@@ -8,6 +8,8 @@ pub enum ChainName {
     Bsc,
     Arbitrum,
     Base,
+    Ethereum,
+    Optimism,
 }
 
 impl ChainName {
@@ -18,6 +20,8 @@ impl ChainName {
             ChainName::Bsc => 56,
             ChainName::Arbitrum => 42161,
             ChainName::Base => 8453,
+            ChainName::Ethereum => 1,
+            ChainName::Optimism => 10,
         }
     }
 
@@ -29,6 +33,8 @@ impl ChainName {
             ChainName::Bsc => "https://bsc.publicnode.com",
             ChainName::Arbitrum => "https://arbitrum-one.publicnode.com",
             ChainName::Base => "https://base.publicnode.com",
+            ChainName::Ethereum => "https://ethereum-rpc.publicnode.com",
+            ChainName::Optimism => "https://optimism-rpc.publicnode.com",
         }
     }
 
@@ -39,6 +45,8 @@ impl ChainName {
             ChainName::Bsc,
             ChainName::Arbitrum,
             ChainName::Base,
+            ChainName::Ethereum,
+            ChainName::Optimism,
         ]
     }
 }
@@ -51,6 +59,8 @@ impl fmt::Display for ChainName {
             ChainName::Bsc => write!(f, "bsc"),
             ChainName::Arbitrum => write!(f, "arbitrum"),
             ChainName::Base => write!(f, "base"),
+            ChainName::Ethereum => write!(f, "ethereum"),
+            ChainName::Optimism => write!(f, "optimism"),
         }
     }
 }
@@ -65,6 +75,8 @@ impl FromStr for ChainName {
             "bsc" => Ok(ChainName::Bsc),
             "arbitrum" => Ok(ChainName::Arbitrum),
             "base" => Ok(ChainName::Base),
+            "ethereum" => Ok(ChainName::Ethereum),
+            "optimism" => Ok(ChainName::Optimism),
             _ => Err(format!(
                 "unknown chain '{s}'. Supported: {}",
                 ChainName::all()

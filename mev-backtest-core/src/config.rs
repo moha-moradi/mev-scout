@@ -191,6 +191,26 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             pools_registry_path: Some("./pools/base.json".to_string()),
         },
     );
+    m.insert(
+        "ethereum".to_string(),
+        ChainConfig {
+            chain_id: 1,
+            balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
+            aave_v3_pool: Some("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2".to_string()),
+            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            pools_registry_path: Some("./pools/ethereum.json".to_string()),
+        },
+    );
+    m.insert(
+        "optimism".to_string(),
+        ChainConfig {
+            chain_id: 10,
+            balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
+            aave_v3_pool: Some("0x794a61358D6845594F94dc1DB02A252b5b4814aD".to_string()),
+            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            pools_registry_path: Some("./pools/optimism.json".to_string()),
+        },
+    );
     m
 }
 

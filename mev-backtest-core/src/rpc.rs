@@ -235,6 +235,17 @@ impl RpcClient {
         })
         .await
     }
+
+    /// Fetch code at a historical block with no retry.
+    /// Useful for non-critical lookups (e.g. precompile detection)
+    /// where unavailability should just produce empty code.
+    pub async fn get_code_no_retry(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
+        self.provider
+            .get_code_at(address)
+            .number(block)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
 }
 
 fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {

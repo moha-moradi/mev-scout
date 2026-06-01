@@ -6,6 +6,7 @@ use revm::bytecode::Bytecode;
 use revm::context::block::BlockEnv;
 use revm::context::cfg::CfgEnv;
 use revm::context::tx::TxEnv;
+use revm::context_interface::block::BlobExcessGasAndPrice;
 use revm::context_interface::result::{ExecutionResult, ResultGas};
 use revm::context_interface::transaction::{AccessList, AccessListItem};
 use revm::database::CacheDB;
@@ -128,6 +129,11 @@ impl CachedRpcDb {
     pub fn rpc(&self) -> &RpcClient {
         &self.rpc
     }
+
+    /// Execute an async RPC call, handling nested runtime scenarios.
+    fn block_on_rpc<F: std::future::Future<Output = T>, T>(&self, future: F) -> T {
+        tokio::task::block_in_place(|| self.handle.block_on(future))
+    }
 }
 
 impl Database for CachedRpcDb {
@@ -162,8 +168,7 @@ impl Database for CachedRpcDb {
             return Ok(Some(info));
         }
         let (nonce, balance, code) = self
-            .handle
-            .block_on(self.rpc.get_account(address, self.block_number))
+            .block_on_rpc(self.rpc.get_account(address, self.block_number))
             .map_err(DbError)?;
         let code_hash = if code.is_empty() {
             KECCAK_EMPTY
@@ -228,8 +233,7 @@ impl Database for CachedRpcDb {
             return Ok(value);
         }
         let value = self
-            .handle
-            .block_on(self.rpc.get_storage_at(address, index, self.block_number))
+            .block_on_rpc(self.rpc.get_storage_at(address, index, self.block_number))
             .map_err(DbError)?;
         self.cache
             .put_slot(self.block_number, address, index, value)
@@ -273,8 +277,7 @@ impl DatabaseRef for CachedRpcDb {
             }));
         }
         let (nonce, balance, code) = self
-            .handle
-            .block_on(self.rpc.get_account(address, self.block_number))
+            .block_on_rpc(self.rpc.get_account(address, self.block_number))
             .map_err(DbError)?;
         let code_hash = if code.is_empty() {
             KECCAK_EMPTY
@@ -310,8 +313,7 @@ impl DatabaseRef for CachedRpcDb {
         {
             return Ok(value);
         }
-        self.handle
-            .block_on(self.rpc.get_storage_at(address, index, self.block_number))
+        self.block_on_rpc(self.rpc.get_storage_at(address, index, self.block_number))
             .map_err(DbError)
     }
 
@@ -335,7 +337,6 @@ pub fn register_polygon_precompiles(
     let code_0a: Bytes;
     let code_0b: Bytes;
     let code_0c: Bytes;
-    let code_1001: Bytes;
 
     {
         let inner = &db.db;
@@ -343,20 +344,14 @@ pub fn register_polygon_precompiles(
         handle = inner.handle.clone();
     }
 
-    code_09 = handle
-        .block_on(rpc.get_code(addr_from_last_byte(0x09), prev_block))
+    let block_on = |f| tokio::task::block_in_place(|| handle.block_on(f));
+    code_09 = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x09), prev_block))
         .unwrap_or_default();
-    code_0a = handle
-        .block_on(rpc.get_code(addr_from_last_byte(0x0a), prev_block))
+    code_0a = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0a), prev_block))
         .unwrap_or_default();
-    code_0b = handle
-        .block_on(rpc.get_code(addr_from_last_byte(0x0b), prev_block))
+    code_0b = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0b), prev_block))
         .unwrap_or_default();
-    code_0c = handle
-        .block_on(rpc.get_code(addr_from_last_byte(0x0c), prev_block))
-        .unwrap_or_default();
-    code_1001 = handle
-        .block_on(rpc.get_code(STATE_RECEIVER, prev_block))
+    code_0c = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0c), prev_block))
         .unwrap_or_default();
 
     let codes = [
@@ -393,32 +388,26 @@ pub fn register_polygon_precompiles(
         );
     }
 
-    if !code_1001.is_empty() {
-        tracing::info!(
-            "State receiver at {} has {} bytes of code, registering as contract",
-            STATE_RECEIVER,
-            code_1001.len()
-        );
-        let bytecode = Bytecode::new_raw(code_1001.clone());
-        let hash = keccak256(&code_1001);
-        db.insert_account_info(
-            STATE_RECEIVER,
-            AccountInfo {
-                nonce: 0,
-                balance: U256::ZERO,
-                code: Some(bytecode),
-                code_hash: hash,
-                account_id: None,
-            },
-        );
-    }
+    // State receiver (0x1001) is a Bor precompile, not an EVM contract.
+    // Always register as no-op stub regardless of eth_getCode result.
+    let bytecode = Bytecode::new_raw(Bytes::new());
+    db.insert_account_info(
+        STATE_RECEIVER,
+        AccountInfo {
+            nonce: 0,
+            balance: U256::ZERO,
+            code: Some(bytecode),
+            code_hash: KECCAK_EMPTY,
+            account_id: None,
+        },
+    );
 
     for b in 0x01u8..=0x1f {
         if BLS12_377_ADDRESSES.contains(&b) {
             continue;
         }
         let addr = addr_from_last_byte(b);
-        if let Ok(code) = handle.block_on(rpc.get_code(addr, prev_block)) {
+        if let Ok(code) = block_on(rpc.get_code_no_retry(addr, prev_block)) {
             if !code.is_empty() {
                 tracing::warn!(
                     "Unrecognised non-empty contract at precompile-range address {} ({} bytes)",
@@ -491,6 +480,12 @@ impl BlockReplayer {
     }
 
     fn build_block_env(&self, block: &BlockData) -> BlockEnv {
+        let spec = spec_id_for_block(self.chain_id, block.number);
+        let blob_excess_gas_and_price = if spec >= SpecId::CANCUN {
+            Some(BlobExcessGasAndPrice::new_with_spec(0, spec))
+        } else {
+            None
+        };
         BlockEnv {
             number: U256::from(block.number),
             beneficiary: block.coinbase,
@@ -499,7 +494,7 @@ impl BlockReplayer {
             basefee: block.base_fee_per_gas.unwrap_or(0) as u64,
             difficulty: U256::ZERO,
             prevrandao: Some(B256::ZERO),
-            blob_excess_gas_and_price: None,
+            blob_excess_gas_and_price,
             slot_num: 0,
         }
     }
@@ -561,14 +556,30 @@ impl BlockReplayer {
             ));
         }
 
-        if exec_logs.len() != receipt.logs.len() {
+        // Polygon adds system-level logs to receipts after EVM execution.
+        // Known system addresses: state receiver (0x1001), native token (0x1010).
+        const SYSTEM_ADDRS: [Address; 2] = [
+            address!("0000000000000000000000000000000000001001"),
+            address!("0000000000000000000000000000000000001010"),
+        ];
+        let receipt_logs: Vec<_> = receipt
+            .logs
+            .iter()
+            .filter(|l| !SYSTEM_ADDRS.contains(&l.address))
+            .collect();
+        let exec_logs_filtered: Vec<_> = exec_logs
+            .iter()
+            .filter(|l| !SYSTEM_ADDRS.contains(&l.address))
+            .collect();
+
+        if exec_logs_filtered.len() != receipt_logs.len() {
             mismatches.push(format!(
                 "log_count (exec={}, receipt={})",
-                exec_logs.len(),
-                receipt.logs.len()
+                exec_logs_filtered.len(),
+                receipt_logs.len()
             ));
         } else {
-            for (i, (l, r)) in exec_logs.iter().zip(receipt.logs.iter()).enumerate() {
+            for (i, (l, r)) in exec_logs_filtered.iter().zip(receipt_logs.iter()).enumerate() {
                 if l.address != r.address {
                     mismatches.push(format!("log[{}].address", i));
                 }
@@ -612,12 +623,13 @@ impl BlockReplayer {
             end
         );
 
+        let state_block = block_num.saturating_sub(1);
         let inner_db = CachedRpcDb::new(
             self.handle.clone(),
             self.cache.clone(),
             self.rpc.clone(),
             self.chain_id,
-            block_num,
+            state_block,
         );
         let mut cache_db = CacheDB::new(inner_db);
 
