@@ -77,13 +77,14 @@ fn onchain_wmatic_usd_price(pm: &PoolManager) -> Option<f64> {
     for &stable in &STABLECOINS {
         let pool_addr = pm.find_pair_pool(&WMATIC, &stable)?;
         let pool = pm.get(&pool_addr)?;
-        let PoolState::UniswapV2(s) = pool;
-        if s.reserve0 > 0 && s.reserve1 > 0 {
-            return if s.info.token0 == WMATIC {
-                Some(s.reserve1 as f64 / s.reserve0 as f64)
-            } else {
-                Some(s.reserve0 as f64 / s.reserve1 as f64)
-            };
+        if let PoolState::UniswapV2(s) = pool {
+            if s.reserve0 > 0 && s.reserve1 > 0 {
+                return if s.info.token0 == WMATIC {
+                    Some(s.reserve1 as f64 / s.reserve0 as f64)
+                } else {
+                    Some(s.reserve0 as f64 / s.reserve1 as f64)
+                };
+            }
         }
     }
     None
@@ -115,6 +116,7 @@ pub fn onchain_usd_price(token: Address, pm: &PoolManager) -> Option<f64> {
                 return None;
             }
         }
+        _ => return None,
     };
 
     if reserve_token == 0 || reserve_wmatic == 0 {

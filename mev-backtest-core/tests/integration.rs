@@ -30,6 +30,8 @@ fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128
             token1,
             fee: 30,
             name: None,
+            dex_type: mev_backtest_core::pool::dex_type::DexType::UniswapV2,
+            tick_spacing: None,
         },
         reserve0: r0,
         reserve1: r1,

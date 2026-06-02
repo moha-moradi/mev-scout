@@ -1,13 +1,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 
-use alloy::primitives::{b256, Address, Bytes, B256, U256};
+use alloy::primitives::{b256, keccak256, Address, Bytes, B256, U256};
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::data::ExecutedLog;
+use crate::pool::decoders;
+use crate::pool::dex_type::DexType;
 use crate::rpc::RpcClient;
 
 /// Static pool information loaded from the registry JSON.
@@ -20,6 +23,16 @@ pub struct PoolInfo {
     pub token1: Address,
     pub fee: u32,
     pub name: Option<String>,
+    #[serde(default)]
+    pub dex_type: DexType,
+    #[serde(default)]
+    pub tick_spacing: Option<u32>,
+}
+
+impl PoolInfo {
+    pub fn is_concentrated_liquidity(&self) -> bool {
+        self.dex_type.is_concentrated_liquidity()
+    }
 }
 
 /// Runtime state for a Uniswap V2 constant-product pool.
@@ -30,24 +43,92 @@ pub struct UniswapV2PoolState {
     pub reserve1: u128,
 }
 
+/// Runtime state for a Uniswap V3 concentrated-liquidity pool.
+#[derive(Debug, Clone)]
+pub struct UniswapV3PoolState {
+    pub info: PoolInfo,
+    pub sqrt_price_x96: U256,
+    pub tick: i32,
+    pub liquidity: u128,
+    /// Ticks with position liquidity (tick_idx → net_liquidity_delta from all positions)
+    pub ticks: HashMap<i32, i128>,
+}
+
+impl UniswapV3PoolState {
+    pub fn new(info: PoolInfo) -> Self {
+        UniswapV3PoolState {
+            info,
+            sqrt_price_x96: U256::ZERO,
+            tick: 0,
+            liquidity: 0,
+            ticks: HashMap::new(),
+        }
+    }
+}
+
+/// Runtime state for a Curve pool (stable-swap / crypto).
+#[derive(Debug, Clone)]
+pub struct CurvePoolState {
+    pub info: PoolInfo,
+    pub balances: Vec<u128>,
+    pub token_index: HashMap<Address, usize>,
+}
+
+/// Runtime state for a Balancer V2 weighted/stable pool.
+#[derive(Debug, Clone)]
+pub struct BalancerPoolState {
+    pub info: PoolInfo,
+    pub balances: Vec<u128>,
+    pub token_index: HashMap<Address, usize>,
+    pub pool_id: Option<[u8; 32]>,
+}
+
 /// Runtime state for any tracked pool.
 #[derive(Debug, Clone)]
 pub enum PoolState {
     UniswapV2(UniswapV2PoolState),
+    UniswapV3(UniswapV3PoolState),
+    Curve(CurvePoolState),
+    Balancer(BalancerPoolState),
 }
 
 impl PoolState {
     pub fn address(&self) -> Address {
         match self {
             PoolState::UniswapV2(s) => s.info.address,
+            PoolState::UniswapV3(s) => s.info.address,
+            PoolState::Curve(s) => s.info.address,
+            PoolState::Balancer(s) => s.info.address,
         }
     }
 
     pub fn info(&self) -> &PoolInfo {
         match self {
             PoolState::UniswapV2(s) => &s.info,
+            PoolState::UniswapV3(s) => &s.info,
+            PoolState::Curve(s) => &s.info,
+            PoolState::Balancer(s) => &s.info,
         }
     }
+
+    pub fn info_mut(&mut self) -> &mut PoolInfo {
+        match self {
+            PoolState::UniswapV2(s) => &mut s.info,
+            PoolState::UniswapV3(s) => &mut s.info,
+            PoolState::Curve(s) => &mut s.info,
+            PoolState::Balancer(s) => &mut s.info,
+        }
+    }
+
+    pub fn dex_label(&self) -> &'static str {
+        self.info().dex_type.label()
+    }
+}
+
+/// Internal helper: result of fetching on-chain state for a pool during init.
+enum PoolInitResult {
+    V2Reserves(u128, u128),
+    V3State(U256, i32, u128),
 }
 
 /// Event signature for Uniswap V2 Swap event
@@ -56,6 +137,17 @@ const SWAP_TOPIC: B256 = b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5
 const SYNC_TOPIC: B256 = b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
 /// getReserves() selector
 const GET_RESERVES_SELECTOR: [u8; 4] = [0x09, 0x02, 0xf1, 0xac];
+
+/// slot0() selector for Uniswap V3
+static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"slot0()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+/// liquidity() selector for Uniswap V3
+static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"liquidity()");
+    Bytes::copy_from_slice(&hash[..4])
+});
 
 /// Manages runtime pool state: initializes from RPC, updates from Swap/Sync events.
 #[derive(Debug, Clone)]
@@ -193,32 +285,82 @@ impl PoolManager {
         }
     }
 
-    /// Count pools that have non-zero reserves (i.e., initialized).
-    pub fn initialized_count(&self) -> usize {
-        self.pools
-            .values()
-            .filter(|p| match p {
-                PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
-            })
-            .count()
+    /// Update a V3 pool's state from a Swap event.
+    pub fn apply_v3_swap(
+        &mut self,
+        address: &Address,
+        sqrt_price_x96: U256,
+        tick: i32,
+        liquidity: u128,
+    ) {
+        if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
+            state.sqrt_price_x96 = sqrt_price_x96;
+            state.tick = tick;
+            state.liquidity = liquidity;
+        }
     }
 
-    /// Initialize pool reserves from on-chain `getReserves()` calls at a historical block.
-    /// Fetches all pool reserves in parallel, capped at 20 concurrent calls.
+    /// Update a V3 pool's tick liquidity from a Mint or Burn event.
+    pub fn apply_v3_mint_burn(
+        &mut self,
+        address: &Address,
+        tick_lower: i32,
+        tick_upper: i32,
+        amount: i128,
+    ) {
+        if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
+            *state.ticks.entry(tick_lower).or_insert(0) += amount;
+            *state.ticks.entry(tick_upper).or_insert(0) -= amount;
+            if amount > 0 {
+                state.liquidity = state.liquidity.saturating_add(amount as u128);
+            } else {
+                state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
+            }
+        }
+    }
+
+    /// Count pools that have non-zero reserves (i.e., initialized).
+    pub fn initialized_count(&self) -> usize {
+        self.pools.values().filter(|p| match p {
+            PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
+            PoolState::UniswapV3(s) => s.liquidity > 0,
+            PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
+            PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
+        })
+        .count()
+    }
+
+    /// Initialize pool state from on-chain calls at a historical block.
+    /// Dispatches V2 / V3 / Curve / Balancer per pool type.
+    /// Fetches all pools in parallel, capped at 20 concurrent calls.
     pub async fn init_from_rpc(&mut self, rpc: &RpcClient, block_num: u64) {
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();
         let cap = pool_addrs.len().min(20).max(1);
         let semaphore = Arc::new(Semaphore::new(cap));
 
+        // Snapshot dex types before spawning tasks
+        let dex_types: Vec<DexType> = pool_addrs
+            .iter()
+            .map(|addr| match self.pools.get(addr) {
+                Some(PoolState::UniswapV2(_)) => DexType::UniswapV2,
+                Some(PoolState::UniswapV3(_)) => DexType::UniswapV3,
+                Some(PoolState::Curve(_)) => DexType::Curve,
+                Some(PoolState::Balancer(_)) => DexType::Balancer,
+                None => DexType::UniswapV2,
+            })
+            .collect();
+
         let tasks: Vec<_> = pool_addrs
             .iter()
-            .map(|addr| {
+            .zip(dex_types.iter())
+            .map(|(addr, dt)| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
+                let dt = *dt;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    Self::fetch_v2_reserves(&rpc, addr, block_num).await
+                    Self::fetch_pool_state(&rpc, addr, dt, block_num).await
                 }
             })
             .collect();
@@ -227,15 +369,46 @@ impl PoolManager {
 
         for (addr, result) in pool_addrs.iter().zip(results) {
             match result {
-                Some((r0, r1)) => {
+                Some(PoolInitResult::V2Reserves(r0, r1)) => {
                     if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(addr) {
                         state.reserve0 = r0;
                         state.reserve1 = r1;
                     }
                 }
-                None => {
-                    tracing::warn!("Failed to fetch reserves for pool {}", addr);
+                Some(PoolInitResult::V3State(sqrt, tick, liq)) => {
+                    if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(addr) {
+                        state.sqrt_price_x96 = sqrt;
+                        state.tick = tick;
+                        state.liquidity = liq;
+                    }
                 }
+                None => {
+                    tracing::warn!("Failed to fetch state for pool {}", addr);
+                }
+            }
+        }
+    }
+
+    /// Fetch the appropriate on-chain state for a pool based on its type.
+    async fn fetch_pool_state(
+        rpc: &RpcClient,
+        pool: Address,
+        dt: DexType,
+        block: u64,
+    ) -> Option<PoolInitResult> {
+        match dt {
+            DexType::UniswapV2 => {
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block).await?;
+                Some(PoolInitResult::V2Reserves(r0, r1))
+            }
+            DexType::UniswapV3 => {
+                let (sqrt, tick, liq) = Self::fetch_v3_state(rpc, pool, block).await?;
+                Some(PoolInitResult::V3State(sqrt, tick, liq))
+            }
+            DexType::Curve | DexType::Balancer => {
+                // Curve & Balancer state depends on pool-specific parameters
+                // (A, gamma, weights, etc.) — not yet implemented
+                None
             }
         }
     }
@@ -256,6 +429,38 @@ impl PoolManager {
         Some((r0, r1))
     }
 
+    /// Fetch V3 pool slot0() + liquidity() at a historical block.
+    async fn fetch_v3_state(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<(U256, i32, u128)> {
+        // --- slot0() ---
+        let result = rpc.call(pool, V3_SLOT0_SELECTOR.clone(), block).await.ok()?;
+        if result.len() < 96 {
+            return None;
+        }
+        let mut buf = [0u8; 32];
+        // sqrtPriceX96 (uint160 → 32 bytes)
+        buf.copy_from_slice(&result[..32]);
+        let sqrt_price_x96 = U256::from_be_bytes(buf);
+        // tick (int24 → int256 → 32 bytes, last 4 bytes are the int24 as i32)
+        let mut tick_bytes = [0u8; 4];
+        tick_bytes.copy_from_slice(&result[60..64]);
+        let tick = i32::from_be_bytes(tick_bytes);
+
+        // --- liquidity() ---
+        let result = rpc.call(pool, V3_LIQUIDITY_SELECTOR.clone(), block).await.ok()?;
+        if result.len() < 32 {
+            return None;
+        }
+        buf.copy_from_slice(&result[..32]);
+        // uint128 is left-padded to 32 bytes; value is in least significant 128 bits
+        let liquidity = U256::from_be_bytes(buf).as_limbs()[0] as u128;
+
+        Some((sqrt_price_x96, tick, liquidity))
+    }
+
     /// Process a list of executed logs from a single transaction, updating pool state
     /// for any Swap or Sync events emitted by tracked pools.
     pub fn update_from_logs(&mut self, logs: &[ExecutedLog]) {
@@ -264,15 +469,43 @@ impl PoolManager {
                 continue;
             }
             let topic0 = log.topics[0];
+
+            // V2 Swap
             if topic0 == SWAP_TOPIC {
-                self.process_swap_log(log);
-            } else if topic0 == SYNC_TOPIC {
-                self.process_sync_log(log);
+                self.process_v2_swap_log(log);
+                continue;
+            }
+            // V2 Sync
+            if topic0 == SYNC_TOPIC {
+                self.process_v2_sync_log(log);
+                continue;
+            }
+            // V3 Swap
+            if topic0 == decoders::V3_SWAP_TOPIC {
+                self.process_v3_swap_log(log);
+                continue;
+            }
+            // V3 Mint/Burn
+            if topic0 == *decoders::V3_MINT_TOPIC || topic0 == decoders::V3_BURN_TOPIC {
+                self.process_v3_mint_burn_log(log);
+                continue;
+            }
+            // Curve TokenExchange
+            if topic0 == *decoders::CURVE_TOKEN_EXCHANGE_TOPIC
+                || topic0 == *decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC
+            {
+                self.process_curve_swap_log(log);
+                continue;
+            }
+            // Balancer Swap
+            if topic0 == *decoders::BALANCER_SWAP_TOPIC {
+                self.process_balancer_swap_log(log);
+                continue;
             }
         }
     }
 
-    fn process_swap_log(&mut self, log: &ExecutedLog) {
+    fn process_v2_swap_log(&mut self, log: &ExecutedLog) {
         if !self.pools.contains_key(&log.address) {
             return;
         }
@@ -286,7 +519,7 @@ impl PoolManager {
         self.apply_v2_swap(&log.address, amt0_in, amt1_in, amt0_out, amt1_out);
     }
 
-    fn process_sync_log(&mut self, log: &ExecutedLog) {
+    fn process_v2_sync_log(&mut self, log: &ExecutedLog) {
         if !self.pools.contains_key(&log.address) {
             return;
         }
@@ -296,6 +529,72 @@ impl PoolManager {
         let r0 = u128_from_be_bytes(&log.data[..32]);
         let r1 = u128_from_be_bytes(&log.data[32..64]);
         self.apply_v2_sync(&log.address, r0, r1);
+    }
+
+    fn process_v3_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_v3_swap(log) {
+            self.apply_v3_swap(
+                &log.address,
+                decoded.sqrt_price_x96,
+                decoded.tick,
+                decoded.liquidity,
+            );
+        }
+    }
+
+    fn process_v3_mint_burn_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_v3_mint_burn(log) {
+            self.apply_v3_mint_burn(
+                &log.address,
+                decoded.tick_lower,
+                decoded.tick_upper,
+                decoded.amount,
+            );
+        }
+    }
+
+    fn process_curve_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_curve_swap(log) {
+            if let Some(PoolState::Curve(state)) = self.pools.get_mut(&log.address) {
+                let coin_sold = decoded.coin_sold as usize;
+                let coin_bought = decoded.coin_bought as usize;
+                if coin_sold < state.balances.len() && coin_bought < state.balances.len() {
+                    state.balances[coin_sold] =
+                        state.balances[coin_sold].saturating_add(decoded.amount_sold);
+                    state.balances[coin_bought] =
+                        state.balances[coin_bought].saturating_sub(decoded.amount_bought);
+                }
+            }
+        }
+    }
+
+    fn process_balancer_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_balancer_swap(log) {
+            if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&log.address) {
+                let idx_in = state.token_index.get(&decoded.token_in);
+                let idx_out = state.token_index.get(&decoded.token_out);
+                if let (Some(&i_in), Some(&i_out)) = (idx_in, idx_out) {
+                    if i_in < state.balances.len() && i_out < state.balances.len() {
+                        state.balances[i_in] =
+                            state.balances[i_in].saturating_add(decoded.amount_in);
+                        state.balances[i_out] =
+                            state.balances[i_out].saturating_sub(decoded.amount_out);
+                    }
+                }
+            }
+        }
     }
 }
 

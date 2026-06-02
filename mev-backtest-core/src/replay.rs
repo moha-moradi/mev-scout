@@ -167,33 +167,40 @@ impl Database for CachedRpcDb {
             self.accounts.insert(address, info.clone());
             return Ok(Some(info));
         }
-        let (nonce, balance, code) = self
-            .block_on_rpc(self.rpc.get_account(address, self.block_number))
+        let (nonce, balance, code_hash, _) = self
+            .block_on_rpc(self.rpc.get_proof(address, &[], self.block_number))
             .map_err(DbError)?;
-        let code_hash = if code.is_empty() {
-            KECCAK_EMPTY
-        } else {
-            keccak256(&code)
-        };
-        let bytecode = if code.is_empty() {
-            Bytecode::new()
-        } else {
-            Bytecode::new_raw(code.clone())
-        };
+
+        if code_hash != KECCAK_EMPTY && !self.codes.contains_key(&code_hash) {
+            let code_bytes = {
+                let from_cache = self
+                    .cache
+                    .get_code(address)
+                    .ok()
+                    .flatten()
+                    .filter(|bytes| keccak256(bytes) == code_hash);
+                match from_cache {
+                    Some(bytes) => bytes,
+                    None => {
+                        let bytes = self
+                            .block_on_rpc(self.rpc.get_code(address, self.block_number))
+                            .map_err(DbError)?;
+                        self.cache.put_code(address, &bytes).map_err(DbError)?;
+                        bytes
+                    }
+                }
+            };
+            self.codes
+                .insert(code_hash, Bytecode::new_raw(code_bytes));
+        }
+
         let info = AccountInfo {
             nonce,
             balance,
-            code: Some(bytecode.clone()),
+            code: self.codes.get(&code_hash).cloned(),
             code_hash,
             account_id: None,
         };
-
-        if !code.is_empty() {
-            self.codes.insert(code_hash, bytecode);
-            self.cache
-                .put_code(address, &code)
-                .map_err(DbError)?;
-        }
         self.cache
             .put_account(
                 self.block_number,
@@ -276,22 +283,23 @@ impl DatabaseRef for CachedRpcDb {
                 account_id: None,
             }));
         }
-        let (nonce, balance, code) = self
-            .block_on_rpc(self.rpc.get_account(address, self.block_number))
+        let (nonce, balance, code_hash, _) = self
+            .block_on_rpc(self.rpc.get_proof(address, &[], self.block_number))
             .map_err(DbError)?;
-        let code_hash = if code.is_empty() {
-            KECCAK_EMPTY
+        let code = if code_hash != KECCAK_EMPTY {
+            self.cache
+                .get_code(address)
+                .ok()
+                .flatten()
+                .filter(|bytes| keccak256(bytes) == code_hash)
+                .map(Bytecode::new_raw)
         } else {
-            keccak256(&code)
+            None
         };
         Ok(Some(AccountInfo {
             nonce,
             balance,
-            code: if code.is_empty() {
-                None
-            } else {
-                Some(Bytecode::new_raw(code))
-            },
+            code,
             code_hash,
             account_id: None,
         }))

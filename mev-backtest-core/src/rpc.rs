@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use alloy::consensus::Transaction;
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
@@ -186,6 +186,38 @@ impl RpcClient {
             .iter()
             .map(alloy_receipt_to_receipt_data)
             .collect())
+    }
+
+    pub async fn get_proof(
+        &self,
+        address: Address,
+        slots: &[U256],
+        block: u64,
+    ) -> anyhow::Result<(u64, U256, B256, Vec<(U256, U256)>)> {
+        let keys: Vec<B256> = slots.iter().map(|s| {
+            B256::from(s.to_be_bytes::<32>())
+        }).collect();
+        self.retry_call(|| {
+            let provider = self.provider.clone();
+            let keys = keys.clone();
+            async move {
+                let proof = provider
+                    .get_proof(address, keys)
+                    .number(block)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let storage: Vec<(U256, U256)> = proof
+                    .storage_proof
+                    .iter()
+                    .map(|sp| {
+                        let key_b256 = sp.key.as_b256();
+                        (U256::from_be_bytes(key_b256.0), sp.value)
+                    })
+                    .collect();
+                Ok((proof.nonce, proof.balance, proof.code_hash, storage))
+            }
+        })
+        .await
     }
 
     pub async fn get_storage_at(

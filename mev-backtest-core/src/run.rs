@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use crate::mev::opportunity::MevOpportunity;
 use crate::mev::two_hop::TwoHopArbDetector;
 use crate::pool::registry::PoolRegistry;
@@ -65,12 +67,36 @@ impl BacktestRunner {
         tracing::info!("Loading {} pools from registry", pool_infos.len());
 
         for info in &pool_infos {
-            if info.pool_type == "uniswap_v2" {
-                pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
-                    info: info.clone(),
-                    reserve0: 0,
-                    reserve1: 0,
-                }));
+            match info.dex_type {
+                crate::pool::dex_type::DexType::UniswapV2 => {
+                    pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+                        info: info.clone(),
+                        reserve0: 0,
+                        reserve1: 0,
+                    }));
+                }
+                crate::pool::dex_type::DexType::UniswapV3 => {
+                    pool_manager.add_pool(PoolState::UniswapV3(
+                        crate::pool::state::UniswapV3PoolState::new(info.clone()),
+                    ));
+                }
+                crate::pool::dex_type::DexType::Curve => {
+                    pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
+                        info: info.clone(),
+                        balances: vec![],
+                        token_index: std::collections::HashMap::new(),
+                    }));
+                }
+                crate::pool::dex_type::DexType::Balancer => {
+                    pool_manager.add_pool(PoolState::Balancer(
+                        crate::pool::state::BalancerPoolState {
+                            info: info.clone(),
+                            balances: vec![],
+                            token_index: std::collections::HashMap::new(),
+                            pool_id: None,
+                        },
+                    ));
+                }
             }
         }
 
@@ -106,7 +132,8 @@ impl BacktestRunner {
             self.pool_manager.token_addresses().into_iter().collect();
 
         let mut all_opportunities = Vec::new();
-        let mut pool_manager = self.pool_manager.clone();
+        let pool_manager = std::mem::take(&mut self.pool_manager);
+        let pool_manager = RefCell::new(pool_manager);
         let detector = &self.detector;
         let priority_fee_gwei = self.priority_fee_gwei;
         let fast_mode = self.fast_mode;
@@ -124,10 +151,11 @@ impl BacktestRunner {
                     })
             },
             |i, tx, _db| {
-                pool_manager.update_from_logs(&tx.logs);
+                let mut pm = pool_manager.borrow_mut();
+                pm.update_from_logs(&tx.logs);
 
                 let opps = detector.detect(
-                    &pool_manager,
+                    &*pm,
                     block_num,
                     i,
                     timestamp,
@@ -148,7 +176,7 @@ impl BacktestRunner {
             },
         )?;
 
-        self.pool_manager = pool_manager;
+        self.pool_manager = pool_manager.into_inner();
         Ok(all_opportunities)
     }
 

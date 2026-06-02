@@ -138,6 +138,73 @@ fn simulate_two_hop(
     })
 }
 
+/// Find the optimal input amount for a two-hop arbitrage using generic quoting functions.
+///
+/// `quote_a(x)`: returns the amount of bridge token received from pool A when spending `x` of token_in.
+/// `quote_b(x)`: returns the amount of token_out received from pool B when spending `x` of the bridge token.
+///
+/// Uses ternary search over the profit function: `profit(x) = quote_b(quote_a(x)) - x`.
+pub fn optimal_two_hop_arb_generic(
+    max_input: u128,
+    quote_a: &impl Fn(u128) -> Option<u128>,
+    quote_b: &impl Fn(u128) -> Option<u128>,
+) -> Option<TwoHopArbResult> {
+    if max_input == 0 {
+        return None;
+    }
+
+    let mut lo = 0u128;
+    let mut hi = max_input;
+    let mut best: Option<TwoHopArbResult> = None;
+
+    for _ in 0..80 {
+        let m1 = lo + (hi - lo) / 3;
+        let m2 = hi - (hi - lo) / 3;
+
+        if m1 == m2 {
+            break;
+        }
+
+        let p1 = simulate_two_hop_generic(m1, quote_a, quote_b);
+        let p2 = simulate_two_hop_generic(m2, quote_a, quote_b);
+
+        match (p1, p2) {
+            (None, None) => break,
+            (Some(_), None) => hi = m2,
+            (None, Some(_)) => lo = m1,
+            (Some(r1), Some(r2)) => {
+                if r1.profit >= r2.profit {
+                    hi = m2;
+                    best = Some(r1);
+                } else {
+                    lo = m1;
+                    best = Some(r2);
+                }
+            }
+        }
+    }
+
+    best
+}
+
+fn simulate_two_hop_generic(
+    input_amount: u128,
+    quote_a: &impl Fn(u128) -> Option<u128>,
+    quote_b: &impl Fn(u128) -> Option<u128>,
+) -> Option<TwoHopArbResult> {
+    let intermediate = quote_a(input_amount)?;
+    let output = quote_b(intermediate)?;
+    if output <= input_amount {
+        return None;
+    }
+    Some(TwoHopArbResult {
+        input_amount,
+        intermediate_amount: intermediate,
+        output_amount: output,
+        profit: output - input_amount,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,5 +267,32 @@ mod tests {
     fn test_optimal_two_hop_arb_low_liquidity() {
         let result = optimal_two_hop_arb(100, 200, 30, 200, 100, 30);
         assert!(result.is_none() || result.unwrap().profit > 0);
+    }
+
+    #[test]
+    fn test_optimal_two_hop_arb_generic_no_profit() {
+        // Identical pools (no price diff)
+        let quote_a = |x: u128| constant_product_output_amount(x, 1_000_000, 1_000_000, 30);
+        let quote_b = |x: u128| constant_product_output_amount(x, 1_000_000, 1_000_000, 30);
+        let result = optimal_two_hop_arb_generic(1_000_000, &quote_a, &quote_b);
+        assert!(result.is_none() || result.unwrap().profit == 0);
+    }
+
+    #[test]
+    fn test_optimal_two_hop_arb_generic_profitable() {
+        // Pool A sells cheap WMATIC (0.5 USDC per WMATIC)
+        let quote_a = |x: u128| constant_product_output_amount(x, 1_000_000, 2_000_000, 30);
+        // Pool B buys WMATIC at premium (2 USDC per WMATIC)
+        let quote_b = |x: u128| constant_product_output_amount(x, 1_000_000, 2_000_000, 30);
+        let result = optimal_two_hop_arb_generic(1_000_000, &quote_a, &quote_b);
+        assert!(result.is_some());
+        assert!(result.unwrap().profit > 0);
+    }
+
+    #[test]
+    fn test_optimal_two_hop_arb_generic_zero_max_input() {
+        let quote_a = |_: u128| Some(0u128);
+        let quote_b = |_: u128| Some(0u128);
+        assert!(optimal_two_hop_arb_generic(0, &quote_a, &quote_b).is_none());
     }
 }

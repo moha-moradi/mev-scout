@@ -98,6 +98,8 @@ impl PoolDiscoverer {
                 token1,
                 fee: 30,
                 name: None,
+                dex_type: Default::default(),
+                tick_spacing: None,
             });
         }
 
