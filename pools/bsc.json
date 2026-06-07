@@ -153,14 +153,6 @@
     "tick_spacing": 10
   },
   {
-    "type": "uniswap_v3",
-    "token0": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",
-    "token1": "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
-    "fee": 500,
-    "name": "PancakeSwap V3 CAKE/WBNB 0.05%",
-    "tick_spacing": 10
-  },
-  {
     "address": "0x133b3d95bad5405d14d53473671200e9342896bf",
     "type": "uniswap_v3",
     "token0": "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82",

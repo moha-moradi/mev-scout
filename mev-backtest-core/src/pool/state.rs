@@ -1157,4 +1157,20 @@ mod tests {
         assert_eq!(tick_out, 50000);
         assert_eq!(liq_out, 1_000_000_000);
     }
+
+    #[test]
+    fn test_decode_v3_tick_min_int24() {
+        // int24 minimum: -8,388,608 (0x800000 as 24-bit two's complement)
+        let slot0 = make_v3_slot0_raw(U256::from(1u128), -8388608);
+        let (_sqrt, tick, _liq) = PoolManager::decode_v3_state_from_storage(slot0, U256::ZERO);
+        assert_eq!(tick, -8388608);
+    }
+
+    #[test]
+    fn test_decode_v3_tick_max_int24() {
+        // int24 maximum: 8,388,607 (0x7FFFFF)
+        let slot0 = make_v3_slot0_raw(U256::from(1u128), 8388607);
+        let (_sqrt, tick, _liq) = PoolManager::decode_v3_state_from_storage(slot0, U256::ZERO);
+        assert_eq!(tick, 8388607);
+    }
 }
