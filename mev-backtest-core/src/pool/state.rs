@@ -428,17 +428,9 @@ impl PoolManager {
         Self::fetch_v2_reserves_storage(rpc, pool, block).await
     }
 
-    /// Fallback: fetch V2 reserves via eth_getStorageAt slot 6.
-    /// Slot 6 packs: uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast
-    /// (packed from LSB by Solidity). In big-endian bytes:
-    ///   bytes[18..32] = reserve0 (14 bytes right-aligned to u128)
-    ///   bytes[4..18]  = reserve1 (14 bytes right-aligned to u128)
-    async fn fetch_v2_reserves_storage(
-        rpc: &RpcClient,
-        pool: Address,
-        block: u64,
-    ) -> Option<(u128, u128)> {
-        let raw = rpc.get_storage_at(pool, U256::from(6), block).await.ok()?;
+    /// Given raw slot 6 (packed uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast),
+    /// decode reserve0 and reserve1.
+    fn decode_v2_reserves_from_storage(raw: U256) -> (u128, u128) {
         let bytes = raw.to_be_bytes::<32>();
         let r0 = u128::from_be_bytes({
             let mut buf = [0u8; 16];
@@ -450,7 +442,17 @@ impl PoolManager {
             buf[2..16].copy_from_slice(&bytes[4..18]);
             buf
         });
-        Some((r0, r1))
+        (r0, r1)
+    }
+
+    /// Fallback: fetch V2 reserves via eth_getStorageAt slot 6.
+    async fn fetch_v2_reserves_storage(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<(u128, u128)> {
+        let raw = rpc.get_storage_at(pool, U256::from(6), block).await.ok()?;
+        Some(Self::decode_v2_reserves_from_storage(raw))
     }
 
     /// Fetch V3 pool slot0() + liquidity() at a historical block.
@@ -459,10 +461,9 @@ impl PoolManager {
         pool: Address,
         block: u64,
     ) -> Option<(U256, i32, u128)> {
-        // Try eth_call slot0() + liquidity() first
         let slot0_result = rpc.call(pool, V3_SLOT0_SELECTOR.clone(), block).await;
         let liq_result = rpc.call(pool, V3_LIQUIDITY_SELECTOR.clone(), block).await;
-        if let (Ok(slot0), Ok(liq)) = (slot0_result, liq_result) {
+        if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
             if slot0.len() >= 96 && liq.len() >= 32 {
                 let mut buf = [0u8; 32];
                 buf.copy_from_slice(&slot0[..32]);
@@ -475,32 +476,34 @@ impl PoolManager {
                 return Some((sqrt_price_x96, tick, liquidity));
             }
         }
-        tracing::trace!("eth_call slot0/liquidity() failed, falling back to storage for {}", pool);
+        if slot0_result.is_err() {
+            tracing::trace!("eth_call slot0() failed for {}", pool);
+        }
+        if liq_result.is_err() {
+            tracing::trace!("eth_call liquidity() failed for {}", pool);
+        }
+        if let Ok(slot0) = slot0_result.as_ref() {
+            if slot0.len() < 96 {
+                tracing::trace!("eth_call slot0() returned short result for {}", pool);
+            }
+        }
+        if let Ok(liq) = liq_result.as_ref() {
+            if liq.len() < 32 {
+                tracing::trace!("eth_call liquidity() returned short result for {}", pool);
+            }
+        }
+        tracing::trace!("falling back to storage for V3 pool {}", pool);
         Self::fetch_v3_state_storage(rpc, pool, block).await
     }
 
-    /// Fallback: fetch V3 state via eth_getStorageAt.
-    /// Slot 0 packs (from LSB):
-    ///   sqrtPriceX96 (uint160, 20 bytes | bits 0..159)
-    ///   tick (int24, 3 bytes | bits 160..183)
-    ///   + observationIndex/ cardinality/ feeProtocol/ unlocked (bits 184..247)
-    /// In big-endian bytes: bytes[12..32] = sqrtPriceX96, bytes[9..12] = tick
-    /// Slot 1: liquidity (uint128, bits 0..127), bytes[16..32] in big-endian
-    async fn fetch_v3_state_storage(
-        rpc: &RpcClient,
-        pool: Address,
-        block: u64,
-    ) -> Option<(U256, i32, u128)> {
-        // --- slot 0: sqrtPriceX96 + tick ---
-        let slot0_raw = rpc.get_storage_at(pool, U256::ZERO, block).await.ok()?;
+    /// Given raw slot0 + slot1, decode sqrtPriceX96, tick, and liquidity.
+    fn decode_v3_state_from_storage(slot0_raw: U256, slot1_raw: U256) -> (U256, i32, u128) {
         let bytes = slot0_raw.to_be_bytes::<32>();
-        // sqrtPriceX96: bytes[12..32] right-aligned within the lower 160 bits
         let sqrt_price_x96 = U256::from_be_bytes({
             let mut buf = [0u8; 32];
             buf[12..32].copy_from_slice(&bytes[12..32]);
             buf
         });
-        // tick: bytes[9..12] as int24, sign-extended to i32
         let mut tick_buf = [0u8; 4];
         tick_buf[1..4].copy_from_slice(&bytes[9..12]);
         if tick_buf[1] & 0x80 != 0 {
@@ -508,8 +511,6 @@ impl PoolManager {
         }
         let tick = i32::from_be_bytes(tick_buf);
 
-        // --- slot 1: liquidity ---
-        let slot1_raw = rpc.get_storage_at(pool, U256::from(1), block).await.ok()?;
         let bytes = slot1_raw.to_be_bytes::<32>();
         let liquidity = u128::from_be_bytes({
             let mut buf = [0u8; 16];
@@ -517,7 +518,18 @@ impl PoolManager {
             buf
         });
 
-        Some((sqrt_price_x96, tick, liquidity))
+        (sqrt_price_x96, tick, liquidity)
+    }
+
+    /// Fallback: fetch V3 state via eth_getStorageAt.
+    async fn fetch_v3_state_storage(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<(U256, i32, u128)> {
+        let slot0_raw = rpc.get_storage_at(pool, U256::ZERO, block).await.ok()?;
+        let slot1_raw = rpc.get_storage_at(pool, U256::from(1), block).await.ok()?;
+        Some(Self::decode_v3_state_from_storage(slot0_raw, slot1_raw))
     }
 
     /// Process a list of executed logs from a single transaction, updating pool state
@@ -1064,5 +1076,85 @@ mod tests {
     fn test_u128_from_be_bytes_zero() {
         let buf = [0u8; 32];
         assert_eq!(super::u128_from_be_bytes(&buf), 0);
+    }
+
+    // ---- decode_v2_reserves_from_storage ----
+
+    fn make_v2_storage_raw(reserve0: u128, reserve1: u128, block_ts: u32) -> U256 {
+        let mut bytes = [0u8; 32];
+        bytes[0..4].copy_from_slice(&block_ts.to_be_bytes());
+        let r1_be = reserve1.to_be_bytes();
+        bytes[4..18].copy_from_slice(&r1_be[2..]);
+        let r0_be = reserve0.to_be_bytes();
+        bytes[18..32].copy_from_slice(&r0_be[2..]);
+        U256::from_be_bytes(bytes)
+    }
+
+    #[test]
+    fn test_decode_v2_small_reserves() {
+        let raw = make_v2_storage_raw(1, 2, 0);
+        let (r0, r1) = PoolManager::decode_v2_reserves_from_storage(raw);
+        assert_eq!(r0, 1);
+        assert_eq!(r1, 2);
+    }
+
+    #[test]
+    fn test_decode_v2_max_reserves() {
+        let max = (1u128 << 112) - 1;
+        let raw = make_v2_storage_raw(max, max, 0);
+        let (r0, r1) = PoolManager::decode_v2_reserves_from_storage(raw);
+        assert_eq!(r0, max);
+        assert_eq!(r1, max);
+    }
+
+    #[test]
+    fn test_decode_v2_zero_reserves() {
+        let raw = make_v2_storage_raw(0, 0, 0);
+        let (r0, r1) = PoolManager::decode_v2_reserves_from_storage(raw);
+        assert_eq!(r0, 0);
+        assert_eq!(r1, 0);
+    }
+
+    // ---- decode_v3_state_from_storage ----
+
+    fn make_v3_slot0_raw(sqrt_price_x96: U256, tick: i32) -> U256 {
+        let mut bytes = [0u8; 32];
+        let sqrt_be = sqrt_price_x96.to_be_bytes::<32>();
+        bytes[12..32].copy_from_slice(&sqrt_be[12..32]);
+        let tick_u24 = (tick as u32) & 0xFFFFFF;
+        let tick_be = tick_u24.to_be_bytes();
+        bytes[9] = tick_be[1];
+        bytes[10] = tick_be[2];
+        bytes[11] = tick_be[3];
+        U256::from_be_bytes(bytes)
+    }
+
+    #[test]
+    fn test_decode_v3_minimal() {
+        let slot0 = make_v3_slot0_raw(U256::from(1u128), 0);
+        let slot1 = U256::ZERO;
+        let (sqrt, tick, liq) = PoolManager::decode_v3_state_from_storage(slot0, slot1);
+        assert_eq!(sqrt, U256::from(1u128));
+        assert_eq!(tick, 0);
+        assert_eq!(liq, 0);
+    }
+
+    #[test]
+    fn test_decode_v3_negative_tick() {
+        let slot0 = make_v3_slot0_raw(U256::from(1u128), -10);
+        let slot1 = U256::ZERO;
+        let (_sqrt, tick, _liq) = PoolManager::decode_v3_state_from_storage(slot0, slot1);
+        assert_eq!(tick, -10);
+    }
+
+    #[test]
+    fn test_decode_v3_typical() {
+        let sqrt = U256::from(1234567890u128) << 64;
+        let slot0 = make_v3_slot0_raw(sqrt, 50000);
+        let slot1 = U256::from(1_000_000_000u128);
+        let (sqrt_out, tick_out, liq_out) = PoolManager::decode_v3_state_from_storage(slot0, slot1);
+        assert_eq!(sqrt_out, sqrt);
+        assert_eq!(tick_out, 50000);
+        assert_eq!(liq_out, 1_000_000_000);
     }
 }
