@@ -94,7 +94,7 @@ impl SandwichDetector {
             pool_records.entry(record.pool).or_default().push(record);
         }
 
-        for (_pool, records) in &pool_records {
+        for records in pool_records.values() {
             for window in records.windows(3) {
                 let front = &window[0];
                 let victim = &window[1];
