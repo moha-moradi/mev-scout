@@ -464,6 +464,39 @@ Note: JIT detection is always active when running backtests. No separate CLI fla
 - Only V3 concentrated liquidity pools are monitored
 - Requires a complete block replay (not snapshot-based)
 
+### Sandwich Detection
+
+The sandwich detector identifies frontrunning attacks on Uniswap V2 pools where a searcher exploits a user's pending swap. The pattern spans three consecutive (or nearby) transactions interacting with the same pool:
+
+1. **Frontrun (tx N):** The searcher buys/sells tokens on pool P, moving the price.
+2. **Victim (tx N+1):** The user's swap executes on pool P at the worsened price.
+3. **Backrun (tx N+2):** The searcher reverses their position on pool P at a profit.
+
+All three transactions must interact with the same pool. The frontrun and backrun must come from the same EOA (the searcher).
+
+**Pattern matched:**
+- Same pool for all three transactions
+- Frontrun and backrun share the same sender address
+- Victim swaps in the same direction as the frontrun
+- Backrun swaps in the opposite direction (reversal)
+- Sliding window over swap records grouped by pool
+
+**Output fields:**
+- `strategy`: `"sandwich"`
+- `pool_a`: The V2 pool where the sandwich occurred
+- `tx_index`: Transaction index of the frontrun
+- `victim_tx_index`: Transaction index of the victim
+- `backrun_tx_index`: Transaction index of the backrun
+- `token_in`, `token_out`: Tokens involved (resolved from pool metadata)
+
+Note: Sandwich detection is always active when running backtests. No separate CLI flag is needed.
+
+**Current limitations:**
+- Only Uniswap V2 pools are monitored (V3 support planned)
+- Expected profit and gas cost are not estimated (set to 0 in v1)
+- Only detects strict consecutive triples on the same pool (no gap handling)
+- Does not verify actual price impact — relies on direction matching
+
 ### Performance
 
 MultiHopArb enumerates all pool paths up to depth 4. For Polygon (~100 pools), this evaluates ~1,600 paths per block, each running 80 iterations of ternary search. Expected overhead: 50–200ms per block.
