@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use crate::cache::CacheStore;
 use crate::mev::opportunity::MevOpportunity;
 use crate::mev::jit::JitDetector;
+use crate::mev::sandwich::SandwichDetector;
 use crate::mev::multi_hop::MultiHopArbDetector;
 use crate::mev::two_hop::TwoHopArbDetector;
 use alloy::primitives::Address;
@@ -114,6 +115,7 @@ impl BacktestRunner {
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
         let mut jit_detector = JitDetector::new(block_num);
+        let mut sandwich_detector = SandwichDetector::new(block_num);
 
         self.replayer.replay_each_filtered(
             block_num,
@@ -179,6 +181,19 @@ impl BacktestRunner {
                     );
                 }
                 all_opportunities.extend(jit_opps);
+
+                // Sandwich detector
+                sandwich_detector.process_tx(i, &tx.logs, sender);
+                let sandwich_opps = sandwich_detector.detect(timestamp, &pm);
+                if !sandwich_opps.is_empty() {
+                    tracing::info!(
+                        "Block {} tx {}: {} sandwich opportunities",
+                        block_num,
+                        i,
+                        sandwich_opps.len()
+                    );
+                }
+                all_opportunities.extend(sandwich_opps);
 
                 Ok(())
             },
