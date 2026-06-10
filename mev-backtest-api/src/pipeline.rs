@@ -361,7 +361,7 @@ pub async fn run_pipeline(
     let chain_name: ChainName = params.chain.parse().ok().unwrap_or(ChainName::Ethereum);
     let usd_price = price_cache.usd_price(chain_name).await.unwrap_or(0.0);
 
-    let agg = aggregate::aggregate(&profitable, &[], chain_name, Some(&mut price_cache));
+    let agg = aggregate::aggregate(&profitable, &[], usd_price);
     let ui_opportunities = crate::mapping::map_opportunities(&profitable, usd_price);
 
     let elapsed = start_time.elapsed();
