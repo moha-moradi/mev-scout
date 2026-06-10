@@ -12,6 +12,9 @@ pub struct SummaryMetrics {
     pub total_cost: f64,
     pub best_strategy: Option<String>,
     pub best_single_opp: f64,
+    pub gross_revenue_wei: u128,
+    pub net_profit_wei: i128,
+    pub total_gas_cost_wei: u128,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -26,6 +29,9 @@ pub struct StrategyMetrics {
     pub roi: f64,
     pub avg_per_opp: f64,
     pub best_opp: f64,
+    pub gross_revenue_wei: u128,
+    pub net_profit_wei: i128,
+    pub total_gas_cost_wei: u128,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -37,6 +43,9 @@ pub struct DexMetrics {
     pub profitable: usize,
     pub revenue: f64,
     pub avg_profit: f64,
+    pub gross_revenue_wei: u128,
+    pub net_profit_wei: i128,
+    pub total_gas_cost_wei: u128,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -53,7 +62,6 @@ pub struct DexMeta {
 }
 
 const WEI_PER_ETH: f64 = 1_000_000_000_000_000_000.0;
-const ETH_USD_RATE: f64 = 3200.0;
 
 fn wei_to_eth(wei: u128) -> f64 {
     wei as f64 / WEI_PER_ETH
@@ -137,6 +145,10 @@ pub fn aggregate(
         };
         let avg = if count > 0 { strat_gross / count as f64 } else { 0.0 };
 
+        let gross_wei: u128 = opps.iter().map(|o| o.expected_profit.to::<u128>()).sum();
+        let gas_wei: u128 = opps.iter().map(|o| o.gas_cost_wei).sum();
+        let net_wei = (gross_wei as i128) - (gas_wei as i128);
+
         if strat_net > best_strat_net {
             best_strat_net = strat_net;
             best_strategy = Some(sname.clone());
@@ -151,10 +163,13 @@ pub fn aggregate(
                 gross_revenue: strat_gross,
                 gas_fees: strat_gas,
                 net_profit: strat_net,
-                net_profit_usd: strat_net * ETH_USD_RATE,
+                net_profit_usd: 0.0, // TODO: wire CoinGecko price
                 roi,
                 avg_per_opp: avg,
                 best_opp,
+                gross_revenue_wei: gross_wei,
+                net_profit_wei: net_wei,
+                total_gas_cost_wei: gas_wei,
             },
         );
     }
@@ -175,6 +190,15 @@ pub fn aggregate(
                 })
                 .count();
             let avg_profit = if count > 0 { revenue / count as f64 } else { 0.0 };
+            let gross_wei: u128 = opps_for_dex
+                .iter()
+                .map(|o| o.expected_profit.to::<u128>())
+                .sum();
+            let gas_wei: u128 = opps_for_dex
+                .iter()
+                .map(|o| o.gas_cost_wei)
+                .sum();
+            let net_wei = (gross_wei as i128) - (gas_wei as i128);
             DexMetrics {
                 dex: dex_meta.name.clone(),
                 fork: dex_meta.fork.clone(),
@@ -183,10 +207,23 @@ pub fn aggregate(
                 profitable,
                 revenue,
                 avg_profit,
+                gross_revenue_wei: gross_wei,
+                net_profit_wei: net_wei,
+                total_gas_cost_wei: gas_wei,
             }
         })
         .collect();
     dex_metrics.sort_by(|a, b| b.revenue.partial_cmp(&a.revenue).unwrap_or(std::cmp::Ordering::Equal));
+
+    let summary_gross_wei: u128 = opportunities
+        .iter()
+        .map(|o| o.expected_profit.to::<u128>())
+        .sum();
+    let summary_gas_wei: u128 = opportunities
+        .iter()
+        .map(|o| o.gas_cost_wei)
+        .sum();
+    let summary_net_wei = (summary_gross_wei as i128) - (summary_gas_wei as i128);
 
     AggregationResult {
         summary: SummaryMetrics {
@@ -194,10 +231,13 @@ pub fn aggregate(
             profitable: profitable_count,
             gross_revenue,
             net_profit,
-            net_profit_usd: net_profit * ETH_USD_RATE,
+            net_profit_usd: 0.0, // TODO: wire CoinGecko price
             total_cost: total_gas,
             best_strategy,
             best_single_opp,
+            gross_revenue_wei: summary_gross_wei,
+            net_profit_wei: summary_net_wei,
+            total_gas_cost_wei: summary_gas_wei,
         },
         by_strategy: strategy_metrics,
         by_dex: dex_metrics,
