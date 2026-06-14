@@ -153,6 +153,7 @@ impl BacktestRunner {
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
         let mut jit_detector = JitDetector::new(block_num);
+        jit_detector.seed_pool_tick_cache(&self.pool_manager);
         let mut sandwich_detector = SandwichDetector::new(block_num);
         let mut jit_arb_detector = JitArbDetector::new(block_num);
 

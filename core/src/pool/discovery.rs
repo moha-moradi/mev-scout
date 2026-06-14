@@ -28,6 +28,8 @@ pub struct DiscoveredPool {
     pub fee: u32,
     pub tick_spacing: Option<i32>,
     pub dex_type: DexType,
+    #[serde(default)]
+    pub creation_block: u64,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
@@ -40,6 +42,7 @@ impl From<DiscoveredPool> for PoolInfo {
             name: None,
             dex_type: d.dex_type,
             tick_spacing: d.tick_spacing.map(|ts| ts as u32),
+            creation_block: d.creation_block,
         }
     }
 }
@@ -78,6 +81,7 @@ pub async fn discover_v2_pools(
             fee: 0,
             tick_spacing: None,
             dex_type: DexType::UniswapV2,
+            creation_block: log.block_number.unwrap_or(to_block),
         });
     }
 
@@ -132,6 +136,7 @@ pub async fn discover_v3_pools(
             fee,
             tick_spacing,
             dex_type: DexType::UniswapV3,
+            creation_block: log.block_number.unwrap_or(to_block),
         });
     }
 
@@ -235,6 +240,7 @@ mod tests {
             fee: 3000,
             tick_spacing: Some(60),
             dex_type: DexType::UniswapV3,
+            creation_block: 0,
         };
         let info: PoolInfo = dp.into();
         assert_eq!(info.fee, 3000);
@@ -251,6 +257,7 @@ mod tests {
             fee: 0,
             tick_spacing: None,
             dex_type: DexType::UniswapV2,
+            creation_block: 0,
         };
         let info: PoolInfo = dp.into();
         assert_eq!(info.dex_type, DexType::UniswapV2);

@@ -1,6 +1,7 @@
 //! Uniswap V3 exact-input quoting using the geometric tick-to-sqrt-price formula.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Mutex;
 
 use alloy::primitives::{U256, U512};
 
@@ -13,6 +14,9 @@ static MIN_SQRT_RATIO: std::sync::LazyLock<U256> =
     std::sync::LazyLock::new(|| get_sqrt_ratio_at_tick(MIN_TICK + 1));
 static MAX_SQRT_RATIO: std::sync::LazyLock<U256> =
     std::sync::LazyLock::new(|| get_sqrt_ratio_at_tick(MAX_TICK - 1));
+
+static SQRT_RATIO_CACHE: std::sync::LazyLock<Mutex<HashMap<i32, U256>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(4096)));
 
 fn limbs_to_u512(lo: &[u64; 4]) -> U512 {
     U512::from_limbs([lo[0], lo[1], lo[2], lo[3], 0, 0, 0, 0])
@@ -57,6 +61,17 @@ fn mul_div_round_up(a: U256, b: U256, d: U256) -> Option<U256> {
 }
 
 pub fn get_sqrt_ratio_at_tick(tick: i32) -> U256 {
+    if let Some(cached) = SQRT_RATIO_CACHE.lock().ok().and_then(|c| c.get(&tick).copied()) {
+        return cached;
+    }
+    let result = compute_sqrt_ratio_at_tick(tick);
+    if let Ok(mut cache) = SQRT_RATIO_CACHE.lock() {
+        cache.insert(tick, result);
+    }
+    result
+}
+
+fn compute_sqrt_ratio_at_tick(tick: i32) -> U256 {
     let abs_tick = tick.unsigned_abs();
     if abs_tick > MAX_TICK as u32 {
         return U256::ZERO;
@@ -285,8 +300,85 @@ fn compute_swap_step(
     }
 }
 
+fn get_next_sqrt_price_from_output(
+    sqrt_price_x96: U256,
+    liquidity: u128,
+    amount_out: U256,
+    zero_for_one: bool,
+) -> Option<U256> {
+    if liquidity == 0 || amount_out.is_zero() {
+        return None;
+    }
+    if zero_for_one {
+        let ratio = mul_div(amount_out, U256::from(1u128 << 96), U256::from(liquidity))?;
+        if ratio >= sqrt_price_x96 {
+            return None;
+        }
+        Some(sqrt_price_x96 - ratio)
+    } else {
+        let numerator: U256 = U256::from(liquidity) << 96;
+        let product = amount_out * sqrt_price_x96;
+        let denominator = numerator.checked_sub(product)?;
+        if denominator.is_zero() {
+            return None;
+        }
+        mul_div(numerator, sqrt_price_x96, denominator)
+    }
+}
+
+fn compute_swap_step_exact_out(
+    sqrt_ratio_current_x96: U256,
+    sqrt_ratio_target_x96: U256,
+    liquidity: u128,
+    amount_remaining: U256,
+    fee: u32,
+) -> (U256, U256, U256, U256) {
+    let zero_for_one = sqrt_ratio_target_x96 < sqrt_ratio_current_x96;
+
+    let max_out = if zero_for_one {
+        get_amount_1_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, false)
+    } else {
+        get_amount_0_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, false)
+    }
+    .unwrap_or(U256::ZERO);
+
+    if amount_remaining >= max_out {
+        let amount_in = if zero_for_one {
+            get_amount_0_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, true)
+        } else {
+            get_amount_1_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, true)
+        }
+        .unwrap_or(U256::ZERO);
+
+        let fee_amount = mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
+            .unwrap_or(U256::ZERO);
+
+        (sqrt_ratio_target_x96, amount_in, max_out, fee_amount)
+    } else {
+        let next_sqrt = get_next_sqrt_price_from_output(
+            sqrt_ratio_current_x96,
+            liquidity,
+            amount_remaining,
+            zero_for_one,
+        )
+        .unwrap_or(sqrt_ratio_current_x96);
+
+        let amount_in = if zero_for_one {
+            get_amount_0_delta(next_sqrt, sqrt_ratio_current_x96, liquidity, true)
+        } else {
+            get_amount_1_delta(sqrt_ratio_current_x96, next_sqrt, liquidity, true)
+        }
+        .unwrap_or(U256::ZERO);
+
+        let fee_amount = mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
+            .unwrap_or(U256::ZERO);
+
+        (next_sqrt, amount_in, amount_remaining, fee_amount)
+    }
+}
+
 fn find_next_initialized_tick(
-    ticks: &HashMap<i32, i128>,
+    ticks: &BTreeMap<i32, i128>,
     current_tick: i32,
     zero_for_one: bool,
 ) -> Option<i32> {
@@ -521,6 +613,109 @@ pub fn quote_v3_exact_in(
         return None;
     }
     let limbs = total_amount_out.as_limbs();
+    if limbs[1] != 0 || limbs[2] != 0 || limbs[3] != 0 {
+        return None;
+    }
+    Some(limbs[0] as u128)
+}
+
+/// Simulates a V3 exact-output swap: determine how much input is required
+/// to receive exactly `amount_out` of the output token.
+///
+/// Walks the tick range in the opposite direction of `quote_v3_exact_in`,
+/// accumulating the input required per tick step.
+///
+/// Returns `None` for zero output, zero liquidity, or zero sqrt-price.
+pub fn quote_v3_exact_out(
+    pool: &UniswapV3PoolState,
+    amount_out: u128,
+    zero_for_one: bool,
+) -> Option<u128> {
+    if amount_out == 0 || pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
+        return None;
+    }
+
+    let mut sqrt_price = pool.sqrt_price_x96;
+    let mut current_tick = pool.tick;
+    let mut liquidity = pool.liquidity;
+    let mut amount_remaining = U256::from(amount_out);
+    let mut total_amount_in = U256::ZERO;
+
+    while amount_remaining > U256::ZERO {
+        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+
+        let target_sqrt_price = match next_tick {
+            Some(t) => {
+                let r = get_sqrt_ratio_at_tick(t);
+                if zero_for_one {
+                    r.max(*MIN_SQRT_RATIO).min(sqrt_price)
+                } else {
+                    r.min(*MAX_SQRT_RATIO).max(sqrt_price)
+                }
+            }
+            None => {
+                if zero_for_one {
+                    *MIN_SQRT_RATIO
+                } else {
+                    *MAX_SQRT_RATIO
+                }
+            }
+        };
+
+        if target_sqrt_price == sqrt_price {
+            break;
+        }
+
+        let (next_sqrt_price, amount_in_step, amount_out_step, fee_step) = compute_swap_step_exact_out(
+            sqrt_price,
+            target_sqrt_price,
+            liquidity,
+            amount_remaining,
+            pool.info.fee,
+        );
+
+        total_amount_in += amount_in_step + fee_step;
+
+        if amount_out_step >= amount_remaining {
+            amount_remaining = U256::ZERO;
+        } else {
+            amount_remaining -= amount_out_step;
+        }
+
+        if next_sqrt_price == target_sqrt_price {
+            current_tick = if zero_for_one {
+                next_tick.unwrap_or(MIN_TICK)
+            } else {
+                next_tick.unwrap_or(MAX_TICK)
+            };
+            if let Some(liq_delta) = pool.ticks.get(&next_tick.unwrap_or(0)) {
+                let delta = *liq_delta;
+                if zero_for_one {
+                    liquidity = if delta > 0 {
+                        liquidity.saturating_sub(delta as u128)
+                    } else {
+                        liquidity.saturating_add((-delta) as u128)
+                    };
+                } else {
+                    liquidity = if delta > 0 {
+                        liquidity.saturating_add(delta as u128)
+                    } else {
+                        liquidity.saturating_sub((-delta) as u128)
+                    };
+                }
+            }
+        }
+
+        sqrt_price = next_sqrt_price;
+    }
+
+    if total_amount_in.is_zero() {
+        return None;
+    }
+    let limbs = total_amount_in.as_limbs();
+    if limbs[1] != 0 || limbs[2] != 0 || limbs[3] != 0 {
+        return None;
+    }
     Some(limbs[0] as u128)
 }
 
@@ -536,7 +731,7 @@ mod tests {
         liquidity: u128,
         fee: u32,
         tick_spacing: Option<u32>,
-        ticks: HashMap<i32, i128>,
+        ticks: BTreeMap<i32, i128>,
     ) -> UniswapV3PoolState {
         UniswapV3PoolState {
             info: PoolInfo {
@@ -547,6 +742,7 @@ mod tests {
                 name: None,
                 dex_type: DexType::UniswapV3,
                 tick_spacing,
+                creation_block: 0,
             },
             sqrt_price_x96,
             tick,
@@ -594,21 +790,21 @@ mod tests {
 
     #[test]
     fn test_quote_no_liquidity() {
-        let pool = make_pool(U256::from(1u128 << 96), 0, 0, 3000, Some(60), HashMap::new());
+        let pool = make_pool(U256::from(1u128 << 96), 0, 0, 3000, Some(60), BTreeMap::new());
         assert!(quote_v3_exact_in(&pool, 1000, true).is_none());
         assert!(quote_v3_exact_in(&pool, 1000, false).is_none());
     }
 
     #[test]
     fn test_quote_no_amount() {
-        let pool = make_pool(U256::from(1u128 << 96), 0, 1_000_000, 3000, Some(60), HashMap::new());
+        let pool = make_pool(U256::from(1u128 << 96), 0, 1_000_000, 3000, Some(60), BTreeMap::new());
         assert!(quote_v3_exact_in(&pool, 0, true).is_none());
     }
 
     #[test]
     fn test_quote_basic_zero_for_one() {
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let pool = make_pool(sqrt_price, 0, 1_000_000_000_000u128, 3000, Some(60), HashMap::new());
+        let pool = make_pool(sqrt_price, 0, 1_000_000_000_000u128, 3000, Some(60), BTreeMap::new());
         let out = quote_v3_exact_in(&pool, 100_000, true);
         assert!(out.is_some(), "should get output");
         let out_val = out.unwrap();
@@ -619,7 +815,7 @@ mod tests {
     #[test]
     fn test_quote_basic_one_for_zero() {
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let pool = make_pool(sqrt_price, 0, 1_000_000_000_000u128, 3000, Some(60), HashMap::new());
+        let pool = make_pool(sqrt_price, 0, 1_000_000_000_000u128, 3000, Some(60), BTreeMap::new());
         let out = quote_v3_exact_in(&pool, 100_000, false);
         assert!(out.is_some(), "should get output");
         assert!(out.unwrap() > 0);
@@ -628,7 +824,7 @@ mod tests {
     #[test]
     fn test_quote_small_amount() {
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let pool = make_pool(sqrt_price, 1200, 1_000_000_000_000u128, 3000, Some(60), HashMap::new());
+        let pool = make_pool(sqrt_price, 1200, 1_000_000_000_000u128, 3000, Some(60), BTreeMap::new());
         // With 0.3% fee, 1 wei input is fully consumed by fee → no output
         // Use enough to exceed the fee rounding threshold
         let out = quote_v3_exact_in(&pool, 10_000, true);
@@ -687,7 +883,7 @@ mod tests {
     #[test]
     fn test_quote_with_initialized_tick_crossing() {
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let mut ticks = HashMap::new();
+        let mut ticks = BTreeMap::new();
         // Add a tick with liquidity at tick -100
         ticks.insert(-100, 1_000_000_000i128);
         let pool = make_pool(sqrt_price, 0, 5_000_000_000_000u128, 500, Some(10), ticks);
@@ -701,7 +897,7 @@ mod tests {
 
     #[test]
     fn test_find_next_initialized_tick_down() {
-        let mut ticks = HashMap::new();
+        let mut ticks = BTreeMap::new();
         ticks.insert(-100, 1000i128);
         ticks.insert(-200, 500i128);
         ticks.insert(-50, 300i128);
@@ -712,7 +908,7 @@ mod tests {
 
     #[test]
     fn test_find_next_initialized_tick_up() {
-        let mut ticks = HashMap::new();
+        let mut ticks = BTreeMap::new();
         ticks.insert(100, 1000i128);
         ticks.insert(200, 500i128);
         ticks.insert(50, 300i128);
@@ -723,7 +919,7 @@ mod tests {
 
     #[test]
     fn test_find_next_initialized_tick_none() {
-        let ticks = HashMap::new();
+        let ticks = BTreeMap::new();
         assert_eq!(find_next_initialized_tick(&ticks, 0, true), None);
         assert_eq!(find_next_initialized_tick(&ticks, 0, false), None);
     }
@@ -739,7 +935,7 @@ mod tests {
     #[test]
     fn test_quote_large_amount_still_works() {
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let pool = make_pool(sqrt_price, 0, u128::MAX, 3000, Some(60), HashMap::new());
+        let pool = make_pool(sqrt_price, 0, u128::MAX, 3000, Some(60), BTreeMap::new());
         let out = quote_v3_exact_in(&pool, 1_000_000_000_000u128, true);
         assert!(out.is_some());
     }

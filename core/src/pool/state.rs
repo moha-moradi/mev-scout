@@ -14,8 +14,8 @@
 //! 1. Load `PoolInfo` from JSON registry + sled discovery cache
 //! 2. Fetch live reserve/state data via `eth_call` (with `eth_getStorageAt` fallback)
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
@@ -46,6 +46,23 @@ pub struct PoolInfo {
     pub dex_type: DexType,
     #[serde(default)]
     pub tick_spacing: Option<u32>,
+    #[serde(default)]
+    pub creation_block: u64,
+}
+
+impl Default for PoolInfo {
+    fn default() -> Self {
+        PoolInfo {
+            address: Address::ZERO,
+            token0: Address::ZERO,
+            token1: Address::ZERO,
+            fee: 0,
+            name: None,
+            dex_type: DexType::UniswapV2,
+            tick_spacing: None,
+            creation_block: 0,
+        }
+    }
 }
 
 impl PoolInfo {
@@ -77,7 +94,7 @@ pub struct UniswapV3PoolState {
     pub tick: i32,
     pub liquidity: u128,
     /// Ticks with position liquidity (tick_idx → net_liquidity_delta from all positions)
-    pub ticks: HashMap<i32, i128>,
+    pub ticks: std::collections::BTreeMap<i32, i128>,
 }
 
 impl UniswapV3PoolState {
@@ -87,7 +104,7 @@ impl UniswapV3PoolState {
             sqrt_price_x96: U256::ZERO,
             tick: 0,
             liquidity: 0,
-            ticks: HashMap::new(),
+            ticks: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -187,15 +204,21 @@ static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
 /// - Dispatches on-chain event logs to the appropriate state update method
 ///
 /// `PoolManager` is the single source of truth for pool state during a run.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PoolManager {
     pools: HashMap<Address, PoolState>,
     /// token address -> list of pool addresses that trade this token
     token_index: HashMap<Address, Vec<Address>>,
     /// Cached arbitrage pairs (invalidated on add_pool)
-    pairs_cache: RefCell<Option<Vec<(Address, Address, Address)>>>,
+    pairs_cache: Mutex<Option<Vec<(Address, Address, Address)>>>,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
     wrapped_native: Option<Address>,
+    /// Pre-filter set of known pool addresses for fast log filtering.
+    known_set: HashSet<Address>,
+    /// Maximum number of pools per token when computing arbitrage pairs.
+    max_pairs_per_token: usize,
+    /// Maximum number of concurrent RPC calls during pool initialization.
+    concurrency_limit: u32,
 }
 
 impl PoolManager {
@@ -207,8 +230,11 @@ impl PoolManager {
         PoolManager {
             pools: HashMap::new(),
             token_index: HashMap::new(),
-            pairs_cache: RefCell::new(None),
+            pairs_cache: Mutex::new(None),
             wrapped_native: None,
+            known_set: HashSet::new(),
+            max_pairs_per_token: 50,
+            concurrency_limit: 20,
         }
     }
 
@@ -217,8 +243,11 @@ impl PoolManager {
         PoolManager {
             pools: HashMap::with_capacity(capacity),
             token_index: HashMap::with_capacity(capacity),
-            pairs_cache: RefCell::new(None),
+            pairs_cache: Mutex::new(None),
             wrapped_native: None,
+            known_set: HashSet::with_capacity(capacity),
+            max_pairs_per_token: 50,
+            concurrency_limit: 20,
         }
     }
 
@@ -228,6 +257,7 @@ impl PoolManager {
     pub fn add_pool(&mut self, state: PoolState) {
         let addr = state.address();
         let info = state.info().clone();
+        self.known_set.insert(addr);
         self.pools.insert(addr, state);
         self.token_index
             .entry(info.token0)
@@ -237,7 +267,7 @@ impl PoolManager {
             .entry(info.token1)
             .or_default()
             .push(addr);
-        *self.pairs_cache.borrow_mut() = None; // invalidate cache
+        *self.pairs_cache.lock().unwrap() = None;
     }
 
     /// Look up a pool by address.
@@ -299,15 +329,16 @@ impl PoolManager {
     /// Each pair is returned once (pool_a < pool_b by address), with the shared token.
     /// Result is cached and invalidated on add_pool.
     pub fn arbitrage_pairs(&self) -> Vec<(Address, Address, Address)> {
-        if let Some(cached) = &*self.pairs_cache.borrow() {
+        if let Some(cached) = &*self.pairs_cache.lock().unwrap() {
             return cached.clone();
         }
         let mut pairs = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
         for (_token, pool_addrs) in &self.token_index {
-            for i in 0..pool_addrs.len() {
-                for j in (i + 1)..pool_addrs.len() {
+            let limit = self.max_pairs_per_token.min(pool_addrs.len());
+            for i in 0..limit {
+                for j in (i + 1)..limit {
                     let a = pool_addrs[i];
                     let b = pool_addrs[j];
                     let key = if a < b { (a, b) } else { (b, a) };
@@ -318,7 +349,7 @@ impl PoolManager {
             }
         }
 
-        *self.pairs_cache.borrow_mut() = Some(pairs.clone());
+        *self.pairs_cache.lock().unwrap() = Some(pairs.clone());
         pairs
     }
 
@@ -392,10 +423,11 @@ impl PoolManager {
 
     /// Initialize pool state from on-chain calls at a historical block.
     /// Dispatches V2 / V3 / Curve / Balancer per pool type.
-    /// Fetches all pools in parallel, capped at 20 concurrent calls.
+    /// Fetches all pools in parallel, capped by concurrency_limit.
     pub async fn init_from_rpc(&mut self, rpc: &RpcClient, block_num: u64) {
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();
-        let cap = pool_addrs.len().clamp(1, 20);
+        let max_concurrent = self.concurrency_limit as usize;
+        let cap = pool_addrs.len().clamp(1, max_concurrent);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         // Snapshot dex types before spawning tasks
@@ -440,6 +472,14 @@ impl PoolManager {
                         state.sqrt_price_x96 = sqrt;
                         state.tick = tick;
                         state.liquidity = liq;
+                        if state.ticks.is_empty() {
+                            tracing::warn!("V3 pool {} initialized with empty tick map", addr);
+                        }
+                        debug_assert!(
+                            !sqrt.is_zero(),
+                            "V3 pool {} initialized with zero sqrt price",
+                            addr
+                        );
                     }
                 }
                 None => {
@@ -473,10 +513,26 @@ impl PoolManager {
         }
     }
 
+    async fn call_with_retry(rpc: &RpcClient, pool: Address, data: Bytes, block: u64, max_retries: u32) -> Result<Bytes, ()> {
+        let mut last_err = ();
+        for attempt in 0..max_retries {
+            match rpc.call(pool, data.clone(), block).await {
+                Ok(result) => return Ok(result),
+                Err(_) => {
+                    last_err = ();
+                    if attempt + 1 < max_retries {
+                        tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
+                    }
+                }
+            }
+        }
+        Err(last_err)
+    }
+
     async fn fetch_v2_reserves(rpc: &RpcClient, pool: Address, block: u64) -> Option<(u128, u128)> {
-        // Try eth_call getReserves() first
+        // Try eth_call getReserves() first (with retries)
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
-        if let Ok(result) = rpc.call(pool, data, block).await {
+        if let Ok(result) = Self::call_with_retry(rpc, pool, data, block, 3).await {
             if result.len() >= 64 {
                 let mut buf = [0u8; 32];
                 buf.copy_from_slice(&result[..32]);
@@ -493,17 +549,13 @@ impl PoolManager {
     /// Given raw slot 6 (packed uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast),
     /// decode reserve0 and reserve1.
     fn decode_v2_reserves_from_storage(raw: U256) -> (u128, u128) {
-        let bytes = raw.to_be_bytes::<32>();
-        let r0 = u128::from_be_bytes({
-            let mut buf = [0u8; 16];
-            buf[2..16].copy_from_slice(&bytes[18..32]);
-            buf
-        });
-        let r1 = u128::from_be_bytes({
-            let mut buf = [0u8; 16];
-            buf[2..16].copy_from_slice(&bytes[4..18]);
-            buf
-        });
+        let mask: U256 = (U256::from(1u128) << 112) - U256::from(1u128);
+        let masked_r0 = raw & mask;
+        let masked_r1 = (raw >> U256::from(112u64)) & mask;
+        let lo_r0 = masked_r0.as_limbs();
+        let lo_r1 = masked_r1.as_limbs();
+        let r0 = (lo_r0[0] as u128) | ((lo_r0[1] as u128) << 64);
+        let r1 = (lo_r1[0] as u128) | ((lo_r1[1] as u128) << 64);
         (r0, r1)
     }
 
@@ -523,8 +575,8 @@ impl PoolManager {
         pool: Address,
         block: u64,
     ) -> Option<(U256, i32, u128)> {
-        let slot0_result = rpc.call(pool, V3_SLOT0_SELECTOR.clone(), block).await;
-        let liq_result = rpc.call(pool, V3_LIQUIDITY_SELECTOR.clone(), block).await;
+        let slot0_result = Self::call_with_retry(rpc, pool, V3_SLOT0_SELECTOR.clone(), block, 3).await;
+        let liq_result = Self::call_with_retry(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), block, 3).await;
         if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
             if slot0.len() >= 96 && liq.len() >= 32 {
                 let mut buf = [0u8; 32];
@@ -599,6 +651,9 @@ impl PoolManager {
     pub fn update_from_logs(&mut self, logs: &[ExecutedLog]) {
         for log in logs {
             if log.topics.is_empty() {
+                continue;
+            }
+            if !self.known_set.contains(&log.address) {
                 continue;
             }
             let topic0 = log.topics[0];
@@ -743,10 +798,33 @@ impl PoolManager {
         }
     }
 
+    /// Get V3 pool state by address (returns None if not a V3 pool or not found).
+    pub fn get_v3_state(&self, address: &Address) -> Option<&UniswapV3PoolState> {
+        match self.pools.get(address) {
+            Some(PoolState::UniswapV3(state)) => Some(state),
+            _ => None,
+        }
+    }
+
     /// Set the wrapped native token address.
     pub fn with_wrapped_native(mut self, addr: Address) -> Self {
         self.wrapped_native = Some(addr);
         self
+    }
+}
+
+impl Clone for PoolManager {
+    fn clone(&self) -> Self {
+        let cache = self.pairs_cache.lock().unwrap().clone();
+        PoolManager {
+            pools: self.pools.clone(),
+            token_index: self.token_index.clone(),
+            pairs_cache: Mutex::new(cache),
+            wrapped_native: self.wrapped_native,
+            known_set: self.known_set.clone(),
+            max_pairs_per_token: self.max_pairs_per_token,
+            concurrency_limit: self.concurrency_limit,
+        }
     }
 }
 
@@ -783,6 +861,7 @@ mod tests {
                 name: None,
                 dex_type: DexType::UniswapV2,
                 tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: r0,
             reserve1: r1,
@@ -799,11 +878,12 @@ mod tests {
                 name: None,
                 dex_type: DexType::UniswapV3,
                 tick_spacing: Some(60),
+                creation_block: 0,
             },
             sqrt_price_x96: sqrt,
             tick,
             liquidity: liq,
-            ticks: HashMap::new(),
+            ticks: std::collections::BTreeMap::new(),
         })
     }
 

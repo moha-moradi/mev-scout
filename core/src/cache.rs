@@ -488,6 +488,7 @@ mod tests {
             name: None,
             dex_type: DexType::UniswapV2,
             tick_spacing: None,
+            creation_block: 0,
         };
         cache.put_discovered_pool(&pool).unwrap();
         let fetched = cache.get_discovered_pool(&pool.address).unwrap().unwrap();
@@ -523,6 +524,7 @@ mod tests {
             name: None,
             dex_type: DexType::UniswapV2,
             tick_spacing: None,
+            creation_block: 0,
         };
         cache_a.put_discovered_pool(&pool).unwrap();
         assert_eq!(cache_b.list_discovered_pools().unwrap().len(), 0);

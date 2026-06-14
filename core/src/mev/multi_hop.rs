@@ -260,6 +260,7 @@ mod tests {
             info: PoolInfo {
                 address: addr, token0: t0, token1: t1, fee: 30,
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: r0, reserve1: r1,
         })

@@ -372,6 +372,7 @@ mod tests {
             info: PoolInfo {
                 address: addr, token0: t0, token1: t1, fee: 30,
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: r0, reserve1: r1,
         })
@@ -382,9 +383,10 @@ mod tests {
             info: PoolInfo {
                 address: addr, token0: t0, token1: t1, fee: 30,
                 name: None, dex_type: DexType::UniswapV3, tick_spacing: Some(60),
+                creation_block: 0,
             },
             sqrt_price_x96: sqrt, tick, liquidity: liq,
-            ticks: HashMap::new(),
+            ticks: std::collections::BTreeMap::new(),
         })
     }
 
@@ -424,6 +426,7 @@ mod tests {
                 address: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 token0: usdc(), token1: wmatic(), fee: 30,
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: 1_000_000, reserve1: 2_000_000,
         };
@@ -440,6 +443,7 @@ mod tests {
                 address: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 token0: wmatic(), token1: usdt(), fee: 30,
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: 2_000_000, reserve1: 1_000_000,
         };
@@ -502,6 +506,7 @@ mod tests {
             info: PoolInfo {
                 address: Address::ZERO, token0: usdc(), token1: wmatic(), fee: 1,
                 name: None, dex_type: DexType::Curve, tick_spacing: None,
+                creation_block: 0,
             },
             balances: vec![1_000_000, 1_000_000],
             token_index,

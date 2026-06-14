@@ -54,6 +54,16 @@ impl JitDetector {
         }
     }
 
+    /// Seed the tick cache from the pool manager's current V3 state.
+    /// Call after `PoolManager::init_from_rpc` to set initial ticks.
+    pub fn seed_pool_tick_cache(&mut self, pool_manager: &PoolManager) {
+        for addr in pool_manager.pool_addresses() {
+            if let Some(state) = pool_manager.get_v3_state(&addr) {
+                self.pool_tick_cache.insert(addr, state.tick);
+            }
+        }
+    }
+
     /// Process a single transaction's logs and optional sender address.
     /// Call BEFORE `detect()` for each tx in block order.
     pub fn process_tx(
@@ -327,11 +337,12 @@ mod tests {
                 name: None,
                 dex_type: DexType::UniswapV3,
                 tick_spacing: Some(60),
+                creation_block: 0,
             },
             sqrt_price_x96: U256::from(1u128 << 96),
             tick: 0,
             liquidity: 1_000_000_000,
-            ticks: HashMap::new(),
+            ticks: std::collections::BTreeMap::new(),
         }));
         pm
     }

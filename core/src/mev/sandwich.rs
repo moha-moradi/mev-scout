@@ -333,6 +333,7 @@ mod tests {
                 name: None,
                 dex_type: DexType::UniswapV2,
                 tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: 1_000_000,
             reserve1: 1_000_000,

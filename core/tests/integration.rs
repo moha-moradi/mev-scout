@@ -61,6 +61,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         name: Some(name.into()),
         dex_type: DexType::UniswapV2,
         tick_spacing: None,
+        creation_block: 0,
     }
 }
 
@@ -78,6 +79,7 @@ fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128
             name: None,
             dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2,
             tick_spacing: None,
+            creation_block: 0,
         },
         reserve0: r0,
         reserve1: r1,
@@ -262,8 +264,6 @@ fn test_two_hop_same_token_different_reserves() {
 #[test]
 fn test_two_hop_v3_reserves_update_accuracy() {
     use mev_scout_core::pool::state::UniswapV3PoolState;
-    use std::collections::HashMap;
-
     // V3 pool with concentrated liquidity
     let v3_addr = address!("3333333333333333333333333333333333333333");
     let v3_pool = PoolState::UniswapV3(UniswapV3PoolState {
@@ -275,11 +275,12 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             name: None,
             dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV3,
             tick_spacing: Some(60),
+            creation_block: 0,
         },
         sqrt_price_x96: U256::from(79228162514264337593543950336u128), // price = 1.0
         tick: 0,
         liquidity: 1_000_000_000_000u128,
-        ticks: HashMap::new(),
+        ticks: std::collections::BTreeMap::new(),
     });
 
     let v2_addr = address!("4444444444444444444444444444444444444444");
@@ -411,6 +412,7 @@ fn test_sandwich_detection_synthetic() {
             name: None,
             dex_type: DexType::UniswapV2,
             tick_spacing: None,
+            creation_block: 0,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,
@@ -689,6 +691,7 @@ fn test_jit_detection_synthetic() {
             name: None,
             dex_type: DexType::UniswapV3,
             tick_spacing: Some(60),
+            creation_block: 0,
         }),
     ));
     let gas_cfg = default_gas_config();
@@ -744,6 +747,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
         name: Some("Uniswap V3 WMATIC/USDC 0.05%".into()),
         dex_type: DexType::UniswapV3,
         tick_spacing: Some(10),
+        creation_block: 0,
     };
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info.clone()));
@@ -810,6 +814,7 @@ fn test_jit_arb_detection_synthetic() {
             info: mev_scout_core::pool::state::PoolInfo {
                 address: pool_p, token0: wmatic, token1: usdc, fee: 30, name: None,
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -822,6 +827,7 @@ fn test_jit_arb_detection_synthetic() {
                 token1: address!("c2132d05d31c914a87c6611c10748aeb04b58e8f"),
                 fee: 30, name: None,
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
+                creation_block: 0,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -878,6 +884,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
         name: Some("Uniswap V3 WMATIC/USDC 0.05%".into()),
         dex_type: DexType::UniswapV3,
         tick_spacing: Some(10),
+        creation_block: 0,
     };
 
     let mut pm = PoolManager::new();

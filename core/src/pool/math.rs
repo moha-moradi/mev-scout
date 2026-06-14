@@ -143,6 +143,15 @@ fn simulate_two_hop(
     })
 }
 
+/// Return `Some((input, output))` only when output strictly exceeds input.
+fn profit_or_none(output: u128, input: u128) -> Option<(u128, u128)> {
+    if output > input {
+        Some((input, output))
+    } else {
+        None
+    }
+}
+
 /// General N-hop ternary search optimizer.
 ///
 /// `quote_fn(x)` returns the output amount for input `x` through the entire pool chain.
@@ -176,21 +185,22 @@ pub fn optimal_n_hop_generic(
             (None, None) => break,
             (Some(_), None) => hi = m2,
             (None, Some(_)) => lo = m1,
-            (Some(r1), Some(r2)) => {
-                let p1 = r1.saturating_sub(m1);
-                let p2 = r2.saturating_sub(m2);
-                if p1 >= p2 {
-                    hi = m2;
-                    if p1 > 0 {
-                        best = Some((m1, r1));
-                    }
-                } else {
-                    lo = m1;
-                    if p2 > 0 {
-                        best = Some((m2, r2));
+            (Some(r1), Some(r2)) => match (profit_or_none(r1, m1), profit_or_none(r2, m2)) {
+                (None, None) => break,
+                (Some(_), None) => hi = m2,
+                (None, Some(_)) => lo = m1,
+                (Some((in1, out1)), Some((in2, out2))) => {
+                    let p1 = out1 - in1;
+                    let p2 = out2 - in2;
+                    if p1 >= p2 {
+                        hi = m2;
+                        best = Some((in1, out1));
+                    } else {
+                        lo = m1;
+                        best = Some((in2, out2));
                     }
                 }
-            }
+            },
         }
     }
 
