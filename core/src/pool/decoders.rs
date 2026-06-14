@@ -30,6 +30,8 @@ pub struct V3SwapDecoded {
     pub sqrt_price_x96: U256,
     pub tick: i32,
     pub liquidity: u128,
+    pub amount0: i128,
+    pub amount1: i128,
 }
 
 /// Result of decoding a V3 Mint/Burn event.
@@ -70,6 +72,25 @@ pub fn decode_v3_swap(log: &ExecutedLog) -> Option<V3SwapDecoded> {
     if log.data.len() < 160 {
         return None;
     }
+
+    // amount0 is signed int256, bytes 0..32
+    let amount0_bytes: [u8; 32] = log.data[..32].try_into().ok()?;
+    let amount0 = i128::from_be_bytes([
+        amount0_bytes[16], amount0_bytes[17], amount0_bytes[18], amount0_bytes[19],
+        amount0_bytes[20], amount0_bytes[21], amount0_bytes[22], amount0_bytes[23],
+        amount0_bytes[24], amount0_bytes[25], amount0_bytes[26], amount0_bytes[27],
+        amount0_bytes[28], amount0_bytes[29], amount0_bytes[30], amount0_bytes[31],
+    ]);
+
+    // amount1 is signed int256, bytes 32..64
+    let amount1_bytes: [u8; 32] = log.data[32..64].try_into().ok()?;
+    let amount1 = i128::from_be_bytes([
+        amount1_bytes[16], amount1_bytes[17], amount1_bytes[18], amount1_bytes[19],
+        amount1_bytes[20], amount1_bytes[21], amount1_bytes[22], amount1_bytes[23],
+        amount1_bytes[24], amount1_bytes[25], amount1_bytes[26], amount1_bytes[27],
+        amount1_bytes[28], amount1_bytes[29], amount1_bytes[30], amount1_bytes[31],
+    ]);
+
     let sqrt_price_x96 = U256::from_be_slice(&log.data[64..96]);
     let liquidity = u128_from_be_bytes(&log.data[96..128]);
 
@@ -86,6 +107,8 @@ pub fn decode_v3_swap(log: &ExecutedLog) -> Option<V3SwapDecoded> {
         sqrt_price_x96,
         tick,
         liquidity,
+        amount0,
+        amount1,
     })
 }
 
@@ -194,10 +217,20 @@ mod tests {
     use super::*;
 
     fn make_v3_swap_log(sqrt: U256, liq: u128, t: i32) -> ExecutedLog {
+        make_v3_swap_log_with_amounts(sqrt, liq, t, 0, 0)
+    }
+
+    fn make_v3_swap_log_with_amounts(sqrt: U256, liq: u128, t: i32, amt0: i128, amt1: i128) -> ExecutedLog {
         let mut data = Vec::with_capacity(160);
-        data.extend_from_slice(&[0u8; 32]);
-        data.extend_from_slice(&[0u8; 32]);
+        let amt0_be = amt0.to_be_bytes();
         let mut b = [0u8; 32];
+        b[16..32].copy_from_slice(&amt0_be);
+        data.extend_from_slice(&b);
+        let amt1_be = amt1.to_be_bytes();
+        b = [0u8; 32];
+        b[16..32].copy_from_slice(&amt1_be);
+        data.extend_from_slice(&b);
+        b = [0u8; 32];
         b.copy_from_slice(&sqrt.to_be_bytes::<32>());
         data.extend_from_slice(&b);
 
@@ -228,6 +261,19 @@ mod tests {
         assert_eq!(decoded.sqrt_price_x96, sqrt);
         assert_eq!(decoded.liquidity, liq);
         assert_eq!(decoded.tick, tick);
+        assert_eq!(decoded.amount0, 0);
+        assert_eq!(decoded.amount1, 0);
+    }
+
+    #[test]
+    fn test_decode_v3_swap_with_amounts() {
+        let sqrt = U256::from(2u128.pow(96));
+        let liq = 1_000_000_000u128;
+        let tick = 10i32;
+        let log = make_v3_swap_log_with_amounts(sqrt, liq, tick, 1000, -990);
+        let decoded = decode_v3_swap(&log).unwrap();
+        assert_eq!(decoded.amount0, 1000);
+        assert_eq!(decoded.amount1, -990);
     }
 
     #[test]

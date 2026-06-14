@@ -356,6 +356,76 @@ fn get_tick_at_sqrt_ratio(sqrt_price_x96: U256) -> i32 {
     high
 }
 
+/// Compute the maximum tradeable input amount for a V3 pool given its current
+/// state and the nearest initialized tick in the swap direction.
+///
+/// Returns the amount that would move the price exactly to the nearest
+/// initialized tick boundary (or the MIN/MAX tick if none exists).
+pub fn max_v3_tradeable_amount(
+    pool: &UniswapV3PoolState,
+    zero_for_one: bool,
+) -> u128 {
+    if pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
+        return 0;
+    }
+
+    let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, zero_for_one);
+    let target_sqrt = match next_tick {
+        Some(t) => {
+            let r = get_sqrt_ratio_at_tick(t);
+            if zero_for_one {
+                r.max(*MIN_SQRT_RATIO).min(pool.sqrt_price_x96)
+            } else {
+                r.min(*MAX_SQRT_RATIO).max(pool.sqrt_price_x96)
+            }
+        }
+        None => {
+            if zero_for_one {
+                *MIN_SQRT_RATIO
+            } else {
+                *MAX_SQRT_RATIO
+            }
+        }
+    };
+
+    if target_sqrt == pool.sqrt_price_x96 {
+        return pool.liquidity.saturating_div(100);
+    }
+
+    let max_in = if zero_for_one {
+        get_amount_0_delta(
+            target_sqrt,
+            pool.sqrt_price_x96,
+            pool.liquidity,
+            true,
+        )
+    } else {
+        get_amount_1_delta(
+            pool.sqrt_price_x96,
+            target_sqrt,
+            pool.liquidity,
+            true,
+        )
+    }
+    .unwrap_or(U256::ZERO);
+
+    if max_in.is_zero() {
+        return pool.liquidity.saturating_div(100);
+    }
+
+    let fee = pool.info.fee as u128;
+    let max_input_with_fee = max_in * U256::from(1_000_000u64)
+        / U256::from(1_000_000u64 - fee.min(999_999) as u64);
+
+    let limbs = max_input_with_fee.as_limbs();
+    let result = limbs[0] as u128;
+    if result == 0 {
+        pool.liquidity.saturating_div(100)
+    } else {
+        result
+    }
+}
+
 /// Quote a Uniswap V3 exact-input swap.
 ///
 /// Simulates stepping through the pool's initialized ticks, crossing each one

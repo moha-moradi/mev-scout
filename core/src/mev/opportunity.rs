@@ -16,6 +16,7 @@ use crate::types::Strategy;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpportunity {
     /// Block where the opportunity was detected
+    /// Block where the opportunity was detected
     pub block_number: u64,
     /// Index of the transaction after which the opportunity exists
     pub tx_index: usize,
@@ -55,6 +56,74 @@ pub struct MevOpportunity {
     /// Transaction index of the backrun (sandwich attacks)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backrun_tx_index: Option<usize>,
+}
+
+impl MevOpportunity {
+    /// Create a new MEV opportunity with required fields.
+    /// Strategy-specific fields should be set via builder methods.
+    pub fn new(
+        block_number: u64,
+        tx_index: usize,
+        strategy: Strategy,
+        pool_a: Address,
+        timestamp: u64,
+    ) -> Self {
+        MevOpportunity {
+            block_number,
+            tx_index,
+            strategy,
+            pool_a,
+            pool_b: Address::ZERO,
+            token_in: Address::ZERO,
+            token_out: Address::ZERO,
+            input_amount: U256::ZERO,
+            expected_profit: U256::ZERO,
+            gas_cost_wei: 0,
+            timestamp,
+            path: None,
+            tick_lower: None,
+            tick_upper: None,
+            liquidity_amount: None,
+            victim_tx_index: None,
+            backrun_tx_index: None,
+        }
+    }
+
+    /// Set JIT-specific fields: tick range and liquidity amount.
+    /// Panics in debug builds if strategy is not JIT or JitArb.
+    pub fn with_jit_fields(mut self, tick_lower: i32, tick_upper: i32, liquidity: u128) -> Self {
+        debug_assert!(
+            self.strategy == Strategy::Jit || self.strategy == Strategy::JitArb,
+            "JIT fields only valid for Jit/JitArb strategies"
+        );
+        self.tick_lower = Some(tick_lower);
+        self.tick_upper = Some(tick_upper);
+        self.liquidity_amount = Some(liquidity);
+        self
+    }
+
+    /// Set sandwich-specific fields: victim and backrun tx indices.
+    /// Panics in debug builds if strategy is not Sandwich.
+    pub fn with_sandwich_fields(mut self, victim_tx_index: usize, backrun_tx_index: usize) -> Self {
+        debug_assert!(
+            self.strategy == Strategy::Sandwich,
+            "Sandwich fields only valid for Sandwich strategy"
+        );
+        self.victim_tx_index = Some(victim_tx_index);
+        self.backrun_tx_index = Some(backrun_tx_index);
+        self
+    }
+
+    /// Set multi-hop path.
+    /// Panics in debug builds if strategy is not MultiHopArb.
+    pub fn with_path(mut self, path: Vec<Address>) -> Self {
+        debug_assert!(
+            self.strategy == Strategy::MultiHopArb,
+            "Path only valid for MultiHopArb strategy"
+        );
+        self.path = Some(path);
+        self
+    }
 }
 
 /// Saved results file wrapping opportunities with run metadata.
@@ -153,6 +222,33 @@ mod tests {
         assert!(!json_no.contains("tick_lower"));
         assert!(!json_no.contains("tick_upper"));
         assert!(!json_no.contains("liquidity_amount"));
+    }
+
+    #[test]
+    fn test_jit_opportunity_must_have_tick_fields() {
+        use alloy::primitives::address;
+        let opp = MevOpportunity::new(1, 0, Strategy::Jit, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+            .with_jit_fields(-88720, 88720, 500_000);
+        assert_eq!(opp.tick_lower, Some(-88720));
+        assert_eq!(opp.tick_upper, Some(88720));
+        assert_eq!(opp.liquidity_amount, Some(500_000));
+    }
+
+    #[test]
+    #[should_panic(expected = "JIT fields only valid")]
+    fn test_jit_fields_on_non_jit_panics_in_debug() {
+        use alloy::primitives::address;
+        let _opp = MevOpportunity::new(1, 0, Strategy::Sandwich, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+            .with_jit_fields(-100, 100, 500_000);
+    }
+
+    #[test]
+    fn test_sandwich_fields_required() {
+        use alloy::primitives::address;
+        let opp = MevOpportunity::new(1, 0, Strategy::Sandwich, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+            .with_sandwich_fields(1, 2);
+        assert_eq!(opp.victim_tx_index, Some(1));
+        assert_eq!(opp.backrun_tx_index, Some(2));
     }
 
     #[test]

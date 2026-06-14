@@ -9,7 +9,7 @@ use crate::mev::sandwich::SandwichDetector;
 use crate::mev::jit_arb::JitArbDetector;
 use crate::mev::multi_hop::MultiHopArbDetector;
 use crate::mev::two_hop::TwoHopArbDetector;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
@@ -210,7 +210,7 @@ impl BacktestRunner {
                 // JIT detector
                 let sender = *current_tx_from.borrow();
                 jit_detector.process_tx(i, &tx.logs, sender);
-                let jit_opps = jit_detector.detect(timestamp);
+                let jit_opps = jit_detector.detect(timestamp, base_fee_per_gas, &self.gas_config, &pm);
                 if !jit_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JIT opportunities",
@@ -223,7 +223,7 @@ impl BacktestRunner {
 
                 // Sandwich detector
                 sandwich_detector.process_tx(i, &tx.logs, sender);
-                let sandwich_opps = sandwich_detector.detect(timestamp, &pm);
+                let sandwich_opps = sandwich_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
                 if !sandwich_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} sandwich opportunities",
@@ -238,7 +238,7 @@ impl BacktestRunner {
 
                 // JitArb detector
                 jit_arb_detector.process_tx(i, &tx.logs, sender);
-                let jit_arb_opps = jit_arb_detector.detect(timestamp, &pool_manager.borrow());
+                let jit_arb_opps = jit_arb_detector.detect(timestamp, &pool_manager.borrow(), base_fee_per_gas, &self.gas_config);
                 if !jit_arb_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JitArb opportunities",
@@ -252,6 +252,9 @@ impl BacktestRunner {
                 Ok(())
             },
         )?;
+
+        // Filter: drop opportunities where expected profit doesn't cover gas
+        all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
 
         self.pool_manager = pool_manager.into_inner();
         Ok(all_opportunities)

@@ -418,18 +418,19 @@ fn test_sandwich_detection_synthetic() {
 
     let mut detector = SandwichDetector::new(42);
     let timestamp = 12345u64;
+    let gas_cfg = default_gas_config();
 
     // Tx 0: alice frontruns — buys WMATIC (token0→token1)
     detector.process_tx(0, &[v2_swap_log(pool, 100, 0, 0, 90)], Some(alice));
-    assert!(detector.detect(timestamp, &pm).is_empty());
+    assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 
     // Tx 1: bob (victim) — buys WMATIC at worse price
     detector.process_tx(1, &[v2_swap_log(pool, 200, 0, 0, 170)], Some(bob));
-    assert!(detector.detect(timestamp, &pm).is_empty());
+    assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 
     // Tx 2: alice backruns — sells WMATIC (token1→token0)
     detector.process_tx(2, &[v2_swap_log(pool, 0, 85, 105, 0)], Some(alice));
-    let opps = detector.detect(timestamp, &pm);
+    let opps = detector.detect(timestamp, &pm, 0, &gas_cfg);
     assert!(!opps.is_empty(), "Should detect sandwich");
     assert_eq!(opps[0].strategy, Strategy::Sandwich);
     assert_eq!(opps[0].pool_a, pool);
@@ -439,7 +440,7 @@ fn test_sandwich_detection_synthetic() {
     assert_eq!(opps[0].token_out, wmatic);
 
     // No duplicate
-    assert!(detector.detect(timestamp, &pm).is_empty());
+    assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 }
 
 /// ── Real-Data Tests (async / RPC) ──────────────────────────────────────────
@@ -678,16 +679,29 @@ fn test_jit_detection_synthetic() {
         ExecutedLog { address: pool, topics: vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data: Bytes::from_static(&[0u8; 160]) }
     }
 
+    let mut pm = PoolManager::new();
+    pm.add_pool(mev_scout_core::pool::state::PoolState::UniswapV3(
+        mev_scout_core::pool::state::UniswapV3PoolState::new(PoolInfo {
+            address: pool,
+            token0: address!("0000000000000000000000000000000000000001"),
+            token1: address!("0000000000000000000000000000000000000002"),
+            fee: 3000,
+            name: None,
+            dex_type: DexType::UniswapV3,
+            tick_spacing: Some(60),
+        }),
+    ));
+    let gas_cfg = default_gas_config();
     let mut detector = JitDetector::new(42);
     let timestamp = 12345u64;
 
     // Tx 0: deploy liquidity
     detector.process_tx(0, &[v3_mint_log(pool, -1000, 1000, 1_000_000)], None);
-    assert!(detector.detect(timestamp).is_empty());
+    assert!(detector.detect(timestamp, 0, &gas_cfg, &pm).is_empty());
 
     // Tx 1: swap against it
     detector.process_tx(1, &[v3_swap_log(pool)], None);
-    let mut opps = detector.detect(timestamp);
+    let mut opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
     assert!(!opps.is_empty(), "Mint+Swap should trigger JIT detection");
     assert_eq!(opps[0].strategy, mev_scout_core::types::Strategy::Jit);
     assert_eq!(opps[0].pool_a, pool);
@@ -697,11 +711,11 @@ fn test_jit_detection_synthetic() {
 
     // Tx 2: burn position
     detector.process_tx(2, &[v3_burn_log(pool, -1000, 1000, 1_000_000)], None);
-    opps = detector.detect(timestamp);
+    opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
     assert_eq!(opps.len(), 1, "Burn should trigger full JIT emission");
 
     // No duplicate
-    assert!(detector.detect(timestamp).is_empty());
+    assert!(detector.detect(timestamp, 0, &gas_cfg, &pm).is_empty());
 }
 
 #[tokio::test]
@@ -746,10 +760,11 @@ async fn test_real_v3_mint_swap_burn_detection() {
 
     // We can't easily force a V3 Mint/Swap/Burn sequence from a test,
     // but we can verify the JitDetector compiles and processes empty data.
+    let gas_cfg = default_gas_config();
     let mut detector = JitDetector::new(block_num);
     // Process empty data (no logs from this pool in this test block)
     detector.process_tx(0, &[], None);
-    let opps = detector.detect(block_num);
+    let opps = detector.detect(block_num, 0, &gas_cfg, &pm);
     eprintln!("JIT detection on real V3 pool: {} opportunities (expected 0 without events)", opps.len());
 
     // This test primarily validates that JitDetector works with real PoolManager state
@@ -812,6 +827,7 @@ fn test_jit_arb_detection_synthetic() {
         },
     ));
 
+    let gas_cfg = default_gas_config();
     let mut detector = JitArbDetector::new(42);
     detector.process_tx(0, &[
         v3_mint_log(pool_p, -100, 100, 500_000),
@@ -819,7 +835,7 @@ fn test_jit_arb_detection_synthetic() {
         v3_swap_log(pool_q),
     ], Some(sender));
 
-    let opps = detector.detect(12345, &pm);
+    let opps = detector.detect(12345, &pm, 0, &gas_cfg);
     assert_eq!(opps.len(), 1, "Should detect JitArb");
     assert_eq!(opps[0].strategy, mev_scout_core::types::Strategy::JitArb);
     assert_eq!(opps[0].pool_a, pool_p);

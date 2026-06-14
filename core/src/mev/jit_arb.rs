@@ -1,18 +1,19 @@
 //! JIT arbitrage detection — identifies arbitrage trades that sandwich a JIT liquidity event.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
-use crate::pool::decoders::{decode_v3_mint_burn, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
+use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
 use crate::pool::state::PoolManager;
 use crate::mev::opportunity::MevOpportunity;
-use crate::types::Strategy;
+use crate::types::{GasConfig, Strategy};
 
 #[derive(Debug, Clone)]
 struct SwapEvent {
     tx_index: usize,
     pool: Address,
     sender: Address,
+    amount_in: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -29,8 +30,9 @@ struct JitArbMint {
 pub struct JitArbDetector {
     active_mints: HashMap<Address, Vec<JitArbMint>>,
     swap_events: Vec<SwapEvent>,
-    emitted: Vec<(Address, usize, Address)>,
+    emitted: HashSet<(Address, usize, Address)>,
     block_number: u64,
+    proximity_window: usize,
 }
 
 impl JitArbDetector {
@@ -38,9 +40,15 @@ impl JitArbDetector {
         JitArbDetector {
             active_mints: HashMap::new(),
             swap_events: Vec::new(),
-            emitted: Vec::new(),
+            emitted: HashSet::new(),
             block_number,
+            proximity_window: 1,
         }
+    }
+
+    pub fn with_proximity_window(mut self, window: usize) -> Self {
+        self.proximity_window = window;
+        self
     }
 
     pub fn process_tx(&mut self, tx_index: usize, logs: &[ExecutedLog], sender: Option<Address>) {
@@ -55,7 +63,6 @@ impl JitArbDetector {
             }
             let t0 = log.topics[0];
 
-            // Mint event
             if t0 == *V3_MINT_TOPIC {
                 if let Some(decoded) = decode_v3_mint_burn(log) {
                     if decoded.amount > 0 {
@@ -75,7 +82,6 @@ impl JitArbDetector {
                 }
             }
 
-            // Burn event
             if t0 == V3_BURN_TOPIC {
                 if let Some(decoded) = decode_v3_mint_burn(log) {
                     if let Some(mints) = self.active_mints.get_mut(&log.address) {
@@ -94,14 +100,21 @@ impl JitArbDetector {
                 }
             }
 
-            // Swap event
             if t0 == V3_SWAP_TOPIC {
+                let amount_in = if let Some(decoded) = decode_v3_swap(log) {
+                    if decoded.amount0 > 0 { decoded.amount0 as u128 }
+                    else { decoded.amount1 as u128 }
+                } else {
+                    0
+                };
+
                 self.swap_events.push(SwapEvent {
                     tx_index,
                     pool: log.address,
                     sender,
+                    amount_in,
                 });
-                // Mark any matching active mints on this pool as swapped
+
                 if let Some(mints) = self.active_mints.get_mut(&log.address) {
                     for mint in mints.iter_mut() {
                         if mint.sender == sender && mint.mint_tx_index <= tx_index {
@@ -113,7 +126,13 @@ impl JitArbDetector {
         }
     }
 
-    pub fn detect(&mut self, timestamp: u64, pm: &PoolManager) -> Vec<MevOpportunity> {
+    pub fn detect(
+        &mut self,
+        timestamp: u64,
+        pm: &PoolManager,
+        base_fee_per_gas: u128,
+        gas_config: &GasConfig,
+    ) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
         let pool_addrs: Vec<Address> = self.active_mints.keys().copied().collect();
 
@@ -125,7 +144,6 @@ impl JitArbDetector {
                     continue;
                 }
 
-                // Find swaps on pool_p by same sender
                 let swaps_on_p: Vec<&SwapEvent> = self.swap_events.iter()
                     .filter(|s| s.pool == pool_p && s.sender == mint.sender && s.tx_index >= mint.mint_tx_index)
                     .collect();
@@ -133,25 +151,33 @@ impl JitArbDetector {
                     continue;
                 }
 
-                // Find swaps on a different pool Q sharing a token
                 for swap_p in &swaps_on_p {
                     for swap_q in &self.swap_events {
                         if swap_q.pool == pool_p || swap_q.sender != mint.sender {
                             continue;
                         }
-                        // Check proximity: within 1 tx index
                         let p_idx = swap_p.tx_index;
                         let q_idx = swap_q.tx_index;
                         let max_idx = p_idx.max(q_idx);
                         let min_idx = p_idx.min(q_idx);
-                        if max_idx - min_idx > 1 {
+                        if max_idx - min_idx > self.proximity_window {
                             continue;
                         }
-                        // Check token sharing
                         if pools_share_token(pm, pool_p, swap_q.pool) {
-                            self.emitted.push(dedup_key);
+                            self.emitted.insert(dedup_key);
+
+                            // Estimate profit as the difference between the two swap amounts
+                            // if they share a token. For simplicity, use the JIT-pool swap amount
+                            // as the input and the arb-pool swap as output (or vice versa).
+                            let arb_profit = if swap_p.amount_in > swap_q.amount_in {
+                                swap_p.amount_in.saturating_sub(swap_q.amount_in) as u128
+                            } else {
+                                swap_q.amount_in.saturating_sub(swap_p.amount_in) as u128
+                            };
+
                             opportunities.push(Self::build_opp(
                                 self.block_number, pool_p, swap_q.pool, mint, timestamp,
+                                U256::from(arb_profit), base_fee_per_gas, gas_config,
                             ));
                             break;
                         }
@@ -170,7 +196,15 @@ impl JitArbDetector {
         arb_pool: Address,
         mint: &JitArbMint,
         timestamp: u64,
+        expected_profit: U256,
+        base_fee_per_gas: u128,
+        gas_config: &GasConfig,
     ) -> MevOpportunity {
+        let gas_cost_wei = gas_config.compute_gas_cost(
+            Strategy::JitArb,
+            base_fee_per_gas,
+            &HashMap::new(),
+        );
         MevOpportunity {
             block_number,
             tx_index: mint.mint_tx_index,
@@ -180,8 +214,8 @@ impl JitArbDetector {
             token_in: Address::ZERO,
             token_out: Address::ZERO,
             input_amount: U256::from(mint.amount),
-            expected_profit: U256::ZERO,
-            gas_cost_wei: 0,
+            expected_profit,
+            gas_cost_wei,
             timestamp,
             path: Some(vec![jit_pool, arb_pool]),
             tick_lower: Some(mint.tick_lower),
@@ -205,7 +239,7 @@ fn pools_share_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> bool
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, Bytes, B256};
+    use alloy::primitives::{address, B256};
     use crate::pool::state::{PoolManager, UniswapV2PoolState, PoolInfo, PoolState};
 
     fn pool_p() -> Address { address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }
@@ -229,7 +263,20 @@ mod tests {
     }
 
     fn v3_swap_log(pool: Address) -> ExecutedLog {
-        ExecutedLog { address: pool, topics: vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data: Bytes::from_static(&[0u8; 160]) }
+        let mut data = Vec::with_capacity(160);
+        data.extend_from_slice(&[0u8; 32]);
+        data.extend_from_slice(&[0u8; 32]);
+        let sqrt = U256::from(1u128 << 96);
+        let mut b = [0u8; 32];
+        b.copy_from_slice(&sqrt.to_be_bytes::<32>());
+        data.extend_from_slice(&b);
+        b = [0u8; 32];
+        b[16..32].copy_from_slice(&1_000_000u128.to_be_bytes());
+        data.extend_from_slice(&b);
+        b = [0u8; 32];
+        b[28..32].copy_from_slice(&0i32.to_be_bytes());
+        data.extend_from_slice(&b);
+        ExecutedLog { address: pool, topics: vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data: data.into() }
     }
 
     fn make_pm() -> PoolManager {
@@ -253,11 +300,13 @@ mod tests {
         pm
     }
 
+    fn gas_cfg() -> GasConfig { GasConfig::default() }
+
     #[test]
     fn test_empty_detector_returns_nothing() {
         let mut detector = JitArbDetector::new(1);
         let pm = PoolManager::new();
-        let opps = detector.detect(100, &pm);
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
     }
 
@@ -270,12 +319,13 @@ mod tests {
             v3_swap_log(pool_p()),
             v3_swap_log(pool_q()),
         ], Some(sender()));
-        let opps = detector.detect(100, &pm);
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "Same-tx Mint+arb should be detected");
         assert_eq!(opps[0].strategy, Strategy::JitArb);
         assert_eq!(opps[0].pool_a, pool_p());
         assert_eq!(opps[0].pool_b, pool_q());
         assert_eq!(opps[0].liquidity_amount, Some(500_000));
+        assert!(opps[0].gas_cost_wei > 0, "Gas cost should be > 0");
     }
 
     #[test]
@@ -283,9 +333,9 @@ mod tests {
         let mut detector = JitArbDetector::new(1);
         let pm = make_pm();
         detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
-        assert!(detector.detect(100, &pm).is_empty(), "Mint alone should not trigger JitArb");
+        assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Mint alone should not trigger JitArb");
         detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(sender()));
-        let opps = detector.detect(100, &pm);
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "Cross-tx Mint+arb should be detected");
     }
 
@@ -296,7 +346,7 @@ mod tests {
         let other = address!("2222222222222222222222222222222222222222");
         detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
         detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(other));
-        let opps = detector.detect(100, &pm);
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty(), "Different sender should not trigger JitArb");
     }
 
@@ -323,7 +373,7 @@ mod tests {
             v3_swap_log(pool_p()),
             v3_swap_log(address!("cccccccccccccccccccccccccccccccccccccccc")),
         ], Some(sender()));
-        let opps = detector.detect(100, &pm);
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty(), "No token sharing should not trigger JitArb");
     }
 
@@ -336,7 +386,40 @@ mod tests {
             v3_swap_log(pool_p()),
             v3_swap_log(pool_q()),
         ], Some(sender()));
-        assert_eq!(detector.detect(100, &pm).len(), 1);
-        assert!(detector.detect(100, &pm).is_empty(), "Should not re-emit");
+        assert_eq!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).len(), 1);
+        assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Should not re-emit");
+    }
+
+    #[test]
+    fn test_jitarb_proximity_window_2() {
+        let mut detector = JitArbDetector::new(1).with_proximity_window(3);
+        let pm = make_pm();
+        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
+        // Swaps at tx 1 and 4 — gap of 3, within window of 3
+        detector.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()));
+        detector.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()));
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
+        assert_eq!(opps.len(), 1, "Should detect with window=3");
+
+        // With window=1, gap of 3 should NOT be detected
+        let mut detector2 = JitArbDetector::new(1).with_proximity_window(1);
+        detector2.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
+        detector2.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()));
+        detector2.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()));
+        assert!(detector2.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Should NOT detect with window=1");
+    }
+
+    #[test]
+    fn test_gas_cost_computed() {
+        let mut detector = JitArbDetector::new(1);
+        let pm = make_pm();
+        detector.process_tx(0, &[
+            v3_mint_log(pool_p(), -100, 100, 500_000),
+            v3_swap_log(pool_p()),
+            v3_swap_log(pool_q()),
+        ], Some(sender()));
+        let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
+        assert_eq!(opps.len(), 1);
+        assert!(opps[0].gas_cost_wei > 0);
     }
 }

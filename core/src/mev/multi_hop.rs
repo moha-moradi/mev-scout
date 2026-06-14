@@ -4,7 +4,8 @@ use alloy::primitives::{Address, U256};
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic};
 use crate::pool::state::{PoolManager, PoolState};
-use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
+use crate::mev::two_hop::{curve_output_amount, balancer_output_amount};
 use crate::types::{GasConfig, Strategy};
 
 /// Detects multi-hop arbitrage opportunities across connected pool paths.
@@ -191,8 +192,14 @@ impl MultiHopArbDetector {
     fn pool_max_input(pool: &PoolState) -> u128 {
         match pool {
             PoolState::UniswapV2(v2) => std::cmp::min(v2.reserve0, v2.reserve1),
-            PoolState::UniswapV3(v3) => v3.liquidity,
-            _ => 1_000_000u128,
+            PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, true)
+                .max(max_v3_tradeable_amount(v3, false)),
+            PoolState::Curve(c) => {
+                c.balances.iter().fold(0u128, |a, &b| a.max(b))
+            }
+            PoolState::Balancer(b) => {
+                b.balances.iter().fold(0u128, |a, &b| a.max(b))
+            }
         }
     }
 
@@ -215,7 +222,24 @@ impl MultiHopArbDetector {
                 }
                 quote_v3_exact_in(v3, amount_in, zero_for_one)
             }
-            _ => None,
+            PoolState::Curve(curve) => {
+                let idx_in = *curve.token_index.get(&token_in)?;
+                let idx_out = curve.token_index.iter()
+                    .find(|(k, _)| **k != token_in)
+                    .map(|(_, v)| *v)?;
+                let balance_in = curve.balances[idx_in];
+                let balance_out = curve.balances[idx_out];
+                curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee)
+            }
+            PoolState::Balancer(bal) => {
+                let idx_in = *bal.token_index.get(&token_in)?;
+                let idx_out = bal.token_index.iter()
+                    .find(|(k, _)| **k != token_in)
+                    .map(|(_, v)| *v)?;
+                let balance_in = bal.balances[idx_in];
+                let balance_out = bal.balances[idx_out];
+                balancer_output_amount(amount_in, balance_in, balance_out, bal.info.fee)
+            }
         }
     }
 }

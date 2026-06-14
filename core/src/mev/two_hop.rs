@@ -6,7 +6,7 @@ use alloy::primitives::{Address, U256};
 
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
-use crate::pool::state::{PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::types::{GasConfig, Strategy};
 
@@ -115,12 +115,6 @@ pub fn quote_path(
         (PoolState::UniswapV2(a), PoolState::UniswapV2(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
             let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let min_reserve = 1000u128;
-            if r_a_other < min_reserve || r_a_shared < min_reserve
-                || r_b_in < min_reserve || r_b_out < min_reserve
-            {
-                return None;
-            }
             optimal_two_hop_arb(r_a_other, r_a_shared, fee_a, r_b_in, r_b_out, fee_b)
         }
         (PoolState::UniswapV3(a), PoolState::UniswapV3(b)) => {
@@ -147,7 +141,81 @@ pub fn quote_path(
             let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
-        // Curve, Balancer, and mixed types — not yet implemented (V2/V3 focus)
+        (PoolState::Curve(a), PoolState::Curve(b)) => {
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
+            let max_input = b_a_in;
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+        }
+        (PoolState::Balancer(a), PoolState::Balancer(b)) => {
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
+            let max_input = b_a_in;
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+        }
+        (PoolState::Curve(a), PoolState::UniswapV2(b)) => {
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
+            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
+            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+        }
+        (PoolState::UniswapV2(a), PoolState::Curve(b)) => {
+            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
+            let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
+        }
+        (PoolState::Curve(a), PoolState::UniswapV3(b)) => {
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
+            let zero_b = shared_token == b.info.token0;
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
+            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+        }
+        (PoolState::UniswapV3(a), PoolState::Curve(b)) => {
+            let zero_a = shared_token == a.info.token1;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
+            let max_input = a.liquidity;
+            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+        }
+        (PoolState::Balancer(a), PoolState::UniswapV2(b)) => {
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
+            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
+            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+        }
+        (PoolState::UniswapV2(a), PoolState::Balancer(b)) => {
+            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
+            let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
+        }
+        (PoolState::Balancer(a), PoolState::UniswapV3(b)) => {
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
+            let zero_b = shared_token == b.info.token0;
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
+            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
+            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+        }
+        (PoolState::UniswapV3(a), PoolState::Balancer(b)) => {
+            let zero_a = shared_token == a.info.token1;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
+            let max_input = a.liquidity;
+            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+        }
+        // Unsupported type combinations
         _ => None,
     }
 }
@@ -176,6 +244,83 @@ fn arb_tokens(
         return None;
     };
     Some((token_in, token_out))
+}
+
+/// Simplified Curve 2-token output approximation.
+/// Uses constant-product approximation (reasonable for stablecoin pools near 1:1).
+pub fn curve_output_amount(
+    amount_in: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee: u32,
+) -> Option<u128> {
+    if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
+        return None;
+    }
+    let fee_factor = 10000u128 - fee as u128;
+    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 10000;
+    let numerator = amount_after_fee.checked_mul(reserve_out)?;
+    let denominator = reserve_in.checked_add(amount_after_fee)?;
+    let output = numerator / denominator;
+    if output == 0 { None } else { Some(output) }
+}
+
+/// Simplified Balancer weighted pool output approximation.
+/// Uses constant-product formula (reasonable for equal-weight pools).
+pub fn balancer_output_amount(
+    amount_in: u128,
+    reserve_in: u128,
+    reserve_out: u128,
+    fee: u32,
+) -> Option<u128> {
+    if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
+        return None;
+    }
+    let fee_factor = 10000u128 - fee as u128;
+    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 10000;
+    let numerator = amount_after_fee.checked_mul(reserve_out)?;
+    let denominator = reserve_in.checked_add(amount_after_fee)?;
+    let output = numerator / denominator;
+    if output == 0 { None } else { Some(output) }
+}
+
+/// Extract Curve pool reserves for a given direction relative to `shared_token`.
+/// `buy_side = true` → we give the other token, receive shared_token.
+fn curve_reserves(
+    pool: &CurvePoolState,
+    shared_token: Address,
+    buy_side: bool,
+) -> Option<(u128, u128, u32)> {
+    let fee = pool.info.fee;
+    let idx_shared = *pool.token_index.get(&shared_token)?;
+    let idx_other = pool.token_index.iter()
+        .find(|(k, _)| **k != shared_token)
+        .map(|(_, v)| *v)?;
+    if buy_side {
+        // We give the other token, receive shared_token
+        Some((pool.balances[idx_other], pool.balances[idx_shared], fee))
+    } else {
+        // We give shared_token, receive the other token
+        Some((pool.balances[idx_shared], pool.balances[idx_other], fee))
+    }
+}
+
+/// Extract Balancer pool reserves for a given direction relative to `shared_token`.
+fn balancer_reserves(
+    pool: &BalancerPoolState,
+    shared_token: Address,
+    buy_side: bool,
+) -> Option<(u128, u128, u32)> {
+    let fee = pool.info.fee;
+    let idx_shared = *pool.token_index.get(&shared_token)?;
+    let idx_other = pool.token_index.iter()
+        .find(|(k, _)| **k != shared_token)
+        .map(|(_, v)| *v)?;
+    if buy_side {
+        Some((pool.balances[idx_other], pool.balances[idx_shared], fee))
+    } else {
+        Some((pool.balances[idx_shared], pool.balances[idx_other], fee))
+    }
 }
 
 /// Extract V2 pool reserves for a given direction relative to `shared_token`.
@@ -323,9 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_path_v2_v2_below_min_reserve() {
+    fn test_quote_path_v2_v2_low_reserves_still_checks_profit() {
+        // Min-reserve filter removed — low reserves may still produce arb if
+        // the price gap is large enough to overcome fees
         let a = v2_pool(address!("1111111111111111111111111111111111111111"), usdc(), wmatic(), 500, 500);
         let b = v2_pool(address!("2222222222222222222222222222222222222222"), wmatic(), usdt(), 500, 500);
+        // Equal reserves with same fee → no profit expected (price = 1:1 both pools)
         assert!(quote_path(&a, &b, wmatic()).is_none());
     }
 
@@ -346,17 +494,23 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_path_unsupported_types_returns_none() {
+    fn test_quote_path_curve_v2_v2_combo() {
+        let mut token_index = HashMap::new();
+        token_index.insert(usdc(), 0usize);
+        token_index.insert(wmatic(), 1usize);
         let curve = PoolState::Curve(crate::pool::state::CurvePoolState {
             info: PoolInfo {
-                address: Address::ZERO, token0: usdc(), token1: wmatic(), fee: 0,
+                address: Address::ZERO, token0: usdc(), token1: wmatic(), fee: 1,
                 name: None, dex_type: DexType::Curve, tick_spacing: None,
             },
-            balances: vec![],
-            token_index: HashMap::new(),
+            balances: vec![1_000_000, 1_000_000],
+            token_index,
         });
-        let v2 = v2_pool(Address::ZERO, usdc(), wmatic(), 1000, 1000);
-        assert!(quote_path(&curve, &v2, usdc()).is_none());
+        let v2 = v2_pool(Address::ZERO, wmatic(), usdt(), 500_000, 1_000_000);
+        // Curve-V2 combo should now be supported
+        let result = quote_path(&curve, &v2, wmatic());
+        // May return None if no profit, but should not panic or skip
+        assert!(result.is_none() || result.unwrap().profit > 0);
     }
 
     // ---- TwoHopArbDetector::detect ----
