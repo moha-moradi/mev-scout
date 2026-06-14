@@ -86,17 +86,37 @@ impl RpcClient {
     /// Execute an RPC call with exponential-backoff retry.
     ///
     /// Retries up to `max_retries` times with delays doubling each attempt.
+    /// Returns immediately for non-retryable errors (e.g. bad request, auth).
     /// Returns the last error if all retries are exhausted.
     async fn retry_call<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
+        fn is_retryable(e: &anyhow::Error) -> bool {
+            let err_str = format!("{e:#}");
+            // Non-retryable: bad request, auth failure, method not found, parse errors
+            if err_str.contains("status code 400")
+                || err_str.contains("status code 401")
+                || err_str.contains("status code 403")
+                || err_str.contains("status code 404")
+                || err_str.contains("method not found")
+                || err_str.contains("parse error")
+                || err_str.contains("deserialize")
+            {
+                return false;
+            }
+            true
+        }
+
         let mut last_err = None;
         for attempt in 0..=self.retry.max_retries {
             match f().await {
                 Ok(val) => return Ok(val),
                 Err(e) => {
+                    if !is_retryable(&e) {
+                        return Err(e);
+                    }
                     tracing::warn!(
                         "RPC call failed (attempt {}/{}): {:?}",
                         attempt + 1,

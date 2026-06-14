@@ -301,6 +301,12 @@ impl CacheStore {
         Ok(pools)
     }
 
+    /// Flush pending writes to disk, ensuring durability.
+    pub fn flush(&self) -> anyhow::Result<()> {
+        self.db.flush()?;
+        Ok(())
+    }
+
     /// Store a discovery cursor (last scanned block) for a factory address.
     /// Key: `discovery:{chain_id}:cursor:{factory}`.
     ///

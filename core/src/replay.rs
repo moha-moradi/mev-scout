@@ -115,6 +115,7 @@ pub struct CachedRpcDb {
     accounts: HashMap<Address, AccountInfo>,
     codes: HashMap<B256, Bytecode>,
     storage: HashMap<(Address, U256), U256>,
+    code_hash_to_address: HashMap<B256, Address>,
 }
 
 impl Clone for CachedRpcDb {
@@ -128,6 +129,7 @@ impl Clone for CachedRpcDb {
             accounts: self.accounts.clone(),
             codes: self.codes.clone(),
             storage: self.storage.clone(),
+            code_hash_to_address: self.code_hash_to_address.clone(),
         }
     }
 }
@@ -149,6 +151,7 @@ impl CachedRpcDb {
             accounts: HashMap::new(),
             codes: HashMap::new(),
             storage: HashMap::new(),
+            code_hash_to_address: HashMap::new(),
         }
     }
 
@@ -196,6 +199,7 @@ impl Database for CachedRpcDb {
                     let bytecode = Bytecode::new_raw(code_bytes);
                     info.code = Some(bytecode.clone());
                     self.codes.insert(acct.code_hash, bytecode);
+                    self.code_hash_to_address.insert(acct.code_hash, address);
                 }
             }
             self.accounts.insert(address, info.clone());
@@ -226,6 +230,7 @@ impl Database for CachedRpcDb {
             };
             self.codes
                 .insert(code_hash, Bytecode::new_raw(code_bytes));
+            self.code_hash_to_address.insert(code_hash, address);
         }
 
         let info = AccountInfo {
@@ -257,8 +262,17 @@ impl Database for CachedRpcDb {
         if let Some(code) = self.codes.get(&code_hash) {
             return Ok(code.clone());
         }
-        tracing::warn!(?code_hash, "code_by_hash: unknown code hash");
-        Ok(Bytecode::new())
+        // Try sled lookup via address mapping
+        if let Some(&addr) = self.code_hash_to_address.get(&code_hash) {
+            if let Ok(Some(code_bytes)) = self.cache.get_code(addr) {
+                let bytecode = Bytecode::new_raw(code_bytes);
+                self.codes.insert(code_hash, bytecode.clone());
+                return Ok(bytecode);
+            }
+        }
+        Err(DbError(anyhow::anyhow!(
+            "code_by_hash: unknown code hash {code_hash:?}"
+        )))
     }
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
@@ -343,8 +357,17 @@ impl DatabaseRef for CachedRpcDb {
         if code_hash == KECCAK_EMPTY {
             return Ok(Bytecode::new());
         }
-        tracing::warn!(?code_hash, "code_by_hash_ref: unknown code hash");
-        Ok(Bytecode::new())
+        if let Some(code) = self.codes.get(&code_hash) {
+            return Ok(code.clone());
+        }
+        if let Some(&addr) = self.code_hash_to_address.get(&code_hash) {
+            if let Ok(Some(code_bytes)) = self.cache.get_code(addr) {
+                return Ok(Bytecode::new_raw(code_bytes));
+            }
+        }
+        Err(DbError(anyhow::anyhow!(
+            "code_by_hash_ref: unknown code hash {code_hash:?}"
+        )))
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
@@ -378,15 +401,17 @@ pub fn register_polygon_precompiles(
         (inner.rpc.clone(), inner.handle.clone())
     };
 
-    let block_on = |f| tokio::task::block_in_place(|| handle.block_on(f));
-    let code_09 = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x09), prev_block))
-        .unwrap_or_default();
-    let code_0a = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0a), prev_block))
-        .unwrap_or_default();
-    let code_0b = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0b), prev_block))
-        .unwrap_or_default();
-    let code_0c = block_on(rpc.get_code_no_retry(addr_from_last_byte(0x0c), prev_block))
-        .unwrap_or_default();
+    let f09 = rpc.get_code_no_retry(addr_from_last_byte(0x09), prev_block);
+    let f0a = rpc.get_code_no_retry(addr_from_last_byte(0x0a), prev_block);
+    let f0b = rpc.get_code_no_retry(addr_from_last_byte(0x0b), prev_block);
+    let f0c = rpc.get_code_no_retry(addr_from_last_byte(0x0c), prev_block);
+    let (code_09, code_0a, code_0b, code_0c) = tokio::task::block_in_place(|| {
+        handle.block_on(async { futures::join!(f09, f0a, f0b, f0c) })
+    });
+    let code_09 = code_09.unwrap_or_default();
+    let code_0a = code_0a.unwrap_or_default();
+    let code_0b = code_0b.unwrap_or_default();
+    let code_0c = code_0c.unwrap_or_default();
 
     let codes = [
         (0x09, code_09),
@@ -441,7 +466,7 @@ pub fn register_polygon_precompiles(
             continue;
         }
         let addr = addr_from_last_byte(b);
-        if let Ok(code) = block_on(rpc.get_code_no_retry(addr, prev_block)) {
+        if let Ok(code) = tokio::task::block_in_place(|| handle.block_on(rpc.get_code_no_retry(addr, prev_block))) {
             if !code.is_empty() {
                 tracing::warn!(
                     "Unrecognised non-empty contract at precompile-range address {} ({} bytes)",
@@ -630,14 +655,29 @@ impl BlockReplayer {
                 receipt_logs.len()
             ));
         } else {
-            for (i, (l, r)) in exec_logs_filtered.iter().zip(receipt_logs.iter()).enumerate() {
-                if l.address != r.address {
-                    mismatches.push(format!("log[{}].address", i));
-                }
-                if !l.data.topics().is_empty() && !r.topics.is_empty()
-                    && l.data.topics()[0] != r.topics[0]
-                {
-                    mismatches.push(format!("log[{}].topic[0]", i));
+            // Use the receipt log order as reference; find matching exec log by address
+            for (i, r_log) in receipt_logs.iter().enumerate() {
+                let exec_log = exec_logs_filtered.iter().find(|l| l.address == r_log.address);
+                match exec_log {
+                    None => mismatches.push(format!("log[{}].address not found in exec", i)),
+                    Some(l) => {
+                        let r_topics = &r_log.topics;
+                        let l_topics = l.data.topics();
+                        if l_topics.len() != r_topics.len() {
+                            mismatches.push(format!(
+                                "log[{}].topic_count (exec={}, receipt={})",
+                                i,
+                                l_topics.len(),
+                                r_topics.len()
+                            ));
+                        } else {
+                            for (t, (lt, rt)) in l_topics.iter().zip(r_topics.iter()).enumerate() {
+                                if lt != rt {
+                                    mismatches.push(format!("log[{}].topic[{}]", i, t));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

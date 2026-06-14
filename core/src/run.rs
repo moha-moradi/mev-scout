@@ -143,19 +143,19 @@ impl BacktestRunner {
             self.pool_manager.token_addresses().into_iter().collect();
 
         let mut all_opportunities = Vec::new();
+        // Seed JIT detector tick cache BEFORE taking pool_manager
+        let mut jit_detector = JitDetector::new(block_num);
+        jit_detector.seed_pool_tick_cache(&self.pool_manager);
+        let mut sandwich_detector = SandwichDetector::new(block_num);
+        let mut jit_arb_detector = JitArbDetector::new(block_num);
+
         // Take ownership of pool_manager so the closure can mutate it via RefCell
-        // (the replayer's closure требует &mut self, so we std::mem::take + RefCell
-        // to satisfy the borrow checker; pool_manager is restored after the block)
         let pool_manager = std::mem::take(&mut self.pool_manager);
         let pool_manager = RefCell::new(pool_manager);
 
         // Shared cell bridging TxData.from from filter closure to on_tx closure
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
-        let mut jit_detector = JitDetector::new(block_num);
-        jit_detector.seed_pool_tick_cache(&self.pool_manager);
-        let mut sandwich_detector = SandwichDetector::new(block_num);
-        let mut jit_arb_detector = JitArbDetector::new(block_num);
 
         self.replayer.replay_each_filtered(
             block_num,

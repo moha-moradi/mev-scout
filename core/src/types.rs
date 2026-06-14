@@ -280,6 +280,8 @@ pub struct GasConfig {
 impl GasConfig {
     /// Strategy-specific default gas limits based on empirical observations.
     /// `overrides` can supply per-strategy overrides keyed by strategy name.
+    const GAS_LIMIT_BASELINE: u64 = 200_000;
+
     pub fn gas_limit_for_strategy(
         &self,
         strategy: Strategy,
@@ -289,13 +291,17 @@ impl GasConfig {
         if let Some(&limit) = overrides.get(&key) {
             return limit;
         }
-        match strategy {
+        let base = match strategy {
             Strategy::TwoHopArb => 150_000,
             Strategy::MultiHopArb => 300_000,
             Strategy::Jit => 300_000,
             Strategy::JitArb => 350_000,
             Strategy::Sandwich => 200_000,
-        }
+        };
+        // Scale by global gas_limit / baseline so that --gas-limit acts as a multiplier
+        (base as u128)
+            .saturating_mul(self.gas_limit as u128)
+            .saturating_div(Self::GAS_LIMIT_BASELINE as u128) as u64
     }
 
     pub fn compute_gas_cost(

@@ -92,6 +92,7 @@ impl Fetcher {
             .check_integrity(range.start_block, range.end_block)?;
 
         summary.elapsed_secs = start.elapsed().as_secs_f64();
+        self.cache.flush()?;
         Ok(summary)
     }
 
@@ -121,6 +122,7 @@ impl Fetcher {
                 }
             }
         }
+        self.cache.flush()?;
         Ok(refetched)
     }
 }

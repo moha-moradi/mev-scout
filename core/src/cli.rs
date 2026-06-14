@@ -49,15 +49,15 @@ pub enum Command {
 #[command(next_help_heading = "Block Range (exactly one required)")]
 pub struct BlockRangeArgs {
     /// Last N days of blocks (1–365)
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
     pub days: Option<u64>,
 
     /// Last N blocks from chain tip (≥1)
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub blocks: Option<u64>,
 
     /// Single specific block number (>0)
-    #[arg(long, value_name = "NUMBER")]
+    #[arg(long, value_name = "NUMBER", value_parser = clap::value_parser!(u64).range(1..))]
     pub block: Option<u64>,
 
     /// Range start (requires --to-block)
@@ -102,7 +102,7 @@ pub struct RunArgs {
     pub gas_model: String,
 
     /// Gas limit for arb transaction cost estimation
-    #[arg(long, default_value_t = 200_000, value_name = "GAS", help_heading = "Gas Model")]
+    #[arg(long, default_value_t = 200_000, value_name = "GAS", help_heading = "Gas Model", value_parser = clap::value_parser!(u64).range(1..))]
     pub gas_limit: u64,
 
     /// Priority fee premium in gwei (added on top of base fee)

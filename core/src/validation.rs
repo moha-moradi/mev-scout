@@ -37,6 +37,41 @@ impl std::fmt::Display for ValidationError {
 
 impl std::error::Error for ValidationError {}
 
+fn resolve_chain(config: &Config) -> Result<(ChainName, ChainConfig), ValidationError> {
+    let chain_name: ChainName = config
+        .chain
+        .parse()
+        .map_err(|e: String| ValidationError::Message(format!("Error: {e}")))?;
+
+    let chain_config = config
+        .chains
+        .get(chain_name.to_string().as_str())
+        .cloned()
+        .ok_or_else(|| {
+            ValidationError::Message(format!(
+                "Error: no [chains.{}] section found in config.",
+                chain_name
+            ))
+        })?;
+
+    Ok((chain_name, chain_config))
+}
+
+fn validate_rpc_url(url: &str) -> Result<(), ValidationError> {
+    if url.trim().is_empty() {
+        return Err(ValidationError::Message(
+            "Error: --rpc URL cannot be empty.".to_string(),
+        ));
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(ValidationError::Message(format!(
+            "Error: --rpc URL '{}' must start with http:// or https://.",
+            url
+        )));
+    }
+    Ok(())
+}
+
 fn count_set_flags(cfg: &Config) -> Vec<&'static str> {
     let mut flags = Vec::new();
     if cfg.days.is_some() {
@@ -121,21 +156,7 @@ fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
 /// Validates config for the replay subcommand.
 /// Only allows --block (single block), rejects all other range flags.
 pub fn validate_replay(config: &Config) -> Result<(ChainName, ChainConfig), ValidationError> {
-    let chain_name: ChainName = config
-        .chain
-        .parse()
-        .map_err(|e: String| ValidationError::Message(format!("Error: {e}")))?;
-
-    let chain_config = config
-        .chains
-        .get(chain_name.to_string().as_str())
-        .cloned()
-        .ok_or_else(|| {
-            ValidationError::Message(format!(
-                "Error: no [chains.{}] section found in config.",
-                chain_name
-            ))
-        })?;
+    let (chain_name, chain_config) = resolve_chain(config)?;
 
     // Replay only supports --block
     let active = count_set_flags(config);
@@ -179,17 +200,7 @@ pub fn validate_replay(config: &Config) -> Result<(ChainName, ChainConfig), Vali
 
     // Validate RPC URL
     if let Some(url) = &config.rpc_url {
-        if url.trim().is_empty() {
-            return Err(ValidationError::Message(
-                "Error: --rpc URL cannot be empty.".to_string(),
-            ));
-        }
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(ValidationError::Message(format!(
-                "Error: --rpc URL '{}' must start with http:// or https://.",
-                url
-            )));
-        }
+        validate_rpc_url(url)?;
     }
 
     Ok((chain_name, chain_config))
@@ -200,25 +211,10 @@ pub fn validate_and_resolve(config: &Config) -> Result<ValidationResult, Validat
 }
 
 pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> Result<ValidationResult, ValidationError> {
-    // 1. Parse and validate chain name
-    let chain_name: ChainName = config
-        .chain
-        .parse()
-        .map_err(|e: String| ValidationError::Message(format!("Error: {e}")))?;
+    // 1. Parse and validate chain name + config
+    let (chain_name, chain_config) = resolve_chain(config)?;
 
-    // 2. Check chain config exists
-    let chain_config = config
-        .chains
-        .get(chain_name.to_string().as_str())
-        .cloned()
-        .ok_or_else(|| {
-            ValidationError::Message(format!(
-                "Error: no [chains.{}] section found in config.",
-                chain_name
-            ))
-        })?;
-
-    // 3. Parse and validate flash loan provider
+    // 2. Parse and validate flash loan provider
     let provider: FlashLoanProvider = config.flash_loan_provider.parse().map_err(|e: String| {
         ValidationError::Message(format!("Error: {e}"))
     })?;
@@ -246,7 +242,7 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> Resu
         }
     }
 
-    // 4. Parse and validate strategies (skip for fetch/report subcommands)
+    // 3. Parse and validate strategies (skip for fetch/report subcommands)
     let strategies: Vec<Strategy> = if check_strategies {
         let s = Strategy::from_comma_list(&config.strategies)
             .map_err(|e| ValidationError::Message(format!("Error: {e}")))?;
@@ -256,23 +252,12 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> Resu
         Vec::new()
     };
 
-    // 5. Validate block range
+    // 4. Validate block range
     let range_mode = check_range_conflicts(config)?;
 
-    // 6. Validate RPC URL
+    // 5. Validate RPC URL
     if let Some(url) = &config.rpc_url {
-        if url.trim().is_empty() {
-            return Err(ValidationError::Message(
-                "Error: --rpc URL cannot be empty.".to_string(),
-            ));
-        }
-        // Basic URL validation
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(ValidationError::Message(format!(
-                "Error: --rpc URL '{}' must start with http:// or https://.",
-                url
-            )));
-        }
+        validate_rpc_url(url)?;
     }
 
     // 7. Validate gas model

@@ -1,5 +1,6 @@
 use crate::mev::opportunity::MevOpportunity;
 use crate::types::Strategy;
+use alloy::primitives::Address;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SummaryMetrics {
@@ -58,6 +59,7 @@ pub struct DexMeta {
     pub name: String,
     pub fork: String,
     pub tx_count: usize,
+    pub pool_addresses: Vec<Address>,
 }
 
 const WEI_PER_ETH: f64 = 1_000_000_000_000_000_000.0;
@@ -80,43 +82,94 @@ pub fn aggregate(
     dexes: &[DexMeta],
     usd_price: f64,
 ) -> AggregationResult {
+    if opportunities.is_empty() {
+        return AggregationResult {
+            summary: SummaryMetrics {
+                total: 0,
+                profitable: 0,
+                gross_revenue: 0.0,
+                net_profit: 0.0,
+                net_profit_usd: 0.0,
+                total_cost: 0.0,
+                best_strategy: None,
+                best_single_opp: 0.0,
+                gross_revenue_wei: 0,
+                net_profit_wei: 0,
+                total_gas_cost_wei: 0,
+            },
+            by_strategy: std::collections::HashMap::new(),
+            by_dex: dexes.iter().map(|d| DexMetrics {
+                dex: d.name.clone(),
+                fork: d.fork.clone(),
+                tx_count: d.tx_count,
+                opportunities: 0,
+                profitable: 0,
+                revenue: 0.0,
+                avg_profit: 0.0,
+                gross_revenue_wei: 0,
+                net_profit_wei: 0,
+                total_gas_cost_wei: 0,
+            }).collect(),
+        };
+    }
+
+    // Build reverse lookup: pool address → dex name
+    let mut pool_to_dex: std::collections::HashMap<Address, &str> =
+        std::collections::HashMap::new();
+    for dex_meta in dexes {
+        for addr in &dex_meta.pool_addresses {
+            pool_to_dex.entry(*addr).or_insert(&dex_meta.name);
+        }
+    }
+
     let mut by_strategy: std::collections::HashMap<String, Vec<&MevOpportunity>> =
         std::collections::HashMap::new();
     let mut by_dex: std::collections::HashMap<String, Vec<&MevOpportunity>> =
         std::collections::HashMap::new();
 
+    let mut gross_revenue = 0.0_f64;
+    let mut total_gas = 0.0_f64;
+    let mut profitable_count = 0_usize;
+    let mut best_single_opp = 0.0_f64;
+    let mut summary_gross_wei = 0_u128;
+    let mut summary_gas_wei = 0_u128;
+
     for opp in opportunities {
+        let profit_wei = opp.expected_profit.to::<u128>();
+        let gas_wei = opp.gas_cost_wei;
+        let profit_eth = wei_to_eth(profit_wei);
+        let gas_eth = wei_to_eth(gas_wei);
+
+        gross_revenue += profit_eth;
+        total_gas += gas_eth;
+        summary_gross_wei += profit_wei;
+        summary_gas_wei += gas_wei;
+        if profit_eth - gas_eth > 0.0 {
+            profitable_count += 1;
+        }
+        if profit_eth > best_single_opp {
+            best_single_opp = profit_eth;
+        }
+
         let sname = ui_strategy_name(opp.strategy).to_string();
         by_strategy.entry(sname).or_default().push(opp);
 
-        for dex_meta in dexes {
-            by_dex.entry(dex_meta.name.clone()).or_default().push(opp);
+        let mut seen = std::collections::HashSet::new();
+        if let Some(&dex_name) = pool_to_dex.get(&opp.pool_a) {
+            if seen.insert(dex_name) {
+                by_dex.entry(dex_name.to_string()).or_default().push(opp);
+            }
+        }
+        if let Some(&dex_name) = pool_to_dex.get(&opp.pool_b) {
+            if seen.insert(dex_name) {
+                by_dex.entry(dex_name.to_string()).or_default().push(opp);
+            }
         }
     }
 
     let total = opportunities.len();
-    let gross_revenue: f64 = opportunities
-        .iter()
-        .map(|o| wei_to_eth(o.expected_profit.to::<u128>()))
-        .sum();
-    let total_gas: f64 = opportunities
-        .iter()
-        .map(|o| wei_to_eth(o.gas_cost_wei))
-        .sum();
     let net_profit = gross_revenue - total_gas;
-
-    let profitable_count = opportunities
-        .iter()
-        .filter(|o| {
-            let profit = wei_to_eth(o.expected_profit.to::<u128>()) - wei_to_eth(o.gas_cost_wei);
-            profit > 0.0
-        })
-        .count();
-
-    let best_single_opp = opportunities
-        .iter()
-        .map(|o| wei_to_eth(o.expected_profit.to::<u128>()))
-        .fold(0.0_f64, f64::max);
+    let summary_net_wei = (summary_gross_wei as i128) - (summary_gas_wei as i128);
 
     let mut best_strategy: Option<String> = None;
     let mut best_strat_net = 0.0_f64;
@@ -124,29 +177,38 @@ pub fn aggregate(
 
     for (sname, opps) in &by_strategy {
         let count = opps.len();
-        let strat_gross: f64 = opps.iter().map(|o| wei_to_eth(o.expected_profit.to::<u128>())).sum();
-        let strat_gas: f64 = opps.iter().map(|o| wei_to_eth(o.gas_cost_wei)).sum();
+        let mut strat_gross = 0.0_f64;
+        let mut strat_gas = 0.0_f64;
+        let mut strat_profitable = 0_usize;
+        let mut best_opp = 0.0_f64;
+        let mut gross_wei = 0_u128;
+        let mut gas_wei = 0_u128;
+
+        for opp in opps {
+            let pw = opp.expected_profit.to::<u128>();
+            let gw = opp.gas_cost_wei;
+            let pe = wei_to_eth(pw);
+            let ge = wei_to_eth(gw);
+            strat_gross += pe;
+            strat_gas += ge;
+            gross_wei += pw;
+            gas_wei += gw;
+            if pe - ge > 0.0 {
+                strat_profitable += 1;
+            }
+            if pe > best_opp {
+                best_opp = pe;
+            }
+        }
+
         let strat_net = strat_gross - strat_gas;
-        let strat_profitable = opps
-            .iter()
-            .filter(|o| {
-                wei_to_eth(o.expected_profit.to::<u128>()) - wei_to_eth(o.gas_cost_wei) > 0.0
-            })
-            .count();
-        let best_opp = opps
-            .iter()
-            .map(|o| wei_to_eth(o.expected_profit.to::<u128>()))
-            .fold(0.0_f64, f64::max);
+        let net_wei = (gross_wei as i128) - (gas_wei as i128);
         let roi = if strat_gas > 0.0 {
             (strat_net / strat_gas) * 100.0
         } else {
             0.0
         };
         let avg = if count > 0 { strat_gross / count as f64 } else { 0.0 };
-
-        let gross_wei: u128 = opps.iter().map(|o| o.expected_profit.to::<u128>()).sum();
-        let gas_wei: u128 = opps.iter().map(|o| o.gas_cost_wei).sum();
-        let net_wei = (gross_wei as i128) - (gas_wei as i128);
 
         if strat_net > best_strat_net {
             best_strat_net = strat_net;
@@ -178,25 +240,25 @@ pub fn aggregate(
         .map(|dex_meta| {
             let opps_for_dex = by_dex.get(&dex_meta.name).cloned().unwrap_or_default();
             let count = opps_for_dex.len();
-            let revenue: f64 = opps_for_dex
-                .iter()
-                .map(|o| wei_to_eth(o.expected_profit.to::<u128>()))
-                .sum();
-            let profitable = opps_for_dex
-                .iter()
-                .filter(|o| {
-                    wei_to_eth(o.expected_profit.to::<u128>()) - wei_to_eth(o.gas_cost_wei) > 0.0
-                })
-                .count();
+            let mut revenue = 0.0_f64;
+            let mut profitable = 0_usize;
+            let mut gross_wei = 0_u128;
+            let mut gas_wei = 0_u128;
+
+            for opp in opps_for_dex {
+                let pw = opp.expected_profit.to::<u128>();
+                let gw = opp.gas_cost_wei;
+                let pe = wei_to_eth(pw);
+                let ge = wei_to_eth(gw);
+                revenue += pe;
+                gross_wei += pw;
+                gas_wei += gw;
+                if pe - ge > 0.0 {
+                    profitable += 1;
+                }
+            }
+
             let avg_profit = if count > 0 { revenue / count as f64 } else { 0.0 };
-            let gross_wei: u128 = opps_for_dex
-                .iter()
-                .map(|o| o.expected_profit.to::<u128>())
-                .sum();
-            let gas_wei: u128 = opps_for_dex
-                .iter()
-                .map(|o| o.gas_cost_wei)
-                .sum();
             let net_wei = (gross_wei as i128) - (gas_wei as i128);
             DexMetrics {
                 dex: dex_meta.name.clone(),
@@ -213,16 +275,6 @@ pub fn aggregate(
         })
         .collect();
     dex_metrics.sort_by(|a, b| b.revenue.partial_cmp(&a.revenue).unwrap_or(std::cmp::Ordering::Equal));
-
-    let summary_gross_wei: u128 = opportunities
-        .iter()
-        .map(|o| o.expected_profit.to::<u128>())
-        .sum();
-    let summary_gas_wei: u128 = opportunities
-        .iter()
-        .map(|o| o.gas_cost_wei)
-        .sum();
-    let summary_net_wei = (summary_gross_wei as i128) - (summary_gas_wei as i128);
 
     AggregationResult {
         summary: SummaryMetrics {
@@ -251,12 +303,23 @@ mod tests {
     use crate::types::Strategy;
 
     fn make_opp(strategy: Strategy, profit_wei: u128, gas_wei: u128, block: u64) -> MevOpportunity {
+        make_opp_with_pools(strategy, profit_wei, gas_wei, block, Address::ZERO, Address::ZERO)
+    }
+
+    fn make_opp_with_pools(
+        strategy: Strategy,
+        profit_wei: u128,
+        gas_wei: u128,
+        block: u64,
+        pool_a: Address,
+        pool_b: Address,
+    ) -> MevOpportunity {
         MevOpportunity {
             block_number: block,
             tx_index: 0,
             strategy,
-            pool_a: Address::ZERO,
-            pool_b: Address::ZERO,
+            pool_a,
+            pool_b,
             token_in: Address::ZERO,
             token_out: Address::ZERO,
             input_amount: U256::ZERO,
@@ -291,7 +354,7 @@ mod tests {
     #[test]
     fn test_aggregate_single_opportunity() {
         let opps = vec![make_opp(Strategy::TwoHopArb, one_eth(), one_eth() / 5, 1)];
-        let dexes = vec![DexMeta { name: "QuickSwap".into(), fork: "UniV2".into(), tx_count: 1 }];
+        let dexes = vec![DexMeta { name: "QuickSwap".into(), fork: "UniV2".into(), tx_count: 1, pool_addresses: vec![Address::ZERO] }];
         let result = aggregate(&opps, &dexes, 2.0);
 
         assert_eq!(result.summary.total, 1);
@@ -321,7 +384,7 @@ mod tests {
             make_opp(Strategy::TwoHopArb, one_eth() / 2, one_eth() / 5 * 3, 2), // not profitable
             make_opp(Strategy::Jit, one_eth() * 2, one_eth() / 10 * 3, 3),    // profitable
         ];
-        let dexes = vec![DexMeta { name: "QuickSwap".into(), fork: "UniV2".into(), tx_count: 3 }];
+        let dexes = vec![DexMeta { name: "QuickSwap".into(), fork: "UniV2".into(), tx_count: 3, pool_addresses: vec![Address::ZERO] }];
         let result = aggregate(&opps, &dexes, 1.5);
 
         assert_eq!(result.summary.total, 3);
@@ -354,7 +417,7 @@ mod tests {
             make_opp(Strategy::Sandwich, one_eth() / 10, one_eth() / 5, 1),
             make_opp(Strategy::JitArb, one_eth() / 100, one_eth() / 20, 2),
         ];
-        let dexes = vec![DexMeta { name: "TestDex".into(), fork: "UniV3".into(), tx_count: 2 }];
+        let dexes = vec![DexMeta { name: "TestDex".into(), fork: "UniV3".into(), tx_count: 2, pool_addresses: vec![Address::ZERO] }];
         let result = aggregate(&opps, &dexes, 1.0);
 
         assert_eq!(result.summary.total, 2);
@@ -364,27 +427,26 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_multiple_dexes_sorted_by_revenue() {
-        // Create opps assigned to specific dexes by name via the aggregate fn
+    fn test_aggregate_multiple_dexes_different_opportunities() {
+        let pool_low = Address::repeat_byte(0x01);
+        let pool_high = Address::repeat_byte(0x02);
         let opps = vec![
-            make_opp(Strategy::TwoHopArb, one_eth(), one_eth() / 10, 1),
-            make_opp(Strategy::TwoHopArb, one_eth() * 3, one_eth() / 5, 2),
+            make_opp_with_pools(Strategy::TwoHopArb, one_eth(), one_eth() / 10, 1, pool_low, pool_low),
+            make_opp_with_pools(Strategy::TwoHopArb, one_eth() * 3, one_eth() / 5, 2, pool_high, pool_high),
         ];
-        // aggregate() assigns ALL opps to ALL dexes, so both get the same total revenue (4 ETH).
-        // For a deterministic sort we need unequal revenue. Since both dexes get the same total
-        // revenue by design, verify they are sorted correctly when revenue differs.
         let dexes = vec![
-            DexMeta { name: "LowDex".into(), fork: "UniV2".into(), tx_count: 0 },
-            DexMeta { name: "HighDex".into(), fork: "UniV3".into(), tx_count: 0 },
+            DexMeta { name: "LowDex".into(), fork: "UniV2".into(), tx_count: 0, pool_addresses: vec![pool_low] },
+            DexMeta { name: "HighDex".into(), fork: "UniV3".into(), tx_count: 0, pool_addresses: vec![pool_high] },
         ];
         let result = aggregate(&opps, &dexes, 1.0);
 
         assert_eq!(result.by_dex.len(), 2);
-        // Both dexes get the same revenue (4.0), so sort order is stable by position.
-        // When equal, sort uses whatever order partial_cmp returns, which preserves
-        // original ordering for equal values.
-        let revs: Vec<f64> = result.by_dex.iter().map(|d| d.revenue).collect();
-        assert!((revs[0] - revs[1]).abs() < 1e-10, "both should have equal revenue");
+        assert_eq!(result.by_dex[0].dex, "HighDex");
+        assert_eq!(result.by_dex[0].opportunities, 1);
+        assert_eq!(result.by_dex[0].revenue, 3.0);
+        assert_eq!(result.by_dex[1].dex, "LowDex");
+        assert_eq!(result.by_dex[1].opportunities, 1);
+        assert_eq!(result.by_dex[1].revenue, 1.0);
     }
 
     #[test]
@@ -401,10 +463,49 @@ mod tests {
     #[test]
     fn test_aggregate_zero_gas_roi() {
         let opps = vec![make_opp(Strategy::TwoHopArb, one_eth(), 0, 1)];
-        let dexes = vec![DexMeta { name: "Dex".into(), fork: "UniV2".into(), tx_count: 1 }];
+        let dexes = vec![DexMeta { name: "Dex".into(), fork: "UniV2".into(), tx_count: 1, pool_addresses: vec![Address::ZERO] }];
         let result = aggregate(&opps, &dexes, 1.0);
         let arb = &result.by_strategy["arb"];
         assert_approx_eq(arb.roi, 0.0);
+    }
+
+    #[test]
+    fn test_aggregate_opp_not_leaked_to_unrelated_dex() {
+        let pool_a = Address::repeat_byte(0xaa);
+        let pool_b = Address::repeat_byte(0xbb);
+        let opp = make_opp_with_pools(Strategy::TwoHopArb, one_eth(), 0, 1, pool_a, pool_b);
+        let dexes = vec![
+            DexMeta { name: "UnrelatedDex".into(), fork: "UniV2".into(), tx_count: 0, pool_addresses: vec![Address::repeat_byte(0xcc)] },
+        ];
+        let result = aggregate(&[opp], &dexes, 1.0);
+        // UnrelatedDex has no pool matching pool_a or pool_b, so opportunities should be 0
+        assert_eq!(result.by_dex[0].opportunities, 0);
+    }
+
+    #[test]
+    fn test_aggregate_opp_assigned_to_match_any_pool() {
+        let pool_a = Address::repeat_byte(0xaa);
+        let pool_b = Address::repeat_byte(0xbb);
+        let opp = make_opp_with_pools(Strategy::TwoHopArb, one_eth(), 0, 1, pool_a, pool_b);
+        // Dex manages pool_a but not pool_b
+        let dexes = vec![
+            DexMeta { name: "PartialDex".into(), fork: "UniV2".into(), tx_count: 0, pool_addresses: vec![pool_a] },
+        ];
+        let result = aggregate(&[opp], &dexes, 1.0);
+        assert_eq!(result.by_dex[0].opportunities, 1);
+    }
+
+    #[test]
+    fn test_aggregate_opp_not_double_counted_same_dex_both_pools() {
+        let pool_a = Address::repeat_byte(0xaa);
+        let pool_b = Address::repeat_byte(0xbb);
+        let opp = make_opp_with_pools(Strategy::TwoHopArb, one_eth(), 0, 1, pool_a, pool_b);
+        let dexes = vec![
+            DexMeta { name: "Dex".into(), fork: "UniV2".into(), tx_count: 0, pool_addresses: vec![pool_a, pool_b] },
+        ];
+        let result = aggregate(&[opp], &dexes, 1.0);
+        // Should count as 1, not 2 (both pools match the same dex)
+        assert_eq!(result.by_dex[0].opportunities, 1);
     }
 
     #[test]

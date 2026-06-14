@@ -32,6 +32,7 @@ pub struct PriceCache {
     entries: std::collections::HashMap<String, PriceEntry>,
     ttl: std::time::Duration,
     api_key: Option<String>,
+    client: reqwest::Client,
 }
 
 /// Response shape from CoinGecko `/simple/price`.
@@ -50,6 +51,7 @@ impl PriceCache {
             entries: std::collections::HashMap::new(),
             ttl: std::time::Duration::from_secs(300),
             api_key,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -99,8 +101,7 @@ impl PriceCache {
             asset_id
         );
 
-        let client = reqwest::Client::new();
-        let mut req = client.get(&url);
+        let mut req = self.client.get(&url);
 
         // Add API key header if provided (CoinGecko Pro/Demo tier)
         if let Some(key) = &self.api_key {
