@@ -4,7 +4,9 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
-use crate::pool::state::PoolManager;
+use crate::pool::math::constant_product_output_amount;
+use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::pool::state::{PoolManager, PoolState};
 use crate::mev::opportunity::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
 
@@ -14,6 +16,8 @@ struct SwapEvent {
     pool: Address,
     sender: Address,
     amount_in: u128,
+    /// The token that was sold (input token of the swap)
+    token_in: Address,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +55,7 @@ impl JitArbDetector {
         self
     }
 
-    pub fn process_tx(&mut self, tx_index: usize, logs: &[ExecutedLog], sender: Option<Address>) {
+    pub fn process_tx(&mut self, tx_index: usize, logs: &[ExecutedLog], sender: Option<Address>, pm: &PoolManager) {
         let sender = match sender {
             Some(s) => s,
             None => return,
@@ -101,11 +105,20 @@ impl JitArbDetector {
             }
 
             if t0 == V3_SWAP_TOPIC {
-                let amount_in = if let Some(decoded) = decode_v3_swap(log) {
-                    if decoded.amount0 > 0 { decoded.amount0 as u128 }
-                    else { decoded.amount1 as u128 }
+                let (amount_in, token_in) = if let Some(decoded) = decode_v3_swap(log) {
+                    let amt = if decoded.amount0 > 0 { decoded.amount0 as u128 }
+                               else { decoded.amount1 as u128 };
+                    // Determine which token was sold from the swap event.
+                    // For V3: amount0 > 0 → token0 sold (pool receives token0),
+                    //          amount1 > 0 → token1 sold.
+                    let sold = if decoded.amount0 > 0 {
+                        pm.get(&log.address).map(|p| p.info().token0).unwrap_or(Address::ZERO)
+                    } else {
+                        pm.get(&log.address).map(|p| p.info().token1).unwrap_or(Address::ZERO)
+                    };
+                    (amt, sold)
                 } else {
-                    0
+                    (0, Address::ZERO)
                 };
 
                 self.swap_events.push(SwapEvent {
@@ -113,6 +126,7 @@ impl JitArbDetector {
                     pool: log.address,
                     sender,
                     amount_in,
+                    token_in,
                 });
 
                 if let Some(mints) = self.active_mints.get_mut(&log.address) {
@@ -163,21 +177,14 @@ impl JitArbDetector {
                         if max_idx - min_idx > self.proximity_window {
                             continue;
                         }
-                        if pools_share_token(pm, pool_p, swap_q.pool) {
-                            self.emitted.insert(dedup_key);
+                            if pools_share_token(pm, pool_p, swap_q.pool) {
+                                self.emitted.insert(dedup_key);
 
-                            // Estimate profit as the difference between the two swap amounts
-                            // if they share a token. For simplicity, use the JIT-pool swap amount
-                            // as the input and the arb-pool swap as output (or vice versa).
-                            let arb_profit = if swap_p.amount_in > swap_q.amount_in {
-                                swap_p.amount_in.saturating_sub(swap_q.amount_in) as u128
-                            } else {
-                                swap_q.amount_in.saturating_sub(swap_p.amount_in) as u128
-                            };
+                            let arb_profit = estimate_arb_profit(pm, swap_p, swap_q);
 
                             opportunities.push(Self::build_opp(
                                 self.block_number, pool_p, swap_q.pool, mint, timestamp,
-                                U256::from(arb_profit), base_fee_per_gas, gas_config,
+                                U256::from(arb_profit), base_fee_per_gas, gas_config, pm,
                             ));
                             break;
                         }
@@ -199,20 +206,25 @@ impl JitArbDetector {
         expected_profit: U256,
         base_fee_per_gas: u128,
         gas_config: &GasConfig,
+        pm: &PoolManager,
     ) -> MevOpportunity {
         let gas_cost_wei = gas_config.compute_gas_cost(
             Strategy::JitArb,
             base_fee_per_gas,
             &HashMap::new(),
         );
+        // Populate token_in/token_out from the JIT pool — both tokens are involved
+        // in the liquidity provision and subsequent arb swap.
+        let token_in = pm.get(&jit_pool).map(|p| p.info().token0).unwrap_or(Address::ZERO);
+        let token_out = pm.get(&jit_pool).map(|p| p.info().token1).unwrap_or(Address::ZERO);
         MevOpportunity {
             block_number,
             tx_index: mint.mint_tx_index,
             strategy: Strategy::JitArb,
             pool_a: jit_pool,
             pool_b: arb_pool,
-            token_in: Address::ZERO,
-            token_out: Address::ZERO,
+            token_in,
+            token_out,
             input_amount: U256::from(mint.amount),
             expected_profit,
             gas_cost_wei,
@@ -234,6 +246,61 @@ fn pools_share_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> bool
         || info_a.token0 == info_b.token1
         || info_a.token1 == info_b.token0
         || info_a.token1 == info_b.token1
+}
+
+/// Find the address of the token shared between two pools.
+fn shared_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> Option<Address> {
+    let info_a = pm.get(&pool_a)?.info();
+    let info_b = pm.get(&pool_b)?.info();
+    if info_a.token0 == info_b.token0 || info_a.token0 == info_b.token1 {
+        Some(info_a.token0)
+    } else if info_a.token1 == info_b.token0 || info_a.token1 == info_b.token1 {
+        Some(info_a.token1)
+    } else {
+        None
+    }
+}
+
+/// Convert a swap's `amount_in` (denominated in `swap.token_in`) to an equivalent
+/// amount of `shared_token` using the pool's reserves or state.
+///
+/// If the swap already sells the shared token, returns `amount_in` directly.
+/// Otherwise, simulates a swap from `token_in` → `shared_token` on the same pool
+/// to estimate the received amount.
+fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) -> u128 {
+    if swap.token_in == shared || swap.amount_in == 0 {
+        return swap.amount_in;
+    }
+    match pm.get(&swap.pool) {
+        Some(PoolState::UniswapV2(v2)) => {
+            let (reserve_in, reserve_out) = if v2.info.token0 == swap.token_in {
+                (v2.reserve0, v2.reserve1)
+            } else {
+                (v2.reserve1, v2.reserve0)
+            };
+            constant_product_output_amount(swap.amount_in, reserve_in, reserve_out, v2.info.fee)
+                .unwrap_or(0)
+        }
+        Some(PoolState::UniswapV3(v3)) => {
+            let zero_for_one = v3.info.token0 == swap.token_in;
+            quote_v3_exact_in(v3, swap.amount_in, zero_for_one).unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
+/// Estimate arbitrage profit between two swaps on pools that share a token.
+///
+/// Converts both swap amounts to the shared token denomination using each
+/// pool's own pricing, then returns the absolute difference.
+fn estimate_arb_profit(pm: &PoolManager, swap_p: &SwapEvent, swap_q: &SwapEvent) -> u128 {
+    let shared = match shared_token(pm, swap_p.pool, swap_q.pool) {
+        Some(s) => s,
+        None => return 0,
+    };
+    let p_val = convert_to_shared_token(pm, swap_p, shared);
+    let q_val = convert_to_shared_token(pm, swap_q, shared);
+    if p_val > q_val { p_val - q_val } else { q_val - p_val }
 }
 
 #[cfg(test)]
@@ -320,7 +387,7 @@ mod tests {
             v3_mint_log(pool_p(), -100, 100, 500_000),
             v3_swap_log(pool_p()),
             v3_swap_log(pool_q()),
-        ], Some(sender()));
+        ], Some(sender()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "Same-tx Mint+arb should be detected");
         assert_eq!(opps[0].strategy, Strategy::JitArb);
@@ -334,9 +401,9 @@ mod tests {
     fn test_mint_then_arb_cross_tx() {
         let mut detector = JitArbDetector::new(1);
         let pm = make_pm();
-        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
+        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()), &pm);
         assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Mint alone should not trigger JitArb");
-        detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(sender()));
+        detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(sender()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "Cross-tx Mint+arb should be detected");
     }
@@ -346,8 +413,8 @@ mod tests {
         let mut detector = JitArbDetector::new(1);
         let pm = make_pm();
         let other = address!("2222222222222222222222222222222222222222");
-        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
-        detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(other));
+        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()), &pm);
+        detector.process_tx(1, &[v3_swap_log(pool_p()), v3_swap_log(pool_q())], Some(other), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty(), "Different sender should not trigger JitArb");
     }
@@ -375,7 +442,7 @@ mod tests {
             v3_mint_log(pool_p(), -100, 100, 500_000),
             v3_swap_log(pool_p()),
             v3_swap_log(address!("cccccccccccccccccccccccccccccccccccccccc")),
-        ], Some(sender()));
+        ], Some(sender()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty(), "No token sharing should not trigger JitArb");
     }
@@ -388,7 +455,7 @@ mod tests {
             v3_mint_log(pool_p(), -100, 100, 500_000),
             v3_swap_log(pool_p()),
             v3_swap_log(pool_q()),
-        ], Some(sender()));
+        ], Some(sender()), &pm);
         assert_eq!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).len(), 1);
         assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Should not re-emit");
     }
@@ -397,18 +464,18 @@ mod tests {
     fn test_jitarb_proximity_window_2() {
         let mut detector = JitArbDetector::new(1).with_proximity_window(3);
         let pm = make_pm();
-        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
+        detector.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()), &pm);
         // Swaps at tx 1 and 4 — gap of 3, within window of 3
-        detector.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()));
-        detector.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()));
+        detector.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()), &pm);
+        detector.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "Should detect with window=3");
 
         // With window=1, gap of 3 should NOT be detected
         let mut detector2 = JitArbDetector::new(1).with_proximity_window(1);
-        detector2.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()));
-        detector2.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()));
-        detector2.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()));
+        detector2.process_tx(0, &[v3_mint_log(pool_p(), -100, 100, 500_000)], Some(sender()), &pm);
+        detector2.process_tx(1, &[v3_swap_log(pool_p())], Some(sender()), &pm);
+        detector2.process_tx(4, &[v3_swap_log(pool_q())], Some(sender()), &pm);
         assert!(detector2.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty(), "Should NOT detect with window=1");
     }
 
@@ -420,7 +487,7 @@ mod tests {
             v3_mint_log(pool_p(), -100, 100, 500_000),
             v3_swap_log(pool_p()),
             v3_swap_log(pool_q()),
-        ], Some(sender()));
+        ], Some(sender()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1);
         assert!(opps[0].gas_cost_wei > 0);

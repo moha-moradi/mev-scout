@@ -12,10 +12,11 @@ A practical guide to using `mev-scout` for MEV opportunity backtesting on EVM ch
 4. [`mev-scout fetch` — Pre-Caching Block Data](#4-mev-scout-fetch--pre-caching-block-data)
 5. [`mev-scout report` — Re-rendering Saved Results](#5-mev-scout-report--re-rendering-saved-results)
 6. [`mev-scout replay` — Debugging Blocks](#6-mev-scout-replay--debugging-blocks)
-7. [`mev-scout discover` — On-Chain Pool Discovery](#7-mev-scout-discover--on-chain-pool-discovery)
-8. [`mev-scout config` — Inspecting Resolved Configuration](#8-mev-scout-config--inspecting-resolved-configuration)
-9. [Common Workflows](#9-common-workflows)
-10. [Tips & Best Practices](#10-tips--best-practices)
+7. [`mev-scout fact-check` — Verifying Backtest Results](#7-mev-scout-fact-check--verifying-backtest-results)
+8. [`mev-scout discover` — On-Chain Pool Discovery](#8-mev-scout-discover--on-chain-pool-discovery)
+9. [`mev-scout config` — Inspecting Resolved Configuration](#9-mev-scout-config--inspecting-resolved-configuration)
+10. [Common Workflows](#10-common-workflows)
+11. [Tips & Best Practices](#11-tips--best-practices)
 
 ---
 
@@ -160,6 +161,7 @@ You must specify one of these mutually exclusive options:
 | `--output <F>` | `table` | `table`, `csv`, `json` |
 | `--export-path <PATH>` | `./results` | Directory for saved JSON/CSV files |
 | `--cache-dir <PATH>` | `./cache` | Directory for block/state sled cache |
+| `--fact-check` | off | Print detailed fact-check report after the run and save as `{run_id}_factcheck.json` |
 
 ### Examples
 
@@ -178,6 +180,9 @@ mev-scout run --from-block 30000000 --to-block 30000100 \
   --strategies sandwich \
   --output json \
   --export-path ./my_results
+
+# Run with fact-check report
+mev-scout run --blocks 500 --fact-check
 
 # Ethereum with custom gas settings
 mev-scout run --blocks 500 -n ethereum \
@@ -321,6 +326,7 @@ mev-scout replay --block <NUMBER> [OPTIONS]
 | `-n, --chain <NAME>` | Chain name (default: `polygon`) |
 | `-r, --rpc <URL>` | RPC URL |
 | `--cache-dir <PATH>` | Cache directory (default: `./cache`) |
+| `--analyze` | Show DEX interaction analysis per transaction (pools must be discovered first) |
 
 ### Examples
 
@@ -334,6 +340,21 @@ mev-scout replay --block 50000000 --tx-index 10
 
 # Replay a block on Ethereum with custom cache
 mev-scout replay --block 18000000 -n ethereum --cache-dir ./eth_cache
+
+# Replay with DEX interaction analysis (requires discovered pools in cache)
+mev-scout replay --block 50000000 --analyze
+```
+
+With `--analyze`, each transaction shows its DEX interactions:
+```
+  idx  tx_hash                                                           status  gas_used  receipt
+  ────  ────────────────────────────────────────────────────────────────  ──────  ────────  ────────
+  0    0xabcd...                                                          ok      142000    ✓
+         DEX interactions:
+           ├ QuickSwap V3 USDC/WETH — Swap
+           └ SushiSwap V2 WMATIC/USDC — Sync
+  1    0xef01...                                                          ok      21000     ✓
+         (no DEX interactions)
 ```
 
 The output shows per-transaction:
@@ -347,7 +368,52 @@ may indicate RPC issues or incorrect chain selection.
 
 ---
 
-## 7. `mev-scout discover` — On-Chain Pool Discovery
+## 7. `mev-scout fact-check` — Verifying Backtest Results
+
+Loads a saved `run_*.json` results file and re-verifies each detected opportunity.
+Reports which opportunities pass sanity checks (profit > gas cost, required fields present).
+
+### Syntax
+
+```bash
+mev-scout fact-check <RUN_ID> [OPTIONS]
+```
+
+| Argument | Description |
+|----------|-------------|
+| `RUN_ID` | **(Required)** Run ID to verify (e.g. `run_1718000000`) |
+
+| Flag | Description |
+|------|-------------|
+| `--re-verify` | Re-load block data from cache and re-verify pool state (requires cached blocks) |
+| `--export-path <PATH>` | Directory where result JSON files are stored (default: `./results`) |
+
+### Examples
+
+```bash
+# Fact-check a specific run
+mev-scout fact-check run_1718000000
+
+# Fact-check with re-verification (loads block data from cache)
+mev-scout fact-check run_1718000000 --re-verify
+
+# Fact-check results from a custom directory
+mev-scout fact-check run_1718000000 --export-path ./my_results
+```
+
+### What gets checked
+
+| Check | Description |
+|-------|-------------|
+| `profit_gt_gas` | Expected profit exceeds estimated gas cost |
+| Sandwich fields | `victim_tx_index` and `backrun_tx_index` are present for sandwich strategies |
+| JIT fields | `tick_lower`, `tick_upper`, `liquidity_amount` are present for JIT strategies |
+
+The report is displayed as a table and saved as `{run_id}_factcheck.json`.
+
+---
+
+## 8. `mev-scout discover` — On-Chain Pool Discovery
 
 Scans factory contracts for `PairCreated` (V2) / `PoolCreated` (V3) events
 to discover liquidity pools directly from the chain.
@@ -419,7 +485,7 @@ V3  0xdef...  token0=0x...  token1=0x...  fee=3000  tickSpacing=60
 
 ---
 
-## 8. `mev-scout config` — Inspecting Resolved Configuration
+## 9. `mev-scout config` — Inspecting Resolved Configuration
 
 Prints the fully resolved configuration (defaults + config file overrides
 + CLI overrides) as TOML to stdout. Useful for debugging what settings
@@ -460,7 +526,7 @@ pool_discovery_start_block = 0
 
 ---
 
-## 9. Common Workflows
+## 10. Common Workflows
 
 ### First-time user: scan last 100 blocks on Polygon
 
@@ -557,7 +623,7 @@ mev-scout run --blocks 1000
 
 ---
 
-## 10. Tips & Best Practices
+## 11. Tips & Best Practices
 
 ### Public node rate limits
 
@@ -644,6 +710,10 @@ mev-scout fetch --days/--blocks/--block/--from-block+--to-block
 mev-scout report --run-id <id> --output <f> --export-path <dir>
 
 mev-scout replay --block <N> --tx-index <I> -n <chain> -r <url> --cache-dir <dir>
+                --analyze                     DEX interaction analysis per tx
+
+mev-scout fact-check <RUN_ID>                 Verify saved results
+                --re-verify                   Re-verify pool state from cache
 
 mev-scout discover --v2-factories <addrs> --v3-factory <addr>
                    --from-block <A> --to-block <B>

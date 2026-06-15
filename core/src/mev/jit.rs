@@ -187,14 +187,14 @@ impl JitDetector {
                     self.emitted.insert(dedup_key);
                     opportunities.push(Self::build_opp(
                         self.block_number, *pool, mint, timestamp, true,
-                        base_fee_per_gas, gas_config, pool_fee,
+                        base_fee_per_gas, gas_config, pool_fee, pool_manager,
                     ));
                 // Partial JIT: Mint → Swap (no burn yet, or no burn in this block)
                 } else if mint.swapped && !mint.burned {
                     self.emitted.insert(dedup_key);
                     opportunities.push(Self::build_opp(
                         self.block_number, *pool, mint, timestamp, false,
-                        base_fee_per_gas, gas_config, pool_fee,
+                        base_fee_per_gas, gas_config, pool_fee, pool_manager,
                     ));
                 }
             }
@@ -212,11 +212,30 @@ impl JitDetector {
         base_fee_per_gas: u128,
         gas_config: &GasConfig,
         pool_fee: u32,
+        pool_manager: &PoolManager,
     ) -> MevOpportunity {
-        let estimated_fees = if pool_fee > 0 && mint.swap_volume > 0 {
-            (mint.swap_volume as u128)
-                .saturating_mul(pool_fee as u128)
-                .saturating_div(1_000_000)
+        // Estimate fee revenue earned by the JIT position.
+        // The JIT position earns fees proportional to its share of active
+        // liquidity in the pool. If the position's liquidity is smaller than
+        // the pool's total active liquidity, scale the fee estimate accordingly.
+        let pool_liquidity = pool_manager
+            .get_v3_state(&pool)
+            .map(|s| s.liquidity)
+            .unwrap_or(0);
+        let estimated_fees = if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
+            if pool_liquidity > 0 && (mint.amount as u128) < pool_liquidity {
+                // Position provides only a fraction of total active liquidity
+                (mint.swap_volume as u128)
+                    .saturating_mul(pool_fee as u128)
+                    .saturating_mul(mint.amount as u128)
+                    .saturating_div(1_000_000u128)
+                    .saturating_div(pool_liquidity as u128)
+            } else {
+                // Position provides all (or more than) active liquidity
+                (mint.swap_volume as u128)
+                    .saturating_mul(pool_fee as u128)
+                    .saturating_div(1_000_000)
+            }
         } else {
             0
         };
@@ -225,14 +244,18 @@ impl JitDetector {
             base_fee_per_gas,
             &HashMap::new(),
         );
+        let pool_tokens = pool_manager.get(&pool).map(|p| {
+            let info = p.info();
+            (info.token0, info.token1)
+        });
         MevOpportunity {
             block_number,
             tx_index: mint.mint_tx_index,
             strategy: Strategy::Jit,
             pool_a: pool,
             pool_b: Address::ZERO,
-            token_in: Address::ZERO,
-            token_out: Address::ZERO,
+            token_in: pool_tokens.map(|(t0, _)| t0).unwrap_or(Address::ZERO),
+            token_out: pool_tokens.map(|(_, t1)| t1).unwrap_or(Address::ZERO),
             input_amount: U256::from(mint.amount),
             expected_profit: U256::from(estimated_fees),
             gas_cost_wei,
@@ -327,6 +350,10 @@ mod tests {
     fn pool_b() -> Address { address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") }
 
     fn make_pm_with_v3_pool(addr: Address, fee: u32) -> PoolManager {
+        make_pm_with_v3_pool_and_liquidity(addr, fee, 1_000_000_000)
+    }
+
+    fn make_pm_with_v3_pool_and_liquidity(addr: Address, fee: u32, liquidity: u128) -> PoolManager {
         let mut pm = PoolManager::new();
         pm.add_pool(PoolState::UniswapV3(UniswapV3PoolState {
             info: PoolInfo {
@@ -341,7 +368,7 @@ mod tests {
             },
             sqrt_price_x96: U256::from(1u128 << 96),
             tick: 0,
-            liquidity: 1_000_000_000,
+            liquidity,
             ticks: std::collections::BTreeMap::new(),
         }));
         pm
@@ -360,7 +387,7 @@ mod tests {
     #[test]
     fn test_mint_swap_burn_detected() {
         let mut detector = JitDetector::new(1);
-        let pm = make_pm_with_v3_pool(pool_a(), 3000);
+        let pm = make_pm_with_v3_pool_and_liquidity(pool_a(), 3000, 500_000);
 
         // Tx 0: Mint on pool A
         detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
@@ -498,10 +525,11 @@ mod tests {
     #[test]
     fn test_profit_scales_with_swap_volume_and_fee() {
         let mut detector = JitDetector::new(1);
-        let pm = make_pm_with_v3_pool(pool_a(), 3000); // 0.3% fee
+        // Pool liquidity matches mint amount so the position captures 100% of fees
+        let pm = make_pm_with_v3_pool_and_liquidity(pool_a(), 3000, 500_000);
 
         detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
-        // Swap with 1_000_000 volume at 0.3% fee = 3_000 expected profit
+        // Swap with 1_000_000 volume at 0.3% fee = 3_000 expected profit (full share)
         detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 1_000_000, -997_000, 0)], None);
 
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);

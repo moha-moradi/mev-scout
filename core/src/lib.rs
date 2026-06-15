@@ -6,6 +6,7 @@ pub mod coingecko;
 pub mod cli;
 pub mod config;
 pub mod data;
+pub mod fact_check;
 pub mod fetch;
 pub mod mev;
 pub mod pool;

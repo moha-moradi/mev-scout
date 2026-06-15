@@ -67,7 +67,7 @@ async fn test_e2e_discover_ethereum_v2_pools() {
         assert_ne!(pool.token0, alloy::primitives::Address::ZERO, "token0 should not be zero");
         assert_ne!(pool.token1, alloy::primitives::Address::ZERO, "token1 should not be zero");
         assert_eq!(pool.dex_type, mev_scout_core::pool::dex_type::DexType::UniswapV2);
-        assert_eq!(pool.fee, 0, "V2 discovered pools should have fee=0");
+        assert_eq!(pool.fee, 30, "V2 discovered pools should default to 30 bps");
     }
 
     // Test cache roundtrip

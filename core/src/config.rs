@@ -20,8 +20,9 @@ pub struct ChainConfig {
     pub balancer_vault: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aave_v3_pool: Option<String>,
+    /// Uniswap V3 factory addresses for on-chain pool discovery
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uniswap_v3_factory: Option<String>,
+    pub uniswap_v3_factories: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pools_registry_path: Option<String>,
     /// Uniswap V2 factory addresses for on-chain pool discovery
@@ -99,6 +100,10 @@ pub struct Config {
     /// Keys are strategy names like "two_hop_arb", "sandwich", etc.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub gas_limits: std::collections::HashMap<String, u64>,
+    /// Maximum number of pool pairs per token for two-hop arbitrage search.
+    /// Higher values increase detection coverage but slow down pair computation.
+    #[serde(default = "default_max_pairs_per_token")]
+    pub max_pairs_per_token: usize,
 }
 
 fn default_chain() -> String {
@@ -137,6 +142,10 @@ fn default_cache_dir() -> String {
     "./cache".to_string()
 }
 
+fn default_max_pairs_per_token() -> usize {
+    50
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -159,6 +168,7 @@ impl Default for Config {
             config_path: None,
             coingecko_api_key: None,
             gas_limits: std::collections::HashMap::new(),
+            max_pairs_per_token: default_max_pairs_per_token(),
         }
     }
 }
@@ -178,7 +188,10 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 137,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x794a61358D6845594F94dc1DB02A252b5b4814aD".to_string()),
-            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
+                "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09".to_string(), // QuickSwap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(polygon_factories),
             pool_discovery_start_block: Some(0),
@@ -196,7 +209,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 43114,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x69FA688f1Dc47d4B5d8029D5a35FB7a548E0B9b0".to_string()),
-            uniswap_v3_factory: Some("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(avalanche_factories),
             pool_discovery_start_block: Some(0),
@@ -214,7 +229,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 56,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2".to_string()),
-            uniswap_v3_factory: Some("0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(bsc_factories),
             pool_discovery_start_block: Some(0),
@@ -231,7 +248,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 42161,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x794a61358D6845594F94dc1DB02A252b5b4814aD".to_string()),
-            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(arbitrum_factories),
             pool_discovery_start_block: Some(0),
@@ -248,7 +267,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 8453,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0xA238Dd80C259a72e81d7e4664a9801593F98d1c5".to_string()),
-            uniswap_v3_factory: Some("0x33128a8fC17869897dcE68Ed026d694621f6FDfD".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x33128a8fC17869897dcE68Ed026d694621f6FDfD".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(base_factories),
             pool_discovery_start_block: Some(0),
@@ -267,7 +288,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 1,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2".to_string()),
-            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(ethereum_factories),
             pool_discovery_start_block: Some(0),
@@ -284,7 +307,9 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             chain_id: 10,
             balancer_vault: Some("0xBA12222222228d8Ba445958a75a0704d566BF2C8".to_string()),
             aave_v3_pool: Some("0x794a61358D6845594F94dc1DB02A252b5b4814aD".to_string()),
-            uniswap_v3_factory: Some("0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string()),
+            uniswap_v3_factories: Some(vec![
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
+            ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(optimism_factories),
             pool_discovery_start_block: Some(0),

@@ -12,6 +12,7 @@ use crate::mev::two_hop::TwoHopArbDetector;
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
+use crate::fact_check::BlockReplayStats;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
 use crate::types::GasConfig;
@@ -29,7 +30,7 @@ use crate::types::GasConfig;
 /// Swap/Sync events emitted during replay.
 pub struct BacktestRunner {
     replayer: BlockReplayer,
-    pool_manager: PoolManager,
+    pub pool_manager: PoolManager,
     gas_config: GasConfig,
 }
 
@@ -44,6 +45,13 @@ impl BacktestRunner {
         pool_manager: PoolManager,
         gas_config: GasConfig,
     ) -> Self {
+        if gas_config.priority_fee_gwei == 0.0 {
+            tracing::warn!(
+                "priority_fee_gwei is 0 — profit estimates will overestimate \
+                 real-world returns. Set --priority-fee to a realistic value \
+                 (e.g. 1-5 gwei) for accurate estimates."
+            );
+        }
         BacktestRunner {
             replayer,
             pool_manager,
@@ -128,10 +136,11 @@ impl BacktestRunner {
     /// 3. JIT liquidity (Mint→Swap→Burn pattern)
     /// 4. Sandwich attacks (frontrun/victim/backrun triple)
     /// 5. JIT+Arb hybrid (Mint + cross-pool swap by same sender)
-    pub fn run_block(&mut self, block_num: u64) -> anyhow::Result<Vec<MevOpportunity>> {
+    pub fn run_block(&mut self, block_num: u64) -> anyhow::Result<(Vec<MevOpportunity>, BlockReplayStats)> {
         let (block_data, txs) = self.replayer.load_block_data(block_num)?;
+        let total_tx_count = txs.len();
         if txs.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0 }));
         }
 
         let timestamp = block_data.timestamp;
@@ -156,17 +165,22 @@ impl BacktestRunner {
         // Shared cell bridging TxData.from from filter closure to on_tx closure
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
+        let dex_tx_count: RefCell<usize> = RefCell::new(0);
 
         self.replayer.replay_each_filtered(
             block_num,
             |tx, receipt_logs| {
                 *current_tx_from.borrow_mut() = Some(tx.from);
-                tx.to.is_some_and(|to| {
+                let matched = tx.to.is_some_and(|to| {
                     pool_addrs.contains(&to) || token_addrs.contains(&to)
                 })
                     || receipt_logs.iter().any(|l| {
                         pool_addrs.contains(&l.address) || token_addrs.contains(&l.address)
-                    })
+                    });
+                if matched {
+                    *dex_tx_count.borrow_mut() += 1;
+                }
+                matched
             },
             |i, tx, _db| {
                 let mut pm = pool_manager.borrow_mut();
@@ -235,11 +249,9 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(sandwich_opps);
 
-                drop(pm);
-
-                // JitArb detector
-                jit_arb_detector.process_tx(i, &tx.logs, sender);
-                let jit_arb_opps = jit_arb_detector.detect(timestamp, &pool_manager.borrow(), base_fee_per_gas, &self.gas_config);
+                // JitArb detector — use &pm (auto-derefs to &PoolManager)
+                jit_arb_detector.process_tx(i, &tx.logs, sender, &pm);
+                let jit_arb_opps = jit_arb_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
                 if !jit_arb_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JitArb opportunities",
@@ -258,7 +270,11 @@ impl BacktestRunner {
         all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
 
         self.pool_manager = pool_manager.into_inner();
-        Ok(all_opportunities)
+        Ok((all_opportunities, BlockReplayStats {
+            block_number: block_num,
+            total_tx_count,
+            dex_tx_count: dex_tx_count.into_inner(),
+        }))
     }
 
     /// Run backtest over a resolved block range, collecting all detected
@@ -274,24 +290,26 @@ impl BacktestRunner {
     pub fn run_range(
         &mut self,
         resolved: &ResolvedRange,
-    ) -> anyhow::Result<Vec<MevOpportunity>> {
+    ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let mut all = Vec::new();
+        let mut all_stats = Vec::new();
         for block_num in resolved.start_block..=resolved.end_block {
             match self.run_block(block_num) {
-                Ok(opps) => {
+                Ok((opps, stats)) => {
                     tracing::info!(
                         "Block {} done: {} opportunities",
                         block_num,
                         opps.len()
                     );
                     all.extend(opps);
+                    all_stats.push(stats);
                 }
                 Err(e) => {
                     tracing::error!("Block {} failed: {:?}", block_num, e);
                 }
             }
         }
-        Ok(all)
+        Ok((all, all_stats))
     }
 }
 

@@ -75,16 +75,19 @@ impl ChainName {
         }
     }
 
-    /// Default Uniswap V3 factory address for this chain, if any.
-    pub fn default_uniswap_v3_factory(&self) -> Option<&'static str> {
+    /// Default Uniswap V3 factory addresses for this chain.
+    pub fn default_uniswap_v3_factories(&self) -> &'static [&'static str] {
         match self {
-            ChainName::Polygon => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
-            ChainName::Avalanche => Some("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"),
-            ChainName::Bsc => Some("0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
-            ChainName::Arbitrum => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
-            ChainName::Base => Some("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),
-            ChainName::Ethereum => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
-            ChainName::Optimism => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+            ChainName::Polygon => &[
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
+                "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09", // QuickSwap V3
+            ],
+            ChainName::Avalanche => &["0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"],
+            ChainName::Bsc => &["0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"],
+            ChainName::Arbitrum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+            ChainName::Base => &["0x33128a8fC17869897dcE68Ed026d694621f6FDfD"],
+            ChainName::Ethereum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+            ChainName::Optimism => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
         }
     }
 

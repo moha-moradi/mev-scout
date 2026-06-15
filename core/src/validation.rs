@@ -235,13 +235,13 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> Resu
         let contract_field = match provider {
             FlashLoanProvider::Balancer => "balancer_vault",
             FlashLoanProvider::Aave => "aave_v3_pool",
-            FlashLoanProvider::Uniswap => "uniswap_v3_factory",
+            FlashLoanProvider::Uniswap => "uniswap_v3_factories",
             _ => unreachable!(),
         };
         let has_contract = match provider {
             FlashLoanProvider::Balancer => chain_config.balancer_vault.is_some(),
             FlashLoanProvider::Aave => chain_config.aave_v3_pool.is_some(),
-            FlashLoanProvider::Uniswap => chain_config.uniswap_v3_factory.is_some(),
+            FlashLoanProvider::Uniswap => chain_config.uniswap_v3_factories.as_ref().is_some_and(|f| !f.is_empty()),
             _ => true,
         };
         if !has_contract {

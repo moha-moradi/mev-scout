@@ -251,6 +251,11 @@ impl PoolManager {
         }
     }
 
+    /// Set the maximum number of pool pairs per token for arbitrage pair computation.
+    pub fn set_max_pairs_per_token(&mut self, max: usize) {
+        self.max_pairs_per_token = max;
+    }
+
     /// Add a pool and update the token index.
     ///
     /// Invalidates the cached arbitrage pairs (recomputed on next `arbitrage_pairs()` call).
@@ -534,11 +539,8 @@ impl PoolManager {
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
         if let Ok(result) = Self::call_with_retry(rpc, pool, data, block, 3).await {
             if result.len() >= 64 {
-                let mut buf = [0u8; 32];
-                buf.copy_from_slice(&result[..32]);
-                let r0 = U256::from_be_bytes(buf).as_limbs()[0] as u128;
-                buf.copy_from_slice(&result[32..64]);
-                let r1 = U256::from_be_bytes(buf).as_limbs()[0] as u128;
+                let r0 = Self::decode_u128_from_abi_word(&result[..32]);
+                let r1 = Self::decode_u128_from_abi_word(&result[32..64]);
                 return Some((r0, r1));
             }
         }
@@ -557,6 +559,14 @@ impl PoolManager {
         let r0 = (lo_r0[0] as u128) | ((lo_r0[1] as u128) << 64);
         let r1 = (lo_r1[0] as u128) | ((lo_r1[1] as u128) << 64);
         (r0, r1)
+    }
+
+    /// Decode a u128 from a 32-byte ABI-encoded word (right-aligned uint128/uint112).
+    /// Handles values up to 2^128-1 without truncation.
+    fn decode_u128_from_abi_word(word: &[u8]) -> u128 {
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&word[16..32]);
+        u128::from_be_bytes(buf)
     }
 
     /// Fallback: fetch V2 reserves via eth_getStorageAt slot 6.
@@ -585,8 +595,7 @@ impl PoolManager {
                 let mut tick_bytes = [0u8; 4];
                 tick_bytes.copy_from_slice(&slot0[60..64]);
                 let tick = i32::from_be_bytes(tick_bytes);
-                buf.copy_from_slice(&liq[..32]);
-                let liquidity = U256::from_be_bytes(buf).as_limbs()[0] as u128;
+                let liquidity = Self::decode_u128_from_abi_word(&liq[..32]);
                 return Some((sqrt_price_x96, tick, liquidity));
             }
         }

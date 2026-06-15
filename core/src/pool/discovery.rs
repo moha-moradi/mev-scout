@@ -78,7 +78,7 @@ pub async fn discover_v2_pools(
             address: pair,
             token0,
             token1,
-            fee: 0,
+            fee: 30, // Default V2 fee 0.3% (30 bps)
             tick_spacing: None,
             dex_type: DexType::UniswapV2,
             creation_block: log.block_number.unwrap_or(to_block),

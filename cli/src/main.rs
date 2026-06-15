@@ -1,6 +1,8 @@
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use alloy::primitives::{keccak256, Address};
 use clap::Parser;
 use comfy_table::Table;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -9,9 +11,10 @@ use tracing_subscriber::EnvFilter;
 use mev_scout_core::cache::{CacheStore, RunManifest};
 use mev_scout_core::cli::{Cli, Command};
 use mev_scout_core::config::{CliOverrides, Config};
+use mev_scout_core::fact_check::{BlockReplayStats, compute_block_summaries, FactCheckReport, verify_opportunities};
 use mev_scout_core::fetch::Fetcher;
 
-use mev_scout_core::pool::state::PoolManager;
+use mev_scout_core::pool::state::{PoolManager, PoolState};
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::RpcClient;
@@ -146,6 +149,24 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             cache_dir: Some(args.cache_dir.clone()),
             coingecko_api_key: None,
         },
+        Command::FactCheck(_) => CliOverrides {
+            days: None,
+            blocks: None,
+            block: None,
+            from_block: None,
+            to_block: None,
+            chain: None,
+            rpc_url: None,
+            flash_loan_provider: None,
+            strategies: None,
+            gas_model: None,
+            gas_limit: None,
+            priority_fee_gwei: None,
+            output: None,
+            export_path: None,
+            cache_dir: None,
+            coingecko_api_key: None,
+        },
     }
 }
 
@@ -188,24 +209,89 @@ fn save_results_json(
     Ok(())
 }
 
-fn render_results_table(all_opportunities: &[mev_scout_core::mev::opportunity::MevOpportunity]) {
-    let mut table = Table::new();
-    table.set_header(vec![
-        "Block", "Tx", "Strategy",
-        "Input", "Profit (token_out)", "Gas (wei)",
-    ]);
+fn pool_name(pm: &PoolManager, addr: &alloy::primitives::Address) -> String {
+    pm.get(addr)
+        .map(|ps| match ps {
+            PoolState::UniswapV2(s) => &s.info,
+            PoolState::UniswapV3(s) => &s.info,
+            PoolState::Curve(s) => &s.info,
+            PoolState::Balancer(s) => &s.info,
+        })
+        .and_then(|info| info.name.clone())
+        .unwrap_or_else(|| format!("{}", addr))
+}
 
-    for opp in all_opportunities {
-        table.add_row(vec![
-            format!("{}", opp.block_number),
-            format!("{}", opp.tx_index),
-            format!("{}", opp.strategy),
-            format!("{}", opp.input_amount),
-            format!("{}", opp.expected_profit),
-            format!("{}", opp.gas_cost_wei),
+fn render_results_table(all_opportunities: &[mev_scout_core::mev::opportunity::MevOpportunity], pool_manager: Option<&PoolManager>) {
+    let mut table = Table::new();
+
+    if pool_manager.is_some() {
+        table.set_header(vec![
+            "Block", "Tx", "Strategy", "Pool A / Pool B",
+            "Input", "Profit (token_out)", "Gas (wei)",
         ]);
+
+        for opp in all_opportunities {
+            let pm = pool_manager.unwrap();
+            let name_a = pool_name(pm, &opp.pool_a);
+            let name_b = if opp.pool_b == alloy::primitives::Address::ZERO {
+                String::new()
+            } else {
+                pool_name(pm, &opp.pool_b)
+            };
+            table.add_row(vec![
+                format!("{}", opp.block_number),
+                format!("{}", opp.tx_index),
+                format!("{}", opp.strategy),
+                if name_b.is_empty() { name_a } else { format!("{} / {}", name_a, name_b) },
+                format!("{}", opp.input_amount),
+                format!("{}", opp.expected_profit),
+                format!("{}", opp.gas_cost_wei),
+            ]);
+        }
+    } else {
+        table.set_header(vec![
+            "Block", "Tx", "Strategy",
+            "Input", "Profit (token_out)", "Gas (wei)",
+        ]);
+
+        for opp in all_opportunities {
+            table.add_row(vec![
+                format!("{}", opp.block_number),
+                format!("{}", opp.tx_index),
+                format!("{}", opp.strategy),
+                format!("{}", opp.input_amount),
+                format!("{}", opp.expected_profit),
+                format!("{}", opp.gas_cost_wei),
+            ]);
+        }
     }
 
+    println!("{table}");
+}
+
+fn render_block_summary_table(summaries: &[BlockReplayStats]) {
+    if summaries.len() <= 1 {
+        return;
+    }
+    let mut table = Table::new();
+    table.set_header(vec!["Block", "Txs", "DEX txs"]);
+    let mut total_tx = 0usize;
+    let mut total_dex = 0usize;
+    for s in summaries {
+        total_tx += s.total_tx_count;
+        total_dex += s.dex_tx_count;
+        table.add_row(vec![
+            format!("{}", s.block_number),
+            format!("{}", s.total_tx_count),
+            format!("{}", s.dex_tx_count),
+        ]);
+    }
+    table.add_row(vec![
+        format!("{}", "Total"),
+        format!("{}", total_tx),
+        format!("{}", total_dex),
+    ]);
+    println!("\nBlock Summary");
     println!("{table}");
 }
 
@@ -224,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Dispatch
     match &cli.command {
-        Command::Run(_) => {
+        Command::Run(args) => {
             let validation_result = match validation::validate_and_resolve(&config) {
                 Ok(r) => r,
                 Err(e) => {
@@ -260,9 +346,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 let mut v3_addrs = Vec::new();
-                if let Some(factory) = &validation_result.chain_config.uniswap_v3_factory {
-                    if let Ok(addr) = factory.parse::<alloy::primitives::Address>() {
-                        v3_addrs.push(addr);
+                if let Some(factories) = &validation_result.chain_config.uniswap_v3_factories {
+                    for s in factories {
+                        if let Ok(addr) = s.parse::<alloy::primitives::Address>() {
+                            v3_addrs.push(addr);
+                        }
                     }
                 }
                 let batch_size = validation_result.chain_config.pool_discovery_batch_size.unwrap_or(10);
@@ -306,6 +394,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Init pool manager (needs cache before it's moved into replayer)
             let mut pool_manager = PoolManager::new();
+            pool_manager.set_max_pairs_per_token(config.max_pairs_per_token);
             let prev_block = resolved.start_block.saturating_sub(1);
             if !validation_result.strategies.is_empty() {
                 BacktestRunner::init_pools(
@@ -332,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
             let start = std::time::Instant::now();
-            let all_opportunities = runner.run_range(&resolved)?;
+            let (all_opportunities, block_stats) = runner.run_range(&resolved)?;
             let elapsed = start.elapsed();
 
             // Save results to JSON
@@ -365,7 +454,40 @@ async fn main() -> anyhow::Result<()> {
                     all_opportunities.len(),
                     elapsed.as_secs_f64()
                 );
-                render_results_table(&all_opportunities);
+                render_results_table(&all_opportunities, Some(&runner.pool_manager));
+            }
+
+            // Block summary table
+            render_block_summary_table(&block_stats);
+
+            // Fact-check if requested
+            if args.fact_check && !all_opportunities.is_empty() {
+                println!("\nFact-Check Report:");
+                let checks = verify_opportunities(&all_opportunities);
+                let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
+                let failed = checks.len().saturating_sub(passed);
+                let summaries = compute_block_summaries(&all_opportunities, &block_stats);
+                let report = FactCheckReport {
+                    run_id: run_id.clone(),
+                    chain: validation_result.chain_name.to_string(),
+                    block_count: block_stats.len(),
+                    total_opportunities: all_opportunities.len(),
+                    passed,
+                    failed,
+                    block_summaries: summaries,
+                    opportunity_checks: checks,
+                };
+
+                // Print summary
+                println!("  Opportunities: {} total, {} passed, {} failed", report.total_opportunities, report.passed, report.failed);
+
+                // Save report
+                let report_path = std::path::Path::new(&config.export_path)
+                    .join(format!("{}_factcheck.json", run_id));
+                if let Ok(json) = serde_json::to_string_pretty(&report) {
+                    let _ = std::fs::write(&report_path, json);
+                    println!("  Report saved to {}", report_path.display());
+                }
             }
         }
         Command::Fetch(args) => {
@@ -534,7 +656,7 @@ async fn main() -> anyhow::Result<()> {
                     if results_file.opportunities.is_empty() {
                         println!("No MEV opportunities in this run.");
                     } else {
-                        render_results_table(&results_file.opportunities);
+                        render_results_table(&results_file.opportunities, None);
                     }
                 }
                 OutputFormat::Csv => {
@@ -586,6 +708,20 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
 
+            // Load pool info for DEX interaction analysis before cache is moved into replayer
+            let pool_map: HashMap<Address, mev_scout_core::pool::state::PoolInfo> = if args.analyze {
+                let mut map = HashMap::new();
+                if let Ok(pools) = cache.list_discovered_pools() {
+                    for pool in pools {
+                        map.insert(pool.address, pool);
+                    }
+                }
+                tracing::info!("Loaded {} pools for DEX analysis", map.len());
+                map
+            } else {
+                HashMap::new()
+            };
+
             let replayer = BlockReplayer::new(
                 tokio::runtime::Handle::current(),
                 cache,
@@ -634,6 +770,43 @@ async fn main() -> anyhow::Result<()> {
                     "  {:<4} {:<66} {:<6} {:<8} {}",
                     r.index, r.tx_hash, status_str, r.gas_used, receipt_str
                 );
+
+                if args.analyze {
+                    let interactions: Vec<String> = r.logs.iter().filter_map(|log| {
+                        pool_map.get(&log.address).map(|info| {
+                            let event_type = if log.topics.is_empty() {
+                                "Unknown"
+                            } else {
+                                let t0 = log.topics[0];
+                                if t0 == keccak256(b"Swap(address,uint256,uint256,uint256,uint256,address)") {
+                                    "Swap"
+                                } else if t0 == keccak256(b"Sync(uint112,uint112)") {
+                                    "Sync"
+                                } else if t0 == keccak256(b"Swap(address,address,int256,int256,uint160,uint128,int24)") {
+                                    "Swap"
+                                } else if t0 == keccak256(b"Mint(address,address,int24,int24,uint128,uint256,uint256)") {
+                                    "Mint"
+                                } else if t0 == keccak256(b"Burn(address,address,int24,int24,uint128,uint256,uint256)") {
+                                    "Burn"
+                                } else {
+                                    "Unknown"
+                                }
+                            };
+                            let name = info.name.clone().unwrap_or_else(|| format!("{}", info.address));
+                            format!("{} — {}", name, event_type)
+                        })
+                    }).collect();
+
+                    if interactions.is_empty() {
+                        println!("         (no DEX interactions)");
+                    } else {
+                        println!("         DEX interactions:");
+                        for (j, line) in interactions.iter().enumerate() {
+                            let prefix = if j == interactions.len() - 1 { "         └ " } else { "         ├ " };
+                            println!("{}{}", prefix, line);
+                        }
+                    }
+                }
             }
 
             println!();
@@ -694,16 +867,22 @@ async fn main() -> anyhow::Result<()> {
             }
             let mut v3_addrs = Vec::new();
             if let Some(v3_str) = &args.v3_factory {
-                if let Ok(addr) = v3_str.trim().parse::<Address>() {
-                    v3_addrs.push(addr);
+                for s in v3_str.split(',') {
+                    if let Ok(addr) = s.trim().parse::<Address>() {
+                        v3_addrs.push(addr);
+                    }
                 }
-            } else if let Some(factory) = chain_config.and_then(|c| c.uniswap_v3_factory.as_ref()) {
-                if let Ok(addr) = factory.parse::<Address>() {
-                    v3_addrs.push(addr);
+            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v3_factories.as_ref()) {
+                for s in factories {
+                    if let Ok(addr) = s.parse::<Address>() {
+                        v3_addrs.push(addr);
+                    }
                 }
-            } else if let Some(factory) = chain_name.default_uniswap_v3_factory() {
-                if let Ok(addr) = factory.parse::<Address>() {
-                    v3_addrs.push(addr);
+            } else {
+                for s in chain_name.default_uniswap_v3_factories() {
+                    if let Ok(addr) = s.parse::<Address>() {
+                        v3_addrs.push(addr);
+                    }
                 }
             }
 
@@ -796,6 +975,70 @@ async fn main() -> anyhow::Result<()> {
                     let _ = cache.put_discovery_cursor(&factory, to);
                 }
                 println!("  Saved to cache: {}", args.cache_dir);
+            }
+        }
+        Command::FactCheck(args) => {
+            let export_path = &config.export_path;
+            let dir = std::path::Path::new(export_path);
+            let run_id = &args.run_id;
+
+            let path = dir.join(format!("{}.json", run_id));
+            if !path.exists() {
+                eprintln!("Error: results file not found: {}", path.display());
+                std::process::exit(1);
+            }
+
+            let json_str = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to read '{}': {}", path.display(), e))?;
+            let results_file: ResultsFile = serde_json::from_str(&json_str)
+                .map_err(|e| anyhow::anyhow!("Failed to parse '{}': {}", path.display(), e))?;
+
+            println!();
+            println!("  Fact-Check Report for {}", run_id);
+            println!("  Chain:         {}", results_file.chain);
+            println!("  Block range:   {}–{}", results_file.start_block, results_file.end_block);
+            println!("  Opportunities: {}", results_file.opportunities.len());
+            println!();
+
+            let checks = verify_opportunities(&results_file.opportunities);
+            let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
+            let failed = checks.len().saturating_sub(passed);
+
+            // Print per-opportunity checks
+            let mut check_table = Table::new();
+            check_table.set_header(vec!["Block", "Tx", "Strategy", "Profit > Gas", "Victim Tx", "Backrun Tx"]);
+            for c in &checks {
+                let profit_check = if c.profit_gt_gas { "✓" } else { "✗" };
+                let victim_str = c.victim_tx_index.map(|i| i.to_string()).unwrap_or_default();
+                let backrun_str = c.backrun_tx_index.map(|i| i.to_string()).unwrap_or_default();
+                check_table.add_row(vec![
+                    format!("{}", c.block_number),
+                    format!("{}", c.tx_index),
+                    c.strategy.clone(),
+                    profit_check.to_string(),
+                    victim_str,
+                    backrun_str,
+                ]);
+            }
+            println!("{}", check_table);
+            println!();
+            println!("  Summary: {} total, {} passed, {} failed", checks.len(), passed, failed);
+
+            // Save report
+            let report = FactCheckReport {
+                run_id: run_id.clone(),
+                chain: results_file.chain.clone(),
+                block_count: (results_file.end_block.saturating_sub(results_file.start_block) + 1) as usize,
+                total_opportunities: results_file.opportunities.len(),
+                passed,
+                failed,
+                block_summaries: Vec::new(),
+                opportunity_checks: checks,
+            };
+            let report_path = dir.join(format!("{}_factcheck.json", run_id));
+            if let Ok(json) = serde_json::to_string_pretty(&report) {
+                let _ = std::fs::write(&report_path, json);
+                println!("  Report saved to {}", report_path.display());
             }
         }
     }

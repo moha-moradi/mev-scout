@@ -43,6 +43,9 @@ pub enum Command {
     /// Found pools are printed to stdout and optionally saved to the sled cache.
     Discover(DiscoverArgs),
 
+    /// Verify a previous run's results
+    FactCheck(FactCheckArgs),
+
 }
 
 #[derive(Args, Debug, Clone)]
@@ -120,6 +123,10 @@ pub struct RunArgs {
     /// Block/state cache directory
     #[arg(long, default_value = "./cache", value_name = "PATH", help_heading = "Output")]
     pub cache_dir: String,
+
+    /// Print detailed fact-check report after the run
+    #[arg(long, help_heading = "Output")]
+    pub fact_check: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -151,6 +158,21 @@ pub struct ReplayArgs {
     /// Block/state cache directory
     #[arg(long, default_value = "./cache", value_name = "PATH")]
     pub cache_dir: String,
+
+    /// Show DEX interaction analysis per transaction
+    #[arg(long)]
+    pub analyze: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct FactCheckArgs {
+    /// Run ID to fact-check (e.g. "run_1712345678")
+    #[arg(required = true, value_name = "RUN_ID")]
+    pub run_id: String,
+
+    /// Re-load block data from cache and re-verify pool state (requires cached blocks)
+    #[arg(long)]
+    pub re_verify: bool,
 }
 
 #[derive(Args, Debug, Clone)]

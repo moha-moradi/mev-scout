@@ -839,7 +839,7 @@ fn test_jit_arb_detection_synthetic() {
         v3_mint_log(pool_p, -100, 100, 500_000),
         v3_swap_log(pool_p),
         v3_swap_log(pool_q),
-    ], Some(sender));
+    ], Some(sender), &pm);
 
     let opps = detector.detect(12345, &pm, 0, &gas_cfg);
     assert_eq!(opps.len(), 1, "Should detect JitArb");

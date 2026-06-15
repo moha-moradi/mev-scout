@@ -5,7 +5,9 @@ use alloy::primitives::{b256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::decoders::{decode_v3_swap, V3_SWAP_TOPIC};
+use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::PoolManager;
+use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
 
@@ -151,26 +153,43 @@ impl SandwichDetector {
             SwapDirection::Token1ForToken0 => token_in,
         };
         if pool_manager.is_wrapped_native(&native_token) {
-            // Use a reference pool if available (not the attacked pool)
+            // Find a reference pool that trades profit_token ↔ native_token
             if let Some(ref_pool) = pool_manager.find_pair_pool(&profit_token, &native_token) {
-                if let Some(state) = pool_manager.get_v2_state(&ref_pool) {
-                    let (reserve_sell, reserve_buy) =
-                        if ref_pool != front.pool {
-                            if state.info.token0 == profit_token {
-                                (state.reserve0, state.reserve1)
+                match pool_manager.get(&ref_pool) {
+                    Some(crate::pool::state::PoolState::UniswapV2(v2)) => {
+                        let (reserve_in, reserve_out) =
+                            if v2.info.token0 == profit_token {
+                                (v2.reserve0, v2.reserve1)
                             } else {
-                                (state.reserve1, state.reserve0)
-                            }
-                        } else {
-                            // Fall back to the attacked pool's own reserves
-                            let (r_sell, r_buy) = match front.direction {
-                                SwapDirection::Token0ForToken1 => (state.reserve0, state.reserve1),
-                                SwapDirection::Token1ForToken0 => (state.reserve1, state.reserve0),
+                                (v2.reserve1, v2.reserve0)
                             };
-                            (r_sell, r_buy)
-                        };
-                    if reserve_sell > 0 {
-                        return U256::from(profit_raw.saturating_mul(reserve_buy).saturating_div(reserve_sell));
+                        if let Some(converted) = constant_product_output_amount(
+                            profit_raw, reserve_in, reserve_out, v2.info.fee,
+                        ) {
+                            return U256::from(converted);
+                        }
+                    }
+                    Some(crate::pool::state::PoolState::UniswapV3(v3)) => {
+                        let zero_for_one = v3.info.token0 == profit_token;
+                        if let Some(converted) = quote_v3_exact_in(v3, profit_raw, zero_for_one) {
+                            return U256::from(converted);
+                        }
+                    }
+                    _ => {
+                        // Fallback: spot reserve ratio for unsupported pool types
+                        if let Some(state) = pool_manager.get_v2_state(&ref_pool) {
+                            let (reserve_sell, reserve_buy) =
+                                if state.info.token0 == profit_token {
+                                    (state.reserve0, state.reserve1)
+                                } else {
+                                    (state.reserve1, state.reserve0)
+                                };
+                            if reserve_sell > 0 {
+                                return U256::from(
+                                    profit_raw.saturating_mul(reserve_buy).saturating_div(reserve_sell)
+                                );
+                            }
+                        }
                     }
                 }
             }
