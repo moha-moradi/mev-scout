@@ -167,7 +167,7 @@ fn default_chains() -> HashMap<String, ChainConfig> {
     let mut m = HashMap::new();
     let polygon_factories = vec![
         "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32".to_string(), // QuickSwap
-        "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b".to_string(), // SushiSwap
+        "0xc35DADB65012eC5796536bD9864eD8773aBc74C4".to_string(), // SushiSwap
         "0xCf083Be4164828f00cAE704EC15a36D711491284".to_string(), // ApeSwap
         "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423B".to_string(), // DFYN
         "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d".to_string(), // Meshswap
