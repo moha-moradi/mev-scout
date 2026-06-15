@@ -129,6 +129,10 @@ pub struct FetchArgs {
 
     #[command(flatten)]
     pub chain_args: ChainArgs,
+
+    /// Block/state cache directory
+    #[arg(long, default_value = "./cache", value_name = "PATH")]
+    pub cache_dir: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -186,7 +190,7 @@ pub struct DiscoverArgs {
     pub to_block: u64,
 
     /// Batch size for each getLogs request
-    #[arg(long, default_value = "50000", value_name = "NUMBER")]
+    #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,
 
     /// Save discovered pools to the sled cache

@@ -1,16 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-  
     "envsitter-guard",
     "opencode-worktree",
-    "superpowers@git+https://github.com/obra/superpowers.git",
-    "opencode-helicone-session",
     "opencode-skills",
-    "@tarquinen/opencode-dcp@latest",
     "@plannotator/opencode",
-    "@gotgenes/opencode-agent-identity",
-    "opencode-mem",
-    "opencode-froggy"
+    "@tarquinen/opencode-dcp@latest",
+    "@opencode/pty-server",
+    "@opencode/websearch-cited"
   ]
 }

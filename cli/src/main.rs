@@ -71,7 +71,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: None,
+            cache_dir: Some(args.cache_dir.clone()),
             coingecko_api_key: None,
         },
         Command::Replay(args) => CliOverrides {
@@ -265,7 +265,7 @@ async fn main() -> anyhow::Result<()> {
                         v3_addrs.push(addr);
                     }
                 }
-                let batch_size = validation_result.chain_config.pool_discovery_batch_size.unwrap_or(50_000);
+                let batch_size = validation_result.chain_config.pool_discovery_batch_size.unwrap_or(10);
                 if !v2_addrs.is_empty() || !v3_addrs.is_empty() {
                     let discovered = mev_scout_core::pool::discovery::discover_pools(
                         &rpc, &cache, &v2_addrs, &v3_addrs, start_block,
@@ -368,26 +368,48 @@ async fn main() -> anyhow::Result<()> {
                 render_results_table(&all_opportunities);
             }
         }
-        Command::Fetch(_) => {
-            let validation_result = match validation::validate_and_resolve_for(&config, false) {
-                Ok(r) => r,
+        Command::Fetch(args) => {
+            use mev_scout_core::types::ChainName;
+
+            let chain_name: ChainName = match args.chain_args.chain.parse() {
+                Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
                 }
             };
 
-            // Build RPC client
-            let rpc_url = config.effective_rpc_url(validation_result.chain_name);
-            let rpc = RpcClient::new(&rpc_url, validation_result.chain_config.chain_id)?;
-            rpc.check_connection(validation_result.chain_config.chain_id).await?;
+            let rpc_url = match &args.chain_args.rpc_url {
+                Some(url) if !url.trim().is_empty() && (url.starts_with("http://") || url.starts_with("https://")) => url.clone(),
+                Some(url) => {
+                    eprintln!("Error: --rpc URL '{}' must be non-empty and start with http:// or https://.", url);
+                    std::process::exit(1);
+                }
+                None => chain_name.public_rpc_url().to_string(),
+            };
 
-            // Open cache
-            let cache = CacheStore::open(&config.cache_dir, validation_result.chain_config.chain_id)?;
+            let chain_id = chain_name.chain_id();
+            let rpc = RpcClient::new(&rpc_url, chain_id)?;
+            rpc.check_connection(chain_id).await?;
 
-            // Resolve block range
+            let cache = CacheStore::open(&args.cache_dir, chain_id)?;
+
+            let range_mode = match validation::resolve_block_range(
+                args.block_range.days,
+                args.block_range.blocks,
+                args.block_range.block,
+                args.block_range.from_block,
+                args.block_range.to_block,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
             let resolver = RangeResolver::new(rpc.clone());
-            let resolved = resolver.resolve(&validation_result.range_mode).await?;
+            let resolved = resolver.resolve(&range_mode).await?;
 
             let run_id = format!(
                 "run_{}",
@@ -397,10 +419,9 @@ async fn main() -> anyhow::Result<()> {
                     .as_secs()
             );
 
-            // Create and store manifest
             let manifest = RunManifest {
                 run_id: run_id.clone(),
-                chain: validation_result.chain_name.to_string(),
+                chain: chain_name.to_string(),
                 start_block: resolved.start_block,
                 end_block: resolved.end_block,
                 resolved_at: SystemTime::now()
@@ -417,7 +438,6 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", resolved.summary());
             println!();
 
-            // Fetch blocks
             let fetcher = Fetcher::new(rpc, cache);
 
             let pb = ProgressBar::new(resolved.block_count);
@@ -438,7 +458,6 @@ async fn main() -> anyhow::Result<()> {
             println!("  Cached:       {}", summary.cached);
             println!("  Elapsed:      {:.2}s", summary.elapsed_secs);
 
-            // Integrity check
             if !summary.missing_after_fetch.is_empty() {
                 println!(
                     "  Missing:      {} blocks — auto-refetching...",
@@ -649,7 +668,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let rpc_url = config.effective_rpc_url(chain_name);
             let chain_config = config.chains.get(&args.chain_args.chain);
-            let chain_id = chain_config.map(|c| c.chain_id).unwrap_or(1);
+            let chain_id = chain_name.chain_id();
             let rpc = RpcClient::new(&rpc_url, chain_id)?;
             rpc.check_connection(chain_id).await?;
 
@@ -660,16 +679,36 @@ async fn main() -> anyhow::Result<()> {
                         v2_addrs.push(addr);
                     }
                 }
+            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v2_factories.as_ref()) {
+                for s in factories {
+                    if let Ok(addr) = s.parse::<Address>() {
+                        v2_addrs.push(addr);
+                    }
+                }
+            } else {
+                for s in chain_name.default_uniswap_v2_factories() {
+                    if let Ok(addr) = s.parse::<Address>() {
+                        v2_addrs.push(addr);
+                    }
+                }
             }
             let mut v3_addrs = Vec::new();
             if let Some(v3_str) = &args.v3_factory {
                 if let Ok(addr) = v3_str.trim().parse::<Address>() {
                     v3_addrs.push(addr);
                 }
+            } else if let Some(factory) = chain_config.and_then(|c| c.uniswap_v3_factory.as_ref()) {
+                if let Ok(addr) = factory.parse::<Address>() {
+                    v3_addrs.push(addr);
+                }
+            } else if let Some(factory) = chain_name.default_uniswap_v3_factory() {
+                if let Ok(addr) = factory.parse::<Address>() {
+                    v3_addrs.push(addr);
+                }
             }
 
             if v2_addrs.is_empty() && v3_addrs.is_empty() {
-                eprintln!("Error: at least one of --v2-factories or --v3-factory is required");
+                eprintln!("Error: no factory addresses found for chain '{}'", args.chain_args.chain);
                 std::process::exit(1);
             }
 

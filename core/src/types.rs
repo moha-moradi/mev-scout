@@ -40,6 +40,54 @@ impl ChainName {
         }
     }
 
+    /// Default Uniswap V2 factory addresses for this chain (built-in, no config file needed).
+    pub fn default_uniswap_v2_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Polygon => vec![
+                "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32", // QuickSwap
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+                "0xCf083Be4164828f00cAE704EC15a36D711491284", // ApeSwap
+                "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423B", // DFYN
+                "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d", // Meshswap
+            ],
+            ChainName::Avalanche => vec![
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+                "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe V1
+            ],
+            ChainName::Bsc => vec![
+                "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+            ],
+            ChainName::Arbitrum => vec![
+                "0x6EcCab422D763aC031210895C81787E87B43A652", // Camelot V2
+            ],
+            ChainName::Base => vec![
+                "0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14", // Aerodrome
+            ],
+            ChainName::Ethereum => vec![
+                "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // Uniswap V2
+                "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", // SushiSwap
+                "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9", // ShibaSwap
+            ],
+            ChainName::Optimism => vec![
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+            ],
+        }
+    }
+
+    /// Default Uniswap V3 factory address for this chain, if any.
+    pub fn default_uniswap_v3_factory(&self) -> Option<&'static str> {
+        match self {
+            ChainName::Polygon => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+            ChainName::Avalanche => Some("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"),
+            ChainName::Bsc => Some("0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
+            ChainName::Arbitrum => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+            ChainName::Base => Some("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),
+            ChainName::Ethereum => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+            ChainName::Optimism => Some("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+        }
+    }
+
     pub fn all() -> &'static [ChainName] {
         &[
             ChainName::Polygon,

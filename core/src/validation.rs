@@ -89,28 +89,36 @@ fn count_set_flags(cfg: &Config) -> Vec<&'static str> {
     flags
 }
 
-fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
-    let active = count_set_flags(cfg);
+/// Resolve a `RangeMode` from individual block range CLI arguments.
+/// Reusable across subcommands that accept `BlockRangeArgs`.
+pub fn resolve_block_range(
+    days: Option<u64>,
+    blocks: Option<u64>,
+    block: Option<u64>,
+    from_block: Option<u64>,
+    to_block: Option<u64>,
+) -> Result<RangeMode, ValidationError> {
+    let mut flags = Vec::new();
+    if days.is_some() { flags.push("--days"); }
+    if blocks.is_some() { flags.push("--blocks"); }
+    if block.is_some() { flags.push("--block"); }
+    if from_block.is_some() || to_block.is_some() { flags.push("--from-block/--to-block"); }
 
-    if active.len() > 1 {
+    if flags.len() > 1 {
         return Err(ValidationError::Message(format!(
             "Error: {} cannot be used together.\n\
              Use exactly one of: --days, --blocks, --block, or --from-block/--to-block.",
-            active.join(" and ")
+            flags.join(" and ")
         )));
     }
 
-    // Check from/to pairing
-    let from = cfg.from_block;
-    let to = cfg.to_block;
-
-    if (from.is_some() && to.is_none()) || (from.is_none() && to.is_some()) {
+    if (from_block.is_some() && to_block.is_none()) || (from_block.is_none() && to_block.is_some()) {
         return Err(ValidationError::Message(
             "Error: --from-block and --to-block must be used together.".to_string(),
         ));
     }
 
-    if let (Some(f), Some(t)) = (from, to) {
+    if let (Some(f), Some(t)) = (from_block, to_block) {
         if t <= f {
             return Err(ValidationError::Message(format!(
                 "Error: --to-block ({t}) must be greater than --from-block ({f})."
@@ -119,7 +127,7 @@ fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
         return Ok(RangeMode::Range(f, t));
     }
 
-    if let Some(d) = cfg.days {
+    if let Some(d) = days {
         if !(1..=365).contains(&d) {
             return Err(ValidationError::Message(
                 "Error: --days must be between 1 and 365.".to_string(),
@@ -128,7 +136,7 @@ fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
         return Ok(RangeMode::Days(d));
     }
 
-    if let Some(b) = cfg.blocks {
+    if let Some(b) = blocks {
         if b < 1 {
             return Err(ValidationError::Message(
                 "Error: --blocks must be >= 1.".to_string(),
@@ -137,7 +145,7 @@ fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
         return Ok(RangeMode::Blocks(b));
     }
 
-    if let Some(b) = cfg.block {
+    if let Some(b) = block {
         if b == 0 {
             return Err(ValidationError::Message(
                 "Error: --block must be > 0.".to_string(),
@@ -151,6 +159,10 @@ fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
          Use one of: --days, --blocks, --block, or --from-block + --to-block."
             .to_string(),
     ))
+}
+
+fn check_range_conflicts(cfg: &Config) -> Result<RangeMode, ValidationError> {
+    resolve_block_range(cfg.days, cfg.blocks, cfg.block, cfg.from_block, cfg.to_block)
 }
 
 /// Validates config for the replay subcommand.
