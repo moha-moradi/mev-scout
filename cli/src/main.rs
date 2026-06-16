@@ -49,6 +49,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: args.block_range.to_block,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_workers: Some(args.chain_args.rpc_workers),
             flash_loan_provider: Some(args.flash_loan_provider.clone()),
             strategies: Some(args.strategies.clone()),
             gas_model: Some(args.gas_model.clone()),
@@ -67,6 +68,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: args.block_range.to_block,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_workers: Some(args.chain_args.rpc_workers),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -85,6 +87,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_workers: Some(args.chain_args.rpc_workers),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -103,6 +106,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_workers: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -121,6 +125,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_workers: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -139,6 +144,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: Some(args.to_block),
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_workers: Some(args.chain_args.rpc_workers),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -157,6 +163,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_workers: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -395,6 +402,9 @@ async fn main() -> anyhow::Result<()> {
             // Init pool manager (needs cache before it's moved into replayer)
             let mut pool_manager = PoolManager::new();
             pool_manager.set_max_pairs_per_token(config.max_pairs_per_token);
+            if let Some(workers) = config.rpc_workers {
+                pool_manager.set_concurrency_limit(workers as u32);
+            }
             let prev_block = resolved.start_block.saturating_sub(1);
             if !validation_result.strategies.is_empty() {
                 BacktestRunner::init_pools(
@@ -560,7 +570,10 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", resolved.summary());
             println!();
 
-            let fetcher = Fetcher::new(rpc, cache);
+            let mut fetcher = Fetcher::new(rpc, cache);
+            if let Some(workers) = config.rpc_workers {
+                fetcher = fetcher.with_parallelism(workers);
+            }
 
             let pb = ProgressBar::new(resolved.block_count);
             pb.set_style(

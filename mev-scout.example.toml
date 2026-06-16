@@ -11,6 +11,10 @@ chain = "polygon"
 #"https://polygon-bor.publicnode.com"
 rpc_url ="https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs" 
 
+# Number of concurrent RPC workers (default: 1).
+# Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
+# rpc_workers = 1
+
 # Flash loan provider: auto, balancer, aave, uniswap
 flash_loan_provider = "auto"
 

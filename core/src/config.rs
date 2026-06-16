@@ -104,6 +104,10 @@ pub struct Config {
     /// Higher values increase detection coverage but slow down pair computation.
     #[serde(default = "default_max_pairs_per_token")]
     pub max_pairs_per_token: usize,
+    /// Number of concurrent RPC workers (default: 1).
+    /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_workers: Option<usize>,
 }
 
 fn default_chain() -> String {
@@ -169,6 +173,7 @@ impl Default for Config {
             coingecko_api_key: None,
             gas_limits: std::collections::HashMap::new(),
             max_pairs_per_token: default_max_pairs_per_token(),
+            rpc_workers: None,
         }
     }
 }
@@ -411,6 +416,7 @@ pub struct CliOverrides {
     pub to_block: Option<u64>,
     pub chain: Option<String>,
     pub rpc_url: Option<String>,
+    pub rpc_workers: Option<usize>,
     pub flash_loan_provider: Option<String>,
     pub strategies: Option<String>,
     pub gas_model: Option<String>,
@@ -471,6 +477,9 @@ impl Config {
         }
         if let Some(v) = &overrides.coingecko_api_key {
             self.coingecko_api_key = Some(v.clone());
+        }
+        if let Some(v) = overrides.rpc_workers {
+            self.rpc_workers = Some(v);
         }
     }
 }
@@ -557,6 +566,7 @@ rpc_url = "https://eth.diy"
             from_block: None, to_block: None,
             chain: Some("ethereum".into()),
             rpc_url: Some("https://custom".into()),
+            rpc_workers: None,
             flash_loan_provider: Some("aave".into()),
             strategies: Some("two_hop_arb".into()),
             gas_model: Some("fixed".into()),
@@ -589,7 +599,7 @@ rpc_url = "https://eth.diy"
         let overrides = CliOverrides {
             days: Some(7),
             blocks: None, block: None, from_block: None, to_block: None,
-            chain: None, rpc_url: None,
+            chain: None, rpc_url: None, rpc_workers: None,
             flash_loan_provider: None, strategies: None,
             gas_model: None, gas_limit: None, priority_fee_gwei: None,
             output: None, export_path: None, cache_dir: None,

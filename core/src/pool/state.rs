@@ -234,7 +234,7 @@ impl PoolManager {
             wrapped_native: None,
             known_set: HashSet::new(),
             max_pairs_per_token: 50,
-            concurrency_limit: 20,
+            concurrency_limit: 1,
         }
     }
 
@@ -247,13 +247,19 @@ impl PoolManager {
             wrapped_native: None,
             known_set: HashSet::with_capacity(capacity),
             max_pairs_per_token: 50,
-            concurrency_limit: 20,
+            concurrency_limit: 1,
         }
     }
 
     /// Set the maximum number of pool pairs per token for arbitrage pair computation.
     pub fn set_max_pairs_per_token(&mut self, max: usize) {
         self.max_pairs_per_token = max;
+    }
+
+    /// Set the maximum number of concurrent RPC calls during pool initialization.
+    /// Lower values (1-3) are safer for public RPCs with rate limits.
+    pub fn set_concurrency_limit(&mut self, limit: u32) {
+        self.concurrency_limit = limit.max(1);
     }
 
     /// Add a pool and update the token index.

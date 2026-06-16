@@ -82,6 +82,11 @@ pub struct ChainArgs {
     /// Archive node RPC endpoint
     #[arg(short = 'r', long = "rpc", value_name = "URL")]
     pub rpc_url: Option<String>,
+
+    /// Number of concurrent RPC workers (default: 1).
+    /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
+    #[arg(long = "rpc-workers", default_value = "1", value_name = "N")]
+    pub rpc_workers: usize,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -27,13 +27,10 @@ pub struct Fetcher {
 
 impl Fetcher {
     pub fn new(rpc: RpcClient, cache: CacheStore) -> Self {
-        let parallelism = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
         Fetcher {
             rpc,
             cache,
-            parallelism,
+            parallelism: 1,
         }
     }
 
