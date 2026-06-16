@@ -359,6 +359,25 @@ impl Config {
             .unwrap_or_else(|| chain.public_rpc_url().to_string())
     }
 
+    /// Resolved RPC URL list: user-provided override first, then built-in fallbacks.
+    /// When the user provides an RPC URL, it is tried first; the built-in list serves as fallback.
+    pub fn effective_rpc_urls(&self, chain: ChainName) -> Vec<String> {
+        let built_in: Vec<String> = chain
+            .public_rpc_urls()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        match &self.rpc_url {
+            Some(custom) => {
+                let mut urls = vec![custom.clone()];
+                urls.extend(built_in);
+                urls.dedup();
+                urls
+            }
+            None => built_in,
+        }
+    }
+
     pub fn to_toml_string(&self) -> anyhow::Result<String> {
         let value = toml::Value::try_from(self)
             .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;

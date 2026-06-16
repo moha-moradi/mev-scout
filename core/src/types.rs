@@ -27,17 +27,29 @@ impl ChainName {
         }
     }
 
-    /// Public (free-tier) RPC endpoint — no API key required.
-    pub fn public_rpc_url(&self) -> &'static str {
+    /// Public (free-tier) RPC endpoints — no API key required.
+    /// Returns a list; the first URL is used as the primary, and the rest serve as fallbacks.
+    pub fn public_rpc_urls(&self) -> &[&'static str] {
         match self {
-            ChainName::Polygon => "https://polygon-bor.publicnode.com",
-            ChainName::Avalanche => "https://avalanche-c-chain.publicnode.com",
-            ChainName::Bsc => "https://bsc.publicnode.com",
-            ChainName::Arbitrum => "https://arbitrum-one.publicnode.com",
-            ChainName::Base => "https://base.publicnode.com",
-            ChainName::Ethereum => "https://ethereum-rpc.publicnode.com",
-            ChainName::Optimism => "https://optimism-rpc.publicnode.com",
+            ChainName::Polygon => &[
+                "https://polygon-bor.publicnode.com",
+                "https://polygon-mainnet.core.chainstack.com/0eba37dcfe9dfb6f02273819eb9e0588",
+                "https://twilight-polished-sailboat.matic.quiknode.pro/ed3d9f40e68e4938394e9246f2b2953761491c7a",
+                "https://lb.drpc.live/polygon/AlEVHe8j40WBrjJdhDUkokDnXjIgaJkR8ZpCVjewFaCJ",
+                "https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs",
+            ],
+            ChainName::Avalanche => &["https://avalanche-c-chain.publicnode.com"],
+            ChainName::Bsc => &["https://bsc.publicnode.com"],
+            ChainName::Arbitrum => &["https://arbitrum-one.publicnode.com"],
+            ChainName::Base => &["https://base.publicnode.com"],
+            ChainName::Ethereum => &["https://ethereum-rpc.publicnode.com"],
+            ChainName::Optimism => &["https://optimism-rpc.publicnode.com"],
         }
+    }
+
+    /// Primary public (free-tier) RPC endpoint — shortcut for `public_rpc_urls()[0]`.
+    pub fn public_rpc_url(&self) -> &'static str {
+        self.public_rpc_urls()[0]
     }
 
     /// Default Uniswap V2 factory addresses for this chain (built-in, no config file needed).

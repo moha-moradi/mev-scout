@@ -327,8 +327,9 @@ async fn main() -> anyhow::Result<()> {
             };
             print_startup_plan(&validation_result, &config);
 
-            let rpc_url = config.effective_rpc_url(validation_result.chain_name);
-            let rpc = RpcClient::new(&rpc_url, validation_result.chain_config.chain_id)?;
+            let rpc_urls_owned = config.effective_rpc_urls(validation_result.chain_name);
+            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
+            let rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
             rpc.check_connection(validation_result.chain_config.chain_id).await?;
             let cache = CacheStore::open(&config.cache_dir, validation_result.chain_config.chain_id)?;
 
@@ -398,6 +399,64 @@ async fn main() -> anyhow::Result<()> {
             println!("Run ID: {}", run_id);
             println!("{}", resolved.summary());
             println!();
+
+            // Load pool addresses from cache for log-first fetch optimization
+            let pool_addresses: Vec<alloy::primitives::Address> = cache
+                .list_discovered_pools()
+                .unwrap_or_default()
+                .iter()
+                .map(|p| p.address)
+                .collect();
+
+            if !pool_addresses.is_empty() {
+                tracing::info!(
+                    "Using log-first fetch with {} known pool addresses",
+                    pool_addresses.len()
+                );
+            } else {
+                tracing::info!("No known pool addresses, fetching all blocks");
+            }
+
+            // Phase 1: Fetch relevant blocks (log-first optimization)
+            let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
+            if let Some(workers) = config.rpc_workers {
+                fetcher = fetcher.with_parallelism(workers);
+            }
+
+            let pb = indicatif::ProgressBar::new(resolved.block_count);
+            pb.set_style(
+                indicatif::ProgressStyle::default_bar()
+                    .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
+                    .progress_chars("=> "),
+            );
+            let tick = || pb.tick();
+
+            let fetch_summary = if !pool_addresses.is_empty() {
+                fetcher.fetch_relevant(&resolved, &pool_addresses, Some(&tick)).await?
+            } else {
+                fetcher.fetch_range(&resolved, Some(&tick)).await?
+            };
+            pb.finish_and_clear();
+
+            if fetch_summary.skipped > 0 {
+                tracing::info!(
+                    "Fetch optimization: skipped {} blocks with no DEX activity (fetched {} of {} scanned)",
+                    fetch_summary.skipped,
+                    fetch_summary.fetched,
+                    fetch_summary.scanned,
+                );
+            }
+
+            if !fetch_summary.missing_after_fetch.is_empty() {
+                tracing::warn!(
+                    "{} blocks missing after fetch, auto-refetching...",
+                    fetch_summary.missing_after_fetch.len()
+                );
+                let refetched = fetcher
+                    .auto_refetch_gaps(&fetch_summary.missing_after_fetch)
+                    .await?;
+                tracing::info!("Refetched {} blocks", refetched);
+            }
 
             // Init pool manager (needs cache before it's moved into replayer)
             let mut pool_manager = PoolManager::new();
@@ -511,17 +570,23 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let rpc_url = match &args.chain_args.rpc_url {
-                Some(url) if !url.trim().is_empty() && (url.starts_with("http://") || url.starts_with("https://")) => url.clone(),
+            let mut rpc_urls: Vec<&str> = Vec::new();
+            match &args.chain_args.rpc_url {
+                Some(url) if !url.trim().is_empty() && (url.starts_with("http://") || url.starts_with("https://")) => {
+                    rpc_urls.push(url.as_str());
+                    rpc_urls.extend(chain_name.public_rpc_urls().iter().copied());
+                }
                 Some(url) => {
                     eprintln!("Error: --rpc URL '{}' must be non-empty and start with http:// or https://.", url);
                     std::process::exit(1);
                 }
-                None => chain_name.public_rpc_url().to_string(),
+                None => {
+                    rpc_urls.extend(chain_name.public_rpc_urls().iter().copied());
+                }
             };
 
             let chain_id = chain_name.chain_id();
-            let rpc = RpcClient::new(&rpc_url, chain_id)?;
+            let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
             rpc.check_connection(chain_id).await?;
 
             let cache = CacheStore::open(&args.cache_dir, chain_id)?;
@@ -704,8 +769,9 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let rpc_url = config.effective_rpc_url(chain_name);
-            let rpc = RpcClient::new(&rpc_url, chain_config.chain_id)?;
+            let rpc_urls_owned = config.effective_rpc_urls(chain_name);
+            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
+            let rpc = RpcClient::from_urls(&rpc_urls, chain_config.chain_id)?;
             rpc.check_connection(chain_config.chain_id).await?;
             let cache = CacheStore::open(&config.cache_dir, chain_config.chain_id)?;
 
@@ -852,10 +918,11 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             };
-            let rpc_url = config.effective_rpc_url(chain_name);
+            let rpc_urls_owned = config.effective_rpc_urls(chain_name);
+            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
             let chain_config = config.chains.get(&args.chain_args.chain);
             let chain_id = chain_name.chain_id();
-            let rpc = RpcClient::new(&rpc_url, chain_id)?;
+            let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
             rpc.check_connection(chain_id).await?;
 
             let mut v2_addrs = Vec::new();

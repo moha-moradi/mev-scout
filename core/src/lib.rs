@@ -11,6 +11,7 @@ pub mod fetch;
 pub mod mev;
 pub mod pool;
 pub mod replay;
+pub mod scan;
 pub mod resolver;
 pub mod rpc;
 pub mod run;

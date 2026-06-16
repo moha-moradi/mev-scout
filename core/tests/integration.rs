@@ -445,6 +445,105 @@ fn test_sandwich_detection_synthetic() {
     assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 }
 
+/// ── Activity Scanner Tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_activity_scanner_finds_active_blocks() {
+    let rpc_url = match rpc_url() {
+        Some(url) => url,
+        None => { eprintln!("Skipping: RPC_URL not set"); return; }
+    };
+
+    let rpc = match mev_scout_core::rpc::RpcClient::new(&rpc_url, 137) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Skipping: failed to create RPC client: {e}"); return; }
+    };
+
+    let latest = match rpc.get_block_number().await {
+        Ok(n) => n,
+        Err(e) => { eprintln!("Skipping: failed to get block number: {e}"); return; }
+    };
+
+    // Use a highly active Polygon pool: QuickSwap WMATIC/USDC
+    let pool = address!("6e7a5fafcec6bb1e78bae2a1f0b612012bf14827");
+
+    // Use the actual batch size from scanner (default 2000) to scan a realistic range
+    let start = latest.saturating_sub(5000);
+    let end = latest;
+
+    let scanner = mev_scout_core::scan::ActivityScanner::new(rpc)
+        .with_batch_size(2000);
+
+    let active = match scanner.find_active_blocks(&[pool], start, end).await {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Skipping: activity scan failed: {e}"); return; }
+    };
+
+    eprintln!(
+        "Activity scan [{start}..{end}]: {}/{} blocks active (pool={pool})",
+        active.len(),
+        end.saturating_sub(start) + 1,
+    );
+
+    // QuickSwap WMATIC/USDC is a high-volume pool — should have activity
+    assert!(!active.is_empty(),
+        "Should find at least one active block for a high-volume pool");
+    assert!(active.len() < (end - start + 1) as usize,
+        "Not all blocks should be active");
+}
+
+#[tokio::test]
+async fn test_activity_scanner_no_pools_returns_empty() {
+    let rpc_url = match rpc_url() {
+        Some(url) => url,
+        None => { eprintln!("Skipping: RPC_URL not set"); return; }
+    };
+
+    let rpc = match mev_scout_core::rpc::RpcClient::new(&rpc_url, 137) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Skipping: failed to create RPC client: {e}"); return; }
+    };
+
+    let scanner = mev_scout_core::scan::ActivityScanner::new(rpc);
+    let active = scanner.find_active_blocks(&[], 0, 100).await.unwrap();
+    assert!(active.is_empty(), "Empty pool list should return empty set");
+}
+
+#[tokio::test]
+async fn test_activity_scanner_multi_block_batch() {
+    let rpc_url = match rpc_url() {
+        Some(url) => url,
+        None => { eprintln!("Skipping: RPC_URL not set"); return; }
+    };
+
+    let rpc = match mev_scout_core::rpc::RpcClient::new(&rpc_url, 137) {
+        Ok(r) => r,
+        Err(e) => { eprintln!("Skipping: failed to create RPC client: {e}"); return; }
+    };
+
+    let latest = match rpc.get_block_number().await {
+        Ok(n) => n,
+        Err(e) => { eprintln!("Skipping: failed to get block number: {e}"); return; }
+    };
+
+    // Test with batch_size=1 (forces multiple batches even for small ranges)
+    let pool = address!("6e7a5fafcec6bb1e78bae2a1f0b612012bf14827");
+    let start = latest.saturating_sub(3);
+    let end = latest;
+
+    let scanner = mev_scout_core::scan::ActivityScanner::new(rpc)
+        .with_batch_size(1);
+
+    let active = match scanner.find_active_blocks(&[pool], start, end).await {
+        Ok(s) => s,
+        Err(e) => { eprintln!("Skipping: activity scan failed: {e}"); return; }
+    };
+
+    eprintln!("Multi-batch scan [{start}..{end}] (batch=1): {} active blocks", active.len());
+    assert!(active.len() <= (end - start + 1) as usize,
+        "Active set should not exceed scanned range");
+}
+
 /// ── Real-Data Tests (async / RPC) ──────────────────────────────────────────
 /// These tests load real pool configs and optionally fetch
 /// on-chain state via RPC.  They skip gracefully when no RPC is available,

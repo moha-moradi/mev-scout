@@ -153,6 +153,19 @@ impl CacheStore {
         Ok(missing)
     }
 
+    /// Check integrity for a specific set of blocks (not a contiguous range).
+    ///
+    /// Used by `Fetcher::fetch_relevant` after a log-first fetch pass.
+    pub fn check_integrity_range(&self, blocks: &[u64]) -> anyhow::Result<Vec<u64>> {
+        let mut missing = Vec::new();
+        for &n in blocks {
+            if !self.has_block(n)? {
+                missing.push(n);
+            }
+        }
+        Ok(missing)
+    }
+
     // ---- Account / Slot / Code (lazy fetch target for revm) ----
     /// Store account state (nonce, balance, code_hash) for lazy EVM replay.
     /// Key: `account:{chain_id}:{block_num}:{address}`.

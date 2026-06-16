@@ -8,6 +8,8 @@
 //! The `RpcClient` is the single external integration point for the backtest engine.
 //! Every blockchain read (blocks, receipts, proofs, storage, code) flows through here.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::consensus::Transaction;
@@ -42,34 +44,63 @@ impl Default for RetryConfig {
     }
 }
 
-/// EVM RPC client with built-in retry and connection validation.
+/// EVM RPC client with built-in retry, multi-URL rotation, and connection validation.
 ///
-/// Wraps an `alloy` `RootProvider` and provides:
+/// Wraps one or more `alloy` `RootProvider` instances and provides:
 /// - Automatic retry with exponential backoff for transient RPC failures
+/// - Automatic fallback to the next provider when all retries on the current URL are exhausted
 /// - Pre-flight connection checks that verify archive-node requirements
 /// - Conversion helpers from alloy types to internal `data` types
 ///
 /// All methods return `anyhow::Result` for uniform error handling.
 #[derive(Debug, Clone)]
 pub struct RpcClient {
-    provider: RootProvider,
+    providers: Vec<RootProvider>,
     chain_id: u64,
     retry: RetryConfig,
+    current: Arc<AtomicUsize>,
 }
 
 impl RpcClient {
-    /// Create a new RPC client from a URL and expected chain ID.
+    /// Create a new RPC client from a single URL and expected chain ID.
     ///
-    /// The chain ID is stored locally and used for connection validation
-    /// (verifying the RPC endpoint is on the expected network).
+    /// Backward-compatible convenience wrapper around `from_urls`.
     pub fn new(rpc_url: &str, chain_id: u64) -> anyhow::Result<Self> {
-        let url = rpc_url.parse::<Url>()?;
-        let provider = RootProvider::new_http(url);
+        Self::from_urls(&[rpc_url], chain_id)
+    }
+
+    /// Create a new RPC client from one or more URLs.
+    ///
+    /// The first URL is the primary endpoint. If all retries on the current provider
+    /// are exhausted, the client automatically falls back to the next URL in the list.
+    pub fn from_urls(urls: &[&str], chain_id: u64) -> anyhow::Result<Self> {
+        if urls.is_empty() {
+            return Err(anyhow::anyhow!("At least one RPC URL is required"));
+        }
+        let providers: Vec<RootProvider> = urls
+            .iter()
+            .map(|url| url.parse::<Url>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Invalid RPC URL: {e}"))?
+            .into_iter()
+            .map(RootProvider::new_http)
+            .collect();
         Ok(RpcClient {
-            provider,
+            providers,
             chain_id,
             retry: RetryConfig::default(),
+            current: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Number of configured RPC providers.
+    pub fn providers_count(&self) -> usize {
+        self.providers.len()
+    }
+
+    /// Reset the active provider index back to the first URL.
+    pub fn reset(&self) {
+        self.current.store(0, Ordering::Relaxed);
     }
 
     /// Override the default retry configuration.
@@ -83,14 +114,15 @@ impl RpcClient {
         self.chain_id
     }
 
-    /// Execute an RPC call with exponential-backoff retry.
+    /// Execute an RPC call with exponential-backoff retry and multi-URL fallback.
     ///
-    /// Retries up to `max_retries` times with delays doubling each attempt.
-    /// Returns immediately for non-retryable errors (e.g. bad request, auth).
-    /// Returns the last error if all retries are exhausted.
+    /// Retries up to `max_retries` times on each provider with delays doubling each attempt.
+    /// If all retries on the current provider are exhausted, falls back to the next provider
+    /// in the list. Returns immediately for non-retryable errors (e.g. bad request, auth).
+    /// Returns the last error if all providers are exhausted.
     async fn retry_call<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
     where
-        F: Fn() -> Fut,
+        F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
         fn is_retryable(e: &anyhow::Error) -> bool {
@@ -109,40 +141,53 @@ impl RpcClient {
             true
         }
 
+        let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
-        for attempt in 0..=self.retry.max_retries {
-            match f().await {
-                Ok(val) => return Ok(val),
-                Err(e) => {
-                    if !is_retryable(&e) {
-                        return Err(e);
+
+        for offset in 0..self.providers.len() {
+            let idx = (start + offset) % self.providers.len();
+            let provider = self.providers[idx].clone();
+
+            for attempt in 0..=self.retry.max_retries {
+                match f(provider.clone()).await {
+                    Ok(val) => {
+                        self.current.store(idx, Ordering::Relaxed);
+                        return Ok(val);
                     }
-                    tracing::warn!(
-                        "RPC call failed (attempt {}/{}): {:?}",
-                        attempt + 1,
-                        self.retry.max_retries + 1,
-                        e
-                    );
-                    last_err = Some(e);
-                    if attempt < self.retry.max_retries {
-                        let delay = (self.retry.base_delay_ms * 2u64.pow(attempt))
-                            .min(self.retry.max_delay_ms);
-                        sleep(Duration::from_millis(delay)).await;
+                    Err(e) => {
+                        if !is_retryable(&e) {
+                            return Err(e);
+                        }
+                        tracing::warn!(
+                            "RPC call failed (provider {idx}, attempt {}/{})",
+                            attempt + 1,
+                            self.retry.max_retries + 1,
+                        );
+                        last_err = Some(e);
+                        if attempt < self.retry.max_retries {
+                            let delay = (self.retry.base_delay_ms * 2u64.pow(attempt))
+                                .min(self.retry.max_delay_ms);
+                            sleep(Duration::from_millis(delay)).await;
+                        }
                     }
                 }
             }
+
+            tracing::warn!(
+                "RPC provider {idx} exhausted, falling back to next provider"
+            );
         }
+
         Err(anyhow::anyhow!(
-            "RPC call failed after {} retries: {:?}",
-            self.retry.max_retries,
+            "All RPC providers failed after retries: {:?}",
             last_err.unwrap()
         ))
     }
 
     /// Fetch the latest block number from the chain.
     pub async fn get_block_number(&self) -> anyhow::Result<u64> {
-        self.retry_call(|| async {
-            self.provider
+        self.retry_call(|provider| async move {
+            provider
                 .get_block_number()
                 .await
                 .map_err(|e| anyhow::anyhow!(e))
@@ -155,17 +200,14 @@ impl RpcClient {
     /// Requests the full block header and extracts the timestamp.
     /// Used by `RangeResolver` for `--days` block range resolution.
     pub async fn get_block_timestamp(&self, block_number: u64) -> anyhow::Result<u64> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
-            async move {
-                let block = provider
-                    .get_block_by_number(block_number.into())
-                    .hashes()
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?
-                    .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))?;
-                Ok(block.header.timestamp)
-            }
+        self.retry_call(|provider| async move {
+            let block = provider
+                .get_block_by_number(block_number.into())
+                .hashes()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+                .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))?;
+            Ok(block.header.timestamp)
         })
         .await
     }
@@ -174,8 +216,7 @@ impl RpcClient {
     ///
     /// Used for pool discovery (scanning `PairCreated` / `PoolCreated` events).
     pub async fn get_logs(&self, filter: &Filter) -> anyhow::Result<Vec<Log>> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
+        self.retry_call(|provider| {
             let filter = filter.clone();
             async move {
                 provider
@@ -193,16 +234,13 @@ impl RpcClient {
     /// Transactions are converted from alloy types to internal types via `alloy_tx_to_tx_data`.
     pub async fn get_block(&self, block_number: u64) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block: Block = self
-            .retry_call(|| {
-                let provider = self.provider.clone();
-                async move {
-                    provider
-                        .get_block_by_number(block_number.into())
-                        .full()
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?
-                        .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))
-                }
+            .retry_call(|provider| async move {
+                provider
+                    .get_block_by_number(block_number.into())
+                    .full()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))
             })
             .await?;
 
@@ -236,17 +274,14 @@ impl RpcClient {
     /// Receipts are converted from alloy types to internal types via `alloy_receipt_to_receipt_data`.
     pub async fn get_receipts(&self, block_number: u64) -> anyhow::Result<Vec<ReceiptData>> {
         let receipts = self
-            .retry_call(|| {
-                let provider = self.provider.clone();
-                async move {
-                    provider
-                        .get_block_receipts(alloy::eips::BlockId::number(block_number))
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))?
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("Receipts not found for block {}", block_number)
-                        })
-                }
+            .retry_call(|provider| async move {
+                provider
+                    .get_block_receipts(alloy::eips::BlockId::number(block_number))
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Receipts not found for block {}", block_number)
+                    })
             })
             .await?;
 
@@ -272,8 +307,7 @@ impl RpcClient {
         let keys: Vec<B256> = slots.iter().map(|s| {
             B256::from(s.to_be_bytes::<32>())
         }).collect();
-        self.retry_call(|| {
-            let provider = self.provider.clone();
+        self.retry_call(|provider| {
             let keys = keys.clone();
             async move {
                 let proof = provider
@@ -302,15 +336,12 @@ impl RpcClient {
         slot: U256,
         block: u64,
     ) -> anyhow::Result<U256> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
-            async move {
-                provider
-                    .get_storage_at(address, slot)
-                    .number(block)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
+        self.retry_call(|provider| async move {
+            provider
+                .get_storage_at(address, slot)
+                .number(block)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
         })
         .await
     }
@@ -325,25 +356,19 @@ impl RpcClient {
         block: u64,
     ) -> anyhow::Result<(u64, U256, Bytes)> {
         let (nonce, balance, code) = futures::try_join!(
-            self.retry_call(|| {
-                let provider = self.provider.clone();
-                async move {
-                    provider
-                        .get_transaction_count(address)
-                        .number(block)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))
-                }
+            self.retry_call(|provider| async move {
+                provider
+                    .get_transaction_count(address)
+                    .number(block)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
             }),
-            self.retry_call(|| {
-                let provider = self.provider.clone();
-                async move {
-                    provider
-                        .get_balance(address)
-                        .number(block)
-                        .await
-                        .map_err(|e| anyhow::anyhow!(e))
-                }
+            self.retry_call(|provider| async move {
+                provider
+                    .get_balance(address)
+                    .number(block)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
             }),
             self.get_code(address, block),
         )?;
@@ -352,15 +377,12 @@ impl RpcClient {
 
     /// Fetch contract bytecode at a historical block via `eth_getCode`.
     pub async fn get_code(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
-            async move {
-                provider
-                    .get_code_at(address)
-                    .number(block)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
+        self.retry_call(|provider| async move {
+            provider
+                .get_code_at(address)
+                .number(block)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
         })
         .await
     }
@@ -369,7 +391,7 @@ impl RpcClient {
     /// Useful for non-critical lookups (e.g. precompile detection)
     /// where unavailability should just produce empty code.
     pub async fn get_code_no_retry(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
-        self.provider
+        self.providers[0]
             .get_code_at(address)
             .number(block)
             .await
@@ -379,8 +401,7 @@ impl RpcClient {
     /// Estimate gas for a transaction.
     /// Returns gas units required.
     pub async fn estimate_gas(&self, to: Address, data: Bytes) -> anyhow::Result<u64> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
+        self.retry_call(|provider| {
             let data = data.clone();
             async move {
                 let request = TransactionRequest::default()
@@ -398,14 +419,11 @@ impl RpcClient {
     /// Get the chain ID from the RPC endpoint.
     /// This calls `eth_chainId` directly rather than using the cached `self.chain_id`.
     pub async fn get_chain_id(&self) -> anyhow::Result<u64> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
-            async move {
-                provider
-                    .get_chain_id()
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))
-            }
+        self.retry_call(|provider| async move {
+            provider
+                .get_chain_id()
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
         })
         .await
     }
@@ -467,8 +485,7 @@ impl RpcClient {
     /// Used for pool state queries (`getReserves()`, `slot0()`, `liquidity()`)
     /// without modifying chain state.
     pub async fn call(&self, to: Address, data: Bytes, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call(|| {
-            let provider = self.provider.clone();
+        self.retry_call(|provider| {
             let data = data.clone();
             async move {
                 let request = TransactionRequest::default()

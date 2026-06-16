@@ -8,7 +8,13 @@
 chain = "polygon"
 
 # Optional RPC URL override (falls back to public node for the chain)
-#"https://polygon-bor.publicnode.com"
+# When no override is set, the built-in fallback list (with automatic rotation)
+# is used. Some free Polygon RPC endpoints:
+#   https://polygon-bor.publicnode.com
+#   https://polygon-mainnet.core.chainstack.com/0eba37dcfe9dfb6f02273819eb9e0588
+#   https://twilight-polished-sailboat.matic.quiknode.pro/ed3d9f40e68e4938394e9246f2b2953761491c7a
+#   https://lb.drpc.live/polygon/AlEVHe8j40WBrjJdhDUkokDnXjIgaJkR8ZpCVjewFaCJ
+#   https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs
 rpc_url ="https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs" 
 
 # Number of concurrent RPC workers (default: 1).
