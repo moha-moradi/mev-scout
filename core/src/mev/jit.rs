@@ -365,6 +365,7 @@ mod tests {
                 dex_type: DexType::UniswapV3,
                 tick_spacing: Some(60),
                 creation_block: 0,
+                pool_id: None,
             },
             sqrt_price_x96: U256::from(1u128 << 96),
             tick: 0,

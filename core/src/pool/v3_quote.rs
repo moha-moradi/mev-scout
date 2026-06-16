@@ -413,6 +413,72 @@ fn find_next_initialized_tick(
     best
 }
 
+/// Compute the nearest tick_spacing boundary in the swap direction.
+/// Returns `None` when no tick_spacing is configured.
+fn tick_spacing_boundary(tick: i32, tick_spacing: i32, zero_for_one: bool) -> Option<i32> {
+    if tick_spacing <= 0 {
+        return None;
+    }
+    if zero_for_one {
+        // Floor division to get the boundary at or below current tick
+        let boundary = tick.div_euclid(tick_spacing) * tick_spacing;
+        if boundary == tick {
+            Some(tick - tick_spacing)
+        } else {
+            Some(boundary)
+        }
+    } else {
+        let boundary = tick.div_euclid(tick_spacing) * tick_spacing;
+        if boundary == tick {
+            Some(tick + tick_spacing)
+        } else {
+            Some(boundary + tick_spacing)
+        }
+    }
+}
+
+/// Determine the effective target sqrt price for a V3 swap, considering:
+/// 1. Real initialized ticks (with known liquidity data)
+/// 2. Synthetic tick_spacing boundaries when no ticks are known (conservative cap)
+///
+/// When only a synthetic boundary is available, the swap is capped at that boundary
+/// and the quoting loop will not attempt to cross it (no phantom liquidity beyond).
+fn get_swap_target(
+    pool: &UniswapV3PoolState,
+    zero_for_one: bool,
+) -> (U256, bool) {
+    let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, zero_for_one);
+    match next_tick {
+        Some(t) => {
+            let r = get_sqrt_ratio_at_tick(t);
+            let sqrt = if zero_for_one {
+                r.max(*MIN_SQRT_RATIO).min(pool.sqrt_price_x96)
+            } else {
+                r.min(*MAX_SQRT_RATIO).max(pool.sqrt_price_x96)
+            };
+            (sqrt, true) // true = has real tick data
+        }
+        None => {
+            if let Some(spacing) = pool.info.tick_spacing {
+                if let Some(boundary) = tick_spacing_boundary(pool.tick, spacing as i32, zero_for_one) {
+                    let r = get_sqrt_ratio_at_tick(boundary);
+                    let sqrt = if zero_for_one {
+                        r.max(*MIN_SQRT_RATIO).min(pool.sqrt_price_x96)
+                    } else {
+                        r.min(*MAX_SQRT_RATIO).max(pool.sqrt_price_x96)
+                    };
+                    return (sqrt, false); // false = synthetic boundary, no liquidity data
+                }
+            }
+            if zero_for_one {
+                (*MIN_SQRT_RATIO, false)
+            } else {
+                (*MAX_SQRT_RATIO, false)
+            }
+        }
+    }
+}
+
 #[allow(dead_code)]
 fn get_tick_spacing_from_fee(fee: u32) -> i32 {
     if fee <= 100 {
@@ -452,7 +518,7 @@ fn get_tick_at_sqrt_ratio(sqrt_price_x96: U256) -> i32 {
 /// state and the nearest initialized tick in the swap direction.
 ///
 /// Returns the amount that would move the price exactly to the nearest
-/// initialized tick boundary (or the MIN/MAX tick if none exists).
+/// initialized tick boundary (or tick_spacing boundary if no ticks known).
 pub fn max_v3_tradeable_amount(
     pool: &UniswapV3PoolState,
     zero_for_one: bool,
@@ -461,24 +527,7 @@ pub fn max_v3_tradeable_amount(
         return 0;
     }
 
-    let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, zero_for_one);
-    let target_sqrt = match next_tick {
-        Some(t) => {
-            let r = get_sqrt_ratio_at_tick(t);
-            if zero_for_one {
-                r.max(*MIN_SQRT_RATIO).min(pool.sqrt_price_x96)
-            } else {
-                r.min(*MAX_SQRT_RATIO).max(pool.sqrt_price_x96)
-            }
-        }
-        None => {
-            if zero_for_one {
-                *MIN_SQRT_RATIO
-            } else {
-                *MAX_SQRT_RATIO
-            }
-        }
-    };
+    let (target_sqrt, _) = get_swap_target(pool, zero_for_one);
 
     if target_sqrt == pool.sqrt_price_x96 {
         return pool.liquidity.saturating_div(100);
@@ -524,6 +573,9 @@ pub fn max_v3_tradeable_amount(
 /// while applying the fee, until `amount_in` is consumed or there are no more
 /// reachable ticks. Returns the total amount of `token_out` the swap would receive.
 ///
+/// When no initialized ticks are known, the swap is conservatively capped at
+/// the nearest tick_spacing boundary to prevent phantom liquidity overestimation.
+///
 /// Returns `None` for zero input, zero liquidity, or zero sqrt-price.
 pub fn quote_v3_exact_in(
     pool: &UniswapV3PoolState,
@@ -541,25 +593,13 @@ pub fn quote_v3_exact_in(
     let mut total_amount_out = U256::ZERO;
 
     while amount_remaining > U256::ZERO {
-        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
-
-        let target_sqrt_price = match next_tick {
-            Some(t) => {
-                let r = get_sqrt_ratio_at_tick(t);
-                if zero_for_one {
-                    r.max(*MIN_SQRT_RATIO).min(sqrt_price)
-                } else {
-                    r.min(*MAX_SQRT_RATIO).max(sqrt_price)
-                }
-            }
-            None => {
-                if zero_for_one {
-                    *MIN_SQRT_RATIO
-                } else {
-                    *MAX_SQRT_RATIO
-                }
-            }
-        };
+        let (target_sqrt_price, has_real_tick) = get_swap_target_for_tick(
+            &pool.ticks,
+            pool.info.tick_spacing,
+            current_tick,
+            sqrt_price,
+            zero_for_one,
+        );
 
         if target_sqrt_price == sqrt_price {
             break;
@@ -582,7 +622,10 @@ pub fn quote_v3_exact_in(
             amount_remaining -= consumed;
         }
 
-        if next_sqrt_price == target_sqrt_price {
+        if next_sqrt_price == target_sqrt_price && has_real_tick {
+            let next_tick = find_next_initialized_tick(
+                &pool.ticks, current_tick, zero_for_one,
+            );
             current_tick = if zero_for_one {
                 next_tick.unwrap_or(MIN_TICK)
             } else {
@@ -604,6 +647,12 @@ pub fn quote_v3_exact_in(
                     };
                 }
             }
+            if liquidity == 0 {
+                break;
+            }
+        } else if next_sqrt_price == target_sqrt_price {
+            // Synthetic boundary reached — no known liquidity beyond, stop
+            break;
         }
 
         sqrt_price = next_sqrt_price;
@@ -619,11 +668,56 @@ pub fn quote_v3_exact_in(
     Some(limbs[0] as u128)
 }
 
+/// Like `get_swap_target` but uses a passed-in sqrt_price and current_tick
+/// for use inside the quoting loop where these values change across tick crossings.
+fn get_swap_target_for_tick(
+    ticks: &BTreeMap<i32, i128>,
+    tick_spacing: Option<u32>,
+    current_tick: i32,
+    sqrt_price: U256,
+    zero_for_one: bool,
+) -> (U256, bool) {
+    let next_tick = find_next_initialized_tick(ticks, current_tick, zero_for_one);
+    match next_tick {
+        Some(t) => {
+            let r = get_sqrt_ratio_at_tick(t);
+            let sqrt = if zero_for_one {
+                r.max(*MIN_SQRT_RATIO).min(sqrt_price)
+            } else {
+                r.min(*MAX_SQRT_RATIO).max(sqrt_price)
+            };
+            (sqrt, true)
+        }
+        None => {
+            if let Some(spacing) = tick_spacing {
+                if let Some(boundary) =
+                    tick_spacing_boundary(current_tick, spacing as i32, zero_for_one)
+                {
+                    let r = get_sqrt_ratio_at_tick(boundary);
+                    let sqrt = if zero_for_one {
+                        r.max(*MIN_SQRT_RATIO).min(sqrt_price)
+                    } else {
+                        r.min(*MAX_SQRT_RATIO).max(sqrt_price)
+                    };
+                    return (sqrt, false);
+                }
+            }
+            if zero_for_one {
+                (*MIN_SQRT_RATIO, false)
+            } else {
+                (*MAX_SQRT_RATIO, false)
+            }
+        }
+    }
+}
+
 /// Simulates a V3 exact-output swap: determine how much input is required
 /// to receive exactly `amount_out` of the output token.
 ///
 /// Walks the tick range in the opposite direction of `quote_v3_exact_in`,
 /// accumulating the input required per tick step.
+///
+/// When no initialized ticks are known, caps at the nearest tick_spacing boundary.
 ///
 /// Returns `None` for zero output, zero liquidity, or zero sqrt-price.
 pub fn quote_v3_exact_out(
@@ -642,25 +736,13 @@ pub fn quote_v3_exact_out(
     let mut total_amount_in = U256::ZERO;
 
     while amount_remaining > U256::ZERO {
-        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
-
-        let target_sqrt_price = match next_tick {
-            Some(t) => {
-                let r = get_sqrt_ratio_at_tick(t);
-                if zero_for_one {
-                    r.max(*MIN_SQRT_RATIO).min(sqrt_price)
-                } else {
-                    r.min(*MAX_SQRT_RATIO).max(sqrt_price)
-                }
-            }
-            None => {
-                if zero_for_one {
-                    *MIN_SQRT_RATIO
-                } else {
-                    *MAX_SQRT_RATIO
-                }
-            }
-        };
+        let (target_sqrt_price, has_real_tick) = get_swap_target_for_tick(
+            &pool.ticks,
+            pool.info.tick_spacing,
+            current_tick,
+            sqrt_price,
+            zero_for_one,
+        );
 
         if target_sqrt_price == sqrt_price {
             break;
@@ -682,7 +764,10 @@ pub fn quote_v3_exact_out(
             amount_remaining -= amount_out_step;
         }
 
-        if next_sqrt_price == target_sqrt_price {
+        if next_sqrt_price == target_sqrt_price && has_real_tick {
+            let next_tick = find_next_initialized_tick(
+                &pool.ticks, current_tick, zero_for_one,
+            );
             current_tick = if zero_for_one {
                 next_tick.unwrap_or(MIN_TICK)
             } else {
@@ -704,6 +789,12 @@ pub fn quote_v3_exact_out(
                     };
                 }
             }
+            if liquidity == 0 {
+                break;
+            }
+        } else if next_sqrt_price == target_sqrt_price {
+            // Synthetic boundary — no known liquidity beyond, stop
+            break;
         }
 
         sqrt_price = next_sqrt_price;
@@ -743,6 +834,7 @@ mod tests {
                 dex_type: DexType::UniswapV3,
                 tick_spacing,
                 creation_block: 0,
+                pool_id: None,
             },
             sqrt_price_x96,
             tick,
@@ -823,8 +915,10 @@ mod tests {
 
     #[test]
     fn test_quote_small_amount() {
+        // Use sqrt_price consistent with tick=0 so the synthetic boundary
+        // from tick_spacing falls at a valid price below current sqrt price
         let sqrt_price = get_sqrt_ratio_at_tick(0);
-        let pool = make_pool(sqrt_price, 1200, 1_000_000_000_000u128, 3000, Some(60), BTreeMap::new());
+        let pool = make_pool(sqrt_price, 0, 1_000_000_000_000u128, 3000, Some(60), BTreeMap::new());
         // With 0.3% fee, 1 wei input is fully consumed by fee → no output
         // Use enough to exceed the fee rounding threshold
         let out = quote_v3_exact_in(&pool, 10_000, true);

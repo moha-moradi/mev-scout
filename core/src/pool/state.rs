@@ -48,6 +48,9 @@ pub struct PoolInfo {
     pub tick_spacing: Option<u32>,
     #[serde(default)]
     pub creation_block: u64,
+    /// Balancer V2 pool ID (bytes32), used to query vault for token balances.
+    #[serde(default)]
+    pub pool_id: Option<[u8; 32]>,
 }
 
 impl Default for PoolInfo {
@@ -61,6 +64,7 @@ impl Default for PoolInfo {
             dex_type: DexType::UniswapV2,
             tick_spacing: None,
             creation_block: 0,
+            pool_id: None,
         }
     }
 }
@@ -175,6 +179,8 @@ impl PoolState {
 enum PoolInitResult {
     V2Reserves(u128, u128),
     V3State(U256, i32, u128),
+    BalancerState(Vec<Address>, Vec<u128>),
+    CurveState(Vec<Address>, Vec<u128>),
 }
 
 /// Event signature for Uniswap V2 Swap event
@@ -184,6 +190,9 @@ const SYNC_TOPIC: B256 = b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e
 /// getReserves() selector
 const GET_RESERVES_SELECTOR: [u8; 4] = [0x09, 0x02, 0xf1, 0xac];
 
+/// balances(int128) selector for Curve pools
+const CURVE_BALANCES_SELECTOR: [u8; 4] = [0x49, 0x7b, 0x66, 0x78];
+
 /// slot0() selector for Uniswap V3
 static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"slot0()");
@@ -192,6 +201,11 @@ static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
 /// liquidity() selector for Uniswap V3
 static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"liquidity()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+/// getPoolTokens(bytes32) selector for Balancer V2 vault
+static GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getPoolTokens(bytes32)");
     Bytes::copy_from_slice(&hash[..4])
 });
 
@@ -213,6 +227,8 @@ pub struct PoolManager {
     pairs_cache: Mutex<Option<Vec<(Address, Address, Address)>>>,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
     wrapped_native: Option<Address>,
+    /// Address of the Balancer V2 vault for flash loans and pool state queries.
+    balancer_vault: Option<Address>,
     /// Pre-filter set of known pool addresses for fast log filtering.
     known_set: HashSet<Address>,
     /// Maximum number of pools per token when computing arbitrage pairs.
@@ -232,6 +248,7 @@ impl PoolManager {
             token_index: HashMap::new(),
             pairs_cache: Mutex::new(None),
             wrapped_native: None,
+            balancer_vault: None,
             known_set: HashSet::new(),
             max_pairs_per_token: 50,
             concurrency_limit: 1,
@@ -245,6 +262,7 @@ impl PoolManager {
             token_index: HashMap::with_capacity(capacity),
             pairs_cache: Mutex::new(None),
             wrapped_native: None,
+            balancer_vault: None,
             known_set: HashSet::with_capacity(capacity),
             max_pairs_per_token: 50,
             concurrency_limit: 1,
@@ -265,19 +283,24 @@ impl PoolManager {
     /// Add a pool and update the token index.
     ///
     /// Invalidates the cached arbitrage pairs (recomputed on next `arbitrage_pairs()` call).
+    /// Skips ZERO addresses in token index to avoid polluting pair computation.
     pub fn add_pool(&mut self, state: PoolState) {
         let addr = state.address();
         let info = state.info().clone();
         self.known_set.insert(addr);
         self.pools.insert(addr, state);
-        self.token_index
-            .entry(info.token0)
-            .or_default()
-            .push(addr);
-        self.token_index
-            .entry(info.token1)
-            .or_default()
-            .push(addr);
+        if !info.token0.is_zero() {
+            self.token_index
+                .entry(info.token0)
+                .or_default()
+                .push(addr);
+        }
+        if !info.token1.is_zero() {
+            self.token_index
+                .entry(info.token1)
+                .or_default()
+                .push(addr);
+        }
         *self.pairs_cache.lock().unwrap() = None;
     }
 
@@ -441,29 +464,31 @@ impl PoolManager {
         let cap = pool_addrs.len().clamp(1, max_concurrent);
         let semaphore = Arc::new(Semaphore::new(cap));
 
-        // Snapshot dex types before spawning tasks
-        let dex_types: Vec<DexType> = pool_addrs
+        // Snapshot pool metadata before spawning tasks
+        let vault = self.balancer_vault;
+        let pool_meta: Vec<(DexType, Option<[u8; 32]>)> = pool_addrs
             .iter()
             .map(|addr| match self.pools.get(addr) {
-                Some(PoolState::UniswapV2(_)) => DexType::UniswapV2,
-                Some(PoolState::UniswapV3(_)) => DexType::UniswapV3,
-                Some(PoolState::Curve(_)) => DexType::Curve,
-                Some(PoolState::Balancer(_)) => DexType::Balancer,
-                None => DexType::UniswapV2,
+                Some(PoolState::UniswapV2(_)) => (DexType::UniswapV2, None),
+                Some(PoolState::UniswapV3(_)) => (DexType::UniswapV3, None),
+                Some(PoolState::Curve(_)) => (DexType::Curve, None),
+                Some(PoolState::Balancer(_)) => (DexType::Balancer, None),
+                None => (DexType::UniswapV2, None),
             })
             .collect();
 
         let tasks: Vec<_> = pool_addrs
             .iter()
-            .zip(dex_types.iter())
-            .map(|(addr, dt)| {
+            .zip(pool_meta.iter())
+            .map(|(addr, (dt, pool_id))| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
                 let dt = *dt;
+                let pool_id = *pool_id;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    Self::fetch_pool_state(&rpc, addr, dt, block_num).await
+                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, vault, block_num).await
                 }
             })
             .collect();
@@ -486,11 +511,38 @@ impl PoolManager {
                         if state.ticks.is_empty() {
                             tracing::warn!("V3 pool {} initialized with empty tick map", addr);
                         }
-                        debug_assert!(
-                            !sqrt.is_zero(),
-                            "V3 pool {} initialized with zero sqrt price",
-                            addr
-                        );
+                        if sqrt.is_zero() {
+                            tracing::warn!("V3 pool {} initialized with zero sqrt price", addr);
+                        }
+                    }
+                }
+                Some(PoolInitResult::BalancerState(tokens, balances)) => {
+                    if let Some(PoolState::Balancer(state)) = self.pools.get_mut(addr) {
+                        state.balances = balances;
+                        // Update token0/token1 from on-chain data
+                        if tokens.len() >= 2 {
+                            state.info.token0 = tokens[0];
+                            state.info.token1 = tokens[1];
+                        }
+                        // Rebuild token_index from all tokens
+                        state.token_index.clear();
+                        for (i, token) in tokens.iter().enumerate() {
+                            state.token_index.insert(*token, i);
+                        }
+                    }
+                }
+                Some(PoolInitResult::CurveState(tokens, balances)) => {
+                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(addr) {
+                        state.balances = balances;
+                        state.token_index.clear();
+                        for (i, token) in tokens.iter().enumerate() {
+                            state.token_index.insert(*token, i);
+                            if i == 0 {
+                                state.info.token0 = *token;
+                            } else if i == 1 {
+                                state.info.token1 = *token;
+                            }
+                        }
                     }
                 }
                 None => {
@@ -500,11 +552,49 @@ impl PoolManager {
         }
     }
 
+    /// Filter pools to only those that have non-empty bytecode at the target block.
+    /// Uses concurrent `eth_getCode` calls bounded by the concurrency limit.
+    /// Pools with empty code (not yet deployed or self-destructed) are excluded.
+    pub async fn filter_existing_pools(
+        rpc: &RpcClient,
+        pools: &[PoolInfo],
+        block_num: u64,
+        concurrency_limit: usize,
+    ) -> Vec<PoolInfo> {
+        if pools.is_empty() {
+            return Vec::new();
+        }
+        let cap = pools.len().clamp(1, concurrency_limit);
+        let semaphore = Arc::new(Semaphore::new(cap));
+
+        let tasks: Vec<_> = pools
+            .iter()
+            .map(|info| {
+                let rpc = rpc.clone();
+                let sem = Arc::clone(&semaphore);
+                let addr = info.address;
+                let info = info.clone();
+                async move {
+                    let _permit = sem.acquire_owned().await.ok();
+                    match rpc.get_code(addr, block_num).await {
+                        Ok(code) if !code.is_empty() => Some(info),
+                        _ => None,
+                    }
+                }
+            })
+            .collect();
+
+        let results = join_all(tasks).await;
+        results.into_iter().flatten().collect()
+    }
+
     /// Fetch the appropriate on-chain state for a pool based on its type.
     async fn fetch_pool_state(
         rpc: &RpcClient,
         pool: Address,
         dt: DexType,
+        pool_id: Option<[u8; 32]>,
+        vault: Option<Address>,
         block: u64,
     ) -> Option<PoolInitResult> {
         match dt {
@@ -516,10 +606,13 @@ impl PoolManager {
                 let (sqrt, tick, liq) = Self::fetch_v3_state(rpc, pool, block).await?;
                 Some(PoolInitResult::V3State(sqrt, tick, liq))
             }
-            DexType::Curve | DexType::Balancer => {
-                // Curve & Balancer state depends on pool-specific parameters
-                // (A, gamma, weights, etc.) — not yet implemented
-                None
+            DexType::Balancer => {
+                let vault = vault?;
+                let pool_id = pool_id?;
+                Self::fetch_balancer_state(rpc, vault, &pool_id, block).await.ok()
+            }
+            DexType::Curve => {
+                Self::fetch_curve_state(rpc, pool, block).await
             }
         }
     }
@@ -826,6 +919,117 @@ impl PoolManager {
         self.wrapped_native = Some(addr);
         self
     }
+
+    /// Set the Balancer V2 vault address for flash loans and pool state queries.
+    pub fn with_balancer_vault(mut self, addr: Address) -> Self {
+        self.balancer_vault = Some(addr);
+        self
+    }
+
+    /// Fetch Balancer V2 pool state (tokens + balances) from the vault.
+    async fn fetch_balancer_state(
+        rpc: &RpcClient,
+        vault: Address,
+        pool_id: &[u8; 32],
+        block: u64,
+    ) -> anyhow::Result<PoolInitResult> {
+        let data = {
+            let mut calldata = Vec::with_capacity(36);
+            calldata.extend_from_slice(&GET_POOL_TOKENS_SELECTOR);
+            calldata.extend_from_slice(pool_id);
+            Bytes::from(calldata)
+        };
+
+        let result = rpc.call(vault, data, block).await?;
+        let return_data = result.0;
+        if return_data.len() < 96 {
+            anyhow::bail!("Balancer getPoolTokens returned too short data");
+        }
+
+        // ABI decode: (address[], uint256[], uint256)
+        // offsets at [0..32] and [32..64]
+        let tokens_offset = U256::from_be_slice(&return_data[..32]);
+        let balances_offset = U256::from_be_slice(&return_data[32..64]);
+        let tokens_len_offset = 32 + tokens_offset.as_limbs()[0] as usize;
+        let token_count = U256::from_be_slice(&return_data[tokens_len_offset..tokens_len_offset + 32]);
+        let token_count = token_count.as_limbs()[0] as usize;
+
+        let tokens_start = tokens_len_offset + 32;
+        let mut tokens = Vec::with_capacity(token_count);
+        for i in 0..token_count {
+            let off = tokens_start + i * 32;
+            let addr = Address::from_slice(&return_data[off + 12..off + 32]);
+            tokens.push(addr);
+        }
+
+        let balances_start = 64 + balances_offset.as_limbs()[0] as usize + 32;
+        let mut balances = Vec::with_capacity(token_count);
+        for i in 0..token_count {
+            let off = balances_start + i * 32;
+            let bal = U256::from_be_slice(&return_data[off..off + 32]);
+            balances.push(bal.as_limbs()[0] as u128);
+        }
+
+        if balances.len() < 2 {
+            anyhow::bail!("Balancer pool has fewer than 2 tokens");
+        }
+
+        Ok(PoolInitResult::BalancerState(tokens, balances))
+    }
+
+    /// Fetch Curve pool state by calling `coins(int128)` and `balances(int128)` for each token index.
+    /// Tries up to 4 token indices (most Curve pools have 2-4 tokens).
+    async fn fetch_curve_state(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<PoolInitResult> {
+        static CURVE_COINS_SELECTOR: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
+        let mut tokens = Vec::new();
+        let mut balances = Vec::new();
+
+        for i in 0u8..4u8 {
+            // Fetch token address
+            let mut coin_calldata = Vec::with_capacity(36);
+            coin_calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
+            let mut arg = [0u8; 32];
+            arg[31] = i;
+            coin_calldata.extend_from_slice(&arg);
+            let coin_data = Bytes::from(coin_calldata);
+
+            let token = match rpc.call(pool, coin_data, block).await {
+                Ok(result) if result.0.len() >= 32 => {
+                    Address::from_slice(&result.0[12..32])
+                }
+                _ => break,
+            };
+
+            // Fetch balance for this token
+            let mut bal_calldata = Vec::with_capacity(36);
+            bal_calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+            let mut bal_arg = [0u8; 32];
+            bal_arg[31] = i;
+            bal_calldata.extend_from_slice(&bal_arg);
+            let bal_data = Bytes::from(bal_calldata);
+
+            let balance = match rpc.call(pool, bal_data, block).await {
+                Ok(result) if result.0.len() >= 32 => {
+                    let bal = U256::from_be_slice(&result.0[..32]);
+                    bal.as_limbs()[0] as u128
+                }
+                _ => break,
+            };
+
+            tokens.push(token);
+            balances.push(balance);
+        }
+
+        if tokens.len() < 2 {
+            return None;
+        }
+
+        Some(PoolInitResult::CurveState(tokens, balances))
+    }
 }
 
 impl Clone for PoolManager {
@@ -836,6 +1040,7 @@ impl Clone for PoolManager {
             token_index: self.token_index.clone(),
             pairs_cache: Mutex::new(cache),
             wrapped_native: self.wrapped_native,
+            balancer_vault: self.balancer_vault,
             known_set: self.known_set.clone(),
             max_pairs_per_token: self.max_pairs_per_token,
             concurrency_limit: self.concurrency_limit,
@@ -877,6 +1082,7 @@ mod tests {
                 dex_type: DexType::UniswapV2,
                 tick_spacing: None,
                 creation_block: 0,
+                pool_id: None,
             },
             reserve0: r0,
             reserve1: r1,
@@ -894,6 +1100,7 @@ mod tests {
                 dex_type: DexType::UniswapV3,
                 tick_spacing: Some(60),
                 creation_block: 0,
+                pool_id: None,
             },
             sqrt_price_x96: sqrt,
             tick,

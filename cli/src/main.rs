@@ -343,35 +343,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            // Run pool discovery if configured
-            if let Some(start_block) = validation_result.chain_config.pool_discovery_start_block {
-                let mut v2_addrs = Vec::new();
-                if let Some(factories) = &validation_result.chain_config.uniswap_v2_factories {
-                    for s in factories {
-                        if let Ok(addr) = s.parse::<alloy::primitives::Address>() {
-                            v2_addrs.push(addr);
-                        }
-                    }
-                }
-                let mut v3_addrs = Vec::new();
-                if let Some(factories) = &validation_result.chain_config.uniswap_v3_factories {
-                    for s in factories {
-                        if let Ok(addr) = s.parse::<alloy::primitives::Address>() {
-                            v3_addrs.push(addr);
-                        }
-                    }
-                }
-                let batch_size = validation_result.chain_config.pool_discovery_batch_size.unwrap_or(10);
-                if !v2_addrs.is_empty() || !v3_addrs.is_empty() {
-                    let discovered = mev_scout_core::pool::discovery::discover_pools(
-                        &rpc, &cache, &v2_addrs, &v3_addrs, start_block,
-                        resolved.start_block.saturating_sub(1), batch_size,
-                    ).await?;
-                    if discovered > 0 {
-                        tracing::info!("Discovered {} new pools", discovered);
-                    }
-                }
-            }
+            // Pool discovery is a separate upfront step.
+            // Run `mev-scout discover` before `mev-scout run` to populate the pool cache.
 
             let run_id = format!(
                 "run_{}",
@@ -463,6 +436,11 @@ async fn main() -> anyhow::Result<()> {
             pool_manager.set_max_pairs_per_token(config.max_pairs_per_token);
             if let Some(workers) = config.rpc_workers {
                 pool_manager.set_concurrency_limit(workers as u32);
+            }
+            if let Some(vault_str) = &validation_result.chain_config.balancer_vault {
+                if let Ok(vault_addr) = vault_str.parse::<Address>() {
+                    pool_manager = pool_manager.with_balancer_vault(vault_addr);
+                }
             }
             let prev_block = resolved.start_block.saturating_sub(1);
             if !validation_result.strategies.is_empty() {
@@ -987,13 +965,14 @@ async fn main() -> anyhow::Result<()> {
             println!();
 
             let mut all_pools = Vec::new();
+            let v2_fee_override = chain_config.and_then(|c| c.uniswap_v2_default_fee);
 
             // V2 discovery batched
             for &factory in &v2_addrs {
                 let mut current = from;
                 while current <= to {
                     let end = (current + batch_size - 1).min(to);
-                    match discover_v2_pools(&rpc, factory, current, end).await {
+                    match discover_v2_pools(&rpc, factory, current, end, v2_fee_override).await {
                         Ok(pools) => {
                             for p in &pools {
                                 println!(
@@ -1037,6 +1016,69 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Balancer V2 pool discovery (optional)
+            if let Some(vault_str) = chain_config.and_then(|c| c.balancer_vault.as_ref()) {
+                if let Ok(vault) = vault_str.parse::<Address>() {
+                    let balancer_start = chain_config
+                        .and_then(|c| c.pool_discovery_start_block)
+                        .unwrap_or(from);
+                    println!();
+                    println!("  Balancer V2 vault: {}", vault);
+                    let mut current = balancer_start.max(from);
+                    while current <= to {
+                        let end = (current + batch_size - 1).min(to);
+                        match mev_scout_core::pool::discovery::discover_balancer_pools(
+                            &rpc, vault, current, end,
+                        ).await {
+                            Ok(pools) => {
+                                for p in &pools {
+                                    println!(
+                                        "  Balancer {}",
+                                        p.address,
+                                    );
+                                }
+                                all_pools.extend(pools);
+                            }
+                            Err(e) => {
+                                eprintln!("  Error scanning Balancer vault {vault} blocks {current}..{end}: {e}");
+                            }
+                        }
+                        if end == to { break; }
+                        current = end + 1;
+                    }
+                }
+            }
+
+            // Curve pool discovery (optional)
+            if let Some(registry_str) = chain_config.and_then(|c| c.curve_registry.as_ref()) {
+                if let Ok(registry) = registry_str.parse::<Address>() {
+                    let curve_start = chain_config
+                        .and_then(|c| c.pool_discovery_start_block)
+                        .unwrap_or(from);
+                    println!();
+                    println!("  Curve registry: {}", registry);
+                    let mut current = curve_start.max(from);
+                    while current <= to {
+                        let end = (current + batch_size - 1).min(to);
+                        match mev_scout_core::pool::discovery::discover_curve_pools(
+                            &rpc, registry, current, end,
+                        ).await {
+                            Ok(pools) => {
+                                for p in &pools {
+                                    println!("  Curve  {}", p.address);
+                                }
+                                all_pools.extend(pools);
+                            }
+                            Err(e) => {
+                                eprintln!("  Error scanning Curve registry {registry} blocks {current}..{end}: {e}");
+                            }
+                        }
+                        if end == to { break; }
+                        current = end + 1;
+                    }
+                }
+            }
+
             println!();
             println!("  Found {} pool(s)", all_pools.len());
 
@@ -1053,6 +1095,18 @@ async fn main() -> anyhow::Result<()> {
                 }
                 for &factory in &v3_addrs {
                     let _ = cache.put_discovery_cursor(&factory, to);
+                }
+                // Save Balancer vault cursor if present
+                if let Some(vault_str) = chain_config.and_then(|c| c.balancer_vault.as_ref()) {
+                    if let Ok(vault) = vault_str.parse::<Address>() {
+                        let _ = cache.put_discovery_cursor(&vault, to);
+                    }
+                }
+                // Save Curve registry cursor if present
+                if let Some(registry_str) = chain_config.and_then(|c| c.curve_registry.as_ref()) {
+                    if let Ok(registry) = registry_str.parse::<Address>() {
+                        let _ = cache.put_discovery_cursor(&registry, to);
+                    }
                 }
                 println!("  Saved to cache: {}", args.cache_dir);
             }

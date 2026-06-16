@@ -37,6 +37,15 @@ pub struct ChainConfig {
     /// Address of the chain's wrapped native token (e.g., WMATIC on Polygon, WETH on Ethereum)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_native_token: Option<String>,
+    /// Default fee (in bps) for V2 pools discovered from the factory.
+    /// Overrides the hardcoded 30 bps default. Set per-chain as needed.
+    /// Example: BSC PancakeSwap uses 25 bps (0.25%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uniswap_v2_default_fee: Option<u32>,
+    /// Curve pool registry contract address for on-chain pool discovery.
+    /// When set, `PoolAdded` events are scanned to discover Curve pools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve_registry: Option<String>,
 }
 
 /// Top-level runtime configuration for MEV backtest runs.
@@ -199,9 +208,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(polygon_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(49_100_000), // QuickSwap factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: None,
         },
     );
     let avalanche_factories = vec![
@@ -219,9 +230,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(avalanche_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(4_200_000), // SushiSwap / Trader Joe deploy era
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: None,
         },
     );
     let bsc_factories = vec![
@@ -239,9 +252,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(bsc_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(5_063_800), // PancakeSwap V2 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".to_string()),
+            uniswap_v2_default_fee: Some(25), // PancakeSwap V2 uses 0.25%
+            curve_registry: None,
         },
     );
     let arbitrum_factories = vec![
@@ -258,9 +273,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(arbitrum_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(172_000), // Uniswap V3 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: None,
         },
     );
     let base_factories = vec![
@@ -277,9 +294,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(base_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(96_000), // Aerodrome factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: None,
         },
     );
     let ethereum_factories = vec![
@@ -298,9 +317,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(ethereum_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(10_008_335), // Uniswap V2 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
         },
     );
     let optimism_factories = vec![
@@ -317,9 +338,11 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             pools_registry_path: None,
             uniswap_v2_factories: Some(optimism_factories),
-            pool_discovery_start_block: Some(0),
+            pool_discovery_start_block: Some(10_827_000), // Uniswap V3 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
+            uniswap_v2_default_fee: None,
+            curve_registry: None,
         },
     );
     m

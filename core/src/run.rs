@@ -63,9 +63,11 @@ impl BacktestRunner {
     /// on-chain reserve state at a reference block.
     ///
     /// Loads pool definitions from the sled cache (on-chain discovery from
-    /// prior runs or auto-discovery at backtest start). Then fetches current
-    /// reserves for each pool via `eth_call getReserves()` (V2) or
-    /// `slot0()/liquidity()` (V3) with up to 20 concurrent RPC calls.
+    /// prior runs). Pools whose `creation_block` is after the target block are
+    /// skipped without an RPC call. Remaining pools are verified via
+    /// concurrent `eth_getCode` checks to filter any that don't exist at the
+    /// target block. Then fetches current reserves for each pool via
+    /// `eth_call getReserves()` (V2) or `slot0()/liquidity()` (V3).
     ///
     /// Pools that fail to initialize (e.g., the contract no longer exists at
     /// that block) are logged as warnings but do not halt execution.
@@ -75,16 +77,45 @@ impl BacktestRunner {
         block_num: u64,
         cache: Option<&CacheStore>,
     ) {
+        let mut loaded_pools: Vec<PoolInfo> = Vec::new();
+
         // Load discovered pools from sled cache (if available)
         if let Some(cache) = cache {
             match cache.list_discovered_pools() {
                 Ok(pools) => {
+                    let mut skipped_creation = 0usize;
                     for info in &pools {
-                        add_pool_to_manager(pool_manager, info.clone());
+                        // Layer 1: free check — skip if pool was created after target block
+                        if info.creation_block > 0 && info.creation_block > block_num {
+                            skipped_creation += 1;
+                            continue;
+                        }
+                        loaded_pools.push(info.clone());
                     }
-                    tracing::info!("Loaded {} pools from discovery cache", pools.len());
+                    tracing::info!(
+                        "Loaded {} pools from discovery cache (skipped {} by creation block)",
+                        loaded_pools.len(),
+                        skipped_creation
+                    );
                 }
                 Err(e) => tracing::warn!("Failed to list discovered pools: {}", e),
+            }
+        }
+
+        // Layer 2: verify remaining pools exist at target block via eth_getCode
+        if !loaded_pools.is_empty() {
+            let existing = PoolManager::filter_existing_pools(rpc, &loaded_pools, block_num, 20).await;
+            let removed = loaded_pools.len() - existing.len();
+            if removed > 0 {
+                tracing::info!("Removed {} pools that don't exist at block {}", removed, block_num);
+            }
+            for info in &existing {
+                // Dedup: skip if already added from registry
+                if pool_manager.get(&info.address).is_some() {
+                    tracing::debug!("Skipping duplicate pool {} (already loaded)", info.address);
+                    continue;
+                }
+                add_pool_to_manager(pool_manager, info.clone());
             }
         }
 

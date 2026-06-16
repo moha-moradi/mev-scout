@@ -50,7 +50,7 @@ async fn test_e2e_discover_ethereum_v2_pools() {
 
     // Scan a range with known PairCreated events
     let pools = match mev_scout_core::pool::discovery::discover_v2_pools(
-        &rpc, factory, 20_000_000, 20_001_000,
+        &rpc, factory, 20_000_000, 20_001_000, None,
     ).await {
         Ok(p) => p,
         Err(e) => {
@@ -123,7 +123,7 @@ async fn test_e2e_discover_with_batching() {
     };
 
     let total = match mev_scout_core::pool::discovery::discover_pools(
-        &rpc, &cache, &[factory], &[], 20_000_000, 20_001_000, 100,
+        &rpc, &cache, &[factory], &[], None, 20_000_000, 20_001_000, 100, 0, &[],
     ).await {
         Ok(n) => n,
         Err(e) => {

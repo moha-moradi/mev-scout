@@ -352,7 +352,8 @@ mod tests {
             info: PoolInfo {
                 address: pool_p(), token0: wmatic(), token1: usdc(), fee: 30, name: None,
                 dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
-                creation_block: 0,
+                                creation_block: 0,
+                pool_id: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         }));
@@ -362,7 +363,8 @@ mod tests {
                 token1: address!("c2132d05d31c914a87c6611c10748aeb04b58e8f"),
                 fee: 30, name: None,
                 dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
-                creation_block: 0,
+                                creation_block: 0,
+                pool_id: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         }));
@@ -433,6 +435,7 @@ mod tests {
                     fee: 30, name: None,
                     dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                     creation_block: 0,
+                    pool_id: None,
                 },
                 reserve0: 1_000_000, reserve1: 1_000_000,
             }));
