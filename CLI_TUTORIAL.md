@@ -160,7 +160,7 @@ You must specify one of these mutually exclusive options:
 |------|---------|-------------|
 | `--output <F>` | `table` | `table`, `csv`, `json` |
 | `--export-path <PATH>` | `./results` | Directory for saved JSON/CSV files |
-| `--cache-dir <PATH>` | `./cache` | Directory for block/state sled cache |
+| `--db-path <PATH>` | `./cache/mev-scout.sqlite` | Path to SQLite database for block/state cache |
 | `--fact-check` | off | Print detailed fact-check report after the run and save as `{run_id}_factcheck.json` |
 
 ### Examples
@@ -216,7 +216,7 @@ mev-scout run --block 10000000 \
 1. Resolves block range (e.g., converts `--days 7` to actual block numbers)
 2. Prints a startup plan with chain, RPC, strategies, gas model
 3. Checks RPC connection
-4. Opens/creates the sled cache database
+4. Opens/creates the SQLite database
 5. If `pool_discovery_start_block` is configured, scans for new pools
 6. Initializes pool manager (loads pool registry, queries on-chain reserves)
 7. For each block in the range:
@@ -433,8 +433,8 @@ mev-scout discover --from-block <N> --to-block <N> [OPTIONS]
 | `--from-block <N>` | **(required)** | Start block (inclusive) |
 | `--to-block <N>` | **(required)** | End block (inclusive) |
 | `--batch-size <N>` | `10` | Blocks per `eth_getLogs` request |
-| `--save` | off | Save discovered pools to sled cache |
-| `--cache-dir <PATH>` | `./cache` | Cache directory (used with `--save`) |
+| `--save` | off | Save discovered pools to local cache |
+| `--db-path <PATH>` | `./cache/mev-scout.sqlite` | Path to SQLite database (used with `--save`) |
 
 > If neither `--v2-factories` nor `--v3-factory` is provided, the command falls back to the chain's default or config-file factory addresses. At least one factory address must be available from either source.
 
@@ -635,7 +635,7 @@ Public RPCs (`*.publicnode.com`) are rate-limited. For large ranges:
 
 ### Cache management
 
-- Cache is stored in `./cache` by default (sled embedded database)
+- Cache is stored in `./cache/mev-scout.sqlite` by default (SQLite database)
 - Cache is keyed by **chain ID**, so switching chains creates separate namespaces
 - Delete the cache directory to start fresh
 - Use `--cache-dir` to point to different locations for different chains/projects

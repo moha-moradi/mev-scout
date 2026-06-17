@@ -6,7 +6,7 @@ use alloy::primitives::{keccak256, Address, B256};
 use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
-use crate::cache::CacheStore;
+use crate::cache::SqliteStore;
 use crate::pool::dex_type::DexType;
 use crate::pool::state::PoolInfo;
 use crate::rpc::RpcClient;
@@ -301,7 +301,7 @@ pub async fn discover_curve_pools(
 
 pub async fn discover_pools(
     rpc: &RpcClient,
-    cache: &CacheStore,
+    cache: &SqliteStore,
     v2_factories: &[Address],
     v3_factories: &[Address],
     balancer_vault: Option<Address>,

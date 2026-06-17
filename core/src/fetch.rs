@@ -1,5 +1,4 @@
-//! Block data fetching with caching — downloads blocks from the RPC endpoint and stores them.
-
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,7 +7,8 @@ use tokio::sync::Semaphore;
 
 use alloy::primitives::Address;
 
-use crate::cache::CacheStore;
+use crate::cache::SqliteStore;
+use crate::parquet_writer::ParquetWriter;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
 use crate::scan::ActivityScanner;
@@ -31,16 +31,18 @@ pub struct FetchSummary {
 
 pub struct Fetcher {
     rpc: RpcClient,
-    cache: CacheStore,
+    cache: SqliteStore,
     parallelism: usize,
+    parquet: Option<ParquetWriter>,
 }
 
 impl Fetcher {
-    pub fn new(rpc: RpcClient, cache: CacheStore) -> Self {
+    pub fn new(rpc: RpcClient, cache: SqliteStore) -> Self {
         Fetcher {
             rpc,
             cache,
             parallelism: 1,
+            parquet: None,
         }
     }
 
@@ -49,12 +51,59 @@ impl Fetcher {
         self
     }
 
+    /// Enable Parquet output. Writes one file per type under `dir`.
+    pub fn with_parquet(mut self, dir: impl AsRef<Path>) -> Self {
+        self.parquet = Some(ParquetWriter::new(dir));
+        self
+    }
+
     pub fn rpc_client(&self) -> &RpcClient {
         &self.rpc
     }
 
-    pub fn cache_store(&self) -> &CacheStore {
+    pub fn cache_store(&self) -> &SqliteStore {
         &self.cache
+    }
+
+    /// Write all cached data in `start..=end` to Parquet files.
+    fn flush_parquet(&self, start: u64, end: u64) -> anyhow::Result<()> {
+        let pw = match &self.parquet {
+            Some(pw) => pw,
+            None => return Ok(()),
+        };
+
+        let mut blocks = Vec::new();
+        let mut all_txs = Vec::new();
+        let mut all_receipts = Vec::new();
+        for n in start..=end {
+            if let Some(block) = self.cache.get_block(n)? {
+                blocks.push(block);
+            }
+            if let Some(txs) = self.cache.get_txs(n)? {
+                all_txs.push(txs);
+            }
+            if let Some(receipts) = self.cache.get_receipts(n)? {
+                all_receipts.push(receipts);
+            }
+        }
+
+        if !blocks.is_empty() {
+            pw.write_all_blocks(&blocks)?;
+        }
+        if !all_txs.is_empty() {
+            pw.write_all_txs(&all_txs)?;
+        }
+        if !all_receipts.is_empty() {
+            pw.write_all_receipts(&all_receipts)?;
+        }
+
+        tracing::info!(
+            "Wrote Parquet cache: {} blocks, {} tx batches, {} receipt batches",
+            blocks.len(),
+            all_txs.len(),
+            all_receipts.len(),
+        );
+        Ok(())
     }
 
     pub async fn fetch_range<F: Fn() + Sync>(
@@ -92,6 +141,9 @@ impl Fetcher {
                 tick();
             }
         }
+
+        // Write Parquet cache from SQLite data
+        self.flush_parquet(range.start_block, range.end_block)?;
 
         // Integrity check
         summary.missing_after_fetch = self
@@ -204,6 +256,11 @@ impl Fetcher {
             }
         }
 
+        // Write Parquet cache from SQLite data
+        let min = sorted.first().copied().unwrap_or(range.start_block);
+        let max = sorted.last().copied().unwrap_or(range.end_block);
+        self.flush_parquet(min, max)?;
+
         // Integrity check only on the blocks we attempted to fetch
         summary.missing_after_fetch = self
             .cache
@@ -229,5 +286,3 @@ impl Fetcher {
         Ok(refetched)
     }
 }
-
-

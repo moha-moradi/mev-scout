@@ -8,7 +8,7 @@ use comfy_table::Table;
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing_subscriber::EnvFilter;
 
-use mev_scout_core::cache::{CacheStore, RunManifest};
+use mev_scout_core::cache::{SqliteStore, RunManifest};
 use mev_scout_core::cli::{Cli, Command};
 use mev_scout_core::config::{CliOverrides, Config};
 use mev_scout_core::fact_check::{BlockReplayStats, compute_block_summaries, FactCheckReport, verify_opportunities};
@@ -57,7 +57,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: Some(args.priority_fee),
             output: Some(args.output.clone()),
             export_path: Some(args.export_path.clone()),
-            cache_dir: Some(args.cache_dir.clone()),
+            db_path: Some(args.db_path.clone()),
+            parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
         },
         Command::Fetch(args) => CliOverrides {
@@ -76,7 +77,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: Some(args.cache_dir.clone()),
+            db_path: Some(args.db_path.clone()),
+            parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
         },
         Command::Replay(args) => CliOverrides {
@@ -95,7 +97,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: Some(args.cache_dir.clone()),
+            db_path: Some(args.db_path.clone()),
+            parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
         },
         Command::Report(args) => CliOverrides {
@@ -114,7 +117,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: Some(args.output.clone()),
             export_path: Some(args.export_path.clone()),
-            cache_dir: None,
+            db_path: None,
+            parquet_dir: None,
             coingecko_api_key: None,
         },
         Command::Config => CliOverrides {
@@ -133,7 +137,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: None,
+            db_path: None,
+            parquet_dir: None,
             coingecko_api_key: None,
         },
         Command::Discover(args) => CliOverrides {
@@ -152,7 +157,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: Some(args.cache_dir.clone()),
+            db_path: Some(args.db_path.clone()),
+            parquet_dir: None,
             coingecko_api_key: None,
         },
         Command::FactCheck(_) => CliOverrides {
@@ -171,7 +177,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            cache_dir: None,
+            db_path: None,
+            parquet_dir: None,
             coingecko_api_key: None,
         },
     }
@@ -331,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
             let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
             let rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
             rpc.check_connection(validation_result.chain_config.chain_id).await?;
-            let cache = CacheStore::open(&config.cache_dir, validation_result.chain_config.chain_id)?;
+            let cache = SqliteStore::open(&config.db_path, validation_result.chain_config.chain_id)?;
 
             // Resolve block range
             let resolver = RangeResolver::new(rpc.clone());
@@ -392,6 +399,9 @@ async fn main() -> anyhow::Result<()> {
 
             // Phase 1: Fetch relevant blocks (log-first optimization)
             let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
+            if let Some(pq_dir) = &config.parquet_dir {
+                fetcher = fetcher.with_parquet(pq_dir);
+            }
             if let Some(workers) = config.rpc_workers {
                 fetcher = fetcher.with_parallelism(workers);
             }
@@ -567,7 +577,7 @@ async fn main() -> anyhow::Result<()> {
             let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
             rpc.check_connection(chain_id).await?;
 
-            let cache = CacheStore::open(&args.cache_dir, chain_id)?;
+            let cache = SqliteStore::open(&args.db_path, chain_id)?;
 
             let range_mode = match validation::resolve_block_range(
                 args.block_range.days,
@@ -614,6 +624,9 @@ async fn main() -> anyhow::Result<()> {
             println!();
 
             let mut fetcher = Fetcher::new(rpc, cache);
+            if let Some(pq_dir) = &config.parquet_dir {
+                fetcher = fetcher.with_parquet(pq_dir);
+            }
             if let Some(workers) = config.rpc_workers {
                 fetcher = fetcher.with_parallelism(workers);
             }
@@ -751,7 +764,7 @@ async fn main() -> anyhow::Result<()> {
             let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
             let rpc = RpcClient::from_urls(&rpc_urls, chain_config.chain_id)?;
             rpc.check_connection(chain_config.chain_id).await?;
-            let cache = CacheStore::open(&config.cache_dir, chain_config.chain_id)?;
+            let cache = SqliteStore::open(&config.db_path, chain_config.chain_id)?;
 
             let block_num = args.block;
             let tx_index = args.tx_index.unwrap_or(usize::MAX);
@@ -1084,7 +1097,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Save to cache if requested
             if args.save {
-                let cache = CacheStore::open(&args.cache_dir, chain_id)?;
+            let cache = SqliteStore::open(&args.db_path, chain_id)?;
                 for pool in &all_pools {
                     let info: mev_scout_core::pool::state::PoolInfo = pool.clone().into();
                     let _ = cache.put_discovered_pool(&info);
@@ -1108,7 +1121,7 @@ async fn main() -> anyhow::Result<()> {
                         let _ = cache.put_discovery_cursor(&registry, to);
                     }
                 }
-                println!("  Saved to cache: {}", args.cache_dir);
+                println!("  Saved to cache: {}", args.db_path);
             }
         }
         Command::FactCheck(args) => {

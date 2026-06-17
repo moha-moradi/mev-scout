@@ -40,7 +40,7 @@ pub enum Command {
     Replay(ReplayArgs),
 
     /// Discover pools from factory events via the RPC endpoint.
-    /// Found pools are printed to stdout and optionally saved to the sled cache.
+    /// Found pools are printed to stdout and optionally saved to the local cache.
     Discover(DiscoverArgs),
 
     /// Verify a previous run's results
@@ -125,9 +125,13 @@ pub struct RunArgs {
     #[arg(long, default_value = "./results", value_name = "PATH", help_heading = "Output")]
     pub export_path: String,
 
-    /// Block/state cache directory
-    #[arg(long, default_value = "./cache", value_name = "PATH", help_heading = "Output")]
-    pub cache_dir: String,
+    /// SQLite database path
+    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH", help_heading = "Output")]
+    pub db_path: String,
+
+    /// Parquet directory (optional, unset = no Parquet output)
+    #[arg(long = "parquet-dir", value_name = "PATH", help_heading = "Output")]
+    pub parquet_dir: Option<String>,
 
     /// Print detailed fact-check report after the run
     #[arg(long, help_heading = "Output")]
@@ -142,9 +146,13 @@ pub struct FetchArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Block/state cache directory
-    #[arg(long, default_value = "./cache", value_name = "PATH")]
-    pub cache_dir: String,
+    /// SQLite database path
+    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
+    pub db_path: String,
+
+    /// Parquet directory (optional, unset = no Parquet output)
+    #[arg(long = "parquet-dir", value_name = "PATH")]
+    pub parquet_dir: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -160,9 +168,13 @@ pub struct ReplayArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Block/state cache directory
-    #[arg(long, default_value = "./cache", value_name = "PATH")]
-    pub cache_dir: String,
+    /// SQLite database path
+    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
+    pub db_path: String,
+
+    /// Parquet directory (optional, unset = no Parquet output)
+    #[arg(long = "parquet-dir", value_name = "PATH")]
+    pub parquet_dir: Option<String>,
 
     /// Show DEX interaction analysis per transaction
     #[arg(long)]
@@ -220,11 +232,11 @@ pub struct DiscoverArgs {
     #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,
 
-    /// Save discovered pools to the sled cache
+    /// Save discovered pools to the SQLite cache
     #[arg(long)]
     pub save: bool,
 
-    /// Block/state cache directory (used when --save is set)
-    #[arg(long, default_value = "./cache", value_name = "PATH")]
-    pub cache_dir: String,
+    /// SQLite database path (used when --save is set)
+    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
+    pub db_path: String,
 }

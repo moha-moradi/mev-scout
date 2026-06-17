@@ -9,6 +9,7 @@ pub mod data;
 pub mod fact_check;
 pub mod fetch;
 pub mod mev;
+pub mod parquet_writer;
 pub mod pool;
 pub mod replay;
 pub mod scan;

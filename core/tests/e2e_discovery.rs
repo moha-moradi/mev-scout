@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn temp_cache_dir() -> std::path::PathBuf {
+fn temp_db_path() -> std::path::PathBuf {
     let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("mev_e2e_discovery_{n}"))
+    std::env::temp_dir().join(format!("mev_e2e_discovery_{n}.sqlite"))
 }
 
 fn rpc_url() -> Option<String> {
@@ -37,9 +37,9 @@ async fn test_e2e_discover_ethereum_v2_pools() {
     };
 
     let factory = eth_uniswap_v2_factory();
-    let cache_dir = temp_cache_dir();
-    let cache = match mev_scout_core::cache::CacheStore::open(
-        cache_dir.to_str().unwrap(), 1,
+    let db_path = temp_db_path();
+    let cache = match mev_scout_core::cache::SqliteStore::open(
+        db_path.to_str().unwrap(), 1,
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -55,7 +55,7 @@ async fn test_e2e_discover_ethereum_v2_pools() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Skipping: discovery failed (RPC may be unavailable): {e}");
-            std::fs::remove_dir_all(&cache_dir).ok();
+            std::fs::remove_file(&db_path).ok();
             return;
         }
     };
@@ -87,7 +87,7 @@ async fn test_e2e_discover_ethereum_v2_pools() {
     assert!(!all.is_empty(), "list_discovered_pools should return pools");
     assert!(all.iter().any(|p| p.address == info.address), "List should include saved pool");
 
-    std::fs::remove_dir_all(&cache_dir).ok();
+    std::fs::remove_file(&db_path).ok();
     eprintln!("PASS: discovered {} V2 pools on Ethereum", pools.len());
 }
 
@@ -111,9 +111,9 @@ async fn test_e2e_discover_with_batching() {
     };
 
     let factory = eth_uniswap_v2_factory();
-    let cache_dir = temp_cache_dir();
-    let cache = match mev_scout_core::cache::CacheStore::open(
-        cache_dir.to_str().unwrap(), 1,
+    let db_path = temp_db_path();
+    let cache = match mev_scout_core::cache::SqliteStore::open(
+        db_path.to_str().unwrap(), 1,
     ) {
         Ok(c) => c,
         Err(e) => {
@@ -128,7 +128,7 @@ async fn test_e2e_discover_with_batching() {
         Ok(n) => n,
         Err(e) => {
             eprintln!("Skipping: batch discovery failed: {e}");
-            std::fs::remove_dir_all(&cache_dir).ok();
+            std::fs::remove_file(&db_path).ok();
             return;
         }
     };
@@ -139,7 +139,7 @@ async fn test_e2e_discover_with_batching() {
     let cursor = cache.get_discovery_cursor(&factory).unwrap();
     assert_eq!(cursor, Some(20_001_000), "Cursor should advance to end block");
 
-    std::fs::remove_dir_all(&cache_dir).ok();
+    std::fs::remove_file(&db_path).ok();
     eprintln!("PASS: batch discovery found {total} pools");
 }
 

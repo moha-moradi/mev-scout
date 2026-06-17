@@ -2,7 +2,7 @@
 
 A high-fidelity historical backtesting engine for detecting Maximal Extractable Value (MEV) opportunities on EVM-compatible blockchains. Currently supports 7 chains with a focus on Polygon.
 
-**Design philosophy:** No API-key-gated services. Relies entirely on public RPC endpoints (`*.publicnode.com`) and on-chain data. All block data is cached locally in an embedded `sled` database for fast replay.
+**Design philosophy:** No API-key-gated services. Relies entirely on public RPC endpoints (`*.publicnode.com`) and on-chain data. All block data is cached locally in a SQLite database for fast replay.
 
 ---
 
@@ -112,7 +112,7 @@ mev-scout run [OPTIONS]
 |------|---------|-------------|
 | `--output <FORMAT>` | `table` | Output format: `table`, `csv`, `json`. |
 | `--export-path <PATH>` | `./results` | Directory for CSV/JSON exports. |
-| `--cache-dir <PATH>` | `./cache` | Block/state cache directory (sled database). |
+| `--db-path <PATH>` | `./cache/mev-scout.sqlite` | Path to SQLite database for block/state cache. |
 
 **Example:**
 
@@ -211,8 +211,8 @@ Scans factory contract events (`PairCreated` / `PoolCreated`) to discover liquid
 | `--from-block <N>` | (required) | Start block for scanning |
 | `--to-block <N>` | (required) | End block for scanning |
 | `--batch-size <N>` | `50000` | Block range per `eth_getLogs` request |
-| `--save` | off | Save discovered pools to the sled cache |
-| `--cache-dir <PATH>` | `./cache` | Cache directory (used with `--save`) |
+| `--save` | off | Save discovered pools to the local cache |
+| `--db-path <PATH>` | `./cache/mev-scout.sqlite` | Path to SQLite database (used with `--save`) |
 
 ```bash
 # Discover V2 pools on Ethereum: QuickSwap factory, blocks 15M–16M
@@ -334,8 +334,8 @@ output = "table"
 # Export directory
 export_path = "./results"
 
-# Cache directory (sled database)
-cache_dir = "./cache"
+# Database path (SQLite database)
+db_path = "./cache/mev-scout.sqlite"
 
 # Per-chain configurations
 [chains.polygon]
@@ -381,7 +381,7 @@ Seven chains are preconfigured with chain IDs, contract addresses, factory addre
    - Calls `eth_call getReserves()` for each pool at `(start_block - 1)` to capture pre-backtest state.
    - Parallel fetches with a semaphore cap of 20 concurrent RPC calls.
 8. **Per-Block Loop**:
-   - Loads block header, transactions, and receipts from the sled cache (fetches from RPC if not cached).
+   - Loads block header, transactions, and receipts from the SQLite cache (fetches from RPC if not cached).
    - Builds a revm execution context with `CachedRpcDb` — a lazy-loading database that checks cache first, then falls back to RPC.
    - **Transaction filter:** For each tx, checks if the `to` address or any log emitter address is a tracked pool or token. If not, skips EVM execution and builds the result directly from the cached receipt (fast path). In `--fast-mode`, only pool addresses are matched (tokens are skipped).
    - After each tx, processes Swap and Sync events to update pool reserves.
@@ -398,13 +398,13 @@ Seven chains are preconfigured with chain IDs, contract addresses, factory addre
 - Parallel block fetching using `tokio` with configurable concurrency.
 - Progress bar display during fetch operations.
 - Integrity verification — auto-detects and refetches missing blocks.
-- All data stored in a sled embedded database: blocks, transactions, receipts, accounts, storage slots, contract code.
+- All data stored in a SQLite database: blocks, transactions, receipts, accounts, storage slots, contract code.
 - Run manifests stored with each execution for traceability.
 
 ### EVM State Replay
 
 - Full transaction re-execution using **revm** (Rust EVM).
-- `CachedRpcDb` implements revm's `Database` trait with a lazy-fetch strategy: check sled cache → query RPC → cache result.
+- `CachedRpcDb` implements revm's `Database` trait with a lazy-fetch strategy: check SQLite cache → query RPC → cache result.
 - Polygon fork support: BLS12-377 precompile addresses registered, state receiver system contract accounted for, spec ID selection by block number (Berlin / London / Cancun).
 - **Filtered replay:** Transactions that don't interact with tracked pools or tokens skip EVM execution entirely, using the cached receipt directly. This dramatically speeds up backtests over large ranges.
 - Receipt verification compares re-execution results against cached receipts (status, gas used, logs).
@@ -570,7 +570,7 @@ Two-tier pricing system:
 - Configured via `uniswap_v2_factories`, `uniswap_v3_factory`, and `pool_discovery_start_block` in chain config.
 - Enable by setting `pool_discovery_start_block` in the chain config. On `run`, the engine scans from that block (or the last saved cursor) to `start_block - 1` before initializing pool reserves.
 - Standalone CLI command: `mev-scout discover` for ad-hoc discovery with optional `--save` to cache.
-- Discovered pools persist in the sled cache and are loaded on subsequent runs alongside the registry JSON files.
+- Discovered pools persist in the SQLite cache and are loaded on subsequent runs alongside the registry JSON files.
 
 ### Multi-Chain Support
 
@@ -666,7 +666,7 @@ Public RPC endpoints (`*.publicnode.com`) are free but rate-limited. For large b
 
 ### Cache directory
 
-- The cache is stored in `./cache` by default as a sled database.
+- The cache is stored in `./cache/mev-scout.sqlite` by default as a SQLite database.
 - If the cache becomes corrupted or you want a fresh start, delete the cache directory.
 - Cache is keyed by chain ID, so switching chains creates separate cache namespaces.
 

@@ -6,7 +6,7 @@
 
 When `pool_discovery_start_block` is configured, the `run` command:
 1. Scans V2/V3 factory events from `start_block` to `resolved.start_block - 1`
-2. Saves discovered pools to sled cache
+2. Saves discovered pools to local cache (SQLite)
 3. Loads all pools from cache into `PoolManager`
 4. Proceeds to fetch/replay
 

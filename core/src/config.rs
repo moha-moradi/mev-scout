@@ -82,9 +82,13 @@ pub struct Config {
     /// Directory for result exports
     #[serde(default = "default_export_path")]
     pub export_path: String,
-    /// Directory for on-disk block/tx cache
-    #[serde(default = "default_cache_dir")]
-    pub cache_dir: String,
+    /// Directory for SQLite database file
+    #[serde(default = "default_db_path")]
+    pub db_path: String,
+
+    /// Directory for Parquet intermediate files (optional, unset = no Parquet)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parquet_dir: Option<String>,
     /// Block range (not serialized to TOML directly, handled via CLI merge)
     #[serde(skip)]
     pub days: Option<u64>,
@@ -151,7 +155,7 @@ fn default_export_path() -> String {
     "./results".to_string()
 }
 
-fn default_cache_dir() -> String {
+fn default_db_path() -> String {
     "./cache".to_string()
 }
 
@@ -171,7 +175,8 @@ impl Default for Config {
             priority_fee_gwei: default_priority_fee_gwei(),
             output: default_output_format(),
             export_path: default_export_path(),
-            cache_dir: default_cache_dir(),
+            db_path: default_db_path(),
+            parquet_dir: None,
             days: None,
             blocks: None,
             block: None,
@@ -434,7 +439,8 @@ Block range:     {} → {}
 Strategies:      {}
 Flash loan:      {}
 Gas model:       {}
-Cache dir:       {}
+DB path:         {}
+Parquet dir:     {}
 "#,
             chain_name,
             chain_cfg.chain_id,
@@ -444,7 +450,8 @@ Cache dir:       {}
             strat_list,
             provider_desc,
             self.gas_model,
-            self.cache_dir,
+            self.db_path,
+            self.parquet_dir.as_deref().unwrap_or("(none)"),
         )
     }
 }
@@ -466,7 +473,8 @@ pub struct CliOverrides {
     pub priority_fee_gwei: Option<f64>,
     pub output: Option<String>,
     pub export_path: Option<String>,
-    pub cache_dir: Option<String>,
+    pub db_path: Option<String>,
+    pub parquet_dir: Option<String>,
     pub coingecko_api_key: Option<String>,
 }
 
@@ -514,8 +522,11 @@ impl Config {
         if let Some(v) = &overrides.export_path {
             self.export_path = v.clone();
         }
-        if let Some(v) = &overrides.cache_dir {
-            self.cache_dir = v.clone();
+        if let Some(v) = &overrides.db_path {
+            self.db_path = v.clone();
+        }
+        if let Some(v) = &overrides.parquet_dir {
+            self.parquet_dir = Some(v.clone());
         }
         if let Some(v) = &overrides.coingecko_api_key {
             self.coingecko_api_key = Some(v.clone());
@@ -616,7 +627,8 @@ rpc_url = "https://eth.diy"
             priority_fee_gwei: Some(2.5),
             output: Some("json".into()),
             export_path: Some("./out".into()),
-            cache_dir: Some("./db".into()),
+            db_path: Some("./db".into()),
+            parquet_dir: None,
             coingecko_api_key: Some("test-key".into()),
         };
         let mut cfg = Config::default();
@@ -631,7 +643,7 @@ rpc_url = "https://eth.diy"
         assert_eq!(cfg.priority_fee_gwei, 2.5);
         assert_eq!(cfg.output, "json");
         assert_eq!(cfg.export_path, "./out");
-        assert_eq!(cfg.cache_dir, "./db");
+        assert_eq!(cfg.db_path, "./db");
         assert_eq!(cfg.coingecko_api_key, Some("test-key".into()));
     }
 
@@ -644,7 +656,7 @@ rpc_url = "https://eth.diy"
             chain: None, rpc_url: None, rpc_workers: None,
             flash_loan_provider: None, strategies: None,
             gas_model: None, gas_limit: None, priority_fee_gwei: None,
-            output: None, export_path: None, cache_dir: None,
+            output: None, export_path: None, db_path: None, parquet_dir: None,
             coingecko_api_key: None,
         };
         cfg.merge_cli(&overrides);

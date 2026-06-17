@@ -45,8 +45,8 @@ output = "table"
 # Export directory
 export_path = "./results"
 
-# Cache directory (sled database)
-cache_dir = "./cache"
+# Database path (SQLite database)
+db_path = "./cache/mev-scout.sqlite"
 
 # Fast mode (skip token widening in tx filter)
 fast_mode = false

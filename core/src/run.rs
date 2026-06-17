@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 
-use crate::cache::CacheStore;
+use crate::cache::SqliteStore;
 use crate::mev::opportunity::MevOpportunity;
 use crate::mev::jit::JitDetector;
 use crate::mev::sandwich::SandwichDetector;
@@ -62,7 +62,7 @@ impl BacktestRunner {
     /// Initialize the pool manager by loading pool definitions and fetching
     /// on-chain reserve state at a reference block.
     ///
-    /// Loads pool definitions from the sled cache (on-chain discovery from
+    /// Loads pool definitions from the local cache (on-chain discovery from
     /// prior runs). Pools whose `creation_block` is after the target block are
     /// skipped without an RPC call. Remaining pools are verified via
     /// concurrent `eth_getCode` checks to filter any that don't exist at the
@@ -75,11 +75,11 @@ impl BacktestRunner {
         pool_manager: &mut PoolManager,
         rpc: &RpcClient,
         block_num: u64,
-        cache: Option<&CacheStore>,
+        cache: Option<&SqliteStore>,
     ) {
         let mut loaded_pools: Vec<PoolInfo> = Vec::new();
 
-        // Load discovered pools from sled cache (if available)
+        // Load discovered pools from local cache (if available)
         if let Some(cache) = cache {
             match cache.list_discovered_pools() {
                 Ok(pools) => {

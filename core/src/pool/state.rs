@@ -11,7 +11,7 @@
 //!   and updates reserves from transaction logs
 //!
 //! Pool initialization uses a two-phase approach:
-//! 1. Load `PoolInfo` from JSON registry + sled discovery cache
+//! 1. Load `PoolInfo` from JSON registry + discovery cache
 //! 2. Fetch live reserve/state data via `eth_call` (with `eth_getStorageAt` fallback)
 
 use std::collections::{HashMap, HashSet};
@@ -34,7 +34,7 @@ use crate::utils::u128_from_be_bytes;
 ///
 /// Registry files (e.g. `pools/polygon.json`) contain the canonical list of
 /// pools to track. `PoolInfo` is deserialized directly from these files and
-/// from the sled discovery cache.
+/// from the discovery cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolInfo {
     pub address: Address,

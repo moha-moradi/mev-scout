@@ -62,6 +62,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         dex_type: DexType::UniswapV2,
         tick_spacing: None,
         creation_block: 0,
+        pool_id: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128
             dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2,
             tick_spacing: None,
             creation_block: 0,
+            pool_id: None,
         },
         reserve0: r0,
         reserve1: r1,
@@ -276,6 +278,7 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV3,
             tick_spacing: Some(60),
             creation_block: 0,
+            pool_id: None,
         },
         sqrt_price_x96: U256::from(79228162514264337593543950336u128), // price = 1.0
         tick: 0,
@@ -413,6 +416,7 @@ fn test_sandwich_detection_synthetic() {
             dex_type: DexType::UniswapV2,
             tick_spacing: None,
             creation_block: 0,
+            pool_id: None,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,
@@ -791,6 +795,7 @@ fn test_jit_detection_synthetic() {
             dex_type: DexType::UniswapV3,
             tick_spacing: Some(60),
             creation_block: 0,
+            pool_id: None,
         }),
     ));
     let gas_cfg = default_gas_config();
@@ -847,6 +852,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
         dex_type: DexType::UniswapV3,
         tick_spacing: Some(10),
         creation_block: 0,
+        pool_id: None,
     };
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info.clone()));
@@ -914,6 +920,7 @@ fn test_jit_arb_detection_synthetic() {
                 address: pool_p, token0: wmatic, token1: usdc, fee: 30, name: None,
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
+                pool_id: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -927,6 +934,7 @@ fn test_jit_arb_detection_synthetic() {
                 fee: 30, name: None,
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
+                pool_id: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -984,6 +992,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
         dex_type: DexType::UniswapV3,
         tick_spacing: Some(10),
         creation_block: 0,
+        pool_id: None,
     };
 
     let mut pm = PoolManager::new();

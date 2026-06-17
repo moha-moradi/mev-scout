@@ -6,7 +6,7 @@
 //!
 //! ## Key components
 //! - [`BlockReplayer`] — high-level replay interface used by `BacktestRunner`
-//! - [`CachedRpcDb`] — lazy-fetch database bridging sled cache and RPC for
+//! - [`CachedRpcDb`] — lazy-fetch database bridging SQLite cache and RPC for
 //!   revm's `Database` trait
 //! - [`StateSnapshot`] — forkable state wrapper for snapshot/rollback patterns
 //!
@@ -61,7 +61,7 @@ impl DBErrorMarker for DbError {
     }
 }
 
-use crate::cache::CacheStore;
+use crate::cache::SqliteStore;
 use crate::data::{AccountData, BlockData, ExecutedLog, ExecutedTx, LogData, TxData};
 use crate::rpc::RpcClient;
 
@@ -92,14 +92,14 @@ pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
     }
 }
 
-/// Lazy-fetch database wrapping sled cache and RPC.
+/// Lazy-fetch database wrapping SQLite cache and RPC.
 ///
 /// Implements revm's `Database` trait, providing a three-tier lookup strategy:
 /// 1. In-memory HashMap (within a single block replay)
-/// 2. Sled cache (persistent, keyed by block number + address/slot)
+/// 2. SQLite cache (persistent, keyed by block number + address/slot)
 /// 3. RPC fallback (`eth_getProof`, `eth_getStorageAt`, `eth_getCodeAt`)
 ///
-/// All RPC results are cached back to sled for subsequent lookups. This is
+/// All RPC results are cached back to SQLite for subsequent lookups. This is
 /// the mechanism that makes large backtests feasible — the EVM only fetches
 /// state for addresses that are actually touched during execution.
 ///
@@ -108,7 +108,7 @@ pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
 /// cross-block operations.
 pub struct CachedRpcDb {
     handle: tokio::runtime::Handle,
-    cache: CacheStore,
+    cache: SqliteStore,
     rpc: RpcClient,
     chain_id: u64,
     block_number: u64,
@@ -137,7 +137,7 @@ impl Clone for CachedRpcDb {
 impl CachedRpcDb {
     pub fn new(
         handle: tokio::runtime::Handle,
-        cache: CacheStore,
+        cache: SqliteStore,
         rpc: RpcClient,
         chain_id: u64,
         block_number: u64,
@@ -262,7 +262,7 @@ impl Database for CachedRpcDb {
         if let Some(code) = self.codes.get(&code_hash) {
             return Ok(code.clone());
         }
-        // Try sled lookup via address mapping
+        // Try SQLite lookup via address mapping
         if let Some(&addr) = self.code_hash_to_address.get(&code_hash) {
             if let Ok(Some(code_bytes)) = self.cache.get_code(addr) {
                 let bytecode = Bytecode::new_raw(code_bytes);
@@ -483,7 +483,7 @@ pub fn register_polygon_precompiles(
 /// Block replayer that replays historical blocks through revm for MEV detection.
 ///
 /// This is the primary interface between `BacktestRunner` and the EVM. It
-/// loads cached block data (header, transactions, receipts) from sled and
+/// loads cached block data (header, transactions, receipts) from SQLite and
 /// replays them through revm with `CachedRpcDb` for lazy state fetching.
 ///
 /// ## Replay modes
@@ -502,7 +502,7 @@ pub fn register_polygon_precompiles(
 /// London, Cancun) is selected per block number.
 pub struct BlockReplayer {
     handle: tokio::runtime::Handle,
-    cache: CacheStore,
+    cache: SqliteStore,
     rpc: RpcClient,
     chain_id: u64,
 }
@@ -510,7 +510,7 @@ pub struct BlockReplayer {
 impl BlockReplayer {
     pub fn new(
         handle: tokio::runtime::Handle,
-        cache: CacheStore,
+        cache: SqliteStore,
         rpc: RpcClient,
         chain_id: u64,
     ) -> Self {
@@ -1100,11 +1100,11 @@ mod tests {
 
     static REPLAY_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    fn temp_cache() -> CacheStore {
+    fn temp_cache() -> SqliteStore {
         let id = REPLAY_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("mev_ut_replay_{}", id));
-        let _ = std::fs::remove_dir_all(&dir);
-        CacheStore::open(&dir, 137).unwrap()
+        let path = std::env::temp_dir().join(format!("mev_ut_replay_{}.sqlite", id));
+        let _ = std::fs::remove_file(&path);
+        SqliteStore::open(&path, 137).unwrap()
     }
 
     fn dummy_rpc() -> RpcClient {
