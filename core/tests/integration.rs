@@ -803,11 +803,11 @@ fn test_jit_detection_synthetic() {
     let timestamp = 12345u64;
 
     // Tx 0: deploy liquidity
-    detector.process_tx(0, &[v3_mint_log(pool, -1000, 1000, 1_000_000)], None);
+    detector.process_tx(0, &[v3_mint_log(pool, -1000, 1000, 1_000_000)], None, &pm);
     assert!(detector.detect(timestamp, 0, &gas_cfg, &pm).is_empty());
 
     // Tx 1: swap against it
-    detector.process_tx(1, &[v3_swap_log(pool)], None);
+    detector.process_tx(1, &[v3_swap_log(pool)], None, &pm);
     let mut opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
     assert!(!opps.is_empty(), "Mint+Swap should trigger JIT detection");
     assert_eq!(opps[0].strategy, mev_scout_core::types::Strategy::Jit);
@@ -817,7 +817,7 @@ fn test_jit_detection_synthetic() {
     assert_eq!(opps[0].liquidity_amount, Some(1_000_000));
 
     // Tx 2: burn position
-    detector.process_tx(2, &[v3_burn_log(pool, -1000, 1000, 1_000_000)], None);
+    detector.process_tx(2, &[v3_burn_log(pool, -1000, 1000, 1_000_000)], None, &pm);
     opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
     assert_eq!(opps.len(), 1, "Burn should trigger full JIT emission");
 
@@ -872,7 +872,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
     let gas_cfg = default_gas_config();
     let mut detector = JitDetector::new(block_num);
     // Process empty data (no logs from this pool in this test block)
-    detector.process_tx(0, &[], None);
+    detector.process_tx(0, &[], None, &pm);
     let opps = detector.detect(block_num, 0, &gas_cfg, &pm);
     eprintln!("JIT detection on real V3 pool: {} opportunities (expected 0 without events)", opps.len());
 

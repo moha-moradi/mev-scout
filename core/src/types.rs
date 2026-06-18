@@ -194,6 +194,18 @@ impl FlashLoanProvider {
         self != FlashLoanProvider::Auto
     }
 
+    /// Fee rate in basis points (1/10000).
+    /// Aave: 0.09% = 9 bps; Balancer: 0% = 0 bps; Uniswap: ~0.10% = 10 bps.
+    /// For Auto, returns 0 (assumes we pick Balancer, which has no fee).
+    pub fn fee_rate_bps(self) -> u128 {
+        match self {
+            FlashLoanProvider::Auto => 0,
+            FlashLoanProvider::Balancer => 0,
+            FlashLoanProvider::Aave => 9,     // 0.09%
+            FlashLoanProvider::Uniswap => 10,  // 0.10% (varies by pool)
+        }
+    }
+
     pub fn priority_list(auto_mode: bool) -> &'static [FlashLoanProvider] {
         if auto_mode {
             &[
@@ -338,6 +350,7 @@ pub struct GasConfig {
     pub gas_limit: u64,
     pub gas_model: GasModel,
     pub priority_fee_gwei: f64,
+    pub flash_loan_provider: FlashLoanProvider,
 }
 
 impl GasConfig {
@@ -367,13 +380,12 @@ impl GasConfig {
             .saturating_div(Self::GAS_LIMIT_BASELINE as u128) as u64
     }
 
-    pub fn compute_gas_cost(
+    /// Gas cost given an explicit gas limit (pool-type-aware, etc.).
+    pub fn compute_gas_cost_with_limit(
         &self,
-        strategy: Strategy,
+        gas_limit: u64,
         base_fee_per_gas: u128,
-        overrides: &std::collections::HashMap<String, u64>,
     ) -> u128 {
-        let gas_limit = self.gas_limit_for_strategy(strategy, overrides);
         let pf_wei = (self.priority_fee_gwei * 1_000_000_000.0) as u128;
         let effective_price = match self.gas_model {
             GasModel::HistoricalExact => base_fee_per_gas.saturating_add(pf_wei),
@@ -381,6 +393,24 @@ impl GasConfig {
             GasModel::P90 => base_fee_per_gas.saturating_mul(150).saturating_div(100).saturating_add(pf_wei),
         };
         (gas_limit as u128).saturating_mul(effective_price)
+    }
+
+    pub fn compute_gas_cost(
+        &self,
+        strategy: Strategy,
+        base_fee_per_gas: u128,
+        overrides: &std::collections::HashMap<String, u64>,
+    ) -> u128 {
+        let gas_limit = self.gas_limit_for_strategy(strategy, overrides);
+        self.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas)
+    }
+
+    /// Compute the flash loan fee for a given principal amount.
+    /// fee = input_amount * fee_rate_bps / 10000
+    pub fn flash_loan_fee(&self, input_amount: u128) -> u128 {
+        let bps = self.flash_loan_provider.fee_rate_bps();
+        if bps == 0 { return 0; }
+        input_amount.saturating_mul(bps).saturating_div(10_000)
     }
 }
 
@@ -390,6 +420,7 @@ impl Default for GasConfig {
             gas_limit: 200_000,
             gas_model: GasModel::default(),
             priority_fee_gwei: 0.0,
+            flash_loan_provider: FlashLoanProvider::Auto,
         }
     }
 }

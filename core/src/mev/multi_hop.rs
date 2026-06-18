@@ -17,6 +17,9 @@ pub struct MultiHopArbDetector;
 
 impl MultiHopArbDetector {
     /// Scan all pool paths and emit profitable multi-hop arbitrage opportunities.
+    /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
+    /// at most once, preventing the same persistent arb gap from being re-reported across
+    /// multiple transactions.
     pub fn detect(
         pool_manager: &PoolManager,
         block_number: u64,
@@ -27,6 +30,7 @@ impl MultiHopArbDetector {
     ) -> Vec<MevOpportunity> {
         let max_depth = 4usize;
         let mut opportunities = Vec::new();
+        let mut seen = std::collections::HashSet::new();
 
         let paths = Self::find_paths(pool_manager, max_depth);
 
@@ -36,7 +40,10 @@ impl MultiHopArbDetector {
                 block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
-                opportunities.push(opp);
+                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
+                if seen.insert(key) {
+                    opportunities.push(opp);
+                }
             }
         }
 
@@ -146,6 +153,12 @@ impl MultiHopArbDetector {
             info_b.token0
         };
 
+        // Only emit cyclic paths where we start and end in the same token.
+        // Non-cyclic paths (e.g. USDC→WMATIC→USDT) compare apples-to-oranges.
+        if token_in != token_out {
+            return None;
+        }
+
         let max_input = Self::pool_max_input(pool_a);
 
         let quote_fn = |x: u128| -> Option<u128> {
@@ -166,7 +179,30 @@ impl MultiHopArbDetector {
             return None;
         }
 
-        let gas_cost_wei = gas_config.compute_gas_cost(Strategy::MultiHopArb, base_fee_per_gas, &std::collections::HashMap::new());
+        let gas_limit = estimate_gas_for_multi_hop(path, pm);
+        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+
+        let gross_profit = output_amount.saturating_sub(input_amount);
+        // Subtract flash loan fee from gross profit
+        let flash_fee = gas_config.flash_loan_fee(input_amount);
+        let net_profit = gross_profit.saturating_sub(flash_fee);
+
+        // Compute slippage-adjusted profits
+        let eval_input = |x: u128| -> Option<U256> {
+            let mut cur = x;
+            let mut cur_token = token_in;
+            for &addr in path {
+                let pool = pm.get(&addr)?;
+                cur = Self::quote_single_pool(pool, cur_token, cur)?;
+                let info = pool.info();
+                cur_token = if info.token0 == cur_token { info.token1 } else { info.token0 };
+            }
+            if cur > x { Some(U256::from(cur - x)) } else { None }
+        };
+        let p1 = if input_amount > 0 { eval_input(input_amount.saturating_mul(101) / 100) } else { None };
+        let m1 = if input_amount > 0 { eval_input(input_amount.saturating_mul(99) / 100) } else { None };
+        let p2 = if input_amount > 0 { eval_input(input_amount.saturating_mul(102) / 100) } else { None };
+        let m2 = if input_amount > 0 { eval_input(input_amount.saturating_mul(98) / 100) } else { None };
 
         Some(MevOpportunity {
             block_number,
@@ -177,7 +213,12 @@ impl MultiHopArbDetector {
             token_in,
             token_out,
             input_amount: U256::from(input_amount),
-            expected_profit: U256::from(output_amount.saturating_sub(input_amount)),
+            expected_profit: U256::from(net_profit),
+            raw_profit: None,
+            profit_slippage_p1: p1,
+            profit_slippage_m1: m1,
+            profit_slippage_p2: p2,
+            profit_slippage_m2: m2,
             gas_cost_wei,
             timestamp,
             path: Some(path.to_vec()),
@@ -229,7 +270,7 @@ impl MultiHopArbDetector {
                     .map(|(_, v)| *v)?;
                 let balance_in = curve.balances[idx_in];
                 let balance_out = curve.balances[idx_out];
-                curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee)
+                curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee, curve.a_coeff)
             }
             PoolState::Balancer(bal) => {
                 let idx_in = *bal.token_index.get(&token_in)?;
@@ -238,10 +279,35 @@ impl MultiHopArbDetector {
                     .map(|(_, v)| *v)?;
                 let balance_in = bal.balances[idx_in];
                 let balance_out = bal.balances[idx_out];
-                balancer_output_amount(amount_in, balance_in, balance_out, bal.info.fee)
+                let w_in = bal.weights.get(idx_in).copied().unwrap_or(1_000_000_000_000_000_000u128);
+                let w_out = bal.weights.get(idx_out).copied().unwrap_or(1_000_000_000_000_000_000u128);
+                balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
             }
         }
     }
+}
+
+/// Estimate gas limit for a multi-hop path.
+/// Each pool hop adds pool-type-dependent gas; longer paths cost more.
+fn gas_for_pool_type(pool: &PoolState) -> u64 {
+    match pool {
+        PoolState::UniswapV2(_) => 60_000,
+        PoolState::UniswapV3(_) => 120_000,
+        PoolState::Curve(_) => 80_000,
+        PoolState::Balancer(_) => 80_000,
+    }
+}
+
+fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager) -> u64 {
+    let mut total = 40_000u64; // base overhead
+    for addr in path {
+        if let Some(pool) = pm.get(addr) {
+            total = total.saturating_add(gas_for_pool_type(pool));
+        } else {
+            total = total.saturating_add(60_000);
+        }
+    }
+    total
 }
 
 #[cfg(test)]

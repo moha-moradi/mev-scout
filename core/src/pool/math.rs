@@ -143,16 +143,129 @@ fn simulate_two_hop(
     })
 }
 
-/// Return `Some((input, output))` only when output strictly exceeds input.
-fn profit_or_none(output: u128, input: u128) -> Option<(u128, u128)> {
-    if output > input {
-        Some((input, output))
-    } else {
-        None
-    }
+/// Evaluate profit at a given input. Returns 0 if quote fails or no profit.
+fn eval_profit(input: u128, quote_fn: &impl Fn(u128) -> Option<u128>) -> u128 {
+    quote_fn(input)
+        .filter(|&output| output > input)
+        .map(|output| output - input)
+        .unwrap_or(0)
 }
 
-/// General N-hop ternary search optimizer.
+/// Single golden-section search pass on the profit function in [lo, hi].
+///
+/// Returns the most profitable input point found, or `None` if none is profitable.
+fn golden_section_maximize(
+    mut lo: u128,
+    mut hi: u128,
+    quote_fn: &impl Fn(u128) -> Option<u128>,
+    max_iter: usize,
+) -> Option<u128> {
+    if lo >= hi {
+        return None;
+    }
+
+    let inv_phi = 0.618033988749895f64;
+
+    let mut x1 = hi - ((hi - lo) as f64 * inv_phi) as u128;
+    let mut x2 = lo + ((hi - lo) as f64 * inv_phi) as u128;
+
+    if x1 <= lo { x1 = lo + 1; }
+    if x2 >= hi { x2 = hi - 1; }
+    if x1 >= x2 {
+        let p = eval_profit(lo.max(1), quote_fn);
+        return if p > 0 { Some(lo.max(1)) } else { None };
+    }
+
+    let mut f1 = eval_profit(x1, quote_fn);
+    let mut f2 = eval_profit(x2, quote_fn);
+
+    for _ in 0..max_iter {
+        if hi - lo <= 1 {
+            break;
+        }
+
+        if f1 > f2 {
+            hi = x2;
+            x2 = x1;
+            f2 = f1;
+            x1 = hi - ((hi - lo) as f64 * inv_phi) as u128;
+            if x1 <= lo { x1 = lo + 1; }
+            f1 = eval_profit(x1, quote_fn);
+        } else {
+            lo = x1;
+            x1 = x2;
+            f1 = f2;
+            x2 = lo + ((hi - lo) as f64 * inv_phi) as u128;
+            if x2 >= hi { x2 = hi - 1; }
+            f2 = eval_profit(x2, quote_fn);
+        }
+    }
+
+    if f1 >= f2 && f1 > 0 { Some(x1) }
+    else if f2 > 0 { Some(x2) }
+    else { None }
+}
+
+/// Coarse grid scan followed by golden-section refinement.
+///
+/// Samples `grid_points` evenly-spaced points in [0, max_input], picks the
+/// best one, then refines with golden-section search around that region.
+/// This handles non-convex profit functions (e.g. V3 with tick boundaries)
+/// much better than pure ternary/golden-section search.
+fn grid_plus_refine(
+    max_input: u128,
+    quote_fn: &impl Fn(u128) -> Option<u128>,
+    grid_points: usize,
+) -> Option<(u128, u128)> {
+    if max_input == 0 {
+        return None;
+    }
+
+    let gp = grid_points.max(3);
+    let step = max_input / gp as u128;
+    let mut best_input = 0u128;
+    let mut best_output = 0u128;
+    let mut best_profit = 0u128;
+
+    // Phase 1: coarse grid
+    for i in 0..=gp {
+        let input = (i as u128).saturating_mul(step).min(max_input);
+        if input == 0 {
+            continue;
+        }
+        if let Some(output) = quote_fn(input) {
+            if output > input {
+                let profit = output - input;
+                if profit > best_profit {
+                    best_profit = profit;
+                    best_input = input;
+                    best_output = output;
+                }
+            }
+        }
+    }
+
+    if best_profit == 0 {
+        return None;
+    }
+
+    // Phase 2: golden-section refinement around best region
+    let radius = (step / 2).max(1);
+    let lo = best_input.saturating_sub(radius);
+    let hi = (best_input + radius).min(max_input);
+
+    if let Some(refined) = golden_section_maximize(lo, hi, quote_fn, 40) {
+        if let Some(output) = quote_fn(refined) {
+            if output > refined && output - refined > best_profit {
+                return Some((refined, output));
+            }
+        }
+    }
+
+    Some((best_input, best_output))
+}
+
+/// General N-hop optimizer using grid + golden-section refinement.
 ///
 /// `quote_fn(x)` returns the output amount for input `x` through the entire pool chain.
 /// Returns `Some((optimal_input, output_amount))` or `None` if no profitable path found.
@@ -162,49 +275,7 @@ pub fn optimal_n_hop_generic(
     max_input: u128,
     quote_fn: &impl Fn(u128) -> Option<u128>,
 ) -> Option<(u128, u128)> {
-    if max_input == 0 {
-        return None;
-    }
-
-    let mut lo = 0u128;
-    let mut hi = max_input;
-    let mut best: Option<(u128, u128)> = None;
-
-    for _ in 0..80 {
-        let m1 = lo + (hi - lo) / 3;
-        let m2 = hi - (hi - lo) / 3;
-
-        if m1 == m2 {
-            break;
-        }
-
-        let o1 = quote_fn(m1);
-        let o2 = quote_fn(m2);
-
-        match (o1, o2) {
-            (None, None) => break,
-            (Some(_), None) => hi = m2,
-            (None, Some(_)) => lo = m1,
-            (Some(r1), Some(r2)) => match (profit_or_none(r1, m1), profit_or_none(r2, m2)) {
-                (None, None) => break,
-                (Some(_), None) => hi = m2,
-                (None, Some(_)) => lo = m1,
-                (Some((in1, out1)), Some((in2, out2))) => {
-                    let p1 = out1 - in1;
-                    let p2 = out2 - in2;
-                    if p1 >= p2 {
-                        hi = m2;
-                        best = Some((in1, out1));
-                    } else {
-                        lo = m1;
-                        best = Some((in2, out2));
-                    }
-                }
-            },
-        }
-    }
-
-    best
+    grid_plus_refine(max_input, quote_fn, 50)
 }
 
 /// Version of `optimal_two_hop_arb` that accepts generic quoting functions.
@@ -212,7 +283,8 @@ pub fn optimal_n_hop_generic(
 /// `quote_a(x)` returns the amount of bridge token received from pool A when spending `x` of token_in.
 /// `quote_b(x)` returns the amount of `token_out` received from pool B when spending `x` of the bridge token.
 ///
-/// Uses ternary search on the profit function: `profit(x) = quote_b(quote_a(x)) - x`.
+/// Uses grid search + golden-section refinement on the profit function:
+/// `profit(x) = quote_b(quote_a(x)) - x`.
 /// Returns `None` when no profitable input exists (profit <= 0 for all inputs).
 pub fn optimal_two_hop_arb_generic(
     max_input: u128,
@@ -223,38 +295,19 @@ pub fn optimal_two_hop_arb_generic(
         return None;
     }
 
-    let mut lo = 0u128;
-    let mut hi = max_input;
-    let mut best: Option<TwoHopArbResult> = None;
+    let combined = |x: u128| -> Option<u128> {
+        let mid = quote_a(x)?;
+        quote_b(mid)
+    };
 
-    for _ in 0..80 {
-        let m1 = lo + (hi - lo) / 3;
-        let m2 = hi - (hi - lo) / 3;
-
-        if m1 == m2 {
-            break;
-        }
-
-        let p1 = simulate_two_hop_generic(m1, quote_a, quote_b);
-        let p2 = simulate_two_hop_generic(m2, quote_a, quote_b);
-
-        match (p1, p2) {
-            (None, None) => break,
-            (Some(_), None) => hi = m2,
-            (None, Some(_)) => lo = m1,
-            (Some(r1), Some(r2)) => {
-                if r1.profit >= r2.profit {
-                    hi = m2;
-                    best = Some(r1);
-                } else {
-                    lo = m1;
-                    best = Some(r2);
-                }
-            }
-        }
-    }
-
-    best
+    let (input, output) = grid_plus_refine(max_input, &combined, 50)?;
+    let intermediate = quote_a(input)?;
+    Some(TwoHopArbResult {
+        input_amount: input,
+        intermediate_amount: intermediate,
+        output_amount: output,
+        profit: output - input,
+    })
 }
 
 fn simulate_two_hop_generic(

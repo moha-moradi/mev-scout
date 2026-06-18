@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
+use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::pool::state::{PoolManager, PoolState};
@@ -18,6 +19,10 @@ struct SwapEvent {
     amount_in: u128,
     /// The token that was sold (input token of the swap)
     token_in: Address,
+    /// Ending tick after swap (V3 only, None for V2/Curve/Balancer)
+    tick: Option<i32>,
+    /// Pool active liquidity after swap (V3 only, None otherwise)
+    liquidity: Option<u128>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,20 +110,17 @@ impl JitArbDetector {
             }
 
             if t0 == V3_SWAP_TOPIC {
-                let (amount_in, token_in) = if let Some(decoded) = decode_v3_swap(log) {
+                let (amount_in, token_in, tick, liquidity) = if let Some(decoded) = decode_v3_swap(log) {
                     let amt = if decoded.amount0 > 0 { decoded.amount0 as u128 }
                                else { decoded.amount1 as u128 };
-                    // Determine which token was sold from the swap event.
-                    // For V3: amount0 > 0 → token0 sold (pool receives token0),
-                    //          amount1 > 0 → token1 sold.
                     let sold = if decoded.amount0 > 0 {
                         pm.get(&log.address).map(|p| p.info().token0).unwrap_or(Address::ZERO)
                     } else {
                         pm.get(&log.address).map(|p| p.info().token1).unwrap_or(Address::ZERO)
                     };
-                    (amt, sold)
+                    (amt, sold, Some(decoded.tick), Some(decoded.liquidity))
                 } else {
-                    (0, Address::ZERO)
+                    (0, Address::ZERO, None, None)
                 };
 
                 self.swap_events.push(SwapEvent {
@@ -127,6 +129,8 @@ impl JitArbDetector {
                     sender,
                     amount_in,
                     token_in,
+                    tick,
+                    liquidity,
                 });
 
                 if let Some(mints) = self.active_mints.get_mut(&log.address) {
@@ -181,10 +185,12 @@ impl JitArbDetector {
                                 self.emitted.insert(dedup_key);
 
                             let arb_profit = estimate_arb_profit(pm, swap_p, swap_q);
+                            let fee_rev = estimate_jit_fee_revenue(mint, pool_p, &self.swap_events, pm, self.proximity_window);
+                            let total_profit = arb_profit.saturating_add(fee_rev);
 
                             opportunities.push(Self::build_opp(
                                 self.block_number, pool_p, swap_q.pool, mint, timestamp,
-                                U256::from(arb_profit), base_fee_per_gas, gas_config, pm,
+                                U256::from(total_profit), base_fee_per_gas, gas_config, pm,
                             ));
                             break;
                         }
@@ -217,6 +223,11 @@ impl JitArbDetector {
         // in the liquidity provision and subsequent arb swap.
         let token_in = pm.get(&jit_pool).map(|p| p.info().token0).unwrap_or(Address::ZERO);
         let token_out = pm.get(&jit_pool).map(|p| p.info().token1).unwrap_or(Address::ZERO);
+        let raw_profit = if pm.is_wrapped_native(&token_in) || pm.is_wrapped_native(&token_out) {
+            None // profit is already in native or mixed
+        } else {
+            Some(expected_profit)
+        };
         MevOpportunity {
             block_number,
             tx_index: mint.mint_tx_index,
@@ -227,6 +238,11 @@ impl JitArbDetector {
             token_out,
             input_amount: U256::from(mint.amount),
             expected_profit,
+            raw_profit,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei,
             timestamp,
             path: Some(vec![jit_pool, arb_pool]),
@@ -285,6 +301,28 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             let zero_for_one = v3.info.token0 == swap.token_in;
             quote_v3_exact_in(v3, swap.amount_in, zero_for_one).unwrap_or(0)
         }
+        Some(PoolState::Curve(curve)) => {
+            if let (Some(&idx_in), Some(&idx_out)) = (
+                curve.token_index.get(&swap.token_in),
+                curve.token_index.get(&shared),
+            ) {
+                curve_output_amount(swap.amount_in, curve.balances[idx_in], curve.balances[idx_out], curve.info.fee, curve.a_coeff)
+                    .unwrap_or(0)
+            } else { 0 }
+        }
+        Some(PoolState::Balancer(bal)) => {
+            if let (Some(&idx_in), Some(&idx_out)) = (
+                bal.token_index.get(&swap.token_in),
+                bal.token_index.get(&shared),
+            ) {
+                let default_w = 1_000_000_000_000_000_000u128;
+                let (w_in, w_out) = if bal.weights.len() == bal.balances.len() && !bal.weights.is_empty() {
+                    (bal.weights[idx_in], bal.weights[idx_out])
+                } else { (default_w, default_w) };
+                balancer_output_amount(swap.amount_in, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)
+                    .unwrap_or(0)
+            } else { 0 }
+        }
         _ => 0,
     }
 }
@@ -292,15 +330,77 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
 /// Estimate arbitrage profit between two swaps on pools that share a token.
 ///
 /// Converts both swap amounts to the shared token denomination using each
-/// pool's own pricing, then returns the absolute difference.
+/// pool's own pricing, then returns the directional profit.
+/// Profit is only non-zero when one swap sells the shared token and the other
+/// buys it (i.e., the two swaps are in opposite directions).
 fn estimate_arb_profit(pm: &PoolManager, swap_p: &SwapEvent, swap_q: &SwapEvent) -> u128 {
     let shared = match shared_token(pm, swap_p.pool, swap_q.pool) {
         Some(s) => s,
         None => return 0,
     };
+    let p_sells_shared = swap_p.token_in == shared;
+    let q_sells_shared = swap_q.token_in == shared;
+
+    // Both swaps must be in opposite directions for arbitrage
+    if p_sells_shared == q_sells_shared {
+        return 0;
+    }
+
     let p_val = convert_to_shared_token(pm, swap_p, shared);
     let q_val = convert_to_shared_token(pm, swap_q, shared);
-    if p_val > q_val { p_val - q_val } else { q_val - p_val }
+
+    // The swap that sells shared gives us the shared amount;
+    // the swap that buys shared costs us the shared amount.
+    if p_sells_shared {
+        p_val.saturating_sub(q_val)
+    } else {
+        q_val.saturating_sub(p_val)
+    }
+}
+
+/// Estimate fee revenue earned by a JIT liquidity position from swaps on the
+/// JIT pool that pass through the position's tick range.
+///
+/// Only V3 pools have tick/liquidity data for this estimation;
+/// returns 0 for non-V3 pools.
+fn estimate_jit_fee_revenue(
+    mint: &JitArbMint,
+    pool_p: Address,
+    swap_events: &[SwapEvent],
+    pm: &PoolManager,
+    proximity_window: usize,
+) -> u128 {
+    let Some(ps) = pm.get(&pool_p) else { return 0 };
+    let fee_rate = ps.info().fee as u128;
+    let window = proximity_window.max(2) as u64;
+
+    let mut total_fees: u128 = 0;
+    for sw in swap_events {
+        if sw.pool != pool_p {
+            continue;
+        }
+        let tx_delta = (sw.tx_index as u64).saturating_sub(mint.mint_tx_index as u64);
+        if tx_delta > window {
+            continue;
+        }
+
+        // Only V3 pools carry tick/liquidity data
+        let (Some(tick), Some(pool_liquidity)) = (sw.tick, sw.liquidity) else { continue };
+        if pool_liquidity == 0 || mint.amount == 0 {
+            continue;
+        }
+        if tick < mint.tick_lower || tick > mint.tick_upper {
+            continue;
+        }
+
+        // Fee revenue ≈ position liquidity share × swap fee amount
+        let swap_fee = sw.amount_in.saturating_mul(fee_rate) / 1_000_000;
+        let earned = mint.amount
+            .saturating_mul(swap_fee)
+            .saturating_div(pool_liquidity);
+        total_fees = total_fees.saturating_add(earned);
+    }
+    total_fees
 }
 
 #[cfg(test)]

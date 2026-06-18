@@ -475,6 +475,7 @@ async fn main() -> anyhow::Result<()> {
                 gas_limit: config.gas_limit,
                 gas_model: validation_result.gas_model,
                 priority_fee_gwei: config.priority_fee_gwei,
+                flash_loan_provider: validation_result.flash_loan_provider,
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
             let start = std::time::Instant::now();
@@ -520,7 +521,7 @@ async fn main() -> anyhow::Result<()> {
             // Fact-check if requested
             if args.fact_check && !all_opportunities.is_empty() {
                 println!("\nFact-Check Report:");
-                let checks = verify_opportunities(&all_opportunities);
+                let checks = verify_opportunities(&all_opportunities, Some(&runner.pool_manager));
                 let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
                 let failed = checks.len().saturating_sub(passed);
                 let summaries = compute_block_summaries(&all_opportunities, &block_stats);
@@ -1147,7 +1148,7 @@ async fn main() -> anyhow::Result<()> {
             println!("  Opportunities: {}", results_file.opportunities.len());
             println!();
 
-            let checks = verify_opportunities(&results_file.opportunities);
+            let checks = verify_opportunities(&results_file.opportunities, None);
             let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
             let failed = checks.len().saturating_sub(passed);
 

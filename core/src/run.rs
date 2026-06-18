@@ -215,8 +215,11 @@ impl BacktestRunner {
             },
             |i, tx, _db| {
                 let mut pm = pool_manager.borrow_mut();
-                pm.update_from_logs(&tx.logs);
 
+                // Detect FIRST against pre-tx pool state, THEN apply log updates.
+                // C6: Running detection before update_from_logs means we see the
+                // opportunity that existed *before* the current tx consumed it,
+                // rather than only the residual post-tx leftovers.
                 let opps = TwoHopArbDetector::detect(
                     &pm,
                     block_num,
@@ -255,7 +258,7 @@ impl BacktestRunner {
 
                 // JIT detector
                 let sender = *current_tx_from.borrow();
-                jit_detector.process_tx(i, &tx.logs, sender);
+                jit_detector.process_tx(i, &tx.logs, sender, &pm);
                 let jit_opps = jit_detector.detect(timestamp, base_fee_per_gas, &self.gas_config, &pm);
                 if !jit_opps.is_empty() {
                     tracing::info!(
@@ -268,7 +271,7 @@ impl BacktestRunner {
                 all_opportunities.extend(jit_opps);
 
                 // Sandwich detector
-                sandwich_detector.process_tx(i, &tx.logs, sender);
+                sandwich_detector.process_tx(i, &tx.logs, sender, &pm);
                 let sandwich_opps = sandwich_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
                 if !sandwich_opps.is_empty() {
                     tracing::info!(
@@ -292,6 +295,9 @@ impl BacktestRunner {
                     );
                 }
                 all_opportunities.extend(jit_arb_opps);
+
+                // Apply this tx's log updates to pool state AFTER detection
+                pm.update_from_logs(&tx.logs);
 
                 Ok(())
             },
@@ -372,6 +378,7 @@ fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 info,
                 balances: vec![],
                 token_index: std::collections::HashMap::new(),
+                a_coeff: 100,
             }));
         }
         crate::pool::dex_type::DexType::Balancer => {
@@ -381,6 +388,7 @@ fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                     balances: vec![],
                     token_index: std::collections::HashMap::new(),
                     pool_id: None,
+                    weights: vec![],
                 },
             ));
         }

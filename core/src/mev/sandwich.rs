@@ -4,9 +4,14 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{b256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::mev::opportunity::MevOpportunity;
-use crate::pool::decoders::{decode_v3_swap, V3_SWAP_TOPIC};
+use crate::pool::decoders::{
+    decode_balancer_swap, decode_curve_swap, decode_v3_swap,
+    BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+    V3_SWAP_TOPIC,
+};
+use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
-use crate::pool::state::PoolManager;
+use crate::pool::state::{BalancerPoolState, CurvePoolState, PoolManager};
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
@@ -29,6 +34,10 @@ struct SwapRecord {
     direction: SwapDirection,
     amount_in: u128,
     amount_out: u128,
+    /// token_in address (None for unknown)
+    token_in: Option<Address>,
+    /// token_out address (None for unknown)
+    token_out: Option<Address>,
 }
 
 /// Detects sandwich attacks on Uniswap V2 and V3 pools.
@@ -50,13 +59,14 @@ impl SandwichDetector {
         }
     }
 
-    /// Process a single transaction's V2 and V3 swap logs.
+    /// Process a single transaction's swap logs.
     /// Call BEFORE `detect()` for each tx in block order.
     pub fn process_tx(
         &mut self,
         tx_index: usize,
         logs: &[ExecutedLog],
         sender: Option<Address>,
+        pool_manager: &PoolManager,
     ) {
         let Some(sender) = sender else { return };
 
@@ -67,14 +77,18 @@ impl SandwichDetector {
             let t0 = log.topics[0];
 
             if t0 == V2_SWAP_TOPIC {
-                self.process_v2_swap(log, tx_index, sender);
+                self.process_v2_swap(log, tx_index, sender, pool_manager);
             } else if t0 == *V3_SWAP_TOPIC {
-                self.process_v3_swap(log, tx_index, sender);
+                self.process_v3_swap(log, tx_index, sender, pool_manager);
+            } else if t0 == *CURVE_TOKEN_EXCHANGE_TOPIC || t0 == *CURVE_V2_TOKEN_EXCHANGE_TOPIC {
+                self.process_curve_swap(log, tx_index, sender, pool_manager);
+            } else if t0 == *BALANCER_SWAP_TOPIC {
+                self.process_balancer_swap(log, tx_index, sender, pool_manager);
             }
         }
     }
 
-    fn process_v2_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address) {
+    fn process_v2_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
         if log.data.len() < 128 {
             return;
         }
@@ -84,11 +98,17 @@ impl SandwichDetector {
         let amt0_out = u128_from_be_bytes(&log.data[64..96]);
         let amt1_out = u128_from_be_bytes(&log.data[96..128]);
 
-        let (direction, amount_in, amount_out) =
+        let (direction, amount_in, amount_out, token_in, token_out) =
             if amt0_in > 0 && amt1_out > 0 {
-                (SwapDirection::Token0ForToken1, amt0_in, amt1_out)
+                let info = pool_manager.get(&log.address).map(|p| p.info());
+                let ti = info.map(|i| i.token0);
+                let to = info.map(|i| i.token1);
+                (SwapDirection::Token0ForToken1, amt0_in, amt1_out, ti, to)
             } else if amt1_in > 0 && amt0_out > 0 {
-                (SwapDirection::Token1ForToken0, amt1_in, amt0_out)
+                let info = pool_manager.get(&log.address).map(|p| p.info());
+                let ti = info.map(|i| i.token1);
+                let to = info.map(|i| i.token0);
+                (SwapDirection::Token1ForToken0, amt1_in, amt0_out, ti, to)
             } else {
                 return;
             };
@@ -100,17 +120,25 @@ impl SandwichDetector {
             direction,
             amount_in,
             amount_out,
+            token_in,
+            token_out,
         });
     }
 
-    fn process_v3_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address) {
+    fn process_v3_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
         if let Some(decoded) = decode_v3_swap(log) {
             // Determine direction and amounts from signed values
-            let (direction, amount_in, amount_out) =
+            let (direction, amount_in, amount_out, token_in, token_out) =
                 if decoded.amount0 > 0 && decoded.amount1 < 0 {
-                    (SwapDirection::Token0ForToken1, decoded.amount0 as u128, decoded.amount1.unsigned_abs())
+                    let info = pool_manager.get(&log.address).map(|p| p.info());
+                    let ti = info.map(|i| i.token0);
+                    let to = info.map(|i| i.token1);
+                    (SwapDirection::Token0ForToken1, decoded.amount0 as u128, decoded.amount1.unsigned_abs(), ti, to)
                 } else if decoded.amount0 < 0 && decoded.amount1 > 0 {
-                    (SwapDirection::Token1ForToken0, decoded.amount1 as u128, decoded.amount0.unsigned_abs())
+                    let info = pool_manager.get(&log.address).map(|p| p.info());
+                    let ti = info.map(|i| i.token1);
+                    let to = info.map(|i| i.token0);
+                    (SwapDirection::Token1ForToken0, decoded.amount1 as u128, decoded.amount0.unsigned_abs(), ti, to)
                 } else {
                     return;
                 };
@@ -122,6 +150,70 @@ impl SandwichDetector {
                 direction,
                 amount_in,
                 amount_out,
+                token_in,
+                token_out,
+            });
+        }
+    }
+
+    fn process_curve_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+        if let Some(decoded) = decode_curve_swap(log) {
+            let pool = pool_manager.get(&log.address);
+            let token_in = pool.and_then(|p| {
+                if let PoolState::Curve(curve) = p {
+                    curve.token_index.iter()
+                        .find(|(_, &idx)| idx == decoded.coin_sold as usize)
+                        .map(|(addr, _)| *addr)
+                } else { None }
+            });
+            let token_out = pool.and_then(|p| {
+                if let PoolState::Curve(curve) = p {
+                    curve.token_index.iter()
+                        .find(|(_, &idx)| idx == decoded.coin_bought as usize)
+                        .map(|(addr, _)| *addr)
+                } else { None }
+            });
+            let direction = if Some(true) == token_in.and_then(|ti| {
+                pool.map(|p| p.info().token0 == ti)
+            }) {
+                SwapDirection::Token0ForToken1
+            } else {
+                SwapDirection::Token1ForToken0
+            };
+            self.swap_records.push(SwapRecord {
+                tx_index,
+                sender,
+                pool: log.address,
+                direction,
+                amount_in: decoded.amount_sold,
+                amount_out: decoded.amount_bought,
+                token_in,
+                token_out,
+            });
+        }
+    }
+
+    fn process_balancer_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+        if let Some(decoded) = decode_balancer_swap(log) {
+            let pool = pool_manager.get(&log.address);
+            let token_in = Some(decoded.token_in);
+            let token_out = Some(decoded.token_out);
+            let direction = if Some(true) == token_in.and_then(|ti| {
+                pool.map(|p| p.info().token0 == ti)
+            }) {
+                SwapDirection::Token0ForToken1
+            } else {
+                SwapDirection::Token1ForToken0
+            };
+            self.swap_records.push(SwapRecord {
+                tx_index,
+                sender,
+                pool: log.address,
+                direction,
+                amount_in: decoded.amount_in,
+                amount_out: decoded.amount_out,
+                token_in,
+                token_out,
             });
         }
     }
@@ -175,8 +267,42 @@ impl SandwichDetector {
                             return U256::from(converted);
                         }
                     }
+                    Some(crate::pool::state::PoolState::Curve(curve)) => {
+                        if let (Some(&idx_in), Some(&idx_out)) = (
+                            curve.token_index.get(&profit_token),
+                            curve.token_index.get(&native_token),
+                        ) {
+                            let reserve_in = curve.balances[idx_in];
+                            let reserve_out = curve.balances[idx_out];
+                            if let Some(converted) = curve_output_amount(
+                                profit_raw, reserve_in, reserve_out, curve.info.fee, curve.a_coeff,
+                            ) {
+                                return U256::from(converted);
+                            }
+                        }
+                    }
+                    Some(crate::pool::state::PoolState::Balancer(bal)) => {
+                        if let (Some(&idx_in), Some(&idx_out)) = (
+                            bal.token_index.get(&profit_token),
+                            bal.token_index.get(&native_token),
+                        ) {
+                            let reserve_in = bal.balances[idx_in];
+                            let reserve_out = bal.balances[idx_out];
+                            let default_w = 1_000_000_000_000_000_000u128;
+                            let (w_in, w_out) = if bal.weights.len() == bal.balances.len() && !bal.weights.is_empty() {
+                                (bal.weights[idx_in], bal.weights[idx_out])
+                            } else {
+                                (default_w, default_w)
+                            };
+                            if let Some(converted) = balancer_output_amount(
+                                profit_raw, reserve_in, reserve_out, w_in, w_out, bal.info.fee,
+                            ) {
+                                return U256::from(converted);
+                            }
+                        }
+                    }
                     _ => {
-                        // Fallback: spot reserve ratio for unsupported pool types
+                        // Last resort: V2-style spot reserve ratio
                         if let Some(state) = pool_manager.get_v2_state(&ref_pool) {
                             let (reserve_sell, reserve_buy) =
                                 if state.info.token0 == profit_token {
@@ -236,14 +362,19 @@ impl SandwichDetector {
 
                 self.emitted.insert(dedup_key);
 
-                let pool_info = pool_manager.get(&front.pool)
-                    .map(|p| p.info());
-                let (token_in, token_out) = match pool_info {
-                    Some(info) => match front.direction {
-                        SwapDirection::Token0ForToken1 => (info.token0, info.token1),
-                        SwapDirection::Token1ForToken0 => (info.token1, info.token0),
-                    },
-                    None => (Address::ZERO, Address::ZERO),
+                let (token_in, token_out) = match (front.token_in, front.token_out) {
+                    (Some(ti), Some(to)) => (ti, to),
+                    _ => {
+                        let pool_info = pool_manager.get(&front.pool)
+                            .map(|p| p.info());
+                        match pool_info {
+                            Some(info) => match front.direction {
+                                SwapDirection::Token0ForToken1 => (info.token0, info.token1),
+                                SwapDirection::Token1ForToken0 => (info.token1, info.token0),
+                            },
+                            None => (Address::ZERO, Address::ZERO),
+                        }
+                    }
                 };
 
                 let profit_wei = self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
@@ -264,6 +395,10 @@ impl SandwichDetector {
                     token_out,
                     input_amount: U256::from(front.amount_in),
                     expected_profit: profit_wei,
+                    profit_slippage_p1: None,
+                    profit_slippage_m1: None,
+                    profit_slippage_p2: None,
+                    profit_slippage_m2: None,
                     gas_cost_wei,
                     timestamp,
                     path: None,
@@ -376,13 +511,13 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = make_pm_with_pool(pool_a(), address!("cccccccccccccccccccccccccccccccccccccccc"), address!("dddddddddddddddddddddddddddddddddddddddd"));
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
         assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty());
 
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
         assert!(detector.detect(100, &pm, 50_000_000_000, &gas_cfg()).is_empty());
 
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()));
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1);
 
@@ -402,9 +537,9 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(address!("3333333333333333333333333333333333333333")));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(address!("3333333333333333333333333333333333333333")), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
@@ -415,9 +550,9 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 300, 0, 0, 250)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 300, 0, 0, 250)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
@@ -428,9 +563,9 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1);
@@ -444,12 +579,12 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()), &pm);
 
-        detector.process_tx(3, &[v2_swap_log(pool_b(), 50, 0, 0, 45)], Some(alice()));
-        detector.process_tx(4, &[v2_swap_log(pool_b(), 100, 0, 0, 85)], Some(bob()));
+        detector.process_tx(3, &[v2_swap_log(pool_b(), 50, 0, 0, 45)], Some(alice()), &pm);
+        detector.process_tx(4, &[v2_swap_log(pool_b(), 100, 0, 0, 85)], Some(bob()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1);
@@ -460,7 +595,7 @@ mod tests {
     fn test_single_tx_no_detection() {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
     }
@@ -469,8 +604,8 @@ mod tests {
     fn test_two_txs_no_detection() {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_a(), 200, 0, 0, 170)], Some(bob()), &pm);
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
     }
@@ -480,9 +615,9 @@ mod tests {
         let mut detector = SandwichDetector::new(1);
         let pm = PoolManager::new();
 
-        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_b(), 50, 0, 0, 45)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_a(), 100, 0, 0, 90)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_b(), 50, 0, 0, 45)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_a(), 0, 85, 105, 0)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty());
@@ -496,9 +631,9 @@ mod tests {
         let pool_addr = pool_a();
         let pm = make_pm_with_pool(pool_addr, wmatic, usdc).with_wrapped_native(wmatic);
 
-        detector.process_tx(0, &[v2_swap_log(pool_addr, 0, 100, 95, 0)], Some(alice()));
-        detector.process_tx(1, &[v2_swap_log(pool_addr, 0, 200, 180, 0)], Some(bob()));
-        detector.process_tx(2, &[v2_swap_log(pool_addr, 82, 0, 0, 108)], Some(alice()));
+        detector.process_tx(0, &[v2_swap_log(pool_addr, 0, 100, 95, 0)], Some(alice()), &pm);
+        detector.process_tx(1, &[v2_swap_log(pool_addr, 0, 200, 180, 0)], Some(bob()), &pm);
+        detector.process_tx(2, &[v2_swap_log(pool_addr, 82, 0, 0, 108)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1);
@@ -512,9 +647,9 @@ mod tests {
         let pm = PoolManager::new();
 
         // V3 swaps: Token0ForToken1 (amt0 > 0, amt1 < 0)
-        detector.process_tx(0, &[v3_swap_log(pool_a(), 100, -90, 0)], Some(alice()));
-        detector.process_tx(1, &[v3_swap_log(pool_a(), 200, -170, 5)], Some(bob()));
-        detector.process_tx(2, &[v3_swap_log(pool_a(), -85, 105, 10)], Some(alice()));
+        detector.process_tx(0, &[v3_swap_log(pool_a(), 100, -90, 0)], Some(alice()), &pm);
+        detector.process_tx(1, &[v3_swap_log(pool_a(), 200, -170, 5)], Some(bob()), &pm);
+        detector.process_tx(2, &[v3_swap_log(pool_a(), -85, 105, 10)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert_eq!(opps.len(), 1, "V3 sandwich should be detected");
@@ -531,9 +666,9 @@ mod tests {
         let pm = PoolManager::new();
 
         // All same direction — not a sandwich
-        detector.process_tx(0, &[v3_swap_log(pool_a(), 100, -90, 0)], Some(alice()));
-        detector.process_tx(1, &[v3_swap_log(pool_a(), 200, -170, 5)], Some(bob()));
-        detector.process_tx(2, &[v3_swap_log(pool_a(), 300, -250, 10)], Some(alice()));
+        detector.process_tx(0, &[v3_swap_log(pool_a(), 100, -90, 0)], Some(alice()), &pm);
+        detector.process_tx(1, &[v3_swap_log(pool_a(), 200, -170, 5)], Some(bob()), &pm);
+        detector.process_tx(2, &[v3_swap_log(pool_a(), 300, -250, 10)], Some(alice()), &pm);
 
         let opps = detector.detect(100, &pm, 50_000_000_000, &gas_cfg());
         assert!(opps.is_empty(), "Same direction is not a sandwich");

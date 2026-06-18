@@ -7,7 +7,7 @@ use alloy::primitives::{Address, U256};
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
 use crate::pool::state::{BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
-use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::types::{GasConfig, Strategy};
 
 /// Detects two-hop arbitrage opportunities across V2, V3, and mixed pools.
@@ -18,6 +18,9 @@ pub struct TwoHopArbDetector;
 
 impl TwoHopArbDetector {
     /// Check all arbitrage pool-pair directions and emit profitable two-hop opportunities.
+    /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
+    /// at most once, preventing the same persistent arb gap from being re-reported across
+    /// multiple transactions.
     pub fn detect(
         pool_manager: &PoolManager,
         block_number: u64,
@@ -27,6 +30,7 @@ impl TwoHopArbDetector {
         gas_config: GasConfig,
     ) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         let pairs = pool_manager.arbitrage_pairs();
 
         for (pool_a, pool_b, shared_token) in &pairs {
@@ -35,14 +39,20 @@ impl TwoHopArbDetector {
                 block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
-                opportunities.push(opp);
+                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
+                if seen.insert(key) {
+                    opportunities.push(opp);
+                }
             }
             if let Some(opp) = Self::check_direction(
                 pool_manager, *pool_b, *pool_a, *shared_token,
                 block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
-                opportunities.push(opp);
+                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
+                if seen.insert(key) {
+                    opportunities.push(opp);
+                }
             }
         }
 
@@ -72,7 +82,32 @@ impl TwoHopArbDetector {
             return None;
         }
 
-        let gas_cost_wei = gas_config.compute_gas_cost(Strategy::TwoHopArb, base_fee_per_gas, &std::collections::HashMap::new());
+        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b);
+        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+
+        // Subtract flash loan fee from gross profit
+        let flash_fee = gas_config.flash_loan_fee(result.input_amount);
+        let profit_after_fl = result.profit.saturating_sub(flash_fee);
+
+        // Normalize profit to wrapped native token when token_in != token_out
+        let (expected_profit, raw_profit) = if token_in == token_out {
+            (U256::from(profit_after_fl), None)
+        } else {
+            let raw = U256::from(profit_after_fl);
+            // Convert output token profit to native using pool reserves
+            let native_profit = pm.normalize_to_native(token_out, profit_after_fl)
+                .or_else(|| pm.normalize_to_native(token_in, result.input_amount)
+                    .map(|native_in| {
+                        let native_out = pm.normalize_to_native(token_out, profit_after_fl)
+                            .unwrap_or(profit_after_fl);
+                        native_out.saturating_sub(native_in)
+                    }))
+                .unwrap_or(profit_after_fl);
+            (U256::from(native_profit), Some(raw))
+        };
+
+        let (profit_slippage_p1, profit_slippage_m1, profit_slippage_p2, profit_slippage_m2) =
+            compute_slippage_profits(pool_a, pool_b, shared_token, result.input_amount);
 
         Some(MevOpportunity {
             block_number,
@@ -83,7 +118,12 @@ impl TwoHopArbDetector {
             token_in,
             token_out,
             input_amount: U256::from(result.input_amount),
-            expected_profit: U256::from(result.profit),
+            expected_profit,
+            raw_profit,
+            profit_slippage_p1,
+            profit_slippage_m1,
+            profit_slippage_p2,
+            profit_slippage_m2,
             gas_cost_wei,
             timestamp,
             path: None,
@@ -111,6 +151,7 @@ pub fn quote_path(
     pool_b: &PoolState,
     shared_token: Address,
 ) -> Option<TwoHopArbResult> {
+    let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
     match (pool_a, pool_b) {
         (PoolState::UniswapV2(a), PoolState::UniswapV2(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
@@ -120,7 +161,10 @@ pub fn quote_path(
         (PoolState::UniswapV3(a), PoolState::UniswapV3(b)) => {
             let zero_a = shared_token == a.info.token1;
             let zero_b = shared_token == b.info.token0;
-            let max_input = cmp::max(a.liquidity, b.liquidity);
+            let max_input = cmp::max(
+                max_v3_tradeable_amount(a, zero_a),
+                max_v3_tradeable_amount(b, zero_b),
+            );
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
@@ -142,82 +186,171 @@ pub fn quote_path(
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Curve(a), PoolState::Curve(b)) => {
-            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
-            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, token_in, shared_token)?;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, token_out)?;
+            let a_a = a.a_coeff;
+            let a_b = b.a_coeff;
             let max_input = b_a_in;
-            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
-            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a, a_a);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b, a_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::Balancer(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
+            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
+            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
             let max_input = b_a_in;
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Curve(a), PoolState::UniswapV2(b)) => {
-            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, token_in, shared_token)?;
             let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
+            let a_a = a.a_coeff;
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a, a_a);
             let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
             optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
         }
         (PoolState::UniswapV2(a), PoolState::Curve(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, token_out)?;
+            let a_b = b.a_coeff;
             let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b, a_b);
             optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
         }
         (PoolState::Curve(a), PoolState::UniswapV3(b)) => {
-            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, shared_token, true)?;
+            let (b_a_in, b_a_out, fee_a) = curve_reserves(a, token_in, shared_token)?;
             let zero_b = shared_token == b.info.token0;
-            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a);
+            let a_a = a.a_coeff;
+            let quote_a = |x: u128| curve_output_amount(x, b_a_in, b_a_out, fee_a, a_a);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
             optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::Curve(b)) => {
             let zero_a = shared_token == a.info.token1;
-            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, false)?;
-            let max_input = a.liquidity;
+            let (b_b_in, b_b_out, fee_b) = curve_reserves(b, shared_token, token_out)?;
+            let a_b = b.a_coeff;
+            let max_input = max_v3_tradeable_amount(a, zero_a);
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_b = |x: u128| curve_output_amount(x, b_b_in, b_b_out, fee_b, a_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::UniswapV2(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
             let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
+            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
             let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
             optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
         }
         (PoolState::UniswapV2(a), PoolState::Balancer(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
+            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
             let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
             optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::UniswapV3(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, shared_token, true)?;
+            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
             let zero_b = shared_token == b.info.token0;
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, fee_a);
+            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
+            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
             optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::Balancer(b)) => {
             let zero_a = shared_token == a.info.token1;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, false)?;
-            let max_input = a.liquidity;
+            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
+            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
+            let max_input = max_v3_tradeable_amount(a, zero_a);
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, fee_b);
+            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         // Unsupported type combinations
         _ => None,
     }
+}
+
+/// Compute profit at ±1% and ±2% slippage levels around the optimal input.
+fn compute_slippage_profits(
+    pool_a: &PoolState,
+    pool_b: &PoolState,
+    shared_token: Address,
+    optimal_input: u128,
+) -> (Option<U256>, Option<U256>, Option<U256>, Option<U256>) {
+    if optimal_input == 0 {
+        return (None, None, None, None);
+    }
+    let eval = |input: u128| {
+        match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
+            Some(p) if p > 0 => Some(U256::from(p)),
+            _ => None,
+        }
+    };
+    (
+        eval(optimal_input.saturating_mul(101) / 100),   // +1%
+        eval(optimal_input.saturating_mul(99) / 100),    // -1%
+        eval(optimal_input.saturating_mul(102) / 100),   // +2%
+        eval(optimal_input.saturating_mul(98) / 100),    // -2%
+    )
+}
+
+/// Compute the profit for a two-hop arbitrage at a fixed input amount.
+/// Returns the profit (output - input) or 0 if unprofitable.
+fn two_hop_profit_at(
+    pool_a: &PoolState,
+    pool_b: &PoolState,
+    shared_token: Address,
+    input_amount: u128,
+) -> Option<u128> {
+    let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
+
+    let intermediate = match pool_a {
+        PoolState::UniswapV2(a) => {
+            let (r_a_other, r_a_shared, fee) = v2_reserves(a, shared_token, true)?;
+            constant_product_output_amount(input_amount, r_a_other, r_a_shared, fee)?
+        }
+        PoolState::UniswapV3(a) => {
+            let zero_a = shared_token == a.info.token1;
+            quote_v3_exact_in(a, input_amount, zero_a)?
+        }
+        PoolState::Curve(a) => {
+            let (reserve_in, reserve_out, fee) = curve_reserves(a, token_in, shared_token)?;
+            curve_output_amount(input_amount, reserve_in, reserve_out, fee, a.a_coeff)?
+        }
+        PoolState::Balancer(a) => {
+            let (reserve_in, reserve_out, fee) = balancer_reserves(a, token_in, shared_token)?;
+            let (w_in, w_out) = balancer_weights(a, token_in, shared_token);
+            balancer_output_amount(input_amount, reserve_in, reserve_out, w_in, w_out, fee)?
+        }
+    };
+
+    let output = match pool_b {
+        PoolState::UniswapV2(b) => {
+            let (r_b_in, r_b_out, fee) = v2_reserves(b, shared_token, false)?;
+            constant_product_output_amount(intermediate, r_b_in, r_b_out, fee)?
+        }
+        PoolState::UniswapV3(b) => {
+            let zero_b = shared_token == b.info.token0;
+            quote_v3_exact_in(b, intermediate, zero_b)?
+        }
+        PoolState::Curve(b) => {
+            let (reserve_in, reserve_out, fee) = curve_reserves(b, shared_token, token_out)?;
+            curve_output_amount(intermediate, reserve_in, reserve_out, fee, b.a_coeff)?
+        }
+        PoolState::Balancer(b) => {
+            let (reserve_in, reserve_out, fee) = balancer_reserves(b, shared_token, token_out)?;
+            let (w_in, w_out) = balancer_weights(b, shared_token, token_out);
+            balancer_output_amount(intermediate, reserve_in, reserve_out, w_in, w_out, fee)?
+        }
+    };
+
+    if output > input_amount { Some(output - input_amount) } else { None }
 }
 
 /// Extract the token_in (spent) and token_out (received) for a two-hop arb
@@ -246,81 +379,153 @@ fn arb_tokens(
     Some((token_in, token_out))
 }
 
-/// Simplified Curve 2-token output approximation.
-/// Uses constant-product approximation (reasonable for stablecoin pools near 1:1).
+/// StableSwap output amount using Newton's method for the invariant D.
+/// Works for 2-token Curve pools. The amplification coefficient `a_coeff`
+/// defaults to 100 (typical for stablecoin pools). Uses f64 for the Newton
+/// iteration since the result is an estimate for profit evaluation.
 pub fn curve_output_amount(
     amount_in: u128,
     reserve_in: u128,
     reserve_out: u128,
     fee: u32,
+    a_coeff: u128,
 ) -> Option<u128> {
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
-    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 10000;
-    let numerator = amount_after_fee.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_add(amount_after_fee)?;
-    let output = numerator / denominator;
-    if output == 0 { None } else { Some(output) }
+    // Fee: apply to input (standard StableSwap fee model)
+    let fee_factor = 1_000_000u128 - fee as u128;
+    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 1_000_000;
+
+    let x = reserve_in as f64;
+    let y = reserve_out as f64;
+    let a = a_coeff as f64;
+
+    // Newton's method to find invariant D for 2-token StableSwap
+    // D satisfies: A*4*(x+y) + D = A*4*D + D³/(4*x*y)
+    let sum = x + y;
+    let mut d = sum;
+    for _ in 0..128 {
+        let d_cube = d * d * d;
+        let prod_4 = 4.0 * x * y;
+        if prod_4.abs() < 1e-30 { break; }
+        let d_term = d_cube / prod_4;
+        let f = 4.0 * a * sum + d - 4.0 * a * d - d_term;
+        let deriv = 1.0 - 4.0 * a - 3.0 * d * d / prod_4;
+        if deriv.abs() < 1e-18 { break; }
+        let d_next = d - f / deriv;
+        if (d_next - d).abs() <= 1.0 { d = d_next; break; }
+        d = d_next;
+    }
+
+    // Apply the swap: x' = x + amount_after_fee
+    let x_new = x + amount_after_fee as f64;
+
+    // Solve for y' given D and x' using the quadratic formula
+    // From the invariant: 4A*y² + y*(4A*x' + D - 4A*D) - D³/(4*x') = 0
+    let aa = 4.0 * a;
+    let b = 4.0 * a * x_new + d - 4.0 * a * d;
+    let c = -(d * d * d) / (4.0 * x_new);
+
+    let discriminant = b * b - 4.0 * aa * c;
+    if discriminant < 0.0 { return None; }
+
+    let y_new = (-b + discriminant.sqrt()) / (2.0 * aa);
+    if y_new <= 0.0 { return None; }
+
+    let output = y - y_new;
+    if output <= 0.0 { return None; }
+
+    Some(output as u128)
 }
 
-/// Simplified Balancer weighted pool output approximation.
-/// Uses constant-product formula (reasonable for equal-weight pools).
+/// Balancer weighted pool output using the weighted product formula.
+/// `weights` are in the same order as reserves, in basis points (1e18 each).
+/// If `weights` is empty or wrong length, equal weights are assumed.
 pub fn balancer_output_amount(
     amount_in: u128,
     reserve_in: u128,
     reserve_out: u128,
+    weight_in: u128,
+    weight_out: u128,
     fee: u32,
 ) -> Option<u128> {
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
-    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 10000;
-    let numerator = amount_after_fee.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_add(amount_after_fee)?;
-    let output = numerator / denominator;
-    if output == 0 { None } else { Some(output) }
+    // Fee: Balancer charges fee on input
+    let fee_factor = 1_000_000u128 - fee as u128;
+    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 1_000_000;
+
+    // Weighted product invariant: (reserve_in / weight_in)^weight_in * (reserve_out / weight_out)^weight_out = const
+    // After swap: (reserve_in + amount_in)^weight_in * (reserve_out - amount_out)^weight_out = const
+    //
+    // amount_out = reserve_out * (1 - (reserve_in / (reserve_in + amount_in))^(weight_in/weight_out))
+    //
+    // Using U256 for intermediate computation.
+    let r_in = U256::from(reserve_in);
+    let r_out = U256::from(reserve_out);
+    let w_in = U256::from(if weight_in == 0 { 1e18 as u128 } else { weight_in });
+    let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
+    let amount = U256::from(amount_after_fee);
+
+    let numerator = r_in;
+    let denominator = r_in + amount;
+
+    if denominator.is_zero() { return None; }
+
+    // Compute ratio = reserve_in / (reserve_in + amount_in) in fixed-point
+    // Then raise to power (weight_in / weight_out)
+    // amount_out = reserve_out * (1 - ratio^(w_in/w_out))
+
+    // For simplicity, use f64 for the exponentiation
+    let ratio_f64 = numerator.as_limbs()[0] as f64 / denominator.as_limbs()[0] as f64;
+    let exp = w_in.as_limbs()[0] as f64 / w_out.as_limbs()[0] as f64;
+    let reduction = ratio_f64.powf(exp);
+
+    let output_f64 = r_out.as_limbs()[0] as f64 * (1.0 - reduction);
+    if output_f64 <= 0.0 { return None; }
+
+    Some(output_f64 as u128)
 }
 
-/// Extract Curve pool reserves for a given direction relative to `shared_token`.
-/// `buy_side = true` → we give the other token, receive shared_token.
+/// Extract Curve pool reserves for a specific token pair (token_in → token_out).
+/// Correctly handles pools with any number of tokens by looking up each
+/// token's index in the pool's `token_index` map.
 fn curve_reserves(
     pool: &CurvePoolState,
-    shared_token: Address,
-    buy_side: bool,
+    token_in: Address,
+    token_out: Address,
 ) -> Option<(u128, u128, u32)> {
-    let fee = pool.info.fee;
-    let idx_shared = *pool.token_index.get(&shared_token)?;
-    let idx_other = pool.token_index.iter()
-        .find(|(k, _)| **k != shared_token)
-        .map(|(_, v)| *v)?;
-    if buy_side {
-        // We give the other token, receive shared_token
-        Some((pool.balances[idx_other], pool.balances[idx_shared], fee))
-    } else {
-        // We give shared_token, receive the other token
-        Some((pool.balances[idx_shared], pool.balances[idx_other], fee))
+    let idx_in = *pool.token_index.get(&token_in)?;
+    let idx_out = *pool.token_index.get(&token_out)?;
+    Some((pool.balances[idx_in], pool.balances[idx_out], pool.info.fee))
+}
+
+/// Extract Balancer weights for a specific token pair (token_in → token_out).
+/// Returns (weight_in, weight_out). Falls back to equal weights (1e18 each)
+/// if the weights vector is empty or doesn't match the token count.
+fn balancer_weights(pool: &BalancerPoolState, token_in: Address, token_out: Address) -> (u128, u128) {
+    let default_w = 1_000_000_000_000_000_000u128;
+    if pool.weights.len() != pool.balances.len() || pool.weights.is_empty() {
+        return (default_w, default_w);
+    }
+    match (pool.token_index.get(&token_in), pool.token_index.get(&token_out)) {
+        (Some(&i), Some(&o)) => (pool.weights[i], pool.weights[o]),
+        _ => (default_w, default_w),
     }
 }
 
-/// Extract Balancer pool reserves for a given direction relative to `shared_token`.
+/// Extract Balancer pool reserves for a specific token pair (token_in → token_out).
+/// Correctly handles pools with any number of tokens.
 fn balancer_reserves(
     pool: &BalancerPoolState,
-    shared_token: Address,
-    buy_side: bool,
+    token_in: Address,
+    token_out: Address,
 ) -> Option<(u128, u128, u32)> {
-    let fee = pool.info.fee;
-    let idx_shared = *pool.token_index.get(&shared_token)?;
-    let idx_other = pool.token_index.iter()
-        .find(|(k, _)| **k != shared_token)
-        .map(|(_, v)| *v)?;
-    if buy_side {
-        Some((pool.balances[idx_other], pool.balances[idx_shared], fee))
-    } else {
-        Some((pool.balances[idx_shared], pool.balances[idx_other], fee))
-    }
+    let idx_in = *pool.token_index.get(&token_in)?;
+    let idx_out = *pool.token_index.get(&token_out)?;
+    Some((pool.balances[idx_in], pool.balances[idx_out], pool.info.fee))
 }
 
 /// Extract V2 pool reserves for a given direction relative to `shared_token`.
@@ -353,6 +558,28 @@ fn v2_reserves(
             None
         }
     }
+}
+
+/// Estimate a per-pool gas cost based on pool type.
+/// V2 swaps cost the least (~60k), V3 depends on tick crossing (~120k average),
+/// Curve/Balancer are moderate (~80k).
+fn gas_for_pool_type(pool: &PoolState) -> u64 {
+    match pool {
+        PoolState::UniswapV2(_) => 60_000,
+        PoolState::UniswapV3(_) => 120_000,
+        PoolState::Curve(_) => 80_000,
+        PoolState::Balancer(_) => 80_000,
+    }
+}
+
+/// Estimate the gas limit for a two-hop arbitrage opportunity based on the
+/// actual pool types involved. Replaces the old flat 150k estimate which was
+/// too low for V3 (can cost 250k+) and too high for V2 (often ~90k).
+fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState) -> u64 {
+    let a_gas = gas_for_pool_type(pool_a);
+    let b_gas = gas_for_pool_type(pool_b);
+    // Two-hop arb executes one swap per pool; add base overhead
+    40_000 + a_gas + b_gas
 }
 
 #[cfg(test)]
@@ -515,6 +742,7 @@ mod tests {
             },
             balances: vec![1_000_000, 1_000_000],
             token_index,
+            a_coeff: 100,
         });
         let v2 = v2_pool(Address::ZERO, wmatic(), usdt(), 500_000, 1_000_000);
         // Curve-V2 combo should now be supported

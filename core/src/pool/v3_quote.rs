@@ -459,17 +459,11 @@ fn get_swap_target(
             (sqrt, true) // true = has real tick data
         }
         None => {
-            if let Some(spacing) = pool.info.tick_spacing {
-                if let Some(boundary) = tick_spacing_boundary(pool.tick, spacing as i32, zero_for_one) {
-                    let r = get_sqrt_ratio_at_tick(boundary);
-                    let sqrt = if zero_for_one {
-                        r.max(*MIN_SQRT_RATIO).min(pool.sqrt_price_x96)
-                    } else {
-                        r.min(*MAX_SQRT_RATIO).max(pool.sqrt_price_x96)
-                    };
-                    return (sqrt, false); // false = synthetic boundary, no liquidity data
-                }
-            }
+            // No real initialized ticks found. Go to the full range instead of
+            // capping at the nearest tick_spacing boundary. This is more accurate
+            // for the first-block case where tick data hasn't been bootstrapped yet
+            // (C2 / M2 fixes). Without tick knowledge, using the full pool.liquidity
+            // is a better estimate than truncating at one spacing interval.
             if zero_for_one {
                 (*MIN_SQRT_RATIO, false)
             } else {

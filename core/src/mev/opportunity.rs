@@ -34,6 +34,21 @@ pub struct MevOpportunity {
     pub input_amount: U256,
     /// Expected profit in token_out (gross, before gas)
     pub expected_profit: U256,
+    /// Raw profit in token_out before normalization to native (None = same as expected_profit)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_profit: Option<U256>,
+    /// Profit estimate with +1% slippage (more input) — None if not computed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_slippage_p1: Option<U256>,
+    /// Profit estimate with -1% slippage (less input) — None if not computed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_slippage_m1: Option<U256>,
+    /// Profit estimate with +2% slippage — None if not computed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_slippage_p2: Option<U256>,
+    /// Profit estimate with -2% slippage — None if not computed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_slippage_m2: Option<U256>,
     /// Estimated gas cost in wei
     pub gas_cost_wei: u128,
     /// Timestamp of the block
@@ -78,6 +93,11 @@ impl MevOpportunity {
             token_out: Address::ZERO,
             input_amount: U256::ZERO,
             expected_profit: U256::ZERO,
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 0,
             timestamp,
             path: None,
@@ -161,6 +181,11 @@ mod tests {
             token_out: address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             input_amount: U256::from(1000u64),
             expected_profit: U256::from(100u64),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 1_000_000,
             timestamp: 12345,
             path: Some(vec![
@@ -193,6 +218,11 @@ mod tests {
             token_out: address!("cccccccccccccccccccccccccccccccccccccccc"),
             input_amount: U256::from(0),
             expected_profit: U256::from(1000),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 0,
             timestamp: 12345,
             path: None,
@@ -264,6 +294,11 @@ mod tests {
             token_out: address!("cccccccccccccccccccccccccccccccccccccccc"),
             input_amount: U256::from(1000),
             expected_profit: U256::from(500),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 0,
             timestamp: 12345,
             path: None,

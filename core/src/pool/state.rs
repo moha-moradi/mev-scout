@@ -99,6 +99,11 @@ pub struct UniswapV3PoolState {
     pub liquidity: u128,
     /// Ticks with position liquidity (tick_idx → net_liquidity_delta from all positions)
     pub ticks: std::collections::BTreeMap<i32, i128>,
+    /// Cumulative fee growth per unit of liquidity for token0 (Q128 format).
+    /// Updated on each Swap event: feeGrowthGlobal0 += fee_amount0 * 2^128 / liquidity
+    pub fee_growth_global_0_x128: U256,
+    /// Cumulative fee growth per unit of liquidity for token1 (Q128 format).
+    pub fee_growth_global_1_x128: U256,
 }
 
 impl UniswapV3PoolState {
@@ -109,6 +114,8 @@ impl UniswapV3PoolState {
             tick: 0,
             liquidity: 0,
             ticks: std::collections::BTreeMap::new(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
         }
     }
 }
@@ -119,6 +126,8 @@ pub struct CurvePoolState {
     pub info: PoolInfo,
     pub balances: Vec<u128>,
     pub token_index: HashMap<Address, usize>,
+    /// Amplification coefficient (A). Defaults to 100 if unknown.
+    pub a_coeff: u128,
 }
 
 /// Runtime state for a Balancer V2 weighted/stable pool.
@@ -128,6 +137,9 @@ pub struct BalancerPoolState {
     pub balances: Vec<u128>,
     pub token_index: HashMap<Address, usize>,
     pub pool_id: Option<[u8; 32]>,
+    /// Weights for each token (same order as balances, basis points = 1e18).
+    /// If empty, equal weights are assumed.
+    pub weights: Vec<u128>,
 }
 
 /// Runtime state for any tracked pool.
@@ -359,8 +371,25 @@ impl PoolManager {
         smaller.iter().find(|addr| larger.contains(addr)).copied()
     }
 
+    /// Estimate a pool's total liquidity/TVL for sorting purposes.
+    /// Higher values mean more meaningful arbitrage candidates.
+    fn pool_liquidity_estimate(&self, addr: &Address) -> u128 {
+        match self.pools.get(addr) {
+            Some(PoolState::UniswapV2(v2)) => {
+                // Use the smaller reserve as a conservative liquidity bound
+                v2.reserve0.min(v2.reserve1)
+            }
+            Some(PoolState::UniswapV3(v3)) => v3.liquidity,
+            Some(PoolState::Curve(c)) => c.balances.iter().sum(),
+            Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
+            None => 0,
+        }
+    }
+
     /// Returns pairs of pool addresses that share at least one common token.
     /// Each pair is returned once (pool_a < pool_b by address), with the shared token.
+    /// Pools are sorted by liquidity estimate (descending) before truncation to
+    /// `max_pairs_per_token`, so high-volume pairs are preferred over low-volume ones.
     /// Result is cached and invalidated on add_pool.
     pub fn arbitrage_pairs(&self) -> Vec<(Address, Address, Address)> {
         if let Some(cached) = &*self.pairs_cache.lock().unwrap() {
@@ -370,11 +399,18 @@ impl PoolManager {
         let mut seen = std::collections::HashSet::new();
 
         for (_token, pool_addrs) in &self.token_index {
-            let limit = self.max_pairs_per_token.min(pool_addrs.len());
+            let mut sorted: Vec<Address> = pool_addrs.clone();
+            // Sort by estimated liquidity descending so the most meaningful pairs come first
+            sorted.sort_by(|a, b| {
+                let la = self.pool_liquidity_estimate(a);
+                let lb = self.pool_liquidity_estimate(b);
+                lb.cmp(&la)
+            });
+            let limit = self.max_pairs_per_token.min(sorted.len());
             for i in 0..limit {
                 for j in (i + 1)..limit {
-                    let a = pool_addrs[i];
-                    let b = pool_addrs[j];
+                    let a = sorted[i];
+                    let b = sorted[j];
                     let key = if a < b { (a, b) } else { (b, a) };
                     if seen.insert(key) {
                         pairs.push((key.0, key.1, *_token));
@@ -417,11 +453,34 @@ impl PoolManager {
         sqrt_price_x96: U256,
         tick: i32,
         liquidity: u128,
+        amount0: i128,
+        amount1: i128,
     ) {
         if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
             state.sqrt_price_x96 = sqrt_price_x96;
             state.tick = tick;
             state.liquidity = liquidity;
+
+            // Update fee growth global based on swap amounts.
+            // The negative amount is the input (trader sends to pool).
+            // Fee = input * fee_tier / 1_000_000, added to feeGrowthGlobal.
+            let fee_tier = state.info.fee as u128;
+            if amount0 < 0 {
+                let input = amount0.unsigned_abs();
+                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                if fee > 0 && liquidity > 0 {
+                    let inc = U256::from(fee) << 128 / U256::from(liquidity);
+                    state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
+                }
+            }
+            if amount1 < 0 {
+                let input = amount1.unsigned_abs();
+                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                if fee > 0 && liquidity > 0 {
+                    let inc = U256::from(fee) << 128 / U256::from(liquidity);
+                    state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
+                }
+            }
         }
     }
 
@@ -837,6 +896,8 @@ impl PoolManager {
                 decoded.sqrt_price_x96,
                 decoded.tick,
                 decoded.liquidity,
+                decoded.amount0,
+                decoded.amount1,
             );
         }
     }
@@ -896,6 +957,35 @@ impl PoolManager {
     /// Check if the given address is the wrapped native token (e.g., WMATIC, WETH).
     pub fn is_wrapped_native(&self, token: &Address) -> bool {
         self.wrapped_native.as_ref() == Some(token)
+    }
+
+    /// Get the wrapped native token address (e.g., WMATIC, WETH), if set.
+    pub fn wrapped_native(&self) -> Option<Address> {
+        self.wrapped_native
+    }
+
+    /// Convert an amount from the given token to its wrapped native equivalent,
+    /// using a V2 pool that pairs the token with wrapped native as a price oracle.
+    /// Returns None if no suitable V2 pool exists.
+    pub fn normalize_to_native(&self, token: Address, amount: u128) -> Option<u128> {
+        let native = self.wrapped_native()?;
+        if token == native {
+            return Some(amount);
+        }
+        let pool_addr = self.find_pair_pool(&token, &native)?;
+        let pool = self.get(&pool_addr)?;
+        match pool {
+            PoolState::UniswapV2(v2) => {
+                let (reserve_token, reserve_native) = if v2.info.token0 == token {
+                    (v2.reserve0, v2.reserve1)
+                } else {
+                    (v2.reserve1, v2.reserve0)
+                };
+                if reserve_token == 0 { return None; }
+                Some(amount.saturating_mul(reserve_native).saturating_div(reserve_token))
+            }
+            _ => None,
+        }
     }
 
     /// Get V2 pool state by address (returns None if not a V2 pool or not found).
@@ -1256,7 +1346,7 @@ mod tests {
         let mut pm = PoolManager::new();
         let addr = address!("3333333333333333333333333333333333333333");
         pm.add_pool(make_v3_pool(addr, wmatic(), usdc(), U256::from(1u128 << 96), 0, 1_000_000));
-        pm.apply_v3_swap(&addr, U256::from(2u128 << 96), 10, 999_000);
+        pm.apply_v3_swap(&addr, U256::from(2u128 << 96), 10, 999_000, 1000, -1000);
         if let Some(PoolState::UniswapV3(s)) = pm.get(&addr) {
             assert_eq!(s.sqrt_price_x96, U256::from(2u128 << 96));
             assert_eq!(s.tick, 10);

@@ -1,6 +1,12 @@
-use crate::mev::opportunity::MevOpportunity;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
+
+use crate::mev::opportunity::MevOpportunity;
+use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
+use crate::pool::math::constant_product_output_amount;
+use crate::pool::state::{PoolManager, PoolState};
+use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::types::Strategy;
 
 /// Per-block stats collected during a backtest run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,12 +122,144 @@ pub fn compute_block_summaries(
     summaries
 }
 
+/// Quote a single swap through any pool type.
+/// Returns the output amount for the given `amount_in` of `token_in`.
+pub fn quote_single_swap(
+    pool: &PoolState,
+    token_in: Address,
+    token_out: Address,
+    amount_in: u128,
+) -> Option<u128> {
+    match pool {
+        PoolState::UniswapV2(v2) => {
+            let (reserve_in, reserve_out) = if v2.info.token0 == token_in {
+                (v2.reserve0, v2.reserve1)
+            } else if v2.info.token1 == token_in {
+                (v2.reserve1, v2.reserve0)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
+        }
+        PoolState::UniswapV3(v3) => {
+            let zero_for_one = v3.info.token0 == token_in;
+            if !zero_for_one && v3.info.token1 != token_in {
+                return None;
+            }
+            quote_v3_exact_in(v3, amount_in, zero_for_one)
+        }
+        PoolState::Curve(curve) => {
+            let idx_in = *curve.token_index.get(&token_in)?;
+            let idx_out = *curve.token_index.get(&token_out)?;
+            let balance_in = curve.balances[idx_in];
+            let balance_out = curve.balances[idx_out];
+            if balance_in == 0 || balance_out == 0 {
+                return None;
+            }
+            curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee, curve.a_coeff)
+        }
+        PoolState::Balancer(bal) => {
+            let idx_in = *bal.token_index.get(&token_in)?;
+            let idx_out = *bal.token_index.get(&token_out)?;
+            let balance_in = bal.balances[idx_in];
+            let balance_out = bal.balances[idx_out];
+            if balance_in == 0 || balance_out == 0 {
+                return None;
+            }
+            let w_in = bal.weights.get(idx_in).copied().unwrap_or(1_000_000_000_000_000_000u128);
+            let w_out = bal.weights.get(idx_out).copied().unwrap_or(1_000_000_000_000_000_000u128);
+            balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
+        }
+    }
+}
+
+/// Recompute the gross profit for a detected MEV opportunity using the
+/// current pool manager state.
+///
+/// Returns `None` when the strategy is not supported for recomputation or
+/// when the necessary pools are no longer tracked.
+/// The returned profit is the raw (gross) profit in `token_out` before
+/// flash loan fee deduction and normalization.
+pub fn recompute_opportunity_profit(
+    pools: &PoolManager,
+    opp: &MevOpportunity,
+) -> Option<U256> {
+    let input = opp.input_amount.to::<u128>();
+    if input == 0 {
+        return None;
+    }
+
+    match opp.strategy {
+        Strategy::TwoHopArb => {
+            let pool_a = pools.get(&opp.pool_a)?;
+            let pool_b = pools.get(&opp.pool_b)?;
+
+            let info_a = pool_a.info();
+            let info_b = pool_b.info();
+
+            let shared = if info_a.token0 == info_b.token0 || info_a.token0 == info_b.token1 {
+                info_a.token0
+            } else {
+                info_a.token1
+            };
+
+            let intermediate = quote_single_swap(pool_a, opp.token_in, shared, input)?;
+            let output = quote_single_swap(pool_b, shared, opp.token_out, intermediate)?;
+
+            if output <= input {
+                return None;
+            }
+            Some(U256::from(output - input))
+        }
+        Strategy::MultiHopArb => {
+            let path = opp.path.as_ref()?;
+            if path.is_empty() {
+                return None;
+            }
+            let mut current = input;
+            let mut current_token = opp.token_in;
+            for &addr in path {
+                let pool = pools.get(&addr)?;
+                let info = pool.info();
+                let next_token = if info.token0 == current_token {
+                    info.token1
+                } else if info.token1 == current_token {
+                    info.token0
+                } else {
+                    return None;
+                };
+                current = quote_single_swap(pool, current_token, next_token, current)?;
+                current_token = next_token;
+            }
+            if current <= input {
+                return None;
+            }
+            Some(U256::from(current - input))
+        }
+        _ => None,
+    }
+}
+
 /// Build opportunity fact checks from saved results.
-pub fn verify_opportunities(opportunities: &[MevOpportunity]) -> Vec<OpportunityFactCheck> {
+///
+/// If `pools` is `Some`, recomputes each opportunity's profit using the
+/// current pool state and fills in `recomputed_profit` and `recomputation_match`.
+pub fn verify_opportunities(
+    opportunities: &[MevOpportunity],
+    pools: Option<&PoolManager>,
+) -> Vec<OpportunityFactCheck> {
     opportunities
         .iter()
         .map(|opp| {
-            let profit_gt_gas = opp.expected_profit > alloy::primitives::U256::from(opp.gas_cost_wei);
+            let profit_gt_gas = opp.expected_profit > U256::from(opp.gas_cost_wei);
+            let (recomputed_profit, recomputation_match) = pools
+                .and_then(|pm| recompute_opportunity_profit(pm, opp))
+                .map(|recomputed| {
+                    let stored = opp.raw_profit.unwrap_or(opp.expected_profit);
+                    let matched = stored == recomputed;
+                    (Some(format_amount(&recomputed, 18)), Some(matched))
+                })
+                .unwrap_or((None, None));
             OpportunityFactCheck {
                 block_number: opp.block_number,
                 tx_index: opp.tx_index,
@@ -132,13 +270,12 @@ pub fn verify_opportunities(opportunities: &[MevOpportunity]) -> Vec<Opportunity
                 pool_b_name: None,
                 token_in: opp.token_in,
                 token_out: opp.token_out,
-                // TODO: look up actual token decimals; using 18 as a safe default
                 input_amount: format_amount(&opp.input_amount, 18),
                 expected_profit: format_amount(&opp.expected_profit, 18),
                 gas_cost_wei: opp.gas_cost_wei,
                 profit_gt_gas,
-                recomputed_profit: None,
-                recomputation_match: None,
+                recomputed_profit,
+                recomputation_match,
                 victim_tx_index: opp.victim_tx_index,
                 backrun_tx_index: opp.backrun_tx_index,
                 tick_lower: opp.tick_lower,
@@ -233,6 +370,11 @@ mod tests {
             token_out: address!("cccccccccccccccccccccccccccccccccccccccc"),
             input_amount: U256::from(1000),
             expected_profit: U256::from(500),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 100,
             timestamp: 12345,
             path: None,
@@ -242,7 +384,7 @@ mod tests {
             victim_tx_index: Some(1),
             backrun_tx_index: Some(2),
         };
-        let checks = verify_opportunities(&[opp]);
+        let checks = verify_opportunities(&[opp], None);
         assert_eq!(checks.len(), 1);
         assert!(checks[0].profit_gt_gas);
         assert_eq!(checks[0].victim_tx_index, Some(1));
@@ -252,7 +394,7 @@ mod tests {
     #[test]
     fn test_verify_opportunities_missing_sandwich_fields() {
         let opp = MevOpportunity::new(1, 0, Strategy::Sandwich, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100);
-        let checks = verify_opportunities(&[opp]);
+        let checks = verify_opportunities(&[opp], None);
         assert_eq!(checks.len(), 1);
         assert!(checks[0].victim_tx_index.is_none());
         assert!(checks[0].backrun_tx_index.is_none());
@@ -270,6 +412,11 @@ mod tests {
             token_out: address!("dddddddddddddddddddddddddddddddddddddddd"),
             input_amount: U256::from(1000),
             expected_profit: U256::from(500),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei: 100,
             timestamp: 12345,
             path: None,
@@ -284,7 +431,7 @@ mod tests {
             ..profitable.clone()
         };
 
-        let checks = verify_opportunities(&[profitable, unprofitable]);
+        let checks = verify_opportunities(&[profitable, unprofitable], None);
         assert_eq!(checks.len(), 2);
         assert!(checks[0].profit_gt_gas);
         assert!(!checks[1].profit_gt_gas);

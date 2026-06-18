@@ -161,6 +161,11 @@ impl CachedRpcDb {
 
     pub fn set_block_number(&mut self, n: u64) {
         self.block_number = n;
+        // Invalidate all in-memory caches — state is block-dependent.
+        self.accounts.clear();
+        self.codes.clear();
+        self.storage.clear();
+        self.code_hash_to_address.clear();
     }
 
     pub fn rpc(&self) -> &RpcClient {

@@ -22,6 +22,10 @@ struct ActiveMint {
     /// Cumulative swap volume (absolute token_in amounts) from swaps
     /// that traded within this mint's tick range.
     swap_volume: u128,
+    /// Snapshot of feeGrowthGlobal0X128 at mint time for computing actual fees.
+    fee_growth_snapshot_0_x128: U256,
+    /// Snapshot of feeGrowthGlobal1X128 at mint time.
+    fee_growth_snapshot_1_x128: U256,
 }
 
 /// Detects Just-In-Time (JIT) liquidity provision on Uniswap V3.
@@ -66,11 +70,13 @@ impl JitDetector {
 
     /// Process a single transaction's logs and optional sender address.
     /// Call BEFORE `detect()` for each tx in block order.
+    /// `pm` is used to snapshot fee growth from V3 pool state at mint time.
     pub fn process_tx(
         &mut self,
         tx_index: usize,
         logs: &[ExecutedLog],
         sender: Option<Address>,
+        pm: &PoolManager,
     ) {
         let mut mints_and_burns: Vec<(&ExecutedLog, &str)> = Vec::new();
         let mut swap_decoded: Vec<(&ExecutedLog, i32, u128, u128)> = Vec::new();
@@ -102,6 +108,9 @@ impl JitDetector {
             match *kind {
                 "mint" => {
                     if decoded.amount > 0 {
+                        let (fg0, fg1) = pm.get_v3_state(&log.address)
+                            .map(|s| (s.fee_growth_global_0_x128, s.fee_growth_global_1_x128))
+                            .unwrap_or((U256::ZERO, U256::ZERO));
                         self.active_mints
                             .entry(log.address)
                             .or_default()
@@ -114,6 +123,8 @@ impl JitDetector {
                                 swapped: false,
                                 burned: false,
                                 swap_volume: 0,
+                                fee_growth_snapshot_0_x128: fg0,
+                                fee_growth_snapshot_1_x128: fg1,
                             });
                     }
                 }
@@ -215,23 +226,28 @@ impl JitDetector {
         pool_manager: &PoolManager,
     ) -> MevOpportunity {
         // Estimate fee revenue earned by the JIT position.
-        // The JIT position earns fees proportional to its share of active
-        // liquidity in the pool. If the position's liquidity is smaller than
-        // the pool's total active liquidity, scale the fee estimate accordingly.
-        let pool_liquidity = pool_manager
-            .get_v3_state(&pool)
-            .map(|s| s.liquidity)
-            .unwrap_or(0);
-        let estimated_fees = if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
-            if pool_liquidity > 0 && (mint.amount as u128) < pool_liquidity {
-                // Position provides only a fraction of total active liquidity
+        // If fee growth snapshots are available, compute actual fees from
+        // the delta in feeGrowthGlobal since mint time. Otherwise fall back
+        // to (swap_volume * fee_tier * position_share) approximation.
+        let estimated_fees = if let Some(v3) = pool_manager.get_v3_state(&pool) {
+            let d0 = v3.fee_growth_global_0_x128.saturating_sub(mint.fee_growth_snapshot_0_x128);
+            let d1 = v3.fee_growth_global_1_x128.saturating_sub(mint.fee_growth_snapshot_1_x128);
+            let fee0 = U256::from(mint.amount) * d0 >> 128;
+            let fee1 = U256::from(mint.amount) * d1 >> 128;
+            let total = fee0.saturating_add(fee1);
+            total.to::<u128>()
+        } else if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
+            let pool_liquidity = pool_manager
+                .get_v3_state(&pool)
+                .map(|s| s.liquidity)
+                .unwrap_or(0);
+            if pool_liquidity > 0 && mint.amount < pool_liquidity {
                 (mint.swap_volume as u128)
                     .saturating_mul(pool_fee as u128)
                     .saturating_mul(mint.amount as u128)
                     .saturating_div(1_000_000u128)
                     .saturating_div(pool_liquidity as u128)
             } else {
-                // Position provides all (or more than) active liquidity
                 (mint.swap_volume as u128)
                     .saturating_mul(pool_fee as u128)
                     .saturating_div(1_000_000)
@@ -258,6 +274,11 @@ impl JitDetector {
             token_out: pool_tokens.map(|(_, t1)| t1).unwrap_or(Address::ZERO),
             input_amount: U256::from(mint.amount),
             expected_profit: U256::from(estimated_fees),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
             gas_cost_wei,
             timestamp,
             path: None,
@@ -391,11 +412,11 @@ mod tests {
         let pm = make_pm_with_v3_pool_and_liquidity(pool_a(), 3000, 500_000);
 
         // Tx 0: Mint on pool A
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &pm);
         assert!(detector.detect(100, 50_000_000_000, &gas_cfg(), &pm).is_empty(), "Mint alone is not JIT");
 
         // Tx 1: Swap on pool A
-        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None);
+        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None, &pm);
         let mut opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert_eq!(opps.len(), 1, "Mint+Swap should emit partial JIT");
 
@@ -409,7 +430,7 @@ mod tests {
         assert!(opp.gas_cost_wei > 0, "Gas cost should be > 0");
 
         // Tx 2: Burn matching the mint
-        detector.process_tx(2, &[v3_burn_log(pool_a(), -100, 100, 500_000)], None);
+        detector.process_tx(2, &[v3_burn_log(pool_a(), -100, 100, 500_000)], None, &pm);
         opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert_eq!(opps.len(), 1, "Burn should emit full JIT");
         assert_eq!(opps[0].tx_index, 0, "Should reference the mint tx index");
@@ -420,9 +441,9 @@ mod tests {
         let mut detector = JitDetector::new(1);
         let pm = make_pm_with_v3_pool(pool_a(), 3000);
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
-        detector.process_tx(1, &[v3_mint_log(pool_b(), -200, 200, 1_000_000)], None);
-        detector.process_tx(2, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &pm);
+        detector.process_tx(1, &[v3_mint_log(pool_b(), -200, 200, 1_000_000)], None, &pm);
+        detector.process_tx(2, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None, &pm);
 
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert_eq!(opps.len(), 1);
@@ -434,8 +455,8 @@ mod tests {
         let mut detector = JitDetector::new(1);
         let pm = make_pm_with_v3_pool(pool_a(), 3000);
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
-        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &pm);
+        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None, &pm);
 
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert_eq!(opps.len(), 1);
@@ -457,8 +478,8 @@ mod tests {
     fn test_swap_burn_without_mint_no_detection() {
         let mut detector = JitDetector::new(1);
         let pm = make_pm_with_v3_pool(pool_a(), 3000);
-        detector.process_tx(0, &[v3_burn_log(pool_a(), -100, 100, 500_000)], None);
-        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None);
+        detector.process_tx(0, &[v3_burn_log(pool_a(), -100, 100, 500_000)], None, &pm);
+        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 0)], None, &pm);
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert!(opps.is_empty());
     }
@@ -469,11 +490,11 @@ mod tests {
         let _pm = make_pm_with_v3_pool(pool_a(), 3000);
 
         // Two mints at different tick ranges
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -200, -100, 500_000)], None);
-        detector.process_tx(1, &[v3_mint_log(pool_a(), 100, 200, 500_000)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -200, -100, 500_000)], None, &_pm);
+        detector.process_tx(1, &[v3_mint_log(pool_a(), 100, 200, 500_000)], None, &_pm);
 
         // Swap at tick 150 — only second mint should be marked
-        detector.process_tx(2, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 150)], None);
+        detector.process_tx(2, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 150)], None, &_pm);
 
         let mints = detector.active_mints.get(&pool_a()).unwrap();
         assert!(!mints[0].swapped, "First mint (-200..-100) should not be swapped");
@@ -486,9 +507,9 @@ mod tests {
         let mut detector = JitDetector::new(1);
         let _pm = make_pm_with_v3_pool(pool_a(), 3000);
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &_pm);
         // Swap at tick 500 — far outside range
-        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 500)], None);
+        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 100_000, -99_000, 500)], None, &_pm);
 
         let mints = detector.active_mints.get(&pool_a()).unwrap();
         assert!(!mints[0].swapped, "Mint should not be marked as swapped");
@@ -501,9 +522,9 @@ mod tests {
         let sender1 = address!("1111111111111111111111111111111111111111");
         let sender2 = address!("2222222222222222222222222222222222222222");
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], Some(sender1));
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], Some(sender1), &_pm);
         // Burn from sender2 — should NOT match mint from sender1
-        detector.process_tx(1, &[v3_burn_log(pool_a(), -100, 100, 500_000)], Some(sender2));
+        detector.process_tx(1, &[v3_burn_log(pool_a(), -100, 100, 500_000)], Some(sender2), &_pm);
 
         let mints = detector.active_mints.get(&pool_a()).unwrap();
         assert!(!mints[0].burned, "Burn from different sender should not match");
@@ -515,9 +536,9 @@ mod tests {
         let _pm = make_pm_with_v3_pool(pool_a(), 3000);
         let sender1 = address!("1111111111111111111111111111111111111111");
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], Some(sender1));
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], Some(sender1), &_pm);
         // Burn from same sender — should match
-        detector.process_tx(1, &[v3_burn_log(pool_a(), -100, 100, 500_000)], Some(sender1));
+        detector.process_tx(1, &[v3_burn_log(pool_a(), -100, 100, 500_000)], Some(sender1), &_pm);
 
         let mints = detector.active_mints.get(&pool_a()).unwrap();
         assert!(mints[0].burned, "Burn from same sender should match");
@@ -529,9 +550,9 @@ mod tests {
         // Pool liquidity matches mint amount so the position captures 100% of fees
         let pm = make_pm_with_v3_pool_and_liquidity(pool_a(), 3000, 500_000);
 
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &pm);
         // Swap with 1_000_000 volume at 0.3% fee = 3_000 expected profit (full share)
-        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 1_000_000, -997_000, 0)], None);
+        detector.process_tx(1, &[v3_swap_log_with_amounts(pool_a(), 1_000_000, -997_000, 0)], None, &pm);
 
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert_eq!(opps.len(), 1);
