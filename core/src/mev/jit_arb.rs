@@ -214,11 +214,15 @@ impl JitArbDetector {
         gas_config: &GasConfig,
         pm: &PoolManager,
     ) -> MevOpportunity {
-        let gas_cost_wei = gas_config.compute_gas_cost(
-            Strategy::JitArb,
-            base_fee_per_gas,
-            &HashMap::new(),
-        );
+        // Per-opportunity gas: JIT position (Mint+Swap) + arb swap on related pool
+        let jit_pool_gas = pm.get(&jit_pool)
+            .map(|p| p.gas_estimate())
+            .unwrap_or(60_000);
+        let arb_pool_gas = pm.get(&arb_pool)
+            .map(|p| p.gas_estimate())
+            .unwrap_or(60_000);
+        let gas_limit = 40_000 + 150_000 + jit_pool_gas + arb_pool_gas;
+        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // Populate token_in/token_out from the JIT pool — both tokens are involved
         // in the liquidity provision and subsequent arb swap.
         let token_in = pm.get(&jit_pool).map(|p| p.info().token0).unwrap_or(Address::ZERO);
@@ -243,6 +247,7 @@ impl JitArbDetector {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: Some(vec![jit_pool, arb_pool]),

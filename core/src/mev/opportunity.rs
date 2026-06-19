@@ -49,6 +49,9 @@ pub struct MevOpportunity {
     /// Profit estimate with -2% slippage — None if not computed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profit_slippage_m2: Option<U256>,
+    /// Profit after PGA simulation (competition-adjusted) — None if not computed
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pga_adjusted_profit: Option<U256>,
     /// Estimated gas cost in wei
     pub gas_cost_wei: u128,
     /// Timestamp of the block
@@ -98,6 +101,7 @@ impl MevOpportunity {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 0,
             timestamp,
             path: None,
@@ -186,6 +190,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 1_000_000,
             timestamp: 12345,
             path: Some(vec![
@@ -223,6 +228,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 0,
             timestamp: 12345,
             path: None,
@@ -299,6 +305,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 0,
             timestamp: 12345,
             path: None,

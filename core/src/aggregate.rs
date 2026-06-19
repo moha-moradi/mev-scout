@@ -74,6 +74,7 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
         Strategy::Jit => "jit",
         Strategy::JitArb => "jitarb",
         Strategy::Sandwich => "sandwich",
+        Strategy::Liquidation => "liquidation",
     }
 }
 
@@ -134,7 +135,11 @@ pub fn aggregate(
     let mut summary_gross_wei = 0_u128;
     let mut summary_gas_wei = 0_u128;
 
-    for opp in opportunities {
+    // Deduplicate by (block, pool pair, token pair) — the same key per-detector dedup uses.
+    let mut dedup_seen = std::collections::HashSet::new();
+    for opp in opportunities.iter().filter(|opp| {
+        dedup_seen.insert((opp.block_number, opp.pool_a, opp.pool_b, opp.token_in, opp.token_out))
+    }) {
         let profit_wei = opp.expected_profit.to::<u128>();
         let gas_wei = opp.gas_cost_wei;
         let profit_eth = wei_to_eth(profit_wei);
@@ -329,6 +334,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: gas_wei,
             timestamp: 12345,
             path: None,

@@ -13,44 +13,57 @@ use crate::types::{GasConfig, Strategy};
 /// Detects two-hop arbitrage opportunities across V2, V3, and mixed pools.
 ///
 /// Uses analytical closed-form solutions for V2 pairs and a step-by-step quote
-/// engine for V3 pools. Does not require block-by-block state accumulation.
-pub struct TwoHopArbDetector;
+/// engine for V3 pools. Maintains a per-block dedup set so the same persistent
+/// arb gap is not re-reported across multiple transactions in the same block.
+pub struct TwoHopArbDetector {
+    block_number: u64,
+    seen: std::collections::HashSet<(Address, Address, Address, Address)>,
+}
 
 impl TwoHopArbDetector {
+    /// Create a new detector for the given block.
+    /// The `seen` set is fresh each block, so opportunities can be re-detected
+    /// on the next block if the price gap persists.
+    pub fn new(block_number: u64) -> Self {
+        Self {
+            block_number,
+            seen: std::collections::HashSet::new(),
+        }
+    }
+
     /// Check all arbitrage pool-pair directions and emit profitable two-hop opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once, preventing the same persistent arb gap from being re-reported across
     /// multiple transactions.
     pub fn detect(
+        &mut self,
         pool_manager: &PoolManager,
-        block_number: u64,
         tx_index: usize,
         timestamp: u64,
         base_fee_per_gas: u128,
         gas_config: GasConfig,
     ) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
-        let mut seen = std::collections::HashSet::new();
         let pairs = pool_manager.arbitrage_pairs();
 
         for (pool_a, pool_b, shared_token) in &pairs {
             if let Some(opp) = Self::check_direction(
                 pool_manager, *pool_a, *pool_b, *shared_token,
-                block_number, tx_index, timestamp,
+                self.block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if seen.insert(key) {
+                if self.seen.insert(key) {
                     opportunities.push(opp);
                 }
             }
             if let Some(opp) = Self::check_direction(
                 pool_manager, *pool_b, *pool_a, *shared_token,
-                block_number, tx_index, timestamp,
+                self.block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if seen.insert(key) {
+                if self.seen.insert(key) {
                     opportunities.push(opp);
                 }
             }
@@ -94,14 +107,17 @@ impl TwoHopArbDetector {
             (U256::from(profit_after_fl), None)
         } else {
             let raw = U256::from(profit_after_fl);
-            // Convert output token profit to native using pool reserves
+            // Convert output token profit to native using pool reserves.
+            // Falls back to: total_output_native - total_input_native when
+            // direct profit normalization is unavailable (C5).
             let native_profit = pm.normalize_to_native(token_out, profit_after_fl)
-                .or_else(|| pm.normalize_to_native(token_in, result.input_amount)
-                    .map(|native_in| {
-                        let native_out = pm.normalize_to_native(token_out, profit_after_fl)
-                            .unwrap_or(profit_after_fl);
-                        native_out.saturating_sub(native_in)
-                    }))
+                .or_else(|| {
+                    let total_input = result.input_amount;
+                    let total_output = total_input.saturating_add(profit_after_fl);
+                    let native_in = pm.normalize_to_native(token_in, total_input)?;
+                    let native_out = pm.normalize_to_native(token_out, total_output)?;
+                    native_out.checked_sub(native_in)
+                })
                 .unwrap_or(profit_after_fl);
             (U256::from(native_profit), Some(raw))
         };
@@ -124,6 +140,7 @@ impl TwoHopArbDetector {
             profit_slippage_m1,
             profit_slippage_p2,
             profit_slippage_m2,
+            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: None,
@@ -355,6 +372,10 @@ fn two_hop_profit_at(
 
 /// Extract the token_in (spent) and token_out (received) for a two-hop arb
 /// given two pools that share a common token.
+///
+/// For multi-token pools (Curve 3pool, Balancer weighted pools with 3+ tokens),
+/// falls back to the pool's `token_index` map when the shared token is not
+/// in the first two positions, picking the first eligible non-shared token.
 fn arb_tokens(
     pool_a: &PoolState,
     pool_b: &PoolState,
@@ -362,20 +383,43 @@ fn arb_tokens(
 ) -> Option<(Address, Address)> {
     let info_a = pool_a.info();
     let info_b = pool_b.info();
+
     let token_in = if info_a.token0 == shared_token {
         info_a.token1
     } else if info_a.token1 == shared_token {
         info_a.token0
     } else {
-        return None;
+        // Multi-token pool: shared_token is beyond token0/token1.
+        // Scan the pool's token_index for the first non-shared token.
+        let non_shared = match pool_a {
+            PoolState::Curve(c) => c.token_index.iter()
+                .find(|(k, _)| **k != shared_token && !k.is_zero())
+                .map(|(k, _)| *k),
+            PoolState::Balancer(b) => b.token_index.iter()
+                .find(|(k, _)| **k != shared_token && !k.is_zero())
+                .map(|(k, _)| *k),
+            _ => None,
+        };
+        non_shared?
     };
+
     let token_out = if info_b.token0 == shared_token {
         info_b.token1
     } else if info_b.token1 == shared_token {
         info_b.token0
     } else {
-        return None;
+        let non_shared = match pool_b {
+            PoolState::Curve(c) => c.token_index.iter()
+                .find(|(k, _)| **k != shared_token && !k.is_zero())
+                .map(|(k, _)| *k),
+            PoolState::Balancer(b) => b.token_index.iter()
+                .find(|(k, _)| **k != shared_token && !k.is_zero())
+                .map(|(k, _)| *k),
+            _ => None,
+        };
+        non_shared?
     };
+
     Some((token_in, token_out))
 }
 
@@ -560,24 +604,12 @@ fn v2_reserves(
     }
 }
 
-/// Estimate a per-pool gas cost based on pool type.
-/// V2 swaps cost the least (~60k), V3 depends on tick crossing (~120k average),
-/// Curve/Balancer are moderate (~80k).
-fn gas_for_pool_type(pool: &PoolState) -> u64 {
-    match pool {
-        PoolState::UniswapV2(_) => 60_000,
-        PoolState::UniswapV3(_) => 120_000,
-        PoolState::Curve(_) => 80_000,
-        PoolState::Balancer(_) => 80_000,
-    }
-}
-
 /// Estimate the gas limit for a two-hop arbitrage opportunity based on the
 /// actual pool types involved. Replaces the old flat 150k estimate which was
 /// too low for V3 (can cost 250k+) and too high for V2 (often ~90k).
 fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState) -> u64 {
-    let a_gas = gas_for_pool_type(pool_a);
-    let b_gas = gas_for_pool_type(pool_b);
+    let a_gas = pool_a.gas_estimate();
+    let b_gas = pool_b.gas_estimate();
     // Two-hop arb executes one swap per pool; add base overhead
     40_000 + a_gas + b_gas
 }
@@ -616,6 +648,8 @@ mod tests {
             },
             sqrt_price_x96: sqrt, tick, liquidity: liq,
             ticks: std::collections::BTreeMap::new(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
         })
     }
 
@@ -762,7 +796,8 @@ mod tests {
         let mut pm = PoolManager::new();
         pm.add_pool(v2_pool(address!("1111111111111111111111111111111111111111"), usdc(), wmatic(), 1_000_000, 2_000_000));
         pm.add_pool(v2_pool(address!("2222222222222222222222222222222222222222"), wmatic(), usdt(), 1_000_000, 2_000_000));
-        let opps = TwoHopArbDetector::detect(&pm, 42, 0, 12345, 50_000_000_000, default_gas_config());
+        let mut detector = TwoHopArbDetector::new(42);
+        let opps = detector.detect(&pm, 0, 12345, 50_000_000_000, default_gas_config());
         assert!(!opps.is_empty());
         for opp in &opps {
             assert_eq!(opp.block_number, 42);
@@ -775,13 +810,15 @@ mod tests {
     #[test]
     fn test_detect_empty_pool_manager() {
         let pm = PoolManager::new();
-        assert!(TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config()).is_empty());
+        let mut detector = TwoHopArbDetector::new(1);
+        assert!(detector.detect(&pm, 0, 100, 50_000_000_000, default_gas_config()).is_empty());
     }
 
     #[test]
     fn test_detect_single_pool_no_pairs() {
         let mut pm = PoolManager::new();
         pm.add_pool(v2_pool(address!("1111111111111111111111111111111111111111"), usdc(), wmatic(), 1_000_000, 2_000_000));
-        assert!(TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config()).is_empty());
+        let mut detector = TwoHopArbDetector::new(1);
+        assert!(detector.detect(&pm, 0, 100, 50_000_000_000, default_gas_config()).is_empty());
     }
 }

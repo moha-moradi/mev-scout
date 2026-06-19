@@ -121,7 +121,20 @@ pub struct Config {
     /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_workers: Option<usize>,
+    /// Enable PGA (Priority Gas Auction) simulation to adjust profits for competition.
+    /// When enabled, expected_profit is replaced with the post-auction estimate.
+    #[serde(default)]
+    pub pga_enabled: bool,
+    /// Mean number of competing searchers for PGA simulation (default: 3.0).
+    #[serde(default = "default_pga_mean_competitors")]
+    pub pga_mean_competitors: f64,
+    /// PGA intensity — fraction of auction surplus dissipated (default: 0.5).
+    #[serde(default = "default_pga_intensity")]
+    pub pga_intensity: f64,
 }
+
+fn default_pga_mean_competitors() -> f64 { 3.0 }
+fn default_pga_intensity() -> f64 { 0.5 }
 
 fn default_chain() -> String {
     "polygon".to_string()
@@ -188,6 +201,9 @@ impl Default for Config {
             gas_limits: std::collections::HashMap::new(),
             max_pairs_per_token: default_max_pairs_per_token(),
             rpc_workers: None,
+            pga_enabled: false,
+            pga_mean_competitors: default_pga_mean_competitors(),
+            pga_intensity: default_pga_intensity(),
         }
     }
 }
@@ -476,6 +492,9 @@ pub struct CliOverrides {
     pub db_path: Option<String>,
     pub parquet_dir: Option<String>,
     pub coingecko_api_key: Option<String>,
+    pub pga_enabled: Option<bool>,
+    pub pga_mean_competitors: Option<f64>,
+    pub pga_intensity: Option<f64>,
 }
 
 impl Config {
@@ -533,6 +552,15 @@ impl Config {
         }
         if let Some(v) = overrides.rpc_workers {
             self.rpc_workers = Some(v);
+        }
+        if let Some(v) = overrides.pga_enabled {
+            self.pga_enabled = v;
+        }
+        if let Some(v) = overrides.pga_mean_competitors {
+            self.pga_mean_competitors = v;
+        }
+        if let Some(v) = overrides.pga_intensity {
+            self.pga_intensity = v;
         }
     }
 }
@@ -630,6 +658,9 @@ rpc_url = "https://eth.diy"
             db_path: Some("./db".into()),
             parquet_dir: None,
             coingecko_api_key: Some("test-key".into()),
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -658,6 +689,9 @@ rpc_url = "https://eth.diy"
             gas_model: None, gas_limit: None, priority_fee_gwei: None,
             output: None, export_path: None, db_path: None, parquet_dir: None,
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));

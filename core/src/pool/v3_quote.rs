@@ -834,6 +834,8 @@ mod tests {
             tick,
             liquidity,
             ticks,
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
         }
     }
 

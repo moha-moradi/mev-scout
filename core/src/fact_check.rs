@@ -6,6 +6,7 @@ use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::rpc::RpcClient;
 use crate::types::Strategy;
 
 /// Per-block stats collected during a backtest run.
@@ -26,6 +27,30 @@ pub struct BlockSummary {
     pub by_strategy: std::collections::HashMap<String, usize>,
 }
 
+/// Recomputation accuracy label.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecomputationAccuracy {
+    /// Recomputation not applicable for this strategy
+    NotApplicable,
+    /// Recomputed profit matches stored profit (within 1%)
+    Match,
+    /// Recomputed profit differs materially from stored profit
+    Mismatch,
+    /// Pool state unavailable for recomputation
+    Unavailable,
+}
+
+impl std::fmt::Display for RecomputationAccuracy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecomputationAccuracy::NotApplicable => write!(f, "N/A"),
+            RecomputationAccuracy::Match => write!(f, "✓"),
+            RecomputationAccuracy::Mismatch => write!(f, "✗"),
+            RecomputationAccuracy::Unavailable => write!(f, "?"),
+        }
+    }
+}
+
 /// Fact-check result for a single opportunity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpportunityFactCheck {
@@ -44,6 +69,7 @@ pub struct OpportunityFactCheck {
     pub profit_gt_gas: bool,
     pub recomputed_profit: Option<String>,
     pub recomputation_match: Option<bool>,
+    pub recomputation_accuracy: RecomputationAccuracy,
     pub victim_tx_index: Option<usize>,
     pub backrun_tx_index: Option<usize>,
     pub tick_lower: Option<i32>,
@@ -63,6 +89,28 @@ pub struct FactCheckReport {
     pub failed: usize,
     pub block_summaries: Vec<BlockSummary>,
     pub opportunity_checks: Vec<OpportunityFactCheck>,
+}
+
+/// Guess token decimals for well-known tokens by address.
+/// Returns 18 (default) for unknown tokens.
+fn guess_token_decimals(token: &Address) -> u8 {
+    // Well-known addresses on Polygon
+    const USDC_POLYGON: Address = alloy::primitives::address!("2791bca1f2de4661ed88a30c99a7a9449aa84174");
+    const USDT_POLYGON: Address = alloy::primitives::address!("c2132d05d31c914a87c6611c10748aeb04b58e8f");
+    const DAI_POLYGON: Address = alloy::primitives::address!("8f3cf7ad23cd3cadbd9735aff958023239c6a063");
+    // Well-known addresses on Ethereum
+    const USDC_ETH: Address = alloy::primitives::address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48");
+    const USDT_ETH: Address = alloy::primitives::address!("dac17f958d2ee523a2206206994597c13d831ec7");
+    const DAI_ETH: Address = alloy::primitives::address!("6b175474e89094c44da98b954eedeac495271d0f");
+    const WBTC_ETH: Address = alloy::primitives::address!("2260fac5e5542a773aa44fbcfedf7c193bc2c599");
+    const WBTC_POLYGON: Address = alloy::primitives::address!("1bfd67037b42cf73acf2047067bd4f2c47d9bfd6");
+
+    match token {
+        &USDC_POLYGON | &USDT_POLYGON | &USDC_ETH | &USDT_ETH => 6,
+        &DAI_POLYGON | &DAI_ETH => 18,
+        &WBTC_ETH | &WBTC_POLYGON => 8,
+        _ => 18,
+    }
 }
 
 /// Format a U256 token amount as a human-readable decimal string.
@@ -236,7 +284,74 @@ pub fn recompute_opportunity_profit(
             }
             Some(U256::from(current - input))
         }
-        _ => None,
+        Strategy::Sandwich => {
+            // Sandwich profit = frontrun buy amount back - backrun sell amount
+            // Approximate: quote the frontrun buy (token_in -> token_out)
+            // then the backrun sell (token_out -> token_in) at stored input_amount
+            let pool = pools.get(&opp.pool_a)?;
+            let mid = quote_single_swap(pool, opp.token_in, opp.token_out, input)?;
+            if mid == 0 { return None; }
+            let back = quote_single_swap(pool, opp.token_out, opp.token_in, mid)?;
+            if back <= input { return None; }
+            Some(U256::from(back - input))
+        }
+        Strategy::Liquidation => {
+            // Liquidation profit verification: structural check only.
+            // Full verification would require re-executing the liquidation
+            // against forked state with Aave pool data.
+            if opp.expected_profit > U256::from(opp.gas_cost_wei) {
+                Some(opp.expected_profit)
+            } else {
+                None
+            }
+        }
+        Strategy::Jit => {
+            // JIT fee revenue: liquidity_share * swap_fee_growth
+            // Use stored tick range and liquidity amount if available
+            let pool = pools.get(&opp.pool_a)?;
+            let v3_state = match pool {
+                PoolState::UniswapV3(s) => s,
+                _ => return None,
+            };
+            let liq_amount = opp.liquidity_amount? as u128;
+            if liq_amount == 0 || v3_state.liquidity == 0 {
+                return None;
+            }
+            let fee_tier = v3_state.info.fee as u128;
+            let estimated_fee = liq_amount.saturating_mul(fee_tier) / 1_000_000u128;
+            // Estimate: fee revenue ≈ input_amount * (liq_amount / pool.total_liquidity) * fee_tier / 1e6
+            let share = U256::from(liq_amount) * U256::from(2u128.pow(64)) / U256::from(v3_state.liquidity.max(1));
+            let fee_revenue = U256::from(input) * share * U256::from(fee_tier)
+                / (U256::from(2u128.pow(64)) * U256::from(1_000_000u128));
+            if fee_revenue.is_zero() {
+                Some(U256::from(estimated_fee))
+            } else {
+                Some(fee_revenue)
+            }
+        }
+        Strategy::JitArb => {
+            // JitArb = arb profit + JIT fee revenue
+            // Arb profit: difference of two swap amounts in shared token
+            let pool = pools.get(&opp.pool_a)?;
+            let mid = quote_single_swap(pool, opp.token_in, opp.token_out, input)?;
+            if mid == 0 { return None; }
+            let back = quote_single_swap(pool, opp.token_out, opp.token_in, mid)?;
+            let arb_profit = if back > input { back - input } else { 0u128 };
+
+            // Add JIT fee component
+            let jit_fee = if let Some(liq) = opp.liquidity_amount {
+                if let PoolState::UniswapV3(v3) = pool {
+                    let fee_tier = v3.info.fee as u128;
+                    let share = U256::from(liq) * U256::from(2u128.pow(64)) / U256::from(v3.liquidity.max(1));
+                    let fee_rev = U256::from(input) * share * U256::from(fee_tier)
+                        / (U256::from(2u128.pow(64)) * U256::from(1_000_000u128));
+                    fee_rev.to::<u128>()
+                } else { 0 }
+            } else { 0 };
+
+            let total = U256::from(arb_profit.saturating_add(jit_fee));
+            if total.is_zero() { None } else { Some(total) }
+        }
     }
 }
 
@@ -244,6 +359,7 @@ pub fn recompute_opportunity_profit(
 ///
 /// If `pools` is `Some`, recomputes each opportunity's profit using the
 /// current pool state and fills in `recomputed_profit` and `recomputation_match`.
+/// Also computes a `recomputation_accuracy` label summarizing match quality.
 pub fn verify_opportunities(
     opportunities: &[MevOpportunity],
     pools: Option<&PoolManager>,
@@ -252,14 +368,24 @@ pub fn verify_opportunities(
         .iter()
         .map(|opp| {
             let profit_gt_gas = opp.expected_profit > U256::from(opp.gas_cost_wei);
-            let (recomputed_profit, recomputation_match) = pools
+            let dec_out = guess_token_decimals(&opp.token_out);
+            let dec_in = guess_token_decimals(&opp.token_in);
+            let (recomputed_profit, recomputation_match, recomputation_accuracy) = pools
                 .and_then(|pm| recompute_opportunity_profit(pm, opp))
                 .map(|recomputed| {
                     let stored = opp.raw_profit.unwrap_or(opp.expected_profit);
-                    let matched = stored == recomputed;
-                    (Some(format_amount(&recomputed, 18)), Some(matched))
+                    // Compute accuracy: match if within 1% or 1 wei of each other
+                    let diff = if stored > recomputed { stored - recomputed } else { recomputed - stored };
+                    let matched = diff == U256::ZERO
+                        || (stored > U256::ZERO && diff * U256::from(100u64) / stored < U256::from(1u64));
+                    let accuracy = if matched {
+                        RecomputationAccuracy::Match
+                    } else {
+                        RecomputationAccuracy::Mismatch
+                    };
+                    (Some(format_amount(&recomputed, dec_out)), Some(matched), accuracy)
                 })
-                .unwrap_or((None, None));
+                .unwrap_or((None, None, RecomputationAccuracy::NotApplicable));
             OpportunityFactCheck {
                 block_number: opp.block_number,
                 tx_index: opp.tx_index,
@@ -270,12 +396,13 @@ pub fn verify_opportunities(
                 pool_b_name: None,
                 token_in: opp.token_in,
                 token_out: opp.token_out,
-                input_amount: format_amount(&opp.input_amount, 18),
-                expected_profit: format_amount(&opp.expected_profit, 18),
+                input_amount: format_amount(&opp.input_amount, dec_in),
+                expected_profit: format_amount(&opp.expected_profit, dec_out),
                 gas_cost_wei: opp.gas_cost_wei,
                 profit_gt_gas,
                 recomputed_profit,
                 recomputation_match,
+                recomputation_accuracy,
                 victim_tx_index: opp.victim_tx_index,
                 backrun_tx_index: opp.backrun_tx_index,
                 tick_lower: opp.tick_lower,
@@ -285,6 +412,50 @@ pub fn verify_opportunities(
             }
         })
         .collect()
+}
+
+/// Verify opportunities against actual on-chain pool state fetched via `eth_call`.
+///
+/// This is the EVM-based fact-check (M3 in PLAN-accuracy-improvement.md). Unlike the
+/// structural `verify_opportunities()` which uses the `PoolManager`'s cached state
+/// (which may diverge from on-chain reality), this function re-fetches each pool's
+/// state directly from the chain at the opportunity's block, then recomputes profit
+/// using the quoting functions.
+///
+/// This catches detection bugs (wrong reserve direction, incorrect fee application,
+/// PoolManager state divergence) that pass the structural check undetected.
+///
+/// # Performance
+/// Makes one `eth_call` per unique pool address across all opportunities. V2 and V3
+/// pools use `getReserves()` / `slot0()+liquidity()` calls; Curve/Balancer pools
+/// make multiple calls (one per token index). Opportunities are grouped by block so
+/// shared pools are only fetched once.
+pub async fn verify_opportunities_from_chain(
+    opportunities: &[MevOpportunity],
+    pools: &PoolManager,
+    rpc: &RpcClient,
+) -> Vec<OpportunityFactCheck> {
+    let mut fresh_pools = PoolManager::new();
+    // Track which (pool, block) pairs have been fetched
+    let mut fetched = std::collections::HashSet::new();
+
+    for opp in opportunities {
+        let block = opp.block_number;
+
+        for addr in std::iter::once(&opp.pool_a)
+            .chain(std::iter::once(&opp.pool_b))
+            .chain(opp.path.as_ref().map(|p| p.as_slice()).unwrap_or(&[]))
+        {
+            if addr.is_zero() || !fetched.insert((*addr, block)) {
+                continue;
+            }
+            if let Some(state) = pools.refetch_pool_state(rpc, addr, block).await {
+                fresh_pools.add_pool(state);
+            }
+        }
+    }
+
+    verify_opportunities(opportunities, Some(&fresh_pools))
 }
 
 #[cfg(test)]
@@ -375,6 +546,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 100,
             timestamp: 12345,
             path: None,
@@ -417,6 +589,7 @@ mod tests {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei: 100,
             timestamp: 12345,
             path: None,

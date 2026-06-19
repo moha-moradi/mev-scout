@@ -5,10 +5,12 @@ use std::cell::RefCell;
 use crate::cache::SqliteStore;
 use crate::mev::opportunity::MevOpportunity;
 use crate::mev::jit::JitDetector;
+use crate::mev::liquidation::LiquidationDetector;
 use crate::mev::sandwich::SandwichDetector;
 use crate::mev::jit_arb::JitArbDetector;
 use crate::mev::multi_hop::MultiHopArbDetector;
 use crate::mev::two_hop::TwoHopArbDetector;
+use crate::mev::pga::{self, PgaConfig};
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
@@ -183,11 +185,15 @@ impl BacktestRunner {
             self.pool_manager.token_addresses().into_iter().collect();
 
         let mut all_opportunities = Vec::new();
+        // Create stateful detectors (H2: persistent per-block dedup across transactions)
+        let mut two_hop_detector = TwoHopArbDetector::new(block_num);
+        let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
         // Seed JIT detector tick cache BEFORE taking pool_manager
         let mut jit_detector = JitDetector::new(block_num);
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
         let mut sandwich_detector = SandwichDetector::new(block_num);
         let mut jit_arb_detector = JitArbDetector::new(block_num);
+        let mut liquidation_detector = LiquidationDetector::new(block_num);
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let pool_manager = std::mem::take(&mut self.pool_manager);
@@ -220,9 +226,10 @@ impl BacktestRunner {
                 // C6: Running detection before update_from_logs means we see the
                 // opportunity that existed *before* the current tx consumed it,
                 // rather than only the residual post-tx leftovers.
-                let opps = TwoHopArbDetector::detect(
+                // H2: Detectors maintain a per-block seen set so the same persistent
+                // arb gap is not re-reported across multiple transactions.
+                let opps = two_hop_detector.detect(
                     &pm,
-                    block_num,
                     i,
                     timestamp,
                     base_fee_per_gas,
@@ -238,9 +245,8 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(opps);
 
-                let multi_opps = MultiHopArbDetector::detect(
+                let multi_opps = multi_hop_detector.detect(
                     &pm,
-                    block_num,
                     i,
                     timestamp,
                     base_fee_per_gas,
@@ -296,6 +302,21 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(jit_arb_opps);
 
+                // Liquidation detector — catches Aave V3 LiquidationCall events
+                liquidation_detector.process_tx(i, &tx.logs);
+                let liq_opps = liquidation_detector.detect(
+                    &pm, timestamp, base_fee_per_gas, self.gas_config,
+                );
+                if !liq_opps.is_empty() {
+                    tracing::info!(
+                        "Block {} tx {}: {} liquidation opportunities",
+                        block_num,
+                        i,
+                        liq_opps.len()
+                    );
+                }
+                all_opportunities.extend(liq_opps);
+
                 // Apply this tx's log updates to pool state AFTER detection
                 pm.update_from_logs(&tx.logs);
 
@@ -328,9 +349,23 @@ impl BacktestRunner {
         &mut self,
         resolved: &ResolvedRange,
     ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
+        self.run_range_with_pga(resolved, None)
+    }
+
+    /// Run backtest over the resolved block range, optionally applying PGA
+    /// profit adjustment to each opportunity after detection.
+    pub fn run_range_with_pga(
+        &mut self,
+        resolved: &ResolvedRange,
+        pga_config: Option<PgaConfig>,
+    ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
         for block_num in resolved.start_block..=resolved.end_block {
+            // H5: Checkpoint pool state before running the block.
+            // On failure, the pool_manager inside run_block is consumed/lost,
+            // so we restore from this checkpoint to prevent state divergence.
+            let checkpoint = self.pool_manager.clone();
             match self.run_block(block_num) {
                 Ok((opps, stats)) => {
                     tracing::info!(
@@ -342,10 +377,19 @@ impl BacktestRunner {
                     all_stats.push(stats);
                 }
                 Err(e) => {
+                    // Restore pool state to the pre-block checkpoint so
+                    // subsequent blocks use correct, non-diverged state.
+                    self.pool_manager = checkpoint;
                     tracing::error!("Block {} failed: {:?}", block_num, e);
                 }
             }
         }
+        let all = if let Some(cfg) = pga_config {
+            tracing::info!("Applying PGA adjustment to {} opportunities", all.len());
+            pga::adjust_opportunities(all, &cfg)
+        } else {
+            all
+        };
         Ok((all, all_stats))
     }
 }

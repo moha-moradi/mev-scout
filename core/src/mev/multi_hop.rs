@@ -10,19 +10,30 @@ use crate::types::{GasConfig, Strategy};
 
 /// Detects multi-hop arbitrage opportunities across connected pool paths.
 ///
-/// Stateful per block: enumerates pool graphs via BFS (depth ≤ 4) from existing
-/// arbitrage pairs, then quotes each path through V2/V3 AMMs. An opportunity
-/// is emitted only when output > input after gas.
-pub struct MultiHopArbDetector;
+/// Enumerates pool graphs via BFS (depth ≤ 4) from existing arbitrage pairs,
+/// then quotes each path through V2/V3 AMMs. Maintains a per-block dedup set
+/// so the same persistent path is not re-reported across multiple transactions.
+pub struct MultiHopArbDetector {
+    block_number: u64,
+    seen: std::collections::HashSet<(Address, Address, Address, Address)>,
+}
 
 impl MultiHopArbDetector {
+    /// Create a new detector for the given block.
+    pub fn new(block_number: u64) -> Self {
+        Self {
+            block_number,
+            seen: std::collections::HashSet::new(),
+        }
+    }
+
     /// Scan all pool paths and emit profitable multi-hop arbitrage opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once, preventing the same persistent arb gap from being re-reported across
     /// multiple transactions.
     pub fn detect(
+        &mut self,
         pool_manager: &PoolManager,
-        block_number: u64,
         tx_index: usize,
         timestamp: u64,
         base_fee_per_gas: u128,
@@ -30,18 +41,17 @@ impl MultiHopArbDetector {
     ) -> Vec<MevOpportunity> {
         let max_depth = 4usize;
         let mut opportunities = Vec::new();
-        let mut seen = std::collections::HashSet::new();
 
         let paths = Self::find_paths(pool_manager, max_depth);
 
         for path in &paths {
             if let Some(opp) = Self::check_path(
                 pool_manager, path,
-                block_number, tx_index, timestamp,
+                self.block_number, tx_index, timestamp,
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if seen.insert(key) {
+                if self.seen.insert(key) {
                     opportunities.push(opp);
                 }
             }
@@ -219,6 +229,7 @@ impl MultiHopArbDetector {
             profit_slippage_m1: m1,
             profit_slippage_p2: p2,
             profit_slippage_m2: m2,
+            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: Some(path.to_vec()),
@@ -287,22 +298,11 @@ impl MultiHopArbDetector {
     }
 }
 
-/// Estimate gas limit for a multi-hop path.
-/// Each pool hop adds pool-type-dependent gas; longer paths cost more.
-fn gas_for_pool_type(pool: &PoolState) -> u64 {
-    match pool {
-        PoolState::UniswapV2(_) => 60_000,
-        PoolState::UniswapV3(_) => 120_000,
-        PoolState::Curve(_) => 80_000,
-        PoolState::Balancer(_) => 80_000,
-    }
-}
-
 fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager) -> u64 {
     let mut total = 40_000u64; // base overhead
     for addr in path {
         if let Some(pool) = pm.get(addr) {
-            total = total.saturating_add(gas_for_pool_type(pool));
+            total = total.saturating_add(pool.gas_estimate());
         } else {
             total = total.saturating_add(60_000);
         }
@@ -335,26 +335,31 @@ mod tests {
 
     fn default_gas() -> GasConfig { GasConfig::default() }
 
+    fn new_detector() -> MultiHopArbDetector { MultiHopArbDetector::new(1) }
+
     #[test]
     fn test_detect_empty_no_paths() {
         let pm = PoolManager::new();
-        let opps = MultiHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas());
-        assert!(opps.is_empty());
+        let mut detector = new_detector();
+        assert!(detector.detect(&pm, 0, 100, 50_000_000_000, default_gas()).is_empty());
     }
 
     #[test]
-    fn test_detect_two_pool_same_as_two_hop() {
+    fn test_detect_three_pool_cyclic() {
         let mut pm = PoolManager::new();
         // Pool A: USDC/WMATIC — WMATIC cheap (0.5 USDC each)
         pm.add_pool(v2_pool(address!("1111111111111111111111111111111111111111"), usdc(), wmatic(), 1_000_000, 2_000_000));
         // Pool B: WMATIC/USDT — WMATIC expensive (2 USDT each)
         pm.add_pool(v2_pool(address!("2222222222222222222222222222222222222222"), wmatic(), usdt(), 500_000, 1_000_000));
-        let opps = MultiHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas());
+        // Pool C: USDT/USDC — 1:1 rate (arb profit converts back to input token)
+        pm.add_pool(v2_pool(address!("3333333333333333333333333333333333333333"), usdt(), usdc(), 1_000_000, 1_000_000));
+        let mut detector = new_detector();
+        let opps = detector.detect(&pm, 0, 100, 50_000_000_000, default_gas());
         assert!(!opps.is_empty());
         for opp in &opps {
             assert_eq!(opp.strategy, Strategy::MultiHopArb);
             assert!(opp.path.is_some());
-            assert_eq!(opp.path.as_ref().unwrap().len(), 2);
+            assert_eq!(opp.path.as_ref().unwrap().len(), 3);
         }
     }
 
@@ -382,7 +387,8 @@ mod tests {
         pm.add_pool(v2_pool(address!("2222222222222222222222222222222222222222"), wmatic(), usdt(), 500_000, 1_000_000));
         pm.add_pool(v2_pool(address!("3333333333333333333333333333333333333333"), usdc(), usdt(), 1_000_000, 1_000_000));
 
-        let opps = MultiHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas());
+        let mut detector = new_detector();
+        let opps = detector.detect(&pm, 0, 100, 50_000_000_000, default_gas());
         assert!(!opps.is_empty(), "Should detect triangular arb");
 
         let paths_3: Vec<_> = opps.iter().filter(|o| o.path.as_ref().map(|p| p.len() >= 3).unwrap_or(false)).collect();
@@ -416,7 +422,8 @@ mod tests {
         pm.add_pool(v2_pool(address!("2222222222222222222222222222222222222222"), wmatic(), usdt(), 1_000_000, 1_000_000));
         pm.add_pool(v2_pool(address!("3333333333333333333333333333333333333333"), usdc(), usdt(), 1_000_000, 1_000_000));
 
-        let opps = MultiHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas());
+        let mut detector = new_detector();
+        let opps = detector.detect(&pm, 0, 100, 50_000_000_000, default_gas());
         assert!(opps.is_empty());
     }
 }

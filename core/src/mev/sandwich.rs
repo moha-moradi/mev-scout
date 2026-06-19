@@ -11,7 +11,7 @@ use crate::pool::decoders::{
 };
 use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
-use crate::pool::state::{BalancerPoolState, CurvePoolState, PoolManager};
+use crate::pool::state::{PoolManager, PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
@@ -219,7 +219,8 @@ impl SandwichDetector {
     }
 
     /// Compute profit from a matched frontrun/backrun pair.
-    /// Returns profit in wrapped native token wei, or U256::ZERO if unconvertible.
+    /// Returns (normalized_profit_in_native, raw_profit_in_profit_token).
+    /// raw_profit is None when profit_token is already wrapped native (no conversion needed).
     fn compute_sandwich_profit(
         &self,
         front: &SwapRecord,
@@ -227,9 +228,9 @@ impl SandwichDetector {
         token_in: Address,
         token_out: Address,
         pool_manager: &PoolManager,
-    ) -> U256 {
+    ) -> (U256, Option<U256>) {
         if back.amount_out <= front.amount_in {
-            return U256::ZERO;
+            return (U256::ZERO, None);
         }
         let profit_raw = back.amount_out - front.amount_in;
         let profit_token = match front.direction {
@@ -237,7 +238,7 @@ impl SandwichDetector {
             SwapDirection::Token1ForToken0 => token_out,
         };
         if pool_manager.is_wrapped_native(&profit_token) {
-            return U256::from(profit_raw);
+            return (U256::from(profit_raw), None);
         }
         // Try converting from profit token to the other token (which may be wrapped native)
         let native_token = match front.direction {
@@ -247,7 +248,7 @@ impl SandwichDetector {
         if pool_manager.is_wrapped_native(&native_token) {
             // Find a reference pool that trades profit_token ↔ native_token
             if let Some(ref_pool) = pool_manager.find_pair_pool(&profit_token, &native_token) {
-                match pool_manager.get(&ref_pool) {
+                let converted = match pool_manager.get(&ref_pool) {
                     Some(crate::pool::state::PoolState::UniswapV2(v2)) => {
                         let (reserve_in, reserve_out) =
                             if v2.info.token0 == profit_token {
@@ -255,17 +256,13 @@ impl SandwichDetector {
                             } else {
                                 (v2.reserve1, v2.reserve0)
                             };
-                        if let Some(converted) = constant_product_output_amount(
+                        constant_product_output_amount(
                             profit_raw, reserve_in, reserve_out, v2.info.fee,
-                        ) {
-                            return U256::from(converted);
-                        }
+                        )
                     }
                     Some(crate::pool::state::PoolState::UniswapV3(v3)) => {
                         let zero_for_one = v3.info.token0 == profit_token;
-                        if let Some(converted) = quote_v3_exact_in(v3, profit_raw, zero_for_one) {
-                            return U256::from(converted);
-                        }
+                        quote_v3_exact_in(v3, profit_raw, zero_for_one)
                     }
                     Some(crate::pool::state::PoolState::Curve(curve)) => {
                         if let (Some(&idx_in), Some(&idx_out)) = (
@@ -274,12 +271,10 @@ impl SandwichDetector {
                         ) {
                             let reserve_in = curve.balances[idx_in];
                             let reserve_out = curve.balances[idx_out];
-                            if let Some(converted) = curve_output_amount(
+                            curve_output_amount(
                                 profit_raw, reserve_in, reserve_out, curve.info.fee, curve.a_coeff,
-                            ) {
-                                return U256::from(converted);
-                            }
-                        }
+                            )
+                        } else { None }
                     }
                     Some(crate::pool::state::PoolState::Balancer(bal)) => {
                         if let (Some(&idx_in), Some(&idx_out)) = (
@@ -294,16 +289,14 @@ impl SandwichDetector {
                             } else {
                                 (default_w, default_w)
                             };
-                            if let Some(converted) = balancer_output_amount(
+                            balancer_output_amount(
                                 profit_raw, reserve_in, reserve_out, w_in, w_out, bal.info.fee,
-                            ) {
-                                return U256::from(converted);
-                            }
-                        }
+                            )
+                        } else { None }
                     }
                     _ => {
                         // Last resort: V2-style spot reserve ratio
-                        if let Some(state) = pool_manager.get_v2_state(&ref_pool) {
+                        pool_manager.get_v2_state(&ref_pool).and_then(|state| {
                             let (reserve_sell, reserve_buy) =
                                 if state.info.token0 == profit_token {
                                     (state.reserve0, state.reserve1)
@@ -311,16 +304,17 @@ impl SandwichDetector {
                                     (state.reserve1, state.reserve0)
                                 };
                             if reserve_sell > 0 {
-                                return U256::from(
-                                    profit_raw.saturating_mul(reserve_buy).saturating_div(reserve_sell)
-                                );
-                            }
-                        }
+                                Some(profit_raw.saturating_mul(reserve_buy).saturating_div(reserve_sell))
+                            } else { None }
+                        })
                     }
+                };
+                if let Some(converted) = converted {
+                    return (U256::from(converted), Some(U256::from(profit_raw)));
                 }
             }
         }
-        U256::ZERO
+        (U256::ZERO, Some(U256::from(profit_raw)))
     }
 
     /// Detect sandwich patterns from accumulated swap records.
@@ -377,13 +371,14 @@ impl SandwichDetector {
                     }
                 };
 
-                let profit_wei = self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
+                let (profit_wei, raw_profit) = self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
 
-                let gas_cost_wei = gas_config.compute_gas_cost(
-                    Strategy::Sandwich,
-                    base_fee_per_gas,
-                    &HashMap::new(),
-                );
+                // Per-opportunity gas: front-run swap + back-run swap on the pool
+                let pool_gas = pool_manager.get(&front.pool)
+                    .map(|p| p.gas_estimate())
+                    .unwrap_or(60_000);
+                let gas_limit = 40_000 + pool_gas * 2;
+                let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
                 opportunities.push(MevOpportunity {
                     block_number: self.block_number,
@@ -395,10 +390,12 @@ impl SandwichDetector {
                     token_out,
                     input_amount: U256::from(front.amount_in),
                     expected_profit: profit_wei,
+                    raw_profit,
                     profit_slippage_p1: None,
                     profit_slippage_m1: None,
                     profit_slippage_p2: None,
                     profit_slippage_m2: None,
+                    pga_adjusted_profit: None,
                     gas_cost_wei,
                     timestamp,
                     path: None,

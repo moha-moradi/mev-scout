@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 use mev_scout_core::cache::{SqliteStore, RunManifest};
 use mev_scout_core::cli::{Cli, Command};
 use mev_scout_core::config::{CliOverrides, Config};
-use mev_scout_core::fact_check::{BlockReplayStats, compute_block_summaries, FactCheckReport, verify_opportunities};
+use mev_scout_core::fact_check::{BlockReplayStats, compute_block_summaries, FactCheckReport, verify_opportunities, verify_opportunities_from_chain};
 use mev_scout_core::fetch::Fetcher;
 
 use mev_scout_core::pool::state::{PoolManager, PoolState};
@@ -19,6 +19,7 @@ use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::mev::opportunity::ResultsFile;
+
 use mev_scout_core::run::BacktestRunner;
 use mev_scout_core::types::{GasConfig, OutputFormat};
 use mev_scout_core::validation;
@@ -60,6 +61,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: Some(args.db_path.clone()),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
+            pga_enabled: Some(args.pga_enabled),
+            pga_mean_competitors: Some(args.pga_mean_competitors),
+            pga_intensity: Some(args.pga_intensity),
         },
         Command::Fetch(args) => CliOverrides {
             days: args.block_range.days,
@@ -80,6 +84,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: Some(args.db_path.clone()),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
         Command::Replay(args) => CliOverrides {
             days: None,
@@ -100,6 +107,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: Some(args.db_path.clone()),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
         Command::Report(args) => CliOverrides {
             days: None,
@@ -120,6 +130,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: None,
             parquet_dir: None,
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
         Command::Config => CliOverrides {
             days: None,
@@ -140,6 +153,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: None,
             parquet_dir: None,
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
         Command::Discover(args) => CliOverrides {
             days: None,
@@ -160,6 +176,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: Some(args.db_path.clone()),
             parquet_dir: None,
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
         Command::FactCheck(_) => CliOverrides {
             days: None,
@@ -180,6 +199,9 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             db_path: None,
             parquet_dir: None,
             coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
         },
     }
 }
@@ -452,6 +474,11 @@ async fn main() -> anyhow::Result<()> {
                     pool_manager = pool_manager.with_balancer_vault(vault_addr);
                 }
             }
+            if let Some(native_str) = &validation_result.chain_config.wrapped_native_token {
+                if let Ok(native_addr) = native_str.parse::<Address>() {
+                    pool_manager = pool_manager.with_wrapped_native(native_addr);
+                }
+            }
             let prev_block = resolved.start_block.saturating_sub(1);
             if !validation_result.strategies.is_empty() {
                 BacktestRunner::init_pools(
@@ -471,15 +498,28 @@ async fn main() -> anyhow::Result<()> {
             );
 
             // Run backtest
-            let gas_config = GasConfig {
+            let mut gas_config = GasConfig {
                 gas_limit: config.gas_limit,
                 gas_model: validation_result.gas_model,
                 priority_fee_gwei: config.priority_fee_gwei,
                 flash_loan_provider: validation_result.flash_loan_provider,
+                winning_bid_premium: 0.0,
+            };
+            let pga_cfg = if config.pga_enabled {
+                gas_config = gas_config.with_winning_bid_premium(
+                    config.pga_mean_competitors,
+                    config.pga_intensity,
+                );
+                Some(mev_scout_core::mev::pga::PgaConfig::new(
+                    config.pga_mean_competitors,
+                    config.pga_intensity,
+                ))
+            } else {
+                None
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
             let start = std::time::Instant::now();
-            let (all_opportunities, block_stats) = runner.run_range(&resolved)?;
+            let (all_opportunities, block_stats) = runner.run_range_with_pga(&resolved, pga_cfg)?;
             let elapsed = start.elapsed();
 
             // Save results to JSON
@@ -519,9 +559,15 @@ async fn main() -> anyhow::Result<()> {
             render_block_summary_table(&block_stats);
 
             // Fact-check if requested
+            let fact_check_mode = if args.evm_fact_check { "EVM" } else { "structural" };
             if args.fact_check && !all_opportunities.is_empty() {
-                println!("\nFact-Check Report:");
-                let checks = verify_opportunities(&all_opportunities, Some(&runner.pool_manager));
+                println!("\nFact-Check Report ({}):", fact_check_mode);
+                let checks = if args.evm_fact_check {
+                    let rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
+                    verify_opportunities_from_chain(&all_opportunities, &runner.pool_manager, &rpc).await
+                } else {
+                    verify_opportunities(&all_opportunities, Some(&runner.pool_manager))
+                };
                 let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
                 let failed = checks.len().saturating_sub(passed);
                 let summaries = compute_block_summaries(&all_opportunities, &block_stats);

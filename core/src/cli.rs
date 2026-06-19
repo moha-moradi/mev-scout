@@ -136,6 +136,23 @@ pub struct RunArgs {
     /// Print detailed fact-check report after the run
     #[arg(long, help_heading = "Output")]
     pub fact_check: bool,
+
+    /// Use EVM-based fact-check (re-fetches pool state from chain via eth_call).
+    /// Requires --fact-check. Catches detection bugs that structural check misses.
+    #[arg(long, help_heading = "Output")]
+    pub evm_fact_check: bool,
+
+    /// Enable PGA (Priority Gas Auction) simulation (default: false)
+    #[arg(long = "pga", help_heading = "PGA")]
+    pub pga_enabled: bool,
+
+    /// Mean number of competing searchers for PGA simulation (default: 3.0)
+    #[arg(long = "pga-mean-competitors", default_value = "3.0", value_name = "N", help_heading = "PGA")]
+    pub pga_mean_competitors: f64,
+
+    /// PGA intensity — fraction of auction surplus dissipated (default: 0.5)
+    #[arg(long = "pga-intensity", default_value = "0.5", value_name = "F", help_heading = "PGA")]
+    pub pga_intensity: f64,
 }
 
 #[derive(Args, Debug, Clone)]

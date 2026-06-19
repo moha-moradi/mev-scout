@@ -225,45 +225,67 @@ impl JitDetector {
         pool_fee: u32,
         pool_manager: &PoolManager,
     ) -> MevOpportunity {
-        // Estimate fee revenue earned by the JIT position.
-        // If fee growth snapshots are available, compute actual fees from
-        // the delta in feeGrowthGlobal since mint time. Otherwise fall back
-        // to (swap_volume * fee_tier * position_share) approximation.
-        let estimated_fees = if let Some(v3) = pool_manager.get_v3_state(&pool) {
-            let d0 = v3.fee_growth_global_0_x128.saturating_sub(mint.fee_growth_snapshot_0_x128);
-            let d1 = v3.fee_growth_global_1_x128.saturating_sub(mint.fee_growth_snapshot_1_x128);
-            let fee0 = U256::from(mint.amount) * d0 >> 128;
-            let fee1 = U256::from(mint.amount) * d1 >> 128;
-            let total = fee0.saturating_add(fee1);
-            total.to::<u128>()
-        } else if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
-            let pool_liquidity = pool_manager
-                .get_v3_state(&pool)
-                .map(|s| s.liquidity)
-                .unwrap_or(0);
-            if pool_liquidity > 0 && mint.amount < pool_liquidity {
-                (mint.swap_volume as u128)
-                    .saturating_mul(pool_fee as u128)
-                    .saturating_mul(mint.amount as u128)
-                    .saturating_div(1_000_000u128)
-                    .saturating_div(pool_liquidity as u128)
-            } else {
-                (mint.swap_volume as u128)
-                    .saturating_mul(pool_fee as u128)
-                    .saturating_div(1_000_000)
-            }
-        } else {
-            0
-        };
-        let gas_cost_wei = gas_config.compute_gas_cost(
-            Strategy::Jit,
-            base_fee_per_gas,
-            &HashMap::new(),
-        );
         let pool_tokens = pool_manager.get(&pool).map(|p| {
             let info = p.info();
             (info.token0, info.token1)
         });
+        // Estimate fee revenue earned by the JIT position.
+        // Compute both raw fees (dimensionally inconsistent sum of token0+token1)
+        // and normalized fees (each fee component converted to wrapped native).
+        let (raw_fees, normalized_fees) = 'calc: {
+            if let Some(v3) = pool_manager.get_v3_state(&pool) {
+                let d0 = v3.fee_growth_global_0_x128.saturating_sub(mint.fee_growth_snapshot_0_x128);
+                let d1 = v3.fee_growth_global_1_x128.saturating_sub(mint.fee_growth_snapshot_1_x128);
+                if !d0.is_zero() || !d1.is_zero() {
+                    let fee0_u256: U256 = U256::from(mint.amount) * d0 >> 128;
+                    let fee1_u256: U256 = U256::from(mint.amount) * d1 >> 128;
+                    let fee0_raw = fee0_u256.to::<u128>();
+                    let fee1_raw = fee1_u256.to::<u128>();
+                    let raw_total = fee0_raw.saturating_add(fee1_raw);
+                    // Normalize each fee component to native
+                    let (t0, t1) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                    let fee0_native = pool_manager.normalize_to_native(t0, fee0_raw).unwrap_or(fee0_raw);
+                    let fee1_native = pool_manager.normalize_to_native(t1, fee1_raw).unwrap_or(fee1_raw);
+                    let norm_total = fee0_native.saturating_add(fee1_native);
+                    break 'calc (raw_total, norm_total);
+                }
+            }
+            // Volume-based fallback when fee growth deltas are not available
+            if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
+                let pool_liquidity = pool_manager
+                    .get_v3_state(&pool)
+                    .map(|s| s.liquidity)
+                    .unwrap_or(0);
+                let raw = if pool_liquidity > 0 && mint.amount < pool_liquidity {
+                    (mint.swap_volume as u128)
+                        .saturating_mul(pool_fee as u128)
+                        .saturating_mul(mint.amount as u128)
+                        .saturating_div(1_000_000u128)
+                        .saturating_div(pool_liquidity as u128)
+                } else {
+                    (mint.swap_volume as u128)
+                        .saturating_mul(pool_fee as u128)
+                        .saturating_div(1_000_000)
+                };
+                // Normalize fallback estimate using token0 as reference
+                let (t0, _) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                let norm = pool_manager.normalize_to_native(t0, raw).unwrap_or(raw);
+                break 'calc (raw, norm);
+            }
+            (0u128, 0u128)
+        };
+        // Per-opportunity gas: JIT involves Mint + Swap (+ optionally Burn).
+        let pool_gas = pool_manager.get(&pool)
+            .map(|p| p.gas_estimate())
+            .unwrap_or(60_000);
+        let gas_limit = if _burned {
+            40_000 + pool_gas + 150_000 + 150_000
+        } else {
+            40_000 + pool_gas + 150_000
+        };
+        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+        // raw_profit = Some(raw) when normalization actually converted the value
+        let raw_profit = if normalized_fees != raw_fees { Some(U256::from(raw_fees)) } else { None };
         MevOpportunity {
             block_number,
             tx_index: mint.mint_tx_index,
@@ -273,12 +295,13 @@ impl JitDetector {
             token_in: pool_tokens.map(|(t0, _)| t0).unwrap_or(Address::ZERO),
             token_out: pool_tokens.map(|(_, t1)| t1).unwrap_or(Address::ZERO),
             input_amount: U256::from(mint.amount),
-            expected_profit: U256::from(estimated_fees),
-            raw_profit: None,
+            expected_profit: U256::from(normalized_fees),
+            raw_profit,
             profit_slippage_p1: None,
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
+            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: None,
@@ -392,6 +415,8 @@ mod tests {
             tick: 0,
             liquidity,
             ticks: std::collections::BTreeMap::new(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
         }));
         pm
     }
@@ -469,7 +494,7 @@ mod tests {
     fn test_mint_only_no_detection() {
         let mut detector = JitDetector::new(1);
         let pm = make_pm_with_v3_pool(pool_a(), 3000);
-        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None);
+        detector.process_tx(0, &[v3_mint_log(pool_a(), -100, 100, 500_000)], None, &pm);
         let opps = detector.detect(100, 50_000_000_000, &gas_cfg(), &pm);
         assert!(opps.is_empty());
     }

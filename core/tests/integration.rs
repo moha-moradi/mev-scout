@@ -1,5 +1,6 @@
 use alloy::primitives::{address, b256, Address, B256, U256};
 use mev_scout_core::mev::two_hop::TwoHopArbDetector;
+use mev_scout_core::mev::multi_hop::MultiHopArbDetector;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState};
 use mev_scout_core::mev::jit::JitDetector;
@@ -26,12 +27,14 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             info,
             balances: vec![],
             token_index: std::collections::HashMap::new(),
+            a_coeff: 100,
         }),
         DexType::Balancer => PoolState::Balancer(mev_scout_core::pool::state::BalancerPoolState {
             info,
             balances: vec![],
             token_index: std::collections::HashMap::new(),
             pool_id: None,
+            weights: vec![],
         }),
     }
 }
@@ -68,6 +71,18 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
 
 fn default_gas_config() -> GasConfig {
     GasConfig::default()
+}
+
+/// Helper: create a TwoHopArbDetector for the given block and run detect once.
+fn two_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::mev::opportunity::MevOpportunity> {
+    let mut d = TwoHopArbDetector::new(block);
+    d.detect(pm, 0, ts, 50_000_000_000, default_gas_config())
+}
+
+/// Helper: create a MultiHopArbDetector for the given block and run detect once.
+fn multi_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::mev::opportunity::MevOpportunity> {
+    let mut d = MultiHopArbDetector::new(block);
+    d.detect(pm, 0, ts, 50_000_000_000, GasConfig::default())
 }
 
 fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128) -> PoolState {
@@ -107,7 +122,7 @@ fn test_detection_pipeline_synthetic_profitable() {
     ));
 
     // Direction 1: buy WMATIC from A (spend USDC), sell WMATIC to B (get USDT)
-    let opps = TwoHopArbDetector::detect(&pm, 1_000_000, 0, 12345678, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1_000_000, 12345678);
 
     assert!(!opps.is_empty(), "Should detect arb between imbalanced pools");
     assert!(opps.iter().any(|o| o.strategy == Strategy::TwoHopArb));
@@ -133,7 +148,7 @@ fn test_detection_no_arb_equal_pools() {
         1_000_000, 1_000_000,
     ));
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     assert!(opps.is_empty(), "No arb should be detected with equal prices");
 }
@@ -152,7 +167,7 @@ fn test_gas_cost_min_profit_filter() {
         1_010_000, 1_000_000,
     ));
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     // Check that gas_cost_wei is computed correctly
     for opp in &opps {
@@ -214,7 +229,7 @@ fn test_detect_both_directions() {
     pm.add_pool(make_pool(matic_usdc_pool(), usdc(), wmatic(), 1_000_000, 2_000_000));
     pm.add_pool(make_pool(matic_usdt_pool(), usdt(), wmatic(), 1_000_000, 500_000));
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     // Should find arb in at least one direction
     assert!(!opps.is_empty(), "Should detect arb");
@@ -234,7 +249,7 @@ fn test_arb_profit_accuracy_known_delta() {
     // Pool B: USDT/WMATIC — price: 1 WMATIC = 2.0 USDT
     pm.add_pool(make_pool(matic_usdt_pool(), usdt(), wmatic(), 1_000_000, 500_000));
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     assert!(!opps.is_empty(), "Should detect arb");
     for opp in &opps {
@@ -257,7 +272,7 @@ fn test_two_hop_same_token_different_reserves() {
     pm.add_pool(make_pool(pool_a, usdc(), wmatic(), 1_000_000, 3_000_000));
     pm.add_pool(make_pool(pool_b, usdc(), wmatic(), 1_000_000, 1_000_000));
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     // Arb exists: buy WMATIC cheap on A, sell expensive on B
     assert!(!opps.is_empty(), "Should detect arb between same-token pools with different prices");
@@ -284,6 +299,8 @@ fn test_two_hop_v3_reserves_update_accuracy() {
         tick: 0,
         liquidity: 1_000_000_000_000u128,
         ticks: std::collections::BTreeMap::new(),
+        fee_growth_global_0_x128: U256::ZERO,
+        fee_growth_global_1_x128: U256::ZERO,
     });
 
     let v2_addr = address!("4444444444444444444444444444444444444444");
@@ -293,7 +310,7 @@ fn test_two_hop_v3_reserves_update_accuracy() {
     pm.add_pool(v3_pool);
     pm.add_pool(v2_pool);
 
-    let opps = TwoHopArbDetector::detect(&pm, 1, 0, 100, 50_000_000_000, default_gas_config());
+    let opps = two_hop_detect(&pm, 1, 100);
 
     // V3+V2 cross-DEX detection should work
     // This may or may not detect an arb depending on price state
@@ -303,8 +320,6 @@ fn test_two_hop_v3_reserves_update_accuracy() {
 
 #[test]
 fn test_multi_hop_detection_three_pool() {
-    use mev_scout_core::mev::multi_hop::MultiHopArbDetector;
-
     let mut pm = PoolManager::new();
 
     // Triangular arb: USDC → WMATIC → USDT → USDC
@@ -326,9 +341,7 @@ fn test_multi_hop_detection_three_pool() {
         1_000_000, 1_000_000,
     ));
 
-    let opps = MultiHopArbDetector::detect(
-        &pm, 1, 0, 12345, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = multi_hop_detect(&pm, 1, 12345);
 
     assert!(!opps.is_empty(), "Should detect multi-hop arb");
 
@@ -347,27 +360,31 @@ fn test_multi_hop_detection_three_pool() {
 
 #[test]
 fn test_multi_hop_path_field_populated() {
-    use mev_scout_core::mev::multi_hop::MultiHopArbDetector;
-
     let mut pm = PoolManager::new();
+    // Pool A: USDC/WMATIC — WMATIC cheap (0.5 USDC each)
     pm.add_pool(make_pool(
         matic_usdc_pool(), usdc(), wmatic(),
         1_000_000, 2_000_000,
     ));
+    // Pool B: WMATIC/USDT — WMATIC expensive (2 USDT each)
     pm.add_pool(make_pool(
         matic_usdt_pool(), usdt(), wmatic(),
         1_000_000, 500_000,
     ));
+    // Pool C: USDT/USDC — converts USDT back to USDC at 1:1 to complete the cycle
+    let usdt_usdc_pool = address!("5555555555555555555555555555555555555555");
+    pm.add_pool(make_pool(
+        usdt_usdc_pool, usdt(), usdc(),
+        1_000_000, 1_000_000,
+    ));
 
-    let opps = MultiHopArbDetector::detect(
-        &pm, 1, 0, 12345, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = multi_hop_detect(&pm, 1, 12345);
 
     assert!(!opps.is_empty());
     for opp in &opps {
         assert!(opp.path.is_some(), "MultiHopArb must have path populated");
         let path = opp.path.as_ref().unwrap();
-        assert_eq!(path.len(), 2, "Two-pool path should have length 2");
+        assert!(path.len() >= 2, "Path must have at least 2 pools");
         assert_eq!(path[0], opp.pool_a);
         assert_eq!(path[path.len() - 1], opp.pool_b);
     }
@@ -427,15 +444,15 @@ fn test_sandwich_detection_synthetic() {
     let gas_cfg = default_gas_config();
 
     // Tx 0: alice frontruns — buys WMATIC (token0→token1)
-    detector.process_tx(0, &[v2_swap_log(pool, 100, 0, 0, 90)], Some(alice));
+    detector.process_tx(0, &[v2_swap_log(pool, 100, 0, 0, 90)], Some(alice), &pm);
     assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 
     // Tx 1: bob (victim) — buys WMATIC at worse price
-    detector.process_tx(1, &[v2_swap_log(pool, 200, 0, 0, 170)], Some(bob));
+    detector.process_tx(1, &[v2_swap_log(pool, 200, 0, 0, 170)], Some(bob), &pm);
     assert!(detector.detect(timestamp, &pm, 0, &gas_cfg).is_empty());
 
     // Tx 2: alice backruns — sells WMATIC (token1→token0)
-    detector.process_tx(2, &[v2_swap_log(pool, 0, 85, 105, 0)], Some(alice));
+    detector.process_tx(2, &[v2_swap_log(pool, 0, 85, 105, 0)], Some(alice), &pm);
     let opps = detector.detect(timestamp, &pm, 0, &gas_cfg);
     assert!(!opps.is_empty(), "Should detect sandwich");
     assert_eq!(opps[0].strategy, Strategy::Sandwich);
@@ -595,9 +612,7 @@ async fn test_real_state_initialization_and_two_hop() {
     }
 
     // Run TwoHopArb detection on real data
-    let opps = TwoHopArbDetector::detect(
-        &pm, block_num, 0, block_num, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = two_hop_detect(&pm, block_num, block_num);
 
     eprintln!("TwoHopArb detected {} opportunities on real pools at block {block_num}", opps.len());
 
@@ -657,9 +672,7 @@ async fn test_real_multi_hop_detection() {
     }
 
     // Run MultiHopArb detection
-    let opps = mev_scout_core::mev::multi_hop::MultiHopArbDetector::detect(
-        &pm, block_num, 0, block_num, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = multi_hop_detect(&pm, block_num, block_num);
 
     eprintln!("MultiHopArb detected {} opportunities on real pools at block {block_num}", opps.len());
 
@@ -723,18 +736,14 @@ async fn test_real_detection_all_sushi_wmatic_pools() {
     }
 
     // TwoHopArb
-    let opps = TwoHopArbDetector::detect(
-        &pm, block_num, 0, block_num, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = two_hop_detect(&pm, block_num, block_num);
     eprintln!("TwoHopArb detected {} opportunities across {count} real pools", opps.len());
 
     // With 6 WMATIC-quoted pools, arb pairs should always exist
     assert!(!opps.is_empty(), "Should detect two-hop arb across multiple WMATIC pools");
 
     // MultiHopArb
-    let mhop_opps = mev_scout_core::mev::multi_hop::MultiHopArbDetector::detect(
-        &pm, block_num, 0, block_num, 50_000_000_000, GasConfig::default(),
-    );
+    let mhop_opps = multi_hop_detect(&pm, block_num, block_num);
     eprintln!("MultiHopArb detected {} opportunities across {count} real pools", mhop_opps.len());
 
     for opp in mhop_opps.iter().take(5) {
@@ -1010,9 +1019,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
     }
 
     // Run TwoHopArb detection across the V2+V3 pools
-    let opps = TwoHopArbDetector::detect(
-        &pm, block_num, 0, block_num, 50_000_000_000, GasConfig::default(),
-    );
+    let opps = two_hop_detect(&pm, block_num, block_num);
 
     eprintln!("TwoHopArb detected {} cross-DEX (V2→V3) opportunities at block {block_num}", opps.len());
 

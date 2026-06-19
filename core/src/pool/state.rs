@@ -185,12 +185,24 @@ impl PoolState {
     pub fn dex_label(&self) -> &'static str {
         self.info().dex_type.label()
     }
+
+    /// Estimated gas cost for a single swap on this pool type.
+    /// V2 swaps ~60k, V3 average ~120k (higher with many tick crossings),
+    /// Curve and Balancer ~80k.
+    pub fn gas_estimate(&self) -> u64 {
+        match self {
+            PoolState::UniswapV2(_) => 60_000,
+            PoolState::UniswapV3(_) => 120_000,
+            PoolState::Curve(_) => 80_000,
+            PoolState::Balancer(_) => 80_000,
+        }
+    }
 }
 
 /// Internal helper: result of fetching on-chain state for a pool during init.
 enum PoolInitResult {
     V2Reserves(u128, u128),
-    V3State(U256, i32, u128),
+    V3State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
     BalancerState(Vec<Address>, Vec<u128>),
     CurveState(Vec<Address>, Vec<u128>),
 }
@@ -218,6 +230,18 @@ static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
 /// getPoolTokens(bytes32) selector for Balancer V2 vault
 static GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"getPoolTokens(bytes32)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// tickBitmap(int16) selector for Uniswap V3 tick bitmap queries
+static V3_TICK_BITMAP_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"tickBitmap(int16)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// ticks(int24) selector for Uniswap V3 per-tick data queries
+static V3_TICKS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"ticks(int24)");
     Bytes::copy_from_slice(&hash[..4])
 });
 
@@ -469,7 +493,7 @@ impl PoolManager {
                 let input = amount0.unsigned_abs();
                 let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
                 if fee > 0 && liquidity > 0 {
-                    let inc = U256::from(fee) << 128 / U256::from(liquidity);
+                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
                     state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
                 }
             }
@@ -477,7 +501,7 @@ impl PoolManager {
                 let input = amount1.unsigned_abs();
                 let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
                 if fee > 0 && liquidity > 0 {
-                    let inc = U256::from(fee) << 128 / U256::from(liquidity);
+                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
                     state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
                 }
             }
@@ -525,29 +549,34 @@ impl PoolManager {
 
         // Snapshot pool metadata before spawning tasks
         let vault = self.balancer_vault;
-        let pool_meta: Vec<(DexType, Option<[u8; 32]>)> = pool_addrs
+        let pool_meta: Vec<(DexType, Option<[u8; 32]>, i32)> = pool_addrs
             .iter()
             .map(|addr| match self.pools.get(addr) {
-                Some(PoolState::UniswapV2(_)) => (DexType::UniswapV2, None),
-                Some(PoolState::UniswapV3(_)) => (DexType::UniswapV3, None),
-                Some(PoolState::Curve(_)) => (DexType::Curve, None),
-                Some(PoolState::Balancer(_)) => (DexType::Balancer, None),
-                None => (DexType::UniswapV2, None),
+                Some(PoolState::UniswapV2(_)) => (DexType::UniswapV2, None, 0),
+                Some(PoolState::UniswapV3(state)) => (
+                    DexType::UniswapV3,
+                    None,
+                    state.info.tick_spacing.unwrap_or(60) as i32,
+                ),
+                Some(PoolState::Curve(_)) => (DexType::Curve, None, 0),
+                Some(PoolState::Balancer(_)) => (DexType::Balancer, None, 0),
+                None => (DexType::UniswapV2, None, 0),
             })
             .collect();
 
         let tasks: Vec<_> = pool_addrs
             .iter()
             .zip(pool_meta.iter())
-            .map(|(addr, (dt, pool_id))| {
+            .map(|(addr, (dt, pool_id, tick_spacing))| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
                 let dt = *dt;
                 let pool_id = *pool_id;
+                let tick_spacing = *tick_spacing;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, vault, block_num).await
+                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, block_num).await
                 }
             })
             .collect();
@@ -562,13 +591,16 @@ impl PoolManager {
                         state.reserve1 = r1;
                     }
                 }
-                Some(PoolInitResult::V3State(sqrt, tick, liq)) => {
+                Some(PoolInitResult::V3State(sqrt, tick, liq, initialized_ticks)) => {
                     if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(addr) {
                         state.sqrt_price_x96 = sqrt;
                         state.tick = tick;
                         state.liquidity = liq;
+                        state.ticks = initialized_ticks;
                         if state.ticks.is_empty() {
                             tracing::warn!("V3 pool {} initialized with empty tick map", addr);
+                        } else {
+                            tracing::debug!("V3 pool {} initialized with {} ticks", addr, state.ticks.len());
                         }
                         if sqrt.is_zero() {
                             tracing::warn!("V3 pool {} initialized with zero sqrt price", addr);
@@ -588,6 +620,13 @@ impl PoolManager {
                         for (i, token) in tokens.iter().enumerate() {
                             state.token_index.insert(*token, i);
                         }
+                        // Register all tokens in the pool manager's token_index so
+                        // multi-token pools are discoverable through arbitrage_pairs()
+                        for token in &tokens {
+                            if !token.is_zero() {
+                                self.token_index.entry(*token).or_default().push(*addr);
+                            }
+                        }
                     }
                 }
                 Some(PoolInitResult::CurveState(tokens, balances)) => {
@@ -600,6 +639,13 @@ impl PoolManager {
                                 state.info.token0 = *token;
                             } else if i == 1 {
                                 state.info.token1 = *token;
+                            }
+                        }
+                        // Register all tokens in the pool manager's token_index so
+                        // multi-token pools are discoverable through arbitrage_pairs()
+                        for token in &tokens {
+                            if !token.is_zero() {
+                                self.token_index.entry(*token).or_default().push(*addr);
                             }
                         }
                     }
@@ -653,6 +699,7 @@ impl PoolManager {
         pool: Address,
         dt: DexType,
         pool_id: Option<[u8; 32]>,
+        tick_spacing: i32,
         vault: Option<Address>,
         block: u64,
     ) -> Option<PoolInitResult> {
@@ -662,8 +709,8 @@ impl PoolManager {
                 Some(PoolInitResult::V2Reserves(r0, r1))
             }
             DexType::UniswapV3 => {
-                let (sqrt, tick, liq) = Self::fetch_v3_state(rpc, pool, block).await?;
-                Some(PoolInitResult::V3State(sqrt, tick, liq))
+                let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+                Some(PoolInitResult::V3State(sqrt, tick, liq, ticks))
             }
             DexType::Balancer => {
                 let vault = vault?;
@@ -737,12 +784,15 @@ impl PoolManager {
         Some(Self::decode_v2_reserves_from_storage(raw))
     }
 
-    /// Fetch V3 pool slot0() + liquidity() at a historical block.
+    /// Fetch V3 pool slot0() + liquidity() + tick data at a historical block.
+    /// Also bootstraps the tick map from on-chain via `tickBitmap` and `ticks` calls,
+    /// fixing C2: pre-existing LP positions are now visible from the first block.
     async fn fetch_v3_state(
         rpc: &RpcClient,
         pool: Address,
         block: u64,
-    ) -> Option<(U256, i32, u128)> {
+        tick_spacing: i32,
+    ) -> Option<(U256, i32, u128, std::collections::BTreeMap<i32, i128>)> {
         let slot0_result = Self::call_with_retry(rpc, pool, V3_SLOT0_SELECTOR.clone(), block, 3).await;
         let liq_result = Self::call_with_retry(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), block, 3).await;
         if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
@@ -754,7 +804,12 @@ impl PoolManager {
                 tick_bytes.copy_from_slice(&slot0[60..64]);
                 let tick = i32::from_be_bytes(tick_bytes);
                 let liquidity = Self::decode_u128_from_abi_word(&liq[..32]);
-                return Some((sqrt_price_x96, tick, liquidity));
+
+                // Bootstrap tick data from on-chain tick bitmap + per-tick queries
+                // This makes pre-existing LP positions visible from the first block.
+                let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, block).await;
+
+                return Some((sqrt_price_x96, tick, liquidity, initialized_ticks));
             }
         }
         if slot0_result.is_err() {
@@ -774,7 +829,144 @@ impl PoolManager {
             }
         }
         tracing::trace!("falling back to storage for V3 pool {}", pool);
-        Self::fetch_v3_state_storage(rpc, pool, block).await
+        let (sqrt, tick, liq) = Self::fetch_v3_state_storage(rpc, pool, block).await?;
+        let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, block).await;
+        Some((sqrt, tick, liq, initialized_ticks))
+    }
+
+    /// Fetch initialized tick liquidity nets from a V3 pool contract.
+    ///
+    /// Queries the tick bitmap for 5 word positions centered around the current
+    /// tick (~1280 tick range), then fetches `liquidityNet` for each initialized
+    /// tick found (up to 200 ticks). This bootstraps pre-existing LP positions
+    /// so that V3 quoting in the first block is accurate (fixes C2).
+    async fn fetch_v3_initialized_ticks(
+        rpc: &RpcClient,
+        pool: Address,
+        current_tick: i32,
+        tick_spacing: i32,
+        block: u64,
+    ) -> std::collections::BTreeMap<i32, i128> {
+        let max_ticks = 200usize;
+        let mut ticks = std::collections::BTreeMap::new();
+
+        // Compressed tick: floor division that handles negatives
+        let compressed = if current_tick < 0 && current_tick % tick_spacing != 0 {
+            current_tick / tick_spacing - 1
+        } else {
+            current_tick / tick_spacing
+        };
+        let center_word = compressed >> 8;
+
+        // Scan 5 word positions (≈1280 tick range) centered on current tick
+        for word_offset in -2i16..=2i16 {
+            if ticks.len() >= max_ticks {
+                break;
+            }
+            let w = center_word.wrapping_add(word_offset as i32);
+
+            // Build calldata for tickBitmap(int16)
+            let mut calldata = Vec::with_capacity(36);
+            calldata.extend_from_slice(&V3_TICK_BITMAP_SELECTOR);
+            let mut arg = [0u8; 32];
+            let w_i16 = w as i16;
+            let w_be = w_i16.to_be_bytes();
+            arg[30..32].copy_from_slice(&w_be);
+            if w_i16 < 0 {
+                arg[..30].fill(0xFF);
+            }
+            calldata.extend_from_slice(&arg);
+
+            let bitmap_bytes = match Self::call_with_retry(rpc, pool, Bytes::from(calldata), block, 2).await {
+                Ok(b) if b.len() >= 32 => b,
+                _ => continue,
+            };
+
+            let bitmap = U256::from_be_slice(&bitmap_bytes[..32]);
+            if bitmap.is_zero() {
+                continue;
+            }
+
+            // Iterate over set bits in the 256-bit bitmap
+            let mut bits_remaining = bitmap;
+            for bit_pos in 0u8..=255u8 {
+                if ticks.len() >= max_ticks {
+                    break;
+                }
+                if !bits_remaining.bit(bit_pos as usize) {
+                    continue;
+                }
+                bits_remaining = bits_remaining & !(U256::from(1u128) << bit_pos as usize);
+
+                // Decode tick index: compressed = w * 256 + bit_pos
+                let compressed_tick = (w << 8) | (bit_pos as i32);
+                // For negative word positions, ensure proper sign extension
+                let compressed_tick = if w < 0 && bit_pos == 0 {
+                    compressed_tick
+                } else {
+                    compressed_tick
+                };
+                let actual_tick = compressed_tick.wrapping_mul(tick_spacing);
+
+                // Fetch liquidityNet for this tick via ticks(int24)
+                if let Some(liq_net) = Self::fetch_v3_tick_liquidity_net(rpc, pool, actual_tick, block).await {
+                    if liq_net != 0 {
+                        ticks.insert(actual_tick, liq_net);
+                    }
+                }
+            }
+        }
+
+        if !ticks.is_empty() {
+            tracing::debug!(
+                "Bootstrapped {} initialized ticks for V3 pool {} at block {}",
+                ticks.len(),
+                pool,
+                block,
+            );
+        }
+
+        ticks
+    }
+
+    /// Fetch liquidityNet for a single tick from a V3 pool via `ticks(int24)`.
+    async fn fetch_v3_tick_liquidity_net(
+        rpc: &RpcClient,
+        pool: Address,
+        tick: i32,
+        block: u64,
+    ) -> Option<i128> {
+        // Build calldata for ticks(int24)
+        let mut calldata = Vec::with_capacity(36);
+        calldata.extend_from_slice(&V3_TICKS_SELECTOR);
+        let mut arg = [0u8; 32];
+        let tick_bytes = tick.to_be_bytes();
+        arg[29..32].copy_from_slice(&tick_bytes);
+        if tick < 0 {
+            arg[..29].fill(0xFF);
+        }
+        calldata.extend_from_slice(&arg);
+
+        let result = Self::call_with_retry(rpc, pool, Bytes::from(calldata), block, 2).await.ok()?;
+
+        // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
+        // Tuple with ABIEncoderV2: 8 fields × 32 bytes = 256 bytes
+        if result.len() < 64 {
+            return None;
+        }
+
+        // Check initialized flag (8th element, last 32-byte slot)
+        let init_byte = result[result.len() - 1];
+        if init_byte == 0 {
+            return None;
+        }
+
+        // Decode int128 liquidityNet from bytes 48..64 (second 32-byte slot, lower 16 bytes)
+        let mut net_bytes = [0u8; 16];
+        net_bytes.copy_from_slice(&result[48..64]);
+        let liq_net = i128::from_be_bytes(net_bytes);
+
+        Some(liq_net)
     }
 
     /// Given raw slot0 + slot1, decode sqrtPriceX96, tick, and liquidity.
@@ -811,6 +1003,16 @@ impl PoolManager {
         let slot0_raw = rpc.get_storage_at(pool, U256::ZERO, block).await.ok()?;
         let slot1_raw = rpc.get_storage_at(pool, U256::from(1), block).await.ok()?;
         Some(Self::decode_v3_state_from_storage(slot0_raw, slot1_raw))
+    }
+
+    /// Decode an int128 from raw storage bytes (big-endian, right-aligned).
+    #[allow(dead_code)]
+    fn decode_i128_from_be_bytes(bytes: &[u8]) -> i128 {
+        let mut buf = [0u8; 16];
+        let start = bytes.len().saturating_sub(16);
+        let copy_len = bytes.len().min(16);
+        buf[16 - copy_len..].copy_from_slice(&bytes[start..start + copy_len]);
+        i128::from_be_bytes(buf)
     }
 
     /// Process a list of executed logs from a single transaction, updating pool state
@@ -965,27 +1167,134 @@ impl PoolManager {
     }
 
     /// Convert an amount from the given token to its wrapped native equivalent,
-    /// using a V2 pool that pairs the token with wrapped native as a price oracle.
-    /// Returns None if no suitable V2 pool exists.
+    /// using a V2/V3/Curve/Balancer pool that pairs the token with wrapped native,
+    /// or a 2-hop path through an intermediate token.
+    ///
+    /// For the direct path: uses the pool's quoting function (V2 spot rate, V3 exact-in,
+    /// Curve StableSwap, Balancer weighted product).
+    ///
+    /// When no direct pool exists, searches for a 2-hop path:
+    ///   token -> intermediate -> native
+    /// using V2 pools (fast, closed-form). Returns None if no path is found.
     pub fn normalize_to_native(&self, token: Address, amount: u128) -> Option<u128> {
         let native = self.wrapped_native()?;
         if token == native {
             return Some(amount);
         }
-        let pool_addr = self.find_pair_pool(&token, &native)?;
-        let pool = self.get(&pool_addr)?;
-        match pool {
-            PoolState::UniswapV2(v2) => {
-                let (reserve_token, reserve_native) = if v2.info.token0 == token {
-                    (v2.reserve0, v2.reserve1)
-                } else {
-                    (v2.reserve1, v2.reserve0)
+        // 1. Try direct pair
+        if let Some(pool_addr) = self.find_pair_pool(&token, &native) {
+            if let Some(pool) = self.get(&pool_addr) {
+                let result = match pool {
+                    PoolState::UniswapV2(v2) => {
+                        let (reserve_token, reserve_native) = if v2.info.token0 == token {
+                            (v2.reserve0, v2.reserve1)
+                        } else {
+                            (v2.reserve1, v2.reserve0)
+                        };
+                        if reserve_token == 0 { None } else {
+                            Some(amount.saturating_mul(reserve_native).saturating_div(reserve_token))
+                        }
+                    }
+                    PoolState::UniswapV3(v3) => {
+                        let zero_for_one = v3.info.token0 == token;
+                        crate::pool::v3_quote::quote_v3_exact_in(v3, amount, zero_for_one)
+                    }
+                    PoolState::Curve(curve) => {
+                        if let (Some(&idx_in), Some(&idx_out)) = (
+                            curve.token_index.get(&token),
+                            curve.token_index.get(&native),
+                        ) {
+                            let reserve_in = curve.balances[idx_in];
+                            let reserve_out = curve.balances[idx_out];
+                            crate::mev::two_hop::curve_output_amount(amount, reserve_in, reserve_out, curve.info.fee, curve.a_coeff)
+                        } else { None }
+                    }
+                    PoolState::Balancer(bal) => {
+                        if let (Some(&idx_in), Some(&idx_out)) = (
+                            bal.token_index.get(&token),
+                            bal.token_index.get(&native),
+                        ) {
+                            let reserve_in = bal.balances[idx_in];
+                            let reserve_out = bal.balances[idx_out];
+                            let default_w = 1_000_000_000_000_000_000u128;
+                            let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
+                            let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
+                            crate::mev::two_hop::balancer_output_amount(amount, reserve_in, reserve_out, w_in, w_out, bal.info.fee)
+                        } else { None }
+                    }
                 };
-                if reserve_token == 0 { return None; }
-                Some(amount.saturating_mul(reserve_native).saturating_div(reserve_token))
+                if result.is_some() {
+                    return result;
+                }
             }
-            _ => None,
         }
+
+        // 2. C5 fallback: try a 2-hop path through an intermediate token
+        //    token -> intermediate -> native
+        self.normalize_to_native_multi_hop(token, amount, native)
+    }
+
+    /// 2-hop normalization fallback: token -> intermediate -> native.
+    /// Iterates through pools trading `token` to find an intermediate token
+    /// that itself has a pool pairing with `native`.
+    fn normalize_to_native_multi_hop(&self, token: Address, amount: u128, native: Address) -> Option<u128> {
+        let token_pools = self.pools_for_token(&token)?;
+        // Limit search to avoid excessive iteration
+        for &pool_addr in token_pools.iter().take(10) {
+            let pool = self.get(&pool_addr)?;
+            let intermediate = if pool.info().token0 == token {
+                pool.info().token1
+            } else {
+                pool.info().token0
+            };
+            if intermediate.is_zero() || intermediate == native {
+                continue;
+            }
+            // Check if intermediate trades with native
+            if self.find_pair_pool(&intermediate, &native).is_none() {
+                continue;
+            }
+            // Step 1: token -> intermediate via the first pool
+            let mid_amount = match pool {
+                PoolState::UniswapV2(v2) => {
+                    let (reserve_token, reserve_intermediate) = if v2.info.token0 == token {
+                        (v2.reserve0, v2.reserve1)
+                    } else {
+                        (v2.reserve1, v2.reserve0)
+                    };
+                    if reserve_token == 0 { continue; }
+                    amount.saturating_mul(reserve_intermediate).saturating_div(reserve_token)
+                }
+                PoolState::UniswapV3(v3) => {
+                    let zero_for_one = v3.info.token0 == token;
+                    crate::pool::v3_quote::quote_v3_exact_in(v3, amount, zero_for_one)?
+                }
+                PoolState::Curve(curve) => {
+                    let (&idx_in, &idx_out) = (
+                        curve.token_index.get(&token)?,
+                        curve.token_index.get(&intermediate)?,
+                    );
+                    crate::mev::two_hop::curve_output_amount(amount, curve.balances[idx_in], curve.balances[idx_out], curve.info.fee, curve.a_coeff)?
+                }
+                PoolState::Balancer(bal) => {
+                    let (&idx_in, &idx_out) = (
+                        bal.token_index.get(&token)?,
+                        bal.token_index.get(&intermediate)?,
+                    );
+                    let default_w = 1_000_000_000_000_000_000u128;
+                    let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
+                    let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
+                    crate::mev::two_hop::balancer_output_amount(amount, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)?
+                }
+            };
+            if mid_amount == 0 {
+                continue;
+            }
+            // Step 2: intermediate -> native
+            let native_amount = self.normalize_to_native(intermediate, mid_amount)?;
+            return Some(native_amount);
+        }
+        None
     }
 
     /// Get V2 pool state by address (returns None if not a V2 pool or not found).
@@ -1067,47 +1376,146 @@ impl PoolManager {
         Ok(PoolInitResult::BalancerState(tokens, balances))
     }
 
+    /// Re-fetch a pool's on-chain state at a given block number (M3 fact-check support).
+    ///
+    /// Returns a fresh `PoolState` with data read directly from the chain via `eth_call`,
+    /// bypassing the in-memory state. This is used by the EVM-based fact-check to verify
+    /// opportunities against the actual on-chain state rather than the potentially-diverged
+    /// cached state.
+    pub async fn refetch_pool_state(
+        &self,
+        rpc: &RpcClient,
+        addr: &Address,
+        block: u64,
+    ) -> Option<PoolState> {
+        let pool = self.pools.get(addr)?;
+        match pool {
+            PoolState::UniswapV2(v2) => {
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block).await?;
+                Some(PoolState::UniswapV2(UniswapV2PoolState {
+                    info: v2.info.clone(),
+                    reserve0: r0,
+                    reserve1: r1,
+                }))
+            }
+            PoolState::UniswapV3(v3) => {
+                let spacing = v3.info.tick_spacing.unwrap_or(60) as i32;
+                let (sqrt, tick, liq, ticks) =
+                    Self::fetch_v3_state(rpc, *addr, block, spacing).await?;
+                Some(PoolState::UniswapV3(UniswapV3PoolState {
+                    info: v3.info.clone(),
+                    sqrt_price_x96: sqrt,
+                    tick,
+                    liquidity: liq,
+                    ticks,
+                    fee_growth_global_0_x128: U256::ZERO,
+                    fee_growth_global_1_x128: U256::ZERO,
+                }))
+            }
+            PoolState::Curve(curve) => {
+                let result = Self::fetch_curve_state(rpc, *addr, block).await?;
+                match result {
+                    PoolInitResult::CurveState(tokens, balances) => {
+                        let token_index: HashMap<Address, usize> = tokens
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| (*t, i))
+                            .collect();
+                        Some(PoolState::Curve(CurvePoolState {
+                            info: curve.info.clone(),
+                            balances,
+                            token_index,
+                            a_coeff: curve.a_coeff,
+                        }))
+                    }
+                    _ => None,
+                }
+            }
+            PoolState::Balancer(bal) => {
+                let vault = self.balancer_vault?;
+                let pool_id = bal.pool_id?;
+                let result = Self::fetch_balancer_state(rpc, vault, &pool_id, block).await.ok()?;
+                match result {
+                    PoolInitResult::BalancerState(tokens, balances) => {
+                        let token_index: HashMap<Address, usize> = tokens
+                            .iter()
+                            .enumerate()
+                            .map(|(i, t)| (*t, i))
+                            .collect();
+                        Some(PoolState::Balancer(BalancerPoolState {
+                            info: bal.info.clone(),
+                            balances,
+                            token_index,
+                            pool_id: Some(pool_id),
+                            weights: bal.weights.clone(),
+                        }))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+
     /// Fetch Curve pool state by calling `coins(int128)` and `balances(int128)` for each token index.
-    /// Tries up to 4 token indices (most Curve pools have 2-4 tokens).
+    /// Tries up to 16 token indices, stopping when a call returns zero address or fails.
+    /// This handles pools with 2–16 tokens (3pool, Tricrypto, 4pool, etc.).
     async fn fetch_curve_state(
         rpc: &RpcClient,
         pool: Address,
         block: u64,
     ) -> Option<PoolInitResult> {
         static CURVE_COINS_SELECTOR: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
+        static CURVE_COINS_U256_SELECTOR: [u8; 4] = [0x19, 0x6c, 0xac, 0x5f]; // coins(uint256) — used by some forks
         let mut tokens = Vec::new();
         let mut balances = Vec::new();
+        let max_tokens = 16u8;
 
-        for i in 0u8..4u8 {
-            // Fetch token address
-            let mut coin_calldata = Vec::with_capacity(36);
-            coin_calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
-            let mut arg = [0u8; 32];
-            arg[31] = i;
-            coin_calldata.extend_from_slice(&arg);
-            let coin_data = Bytes::from(coin_calldata);
-
-            let token = match rpc.call(pool, coin_data, block).await {
-                Ok(result) if result.0.len() >= 32 => {
-                    Address::from_slice(&result.0[12..32])
+        for i in 0u8..max_tokens {
+            // Try coins(int128) first
+            let token = {
+                let mut calldata = Vec::with_capacity(36);
+                calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
+                let mut arg = [0u8; 32];
+                arg[31] = i;
+                calldata.extend_from_slice(&arg);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        let addr = Address::from_slice(&result.0[12..32]);
+                        if addr.is_zero() { break; }
+                        addr
+                    }
+                    _ => {
+                        // Fallback: try coins(uint256)
+                        let mut calldata2 = Vec::with_capacity(36);
+                        calldata2.extend_from_slice(&CURVE_COINS_U256_SELECTOR);
+                        let mut arg2 = [0u8; 32];
+                        arg2[31] = i;
+                        calldata2.extend_from_slice(&arg2);
+                        match rpc.call(pool, Bytes::from(calldata2), block).await {
+                            Ok(result) if result.0.len() >= 32 => {
+                                let addr = Address::from_slice(&result.0[12..32]);
+                                if addr.is_zero() { break; }
+                                addr
+                            }
+                            _ => break,
+                        }
+                    }
                 }
-                _ => break,
             };
 
-            // Fetch balance for this token
-            let mut bal_calldata = Vec::with_capacity(36);
-            bal_calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
-            let mut bal_arg = [0u8; 32];
-            bal_arg[31] = i;
-            bal_calldata.extend_from_slice(&bal_arg);
-            let bal_data = Bytes::from(bal_calldata);
-
-            let balance = match rpc.call(pool, bal_data, block).await {
-                Ok(result) if result.0.len() >= 32 => {
-                    let bal = U256::from_be_slice(&result.0[..32]);
-                    bal.as_limbs()[0] as u128
+            // Fetch balance for this token via balances(int128)
+            let balance = {
+                let mut calldata = Vec::with_capacity(36);
+                calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                let mut arg = [0u8; 32];
+                arg[31] = i;
+                calldata.extend_from_slice(&arg);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                    }
+                    _ => break,
                 }
-                _ => break,
             };
 
             tokens.push(token);
@@ -1196,6 +1604,8 @@ mod tests {
             tick,
             liquidity: liq,
             ticks: std::collections::BTreeMap::new(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
         })
     }
 

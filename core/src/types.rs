@@ -226,6 +226,7 @@ pub enum Strategy {
     Jit,
     JitArb,
     Sandwich,
+    Liquidation,
 }
 
 impl fmt::Display for Strategy {
@@ -236,6 +237,7 @@ impl fmt::Display for Strategy {
             Strategy::Jit => write!(f, "jit"),
             Strategy::JitArb => write!(f, "jit_arb"),
             Strategy::Sandwich => write!(f, "sandwich"),
+            Strategy::Liquidation => write!(f, "liquidation"),
         }
     }
 }
@@ -250,8 +252,9 @@ impl FromStr for Strategy {
             "jit" => Ok(Strategy::Jit),
             "jit_arb" => Ok(Strategy::JitArb),
             "sandwich" => Ok(Strategy::Sandwich),
+            "liquidation" => Ok(Strategy::Liquidation),
             _ => Err(format!(
-                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, all"
+                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, all"
             )),
         }
     }
@@ -265,6 +268,7 @@ impl Strategy {
             Strategy::Jit,
             Strategy::JitArb,
             Strategy::Sandwich,
+            Strategy::Liquidation,
         ]
     }
 
@@ -351,42 +355,31 @@ pub struct GasConfig {
     pub gas_model: GasModel,
     pub priority_fee_gwei: f64,
     pub flash_loan_provider: FlashLoanProvider,
+    /// Premium multiplier on top of priority fee to account for PGA dynamics.
+    /// 0.0 = no premium (base priority fee). 0.5 = 50% premium.
+    /// When PGA is enabled, this is set from `PgaConfig` to model the
+    /// winning bid premium needed to outbid competitors (H10).
+    pub winning_bid_premium: f64,
 }
 
 impl GasConfig {
-    /// Strategy-specific default gas limits based on empirical observations.
-    /// `overrides` can supply per-strategy overrides keyed by strategy name.
-    const GAS_LIMIT_BASELINE: u64 = 200_000;
-
-    pub fn gas_limit_for_strategy(
-        &self,
-        strategy: Strategy,
-        overrides: &std::collections::HashMap<String, u64>,
-    ) -> u64 {
-        let key = strategy.to_string();
-        if let Some(&limit) = overrides.get(&key) {
-            return limit;
-        }
-        let base = match strategy {
-            Strategy::TwoHopArb => 150_000,
-            Strategy::MultiHopArb => 300_000,
-            Strategy::Jit => 300_000,
-            Strategy::JitArb => 350_000,
-            Strategy::Sandwich => 200_000,
-        };
-        // Scale by global gas_limit / baseline so that --gas-limit acts as a multiplier
-        (base as u128)
-            .saturating_mul(self.gas_limit as u128)
-            .saturating_div(Self::GAS_LIMIT_BASELINE as u128) as u64
+    /// Compute the effective priority fee in wei, optionally inflated by
+    /// the PGA winning bid premium.
+    fn effective_priority_fee_wei(&self) -> u128 {
+        let base_pf = self.priority_fee_gwei * 1_000_000_000.0;
+        let premium = self.winning_bid_premium.max(0.0);
+        (base_pf * (1.0 + premium)) as u128
     }
 
-    /// Gas cost given an explicit gas limit (pool-type-aware, etc.).
+    /// Gas cost given an explicit gas limit (pool-type-aware, per-opportunity).
+    /// When `winning_bid_premium > 0`, the priority fee is inflated to
+    /// model the cost of winning inclusion in a competitive auction.
     pub fn compute_gas_cost_with_limit(
         &self,
         gas_limit: u64,
         base_fee_per_gas: u128,
     ) -> u128 {
-        let pf_wei = (self.priority_fee_gwei * 1_000_000_000.0) as u128;
+        let pf_wei = self.effective_priority_fee_wei();
         let effective_price = match self.gas_model {
             GasModel::HistoricalExact => base_fee_per_gas.saturating_add(pf_wei),
             GasModel::Fixed => pf_wei,
@@ -395,22 +388,25 @@ impl GasConfig {
         (gas_limit as u128).saturating_mul(effective_price)
     }
 
-    pub fn compute_gas_cost(
-        &self,
-        strategy: Strategy,
-        base_fee_per_gas: u128,
-        overrides: &std::collections::HashMap<String, u64>,
-    ) -> u128 {
-        let gas_limit = self.gas_limit_for_strategy(strategy, overrides);
-        self.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas)
-    }
-
     /// Compute the flash loan fee for a given principal amount.
     /// fee = input_amount * fee_rate_bps / 10000
     pub fn flash_loan_fee(&self, input_amount: u128) -> u128 {
         let bps = self.flash_loan_provider.fee_rate_bps();
         if bps == 0 { return 0; }
         input_amount.saturating_mul(bps).saturating_div(10_000)
+    }
+
+    /// Set the winning bid premium from PGA configuration (H10).
+    /// Returns self for chaining.
+    ///
+    /// Premium formula: `intensity × mean_competitors / (mean_competitors + 1)`.
+    /// With mean_competitors=3, intensity=0.5: premium ≈ 37.5%
+    /// With mean_competitors=10, intensity=1.0: premium ≈ 91%
+    pub fn with_winning_bid_premium(mut self, mean_competitors: f64, intensity: f64) -> Self {
+        let n = mean_competitors.max(1.0);
+        let premium = intensity * (n / (n + 1.0));
+        self.winning_bid_premium = premium.min(10.0); // cap at 10x
+        self
     }
 }
 
@@ -421,6 +417,7 @@ impl Default for GasConfig {
             gas_model: GasModel::default(),
             priority_fee_gwei: 0.0,
             flash_loan_provider: FlashLoanProvider::Auto,
+            winning_bid_premium: 0.0,
         }
     }
 }
@@ -520,6 +517,7 @@ mod tests {
             (Strategy::Jit, "jit"),
             (Strategy::JitArb, "jit_arb"),
             (Strategy::Sandwich, "sandwich"),
+            (Strategy::Liquidation, "liquidation"),
         ] {
             assert_eq!(s.to_string(), *expected);
             assert_eq!(expected.parse::<Strategy>().unwrap(), *s);
@@ -545,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_strategy_all_static() {
-        assert_eq!(Strategy::all().len(), 5);
+        assert_eq!(Strategy::all().len(), 6);
     }
 
     #[test]
@@ -591,51 +589,51 @@ mod tests {
     }
 
     #[test]
-    fn test_gas_config_default_compute_historical_exact() {
+    fn test_gas_config_with_limit_historical_exact() {
         let cfg = GasConfig::default();
-        let cost = cfg.compute_gas_cost(Strategy::TwoHopArb, 50_000_000_000, &std::collections::HashMap::new());
-        assert_eq!(cost, 150_000u128 * 50_000_000_000);
+        let cost = cfg.compute_gas_cost_with_limit(80_000, 50_000_000_000);
+        assert_eq!(cost, 80_000u128 * 50_000_000_000);
     }
 
     #[test]
-    fn test_gas_config_priority_fee() {
+    fn test_gas_config_priority_fee_with_limit() {
         let cfg = GasConfig {
             priority_fee_gwei: 2.0,
             ..GasConfig::default()
         };
-        let cost = cfg.compute_gas_cost(Strategy::TwoHopArb, 50_000_000_000u128, &std::collections::HashMap::new());
-        assert_eq!(cost, 150_000u128 * 52_000_000_000u128);
+        let cost = cfg.compute_gas_cost_with_limit(80_000, 50_000_000_000u128);
+        assert_eq!(cost, 80_000u128 * 52_000_000_000u128);
     }
 
     #[test]
-    fn test_gas_config_fixed_model() {
+    fn test_gas_config_fixed_model_with_limit() {
         let cfg = GasConfig {
             gas_model: GasModel::Fixed,
             priority_fee_gwei: 3.0,
             ..GasConfig::default()
         };
-        let cost = cfg.compute_gas_cost(Strategy::TwoHopArb, 50_000_000_000u128, &std::collections::HashMap::new());
-        assert_eq!(cost, 150_000u128 * 3_000_000_000u128);
+        let cost = cfg.compute_gas_cost_with_limit(80_000, 50_000_000_000u128);
+        assert_eq!(cost, 80_000u128 * 3_000_000_000u128);
     }
 
     #[test]
-    fn test_gas_config_p90_model() {
+    fn test_gas_config_p90_model_with_limit() {
         let cfg = GasConfig {
             gas_model: GasModel::P90,
             priority_fee_gwei: 1.0,
             ..GasConfig::default()
         };
-        let cost = cfg.compute_gas_cost(Strategy::TwoHopArb, 50_000_000_000u128, &std::collections::HashMap::new());
-        assert_eq!(cost, 150_000u128 * 76_000_000_000u128);
+        let cost = cfg.compute_gas_cost_with_limit(80_000, 50_000_000_000u128);
+        assert_eq!(cost, 80_000u128 * 76_000_000_000u128);
     }
 
     #[test]
-    fn test_gas_limit_per_strategy() {
-        let cfg = GasConfig::default();
-        assert_eq!(cfg.gas_limit_for_strategy(Strategy::TwoHopArb, &std::collections::HashMap::new()), 150_000);
-        assert_eq!(cfg.gas_limit_for_strategy(Strategy::MultiHopArb, &std::collections::HashMap::new()), 300_000);
-        assert_eq!(cfg.gas_limit_for_strategy(Strategy::Jit, &std::collections::HashMap::new()), 300_000);
-        assert_eq!(cfg.gas_limit_for_strategy(Strategy::JitArb, &std::collections::HashMap::new()), 350_000);
-        assert_eq!(cfg.gas_limit_for_strategy(Strategy::Sandwich, &std::collections::HashMap::new()), 200_000);
+    fn test_flash_loan_fee() {
+        let cfg_no_fee = GasConfig::default();
+        assert_eq!(cfg_no_fee.flash_loan_fee(1_000_000), 0);
+        let cfg_aave = GasConfig { flash_loan_provider: FlashLoanProvider::Aave, ..GasConfig::default() };
+        assert_eq!(cfg_aave.flash_loan_fee(1_000_000), 900); // 0.09% of 1M
+        let cfg_uni = GasConfig { flash_loan_provider: FlashLoanProvider::Uniswap, ..GasConfig::default() };
+        assert_eq!(cfg_uni.flash_loan_fee(1_000_000), 1000); // 0.10% of 1M
     }
 }
