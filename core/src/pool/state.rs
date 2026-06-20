@@ -187,16 +187,26 @@ impl PoolState {
     }
 
     /// Estimated gas cost for a single swap on this pool type.
-    /// V2 swaps ~60k, V3 average ~120k (higher with many tick crossings),
-    /// Curve and Balancer ~80k.
+    /// Empirical benchmarks (H7):
+    /// - V2 swap: ~80k (Uniswap V2 swap)
+    /// - V3 swap (base, few tick crossings): ~120k average (use `estimate_v3_swap_gas` for per-direction estimate)
+    /// - Curve swap: ~100k
+    /// - Balancer swap: ~100k
     pub fn gas_estimate(&self) -> u64 {
         match self {
-            PoolState::UniswapV2(_) => 60_000,
+            PoolState::UniswapV2(_) => 80_000,
             PoolState::UniswapV3(_) => 120_000,
-            PoolState::Curve(_) => 80_000,
-            PoolState::Balancer(_) => 80_000,
+            PoolState::Curve(_) => 100_000,
+            PoolState::Balancer(_) => 100_000,
         }
     }
+}
+
+/// Estimate calldata gas cost for a transaction involving `pool_count` pool addresses.
+/// Base tx cost: 21,000 gas. Each warm address read in calldata: ~2,800 gas.
+/// (H7: Include calldata cost in per-opportunity gas estimation.)
+pub fn calldata_gas_estimate(pool_count: usize) -> u64 {
+    21_000 + (pool_count as u64) * 2_800
 }
 
 /// Internal helper: result of fetching on-chain state for a pool during init.

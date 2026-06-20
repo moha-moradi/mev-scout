@@ -8,6 +8,7 @@ pub mod config;
 pub mod data;
 pub mod fact_check;
 pub mod fetch;
+pub mod gas_distribution;
 pub mod mev;
 pub mod parquet_writer;
 pub mod pool;

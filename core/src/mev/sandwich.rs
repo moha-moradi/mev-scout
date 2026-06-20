@@ -11,8 +11,8 @@ use crate::pool::decoders::{
 };
 use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
-use crate::pool::state::{PoolManager, PoolState};
-use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in};
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
 
@@ -374,10 +374,20 @@ impl SandwichDetector {
                 let (profit_wei, raw_profit) = self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
 
                 // Per-opportunity gas: front-run swap + back-run swap on the pool
+                // H7: Use direction-aware V3 estimate for each swap leg.
                 let pool_gas = pool_manager.get(&front.pool)
-                    .map(|p| p.gas_estimate())
-                    .unwrap_or(60_000);
-                let gas_limit = 40_000 + pool_gas * 2;
+                    .map(|p| match p {
+                        PoolState::UniswapV3(v3) => {
+                            let front_dir = front.direction == SwapDirection::Token0ForToken1;
+                            let back_dir = back.direction == SwapDirection::Token0ForToken1;
+                            estimate_v3_swap_gas(v3, front_dir)
+                                .saturating_add(estimate_v3_swap_gas(v3, back_dir))
+                        }
+                        other => other.gas_estimate().saturating_mul(2),
+                    })
+                    .unwrap_or(80_000u64.saturating_mul(2));
+                let calldata = calldata_gas_estimate(1);
+                let gas_limit = 40_000 + calldata + pool_gas;
                 let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
                 opportunities.push(MevOpportunity {

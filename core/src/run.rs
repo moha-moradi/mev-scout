@@ -17,6 +17,7 @@ use crate::replay::BlockReplayer;
 use crate::fact_check::BlockReplayStats;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
+use crate::gas_distribution::GasPriceDistribution;
 use crate::types::GasConfig;
 
 /// Orchestrates MEV backtest execution by replaying blocks through revm and
@@ -169,11 +170,11 @@ impl BacktestRunner {
     /// 3. JIT liquidity (Mint→Swap→Burn pattern)
     /// 4. Sandwich attacks (frontrun/victim/backrun triple)
     /// 5. JIT+Arb hybrid (Mint + cross-pool swap by same sender)
-    pub fn run_block(&mut self, block_num: u64) -> anyhow::Result<(Vec<MevOpportunity>, BlockReplayStats)> {
+    pub fn run_block(&mut self, block_num: u64) -> anyhow::Result<(Vec<MevOpportunity>, BlockReplayStats, Vec<u128>)> {
         let (block_data, txs) = self.replayer.load_block_data(block_num)?;
         let total_tx_count = txs.len();
         if txs.is_empty() {
-            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0 }));
+            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0 }, Vec::new()));
         }
 
         let timestamp = block_data.timestamp;
@@ -203,6 +204,8 @@ impl BacktestRunner {
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
         let dex_tx_count: RefCell<usize> = RefCell::new(0);
+        // Collect effective gas prices for gas price distribution (H10)
+        let gas_prices: RefCell<Vec<u128>> = RefCell::new(Vec::new());
 
         self.replayer.replay_each_filtered(
             block_num,
@@ -317,6 +320,9 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(liq_opps);
 
+                // Collect effective gas price for H10 distribution modeling
+                gas_prices.borrow_mut().push(tx.gas_effective);
+
                 // Apply this tx's log updates to pool state AFTER detection
                 pm.update_from_logs(&tx.logs);
 
@@ -332,7 +338,7 @@ impl BacktestRunner {
             block_number: block_num,
             total_tx_count,
             dex_tx_count: dex_tx_count.into_inner(),
-        }))
+        }, gas_prices.into_inner()))
     }
 
     /// Run backtest over a resolved block range, collecting all detected
@@ -354,6 +360,10 @@ impl BacktestRunner {
 
     /// Run backtest over the resolved block range, optionally applying PGA
     /// profit adjustment to each opportunity after detection.
+    ///
+    /// H10: Maintains a `GasPriceDistribution` across blocks, feeding it
+    /// per-tx effective gas prices and using the N-th percentile as the
+    /// effective gas price for P90 / Distribution gas models.
     pub fn run_range_with_pga(
         &mut self,
         resolved: &ResolvedRange,
@@ -361,18 +371,43 @@ impl BacktestRunner {
     ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
+        // H10: Gas price distribution across recent blocks (sliding window of 50)
+        let mut gas_dist = GasPriceDistribution::new(50);
         for block_num in resolved.start_block..=resolved.end_block {
+            // H10: Set the percentile gas price from historical distribution
+            // before each block so detectors use it for gas cost computation.
+            if let Some(p) = self.gas_config.gas_model.target_percentile() {
+                self.gas_config.percentile_gas_price = gas_dist.percentile(p);
+            }
+
             // H5: Checkpoint pool state before running the block.
             // On failure, the pool_manager inside run_block is consumed/lost,
             // so we restore from this checkpoint to prevent state divergence.
             let checkpoint = self.pool_manager.clone();
             match self.run_block(block_num) {
-                Ok((opps, stats)) => {
+                Ok((opps, stats, block_prices)) => {
                     tracing::info!(
-                        "Block {} done: {} opportunities",
+                        "Block {} done: {} opportunities ({} txs)",
                         block_num,
-                        opps.len()
+                        opps.len(),
+                        block_prices.len(),
                     );
+                    // Feed gas prices into the distribution (H10)
+                    for price in &block_prices {
+                        gas_dist.add_tx_gas_price(*price);
+                    }
+                    // Record block-level data for EIP-1559 forecasting
+                    match self.replayer.load_block_data(block_num) {
+                        Ok((block, _)) => {
+                            let base_fee = block.base_fee_per_gas.unwrap_or(0);
+                            gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
+                        }
+                        Err(_) => {
+                            gas_dist.record_block(0, 0, 30_000_000);
+                        }
+                    }
+                    gas_dist.finalize_block();
+
                     all.extend(opps);
                     all_stats.push(stats);
                 }

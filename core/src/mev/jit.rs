@@ -5,7 +5,8 @@ use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
 use crate::mev::opportunity::MevOpportunity;
-use crate::pool::state::PoolManager;
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::pool::v3_quote::estimate_v3_swap_gas;
 use crate::types::{GasConfig, Strategy};
 
 /// Tracks an active V3 Mint event that hasn't been fully processed.
@@ -275,13 +276,21 @@ impl JitDetector {
             (0u128, 0u128)
         };
         // Per-opportunity gas: JIT involves Mint + Swap (+ optionally Burn).
+        // H7: Use direction-aware V3 estimate since JIT pool is always V3.
         let pool_gas = pool_manager.get(&pool)
-            .map(|p| p.gas_estimate())
-            .unwrap_or(60_000);
+            .map(|p| match p {
+                PoolState::UniswapV3(v3) => {
+                    // JIT swap can go either direction — take the more expensive estimate
+                    estimate_v3_swap_gas(v3, true).max(estimate_v3_swap_gas(v3, false))
+                }
+                other => other.gas_estimate(),
+            })
+            .unwrap_or(80_000);
+        let calldata = calldata_gas_estimate(1);
         let gas_limit = if _burned {
-            40_000 + pool_gas + 150_000 + 150_000
+            40_000 + calldata + pool_gas + 150_000 + 150_000
         } else {
-            40_000 + pool_gas + 150_000
+            40_000 + calldata + pool_gas + 150_000
         };
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // raw_profit = Some(raw) when normalization actually converted the value

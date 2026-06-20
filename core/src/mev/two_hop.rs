@@ -6,8 +6,8 @@ use alloy::primitives::{Address, U256};
 
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
-use crate::pool::state::{BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
-use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
+use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::types::{GasConfig, Strategy};
 
 /// Detects two-hop arbitrage opportunities across V2, V3, and mixed pools.
@@ -95,7 +95,7 @@ impl TwoHopArbDetector {
             return None;
         }
 
-        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b);
+        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b, shared_token);
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         // Subtract flash loan fee from gross profit
@@ -605,13 +605,30 @@ fn v2_reserves(
 }
 
 /// Estimate the gas limit for a two-hop arbitrage opportunity based on the
-/// actual pool types involved. Replaces the old flat 150k estimate which was
-/// too low for V3 (can cost 250k+) and too high for V2 (often ~90k).
-fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState) -> u64 {
-    let a_gas = pool_a.gas_estimate();
-    let b_gas = pool_b.gas_estimate();
-    // Two-hop arb executes one swap per pool; add base overhead
-    40_000 + a_gas + b_gas
+/// actual pool types involved and the swap direction (H7).
+///
+/// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
+/// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
+fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address) -> u64 {
+    let base_overhead = 40_000u64;
+    let calldata = calldata_gas_estimate(2);
+
+    let a_gas = match pool_a {
+        PoolState::UniswapV3(v3) => {
+            let zero_for_one = shared_token == v3.info.token1;
+            estimate_v3_swap_gas(v3, zero_for_one)
+        }
+        other => other.gas_estimate(),
+    };
+    let b_gas = match pool_b {
+        PoolState::UniswapV3(v3) => {
+            let zero_for_one = shared_token == v3.info.token0;
+            estimate_v3_swap_gas(v3, zero_for_one)
+        }
+        other => other.gas_estimate(),
+    };
+
+    base_overhead + calldata + a_gas + b_gas
 }
 
 #[cfg(test)]

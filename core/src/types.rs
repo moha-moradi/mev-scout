@@ -322,6 +322,12 @@ pub enum GasModel {
     P90,
     #[serde(rename = "fixed")]
     Fixed,
+    /// Use the N-th percentile effective gas price from the historical
+    /// distribution tracked by `GasPriceDistribution` (H10).
+    /// Storage value N (1–99) is the percentile. Example: `Distribution(90)`
+    /// uses the 90th percentile from recent blocks' effective gas prices.
+    #[serde(rename = "distribution")]
+    Distribution(u8),
 }
 
 impl fmt::Display for GasModel {
@@ -330,6 +336,7 @@ impl fmt::Display for GasModel {
             GasModel::HistoricalExact => write!(f, "historical_exact"),
             GasModel::P90 => write!(f, "p90"),
             GasModel::Fixed => write!(f, "fixed"),
+            GasModel::Distribution(p) => write!(f, "distribution_{p}"),
         }
     }
 }
@@ -338,13 +345,43 @@ impl FromStr for GasModel {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
+        let lower = s.to_lowercase();
+        match lower.as_str() {
             "historical_exact" => Ok(GasModel::HistoricalExact),
             "p90" => Ok(GasModel::P90),
             "fixed" => Ok(GasModel::Fixed),
-            _ => Err(format!(
-                "unknown gas model '{s}'. Supported: historical_exact, p90, fixed"
-            )),
+            _ => {
+                if let Some(rest) = lower.strip_prefix("distribution_") {
+                    if let Ok(p) = rest.parse::<u8>() {
+                        if p >= 1 && p <= 99 {
+                            return Ok(GasModel::Distribution(p));
+                        }
+                    }
+                }
+                if let Some(rest) = lower.strip_prefix("distribution") {
+                    if let Ok(p) = rest.parse::<u8>() {
+                        if p >= 1 && p <= 99 {
+                            return Ok(GasModel::Distribution(p));
+                        }
+                    }
+                }
+                Err(format!(
+                    "unknown gas model '{s}'. Supported: historical_exact, p90, fixed, distribution_N (1-99)"
+                ))
+            }
+        }
+    }
+}
+
+impl GasModel {
+    /// Return the target percentile for this gas model.
+    /// For `P90` returns 90. For `Distribution(p)` returns p.
+    /// For `HistoricalExact` and `Fixed` returns `None`.
+    pub fn target_percentile(&self) -> Option<u8> {
+        match self {
+            GasModel::P90 => Some(90),
+            GasModel::Distribution(p) => Some(*p),
+            _ => None,
         }
     }
 }
@@ -360,6 +397,12 @@ pub struct GasConfig {
     /// When PGA is enabled, this is set from `PgaConfig` to model the
     /// winning bid premium needed to outbid competitors (H10).
     pub winning_bid_premium: f64,
+    /// Pre-computed N-th percentile effective gas price from the historical
+    /// gas price distribution (H10). When set, `GasModel::P90` and
+    /// `GasModel::Distribution(p)` use this value instead of the crude
+    /// `base_fee * 150%` multiplier. Set by `BacktestRunner` before each
+    /// block based on recent blocks' effective gas prices.
+    pub percentile_gas_price: Option<u128>,
 }
 
 impl GasConfig {
@@ -374,6 +417,11 @@ impl GasConfig {
     /// Gas cost given an explicit gas limit (pool-type-aware, per-opportunity).
     /// When `winning_bid_premium > 0`, the priority fee is inflated to
     /// model the cost of winning inclusion in a competitive auction.
+    ///
+    /// For `GasModel::P90` and `GasModel::Distribution(p)`, uses the
+    /// pre-computed `percentile_gas_price` from the historical distribution
+    /// when available, falling back to the crude `base_fee * 150%` multiplier
+    /// when distribution data has not been collected yet (H10).
     pub fn compute_gas_cost_with_limit(
         &self,
         gas_limit: u64,
@@ -383,7 +431,15 @@ impl GasConfig {
         let effective_price = match self.gas_model {
             GasModel::HistoricalExact => base_fee_per_gas.saturating_add(pf_wei),
             GasModel::Fixed => pf_wei,
-            GasModel::P90 => base_fee_per_gas.saturating_mul(150).saturating_div(100).saturating_add(pf_wei),
+            GasModel::P90 | GasModel::Distribution(_) => {
+                // Use histogram-derived percentile when available (H10),
+                // fall back to the crude 150% multiplier while collecting data.
+                self.percentile_gas_price
+                    .unwrap_or_else(|| {
+                        base_fee_per_gas.saturating_mul(150).saturating_div(100)
+                    })
+                    .saturating_add(pf_wei)
+            }
         };
         (gas_limit as u128).saturating_mul(effective_price)
     }
@@ -418,6 +474,7 @@ impl Default for GasConfig {
             priority_fee_gwei: 0.0,
             flash_loan_provider: FlashLoanProvider::Auto,
             winning_bid_premium: 0.0,
+            percentile_gas_price: None,
         }
     }
 }
@@ -571,6 +628,21 @@ mod tests {
     }
 
     #[test]
+    fn test_gas_model_distribution_parse() {
+        let m: GasModel = "distribution_90".parse().unwrap();
+        assert_eq!(m, GasModel::Distribution(90));
+        assert_eq!(m.to_string(), "distribution_90");
+        assert_eq!(m.target_percentile(), Some(90));
+
+        let m: GasModel = "distribution_50".parse().unwrap();
+        assert_eq!(m, GasModel::Distribution(50));
+        assert_eq!(m.target_percentile(), Some(50));
+
+        assert!("distribution_0".parse::<GasModel>().is_err());
+        assert!("distribution_100".parse::<GasModel>().is_err());
+    }
+
+    #[test]
     fn test_gas_model_unknown() {
         assert!("foo".parse::<GasModel>().unwrap_err().contains("unknown gas model"));
     }
@@ -635,5 +707,44 @@ mod tests {
         assert_eq!(cfg_aave.flash_loan_fee(1_000_000), 900); // 0.09% of 1M
         let cfg_uni = GasConfig { flash_loan_provider: FlashLoanProvider::Uniswap, ..GasConfig::default() };
         assert_eq!(cfg_uni.flash_loan_fee(1_000_000), 1000); // 0.10% of 1M
+    }
+
+    #[test]
+    fn test_gas_config_p90_with_percentile_price() {
+        let cfg = GasConfig {
+            gas_model: GasModel::P90,
+            priority_fee_gwei: 0.0,
+            percentile_gas_price: Some(80_000_000_000u128), // 80 gwei
+            ..GasConfig::default()
+        };
+        // Uses percentile_gas_price (80 gwei) instead of base_fee * 150%
+        let cost = cfg.compute_gas_cost_with_limit(100_000, 50_000_000_000u128);
+        assert_eq!(cost, 100_000u128 * 80_000_000_000u128);
+    }
+
+    #[test]
+    fn test_gas_config_distribution_model() {
+        let cfg = GasConfig {
+            gas_model: GasModel::Distribution(75),
+            priority_fee_gwei: 1.0,
+            percentile_gas_price: Some(100_000_000_000u128),
+            ..GasConfig::default()
+        };
+        // Uses percentile + priority fee
+        let cost = cfg.compute_gas_cost_with_limit(100_000, 50_000_000_000u128);
+        assert_eq!(cost, 100_000u128 * 101_000_000_000u128);
+    }
+
+    #[test]
+    fn test_gas_config_distribution_fallback_no_percentile() {
+        let cfg = GasConfig {
+            gas_model: GasModel::Distribution(90),
+            priority_fee_gwei: 0.0,
+            percentile_gas_price: None,
+            ..GasConfig::default()
+        };
+        // Falls back to base_fee * 150% when no distribution data
+        let cost = cfg.compute_gas_cost_with_limit(100_000, 50_000_000_000u128);
+        assert_eq!(cost, 100_000u128 * 75_000_000_000u128);
     }
 }

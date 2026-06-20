@@ -508,6 +508,34 @@ fn get_tick_at_sqrt_ratio(sqrt_price_x96: U256) -> i32 {
     high
 }
 
+/// Estimate gas cost for a V3 swap in the given direction, accounting for
+/// initialized tick crossings. Each tick crossing costs ~25k gas on top of
+/// the base swap cost (~80k). Capped at 20 crossings to avoid runaway estimates.
+///
+/// H7: V3 gas varies from ~80k (no tick crossing) to ~500k+ (many crossings),
+/// so direction-aware estimation is essential for accurate per-opportunity gas.
+pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u64 {
+    const BASE_SWAP_GAS: u64 = 80_000;
+    const PER_TICK_CROSSING_GAS: u64 = 25_000;
+    const MAX_CROSSINGS: u64 = 20;
+
+    if pool.ticks.is_empty() || pool.liquidity == 0 {
+        // When no tick data, assume ~3 crossings based on tick_spacing
+        return BASE_SWAP_GAS + PER_TICK_CROSSING_GAS * 3;
+    }
+
+    // Count initialized (non-zero liquidity net) ticks between current tick
+    // and the end of the tick map in the swap direction. This gives an upper
+    // bound on crossings for a full-range swap in that direction.
+    let crossings = if zero_for_one {
+        pool.ticks.range(..pool.tick).filter(|(_, &liq)| liq != 0).count()
+    } else {
+        pool.ticks.range(pool.tick + 1..).filter(|(_, &liq)| liq != 0).count()
+    };
+
+    BASE_SWAP_GAS + PER_TICK_CROSSING_GAS * (crossings as u64).min(MAX_CROSSINGS)
+}
+
 /// Compute the maximum tradeable input amount for a V3 pool given its current
 /// state and the nearest initialized tick in the swap direction.
 ///

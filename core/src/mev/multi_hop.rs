@@ -3,7 +3,7 @@
 use alloy::primitives::{Address, U256};
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic};
-use crate::pool::state::{PoolManager, PoolState};
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::mev::two_hop::{curve_output_amount, balancer_output_amount};
 use crate::types::{GasConfig, Strategy};
@@ -299,12 +299,13 @@ impl MultiHopArbDetector {
 }
 
 fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager) -> u64 {
-    let mut total = 40_000u64; // base overhead
+    let calldata = calldata_gas_estimate(path.len());
+    let mut total = 40_000u64 + calldata;
     for addr in path {
         if let Some(pool) = pm.get(addr) {
             total = total.saturating_add(pool.gas_estimate());
         } else {
-            total = total.saturating_add(60_000);
+            total = total.saturating_add(80_000);
         }
     }
     total

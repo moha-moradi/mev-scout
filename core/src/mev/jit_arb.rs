@@ -7,7 +7,8 @@ use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, 
 use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::v3_quote::quote_v3_exact_in;
-use crate::pool::state::{PoolManager, PoolState};
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::pool::v3_quote::estimate_v3_swap_gas;
 use crate::mev::opportunity::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
 
@@ -215,13 +216,20 @@ impl JitArbDetector {
         pm: &PoolManager,
     ) -> MevOpportunity {
         // Per-opportunity gas: JIT position (Mint+Swap) + arb swap on related pool
+        // H7: Use direction-aware V3 estimate for JIT pool (swap can go either way).
         let jit_pool_gas = pm.get(&jit_pool)
-            .map(|p| p.gas_estimate())
-            .unwrap_or(60_000);
+            .map(|p| match p {
+                PoolState::UniswapV3(v3) => {
+                    estimate_v3_swap_gas(v3, true).max(estimate_v3_swap_gas(v3, false))
+                }
+                other => other.gas_estimate(),
+            })
+            .unwrap_or(80_000);
         let arb_pool_gas = pm.get(&arb_pool)
             .map(|p| p.gas_estimate())
-            .unwrap_or(60_000);
-        let gas_limit = 40_000 + 150_000 + jit_pool_gas + arb_pool_gas;
+            .unwrap_or(80_000);
+        let calldata = calldata_gas_estimate(2);
+        let gas_limit = 40_000 + calldata + 150_000 + jit_pool_gas + arb_pool_gas;
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // Populate token_in/token_out from the JIT pool — both tokens are involved
         // in the liquidity provision and subsequent arb swap.

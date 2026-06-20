@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use alloy::primitives::{keccak256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::mev::opportunity::MevOpportunity;
-use crate::pool::state::PoolManager;
+use crate::pool::state::{calldata_gas_estimate, PoolManager};
 use crate::types::{GasConfig, Strategy};
 
 /// Aave V3 LiquidationCall event signature.
@@ -120,7 +120,8 @@ impl LiquidationDetector {
         base_fee_per_gas: u128,
         gas_config: GasConfig,
     ) -> Option<MevOpportunity> {
-        let gas_limit = 200_000u64;
+        // H7: Aave V3 liquidation costs ~180k gas empirical. Add calldata overhead.
+        let gas_limit = 180_000 + calldata_gas_estimate(2);
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         // Gross profit = collateral received - debt repaid.
@@ -251,7 +252,7 @@ mod tests {
         let user = address!("1111111111111111111111111111111111111111");
 
         let log = sample_log(
-            vec![*LIQUIDATION_CALL_TOPIC, B256::from(collateral), B256::from(debt), B256::from(user)],
+            vec![*LIQUIDATION_CALL_TOPIC, addr_to_topic(collateral), addr_to_topic(debt), addr_to_topic(user)],
             128, 1000, 1200,
         );
 
@@ -268,7 +269,7 @@ mod tests {
         let user = address!("1111111111111111111111111111111111111111");
 
         let log = sample_log(
-            vec![*LIQUIDATION_CALL_TOPIC, B256::from(collateral), B256::from(debt), B256::from(user)],
+            vec![*LIQUIDATION_CALL_TOPIC, addr_to_topic(collateral), addr_to_topic(debt), addr_to_topic(user)],
             128, 1000, 1200,
         );
 
@@ -286,7 +287,7 @@ mod tests {
         let user = address!("1111111111111111111111111111111111111111");
 
         let log = sample_log(
-            vec![*LIQUIDATION_CALL_TOPIC, B256::from(collateral), B256::from(debt), B256::from(user)],
+            vec![*LIQUIDATION_CALL_TOPIC, addr_to_topic(collateral), addr_to_topic(debt), addr_to_topic(user)],
             128, 1000, 1200,
         );
 
