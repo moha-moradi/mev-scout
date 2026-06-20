@@ -64,6 +64,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: Some(args.pga_enabled),
             pga_mean_competitors: Some(args.pga_mean_competitors),
             pga_intensity: Some(args.pga_intensity),
+            price_oracle_mode: Some(args.price_oracle_mode.clone()),
+            token_prices: args.token_prices.clone(),
         },
         Command::Fetch(args) => CliOverrides {
             days: args.block_range.days,
@@ -87,6 +89,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
         Command::Replay(args) => CliOverrides {
             days: None,
@@ -110,6 +114,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
         Command::Report(args) => CliOverrides {
             days: None,
@@ -133,6 +139,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
         Command::Config => CliOverrides {
             days: None,
@@ -156,6 +164,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
         Command::Discover(args) => CliOverrides {
             days: None,
@@ -179,6 +189,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
         Command::FactCheck(_) => CliOverrides {
             days: None,
@@ -202,6 +214,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         },
     }
 }
@@ -329,6 +343,60 @@ fn render_block_summary_table(summaries: &[BlockReplayStats]) {
     ]);
     println!("\nBlock Summary");
     println!("{table}");
+}
+
+fn resolve_v2_factories(
+    args: &mev_scout_core::cli::RunArgs,
+    validation_result: &mev_scout_core::validation::ValidationResult,
+) -> Vec<Address> {
+    let mut addrs = Vec::new();
+    if let Some(v2_str) = &args.v2_factories {
+        for s in v2_str.split(',') {
+            if let Ok(addr) = s.trim().parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    } else if let Some(factories) = validation_result.chain_config.uniswap_v2_factories.as_ref() {
+        for s in factories {
+            if let Ok(addr) = s.parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    } else {
+        for s in validation_result.chain_name.default_uniswap_v2_factories() {
+            if let Ok(addr) = s.parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    }
+    addrs
+}
+
+fn resolve_v3_factories(
+    args: &mev_scout_core::cli::RunArgs,
+    validation_result: &mev_scout_core::validation::ValidationResult,
+) -> Vec<Address> {
+    let mut addrs = Vec::new();
+    if let Some(v3_str) = &args.v3_factory {
+        for s in v3_str.split(',') {
+            if let Ok(addr) = s.trim().parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    } else if let Some(factories) = validation_result.chain_config.uniswap_v3_factories.as_ref() {
+        for s in factories {
+            if let Ok(addr) = s.parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    } else {
+        for s in validation_result.chain_name.default_uniswap_v3_factories() {
+            if let Ok(addr) = s.parse::<Address>() {
+                addrs.push(addr);
+            }
+        }
+    }
+    addrs
 }
 
 #[tokio::main]
@@ -504,6 +572,7 @@ async fn main() -> anyhow::Result<()> {
                 priority_fee_gwei: config.priority_fee_gwei,
                 flash_loan_provider: validation_result.flash_loan_provider,
                 winning_bid_premium: 0.0,
+                percentile_gas_price: None,
             };
             let pga_cfg = if config.pga_enabled {
                 gas_config = gas_config.with_winning_bid_premium(
@@ -519,7 +588,37 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
             let start = std::time::Instant::now();
-            let (all_opportunities, block_stats) = runner.run_range_with_pga(&resolved, pga_cfg)?;
+
+            let (all_opportunities, block_stats) = if args.live_discover {
+                let v2_addrs = resolve_v2_factories(args, &validation_result);
+                let v3_addrs = resolve_v3_factories(args, &validation_result);
+                if v2_addrs.is_empty() && v3_addrs.is_empty() {
+                    tracing::warn!("--live-discover set but no factory addresses found for chain");
+                    runner.run_range_with_pga(&resolved, pga_cfg)?
+                } else {
+                    let v2_fee_override = validation_result.chain_config.uniswap_v2_default_fee;
+                    let v2_factory_fees: Vec<Option<u32>> = v2_addrs.iter().map(|_| v2_fee_override).collect();
+                    let batch_size = validation_result
+                        .chain_config
+                        .pool_discovery_batch_size
+                        .unwrap_or(10);
+                    let chunk_size = 10_000;
+                    runner
+                        .run_range_with_live_discovery(
+                            &rpc,
+                            &resolved,
+                            pga_cfg,
+                            &v2_addrs,
+                            &v3_addrs,
+                            &v2_factory_fees,
+                            batch_size,
+                            chunk_size,
+                        )
+                        .await?
+                }
+            } else {
+                runner.run_range_with_pga(&resolved, pga_cfg)?
+            };
             let elapsed = start.elapsed();
 
             // Save results to JSON

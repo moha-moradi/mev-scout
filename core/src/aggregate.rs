@@ -78,11 +78,31 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
     }
 }
 
+/// Backward-compatible aggregate with a single USD price for the native token.
+/// Delegates to `aggregate_with_prices` using the native token as fallback.
 pub fn aggregate(
     opportunities: &[MevOpportunity],
     dexes: &[DexMeta],
     usd_price: f64,
 ) -> AggregationResult {
+    // Build a single-entry price map keyed by ZERO (native fallback)
+    let mut prices = std::collections::HashMap::new();
+    prices.insert(Address::ZERO, usd_price);
+    aggregate_with_prices(opportunities, dexes, &prices)
+}
+
+/// Aggregate with per-token USD prices.
+///
+/// `token_prices` maps token addresses to their USD price.
+/// If a token is not in the map, `Address::ZERO` (native token) is used as fallback.
+/// When no native price is available, `net_profit_usd` is set to 0.0.
+pub fn aggregate_with_prices(
+    opportunities: &[MevOpportunity],
+    dexes: &[DexMeta],
+    token_prices: &std::collections::HashMap<Address, f64>,
+) -> AggregationResult {
+    let usd_price = token_prices.get(&Address::ZERO).copied().unwrap_or(0.0);
+
     if opportunities.is_empty() {
         return AggregationResult {
             summary: SummaryMetrics {
@@ -189,6 +209,7 @@ pub fn aggregate(
         let mut gross_wei = 0_u128;
         let mut gas_wei = 0_u128;
 
+        let mut strat_usd = 0.0_f64;
         for opp in opps {
             let pw = opp.expected_profit.to::<u128>();
             let gw = opp.gas_cost_wei;
@@ -204,6 +225,12 @@ pub fn aggregate(
             if pe > best_opp {
                 best_opp = pe;
             }
+            // Per-token USD: use token_out price if available, else native fallback (L3)
+            let token_price = token_prices.get(&opp.token_out)
+                .or_else(|| token_prices.get(&Address::ZERO))
+                .copied()
+                .unwrap_or(0.0);
+            strat_usd += (pe - ge) * token_price;
         }
 
         let strat_net = strat_gross - strat_gas;
@@ -229,7 +256,7 @@ pub fn aggregate(
                 gross_revenue: strat_gross,
                 gas_fees: strat_gas,
                 net_profit: strat_net,
-                net_profit_usd: strat_net * usd_price,
+                net_profit_usd: strat_usd,
                 roi,
                 avg_per_opp: avg,
                 best_opp,

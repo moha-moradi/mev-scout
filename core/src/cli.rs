@@ -153,6 +153,30 @@ pub struct RunArgs {
     /// PGA intensity — fraction of auction surplus dissipated (default: 0.5)
     #[arg(long = "pga-intensity", default_value = "0.5", value_name = "F", help_heading = "PGA")]
     pub pga_intensity: f64,
+
+    /// Price oracle mode: coingecko, onchain, or hybrid (default: coingecko)
+    #[arg(long = "price-oracle", default_value = "coingecko", value_name = "MODE", help_heading = "Pricing")]
+    pub price_oracle_mode: String,
+
+    /// Per-token USD prices as comma-separated ADDR=price pairs (e.g. "0x...=0.999,0x...=1800")
+    #[arg(long = "token-price", value_name = "PAIRS", help_heading = "Pricing")]
+    pub token_prices: Option<String>,
+
+    /// Discover pools from factory events during backtest replay (live discovery).
+    /// Scans each factory for PairCreated/PoolCreated events and adds new pools
+    /// to the pool manager before processing the blocks they appear in.
+    #[arg(long = "live-discover", help_heading = "Discovery")]
+    pub live_discover: bool,
+
+    /// Uniswap V2 factory addresses (comma-separated) for live discovery.
+    /// Overrides chain config defaults. Only used with --live-discover.
+    #[arg(long, value_name = "ADDRS", help_heading = "Discovery")]
+    pub v2_factories: Option<String>,
+
+    /// Uniswap V3 factory address for live discovery.
+    /// Overrides chain config defaults. Only used with --live-discover.
+    #[arg(long, value_name = "ADDR", help_heading = "Discovery")]
+    pub v3_factory: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

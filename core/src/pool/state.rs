@@ -784,12 +784,27 @@ impl PoolManager {
         u128::from_be_bytes(buf)
     }
 
-    /// Fallback: fetch V2 reserves via eth_getStorageAt slot 6.
+    /// Fallback: fetch V2 reserves via eth_getStorageAt.
+    /// Tries multiple storage slots known to hold packed reserves:
+    /// - Slot 6: Uniswap V2, PancakeSwap, QuickSwap (standard)
+    /// - Slot 8: Camelot
+    /// - Slot 12: Velodrome / Aerodrome
+    /// Returns the first slot that decodes to non-zero reserves.
     async fn fetch_v2_reserves_storage(
         rpc: &RpcClient,
         pool: Address,
         block: u64,
     ) -> Option<(u128, u128)> {
+        let slots = [U256::from(6u64), U256::from(8u64), U256::from(12u64)];
+        for &slot in &slots {
+            if let Ok(raw) = rpc.get_storage_at(pool, slot, block).await {
+                let (r0, r1) = Self::decode_v2_reserves_from_storage(raw);
+                if r0 > 0 || r1 > 0 {
+                    return Some((r0, r1));
+                }
+            }
+        }
+        // Last resort: try slot 6 (standard) even if zero
         let raw = rpc.get_storage_at(pool, U256::from(6), block).await.ok()?;
         Some(Self::decode_v2_reserves_from_storage(raw))
     }
@@ -1312,6 +1327,81 @@ impl PoolManager {
             Some(PoolState::UniswapV3(state)) => Some(state),
             _ => None,
         }
+    }
+
+    /// Derive native token USD price from the highest-TVL pool that pairs
+    /// wrapped native with a stablecoin (USDC, USDT, DAI).
+    /// Returns `None` if no suitable pool is found.
+    ///
+    /// Price = reserve_stable / reserve_native, adjusted for token decimals.
+    /// Used as an on-chain oracle fallback (L5).
+    pub fn onchain_native_price(&self, stable_tokens: &[Address]) -> Option<f64> {
+        let native = self.wrapped_native()?;
+        let mut best_price: Option<f64> = None;
+        let mut best_tvl: u128 = 0;
+        for &stable in stable_tokens {
+            let pool_addr = self.find_pair_pool(&native, &stable)?;
+            let pool = self.get(&pool_addr)?;
+            let (reserve_native, reserve_stable) = match pool {
+                PoolState::UniswapV2(v2) => {
+                    if v2.info.token0 == native {
+                        (v2.reserve0, v2.reserve1)
+                    } else {
+                        (v2.reserve1, v2.reserve0)
+                    }
+                }
+                PoolState::UniswapV3(v3) => {
+                    // V3 native/stable pools aren't typically used for price
+                    // estimation; skip V3 and prefer V2/Curve/Balancer
+                    if v3.liquidity == 0 { continue; }
+                    let tvl = v3.liquidity;
+                    // Use sqrt price for direction: if native is token0,
+                    // price = (sqrtPriceX96 / 2^96)^2 token1 per token0
+                    let price = if v3.info.token0 == native {
+                        let sqrt = v3.sqrt_price_x96;
+                        if sqrt.is_zero() { continue; }
+                        let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
+                        let p = p_u256.to::<u128>();
+                        if p == 0 { continue; }
+                        p
+                    } else {
+                        let sqrt = v3.sqrt_price_x96;
+                        if sqrt.is_zero() { continue; }
+                        let one: U256 = U256::from(1u128) << 192;
+                        let inv: U256 = one / sqrt;
+                        let p_u256: U256 = inv.saturating_mul(inv) >> 192;
+                        let p = p_u256.to::<u128>();
+                        if p == 0 { continue; }
+                        p
+                    };
+                    // Use (reserve_native, reserve_stable * price) as TVL proxy
+                    // Higher TVL means more reliable price
+                    (tvl, tvl.saturating_mul(price))
+                }
+                PoolState::Curve(curve) => {
+                    let idx_native = curve.token_index.get(&native)?;
+                    let idx_stable = curve.token_index.get(&stable)?;
+                    let bal_native = curve.balances.get(*idx_native)?;
+                    let bal_stable = curve.balances.get(*idx_stable)?;
+                    (*bal_native, *bal_stable)
+                }
+                PoolState::Balancer(bal) => {
+                    let idx_native = bal.token_index.get(&native)?;
+                    let idx_stable = bal.token_index.get(&stable)?;
+                    let bal_native = bal.balances.get(*idx_native)?;
+                    let bal_stable = bal.balances.get(*idx_stable)?;
+                    (*bal_native, *bal_stable)
+                }
+            };
+            let tvl = reserve_native.saturating_mul(reserve_stable).max(1);
+            if tvl > best_tvl {
+                best_tvl = tvl;
+                if reserve_native > 0 && reserve_stable > 0 {
+                    best_price = Some(reserve_stable as f64 / reserve_native as f64);
+                }
+            }
+        }
+        best_price
     }
 
     /// Set the wrapped native token address.

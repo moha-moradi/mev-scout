@@ -424,6 +424,58 @@ pub async fn discover_pools(
     Ok(total)
 }
 
+/// Discover pools from factory events in a block range, without requiring a cache.
+/// Returns all discovered pools without persisting them anywhere.
+/// This is used for live discovery during backtest replay.
+pub async fn discover_pools_in_range(
+    rpc: &RpcClient,
+    v2_factories: &[Address],
+    v3_factories: &[Address],
+    from_block: u64,
+    to_block: u64,
+    v2_factory_fees: &[Option<u32>],
+    batch_size: u64,
+) -> Vec<DiscoveredPool> {
+    let mut all_pools = Vec::new();
+
+    for (i, &factory) in v2_factories.iter().enumerate() {
+        let factory_fee = v2_factory_fees.get(i).copied().flatten();
+        let mut current = from_block;
+        while current <= to_block {
+            let end = (current + batch_size - 1).min(to_block);
+            match discover_v2_pools(rpc, factory, current, end, factory_fee).await {
+                Ok(pools) => all_pools.extend(pools),
+                Err(e) => {
+                    tracing::warn!("V2 discovery {factory} blocks {current}..{end} failed: {e}");
+                }
+            }
+            if end == to_block {
+                break;
+            }
+            current = end + 1;
+        }
+    }
+
+    for &factory in v3_factories {
+        let mut current = from_block;
+        while current <= to_block {
+            let end = (current + batch_size - 1).min(to_block);
+            match discover_v3_pools(rpc, factory, current, end).await {
+                Ok(pools) => all_pools.extend(pools),
+                Err(e) => {
+                    tracing::warn!("V3 discovery {factory} blocks {current}..{end} failed: {e}");
+                }
+            }
+            if end == to_block {
+                break;
+            }
+            current = end + 1;
+        }
+    }
+
+    all_pools
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

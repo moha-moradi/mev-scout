@@ -131,6 +131,13 @@ pub struct Config {
     /// PGA intensity — fraction of auction surplus dissipated (default: 0.5).
     #[serde(default = "default_pga_intensity")]
     pub pga_intensity: f64,
+    /// Price oracle mode: "coingecko", "onchain", or "hybrid" (default: "coingecko").
+    #[serde(default)]
+    pub price_oracle_mode: String,
+    /// Per-token USD prices: comma-separated "ADDR=price" pairs (e.g. "0x...=0.999,0x...=1800").
+    /// Overrides CoinGecko prices for the specified tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_prices: Option<String>,
 }
 
 fn default_pga_mean_competitors() -> f64 { 3.0 }
@@ -204,6 +211,8 @@ impl Default for Config {
             pga_enabled: false,
             pga_mean_competitors: default_pga_mean_competitors(),
             pga_intensity: default_pga_intensity(),
+            price_oracle_mode: "coingecko".to_string(),
+            token_prices: None,
         }
     }
 }
@@ -495,6 +504,8 @@ pub struct CliOverrides {
     pub pga_enabled: Option<bool>,
     pub pga_mean_competitors: Option<f64>,
     pub pga_intensity: Option<f64>,
+    pub price_oracle_mode: Option<String>,
+    pub token_prices: Option<String>,
 }
 
 impl Config {
@@ -561,6 +572,12 @@ impl Config {
         }
         if let Some(v) = overrides.pga_intensity {
             self.pga_intensity = v;
+        }
+        if let Some(v) = &overrides.price_oracle_mode {
+            self.price_oracle_mode = v.clone();
+        }
+        if let Some(v) = &overrides.token_prices {
+            self.token_prices = Some(v.clone());
         }
     }
 }
@@ -661,6 +678,8 @@ rpc_url = "https://eth.diy"
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -692,6 +711,8 @@ rpc_url = "https://eth.diy"
             pga_enabled: None,
             pga_mean_competitors: None,
             pga_intensity: None,
+            price_oracle_mode: None,
+            token_prices: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));

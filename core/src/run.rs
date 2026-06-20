@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 use crate::cache::SqliteStore;
 use crate::mev::opportunity::MevOpportunity;
+use crate::pool::discovery::discover_pools_in_range;
 use crate::mev::jit::JitDetector;
 use crate::mev::liquidation::LiquidationDetector;
 use crate::mev::sandwich::SandwichDetector;
@@ -140,6 +141,120 @@ impl BacktestRunner {
             initialized,
             pool_manager.pool_count()
         );
+    }
+
+    /// Discover pools from factory events in a block range and add them to the pool manager.
+    /// Runs discovery for each chunk, adds newly discovered pools, and initializes their
+    /// on-chain state at the chunk's start block for accurate reserves.
+    pub async fn discover_and_add_pools(
+        &mut self,
+        rpc: &RpcClient,
+        v2_factories: &[Address],
+        v3_factories: &[Address],
+        from_block: u64,
+        to_block: u64,
+        v2_factory_fees: &[Option<u32>],
+        batch_size: u64,
+    ) {
+        tracing::info!(
+            "Discovering pools from {} factory addresses in blocks {}..{}",
+            v2_factories.len() + v3_factories.len(),
+            from_block,
+            to_block,
+        );
+
+        let discovered = discover_pools_in_range(
+            rpc,
+            v2_factories,
+            v3_factories,
+            from_block,
+            to_block,
+            v2_factory_fees,
+            batch_size,
+        )
+        .await;
+
+        if discovered.is_empty() {
+            tracing::info!("No new pools discovered in range {}..{}", from_block, to_block);
+            return;
+        }
+
+        tracing::info!("Discovered {} new pools, adding to pool manager", discovered.len());
+
+        for pool in &discovered {
+            let info: PoolInfo = pool.clone().into();
+            add_pool_to_manager(&mut self.pool_manager, info);
+        }
+
+        // Initialize reserves for newly added pools at the start of the range
+        let init_block = from_block.saturating_sub(1);
+        self.pool_manager.init_from_rpc(rpc, init_block).await;
+
+        tracing::info!(
+            "Discovered and initialized {} pools for range {}..{}",
+            discovered.len(),
+            from_block,
+            to_block,
+        );
+    }
+
+    /// Run backtest over the resolved block range with live pool discovery.
+    ///
+    /// Splits the range into chunks of `chunk_size` blocks. For each chunk:
+    /// 1. Scans factory events for newly created pools in that range
+    /// 2. Adds discovered pools to the pool manager and initializes reserves
+    /// 3. Processes blocks in the chunk via the standard replay pipeline
+    ///
+    /// PGA adjustment is applied globally across all chunks at the end.
+    pub async fn run_range_with_live_discovery(
+        &mut self,
+        rpc: &RpcClient,
+        resolved: &ResolvedRange,
+        pga_config: Option<PgaConfig>,
+        v2_factories: &[Address],
+        v3_factories: &[Address],
+        v2_factory_fees: &[Option<u32>],
+        batch_size: u64,
+        chunk_size: u64,
+    ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
+        let mut all_opps = Vec::new();
+        let mut all_stats = Vec::new();
+        let mut chunk_start = resolved.start_block;
+
+        while chunk_start <= resolved.end_block {
+            let chunk_end = (chunk_start + chunk_size - 1).min(resolved.end_block);
+            tracing::info!("Live discovery chunk: blocks {}..{}", chunk_start, chunk_end);
+
+            // Discover pools created in this chunk's range and add to pool manager
+            self.discover_and_add_pools(rpc, v2_factories, v3_factories, chunk_start, chunk_end, v2_factory_fees, batch_size)
+                .await;
+
+            // Process this chunk's blocks via the standard pipeline (no PGA per-chunk)
+            let chunk_resolved = ResolvedRange {
+                start_block: chunk_start,
+                end_block: chunk_end,
+                block_count: chunk_end - chunk_start + 1,
+                mode: resolved.mode,
+            };
+            let (opps, stats) = self.run_range_with_pga(&chunk_resolved, None)?;
+            all_opps.extend(opps);
+            all_stats.extend(stats);
+
+            if chunk_end == resolved.end_block {
+                break;
+            }
+            chunk_start = chunk_end + 1;
+        }
+
+        // Apply PGA globally
+        let all_opps = if let Some(cfg) = pga_config {
+            tracing::info!("Applying PGA adjustment to {} opportunities", all_opps.len());
+            pga::adjust_opportunities(all_opps, &cfg)
+        } else {
+            all_opps
+        };
+
+        Ok((all_opps, all_stats))
     }
 
     /// Replay a single block and run all active MEV detection strategies.

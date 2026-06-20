@@ -479,6 +479,40 @@ impl Default for GasConfig {
     }
 }
 
+/// Controls how native token USD price is sourced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PriceOracleMode {
+    /// Use CoinGecko API only (default, backward compat).
+    #[default]
+    CoinGeckoOnly,
+    /// Derive native token price from the highest-TVL on-chain pool.
+    OnChain,
+    /// Fetch both CoinGecko and on-chain; warn if divergence >5%.
+    Hybrid,
+}
+
+impl fmt::Display for PriceOracleMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PriceOracleMode::CoinGeckoOnly => write!(f, "coingecko"),
+            PriceOracleMode::OnChain => write!(f, "onchain"),
+            PriceOracleMode::Hybrid => write!(f, "hybrid"),
+        }
+    }
+}
+
+impl FromStr for PriceOracleMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "coingecko" | "coingecko_only" => Ok(PriceOracleMode::CoinGeckoOnly),
+            "onchain" | "on_chain" => Ok(PriceOracleMode::OnChain),
+            "hybrid" => Ok(PriceOracleMode::Hybrid),
+            _ => Err(format!("unknown price oracle mode '{s}'. Supported: coingecko, onchain, hybrid")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OutputFormat {
     #[serde(rename = "table")]

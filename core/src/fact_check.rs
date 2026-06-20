@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::sync::Mutex;
 use alloy::primitives::{keccak256, Address, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +11,13 @@ use crate::pool::state::{PoolManager, PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::rpc::RpcClient;
 use crate::types::Strategy;
+
+/// Thread-safe cache for on-chain token decimals.
+/// Populated lazily by `fetch_token_decimals` and checked by `guess_token_decimals`.
+static DECIMALS_CACHE: LazyLock<Mutex<HashMap<Address, u8>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// ERC20 `decimals()` function selector: 0x313ce567
+const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 
 /// Per-block stats collected during a backtest run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,9 +111,44 @@ pub struct FactCheckReport {
     pub opportunity_checks: Vec<OpportunityFactCheck>,
 }
 
+/// Fetch token decimals from on-chain via `decimals()` (selector: 0x313ce567).
+/// Results are cached per address so each token is queried at most once.
+async fn fetch_token_decimals(rpc: &RpcClient, token: Address, block: u64) -> Option<u8> {
+    // Check cache first
+    {
+        let cache = DECIMALS_CACHE.lock().unwrap();
+        if let Some(&d) = cache.get(&token) {
+            return Some(d);
+        }
+    }
+    let data = {
+        let mut calldata = Vec::with_capacity(36);
+        calldata.extend_from_slice(&DECIMALS_SELECTOR);
+        let mut word = [0u8; 32];
+        word[12..32].copy_from_slice(token.as_slice());
+        calldata.extend_from_slice(&word);
+        Bytes::from(calldata)
+    };
+    let result = rpc.call(token, data, block).await.ok()?;
+    if result.len() < 32 {
+        return None;
+    }
+    let val = result[31]; // uint8, right-aligned in 32-byte word
+    DECIMALS_CACHE.lock().unwrap().insert(token, val);
+    Some(val)
+}
+
 /// Guess token decimals for well-known tokens by address.
+/// Checks the on-chain decimals cache first, then hardcoded addresses.
 /// Returns 18 (default) for unknown tokens.
 fn guess_token_decimals(token: &Address) -> u8 {
+    // Check on-chain cache first (populated by fetch_token_decimals)
+    if let Ok(cache) = DECIMALS_CACHE.lock() {
+        if let Some(&d) = cache.get(token) {
+            return d;
+        }
+    }
+
     // Well-known addresses on Polygon
     const USDC_POLYGON: Address = alloy::primitives::address!("2791bca1f2de4661ed88a30c99a7a9449aa84174");
     const USDT_POLYGON: Address = alloy::primitives::address!("c2132d05d31c914a87c6611c10748aeb04b58e8f");
@@ -824,6 +868,12 @@ pub async fn verify_opportunities_from_chain(
                 fresh_pools.add_pool(state);
             }
         }
+    }
+
+    // Pre-populate decimals cache for all unique tokens (L4)
+    for opp in opportunities {
+        fetch_token_decimals(rpc, opp.token_in, opp.block_number).await;
+        fetch_token_decimals(rpc, opp.token_out, opp.block_number).await;
     }
 
     // Phase 2: structural recomputation on refetched state

@@ -52,7 +52,7 @@ impl JitArbDetector {
             swap_events: Vec::new(),
             emitted: HashSet::new(),
             block_number,
-            proximity_window: 1,
+            proximity_window: 3,
         }
     }
 
@@ -185,9 +185,7 @@ impl JitArbDetector {
                             if pools_share_token(pm, pool_p, swap_q.pool) {
                                 self.emitted.insert(dedup_key);
 
-                            let arb_profit = estimate_arb_profit(pm, swap_p, swap_q);
-                            let fee_rev = estimate_jit_fee_revenue(mint, pool_p, &self.swap_events, pm, self.proximity_window);
-                            let total_profit = arb_profit.saturating_add(fee_rev);
+                            let total_profit = compute_jit_arb_profit(pm, swap_p, swap_q, mint, pool_p, &self.swap_events, self.proximity_window);
 
                             opportunities.push(Self::build_opp(
                                 self.block_number, pool_p, swap_q.pool, mint, timestamp,
@@ -288,6 +286,21 @@ fn shared_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> Option<Ad
     } else {
         None
     }
+}
+
+/// Compute combined JIT arbitrage profit: arbitrage profit + JIT fee revenue.
+fn compute_jit_arb_profit(
+    pm: &PoolManager,
+    swap_p: &SwapEvent,
+    swap_q: &SwapEvent,
+    mint: &JitArbMint,
+    pool_p: Address,
+    swap_events: &[SwapEvent],
+    proximity_window: usize,
+) -> u128 {
+    let arb_profit = estimate_arb_profit(pm, swap_p, swap_q);
+    let fee_rev = estimate_jit_fee_revenue(mint, pool_p, swap_events, pm, proximity_window);
+    arb_profit.saturating_add(fee_rev)
 }
 
 /// Convert a swap's `amount_in` (denominated in `swap.token_in`) to an equivalent
