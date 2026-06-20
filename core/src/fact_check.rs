@@ -1,4 +1,5 @@
-use alloy::primitives::{Address, U256};
+use std::sync::LazyLock;
+use alloy::primitives::{keccak256, Address, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::mev::opportunity::MevOpportunity;
@@ -70,6 +71,16 @@ pub struct OpportunityFactCheck {
     pub recomputed_profit: Option<String>,
     pub recomputation_match: Option<bool>,
     pub recomputation_accuracy: RecomputationAccuracy,
+    /// Profit returned by EVM simulation (via eth_call on DEX view functions).
+    /// None when EVM simulation is not applicable (Liquidation, Jit, JitArb).
+    pub evm_simulated_profit: Option<String>,
+    /// Whether the EVM-simulated profit matches the stored expected_profit (within 1%).
+    /// None when EVM simulation was not performed.
+    pub evm_simulation_match: Option<bool>,
+    /// Whether the cached pool state is consistent with on-chain balances (V2 only).
+    pub pool_state_consistent: Option<bool>,
+    /// Percentage divergence between cached and on-chain state.
+    pub state_divergence_pct: Option<f64>,
     pub victim_tx_index: Option<usize>,
     pub backrun_tx_index: Option<usize>,
     pub tick_lower: Option<i32>,
@@ -216,6 +227,348 @@ pub fn quote_single_swap(
             let w_out = bal.weights.get(idx_out).copied().unwrap_or(1_000_000_000_000_000_000u128);
             balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
         }
+    }
+}
+
+// ── ABI encoding helpers for EVM simulation (M3) ──────────────────────────
+//
+// These helpers construct calldata for on-chain view functions used to
+// simulate swaps through the actual DEX contracts via eth_call. The
+// resulting output amounts are compared against the quoting-function
+// recomputation to catch detection bugs, state divergence, and formula
+// errors.
+
+/// Function selector for ERC20 `balanceOf(address)`: 0x70a08231
+const BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+
+/// Function selector for Uniswap V3 Quoter `quoteExactInputSingle`
+static QUOTE_EXACT_INPUT_SINGLE_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
+    keccak256(b"quoteExactInputSingle(address,address,uint24,uint256,uint160)")[..4]
+        .try_into()
+        .unwrap()
+});
+
+/// Function selector for Curve `get_dy(int128,int128,uint256)`
+static GET_DY_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
+    keccak256(b"get_dy(int128,int128,uint256)")[..4]
+        .try_into()
+        .unwrap()
+});
+
+/// Standard Uniswap V3 Quoter address (same on Ethereum, Polygon, Arbitrum, Optimism, etc.)
+const V3_QUOTER: Address = alloy::primitives::address!("b27308f9F90D607463bb33eA1BeBb41C27CE5AB6");
+
+/// ABI-encode `quoteExactInputSingle(address,address,uint24,uint256,uint160)`.
+fn encode_quote_exact_input_single(
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    amount_in: u128,
+) -> Bytes {
+    let mut data = Vec::with_capacity(164);
+    data.extend_from_slice(&*QUOTE_EXACT_INPUT_SINGLE_SELECTOR);
+    let mut word = [0u8; 32];
+    word[12..32].copy_from_slice(token_in.as_slice());
+    data.extend_from_slice(&word);
+    word[12..32].copy_from_slice(token_out.as_slice());
+    data.extend_from_slice(&word);
+    word.fill(0);
+    let fee_bytes = fee.to_be_bytes();
+    word[29..32].copy_from_slice(&fee_bytes[1..4]);
+    data.extend_from_slice(&word);
+    word.fill(0);
+    word = U256::from(amount_in).to_be_bytes::<32>();
+    data.extend_from_slice(&word);
+    word.fill(0);
+    data.extend_from_slice(&word);
+    Bytes::from(data)
+}
+
+/// Decode the `uint256 amountOut` return value from `quoteExactInputSingle`.
+fn decode_v3_quoter_result(data: &[u8]) -> Option<u128> {
+    if data.len() < 32 {
+        return None;
+    }
+    let amount = U256::from_be_slice(&data[..32]);
+    Some(amount.to::<u128>())
+}
+
+/// ABI-encode `get_dy(int128 i, int128 j, uint256 dx)` for Curve pools.
+fn encode_curve_get_dy(i: i128, j: i128, dx: u128) -> Bytes {
+    let mut data = Vec::with_capacity(100);
+    data.extend_from_slice(&*GET_DY_SELECTOR);
+    let mut word = [0u8; 32];
+    let i_bytes = i.to_be_bytes();
+    word[16..32].copy_from_slice(&i_bytes);
+    if i < 0 {
+        word[..16].fill(0xFF);
+    }
+    data.extend_from_slice(&word);
+    word.fill(0);
+    let j_bytes = j.to_be_bytes();
+    word[16..32].copy_from_slice(&j_bytes);
+    if j < 0 {
+        word[..16].fill(0xFF);
+    }
+    data.extend_from_slice(&word);
+    word.fill(0);
+    word = U256::from(dx).to_be_bytes::<32>();
+    data.extend_from_slice(&word);
+    Bytes::from(data)
+}
+
+/// ABI-encode `balanceOf(address owner)` for ERC20 tokens.
+fn encode_balance_of(owner: Address) -> Bytes {
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&BALANCE_OF_SELECTOR);
+    let mut word = [0u8; 32];
+    word[12..32].copy_from_slice(owner.as_slice());
+    data.extend_from_slice(&word);
+    Bytes::from(data)
+}
+
+/// Simulate a V3 single-hop swap via the on-chain Quoter contract at a
+/// historical block. Returns the exact output amount the pool would produce.
+///
+/// This is a genuine EVM execution: the Quoter runs the full swap logic
+/// (tick crossing, fee application, liquidity calculation) in the EVM at
+/// the given block's state. Catches tick data errors, liquidity divergence,
+/// and quoting formula bugs that structural recomputation cannot see.
+async fn simulate_v3_swap_via_quoter(
+    rpc: &RpcClient,
+    token_in: Address,
+    token_out: Address,
+    fee: u32,
+    amount_in: u128,
+    block: u64,
+) -> Option<u128> {
+    let calldata = encode_quote_exact_input_single(token_in, token_out, fee, amount_in);
+    let result = rpc.call(V3_QUOTER, calldata, block).await.ok()?;
+    decode_v3_quoter_result(&result)
+}
+
+/// Simulate a Curve swap via `get_dy` at a historical block.
+///
+/// Like the Quoter for V3, this runs the actual Curve StableSwap formula
+/// in the EVM and returns the exact output for the given input.
+async fn simulate_curve_swap_via_get_dy(
+    rpc: &RpcClient,
+    pool: Address,
+    i: i128,
+    j: i128,
+    dx: u128,
+    block: u64,
+) -> Option<u128> {
+    let calldata = encode_curve_get_dy(i, j, dx);
+    let result = rpc.call(pool, calldata, block).await.ok()?;
+    if result.len() < 32 {
+        return None;
+    }
+    let amount = U256::from_be_slice(&result[..32]);
+    Some(amount.to::<u128>())
+}
+
+/// Check whether the cached pool state matches on-chain token balances.
+/// For V2 pools, compares cached `reserve0`/`reserve1` against
+/// `balanceOf(pool)` on both token contracts. Returns `(consistent, divergence_pct)`.
+///
+/// A divergence > 0.1% indicates the pool manager's cached state has
+/// drifted from on-chain reality (H5 / M4 scenario).
+async fn check_pool_state_consistency(
+    rpc: &RpcClient,
+    pools: &PoolManager,
+    opp: &MevOpportunity,
+    block: u64,
+) -> Option<(bool, f64)> {
+    let pool_a = pools.get(&opp.pool_a)?;
+    match pool_a {
+        PoolState::UniswapV2(v2) => {
+            let calldata0 = encode_balance_of(v2.info.address);
+            let calldata1 = encode_balance_of(v2.info.address);
+            let bal0_raw = rpc.call(v2.info.token0, calldata0, block).await.ok()?;
+            let bal1_raw = rpc.call(v2.info.token1, calldata1, block).await.ok()?;
+            if bal0_raw.len() < 32 || bal1_raw.len() < 32 {
+                return None;
+            }
+            let bal0 = U256::from_be_slice(&bal0_raw[..32]).to::<u128>();
+            let bal1 = U256::from_be_slice(&bal1_raw[..32]).to::<u128>();
+            let r0 = v2.reserve0;
+            let r1 = v2.reserve1;
+            if r0 == 0 || r1 == 0 {
+                return Some((true, 0.0));
+            }
+            let dev0 = if r0 > bal0 { r0 - bal0 } else { bal0 - r0 };
+            let dev1 = if r1 > bal1 { r1 - bal1 } else { bal1 - r1 };
+            let max_dev = dev0.max(dev1) as f64;
+            let max_res = r0.max(r1).max(1) as f64;
+            let divergence = max_dev / max_res;
+            Some((divergence < 0.001, divergence * 100.0))
+        }
+        _ => None,
+    }
+}
+
+/// EVM-based quote for a single swap via `eth_call` on the pool's view
+/// functions (V3 Quoter, Curve get_dy) or structural fallback (V2, Balancer).
+///
+/// For V3 and Curve pools this is a genuine EVM simulation at the historical
+/// block. For V2 and Balancer the structural quote is used since their formulas
+/// are deterministic given correct state — state divergence is caught by
+/// `check_pool_state_consistency`.
+async fn evm_quote_single_swap(
+    rpc: &RpcClient,
+    pool: &PoolState,
+    token_in: Address,
+    token_out: Address,
+    amount_in: u128,
+    block: u64,
+) -> Option<u128> {
+    match pool {
+        PoolState::UniswapV3(v3) => {
+            simulate_v3_swap_via_quoter(
+                rpc, token_in, token_out, v3.info.fee, amount_in, block,
+            )
+            .await
+        }
+        PoolState::Curve(curve) => {
+            let i = *curve.token_index.get(&token_in)? as i128;
+            let j = *curve.token_index.get(&token_out)? as i128;
+            simulate_curve_swap_via_get_dy(rpc, curve.info.address, i, j, amount_in, block).await
+        }
+        PoolState::UniswapV2(v2) => {
+            let (reserve_in, reserve_out) = if v2.info.token0 == token_in {
+                (v2.reserve0, v2.reserve1)
+            } else if v2.info.token1 == token_in {
+                (v2.reserve1, v2.reserve0)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
+        }
+        PoolState::Balancer(bal) => {
+            let idx_in = *bal.token_index.get(&token_in)?;
+            let idx_out = *bal.token_index.get(&token_out)?;
+            let balance_in = bal.balances[idx_in];
+            let balance_out = bal.balances[idx_out];
+            if balance_in == 0 || balance_out == 0 {
+                return None;
+            }
+            let w_in = bal
+                .weights
+                .get(idx_in)
+                .copied()
+                .unwrap_or(1_000_000_000_000_000_000u128);
+            let w_out = bal
+                .weights
+                .get(idx_out)
+                .copied()
+                .unwrap_or(1_000_000_000_000_000_000u128);
+            balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
+        }
+    }
+}
+
+/// Simulate a detected MEV opportunity via EVM and return the actual profit.
+///
+/// Constructs the swap path encoded by the opportunity and executes each
+/// leg through the DEX's on-chain view function (V3 Quoter, Curve get_dy)
+/// or deterministic formula (V2, Balancer). Returns the computed profit
+/// in the output token, which can be compared against `expected_profit`
+/// to detect quoting bugs and state divergence.
+///
+/// Returns `None` for strategies that cannot be simulated (Liquidation) or
+/// when the necessary pools or RPC data are unavailable.
+///
+/// ## M3 (PLAN-accuracy-improvement.md)
+/// This function addresses the "replay opportunity" gap: previously, all
+/// verification was structural (recomputed via quoting functions which may
+/// share bugs with the detector). By running the same swap through the
+/// actual EVM (via eth_call on the DEX's view functions), we catch:
+/// - Wrong reserve direction in pool state
+/// - Incorrect fee application in quoting formulas
+/// - Pool state divergence from on-chain reality
+/// - Formula bugs (e.g., constant-product instead of StableSwap)
+pub async fn simulate_opportunity_evm(
+    rpc: &RpcClient,
+    pools: &PoolManager,
+    opp: &MevOpportunity,
+    block: u64,
+) -> Option<U256> {
+    let input = opp.input_amount.to::<u128>();
+    if input == 0 {
+        return None;
+    }
+
+    match opp.strategy {
+        Strategy::TwoHopArb => {
+            let pool_a = pools.get(&opp.pool_a)?;
+            let pool_b = pools.get(&opp.pool_b)?;
+            let info_a = pool_a.info();
+            let info_b = pool_b.info();
+
+            let shared = if info_a.token0 == info_b.token0 || info_a.token0 == info_b.token1 {
+                info_a.token0
+            } else {
+                info_a.token1
+            };
+
+            let intermediate =
+                evm_quote_single_swap(rpc, pool_a, opp.token_in, shared, input, block).await?;
+            if intermediate == 0 {
+                return None;
+            }
+            let output = evm_quote_single_swap(
+                rpc, pool_b, shared, opp.token_out, intermediate, block,
+            )
+            .await?;
+            if output <= input {
+                return None;
+            }
+            Some(U256::from(output - input))
+        }
+        Strategy::MultiHopArb => {
+            let path = opp.path.as_ref()?;
+            let mut current = input;
+            let mut current_token = opp.token_in;
+            for &addr in path {
+                let pool = pools.get(&addr)?;
+                let info = pool.info();
+                let next_token = if info.token0 == current_token {
+                    info.token1
+                } else if info.token1 == current_token {
+                    info.token0
+                } else {
+                    return None;
+                };
+                current =
+                    evm_quote_single_swap(rpc, pool, current_token, next_token, current, block)
+                        .await?;
+                current_token = next_token;
+            }
+            if current <= input {
+                return None;
+            }
+            Some(U256::from(current - input))
+        }
+        Strategy::Sandwich => {
+            // Sandwich: simulate front-run buy (token_in -> token_out) then
+            // back-run sell (token_out -> token_in) using the stored input_amount
+            let pool = pools.get(&opp.pool_a)?;
+            let mid =
+                evm_quote_single_swap(rpc, pool, opp.token_in, opp.token_out, input, block).await?;
+            if mid == 0 {
+                return None;
+            }
+            let back = evm_quote_single_swap(
+                rpc, pool, opp.token_out, opp.token_in, mid, block,
+            )
+            .await?;
+            if back <= input {
+                return None;
+            }
+            Some(U256::from(back - input))
+        }
+        Strategy::Jit | Strategy::JitArb | Strategy::Liquidation => None,
     }
 }
 
@@ -401,6 +754,10 @@ pub fn verify_opportunities(
                 recomputed_profit,
                 recomputation_match,
                 recomputation_accuracy,
+                evm_simulated_profit: None,
+                evm_simulation_match: None,
+                pool_state_consistent: None,
+                state_divergence_pct: None,
                 victim_tx_index: opp.victim_tx_index,
                 backrun_tx_index: opp.backrun_tx_index,
                 tick_lower: opp.tick_lower,
@@ -414,32 +771,48 @@ pub fn verify_opportunities(
 
 /// Verify opportunities against actual on-chain pool state fetched via `eth_call`.
 ///
-/// This is the EVM-based fact-check (M3 in PLAN-accuracy-improvement.md). Unlike the
-/// structural `verify_opportunities()` which uses the `PoolManager`'s cached state
-/// (which may diverge from on-chain reality), this function re-fetches each pool's
-/// state directly from the chain at the opportunity's block, then recomputes profit
-/// using the quoting functions.
+/// **M3 (PLAN-accuracy-improvement.md): Full EVM re-execution fact-check.**
 ///
-/// This catches detection bugs (wrong reserve direction, incorrect fee application,
-/// PoolManager state divergence) that pass the structural check undetected.
+/// This is a three-tier verification:
+///
+/// 1. **State refetch** — Re-fetches each pool's state from the chain at the
+///    opportunity's block (`getReserves()`, `slot0()+liquidity()`, Curve
+///    balances, Balancer pool tokens) into a fresh `PoolManager`.
+///
+/// 2. **Structural recomputation** — Runs the same quoting formulas used
+///    during detection against the fresh state. This catches state divergence
+///    and reserve ordering bugs.
+///
+/// 3. **EVM simulation** — For V3 and Curve pools, calls the actual DEX view
+///    functions (`quoteExactInputSingle` on the V3 Quoter, `get_dy` on Curve
+///    pools) via `eth_call` at the historical block. The EVM simulates the
+///    full swap logic (tick crossing, StableSwap Newton iteration, fee
+///    application) and returns the exact output. This catches formula bugs
+///    that structural recomputation cannot.
+///
+/// Also verifies pool state consistency by comparing cached V2 reserves
+/// against on-chain `balanceOf()` calls on the token contracts.
 ///
 /// # Performance
-/// Makes one `eth_call` per unique pool address across all opportunities. V2 and V3
-/// pools use `getReserves()` / `slot0()+liquidity()` calls; Curve/Balancer pools
-/// make multiple calls (one per token index). Opportunities are grouped by block so
-/// shared pools are only fetched once.
+/// Makes one `eth_call` per unique pool address for state refetch, plus up
+/// to two `eth_call` calls per opportunity for EVM simulation. Opportunities
+/// are grouped by block so shared pools are only fetched once.
+///
+/// # Returns
+/// One `OpportunityFactCheck` per input opportunity with `recomputed_profit`,
+/// `evm_simulated_profit`, `evm_simulation_match`, `pool_state_consistent`,
+/// and `state_divergence_pct` populated where applicable.
 pub async fn verify_opportunities_from_chain(
     opportunities: &[MevOpportunity],
     pools: &PoolManager,
     rpc: &RpcClient,
 ) -> Vec<OpportunityFactCheck> {
     let mut fresh_pools = PoolManager::new();
-    // Track which (pool, block) pairs have been fetched
     let mut fetched = std::collections::HashSet::new();
 
+    // Phase 1: refetch on-chain pool state for each unique (pool, block)
     for opp in opportunities {
         let block = opp.block_number;
-
         for addr in std::iter::once(&opp.pool_a)
             .chain(std::iter::once(&opp.pool_b))
             .chain(opp.path.as_ref().map(|p| p.as_slice()).unwrap_or(&[]))
@@ -453,7 +826,34 @@ pub async fn verify_opportunities_from_chain(
         }
     }
 
-    verify_opportunities(opportunities, Some(&fresh_pools))
+    // Phase 2: structural recomputation on refetched state
+    let mut results = verify_opportunities(opportunities, Some(&fresh_pools));
+
+    // Phase 3: EVM simulation + state consistency per opportunity
+    for (opp, check) in opportunities.iter().zip(results.iter_mut()) {
+        let block = opp.block_number;
+        let dec_out = guess_token_decimals(&opp.token_out);
+
+        // EVM simulation (V3 Quoter, Curve get_dy, or structural fallback)
+        if let Some(evm_profit) = simulate_opportunity_evm(rpc, &fresh_pools, opp, block).await {
+            let stored = opp.expected_profit;
+            let diff = if stored > evm_profit { stored - evm_profit } else { evm_profit - stored };
+            let matched = diff == U256::ZERO
+                || (stored > U256::ZERO && diff * U256::from(100u64) / stored < U256::from(1u64));
+            check.evm_simulated_profit = Some(format_amount(&evm_profit, dec_out));
+            check.evm_simulation_match = Some(matched);
+        }
+
+        // Pool state consistency (V2 balanceOf vs cached reserves)
+        if let Some((consistent, divergence)) =
+            check_pool_state_consistency(rpc, &fresh_pools, opp, block).await
+        {
+            check.pool_state_consistent = Some(consistent);
+            check.state_divergence_pct = Some(divergence);
+        }
+    }
+
+    results
 }
 
 #[cfg(test)]
@@ -610,11 +1010,190 @@ mod tests {
 
     #[test]
     fn test_format_amount() {
-        // 1 ether = 10^18 wei
         let one_eth = U256::from(10u64).pow(U256::from(18));
         assert!(format_amount(&one_eth, 18).contains("1.0"));
 
         let zero = U256::ZERO;
         assert!(format_amount(&zero, 18).contains("0"));
+    }
+
+    // ── ABI encoding tests (M3) ───────────────────────────────────────────
+
+    #[test]
+    fn test_encode_balance_of() {
+        let owner = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let data = encode_balance_of(owner);
+        assert_eq!(data.len(), 36);
+        assert_eq!(&data[..4], &BALANCE_OF_SELECTOR);
+        // Address is right-aligned in the 32-byte word, offset by 12 from selector start
+        let addr_start = 4 + 12;
+        assert_eq!(&data[addr_start..addr_start + 20], owner.as_slice());
+    }
+
+    #[test]
+    fn test_encode_quote_exact_input_single_well_formed() {
+        let token_in = address!("1111111111111111111111111111111111111111");
+        let token_out = address!("2222222222222222222222222222222222222222");
+        let fee = 3000u32;
+        let amount = 1_000_000u128;
+        let data = encode_quote_exact_input_single(token_in, token_out, fee, amount);
+        assert_eq!(data.len(), 164);
+        assert_eq!(&data[..4], &*QUOTE_EXACT_INPUT_SINGLE_SELECTOR);
+        // tokenIn at bytes 4+12..4+32 = 16..36
+        assert_eq!(&data[16..36], token_in.as_slice());
+        // tokenOut at bytes 36+12..36+32 = 48..68
+        assert_eq!(&data[48..68], token_out.as_slice());
+        // fee = 3000 = 0x0BB8, right-aligned in 3 bytes at bytes 68+29..68+32 = 97..100
+        assert_eq!(data[98], 0x0b);
+        assert_eq!(data[99], 0xb8);
+        // amountIn at bytes 100..132
+        let decoded_amount = U256::from_be_slice(&data[100..132]);
+        assert_eq!(decoded_amount, U256::from(amount));
+        // sqrtPriceLimitX96 = 0 (last word at bytes 132..164)
+        assert!(data[132..164].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_decode_v3_quoter_result() {
+        let buf = U256::from(5000u64).to_be_bytes::<32>();
+        assert_eq!(decode_v3_quoter_result(&buf), Some(5000));
+        assert_eq!(decode_v3_quoter_result(&[]), None);
+        assert_eq!(decode_v3_quoter_result(&[0u8; 16]), None);
+    }
+
+    #[test]
+    fn test_encode_curve_get_dy_positive_indices() {
+        let data = encode_curve_get_dy(0i128, 1i128, 1000u128);
+        assert_eq!(data.len(), 100);
+        assert_eq!(&data[..4], &*GET_DY_SELECTOR);
+        // i=0: all zeros in bytes 4..36 (32-byte word, no sign extension)
+        assert!(data[4..36].iter().all(|&b| b == 0), "i word should be all zeros");
+        // j=1: last byte of second word = 1 (bytes 36..68)
+        assert_eq!(data[67], 1, "j=1 should be at the last byte of the second word");
+        assert!(data[36..67].iter().all(|&b| b == 0), "j word before last byte should be zeros");
+        // dx = 1000 at bytes 68..100
+        let dx_val = U256::from_be_slice(&data[68..100]);
+        assert_eq!(dx_val, U256::from(1000u64));
+    }
+
+    #[test]
+    fn test_encode_curve_get_dy_negative_indices() {
+        let data = encode_curve_get_dy(-1i128, 2i128, 500u128);
+        assert_eq!(data.len(), 100);
+        // i=-1: sign extension fills bytes 4..20 with 0xFF
+        for i in 4..20 {
+            assert_eq!(data[i], 0xFF, "byte {} should be 0xFF for sign extension", i);
+        }
+        // Last byte of i should also be 0xFF (-1 is all 1s)
+        assert_eq!(data[35], 0xFF);
+        // j=2: fourth byte from end of second word should be 2
+        assert_eq!(data[67], 2);
+        // dx = 500
+        let dx_val = U256::from_be_slice(&data[68..100]);
+        assert_eq!(dx_val, U256::from(500u64));
+    }
+
+    // ── EVM simulation tests (M3) ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_simulate_opportunity_evm_unsupported_strategies() {
+        let rpc = crate::rpc::RpcClient::new("http://localhost:9999", 1).unwrap();
+        let pools = PoolManager::new();
+
+        // Jit (no EVM simulation path)
+        let jit_opp = MevOpportunity {
+            block_number: 1,
+            tx_index: 0,
+            strategy: Strategy::Jit,
+            pool_a: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            pool_b: Address::ZERO,
+            token_in: address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            token_out: address!("cccccccccccccccccccccccccccccccccccccccc"),
+            input_amount: U256::from(1000),
+            expected_profit: U256::from(500),
+            ..MevOpportunity::new(1, 0, Strategy::Jit, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+        };
+        assert!(simulate_opportunity_evm(&rpc, &pools, &jit_opp, 1).await.is_none());
+
+        // Liquidation (no EVM simulation path)
+        let liq_opp = MevOpportunity::new(1, 0, Strategy::Liquidation, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100);
+        assert!(simulate_opportunity_evm(&rpc, &pools, &liq_opp, 1).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_simulate_opportunity_evm_two_hop_no_pools() {
+        let rpc = crate::rpc::RpcClient::new("http://localhost:9999", 1).unwrap();
+        let pools = PoolManager::new();
+
+        let opp = MevOpportunity {
+            block_number: 1,
+            tx_index: 0,
+            strategy: Strategy::TwoHopArb,
+            pool_a: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            pool_b: address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            token_in: address!("cccccccccccccccccccccccccccccccccccccccc"),
+            token_out: address!("dddddddddddddddddddddddddddddddddddddddd"),
+            input_amount: U256::from(1000),
+            expected_profit: U256::from(100),
+            ..MevOpportunity::new(1, 0, Strategy::TwoHopArb, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+        };
+        // Pools are not in PoolManager — expect None
+        assert!(simulate_opportunity_evm(&rpc, &pools, &opp, 1).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_simulate_opportunity_evm_sandwich_no_pool() {
+        let rpc = crate::rpc::RpcClient::new("http://localhost:9999", 1).unwrap();
+        let pools = PoolManager::new();
+
+        let opp = MevOpportunity {
+            block_number: 1,
+            tx_index: 0,
+            strategy: Strategy::Sandwich,
+            pool_a: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            pool_b: Address::ZERO,
+            token_in: address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            token_out: address!("cccccccccccccccccccccccccccccccccccccccc"),
+            input_amount: U256::from(1000),
+            expected_profit: U256::from(100),
+            ..MevOpportunity::new(1, 0, Strategy::Sandwich, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 100)
+        };
+        assert!(simulate_opportunity_evm(&rpc, &pools, &opp, 1).await.is_none());
+    }
+
+    #[test]
+    fn test_verify_opportunities_evm_fields_default_none() {
+        let opp = MevOpportunity {
+            block_number: 1,
+            tx_index: 0,
+            strategy: Strategy::TwoHopArb,
+            pool_a: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            pool_b: address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            token_in: address!("cccccccccccccccccccccccccccccccccccccccc"),
+            token_out: address!("dddddddddddddddddddddddddddddddddddddddd"),
+            input_amount: U256::from(1000),
+            expected_profit: U256::from(500),
+            raw_profit: None,
+            profit_slippage_p1: None,
+            profit_slippage_m1: None,
+            profit_slippage_p2: None,
+            profit_slippage_m2: None,
+            pga_adjusted_profit: None,
+            gas_cost_wei: 100,
+            timestamp: 12345,
+            path: None,
+            tick_lower: None,
+            tick_upper: None,
+            liquidity_amount: None,
+            victim_tx_index: None,
+            backrun_tx_index: None,
+        };
+        let checks = verify_opportunities(&[opp], None);
+        assert_eq!(checks.len(), 1);
+        // When pools=None, EVM fields should be None
+        assert!(checks[0].evm_simulated_profit.is_none());
+        assert!(checks[0].evm_simulation_match.is_none());
+        assert!(checks[0].pool_state_consistent.is_none());
+        assert!(checks[0].state_divergence_pct.is_none());
     }
 }
