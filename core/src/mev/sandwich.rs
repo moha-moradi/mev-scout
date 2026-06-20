@@ -265,15 +265,10 @@ impl SandwichDetector {
                         quote_v3_exact_in(v3, profit_raw, zero_for_one)
                     }
                     Some(crate::pool::state::PoolState::Curve(curve)) => {
-                        if let (Some(&idx_in), Some(&idx_out)) = (
-                            curve.token_index.get(&profit_token),
-                            curve.token_index.get(&native_token),
-                        ) {
-                            let reserve_in = curve.balances[idx_in];
-                            let reserve_out = curve.balances[idx_out];
-                            curve_output_amount(
-                                profit_raw, reserve_in, reserve_out, curve.info.fee, curve.a_coeff,
-                            )
+                        if curve.token_index.contains_key(&profit_token)
+                            && curve.token_index.contains_key(&native_token)
+                        {
+                            curve_output_amount(profit_raw, curve, profit_token, native_token)
                         } else { None }
                     }
                     Some(crate::pool::state::PoolState::Balancer(bal)) => {

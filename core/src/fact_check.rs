@@ -197,14 +197,12 @@ pub fn quote_single_swap(
             quote_v3_exact_in(v3, amount_in, zero_for_one)
         }
         PoolState::Curve(curve) => {
-            let idx_in = *curve.token_index.get(&token_in)?;
-            let idx_out = *curve.token_index.get(&token_out)?;
-            let balance_in = curve.balances[idx_in];
-            let balance_out = curve.balances[idx_out];
-            if balance_in == 0 || balance_out == 0 {
+            if !curve.token_index.contains_key(&token_in)
+                || !curve.token_index.contains_key(&token_out)
+            {
                 return None;
             }
-            curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee, curve.a_coeff)
+            curve_output_amount(amount_in, curve, token_in, token_out)
         }
         PoolState::Balancer(bal) => {
             let idx_in = *bal.token_index.get(&token_in)?;

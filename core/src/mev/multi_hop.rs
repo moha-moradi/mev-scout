@@ -275,19 +275,19 @@ impl MultiHopArbDetector {
                 quote_v3_exact_in(v3, amount_in, zero_for_one)
             }
             PoolState::Curve(curve) => {
-                let idx_in = *curve.token_index.get(&token_in)?;
-                let idx_out = curve.token_index.iter()
-                    .find(|(k, _)| **k != token_in)
-                    .map(|(_, v)| *v)?;
-                let balance_in = curve.balances[idx_in];
-                let balance_out = curve.balances[idx_out];
-                curve_output_amount(amount_in, balance_in, balance_out, curve.info.fee, curve.a_coeff)
+                let token_out = curve.token_index.keys()
+                    .filter(|k| **k != token_in)
+                    .min()?;
+                curve_output_amount(amount_in, curve, token_in, *token_out)
             }
             PoolState::Balancer(bal) => {
-                let idx_in = *bal.token_index.get(&token_in)?;
-                let idx_out = bal.token_index.iter()
-                    .find(|(k, _)| **k != token_in)
-                    .map(|(_, v)| *v)?;
+                let (&idx_in, &idx_out) = (
+                    bal.token_index.get(&token_in)?,
+                    bal.token_index.keys()
+                        .filter(|k| **k != token_in)
+                        .min()
+                        .and_then(|k| bal.token_index.get(k))?,
+                );
                 let balance_in = bal.balances[idx_in];
                 let balance_out = bal.balances[idx_out];
                 let w_in = bal.weights.get(idx_in).copied().unwrap_or(1_000_000_000_000_000_000u128);

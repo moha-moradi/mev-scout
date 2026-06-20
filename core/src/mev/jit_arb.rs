@@ -315,11 +315,10 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             quote_v3_exact_in(v3, swap.amount_in, zero_for_one).unwrap_or(0)
         }
         Some(PoolState::Curve(curve)) => {
-            if let (Some(&idx_in), Some(&idx_out)) = (
-                curve.token_index.get(&swap.token_in),
-                curve.token_index.get(&shared),
-            ) {
-                curve_output_amount(swap.amount_in, curve.balances[idx_in], curve.balances[idx_out], curve.info.fee, curve.a_coeff)
+            if curve.token_index.contains_key(&swap.token_in)
+                && curve.token_index.contains_key(&shared)
+            {
+                curve_output_amount(swap.amount_in, curve, swap.token_in, shared)
                     .unwrap_or(0)
             } else { 0 }
         }
