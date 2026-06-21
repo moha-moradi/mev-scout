@@ -5,7 +5,8 @@
 //! configurable TTL.
 
 use alloy::primitives::Address;
-use crate::types::ChainName;
+use crate::pool::state::PoolManager;
+use crate::types::{ChainName, PriceOracleMode};
 
 /// Maps our ChainName to CoinGecko's asset identifier (for native tokens).
 fn coingecko_asset_id(chain: ChainName) -> &'static str {
@@ -107,6 +108,71 @@ impl PriceCache {
                 None
             }
         }
+    }
+
+    /// Get the native token USD price according to the configured oracle mode.
+    ///
+    /// - `CoinGeckoOnly`: fetches from CoinGecko API (default).
+    /// - `OnChain`: derives price from the highest-TVL token pair in the pool manager.
+    /// - `Hybrid`: fetches both CoinGecko and on-chain; logs a warning if they diverge >5%.
+    ///
+    /// Caches on-chain prices in-memory with a per-block invalidation scheme
+    /// (block number is used as part of the cache key).
+    pub async fn resolve_native_price(
+        &mut self,
+        mode: PriceOracleMode,
+        chain: ChainName,
+        pm: &PoolManager,
+        block: u64,
+    ) -> Option<f64> {
+        match mode {
+            PriceOracleMode::CoinGeckoOnly => self.usd_price(chain).await,
+            PriceOracleMode::OnChain => self.resolve_onchain_price(pm, block),
+            PriceOracleMode::Hybrid => {
+                let cg_price = self.usd_price(chain).await;
+                let onchain_price = self.resolve_onchain_price(pm, block);
+                match (cg_price, onchain_price) {
+                    (Some(cg), Some(oc)) => {
+                        let divergence = (cg - oc).abs() / cg;
+                        if divergence > 0.05 {
+                            tracing::warn!(
+                                "PriceOracle Hybrid: CoinGecko={cg:.4} vs OnChain={oc:.4} ({:.1}% divergence >5%)",
+                                divergence * 100.0
+                            );
+                        }
+                        Some(cg)
+                    }
+                    (Some(cg), None) => Some(cg),
+                    (None, Some(oc)) => Some(oc),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+
+    /// Derive native token price from the pool manager's on-chain state.
+    /// Caches the result keyed by block number so repeated calls for the same
+    /// block return the cached value without recomputation.
+    fn resolve_onchain_price(&mut self, pm: &PoolManager, block: u64) -> Option<f64> {
+        let cache_key = format!("onchain:{}", block);
+        if let Some(entry) = self.entries.get(&cache_key) {
+            if entry.fetched_at.elapsed() < self.ttl {
+                return Some(entry.usd);
+            }
+        }
+        let stable_tokens = vec![
+            alloy::primitives::address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
+            alloy::primitives::address!("dAC17F958D2ee523a2206206994597C13D831ec7"), // USDT
+            alloy::primitives::address!("6B175474E89094C44Da98b954EedeAC495271d0F"), // DAI
+        ];
+        let price = pm.onchain_native_price(&stable_tokens);
+        if let Some(p) = price {
+            self.entries.insert(cache_key, PriceEntry {
+                usd: p,
+                fetched_at: std::time::Instant::now(),
+            });
+        }
+        price
     }
 
     /// Get USD price for an arbitrary ERC20 token on the given chain.

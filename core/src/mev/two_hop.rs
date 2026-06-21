@@ -721,6 +721,7 @@ mod tests {
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: r0, reserve1: r1,
         })
@@ -733,6 +734,7 @@ mod tests {
                 name: None, dex_type: DexType::UniswapV3, tick_spacing: Some(60),
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             sqrt_price_x96: sqrt, tick, liquidity: liq,
             ticks: std::collections::BTreeMap::new(),
@@ -779,6 +781,7 @@ mod tests {
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 1_000_000, reserve1: 2_000_000,
         };
@@ -797,6 +800,7 @@ mod tests {
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 2_000_000, reserve1: 1_000_000,
         };
@@ -861,6 +865,7 @@ mod tests {
                 name: None, dex_type: DexType::Curve, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             balances: vec![1_000_000, 1_000_000],
             token_index,

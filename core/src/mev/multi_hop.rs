@@ -329,6 +329,7 @@ mod tests {
                 name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: r0, reserve1: r1,
         })

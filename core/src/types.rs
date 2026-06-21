@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::str::FromStr;
+use alloy::primitives::Address;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChainName {
@@ -113,6 +114,27 @@ impl ChainName {
             ChainName::Ethereum,
             ChainName::Optimism,
         ]
+    }
+}
+
+/// Return the storage slot(s) to try for a V2 pool created by the given factory.
+/// Returns `&[6]` (standard Uniswap V2) for unknown or standard factories.
+/// Known forks:
+/// - Camelot → slot 8
+/// - Aerodrome / Velodrome → slots [6, 12]
+pub fn v2_storage_slots_for_factory(factory: Option<Address>) -> &'static [u64] {
+    use alloy::primitives::address;
+    match factory {
+        Some(addr) if addr == address!("6EcCab422D763aC031210895C81787E87B43A652") => {
+            &[8] // Camelot
+        }
+        Some(addr)
+            if addr == address!("8909Dc15e40173Ff4699343b6eB8132c0eE88a14")
+                || addr == address!("420DD381b31aEf6683db6B902084cB0FFECe40Da") =>
+        {
+            &[6, 12] // Aerodrome / Velodrome
+        }
+        _ => &[6], // Standard Uniswap V2, PancakeSwap, QuickSwap, SushiSwap, etc.
     }
 }
 
@@ -477,6 +499,17 @@ impl Default for GasConfig {
             percentile_gas_price: None,
         }
     }
+}
+
+/// Describes where token USD prices come from.
+#[derive(Debug, Clone)]
+pub enum PriceSource {
+    /// Fetch prices dynamically from CoinGecko API.
+    CoinGecko,
+    /// Pre-fetched prices from CoinGecko (token address → USD).
+    FromCoinGecko(std::collections::HashMap<alloy::primitives::Address, f64>),
+    /// Prices provided via CLI --token-price flag.
+    FromCli(std::collections::HashMap<alloy::primitives::Address, f64>),
 }
 
 /// Controls how native token USD price is sourced.

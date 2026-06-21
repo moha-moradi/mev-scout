@@ -36,6 +36,7 @@ pub struct BacktestRunner {
     replayer: BlockReplayer,
     pub pool_manager: PoolManager,
     gas_config: GasConfig,
+    proximity_window: usize,
 }
 
 impl BacktestRunner {
@@ -60,7 +61,14 @@ impl BacktestRunner {
             replayer,
             pool_manager,
             gas_config,
+            proximity_window: 3,
         }
+    }
+
+    /// Set the JitArb proximity window (tx index gap for related swaps).
+    pub fn with_proximity_window(mut self, window: usize) -> Self {
+        self.proximity_window = window;
+        self
     }
 
     /// Initialize the pool manager by loading pool definitions and fetching
@@ -308,7 +316,7 @@ impl BacktestRunner {
         let mut jit_detector = JitDetector::new(block_num);
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
         let mut sandwich_detector = SandwichDetector::new(block_num);
-        let mut jit_arb_detector = JitArbDetector::new(block_num);
+        let mut jit_arb_detector = JitArbDetector::new(block_num).with_proximity_window(self.proximity_window);
         let mut liquidation_detector = LiquidationDetector::new(block_num);
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell

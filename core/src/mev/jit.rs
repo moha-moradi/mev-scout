@@ -419,6 +419,7 @@ mod tests {
                 tick_spacing: Some(60),
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             sqrt_price_x96: U256::from(1u128 << 96),
             tick: 0,

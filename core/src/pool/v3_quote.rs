@@ -857,6 +857,7 @@ mod tests {
                 tick_spacing,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             sqrt_price_x96,
             tick,

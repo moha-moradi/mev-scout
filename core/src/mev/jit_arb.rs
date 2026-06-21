@@ -479,6 +479,7 @@ mod tests {
                 dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         }));
@@ -490,6 +491,7 @@ mod tests {
                 dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         }));
@@ -561,6 +563,7 @@ mod tests {
                     dex_type: crate::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                     creation_block: 0,
                     pool_id: None,
+                    factory: None,
                 },
                 reserve0: 1_000_000, reserve1: 1_000_000,
             }));

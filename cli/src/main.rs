@@ -66,6 +66,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: Some(args.pga_intensity),
             price_oracle_mode: Some(args.price_oracle_mode.clone()),
             token_prices: args.token_prices.clone(),
+            proximity_window: Some(args.proximity_window),
         },
         Command::Fetch(args) => CliOverrides {
             days: args.block_range.days,
@@ -91,6 +92,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
         Command::Replay(args) => CliOverrides {
             days: None,
@@ -116,6 +118,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
         Command::Report(args) => CliOverrides {
             days: None,
@@ -141,6 +144,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
         Command::Config => CliOverrides {
             days: None,
@@ -166,6 +170,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
         Command::Discover(args) => CliOverrides {
             days: None,
@@ -191,6 +196,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
         Command::FactCheck(_) => CliOverrides {
             days: None,
@@ -216,6 +222,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         },
     }
 }
@@ -586,7 +593,8 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
-            let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
+            let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
+                .with_proximity_window(config.proximity_window);
             let start = std::time::Instant::now();
 
             let (all_opportunities, block_stats) = if args.live_discover {

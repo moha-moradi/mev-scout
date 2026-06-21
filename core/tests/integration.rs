@@ -66,6 +66,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         tick_spacing: None,
         creation_block: 0,
         pool_id: None,
+        factory: None,
     }
 }
 
@@ -97,6 +98,7 @@ fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         },
         reserve0: r0,
         reserve1: r1,
@@ -294,6 +296,7 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             tick_spacing: Some(60),
             creation_block: 0,
             pool_id: None,
+            factory: None,
         },
         sqrt_price_x96: U256::from(79228162514264337593543950336u128), // price = 1.0
         tick: 0,
@@ -434,6 +437,7 @@ fn test_sandwich_detection_synthetic() {
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,
@@ -805,6 +809,7 @@ fn test_jit_detection_synthetic() {
             tick_spacing: Some(60),
             creation_block: 0,
             pool_id: None,
+            factory: None,
         }),
     ));
     let gas_cfg = default_gas_config();
@@ -862,6 +867,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
         tick_spacing: Some(10),
         creation_block: 0,
         pool_id: None,
+        factory: None,
     };
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info.clone()));
@@ -930,6 +936,7 @@ fn test_jit_arb_detection_synthetic() {
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -944,6 +951,7 @@ fn test_jit_arb_detection_synthetic() {
                 dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2, tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: 1_000_000, reserve1: 1_000_000,
         },
@@ -1002,6 +1010,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
         tick_spacing: Some(10),
         creation_block: 0,
         pool_id: None,
+        factory: None,
     };
 
     let mut pm = PoolManager::new();

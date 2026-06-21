@@ -40,6 +40,9 @@ pub struct DiscoveredPool {
     /// Balancer V2 pool ID (bytes32), used to query vault for token balances.
     #[serde(default)]
     pub pool_id: Option<[u8; 32]>,
+    /// Factory address that created this pool (L6: fork-aware V2 storage slots).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factory: Option<Address>,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
@@ -54,6 +57,7 @@ impl From<DiscoveredPool> for PoolInfo {
             tick_spacing: d.tick_spacing.map(|ts| ts as u32),
             creation_block: d.creation_block,
             pool_id: d.pool_id,
+            factory: d.factory,
         }
     }
 }
@@ -108,6 +112,7 @@ pub async fn discover_v2_pools(
             dex_type: DexType::UniswapV2,
             creation_block,
             pool_id: None,
+            factory: Some(factory),
         });
     }
 
@@ -176,6 +181,7 @@ pub async fn discover_v3_pools(
             dex_type: DexType::UniswapV3,
             creation_block,
             pool_id: None,
+            factory: Some(factory),
         });
     }
 
@@ -240,6 +246,7 @@ pub async fn discover_balancer_pools(
             dex_type: DexType::Balancer,
             creation_block,
             pool_id: Some(pool_id),
+            factory: None,
         });
     }
 
@@ -293,6 +300,7 @@ pub async fn discover_curve_pools(
             dex_type: DexType::Curve,
             creation_block,
             pool_id: None,
+            factory: None,
         });
     }
 
@@ -511,6 +519,7 @@ mod tests {
             dex_type: DexType::UniswapV3,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         };
         let info: PoolInfo = dp.into();
         assert_eq!(info.fee, 3000);
@@ -530,6 +539,7 @@ mod tests {
             dex_type: DexType::UniswapV2,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         };
         let info: PoolInfo = dp.into();
         assert_eq!(info.dex_type, DexType::UniswapV2);
@@ -549,6 +559,7 @@ mod tests {
             dex_type: DexType::Balancer,
             creation_block: 100,
             pool_id: Some(pool_id),
+            factory: None,
         };
         let info: PoolInfo = dp.into();
         assert_eq!(info.dex_type, DexType::Balancer);

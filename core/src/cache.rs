@@ -131,7 +131,8 @@ impl SqliteStore {
                 dex_type   INTEGER NOT NULL,
                 tick_spacing INTEGER,
                 creation_block INTEGER NOT NULL,
-                pool_id    BLOB
+                pool_id    BLOB,
+                factory    BLOB
             );
 
             CREATE TABLE IF NOT EXISTS pool_states (
@@ -155,9 +156,12 @@ impl SqliteStore {
                 range_mode TEXT NOT NULL,
                 strategies TEXT NOT NULL,
                 flash_loan_provider TEXT NOT NULL
+
             );
             ",
         )?;
+        // L6: migration — add factory column to pool_info if missing (backward compat)
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN factory BLOB;");
         Ok(())
     }
 
@@ -582,9 +586,10 @@ impl SqliteStore {
     pub fn put_discovered_pool(&self, pool: &PoolInfo) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         let pool_id_blob = pool.pool_id.map(|id| id.to_vec());
+        let factory_blob = pool.factory.map(|f| f.to_vec());
         conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 Self::addr_to_blob(&pool.address),
                 Self::addr_to_blob(&pool.token0),
@@ -594,6 +599,7 @@ impl SqliteStore {
                 pool.tick_spacing,
                 pool.creation_block as i64,
                 pool_id_blob,
+                factory_blob,
             ],
         )?;
         Ok(())
@@ -602,7 +608,7 @@ impl SqliteStore {
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
              FROM pool_info WHERE address = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![Self::addr_to_blob(address)])?;
@@ -613,6 +619,11 @@ impl SqliteStore {
                     arr.copy_from_slice(&v);
                     arr
                 });
+                // L6: read factory from column 8 (optional, may be NULL for legacy rows)
+                let factory = row.get::<_, Option<Vec<u8>>>(8).ok()
+                    .and_then(|v| v.and_then(|bytes| {
+                        if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
+                    }));
                 Ok(Some(PoolInfo {
                     address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
                     token0: Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?),
@@ -623,6 +634,7 @@ impl SqliteStore {
                     tick_spacing: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
                     creation_block: row.get::<_, i64>(6)? as u64,
                     pool_id,
+                    factory,
                 }))
             }
             None => Ok(None),
@@ -632,7 +644,7 @@ impl SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
@@ -643,6 +655,10 @@ impl SqliteStore {
                 arr.copy_from_slice(&v);
                 arr
             });
+            let factory_addr = row.get::<_, Option<Vec<u8>>>(8).ok()
+                .and_then(|v| v.and_then(|bytes| {
+                    if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
+                }));
             pools.push(PoolInfo {
                 address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
                 token0: Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?),
@@ -653,6 +669,7 @@ impl SqliteStore {
                 tick_spacing: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
                 creation_block: row.get::<_, i64>(6)? as u64,
                 pool_id,
+                factory: factory_addr,
             });
         }
         Ok(pools)
@@ -879,6 +896,7 @@ mod tests {
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         };
         store.put_discovered_pool(&pool).unwrap();
         let fetched = store.get_discovered_pool(&pool.address).unwrap().unwrap();
@@ -916,6 +934,7 @@ mod tests {
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         };
         store_a.put_discovered_pool(&pool).unwrap();
         assert_eq!(store_b.list_discovered_pools().unwrap().len(), 0);

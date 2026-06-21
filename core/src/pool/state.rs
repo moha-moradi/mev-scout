@@ -51,6 +51,9 @@ pub struct PoolInfo {
     /// Balancer V2 pool ID (bytes32), used to query vault for token balances.
     #[serde(default)]
     pub pool_id: Option<[u8; 32]>,
+    /// Factory address that created this pool (L6: fork-aware V2 storage slots).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factory: Option<Address>,
 }
 
 impl Default for PoolInfo {
@@ -65,6 +68,7 @@ impl Default for PoolInfo {
             tick_spacing: None,
             creation_block: 0,
             pool_id: None,
+            factory: None,
         }
     }
 }
@@ -559,34 +563,36 @@ impl PoolManager {
 
         // Snapshot pool metadata before spawning tasks
         let vault = self.balancer_vault;
-        let pool_meta: Vec<(DexType, Option<[u8; 32]>, i32)> = pool_addrs
+        let pool_meta: Vec<(DexType, Option<[u8; 32]>, i32, Option<Address>)> = pool_addrs
             .iter()
             .map(|addr| match self.pools.get(addr) {
-                Some(PoolState::UniswapV2(_)) => (DexType::UniswapV2, None, 0),
+                Some(PoolState::UniswapV2(s)) => (DexType::UniswapV2, None, 0, s.info.factory),
                 Some(PoolState::UniswapV3(state)) => (
                     DexType::UniswapV3,
                     None,
                     state.info.tick_spacing.unwrap_or(60) as i32,
+                    None,
                 ),
-                Some(PoolState::Curve(_)) => (DexType::Curve, None, 0),
-                Some(PoolState::Balancer(_)) => (DexType::Balancer, None, 0),
-                None => (DexType::UniswapV2, None, 0),
+                Some(PoolState::Curve(_)) => (DexType::Curve, None, 0, None),
+                Some(PoolState::Balancer(_)) => (DexType::Balancer, None, 0, None),
+                None => (DexType::UniswapV2, None, 0, None),
             })
             .collect();
 
         let tasks: Vec<_> = pool_addrs
             .iter()
             .zip(pool_meta.iter())
-            .map(|(addr, (dt, pool_id, tick_spacing))| {
+            .map(|(addr, (dt, pool_id, tick_spacing, factory))| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
                 let dt = *dt;
                 let pool_id = *pool_id;
                 let tick_spacing = *tick_spacing;
+                let factory = *factory;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, block_num).await
+                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num).await
                 }
             })
             .collect();
@@ -711,11 +717,12 @@ impl PoolManager {
         pool_id: Option<[u8; 32]>,
         tick_spacing: i32,
         vault: Option<Address>,
+        factory: Option<Address>,
         block: u64,
     ) -> Option<PoolInitResult> {
         match dt {
             DexType::UniswapV2 => {
-                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block).await?;
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
                 Some(PoolInitResult::V2Reserves(r0, r1))
             }
             DexType::UniswapV3 => {
@@ -749,7 +756,12 @@ impl PoolManager {
         Err(last_err)
     }
 
-    async fn fetch_v2_reserves(rpc: &RpcClient, pool: Address, block: u64) -> Option<(u128, u128)> {
+    async fn fetch_v2_reserves(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+        factory: Option<Address>,
+    ) -> Option<(u128, u128)> {
         // Try eth_call getReserves() first (with retries)
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
         if let Ok(result) = Self::call_with_retry(rpc, pool, data, block, 3).await {
@@ -760,7 +772,11 @@ impl PoolManager {
             }
         }
         tracing::trace!("eth_call getReserves() failed, falling back to storage for {}", pool);
-        Self::fetch_v2_reserves_storage(rpc, pool, block).await
+        let slots: Vec<U256> = crate::types::v2_storage_slots_for_factory(factory)
+            .iter()
+            .map(|&s| U256::from(s))
+            .collect();
+        Self::fetch_v2_reserves_storage(rpc, pool, block, &slots).await
     }
 
     /// Given raw slot 6 (packed uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast),
@@ -785,18 +801,15 @@ impl PoolManager {
     }
 
     /// Fallback: fetch V2 reserves via eth_getStorageAt.
-    /// Tries multiple storage slots known to hold packed reserves:
-    /// - Slot 6: Uniswap V2, PancakeSwap, QuickSwap (standard)
-    /// - Slot 8: Camelot
-    /// - Slot 12: Velodrome / Aerodrome
-    /// Returns the first slot that decodes to non-zero reserves.
+    /// Tries the given storage slots and returns the first that decodes to non-zero.
+    /// If all slots return zero, falls back to the first slot as last resort.
     async fn fetch_v2_reserves_storage(
         rpc: &RpcClient,
         pool: Address,
         block: u64,
+        slots: &[U256],
     ) -> Option<(u128, u128)> {
-        let slots = [U256::from(6u64), U256::from(8u64), U256::from(12u64)];
-        for &slot in &slots {
+        for &slot in slots {
             if let Ok(raw) = rpc.get_storage_at(pool, slot, block).await {
                 let (r0, r1) = Self::decode_v2_reserves_from_storage(raw);
                 if r0 > 0 || r1 > 0 {
@@ -804,8 +817,9 @@ impl PoolManager {
                 }
             }
         }
-        // Last resort: try slot 6 (standard) even if zero
-        let raw = rpc.get_storage_at(pool, U256::from(6), block).await.ok()?;
+        // Last resort: try the first slot even if zero
+        let first = slots.first().copied().unwrap_or(U256::from(6u64));
+        let raw = rpc.get_storage_at(pool, first, block).await.ok()?;
         Some(Self::decode_v2_reserves_from_storage(raw))
     }
 
@@ -1482,7 +1496,7 @@ impl PoolManager {
         let pool = self.pools.get(addr)?;
         match pool {
             PoolState::UniswapV2(v2) => {
-                let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block).await?;
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block, v2.info.factory).await?;
                 Some(PoolState::UniswapV2(UniswapV2PoolState {
                     info: v2.info.clone(),
                     reserve0: r0,
@@ -1672,6 +1686,7 @@ mod tests {
                 tick_spacing: None,
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             reserve0: r0,
             reserve1: r1,
@@ -1690,6 +1705,7 @@ mod tests {
                 tick_spacing: Some(60),
                 creation_block: 0,
                 pool_id: None,
+                factory: None,
             },
             sqrt_price_x96: sqrt,
             tick,

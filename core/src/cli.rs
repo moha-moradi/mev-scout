@@ -162,6 +162,10 @@ pub struct RunArgs {
     #[arg(long = "token-price", value_name = "PAIRS", help_heading = "Pricing")]
     pub token_prices: Option<String>,
 
+    /// Proximity window (in tx indices) for JitArb detection (default: 3).
+    #[arg(long = "proximity-window", default_value = "3", value_name = "N", help_heading = "Strategies")]
+    pub proximity_window: usize,
+
     /// Discover pools from factory events during backtest replay (live discovery).
     /// Scans each factory for PairCreated/PoolCreated events and adds new pools
     /// to the pool manager before processing the blocks they appear in.

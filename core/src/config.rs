@@ -138,6 +138,9 @@ pub struct Config {
     /// Overrides CoinGecko prices for the specified tokens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_prices: Option<String>,
+    /// Proximity window (in tx indices) for JitArb detection (default: 3).
+    #[serde(default = "default_proximity_window")]
+    pub proximity_window: usize,
 }
 
 fn default_pga_mean_competitors() -> f64 { 3.0 }
@@ -183,6 +186,8 @@ fn default_max_pairs_per_token() -> usize {
     50
 }
 
+fn default_proximity_window() -> usize { 3 }
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -213,6 +218,7 @@ impl Default for Config {
             pga_intensity: default_pga_intensity(),
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
+            proximity_window: default_proximity_window(),
         }
     }
 }
@@ -506,6 +512,7 @@ pub struct CliOverrides {
     pub pga_intensity: Option<f64>,
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
+    pub proximity_window: Option<usize>,
 }
 
 impl Config {
@@ -579,6 +586,29 @@ impl Config {
         if let Some(v) = &overrides.token_prices {
             self.token_prices = Some(v.clone());
         }
+        if let Some(v) = overrides.proximity_window {
+            self.proximity_window = v;
+        }
+    }
+
+    /// Parse the `--token-price` value (e.g. "0xABC=0.999,0xDEF=1800") into a
+    /// `HashMap<Address, f64>`. Returns an empty map when config value is `None`.
+    pub fn parse_token_prices(&self) -> std::collections::HashMap<alloy::primitives::Address, f64> {
+        let mut map = std::collections::HashMap::new();
+        let Some(s) = &self.token_prices else { return map };
+        for pair in s.split(',') {
+            let pair = pair.trim();
+            if pair.is_empty() { continue; }
+            if let Some((addr_str, price_str)) = pair.split_once('=') {
+                if let (Ok(addr), Ok(price)) = (
+                    addr_str.trim().parse::<alloy::primitives::Address>(),
+                    price_str.trim().parse::<f64>(),
+                ) {
+                    map.insert(addr, price);
+                }
+            }
+        }
+        map
     }
 }
 
@@ -680,6 +710,7 @@ rpc_url = "https://eth.diy"
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -713,6 +744,7 @@ rpc_url = "https://eth.diy"
             pga_intensity: None,
             price_oracle_mode: None,
             token_prices: None,
+            proximity_window: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));
