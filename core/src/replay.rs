@@ -552,6 +552,10 @@ impl BlockReplayer {
             .ok_or_else(|| anyhow::anyhow!("Receipts for block {} not found in cache", block_num))
     }
 
+    pub fn rpc(&self) -> &RpcClient {
+        &self.rpc
+    }
+
     fn build_cfg_env(&self, block_num: u64) -> CfgEnv {
         let spec = spec_id_for_block(self.chain_id, block_num);
         let mut cfg = CfgEnv::new_with_spec(spec);

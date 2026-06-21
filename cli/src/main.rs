@@ -595,6 +595,16 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
                 .with_proximity_window(config.proximity_window);
+
+            // Pre-fetch Aave V3 reserve data for per-asset liquidation parameters (L1).
+            // This populates the reserve cache so LiquidationDetector can use real
+            // on-chain thresholds and bonuses instead of hardcoded 80%/5% defaults.
+            if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
+                if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
+                    runner.prefetch_aave_reserves(aave_pool, resolved.start_block.saturating_sub(1)).await;
+                }
+            }
+
             let start = std::time::Instant::now();
 
             let (all_opportunities, block_stats) = if args.live_discover {

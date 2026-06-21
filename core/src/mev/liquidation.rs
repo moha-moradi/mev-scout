@@ -3,6 +3,7 @@ use alloy::primitives::{keccak256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::state::{calldata_gas_estimate, PoolManager};
+use crate::rpc::RpcClient;
 use crate::types::{GasConfig, Strategy};
 
 /// Aave V3 LiquidationCall event signature.
@@ -25,14 +26,119 @@ static WITHDRAW_TOPIC: std::sync::LazyLock<B256> =
 static REPAY_TOPIC: std::sync::LazyLock<B256> =
     std::sync::LazyLock::new(|| keccak256("Repay(address,address,address,uint256,bool)"));
 
-/// Constants for proactive health-factor scanning.
-const LIQUIDATION_THRESHOLD_NUM: u128 = 80; // 80%
-const LIQUIDATION_THRESHOLD_DEN: u128 = 100;
-const LIQUIDATION_BONUS_NUM: u128 = 5; // 5%
-const LIQUIDATION_BONUS_DEN: u128 = 100;
+/// Default fallback constants when on-chain reserve data is unavailable.
+const FALLBACK_LIQUIDATION_THRESHOLD_BPS: u16 = 8000; // 80.00%
+const FALLBACK_LIQUIDATION_BONUS_BPS: u16 = 500; // 5.00%
+#[allow(dead_code)]
+const FALLBACK_LTV_BPS: u16 = 7500; // 75.00%
 const MAX_CLOSE_FACTOR_NUM: u128 = 50; // 50%
 const MAX_CLOSE_FACTOR_DEN: u128 = 100;
 const LIQUIDATION_GAS_LIMIT: u64 = 180_000;
+
+/// Per-asset reserve parameters fetched from the Aave V3 Pool contract.
+/// Used to replace hardcoded constants with real protocol data during proactive detection.
+#[derive(Debug, Clone, Copy)]
+pub struct AaveReserveData {
+    pub liquidation_threshold_bps: u16,
+    pub liquidation_bonus_bps: u16,
+    pub ltv_bps: u16,
+}
+
+/// Cache of Aave V3 reserve data keyed by asset address.
+/// Populated via on-chain `eth_call` to `getReserveData()` before detection runs.
+/// When empty or missing a token, `detect()` falls back to hardcoded defaults.
+#[derive(Debug, Clone, Default)]
+pub struct AaveReserveCache {
+    reserves: HashMap<Address, AaveReserveData>,
+}
+
+impl AaveReserveCache {
+    /// Fetch reserve data for a single asset from the Aave V3 Pool contract.
+    /// Calls `getReserveData(address)` (selector: 0x35ea6a75) via `eth_call`
+    /// and decodes the `configuration` bitmap to extract LTV, liquidation
+    /// threshold, and liquidation bonus.
+    pub async fn fetch_reserve(
+        rpc: &RpcClient,
+        aave_pool: Address,
+        token: Address,
+        block: u64,
+    ) -> Option<AaveReserveData> {
+        let selector = [0x35, 0xea, 0x6a, 0x75];
+        let mut calldata = Vec::with_capacity(36);
+        calldata.extend_from_slice(&selector);
+        let mut token_bytes = [0u8; 32];
+        token_bytes[12..32].copy_from_slice(token.as_slice());
+        calldata.extend_from_slice(&token_bytes);
+
+        let result = rpc.call(aave_pool, calldata.into(), block).await.ok()?;
+        if result.len() < 64 {
+            return None;
+        }
+
+        // configuration is the first uint256 (32 bytes) of ReserveData struct
+        let config = U256::from_be_slice(&result[..32]);
+
+        Some(AaveReserveData {
+            ltv_bps: (config & U256::from(0xFFFFu64)).to::<u16>(),
+            liquidation_threshold_bps: ((config >> U256::from(16u64)) & U256::from(0xFFFFu64)).to::<u16>(),
+            liquidation_bonus_bps: ((config >> U256::from(32u64)) & U256::from(0xFFFFu64)).to::<u16>(),
+        })
+    }
+
+    pub fn get(&self, token: &Address) -> Option<&AaveReserveData> {
+        self.reserves.get(token)
+    }
+
+    pub fn insert(&mut self, token: Address, data: AaveReserveData) {
+        self.reserves.insert(token, data);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reserves.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.reserves.len()
+    }
+
+    /// Pre-fetch reserve data for a set of tokens at the given block.
+    /// Skips tokens already in the cache. Tokens that fail to fetch
+    /// are silently skipped (the caller will fall back to defaults).
+    pub async fn prefetch(
+        &mut self,
+        rpc: &RpcClient,
+        aave_pool: Address,
+        tokens: &[Address],
+        block: u64,
+    ) {
+        for &token in tokens {
+            if self.reserves.contains_key(&token) {
+                continue;
+            }
+            if let Some(data) = Self::fetch_reserve(rpc, aave_pool, token, block).await {
+                self.reserves.insert(token, data);
+            }
+        }
+    }
+}
+
+/// Standard Aave V3 health factor formula:
+/// `HF = (totalCollateral * avgLiquidationThreshold) / totalDebt`
+///
+/// Returns `f64::MAX` when `total_debt_native` is zero (position is healthy).
+/// A health factor below 1.0 means the position can be liquidated.
+/// Values between 1.0 and 1.1 are approaching liquidation.
+pub fn compute_health_factor(
+    total_collateral_native: u128,
+    total_debt_native: u128,
+    avg_liquidation_threshold_bps: u16,
+) -> f64 {
+    if total_debt_native == 0 {
+        return f64::MAX;
+    }
+    let threshold = avg_liquidation_threshold_bps as f64 / 10000.0;
+    (total_collateral_native as f64 * threshold) / total_debt_native as f64
+}
 
 #[derive(Debug, Clone)]
 struct LiquidationEvent {
@@ -64,6 +170,7 @@ pub struct LiquidationDetector {
     events: Vec<LiquidationEvent>,
     emitted: HashSet<(Address, Address, Address)>,
     users: HashMap<Address, UserPosition>,
+    reserve_cache: AaveReserveCache,
 }
 
 impl LiquidationDetector {
@@ -74,7 +181,16 @@ impl LiquidationDetector {
             events: Vec::new(),
             emitted: HashSet::new(),
             users: HashMap::new(),
+            reserve_cache: AaveReserveCache::default(),
         }
+    }
+
+    /// Attach pre-fetched Aave V3 reserve data for per-asset liquidation parameters.
+    /// When set, `detect()` uses real on-chain thresholds and bonuses instead of
+    /// hardcoded 80%/5% defaults. Call `AaveReserveCache::prefetch()` to populate.
+    pub fn with_reserve_cache(mut self, cache: AaveReserveCache) -> Self {
+        self.reserve_cache = cache;
+        self
     }
 
     /// Process a transaction's logs, extracting Aave V3 events.
@@ -242,30 +358,47 @@ impl LiquidationDetector {
                 continue;
             }
 
-            // Compute total collateral and debt in native ETH
-            let total_collateral_native = pos.collateral.iter()
-                .filter_map(|(&asset, &amount)| {
-                    pool_manager.normalize_to_native(asset, amount)
-                })
-                .sum::<u128>();
+            // Compute total collateral and debt in native ETH,
+            // plus weighted average liquidation threshold from per-asset data.
+            let mut total_collateral_native = 0u128;
+            let mut total_debt_native = 0u128;
+            let mut weighted_threshold_sum = 0u128; // collateral_native_i * threshold_bps_i
 
-            let total_debt_native = pos.debt.iter()
-                .filter_map(|(&asset, &amount)| {
-                    pool_manager.normalize_to_native(asset, amount)
-                })
-                .sum::<u128>();
+            for (&asset, &amount) in &pos.collateral {
+                if let Some(native) = pool_manager.normalize_to_native(asset, amount) {
+                    let threshold_bps = self.reserve_cache
+                        .get(&asset)
+                        .map(|d| d.liquidation_threshold_bps as u128)
+                        .unwrap_or(FALLBACK_LIQUIDATION_THRESHOLD_BPS as u128);
+                    total_collateral_native = total_collateral_native.saturating_add(native);
+                    weighted_threshold_sum = weighted_threshold_sum.saturating_add(native.saturating_mul(threshold_bps));
+                }
+            }
+
+            for (&asset, &amount) in &pos.debt {
+                if let Some(native) = pool_manager.normalize_to_native(asset, amount) {
+                    total_debt_native = total_debt_native.saturating_add(native);
+                }
+            }
 
             if total_debt_native == 0 {
                 continue;
             }
 
-            // Health factor = totalCollateralETH * liquidationThreshold / totalDebtETH
-            let threshold_val = total_collateral_native
-                .saturating_mul(LIQUIDATION_THRESHOLD_NUM)
-                .saturating_div(LIQUIDATION_THRESHOLD_DEN);
+            // Compute weighted average liquidation threshold
+            let avg_threshold_bps = if total_collateral_native > 0 {
+                (weighted_threshold_sum / total_collateral_native) as u16
+            } else {
+                FALLBACK_LIQUIDATION_THRESHOLD_BPS
+            };
 
-            if threshold_val >= total_debt_native {
-                continue; // Not liquidatable
+            // Compute health factor using the real Aave V3 formula
+            let hf = compute_health_factor(total_collateral_native, total_debt_native, avg_threshold_bps);
+
+            // Flag positions with HF < 1.0 (immediately liquidatable)
+            // or HF < 1.1 (approaching liquidation, early warning)
+            if hf >= 1.0 {
+                continue;
             }
 
             // Pick the most valuable debt asset to close
@@ -312,10 +445,14 @@ impl LiquidationDetector {
                 continue;
             }
 
-            // Profit = debt * liquidationBonus (simplified; assumes collateral value ~ debt value)
+            // Use per-asset liquidation bonus if available, fall back to default 5%
+            let bonus_bps = self.reserve_cache
+                .get(&collateral_asset)
+                .map(|d| d.liquidation_bonus_bps as u128)
+                .unwrap_or(FALLBACK_LIQUIDATION_BONUS_BPS as u128);
             let profit_native = debt_to_cover_native
-                .saturating_mul(LIQUIDATION_BONUS_NUM)
-                .saturating_div(LIQUIDATION_BONUS_DEN);
+                .saturating_mul(bonus_bps)
+                .saturating_div(10000);
 
             let gas_limit = LIQUIDATION_GAS_LIMIT.saturating_add(calldata_gas_estimate(2));
             let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
@@ -331,7 +468,7 @@ impl LiquidationDetector {
                 token_out: collateral_asset,
                 input_amount: U256::from(debt_to_cover),
                 expected_profit: U256::from(profit_native),
-                raw_profit: None,
+                raw_profit: Some(U256::from(debt_to_cover_native.saturating_add(profit_native))),
                 profit_slippage_p1: None,
                 profit_slippage_m1: None,
                 profit_slippage_p2: None,

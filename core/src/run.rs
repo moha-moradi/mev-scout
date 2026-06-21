@@ -6,7 +6,7 @@ use crate::cache::SqliteStore;
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::discovery::discover_pools_in_range;
 use crate::mev::jit::JitDetector;
-use crate::mev::liquidation::LiquidationDetector;
+use crate::mev::liquidation::{AaveReserveCache, LiquidationDetector};
 use crate::mev::sandwich::SandwichDetector;
 use crate::mev::jit_arb::JitArbDetector;
 use crate::mev::multi_hop::MultiHopArbDetector;
@@ -37,6 +37,7 @@ pub struct BacktestRunner {
     pub pool_manager: PoolManager,
     gas_config: GasConfig,
     proximity_window: usize,
+    aave_reserve_cache: AaveReserveCache,
 }
 
 impl BacktestRunner {
@@ -62,6 +63,7 @@ impl BacktestRunner {
             pool_manager,
             gas_config,
             proximity_window: 3,
+            aave_reserve_cache: AaveReserveCache::default(),
         }
     }
 
@@ -69,6 +71,51 @@ impl BacktestRunner {
     pub fn with_proximity_window(mut self, window: usize) -> Self {
         self.proximity_window = window;
         self
+    }
+
+    /// Attach pre-fetched Aave V3 reserve data for per-asset liquidation parameters.
+    /// When set, `LiquidationDetector` uses real on-chain thresholds and bonuses.
+    pub fn with_aave_reserve_cache(mut self, cache: AaveReserveCache) -> Self {
+        self.aave_reserve_cache = cache;
+        self
+    }
+
+    /// Expose a reference to the Aave reserve cache for inspection.
+    pub fn aave_reserve_cache(&self) -> &AaveReserveCache {
+        &self.aave_reserve_cache
+    }
+
+    /// Pre-fetch Aave V3 reserve data for all known token addresses.
+    /// This populates the reserve cache so `LiquidationDetector` can use
+    /// real per-asset liquidation thresholds and bonuses during replay.
+    ///
+    /// Should be called once before `run_block()` / `run_range()`.
+    pub async fn prefetch_aave_reserves(
+        &mut self,
+        aave_pool: Address,
+        block: u64,
+    ) {
+        let tokens: Vec<Address> = self.pool_manager.token_addresses();
+        if tokens.is_empty() {
+            tracing::warn!("No tokens in pool manager, skipping Aave reserve pre-fetch");
+            return;
+        }
+        tracing::info!(
+            "Pre-fetching Aave V3 reserve data for {} tokens at block {}",
+            tokens.len(),
+            block,
+        );
+        self.aave_reserve_cache.prefetch(
+            self.replayer.rpc(),
+            aave_pool,
+            &tokens,
+            block,
+        ).await;
+        tracing::info!(
+            "Aave reserve cache: {}/{} tokens resolved",
+            self.aave_reserve_cache.len(),
+            tokens.len(),
+        );
     }
 
     /// Initialize the pool manager by loading pool definitions and fetching
@@ -317,7 +364,8 @@ impl BacktestRunner {
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
         let mut sandwich_detector = SandwichDetector::new(block_num);
         let mut jit_arb_detector = JitArbDetector::new(block_num).with_proximity_window(self.proximity_window);
-        let mut liquidation_detector = LiquidationDetector::new(block_num);
+        let mut liquidation_detector = LiquidationDetector::new(block_num)
+            .with_reserve_cache(self.aave_reserve_cache.clone());
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let pool_manager = std::mem::take(&mut self.pool_manager);
