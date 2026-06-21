@@ -456,6 +456,20 @@ impl BacktestRunner {
         // Filter: drop opportunities where expected profit doesn't cover gas
         all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
 
+        // Assign canonical dedup IDs (L9) to all opportunities
+        for opp in &mut all_opportunities {
+            opp.canonical_id = Some(crate::mev::opportunity::compute_canonical_id(
+                opp.strategy,
+                opp.block_number,
+                opp.pool_a,
+                opp.pool_b,
+                opp.token_in,
+                opp.token_out,
+                opp.victim_tx_index,
+                opp.backrun_tx_index,
+            ));
+        }
+
         self.pool_manager = pool_manager.into_inner();
         Ok((all_opportunities, BlockReplayStats {
             block_number: block_num,

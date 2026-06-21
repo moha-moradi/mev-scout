@@ -296,6 +296,7 @@ impl JitDetector {
         // raw_profit = Some(raw) when normalization actually converted the value
         let raw_profit = if normalized_fees != raw_fees { Some(U256::from(raw_fees)) } else { None };
         MevOpportunity {
+            canonical_id: None,
             block_number,
             tx_index: mint.mint_tx_index,
             strategy: Strategy::Jit,

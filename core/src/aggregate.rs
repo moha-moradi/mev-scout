@@ -155,10 +155,20 @@ pub fn aggregate_with_prices(
     let mut summary_gross_wei = 0_u128;
     let mut summary_gas_wei = 0_u128;
 
-    // Deduplicate by (block, pool pair, token pair) — the same key per-detector dedup uses.
-    let mut dedup_seen = std::collections::HashSet::new();
+    // Deduplicate by canonical_id when available, falling back to
+    // (block, pool pair, token pair) for backward compatibility (L9).
+    let mut dedup_seen = std::collections::HashSet::<String>::new();
     for opp in opportunities.iter().filter(|opp| {
-        dedup_seen.insert((opp.block_number, opp.pool_a, opp.pool_b, opp.token_in, opp.token_out))
+        let key = if let Some(ref cid) = opp.canonical_id {
+            cid.clone()
+        } else {
+            format!(
+                "{:?}|{}|{:#x}|{:#x}|{:#x}|{:#x}",
+                opp.strategy, opp.block_number, opp.pool_a, opp.pool_b,
+                opp.token_in, opp.token_out,
+            )
+        };
+        dedup_seen.insert(key)
     }) {
         let profit_wei = opp.expected_profit.to::<u128>();
         let gas_wei = opp.gas_cost_wei;
@@ -347,6 +357,7 @@ mod tests {
         pool_b: Address,
     ) -> MevOpportunity {
         MevOpportunity {
+            canonical_id: None,
             block_number: block,
             tx_index: 0,
             strategy,

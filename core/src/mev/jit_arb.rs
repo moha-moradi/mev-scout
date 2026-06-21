@@ -239,6 +239,7 @@ impl JitArbDetector {
             Some(expected_profit)
         };
         MevOpportunity {
+            canonical_id: None,
             block_number,
             tx_index: mint.mint_tx_index,
             strategy: Strategy::JitArb,

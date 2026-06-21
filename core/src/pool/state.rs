@@ -283,6 +283,10 @@ pub struct PoolManager {
     known_set: HashSet<Address>,
     /// Maximum number of pools per token when computing arbitrage pairs.
     max_pairs_per_token: usize,
+    /// Per-token overrides for max_pairs_per_token (H3).
+    /// Allows configuring different caps for high/medium/low-connectivity tokens.
+    /// Key = token address, value = per-token max pairs limit.
+    token_max_pairs: HashMap<Address, usize>,
     /// Maximum number of concurrent RPC calls during pool initialization.
     concurrency_limit: u32,
 }
@@ -301,6 +305,7 @@ impl PoolManager {
             balancer_vault: None,
             known_set: HashSet::new(),
             max_pairs_per_token: 50,
+            token_max_pairs: HashMap::new(),
             concurrency_limit: 1,
         }
     }
@@ -315,6 +320,7 @@ impl PoolManager {
             balancer_vault: None,
             known_set: HashSet::with_capacity(capacity),
             max_pairs_per_token: 50,
+            token_max_pairs: HashMap::new(),
             concurrency_limit: 1,
         }
     }
@@ -322,6 +328,17 @@ impl PoolManager {
     /// Set the maximum number of pool pairs per token for arbitrage pair computation.
     pub fn set_max_pairs_per_token(&mut self, max: usize) {
         self.max_pairs_per_token = max;
+    }
+
+    /// Set per-token max pairs limit (H3). Tokens without an explicit override
+    /// use the global `max_pairs_per_token`. Set 0 for no limit.
+    pub fn set_token_max_pairs(&mut self, token: Address, max: usize) {
+        self.token_max_pairs.insert(token, max);
+    }
+
+    /// Get the effective max_pairs for a given token, accounting for per-token overrides.
+    fn effective_max_pairs(&self, token: &Address) -> usize {
+        self.token_max_pairs.get(token).copied().unwrap_or(self.max_pairs_per_token)
     }
 
     /// Set the maximum number of concurrent RPC calls during pool initialization.
@@ -411,7 +428,7 @@ impl PoolManager {
 
     /// Estimate a pool's total liquidity/TVL for sorting purposes.
     /// Higher values mean more meaningful arbitrage candidates.
-    fn pool_liquidity_estimate(&self, addr: &Address) -> u128 {
+    pub fn pool_liquidity_estimate(&self, addr: &Address) -> u128 {
         match self.pools.get(addr) {
             Some(PoolState::UniswapV2(v2)) => {
                 // Use the smaller reserve as a conservative liquidity bound
@@ -444,7 +461,9 @@ impl PoolManager {
                 let lb = self.pool_liquidity_estimate(b);
                 lb.cmp(&la)
             });
-            let limit = self.max_pairs_per_token.min(sorted.len());
+            // Use per-token-tier max_pairs if configured, else global default (H3)
+            let token_limit = self.effective_max_pairs(_token);
+            let limit = if token_limit == 0 { sorted.len() } else { token_limit.min(sorted.len()) };
             for i in 0..limit {
                 for j in (i + 1)..limit {
                     let a = sorted[i];
@@ -762,21 +781,49 @@ impl PoolManager {
         block: u64,
         factory: Option<Address>,
     ) -> Option<(u128, u128)> {
-        // Try eth_call getReserves() first (with retries)
+        let slots: Vec<U256> = crate::types::v2_storage_slots_for_factory(factory)
+            .iter()
+            .map(|&s| U256::from(s))
+            .collect();
+
+        // M9: eth_getStorageAt is primary path (cheaper, works on more nodes).
+        // eth_call getReserves() is the fallback.
+        if let Some(reserves) = Self::fetch_v2_reserves_storage(rpc, pool, block, &slots).await {
+            if Self::validate_v2_reserves(reserves) {
+                return Some(reserves);
+            }
+            tracing::trace!("storage reserves failed validation ({},{}), trying eth_call", reserves.0, reserves.1);
+        }
+
+        // Fallback: eth_call getReserves()
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
         if let Ok(result) = Self::call_with_retry(rpc, pool, data, block, 3).await {
             if result.len() >= 64 {
                 let r0 = Self::decode_u128_from_abi_word(&result[..32]);
                 let r1 = Self::decode_u128_from_abi_word(&result[32..64]);
-                return Some((r0, r1));
+                let reserves = (r0, r1);
+                if Self::validate_v2_reserves(reserves) {
+                    return Some(reserves);
+                }
+                tracing::trace!("eth_call reserves failed validation ({},{}), returning raw", r0, r1);
+                return Some(reserves);
             }
         }
-        tracing::trace!("eth_call getReserves() failed, falling back to storage for {}", pool);
-        let slots: Vec<U256> = crate::types::v2_storage_slots_for_factory(factory)
-            .iter()
-            .map(|&s| U256::from(s))
-            .collect();
-        Self::fetch_v2_reserves_storage(rpc, pool, block, &slots).await
+        tracing::trace!("eth_call getReserves() failed for {}", pool);
+        None
+    }
+
+    /// Validate V2 reserves: both > 0 and ratio is within 100x (M9).
+    fn validate_v2_reserves(reserves: (u128, u128)) -> bool {
+        let (r0, r1) = reserves;
+        if r0 == 0 || r1 == 0 {
+            return false;
+        }
+        // Reject extreme ratios (>100:1) which indicate corrupted data
+        let (big, small) = if r0 > r1 { (r0, r1) } else { (r1, r0) };
+        if small == 0 { return false; }
+        let ratio = big / small;
+        ratio < 100
     }
 
     /// Given raw slot 6 (packed uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast),
@@ -1646,6 +1693,7 @@ impl Clone for PoolManager {
             balancer_vault: self.balancer_vault,
             known_set: self.known_set.clone(),
             max_pairs_per_token: self.max_pairs_per_token,
+            token_max_pairs: self.token_max_pairs.clone(),
             concurrency_limit: self.concurrency_limit,
         }
     }

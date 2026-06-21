@@ -980,6 +980,7 @@ mod tests {
     #[test]
     fn test_verify_opportunities_sandwich() {
         let opp = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 0,
             strategy: Strategy::Sandwich,
@@ -1023,6 +1024,7 @@ mod tests {
     #[test]
     fn test_verify_opportunities_profit_vs_gas() {
         let profitable = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 0,
             strategy: Strategy::TwoHopArb,
@@ -1214,6 +1216,7 @@ mod tests {
     #[test]
     fn test_verify_opportunities_evm_fields_default_none() {
         let opp = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 0,
             strategy: Strategy::TwoHopArb,

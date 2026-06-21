@@ -321,6 +321,7 @@ impl LiquidationDetector {
             let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
             opportunities.push(MevOpportunity {
+                canonical_id: None,
                 block_number: self.block_number,
                 tx_index: self.current_tx_index,
                 strategy: Strategy::Liquidation,
@@ -369,6 +370,7 @@ impl LiquidationDetector {
         let profit_native = collateral_native.saturating_sub(debt_native);
 
         Some(MevOpportunity {
+            canonical_id: None,
             block_number: self.block_number,
             tx_index: ev.tx_index,
             strategy: Strategy::Liquidation,

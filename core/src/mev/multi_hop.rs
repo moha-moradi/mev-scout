@@ -15,7 +15,7 @@ use crate::types::{GasConfig, Strategy};
 /// so the same persistent path is not re-reported across multiple transactions.
 pub struct MultiHopArbDetector {
     block_number: u64,
-    seen: std::collections::HashSet<(Address, Address, Address, Address)>,
+    seen: std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
 }
 
 impl MultiHopArbDetector {
@@ -23,14 +23,14 @@ impl MultiHopArbDetector {
     pub fn new(block_number: u64) -> Self {
         Self {
             block_number,
-            seen: std::collections::HashSet::new(),
+            seen: std::collections::HashMap::new(),
         }
     }
 
     /// Scan all pool paths and emit profitable multi-hop arbitrage opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
-    /// at most once, preventing the same persistent arb gap from being re-reported across
-    /// multiple transactions.
+    /// at most once per block *unless* pool reserves change by >0.1%, in which case the
+    /// dedup is cleared and the opportunity is re-evaluated (H2).
     pub fn detect(
         &mut self,
         pool_manager: &PoolManager,
@@ -51,13 +51,42 @@ impl MultiHopArbDetector {
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if self.seen.insert(key) {
+                if Self::check_and_update_seen(
+                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
+                ) {
                     opportunities.push(opp);
                 }
             }
         }
 
         opportunities
+    }
+
+    /// Check whether a dedup key should be emitted, and update the seen set.
+    /// Returns true if the opportunity should be emitted (new entry or reserves
+    /// changed by >0.1%). When reserves change significantly, the old entry is
+    /// removed and the new snapshot is stored.
+    fn check_and_update_seen(
+        seen: &mut std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
+        key: &(Address, Address, Address, Address),
+        pm: &PoolManager,
+        pool_a: Address,
+        pool_b: Address,
+    ) -> bool {
+        let la = pm.pool_liquidity_estimate(&pool_a);
+        let lb = pm.pool_liquidity_estimate(&pool_b);
+        let new_snapshot = (la, lb);
+
+        if let Some(&(prev_la, prev_lb)) = seen.get(key) {
+            let threshold_a = std::cmp::max(prev_la / 1000, 1);
+            let threshold_b = std::cmp::max(prev_lb / 1000, 1);
+            if la.abs_diff(prev_la) <= threshold_a && lb.abs_diff(prev_lb) <= threshold_b {
+                return false;
+            }
+        }
+
+        seen.insert(*key, new_snapshot);
+        true
     }
 
     /// BFS-limited enumeration of pool paths through the token graph.
@@ -163,12 +192,6 @@ impl MultiHopArbDetector {
             info_b.token0
         };
 
-        // Only emit cyclic paths where we start and end in the same token.
-        // Non-cyclic paths (e.g. USDC→WMATIC→USDT) compare apples-to-oranges.
-        if token_in != token_out {
-            return None;
-        }
-
         let max_input = Self::pool_max_input(pool_a);
 
         let quote_fn = |x: u128| -> Option<u128> {
@@ -197,8 +220,26 @@ impl MultiHopArbDetector {
         let flash_fee = gas_config.flash_loan_fee(input_amount);
         let net_profit = gross_profit.saturating_sub(flash_fee);
 
+        // Normalize profit to token_in for non-cyclic paths (H6).
+        // Two-hop already handles this; multi-hop was silently dropping non-cyclic paths.
+        let (expected_profit, raw_profit) = if token_in == token_out {
+            (U256::from(net_profit), None)
+        } else {
+            let raw = U256::from(net_profit);
+            let native_profit = pm.normalize_to_native(token_out, net_profit)
+                .or_else(|| {
+                    let total_input = input_amount;
+                    let total_output = total_input.saturating_add(net_profit);
+                    let native_in = pm.normalize_to_native(token_in, total_input)?;
+                    let native_out = pm.normalize_to_native(token_out, total_output)?;
+                    native_out.checked_sub(native_in)
+                })
+                .unwrap_or(net_profit);
+            (U256::from(native_profit), Some(raw))
+        };
+
         // Compute slippage-adjusted profits
-        let eval_input = |x: u128| -> Option<U256> {
+        let eval_raw = |x: u128| -> Option<u128> {
             let mut cur = x;
             let mut cur_token = token_in;
             for &addr in path {
@@ -207,14 +248,28 @@ impl MultiHopArbDetector {
                 let info = pool.info();
                 cur_token = if info.token0 == cur_token { info.token1 } else { info.token0 };
             }
-            if cur > x { Some(U256::from(cur - x)) } else { None }
+            if cur > x { Some(cur - x) } else { None }
         };
-        let p1 = if input_amount > 0 { eval_input(input_amount.saturating_mul(101) / 100) } else { None };
-        let m1 = if input_amount > 0 { eval_input(input_amount.saturating_mul(99) / 100) } else { None };
-        let p2 = if input_amount > 0 { eval_input(input_amount.saturating_mul(102) / 100) } else { None };
-        let m2 = if input_amount > 0 { eval_input(input_amount.saturating_mul(98) / 100) } else { None };
+        let normalize_slippage = |p: u128| -> Option<U256> {
+            if token_in == token_out {
+                Some(U256::from(p))
+            } else {
+                pm.normalize_to_native(token_out, p)
+                    .or_else(|| {
+                        let native_in = pm.normalize_to_native(token_in, input_amount)?;
+                        let native_out = pm.normalize_to_native(token_out, input_amount + p)?;
+                        native_out.checked_sub(native_in)
+                    })
+                    .map(U256::from)
+            }
+        };
+        let p1 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(101) / 100).and_then(normalize_slippage) } else { None };
+        let m1 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(99) / 100).and_then(normalize_slippage) } else { None };
+        let p2 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(102) / 100).and_then(normalize_slippage) } else { None };
+        let m2 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(98) / 100).and_then(normalize_slippage) } else { None };
 
         Some(MevOpportunity {
+            canonical_id: None,
             block_number,
             tx_index,
             strategy: Strategy::MultiHopArb,
@@ -223,8 +278,8 @@ impl MultiHopArbDetector {
             token_in,
             token_out,
             input_amount: U256::from(input_amount),
-            expected_profit: U256::from(net_profit),
-            raw_profit: None,
+            expected_profit,
+            raw_profit,
             profit_slippage_p1: p1,
             profit_slippage_m1: m1,
             profit_slippage_p2: p2,
@@ -358,10 +413,13 @@ mod tests {
         let mut detector = new_detector();
         let opps = detector.detect(&pm, 0, 100, 50_000_000_000, default_gas());
         assert!(!opps.is_empty());
-        for opp in &opps {
+        // Non-cyclic 2-pool paths now convert price instead of being dropped (H6),
+        // so we may get both 2-hop and 3-hop opportunities.
+        let three_hop_opps: Vec<_> = opps.iter().filter(|o| o.path.as_ref().map_or(false, |p| p.len() == 3)).collect();
+        assert!(!three_hop_opps.is_empty(), "Should contain at least one 3-pool cyclic opportunity");
+        for opp in &three_hop_opps {
             assert_eq!(opp.strategy, Strategy::MultiHopArb);
-            assert!(opp.path.is_some());
-            assert_eq!(opp.path.as_ref().unwrap().len(), 3);
+            assert_eq!(opp.token_in, opp.token_out, "3-pool paths should be cyclic");
         }
     }
 

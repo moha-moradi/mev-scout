@@ -15,7 +15,11 @@ use crate::types::Strategy;
 /// - `victim_tx_index`/`backrun_tx_index` for sandwich attacks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpportunity {
-    /// Block where the opportunity was detected
+    /// Canonical dedup ID (L9): derived from strategy + key fields to uniquely
+    /// identify this opportunity across detectors and aggregation passes.
+    /// Example: "TwoHopArb|0xaaa|0xbbb|0xccc|0xddd" or "Sandwich|0xaaa|tx:1|tx:2".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_id: Option<String>,
     /// Block where the opportunity was detected
     pub block_number: u64,
     /// Index of the transaction after which the opportunity exists
@@ -76,6 +80,31 @@ pub struct MevOpportunity {
     pub backrun_tx_index: Option<usize>,
 }
 
+/// Build a canonical dedup string from the opportunity's key fields (L9).
+/// Exposed as a free function so the runner can assign IDs after collection.
+pub fn compute_canonical_id(
+    strategy: Strategy,
+    _block: u64,
+    pool_a: Address,
+    pool_b: Address,
+    token_in: Address,
+    token_out: Address,
+    victim_tx: Option<usize>,
+    backrun_tx: Option<usize>,
+) -> String {
+    match strategy {
+        Strategy::Sandwich => {
+            format!("Sandwich|{:#x}|victim:{:?}|backrun:{:?}", pool_a, victim_tx, backrun_tx)
+        }
+        _ => {
+            format!(
+                "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",
+                strategy, pool_a, pool_b, token_in, token_out,
+            )
+        }
+    }
+}
+
 impl MevOpportunity {
     /// Create a new MEV opportunity with required fields.
     /// Strategy-specific fields should be set via builder methods.
@@ -87,6 +116,7 @@ impl MevOpportunity {
         timestamp: u64,
     ) -> Self {
         MevOpportunity {
+            canonical_id: None,
             block_number,
             tx_index,
             strategy,
@@ -111,6 +141,22 @@ impl MevOpportunity {
             victim_tx_index: None,
             backrun_tx_index: None,
         }
+    }
+
+    /// Compute and store the canonical dedup ID (L9) based on strategy type
+    /// and key identifying fields. Returns self for builder chaining.
+    pub fn with_canonical_id(mut self) -> Self {
+        self.canonical_id = Some(compute_canonical_id(
+            self.strategy,
+            self.block_number,
+            self.pool_a,
+            self.pool_b,
+            self.token_in,
+            self.token_out,
+            self.victim_tx_index,
+            self.backrun_tx_index,
+        ));
+        self
     }
 
     /// Set JIT-specific fields: tick range and liquidity amount.
@@ -176,6 +222,7 @@ mod tests {
     fn test_mev_opportunity_path_roundtrip() {
         use alloy::primitives::address;
         let opp = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 0,
             strategy: Strategy::MultiHopArb,
@@ -214,6 +261,7 @@ mod tests {
     fn test_mev_opportunity_jit_fields_roundtrip() {
         use alloy::primitives::address;
         let opp = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 5,
             strategy: Strategy::Jit,
@@ -249,6 +297,7 @@ mod tests {
 
         // Verify JIT fields are absent from serde output when None
         let no_jit = MevOpportunity {
+            canonical_id: None,
             tick_lower: None,
             tick_upper: None,
             liquidity_amount: None,
@@ -291,6 +340,7 @@ mod tests {
     fn test_mev_opportunity_sandwich_fields_roundtrip() {
         use alloy::primitives::address;
         let opp = MevOpportunity {
+            canonical_id: None,
             block_number: 1,
             tx_index: 0,
             strategy: Strategy::Sandwich,

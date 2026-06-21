@@ -119,6 +119,7 @@ mod tests {
 
     fn make_opp(block: u64, profit: u128, gas: u128, pool_a: Address, pool_b: Address) -> MevOpportunity {
         MevOpportunity {
+            canonical_id: None,
             block_number: block,
             tx_index: 0,
             strategy: Strategy::TwoHopArb,

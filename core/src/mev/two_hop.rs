@@ -15,9 +15,11 @@ use crate::types::{GasConfig, Strategy};
 /// Uses analytical closed-form solutions for V2 pairs and a step-by-step quote
 /// engine for V3 pools. Maintains a per-block dedup set so the same persistent
 /// arb gap is not re-reported across multiple transactions in the same block.
+/// If pool reserves change by >0.1% within the same block, the dedup is cleared
+/// for that pair so the changed opportunity can be re-detected (H2).
 pub struct TwoHopArbDetector {
     block_number: u64,
-    seen: std::collections::HashSet<(Address, Address, Address, Address)>,
+    seen: std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
 }
 
 impl TwoHopArbDetector {
@@ -27,14 +29,14 @@ impl TwoHopArbDetector {
     pub fn new(block_number: u64) -> Self {
         Self {
             block_number,
-            seen: std::collections::HashSet::new(),
+            seen: std::collections::HashMap::new(),
         }
     }
 
     /// Check all arbitrage pool-pair directions and emit profitable two-hop opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
-    /// at most once, preventing the same persistent arb gap from being re-reported across
-    /// multiple transactions.
+    /// at most once per block *unless* pool reserves change by >0.1%, in which case the
+    /// dedup is cleared and the opportunity is re-evaluated (H2).
     pub fn detect(
         &mut self,
         pool_manager: &PoolManager,
@@ -53,7 +55,9 @@ impl TwoHopArbDetector {
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if self.seen.insert(key) {
+                if Self::check_and_update_seen(
+                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
+                ) {
                     opportunities.push(opp);
                 }
             }
@@ -63,13 +67,42 @@ impl TwoHopArbDetector {
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if self.seen.insert(key) {
+                if Self::check_and_update_seen(
+                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
+                ) {
                     opportunities.push(opp);
                 }
             }
         }
 
         opportunities
+    }
+
+    /// Check whether a dedup key should be emitted, and update the seen set.
+    /// Returns true if the opportunity should be emitted (new entry or reserves
+    /// changed by >0.1%). When reserves change significantly, the old entry is
+    /// removed and the new snapshot is stored.
+    fn check_and_update_seen(
+        seen: &mut std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
+        key: &(Address, Address, Address, Address),
+        pm: &PoolManager,
+        pool_a: Address,
+        pool_b: Address,
+    ) -> bool {
+        let la = pm.pool_liquidity_estimate(&pool_a);
+        let lb = pm.pool_liquidity_estimate(&pool_b);
+        let new_snapshot = (la, lb);
+
+        if let Some(&(prev_la, prev_lb)) = seen.get(key) {
+            let threshold_a = std::cmp::max(prev_la / 1000, 1);
+            let threshold_b = std::cmp::max(prev_lb / 1000, 1);
+            if la.abs_diff(prev_la) <= threshold_a && lb.abs_diff(prev_lb) <= threshold_b {
+                return false;
+            }
+        }
+
+        seen.insert(*key, new_snapshot);
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -126,6 +159,7 @@ impl TwoHopArbDetector {
             compute_slippage_profits(pool_a, pool_b, shared_token, result.input_amount);
 
         Some(MevOpportunity {
+            canonical_id: None,
             block_number,
             tx_index,
             strategy: Strategy::TwoHopArb,

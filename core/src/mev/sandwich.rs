@@ -386,6 +386,7 @@ impl SandwichDetector {
                 let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
                 opportunities.push(MevOpportunity {
+                    canonical_id: None,
                     block_number: self.block_number,
                     tx_index: front.tx_index,
                     strategy: Strategy::Sandwich,

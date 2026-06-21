@@ -140,7 +140,8 @@ impl PriceCache {
                                 divergence * 100.0
                             );
                         }
-                        Some(cg)
+                        // L5: Return midpoint of both sources instead of just CoinGecko
+                        Some((cg + oc) / 2.0)
                     }
                     (Some(cg), None) => Some(cg),
                     (None, Some(oc)) => Some(oc),
