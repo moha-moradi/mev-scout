@@ -639,6 +639,59 @@ async fn main() -> anyhow::Result<()> {
             };
             let elapsed = start.elapsed();
 
+            // L3/L5: Compute USD aggregation for detected opportunities
+            // Builds DexMeta from pool manager, resolves native token USD price
+            // via the configured PriceOracleMode, and calls aggregate_with_prices.
+            let aggregation = if !all_opportunities.is_empty() {
+                use mev_scout_core::aggregate::{aggregate_with_prices, DexMeta};
+                use mev_scout_core::coingecko::PriceCache;
+                use mev_scout_core::types::PriceOracleMode;
+
+                let oracle_mode: PriceOracleMode = match config.price_oracle_mode.parse() {
+                    Ok(m) => m,
+                    Err(_) => {
+                        tracing::warn!(
+                            "Invalid price_oracle_mode '{}', falling back to coingecko",
+                            config.price_oracle_mode,
+                        );
+                        PriceOracleMode::CoinGeckoOnly
+                    }
+                };
+
+                let mut token_prices = config.parse_token_prices();
+                let mut price_cache = PriceCache::new(config.coingecko_api_key.clone());
+
+                let native_price = price_cache.resolve_native_price(
+                    oracle_mode,
+                    validation_result.chain_name,
+                    &runner.pool_manager,
+                    resolved.start_block,
+                ).await;
+                if let Some(price) = native_price {
+                    token_prices.insert(Address::ZERO, price);
+                }
+
+                let dexes: Vec<DexMeta> = runner.pool_manager.all_pools().map(|pool| {
+                    let info = pool.info();
+                    DexMeta {
+                        name: info.name.clone().unwrap_or_else(|| format!("{:#x}", info.address)),
+                        fork: format!("{:?}", info.dex_type),
+                        tx_count: 0,
+                        pool_addresses: vec![info.address],
+                    }
+                }).collect();
+
+                let agg = aggregate_with_prices(&all_opportunities, &dexes, &token_prices);
+                tracing::info!(
+                    "USD aggregation: {} opportunities, net_profit_usd=${:.2}",
+                    agg.summary.total,
+                    agg.summary.net_profit_usd,
+                );
+                Some(agg)
+            } else {
+                None
+            };
+
             // Save results to JSON
             let created_at = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -660,6 +713,19 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!("Failed to save results: {}", e);
             }
 
+            // Save USD aggregation if computed (L3/L5)
+            if let Some(ref agg) = aggregation {
+                let agg_path = std::path::Path::new(&config.export_path)
+                    .join(format!("{}_aggregation.json", run_id));
+                if let Ok(json) = serde_json::to_string_pretty(agg) {
+                    if let Err(e) = std::fs::write(&agg_path, json) {
+                        tracing::warn!("Failed to save aggregation: {}", e);
+                    } else {
+                        tracing::info!("Aggregation saved to {}", agg_path.display());
+                    }
+                }
+            }
+
             // Print results
             if all_opportunities.is_empty() {
                 println!("No MEV opportunities detected in the specified range.");
@@ -674,6 +740,23 @@ async fn main() -> anyhow::Result<()> {
 
             // Block summary table
             render_block_summary_table(&block_stats);
+
+            // Print USD aggregation if computed (L3/L5)
+            if let Some(ref agg) = aggregation {
+                println!("\nUSD Aggregation:");
+                let mut agg_table = Table::new();
+                agg_table.set_header(vec!["Metric".to_string(), "Value".to_string()]);
+                agg_table.add_row(vec!["Total".to_string(), agg.summary.total.to_string()]);
+                agg_table.add_row(vec!["Profitable".to_string(), agg.summary.profitable.to_string()]);
+                agg_table.add_row(vec!["Gross (ETH)".to_string(), format!("{:.6}", agg.summary.gross_revenue)]);
+                agg_table.add_row(vec!["Gas (ETH)".to_string(), format!("{:.6}", agg.summary.total_cost)]);
+                agg_table.add_row(vec!["Net (ETH)".to_string(), format!("{:.6}", agg.summary.net_profit)]);
+                agg_table.add_row(vec!["Net (USD)".to_string(), format!("${:.2}", agg.summary.net_profit_usd)]);
+                if let Some(ref best) = agg.summary.best_strategy {
+                    agg_table.add_row(vec!["Best strategy".to_string(), best.clone()]);
+                }
+                println!("{agg_table}");
+            }
 
             // Fact-check if requested
             let fact_check_mode = if args.evm_fact_check { "EVM" } else { "structural" };

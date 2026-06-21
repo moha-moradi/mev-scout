@@ -138,6 +138,40 @@ pub fn v2_storage_slots_for_factory(factory: Option<Address>) -> &'static [u64] 
     }
 }
 
+/// Return the known V2 router address for a given factory, if available.
+/// Used by M3 on-chain simulation to call `getAmountsOut` via eth_call.
+/// Returns `None` for unknown factories — caller falls back to structural formula.
+pub fn v2_router_for_factory(factory: Address) -> Option<Address> {
+    use alloy::primitives::address;
+    // Uniswap V2 (Ethereum)
+    if factory == address!("5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f") {
+        return Some(address!("7a250d5630B4cF539739dF2C5dAcb4c659F2488D"));
+    }
+    // QuickSwap (Polygon)
+    if factory == address!("5757371414417b8C6CAad45bAeF941aBc7d3Ab32") {
+        return Some(address!("a5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"));
+    }
+    // PancakeSwap V2 (BSC)
+    if factory == address!("cA143Ce32Fe78f1f7019d7d551a6402fC5350c73") {
+        return Some(address!("10ED43C718714eb63d5aA57B78B54704E256024E"));
+    }
+    // SushiSwap (Ethereum, Polygon)
+    if factory == address!("C0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac")
+        || factory == address!("c35DADB65012eC5796536bD9864eD8773aBc74C4")
+    {
+        return Some(address!("1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"));
+    }
+    // Camelot (Arbitrum)
+    if factory == address!("6EcCab422D763aC031210895C81787E87B43A652") {
+        return Some(address!("c873fEcbd354f5A56E00E710B90EF4201db2448d"));
+    }
+    // Trader Joe (Avalanche)
+    if factory == address!("9Ad6C38BE94206cA50bb0d90783181662f0Cfa10") {
+        return Some(address!("60aE616a2155Ee3d9A68541Ba4544862310933d4"));
+    }
+    None
+}
+
 impl fmt::Display for ChainName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

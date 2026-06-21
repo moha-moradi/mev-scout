@@ -2,24 +2,24 @@
 
 **Goal:** Bring all incomplete Phase 4 items to completion, prioritizing quick wins first.
 
-**Current status:** 8 items remain + L1 added — 6 not started, 3 partial.
+**Current status:** 8 items — 5 done, 1 partial (M3), 2 not started (H8, L2). L3 and L5 were partial and are now fully wired in main.rs.
 
 ---
 
 ## Remaining Work Inventory
 
-| # | Item | Status | Est. Effort | Key Files |
-|---|------|--------|-------------|-----------|
-| M6 | JitArb profit model | Partial — arb profit + fee revenue are separate; proximity_window default is 1 | 1 day | `jit_arb.rs:55,188-190,348-416` |
-| L4 | Token decimals | Not started — hardcoded address list of 7 tokens; falls back to 18 | 0.5 day | `fact_check.rs:105-125` |
-| L6 | V2 slot 6 for forks | Not started — storage fallback at `state.rs:793` always uses slot 6 | 1 day | `state.rs:787-795`, `types.rs` |
-| L3 | Single USD price | Not started — `aggregate.rs:84` takes one `f64`, applies uniformly | 2 days | `aggregate.rs:84,232,290` |
-| L5 | CoinGecko midpoint | Not started — no on-chain oracle fallback | 2-3 days | `coingecko.rs`, `cli.rs`, `config.rs` |
-| L1 | Aave liquidation detection | Partial — reactive event capture only; no pre-tx health factor prediction | 1-2 weeks | `liquidation.rs`, `run.rs:308-315` |
-| M3 | State re-execution | DONE — added in previous implementation | 0 | `fact_check.rs` |
-| L8 | Dynamic pool discovery | Not started — pools discovered upfront only; none mid-range | 3-5 days | `discovery.rs`, `run.rs:85-106` |
-| H8 | MEV-Share / mempool | Not started — no Flashbots, bloXroute, pending txs | 3-4 weeks | New modules |
-| L2 | Cross-block MEV | Not started — no reorg/time-bandit/multi-block arb | 2-3 weeks | `block_builder.rs`, `run.rs` |
+| # | Item | Status | Notes | Key Files |
+|---|------|--------|-------|-----------|
+| M6 | JitArb profit model | ✅ Done | Single `compute_jit_arb_profit()`, proximity_window default=3, `--proximity-window` CLI flag | `jit_arb.rs`, `config.rs`, `cli.rs` |
+| L4 | Token decimals | ✅ Done | `fetch_token_decimals()` via eth_call, cached HashMap, hardcoded → cache → 18 fallback | `fact_check.rs` |
+| L6 | V2 slot 6 for forks | ✅ Done | `v2_storage_slots_for_factory()` maps Camelot→8, Aerodrome→[6,12], default→6 | `state.rs`, `types.rs` |
+| L1 | Aave liquidation detection | ✅ Done | Proactive + reactive, `compute_health_factor()`, event tracking, integrated in `run.rs` per-tx | `liquidation.rs`, `run.rs` |
+| L8 | Dynamic pool discovery | ✅ Done | Pre-chunk (10k blocks), `--live-discover` flag, `discover_pools_in_range()` | `run.rs`, `discovery.rs` |
+| L3 | Per-token USD prices | ✅ Done | `aggregate_with_prices(HashMap)` + `aggregate(f64)` overload, `--token-price` CLI flag, **wired into main.rs** | `aggregate.rs`, `config.rs`, `cli/src/main.rs` |
+| L5 | CoinGecko midpoint / on-chain oracle | ✅ Done | `PriceOracleMode`, `resolve_native_price()` (all 3 modes), `resolve_onchain_price()`, `onchain_native_price()`, `--price-oracle` CLI flag, **wired into main.rs** | `coingecko.rs`, `config.rs`, `cli.rs`, `state.rs` |
+| M3 | State re-execution | ✅ Done | `verify_opportunities_from_chain()` with 3 tiers: (1) state refetch, (2) structural recomputation, (3) EVM simulation via eth_call. V3 via Quoter, Curve via get_dy, **V2 via router getAmountsOut** (`v2_router_for_factory()` mapping), Balancer structural (state refetched). Jit/JitArb/Liquidation unsupported (require full revm). | `fact_check.rs`, `types.rs` |
+| H8 | MEV-Share / mempool | ❌ Not started | No files, no pending tx, no Flashbots/bloXroute code | New modules |
+| L2 | Cross-block MEV | ❌ Not started | No `detect_cross_block_opportunities()`, no time-bandit, no confidence scores | `block_builder.rs`, `run.rs` |
 
 ---
 
@@ -196,14 +196,15 @@ The function only affects display formatting in fact-check output, so the RPC ca
 
 ## Implementation Roadmap
 
-| Sprint | Items | Effort | Impact |
+| Sprint | Items | Effort | Status |
 |--------|-------|--------|--------|
-| **4a Quick Wins** | M6, L4, L6 | 2-3 days | Fixes 3 remaining modeling gaps, fork compatibility, correct token display |
-| **4b Pricing** | L3, L5 | 3-5 days | USD becomes token-aware, on-chain prices validate CoinGecko |
-| **4c Discovery** | L8 | 3-5 days | Catches pools created mid-range for long backtests |
-| **4d Mempool (P1)** | H8 Phase 1 | 3-5 days | Pending tx capture — first step toward mempool analysis |
-| **4e Advanced** | H8 Phases 2-3, L2 | 5-8 weeks | Full MEV-Share, cross-block MEV |
-| **4f Liquidation** | L1 | 1-2 weeks | Proactive Aave liquidation detection — new strategy class |
+| **4a Quick Wins** | M6, L4, L6 | 2-3 days | ✅ **Done** |
+| **4b Pricing** | L3, L5 | 3-5 days | ✅ **Done** (wired into main.rs) |
+| **4c Discovery** | L8 | 3-5 days | ✅ **Done** |
+| **4f Liquidation** | L1 | 1-2 weeks | ✅ **Done** |
+| **M3 Re-execution** | M3 | 0 | ✅ **Done** — V2 router getAmountsOut added |
+| **4d Mempool (P1)** | H8 Phase 1 | 3-5 days | ❌ Not started |
+| **4e Advanced** | H8 Phases 2-3, L2 | 5-8 weeks | ❌ Not started |
 
 ---
 
@@ -215,9 +216,9 @@ The function only affects display formatting in fact-check output, so the RPC ca
 
 3. **L4**: RPC calls for unknown token decimals are cached per-address, so each unique token is queried at most once per fact-check run.
 
-4. **L3**: Backward-compatible overload keeps existing callers working. Per-token prices are optional.
+4. **L3**: Backward-compatible overload keeps existing callers working. Per-token prices are optional. Integration: after backtest, `main.rs` parses `--token-price`, resolves native price via oracle, and calls `aggregate_with_prices()`. Aggregation saved as `{run_id}_aggregation.json`.
 
-5. **L5**: On-chain pricing is less precise than CoinGecko (slippage, liquidity depth). Use as validation, not replacement. Flag >5% divergences.
+5. **L5**: On-chain pricing is less precise than CoinGecko (slippage, liquidity depth). Use as validation, not replacement. Flag >5% divergences. Integration: `main.rs` creates `PriceCache`, parses `price_oracle_mode` into `PriceOracleMode` enum, calls `resolve_native_price()`, and passes result into aggregation.
 
 6. **L8**: Pre-chunk discovery is recommended over real-time. Reuses existing code, no hot-path overhead.
 
@@ -234,7 +235,5 @@ The function only affects display formatting in fact-check output, so the RPC ca
 |------|------|------------|
 | H8 (MEV-Share) | High — external API, may need Flashbots partnership | Phase 1 has zero external deps |
 | L2 (cross-block) | Medium — speculative detection | Confidence score labels |
-| L8 (discovery) | Medium — RPC rate limits | Pre-chunk approach avoids hot-path calls |
-| L3 (per-token USD) | Low — display only | Backward-compatible default |
-| M6, L6, L4, L5 | Low — isolated changes | Existing test coverage |
-| L1 (liquidation) | Medium — Aave RPC state queries, new reserve data types | Pre-tx prediction is additive; reactive capture is the fallback |
+| M3 (state re-execution) | Low — V2 router getAmountsOut eth_call may miss on some chains | Mapped 6 major factories; falls back to structural formula + state consistency check |
+| M6, L4, L6, L8, L1, L3, L5 | Low — completed and tested | Existing test coverage + compilation checked |

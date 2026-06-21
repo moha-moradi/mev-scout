@@ -302,6 +302,13 @@ static GET_DY_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
 /// Standard Uniswap V3 Quoter address (same on Ethereum, Polygon, Arbitrum, Optimism, etc.)
 const V3_QUOTER: Address = alloy::primitives::address!("b27308f9F90D607463bb33eA1BeBb41C27CE5AB6");
 
+/// Function selector for V2 Router `getAmountsOut(uint256,address[])`.
+static GET_AMOUNTS_OUT_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
+    keccak256(b"getAmountsOut(uint256,address[])")[..4]
+        .try_into()
+        .unwrap()
+});
+
 /// ABI-encode `quoteExactInputSingle(address,address,uint24,uint256,uint160)`.
 fn encode_quote_exact_input_single(
     token_in: Address,
@@ -412,6 +419,56 @@ async fn simulate_curve_swap_via_get_dy(
     Some(amount.to::<u128>())
 }
 
+/// ABI-encode `getAmountsOut(uint256 amountIn, address[] memory path)` for V2 routers.
+/// The path contains exactly two addresses: [tokenIn, tokenOut].
+fn encode_get_amounts_out(amount_in: u128, token_in: Address, token_out: Address) -> Bytes {
+    let mut data = Vec::with_capacity(164);
+    data.extend_from_slice(&*GET_AMOUNTS_OUT_SELECTOR);
+    // amountIn (uint256, 32 bytes)
+    data.extend_from_slice(&U256::from(amount_in).to_be_bytes::<32>());
+    // offset to path array data (points to byte 64 from start of non-selector data)
+    data.extend_from_slice(&U256::from(64u64).to_be_bytes::<32>());
+    // path.length = 2
+    data.extend_from_slice(&U256::from(2u64).to_be_bytes::<32>());
+    // path[0] = tokenIn (right-aligned in 32-byte word)
+    let mut word = [0u8; 32];
+    word[12..32].copy_from_slice(token_in.as_slice());
+    data.extend_from_slice(&word);
+    // path[1] = tokenOut
+    word.fill(0);
+    word[12..32].copy_from_slice(token_out.as_slice());
+    data.extend_from_slice(&word);
+    Bytes::from(data)
+}
+
+/// Decode the `uint256[] amounts` return value from `getAmountsOut`.
+/// Returns the second element (output amount) for a 2-element path.
+fn decode_get_amounts_out(data: &[u8]) -> Option<u128> {
+    if data.len() < 128 {
+        return None;
+    }
+    // amounts[1] is at offset 96: [offset(32) + length(32) + amounts[0](32)]
+    let amount = U256::from_be_slice(&data[96..128]);
+    Some(amount.to::<u128>())
+}
+
+/// Simulate a V2 single-hop swap via the router's `getAmountsOut` at a
+/// historical block. Runs the actual constant-product formula in the EVM
+/// at the given block's state, catching protocol fees and formula
+/// modifications that the structural fallback cannot detect.
+async fn simulate_v2_swap_via_router(
+    rpc: &RpcClient,
+    router: Address,
+    token_in: Address,
+    token_out: Address,
+    amount_in: u128,
+    block: u64,
+) -> Option<u128> {
+    let calldata = encode_get_amounts_out(amount_in, token_in, token_out);
+    let result = rpc.call(router, calldata, block).await.ok()?;
+    decode_get_amounts_out(&result)
+}
+
 /// Check whether the cached pool state matches on-chain token balances.
 /// For V2 pools, compares cached `reserve0`/`reserve1` against
 /// `balanceOf(pool)` on both token contracts. Returns `(consistent, divergence_pct)`.
@@ -453,11 +510,14 @@ async fn check_pool_state_consistency(
 }
 
 /// EVM-based quote for a single swap via `eth_call` on the pool's view
-/// functions (V3 Quoter, Curve get_dy) or structural fallback (V2, Balancer).
+/// functions (V3 Quoter, Curve get_dy, V2 Router getAmountsOut) or
+/// structural fallback (Balancer).
 ///
-/// For V3 and Curve pools this is a genuine EVM simulation at the historical
-/// block. For V2 and Balancer the structural quote is used since their formulas
-/// are deterministic given correct state — state divergence is caught by
+/// For V3 and Curve this is a genuine EVM simulation at the historical
+/// block. For V2 the router's `getAmountsOut` is tried first (M3); if no
+/// known router is available, the structural formula is used with refetched
+/// state. Balancer uses the structural formula since state is already
+/// refetched from the Vault via `getPoolTokens` — divergence is caught by
 /// `check_pool_state_consistency`.
 async fn evm_quote_single_swap(
     rpc: &RpcClient,
@@ -480,6 +540,18 @@ async fn evm_quote_single_swap(
             simulate_curve_swap_via_get_dy(rpc, curve.info.address, i, j, amount_in, block).await
         }
         PoolState::UniswapV2(v2) => {
+            // M3: Try on-chain router simulation first (catches protocol fees,
+            // dynamic fee changes, and formula modifications).
+            if let Some(router) = v2.info.factory.and_then(crate::types::v2_router_for_factory) {
+                let simulated = simulate_v2_swap_via_router(
+                    rpc, router, token_in, token_out, amount_in, block,
+                )
+                .await;
+                if simulated.is_some() {
+                    return simulated;
+                }
+            }
+            // Structural fallback with refetched state
             let (reserve_in, reserve_out) = if v2.info.token0 == token_in {
                 (v2.reserve0, v2.reserve1)
             } else if v2.info.token1 == token_in {
@@ -490,6 +562,9 @@ async fn evm_quote_single_swap(
             constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
         }
         PoolState::Balancer(bal) => {
+            // M3: Balancer Vault queryBatchSwap could be used here for full
+            // on-chain simulation; currently state is refetched in Phase 1
+            // and the structural formula with verified balances is correct.
             let idx_in = *bal.token_index.get(&token_in)?;
             let idx_out = *bal.token_index.get(&token_out)?;
             let balance_in = bal.balances[idx_in];
