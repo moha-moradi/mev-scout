@@ -457,6 +457,18 @@ impl LiquidationDetector {
             let gas_limit = LIQUIDATION_GAS_LIMIT.saturating_add(calldata_gas_estimate(2));
             let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
+            // H9: Compute slippage — profit scales linearly with debt_to_cover (fixed bonus rate)
+            let liq_slippage = |pct: u128| -> Option<U256> {
+                let debt_adj = debt_to_cover.saturating_mul(pct) / 100;
+                if debt_adj == 0 { return None; }
+                let debt_native_adj = pool_manager
+                    .normalize_to_native(debt_asset, debt_adj)
+                    .unwrap_or(debt_adj);
+                let profit_adj = debt_native_adj
+                    .saturating_mul(bonus_bps as u128)
+                    .saturating_div(10000);
+                Some(U256::from(profit_adj))
+            };
             opportunities.push(MevOpportunity {
                 canonical_id: None,
                 block_number: self.block_number,
@@ -469,10 +481,10 @@ impl LiquidationDetector {
                 input_amount: U256::from(debt_to_cover),
                 expected_profit: U256::from(profit_native),
                 raw_profit: Some(U256::from(debt_to_cover_native.saturating_add(profit_native))),
-                profit_slippage_p1: None,
-                profit_slippage_m1: None,
-                profit_slippage_p2: None,
-                profit_slippage_m2: None,
+                profit_slippage_p1: liq_slippage(101),
+                profit_slippage_m1: liq_slippage(99),
+                profit_slippage_p2: liq_slippage(102),
+                profit_slippage_m2: liq_slippage(98),
                 pga_adjusted_profit: None,
                 gas_cost_wei,
                 timestamp,
@@ -506,6 +518,16 @@ impl LiquidationDetector {
 
         let profit_native = collateral_native.saturating_sub(debt_native);
 
+        // H9: Compute slippage — profit scales linearly with debt_to_cover
+        let liq_slippage = |pct: u128| -> Option<U256> {
+            let debt_adj = ev.debt_to_cover.saturating_mul(pct) / 100;
+            if debt_adj == 0 { return None; }
+            let debt_native_adj = pool_manager
+                .normalize_to_native(ev.debt_asset, debt_adj)
+                .unwrap_or(debt_adj);
+            let ratio_adj = debt_native_adj * 1_000_000 / debt_native.max(1);
+            Some(U256::from(profit_native.saturating_mul(ratio_adj) / 1_000_000))
+        };
         Some(MevOpportunity {
             canonical_id: None,
             block_number: self.block_number,
@@ -518,10 +540,10 @@ impl LiquidationDetector {
             input_amount: U256::from(ev.debt_to_cover),
             expected_profit: U256::from(profit_native),
             raw_profit: None,
-            profit_slippage_p1: None,
-            profit_slippage_m1: None,
-            profit_slippage_p2: None,
-            profit_slippage_m2: None,
+            profit_slippage_p1: liq_slippage(101),
+            profit_slippage_m1: liq_slippage(99),
+            profit_slippage_p2: liq_slippage(102),
+            profit_slippage_m2: liq_slippage(98),
             pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,

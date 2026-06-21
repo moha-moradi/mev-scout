@@ -1027,7 +1027,7 @@ impl PoolManager {
         calldata.extend_from_slice(&V3_TICKS_SELECTOR);
         let mut arg = [0u8; 32];
         let tick_bytes = tick.to_be_bytes();
-        arg[29..32].copy_from_slice(&tick_bytes);
+        arg[29..32].copy_from_slice(&tick_bytes[1..4]);
         if tick < 0 {
             arg[..29].fill(0xFF);
         }

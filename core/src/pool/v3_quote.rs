@@ -413,35 +413,11 @@ fn find_next_initialized_tick(
     best
 }
 
-/// Compute the nearest tick_spacing boundary in the swap direction.
-/// Returns `None` when no tick_spacing is configured.
-fn tick_spacing_boundary(tick: i32, tick_spacing: i32, zero_for_one: bool) -> Option<i32> {
-    if tick_spacing <= 0 {
-        return None;
-    }
-    if zero_for_one {
-        // Floor division to get the boundary at or below current tick
-        let boundary = tick.div_euclid(tick_spacing) * tick_spacing;
-        if boundary == tick {
-            Some(tick - tick_spacing)
-        } else {
-            Some(boundary)
-        }
-    } else {
-        let boundary = tick.div_euclid(tick_spacing) * tick_spacing;
-        if boundary == tick {
-            Some(tick + tick_spacing)
-        } else {
-            Some(boundary + tick_spacing)
-        }
-    }
-}
-
 /// Determine the effective target sqrt price for a V3 swap, considering:
 /// 1. Real initialized ticks (with known liquidity data)
-/// 2. Synthetic tick_spacing boundaries when no ticks are known (conservative cap)
+/// 2. Full range when no ticks are known (no synthetic cap)
 ///
-/// When only a synthetic boundary is available, the swap is capped at that boundary
+/// When only a synthetic boundary is available, the swap uses the full pool liquidity
 /// and the quoting loop will not attempt to cross it (no phantom liquidity beyond).
 fn get_swap_target(
     pool: &UniswapV3PoolState,
@@ -595,8 +571,8 @@ pub fn max_v3_tradeable_amount(
 /// while applying the fee, until `amount_in` is consumed or there are no more
 /// reachable ticks. Returns the total amount of `token_out` the swap would receive.
 ///
-/// When no initialized ticks are known, the swap is conservatively capped at
-/// the nearest tick_spacing boundary to prevent phantom liquidity overestimation.
+/// When no initialized ticks are known, the swap uses the full pool liquidity
+/// (M2 fix) instead of being capped at the nearest tick_spacing boundary.
 ///
 /// Returns `None` for zero input, zero liquidity, or zero sqrt-price.
 pub fn quote_v3_exact_in(
@@ -692,9 +668,14 @@ pub fn quote_v3_exact_in(
 
 /// Like `get_swap_target` but uses a passed-in sqrt_price and current_tick
 /// for use inside the quoting loop where these values change across tick crossings.
+///
+/// When no initialized ticks are known, goes to the full range
+/// (MIN_SQRT_RATIO / MAX_SQRT_RATIO) instead of capping at a synthetic
+/// tick_spacing boundary (M2 fix). Without tick knowledge, using the full
+/// pool.liquidity is a better estimate than truncating at one spacing interval.
 fn get_swap_target_for_tick(
     ticks: &BTreeMap<i32, i128>,
-    tick_spacing: Option<u32>,
+    _tick_spacing: Option<u32>,
     current_tick: i32,
     sqrt_price: U256,
     zero_for_one: bool,
@@ -711,19 +692,6 @@ fn get_swap_target_for_tick(
             (sqrt, true)
         }
         None => {
-            if let Some(spacing) = tick_spacing {
-                if let Some(boundary) =
-                    tick_spacing_boundary(current_tick, spacing as i32, zero_for_one)
-                {
-                    let r = get_sqrt_ratio_at_tick(boundary);
-                    let sqrt = if zero_for_one {
-                        r.max(*MIN_SQRT_RATIO).min(sqrt_price)
-                    } else {
-                        r.min(*MAX_SQRT_RATIO).max(sqrt_price)
-                    };
-                    return (sqrt, false);
-                }
-            }
             if zero_for_one {
                 (*MIN_SQRT_RATIO, false)
             } else {

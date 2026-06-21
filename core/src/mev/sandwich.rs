@@ -218,6 +218,154 @@ impl SandwichDetector {
         }
     }
 
+    /// Compute raw profit (back.amount_out - front.amount_in) at a given frontrun input,
+    /// using the actual pool formula to re-quote both legs. Handles each DEX type's
+    /// unique pricing function (x*y=k for V2, tick-walking for V3, StableSwap for Curve,
+    /// weighted product for Balancer).
+    fn sandwich_raw_profit_at(
+        pool_manager: &PoolManager,
+        front: &SwapRecord,
+        victim: &SwapRecord,
+        back: &SwapRecord,
+        token_in: Address,
+        token_out: Address,
+        front_in_adj: u128,
+    ) -> Option<u128> {
+        let pool = pool_manager.get(&front.pool)?;
+        let front_dir_is_t0t1 = front.direction == SwapDirection::Token0ForToken1;
+
+        // --- Frontrun at adjusted input ---
+        let front_out_adj = match pool {
+            PoolState::UniswapV2(v2) => {
+                // Current pool state includes original frontrun + victim.
+                // Reverse-apply original frontrun to get pre-frontrun reserves.
+                let (r0_pre, r1_pre) = if front_dir_is_t0t1 {
+                    (v2.reserve0.saturating_sub(front.amount_in),
+                     v2.reserve1.saturating_add(front.amount_out))
+                } else {
+                    (v2.reserve0.saturating_add(front.amount_out),
+                     v2.reserve1.saturating_sub(front.amount_in))
+                };
+                let (r_in, r_out) = if front_dir_is_t0t1 {
+                    (r0_pre, r1_pre)
+                } else {
+                    (r1_pre, r0_pre)
+                };
+                constant_product_output_amount(front_in_adj, r_in, r_out, v2.info.fee)?
+            }
+            PoolState::UniswapV3(v3) => {
+                quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?
+            }
+            PoolState::Curve(curve) => {
+                let (ti, to) = if front_dir_is_t0t1 {
+                    (token_in, token_out)
+                } else {
+                    (token_out, token_in)
+                };
+                curve_output_amount(front_in_adj, curve, ti, to)?
+            }
+            PoolState::Balancer(bal) => {
+                let (ti, to) = if front_dir_is_t0t1 {
+                    (token_in, token_out)
+                } else {
+                    (token_out, token_in)
+                };
+                let idx_in = *bal.token_index.get(&ti)?;
+                let idx_out = *bal.token_index.get(&to)?;
+                let default_w = 1_000_000_000_000_000_000u128;
+                let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
+                let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
+                balancer_output_amount(front_in_adj, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)?
+            }
+        };
+
+        // --- Backrun at adjusted amount ---
+        // The backrun sells what the frontrun bought (front_out_adj) in the opposite direction,
+        // after the victim swap moves the price in the same direction as the frontrun.
+        let back_out_adj = match pool {
+            PoolState::UniswapV2(v2) => {
+                // For V2 we can compute exactly: reverse frontrun, apply adjusted, apply victim.
+                let (r0_pre, r1_pre) = if front_dir_is_t0t1 {
+                    (v2.reserve0.saturating_sub(front.amount_in),
+                     v2.reserve1.saturating_add(front.amount_out))
+                } else {
+                    (v2.reserve0.saturating_add(front.amount_out),
+                     v2.reserve1.saturating_sub(front.amount_in))
+                };
+                // Apply adjusted frontrun
+                let (r0_af, r1_af) = if front_dir_is_t0t1 {
+                    (r0_pre.saturating_add(front_in_adj),
+                     r1_pre.saturating_sub(front_out_adj))
+                } else {
+                    (r0_pre.saturating_sub(front_out_adj),
+                     r1_pre.saturating_add(front_in_adj))
+                };
+                // Apply victim (same direction as frontrun, historical amounts)
+                let (r0_av, r1_av) = if front_dir_is_t0t1 {
+                    (r0_af.saturating_add(victim.amount_in),
+                     r1_af.saturating_sub(victim.amount_out))
+                } else {
+                    (r0_af.saturating_sub(victim.amount_out),
+                     r1_af.saturating_add(victim.amount_in))
+                };
+                // Backrun sells front_out_adj in opposite direction
+                let (r_in, r_out) = if front_dir_is_t0t1 {
+                    (r1_av, r0_av)
+                } else {
+                    (r0_av, r1_av)
+                };
+                constant_product_output_amount(front_out_adj, r_in, r_out, v2.info.fee)?
+            }
+            _ => {
+                // Non-V2: estimate backrun using the same relative exchange rate
+                // as the historical backrun, which accounts for the victim swap's effect.
+                let back_rate = (back.amount_out as u128).saturating_mul(1_000_000)
+                    .saturating_div((back.amount_in as u128).max(1));
+                front_out_adj.saturating_mul(back_rate).saturating_div(1_000_000)
+            }
+        };
+
+        Some(back_out_adj.saturating_sub(front_in_adj))
+    }
+
+    /// Normalize raw profit to native token using the best available price feed
+    /// (same multi-DEX logic as compute_sandwich_profit).
+    fn normalize_profit_to_native(
+        pool_manager: &PoolManager,
+        profit_token: Address,
+        native_token: Address,
+        profit_raw: u128,
+    ) -> Option<U256> {
+        let ref_pool = pool_manager.find_pair_pool(&profit_token, &native_token)?;
+        let converted = match pool_manager.get(&ref_pool) {
+            Some(PoolState::UniswapV2(v2)) => {
+                let (r_in, r_out) = if v2.info.token0 == profit_token {
+                    (v2.reserve0, v2.reserve1)
+                } else {
+                    (v2.reserve1, v2.reserve0)
+                };
+                constant_product_output_amount(profit_raw, r_in, r_out, v2.info.fee)?
+            }
+            Some(PoolState::UniswapV3(v3)) => {
+                let zero_for_one = v3.info.token0 == profit_token;
+                quote_v3_exact_in(v3, profit_raw, zero_for_one)?
+            }
+            Some(PoolState::Curve(curve)) => {
+                curve_output_amount(profit_raw, curve, profit_token, native_token)?
+            }
+            Some(PoolState::Balancer(bal)) => {
+                let idx_in = *bal.token_index.get(&profit_token)?;
+                let idx_out = *bal.token_index.get(&native_token)?;
+                let default_w = 1_000_000_000_000_000_000u128;
+                let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
+                let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
+                balancer_output_amount(profit_raw, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)?
+            }
+            _ => return None,
+        };
+        Some(U256::from(converted))
+    }
+
     /// Compute profit from a matched frontrun/backrun pair.
     /// Returns (normalized_profit_in_native, raw_profit_in_profit_token).
     /// raw_profit is None when profit_token is already wrapped native (no conversion needed).
@@ -385,6 +533,33 @@ impl SandwichDetector {
                 let gas_limit = 40_000 + calldata + pool_gas;
                 let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
+                // H9: Compute slippage by re-quoting through the pool at adjusted frontrun amounts
+                let profit_token = match front.direction {
+                    SwapDirection::Token0ForToken1 => token_in,
+                    SwapDirection::Token1ForToken0 => token_out,
+                };
+                let native_token = match front.direction {
+                    SwapDirection::Token0ForToken1 => token_out,
+                    SwapDirection::Token1ForToken0 => token_in,
+                };
+                let sandwich_slippage = |pct: u128| -> Option<U256> {
+                    if front.amount_in == 0 { return None; }
+                    let adj_in = (front.amount_in as u128).saturating_mul(pct) / 100;
+                    if adj_in == 0 { return None; }
+                    let raw_adj = Self::sandwich_raw_profit_at(
+                        pool_manager, front, victim, back,
+                        token_in, token_out, adj_in,
+                    )?;
+                    // Normalize to native using the same path as compute_sandwich_profit
+                    if pool_manager.is_wrapped_native(&profit_token) {
+                        return Some(U256::from(raw_adj));
+                    }
+                    if pool_manager.is_wrapped_native(&native_token) {
+                        return Self::normalize_profit_to_native(pool_manager, profit_token, native_token, raw_adj);
+                    }
+                    Some(U256::from(raw_adj))
+                };
+
                 opportunities.push(MevOpportunity {
                     canonical_id: None,
                     block_number: self.block_number,
@@ -397,10 +572,10 @@ impl SandwichDetector {
                     input_amount: U256::from(front.amount_in),
                     expected_profit: profit_wei,
                     raw_profit,
-                    profit_slippage_p1: None,
-                    profit_slippage_m1: None,
-                    profit_slippage_p2: None,
-                    profit_slippage_m2: None,
+                    profit_slippage_p1: sandwich_slippage(101),
+                    profit_slippage_m1: sandwich_slippage(99),
+                    profit_slippage_p2: sandwich_slippage(102),
+                    profit_slippage_m2: sandwich_slippage(98),
                     pga_adjusted_profit: None,
                     gas_cost_wei,
                     timestamp,

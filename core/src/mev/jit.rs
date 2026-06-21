@@ -295,6 +295,11 @@ impl JitDetector {
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // raw_profit = Some(raw) when normalization actually converted the value
         let raw_profit = if normalized_fees != raw_fees { Some(U256::from(raw_fees)) } else { None };
+        // H9: JIT fee scales linearly with position size — compute ±1%/±2% slippage
+        let jit_slippage = |pct: u128| -> Option<U256> {
+            if normalized_fees == 0 { return None; }
+            Some(U256::from(normalized_fees.saturating_mul(pct) / 100))
+        };
         MevOpportunity {
             canonical_id: None,
             block_number,
@@ -307,10 +312,10 @@ impl JitDetector {
             input_amount: U256::from(mint.amount),
             expected_profit: U256::from(normalized_fees),
             raw_profit,
-            profit_slippage_p1: None,
-            profit_slippage_m1: None,
-            profit_slippage_p2: None,
-            profit_slippage_m2: None,
+            profit_slippage_p1: jit_slippage(101),
+            profit_slippage_m1: jit_slippage(99),
+            profit_slippage_p2: jit_slippage(102),
+            profit_slippage_m2: jit_slippage(98),
             pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,

@@ -185,11 +185,12 @@ impl JitArbDetector {
                             if pools_share_token(pm, pool_p, swap_q.pool) {
                                 self.emitted.insert(dedup_key);
 
-                            let total_profit = compute_jit_arb_profit(pm, swap_p, swap_q, mint, pool_p, &self.swap_events, self.proximity_window);
+                            let (total_profit, arb_profit, fee_rev) = compute_jit_arb_profit(pm, swap_p, swap_q, mint, pool_p, &self.swap_events, self.proximity_window);
 
                             opportunities.push(Self::build_opp(
                                 self.block_number, pool_p, swap_q.pool, mint, timestamp,
-                                U256::from(total_profit), base_fee_per_gas, gas_config, pm,
+                                U256::from(total_profit), arb_profit, fee_rev,
+                                base_fee_per_gas, gas_config, pm,
                             ));
                             break;
                         }
@@ -209,6 +210,8 @@ impl JitArbDetector {
         mint: &JitArbMint,
         timestamp: u64,
         expected_profit: U256,
+        arb_profit: u128,
+        fee_rev: u128,
         base_fee_per_gas: u128,
         gas_config: &GasConfig,
         pm: &PoolManager,
@@ -238,6 +241,13 @@ impl JitArbDetector {
         } else {
             Some(expected_profit)
         };
+        // H9: JitArb profit = arb_profit (fixed) + fee_rev (scales with position size)
+        let jit_arb_slippage = |pct: u128| -> Option<U256> {
+            if fee_rev == 0 { return None; }
+            let fee_adj = fee_rev.saturating_mul(pct) / 100;
+            let total_adj = arb_profit.saturating_add(fee_adj);
+            Some(U256::from(total_adj))
+        };
         MevOpportunity {
             canonical_id: None,
             block_number,
@@ -250,10 +260,10 @@ impl JitArbDetector {
             input_amount: U256::from(mint.amount),
             expected_profit,
             raw_profit,
-            profit_slippage_p1: None,
-            profit_slippage_m1: None,
-            profit_slippage_p2: None,
-            profit_slippage_m2: None,
+            profit_slippage_p1: jit_arb_slippage(101),
+            profit_slippage_m1: jit_arb_slippage(99),
+            profit_slippage_p2: jit_arb_slippage(102),
+            profit_slippage_m2: jit_arb_slippage(98),
             pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
@@ -290,6 +300,8 @@ fn shared_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> Option<Ad
 }
 
 /// Compute combined JIT arbitrage profit: arbitrage profit + JIT fee revenue.
+/// Returns (total_profit, arb_profit, fee_revenue) so callers can compute
+/// slippage (H9) by varying the fee component with position size.
 fn compute_jit_arb_profit(
     pm: &PoolManager,
     swap_p: &SwapEvent,
@@ -298,10 +310,10 @@ fn compute_jit_arb_profit(
     pool_p: Address,
     swap_events: &[SwapEvent],
     proximity_window: usize,
-) -> u128 {
+) -> (u128, u128, u128) {
     let arb_profit = estimate_arb_profit(pm, swap_p, swap_q);
     let fee_rev = estimate_jit_fee_revenue(mint, pool_p, swap_events, pm, proximity_window);
-    arb_profit.saturating_add(fee_rev)
+    (arb_profit.saturating_add(fee_rev), arb_profit, fee_rev)
 }
 
 /// Convert a swap's `amount_in` (denominated in `swap.token_in`) to an equivalent
