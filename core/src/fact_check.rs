@@ -5,7 +5,7 @@ use alloy::primitives::{keccak256, Address, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::mev::opportunity::MevOpportunity;
-use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
+use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
@@ -260,16 +260,7 @@ pub fn quote_single_swap(
             curve_output_amount(amount_in, curve, token_in, token_out)
         }
         PoolState::Balancer(bal) => {
-            let idx_in = *bal.token_index.get(&token_in)?;
-            let idx_out = *bal.token_index.get(&token_out)?;
-            let balance_in = bal.balances[idx_in];
-            let balance_out = bal.balances[idx_out];
-            if balance_in == 0 || balance_out == 0 {
-                return None;
-            }
-            let w_in = bal.weights.get(idx_in).copied().unwrap_or(1_000_000_000_000_000_000u128);
-            let w_out = bal.weights.get(idx_out).copied().unwrap_or(1_000_000_000_000_000_000u128);
-            balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
+            balancer_quote_exact_in(amount_in, bal, token_in, token_out)
         }
     }
 }
@@ -562,27 +553,7 @@ async fn evm_quote_single_swap(
             constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
         }
         PoolState::Balancer(bal) => {
-            // M3: Balancer Vault queryBatchSwap could be used here for full
-            // on-chain simulation; currently state is refetched in Phase 1
-            // and the structural formula with verified balances is correct.
-            let idx_in = *bal.token_index.get(&token_in)?;
-            let idx_out = *bal.token_index.get(&token_out)?;
-            let balance_in = bal.balances[idx_in];
-            let balance_out = bal.balances[idx_out];
-            if balance_in == 0 || balance_out == 0 {
-                return None;
-            }
-            let w_in = bal
-                .weights
-                .get(idx_in)
-                .copied()
-                .unwrap_or(1_000_000_000_000_000_000u128);
-            let w_out = bal
-                .weights
-                .get(idx_out)
-                .copied()
-                .unwrap_or(1_000_000_000_000_000_000u128);
-            balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
+            balancer_quote_exact_in(amount_in, bal, token_in, token_out)
         }
     }
 }

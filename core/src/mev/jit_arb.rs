@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
-use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
+use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::v3_quote::quote_v3_exact_in;
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
@@ -349,17 +349,7 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             } else { 0 }
         }
         Some(PoolState::Balancer(bal)) => {
-            if let (Some(&idx_in), Some(&idx_out)) = (
-                bal.token_index.get(&swap.token_in),
-                bal.token_index.get(&shared),
-            ) {
-                let default_w = 1_000_000_000_000_000_000u128;
-                let (w_in, w_out) = if bal.weights.len() == bal.balances.len() && !bal.weights.is_empty() {
-                    (bal.weights[idx_in], bal.weights[idx_out])
-                } else { (default_w, default_w) };
-                balancer_output_amount(swap.amount_in, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)
-                    .unwrap_or(0)
-            } else { 0 }
+            balancer_quote_exact_in(swap.amount_in, bal, swap.token_in, shared).unwrap_or(0)
         }
         _ => 0,
     }

@@ -6,7 +6,7 @@ use alloy::primitives::{Address, U256};
 
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
-use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, BalancerPoolVariant, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
 use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::types::{GasConfig, Strategy};
 
@@ -243,13 +243,9 @@ pub fn quote_path(
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::Balancer(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
-            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
-            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
-            let max_input = b_a_in;
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
+            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
+            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
+            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Curve(a), PoolState::UniswapV2(b)) => {
@@ -280,36 +276,30 @@ pub fn quote_path(
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::UniswapV2(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
+            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
             let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
+            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
             let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
-            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::UniswapV2(a), PoolState::Balancer(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
-            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
             let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
+            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
             optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::UniswapV3(b)) => {
-            let (b_a_in, b_a_out, fee_a) = balancer_reserves(a, token_in, shared_token)?;
+            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
             let zero_b = shared_token == b.info.token0;
-            let (wa_in, wa_out) = balancer_weights(a, token_in, shared_token);
-            let quote_a = |x: u128| balancer_output_amount(x, b_a_in, b_a_out, wa_in, wa_out, fee_a);
+            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            optimal_two_hop_arb_generic(b_a_in, &quote_a, &quote_b)
+            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::Balancer(b)) => {
             let zero_a = shared_token == a.info.token1;
-            let (b_b_in, b_b_out, fee_b) = balancer_reserves(b, shared_token, token_out)?;
-            let (wb_in, wb_out) = balancer_weights(b, shared_token, token_out);
             let max_input = max_v3_tradeable_amount(a, zero_a);
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| balancer_output_amount(x, b_b_in, b_b_out, wb_in, wb_out, fee_b);
+            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
         // Unsupported type combinations
@@ -364,9 +354,7 @@ fn two_hop_profit_at(
             curve_output_amount(input_amount, a, token_in, shared_token)?
         }
         PoolState::Balancer(a) => {
-            let (reserve_in, reserve_out, fee) = balancer_reserves(a, token_in, shared_token)?;
-            let (w_in, w_out) = balancer_weights(a, token_in, shared_token);
-            balancer_output_amount(input_amount, reserve_in, reserve_out, w_in, w_out, fee)?
+            balancer_quote_exact_in(input_amount, a, token_in, shared_token)?
         }
     };
 
@@ -383,9 +371,7 @@ fn two_hop_profit_at(
             curve_output_amount(intermediate, b, shared_token, token_out)?
         }
         PoolState::Balancer(b) => {
-            let (reserve_in, reserve_out, fee) = balancer_reserves(b, shared_token, token_out)?;
-            let (w_in, w_out) = balancer_weights(b, shared_token, token_out);
-            balancer_output_amount(intermediate, reserve_in, reserve_out, w_in, w_out, fee)?
+            balancer_quote_exact_in(intermediate, b, shared_token, token_out)?
         }
     };
 
@@ -648,6 +634,82 @@ pub fn balancer_output_amount(
     if output_f64 <= 0.0 { return None; }
 
     Some(output_f64 as u128)
+}
+
+/// Balancer Stable pool output amount using the StableSwap invariant.
+///
+/// Uses the same Newton's method as Curve's StableSwap, but with the Balancer
+/// amplification parameter from `getAmplificationParameter()`.
+fn balancer_stable_output_amount(
+    amount_in: u128,
+    pool: &BalancerPoolState,
+    token_in: Address,
+    token_out: Address,
+) -> Option<u128> {
+    let n = pool.balances.len();
+    if n < 2 || amount_in == 0 {
+        return None;
+    }
+    let idx_in = *pool.token_index.get(&token_in)?;
+    let idx_out = *pool.token_index.get(&token_out)?;
+    let balances: Vec<f64> = pool.balances.iter().map(|&b| b as f64).collect();
+    if balances[idx_in] <= 0.0 || balances[idx_out] <= 0.0 {
+        return None;
+    }
+
+    let a = pool.amplification.unwrap_or(100) as f64;
+    let nn = (n as f64).powf(n as f64);
+    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
+
+    // Phase 1: Compute invariant D
+    let sum: f64 = balances.iter().sum();
+    let prod: f64 = balances.iter().product();
+    if prod <= 0.0 {
+        return None;
+    }
+    let ann = a * nn;
+    let d_init = sum;
+    let d = newton_stableswap_invariant(n, ann, sum, prod, d_init)?;
+
+    // Phase 2: Apply fee to input
+    let x_in_new = balances[idx_in] + amount_in as f64 * fee_factor;
+
+    // Phase 3: Solve for x_out'
+    let sum_others: f64 = balances.iter().enumerate()
+        .filter(|&(i, _)| i != idx_out)
+        .map(|(_, &v)| v)
+        .sum::<f64>() + (x_in_new - balances[idx_in]);
+    let prod_others: f64 = balances.iter().enumerate()
+        .filter(|&(i, _)| i != idx_out && i != idx_in)
+        .map(|(_, &v)| v)
+        .product::<f64>() * x_in_new;
+    if prod_others <= 0.0 {
+        return None;
+    }
+
+    let x_out_new = newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
+    let output = balances[idx_out] - x_out_new;
+    if output <= 0.0 { None } else { Some(output as u128) }
+}
+
+/// Dispatch to the correct Balancer quoting formula based on pool variant.
+/// Weighted pools use the weighted product formula; Stable pools use StableSwap.
+pub fn balancer_quote_exact_in(
+    amount_in: u128,
+    pool: &BalancerPoolState,
+    token_in: Address,
+    token_out: Address,
+) -> Option<u128> {
+    match pool.pool_variant {
+        BalancerPoolVariant::Stable | BalancerPoolVariant::ComposableStable => {
+            balancer_stable_output_amount(amount_in, pool, token_in, token_out)
+        }
+        BalancerPoolVariant::Weighted | BalancerPoolVariant::Other => {
+            let (reserve_in, reserve_out, fee) = balancer_reserves(pool, token_in, token_out)?;
+            let (w_in, w_out) = balancer_weights(pool, token_in, token_out);
+            balancer_output_amount(amount_in, reserve_in, reserve_out, w_in, w_out, fee)
+        }
+    }
 }
 
 /// Extract Curve pool reserves for a specific token pair (token_in → token_out).

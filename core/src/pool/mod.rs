@@ -11,5 +11,5 @@ pub use decoders::{V3SwapDecoded, V3MintBurnDecoded, CurveSwapDecoded, BalancerS
 pub use dex_type::DexType;
 pub use discovery::DiscoveredPool;
 pub use math::TwoHopArbResult;
-pub use state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState, CurvePoolState, BalancerPoolState};
+pub use state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState, CurvePoolState, BalancerPoolState, BalancerPoolVariant};
 pub use v3_quote::{quote_v3_exact_in, quote_v3_exact_out};

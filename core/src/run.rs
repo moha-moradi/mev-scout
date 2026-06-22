@@ -653,6 +653,8 @@ fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                     token_index: std::collections::HashMap::new(),
                     pool_id: None,
                     weights: vec![],
+                    pool_variant: crate::pool::state::BalancerPoolVariant::Weighted,
+                    amplification: None,
                 },
             ));
         }

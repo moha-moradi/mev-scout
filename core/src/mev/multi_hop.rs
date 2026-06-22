@@ -5,7 +5,7 @@ use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
-use crate::mev::two_hop::{curve_output_amount, balancer_output_amount};
+use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
 use crate::types::{GasConfig, Strategy};
 
 /// Detects multi-hop arbitrage opportunities across connected pool paths.
@@ -336,18 +336,10 @@ impl MultiHopArbDetector {
                 curve_output_amount(amount_in, curve, token_in, *token_out)
             }
             PoolState::Balancer(bal) => {
-                let (&idx_in, &idx_out) = (
-                    bal.token_index.get(&token_in)?,
-                    bal.token_index.keys()
-                        .filter(|k| **k != token_in)
-                        .min()
-                        .and_then(|k| bal.token_index.get(k))?,
-                );
-                let balance_in = bal.balances[idx_in];
-                let balance_out = bal.balances[idx_out];
-                let w_in = bal.weights.get(idx_in).copied().unwrap_or(1_000_000_000_000_000_000u128);
-                let w_out = bal.weights.get(idx_out).copied().unwrap_or(1_000_000_000_000_000_000u128);
-                balancer_output_amount(amount_in, balance_in, balance_out, w_in, w_out, bal.info.fee)
+                let token_out = *bal.token_index.keys()
+                    .filter(|k| **k != token_in)
+                    .min()?;
+                balancer_quote_exact_in(amount_in, bal, token_in, token_out)
             }
         }
     }

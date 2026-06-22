@@ -9,7 +9,7 @@ use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
     V3_SWAP_TOPIC,
 };
-use crate::mev::two_hop::{balancer_output_amount, curve_output_amount};
+use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in};
@@ -270,12 +270,7 @@ impl SandwichDetector {
                 } else {
                     (token_out, token_in)
                 };
-                let idx_in = *bal.token_index.get(&ti)?;
-                let idx_out = *bal.token_index.get(&to)?;
-                let default_w = 1_000_000_000_000_000_000u128;
-                let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
-                let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
-                balancer_output_amount(front_in_adj, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)?
+                balancer_quote_exact_in(front_in_adj, bal, ti, to)?
             }
         };
 
@@ -354,12 +349,7 @@ impl SandwichDetector {
                 curve_output_amount(profit_raw, curve, profit_token, native_token)?
             }
             Some(PoolState::Balancer(bal)) => {
-                let idx_in = *bal.token_index.get(&profit_token)?;
-                let idx_out = *bal.token_index.get(&native_token)?;
-                let default_w = 1_000_000_000_000_000_000u128;
-                let w_in = bal.weights.get(idx_in).copied().unwrap_or(default_w);
-                let w_out = bal.weights.get(idx_out).copied().unwrap_or(default_w);
-                balancer_output_amount(profit_raw, bal.balances[idx_in], bal.balances[idx_out], w_in, w_out, bal.info.fee)?
+                balancer_quote_exact_in(profit_raw, bal, profit_token, native_token)?
             }
             _ => return None,
         };
@@ -420,21 +410,8 @@ impl SandwichDetector {
                         } else { None }
                     }
                     Some(crate::pool::state::PoolState::Balancer(bal)) => {
-                        if let (Some(&idx_in), Some(&idx_out)) = (
-                            bal.token_index.get(&profit_token),
-                            bal.token_index.get(&native_token),
-                        ) {
-                            let reserve_in = bal.balances[idx_in];
-                            let reserve_out = bal.balances[idx_out];
-                            let default_w = 1_000_000_000_000_000_000u128;
-                            let (w_in, w_out) = if bal.weights.len() == bal.balances.len() && !bal.weights.is_empty() {
-                                (bal.weights[idx_in], bal.weights[idx_out])
-                            } else {
-                                (default_w, default_w)
-                            };
-                            balancer_output_amount(
-                                profit_raw, reserve_in, reserve_out, w_in, w_out, bal.info.fee,
-                            )
+                        if bal.token_index.contains_key(&profit_token) && bal.token_index.contains_key(&native_token) {
+                            balancer_quote_exact_in(profit_raw, bal, profit_token, native_token)
                         } else { None }
                     }
                     _ => {

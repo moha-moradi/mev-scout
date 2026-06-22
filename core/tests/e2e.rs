@@ -11,7 +11,7 @@ use mev_scout_core::mev::two_hop::TwoHopArbDetector;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::discovery::discover_v2_pools;
 use mev_scout_core::pool::state::{
-    PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+    BalancerPoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
 };
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
@@ -96,6 +96,8 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             token_index: HashMap::new(),
             pool_id: None,
             weights: vec![],
+            pool_variant: BalancerPoolVariant::Weighted,
+            amplification: None,
         }),
     }
 }
