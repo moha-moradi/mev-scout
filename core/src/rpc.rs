@@ -19,6 +19,7 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
+use serde_json::Value;
 use tokio::time::sleep;
 use url::Url;
 
@@ -229,6 +230,21 @@ impl RpcClient {
         .await
     }
 
+    /// Some chains (e.g. Polygon) include non-standard transaction types (e.g. `"0x7f"`)
+    /// that alloy's `TxEnvelope` cannot deserialize. This helper removes them from the raw JSON.
+    fn clean_block_transactions(raw: &mut Value) {
+        if let Some(transactions) = raw.get_mut("transactions") {
+            if let Some(tx_array) = transactions.as_array_mut() {
+                tx_array.retain(|tx| {
+                    tx.get("type")
+                        .and_then(|t| t.as_str())
+                        .map(|t| matches!(t, "0x0" | "0x1" | "0x2" | "0x3" | "0x4"))
+                        .unwrap_or(true)
+                });
+            }
+        }
+    }
+
     /// Fetch a full block (header + transactions) by block number.
     ///
     /// Returns `BlockData` (header fields) and `Vec<TxData>` (transaction list).
@@ -236,12 +252,23 @@ impl RpcClient {
     pub async fn get_block(&self, block_number: u64) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block: Block = self
             .retry_call(|provider| async move {
-                provider
-                    .get_block_by_number(block_number.into())
-                    .full()
+                let raw: Value = provider
+                    .client()
+                    .request(
+                        "eth_getBlockByNumber",
+                        (BlockNumberOrTag::Number(block_number), true),
+                    )
                     .await
-                    .map_err(|e| anyhow::anyhow!(e))?
-                    .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))
+                    .map_err(|e| anyhow::anyhow!(e))?;
+
+                if raw.is_null() {
+                    return Err(anyhow::anyhow!("Block {} not found", block_number));
+                }
+
+                let mut raw = raw;
+                Self::clean_block_transactions(&mut raw);
+
+                serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!(e))
             })
             .await?;
 
