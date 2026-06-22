@@ -1,4 +1,58 @@
-//! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, and multi-hop routing.
+//! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
+//! and unified `quote_exact_in` dispatcher for all pool types.
+
+use alloy::primitives::Address;
+use crate::pool::state::PoolState;
+use crate::pool::v3_quote::quote_v3_exact_in;
+use super::curve_math;
+use super::balancer_math;
+
+/// Unified single-pool quoting dispatch.
+///
+/// Routes to the correct quoting function based on pool type and variant.
+/// This is the single entry point for all exact-input quotes across all DEX types.
+/// New pool variants only need to be handled in this function.
+pub fn quote_exact_in(
+    pool: &PoolState,
+    token_in: Address,
+    token_out: Address,
+    amount_in: u128,
+) -> Option<u128> {
+    if amount_in == 0 {
+        return None;
+    }
+    match pool {
+        PoolState::UniswapV2(v2) => {
+            let (reserve_in, reserve_out) = if v2.info.token0 == token_in {
+                (v2.reserve0, v2.reserve1)
+            } else if v2.info.token1 == token_in {
+                (v2.reserve1, v2.reserve0)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
+        }
+        PoolState::UniswapV3(v3) => {
+            let zero_for_one = v3.info.token0 == token_in;
+            if !zero_for_one && v3.info.token1 != token_in {
+                return None;
+            }
+            quote_v3_exact_in(v3, amount_in, zero_for_one)
+        }
+        PoolState::Curve(curve) => {
+            if !curve.token_index.contains_key(&token_in) || !curve.token_index.contains_key(&token_out) {
+                return None;
+            }
+            curve_math::curve_output_amount(amount_in, curve, token_in, token_out)
+        }
+        PoolState::Balancer(bal) => {
+            if !bal.token_index.contains_key(&token_in) || !bal.token_index.contains_key(&token_out) {
+                return None;
+            }
+            balancer_math::balancer_quote_exact_in(amount_in, bal, token_in, token_out)
+        }
+    }
+}
 
 /// Compute output amount for a given input amount under constant product.
 ///

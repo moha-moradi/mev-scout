@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alloy::consensus::Transaction;
+use alloy::eips::BlockNumberOrTag;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
@@ -241,6 +242,49 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?
                     .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))
+            })
+            .await?;
+
+        let txs: Vec<TxData> = block
+            .transactions
+            .as_transactions()
+            .map(|txs| {
+                txs.iter()
+                    .enumerate()
+                    .map(|(i, tx)| alloy_tx_to_tx_data(tx, i as u64))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let block_data = BlockData {
+            number: block.header.number,
+            hash: block.header.hash,
+            timestamp: block.header.timestamp,
+            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
+            gas_limit: block.header.gas_limit,
+            gas_used: block.header.gas_used,
+            coinbase: block.header.beneficiary,
+        };
+
+        Ok((block_data, txs))
+    }
+
+    /// Fetch the pending block (header + transactions) from the node's mempool.
+    ///
+    /// Calls `eth_getBlockByNumber("pending", true)` to retrieve all pending
+    /// (not-yet-mined) transactions. The pending block number may be `None`
+    /// on some nodes — in that case `block_data.number` is set to 0.
+    ///
+    /// Returns an error if the RPC does not support pending block queries.
+    pub async fn get_pending_block(&self) -> anyhow::Result<(BlockData, Vec<TxData>)> {
+        let block: Block = self
+            .retry_call(|provider| async move {
+                provider
+                    .get_block_by_number(BlockNumberOrTag::Pending)
+                    .full()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .ok_or_else(|| anyhow::anyhow!("Pending block not available"))
             })
             .await?;
 

@@ -5,7 +5,7 @@ use alloy::primitives::{keccak256, Address, Bytes, U256};
 use serde::{Deserialize, Serialize};
 
 use crate::mev::opportunity::MevOpportunity;
-use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
+use crate::pool::math::quote_exact_in;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState};
 use crate::pool::v3_quote::quote_v3_exact_in;
@@ -25,6 +25,8 @@ pub struct BlockReplayStats {
     pub block_number: u64,
     pub total_tx_count: usize,
     pub dex_tx_count: usize,
+    pub pending_tx_count: usize,
+    pub mempool_opp_count: usize,
 }
 
 /// Per-block summary from a backtest run.
@@ -33,6 +35,8 @@ pub struct BlockSummary {
     pub block_number: u64,
     pub total_tx: usize,
     pub dex_tx: usize,
+    pub pending_tx: usize,
+    pub mempool_opps: usize,
     pub opportunities: usize,
     pub by_strategy: std::collections::HashMap<String, usize>,
 }
@@ -217,6 +221,8 @@ pub fn compute_block_summaries(
             block_number: block_num,
             total_tx: stats.total_tx_count,
             dex_tx: stats.dex_tx_count,
+            pending_tx: stats.pending_tx_count,
+            mempool_opps: stats.mempool_opp_count,
             opportunities: opps.len(),
             by_strategy,
         });
@@ -251,16 +257,8 @@ pub fn quote_single_swap(
             }
             quote_v3_exact_in(v3, amount_in, zero_for_one)
         }
-        PoolState::Curve(curve) => {
-            if !curve.token_index.contains_key(&token_in)
-                || !curve.token_index.contains_key(&token_out)
-            {
-                return None;
-            }
-            curve_output_amount(amount_in, curve, token_in, token_out)
-        }
-        PoolState::Balancer(bal) => {
-            balancer_quote_exact_in(amount_in, bal, token_in, token_out)
+        PoolState::Curve(_) | PoolState::Balancer(_) => {
+            quote_exact_in(pool, token_in, token_out, amount_in)
         }
     }
 }
@@ -552,8 +550,8 @@ async fn evm_quote_single_swap(
             };
             constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
         }
-        PoolState::Balancer(bal) => {
-            balancer_quote_exact_in(amount_in, bal, token_in, token_out)
+        PoolState::Balancer(_) => {
+            quote_exact_in(pool, token_in, token_out, amount_in)
         }
     }
 }
@@ -659,6 +657,7 @@ pub async fn simulate_opportunity_evm(
             Some(U256::from(back - input))
         }
         Strategy::Jit | Strategy::JitArb | Strategy::Liquidation => None,
+        Strategy::CrossBlockArb | Strategy::TimeBandit => None,
     }
 }
 
@@ -793,6 +792,7 @@ pub fn recompute_opportunity_profit(
             let total = U256::from(arb_profit.saturating_add(jit_fee));
             if total.is_zero() { None } else { Some(total) }
         }
+        Strategy::CrossBlockArb | Strategy::TimeBandit => None,
     }
 }
 
@@ -970,6 +970,8 @@ mod tests {
             block_number: 1,
             total_tx_count: 100,
             dex_tx_count: 25,
+            pending_tx_count: 0,
+            mempool_opp_count: 0,
         }];
         let opps = vec![
             MevOpportunity {
@@ -1003,11 +1005,15 @@ mod tests {
                 block_number: 1,
                 total_tx_count: 100,
                 dex_tx_count: 25,
+                pending_tx_count: 0,
+                mempool_opp_count: 0,
             },
             BlockReplayStats {
                 block_number: 2,
                 total_tx_count: 50,
                 dex_tx_count: 10,
+                pending_tx_count: 0,
+                mempool_opp_count: 0,
             },
         ];
         let opps = vec![
@@ -1050,6 +1056,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: Some(1),
             backrun_tx_index: Some(2),
+            mempool_only: false,
+            confidence: None,
         };
         let checks = verify_opportunities(&[opp], None);
         assert_eq!(checks.len(), 1);
@@ -1094,6 +1102,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         };
         let unprofitable = MevOpportunity {
             expected_profit: U256::from(50),
@@ -1286,6 +1296,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         };
         let checks = verify_opportunities(&[opp], None);
         assert_eq!(checks.len(), 1);

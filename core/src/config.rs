@@ -141,6 +141,13 @@ pub struct Config {
     /// Proximity window (in tx indices) for JitArb detection (default: 3).
     #[serde(default = "default_proximity_window")]
     pub proximity_window: usize,
+    /// Capture pending transactions from the mempool during backtest (default: false).
+    #[serde(default)]
+    pub capture_pending: bool,
+    /// Cross-block MEV detection window size (default: 0 = disabled).
+    /// When > 1, tracks pool price snapshots across consecutive blocks.
+    #[serde(default)]
+    pub cross_block_window: usize,
 }
 
 fn default_pga_mean_competitors() -> f64 { 3.0 }
@@ -219,6 +226,8 @@ impl Default for Config {
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
             proximity_window: default_proximity_window(),
+            capture_pending: false,
+            cross_block_window: 0,
         }
     }
 }
@@ -464,14 +473,15 @@ impl Config {
             .join(", ");
 
         format!(
-            r#"Chain:           {} (chain ID {})
-RPC:             {}
-Block range:     {} → {}
-Strategies:      {}
-Flash loan:      {}
-Gas model:       {}
-DB path:         {}
-Parquet dir:     {}
+            r#"Chain:               {} (chain ID {})
+RPC:                 {}
+Block range:         {} → {}
+Strategies:          {}
+Flash loan:          {}
+Gas model:           {}
+Cross-block window:  {}
+DB path:             {}
+Parquet dir:         {}
 "#,
             chain_name,
             chain_cfg.chain_id,
@@ -481,6 +491,7 @@ Parquet dir:     {}
             strat_list,
             provider_desc,
             self.gas_model,
+            if self.cross_block_window > 0 { format!("{} blocks", self.cross_block_window) } else { "disabled".to_string() },
             self.db_path,
             self.parquet_dir.as_deref().unwrap_or("(none)"),
         )
@@ -513,6 +524,8 @@ pub struct CliOverrides {
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
     pub proximity_window: Option<usize>,
+    pub capture_pending: Option<bool>,
+    pub cross_block_window: Option<usize>,
 }
 
 impl Config {
@@ -588,6 +601,12 @@ impl Config {
         }
         if let Some(v) = overrides.proximity_window {
             self.proximity_window = v;
+        }
+        if let Some(v) = overrides.capture_pending {
+            self.capture_pending = v;
+        }
+        if let Some(v) = overrides.cross_block_window {
+            self.cross_block_window = v;
         }
     }
 
@@ -711,6 +730,8 @@ rpc_url = "https://eth.diy"
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -745,6 +766,8 @@ rpc_url = "https://eth.diy"
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));
@@ -768,5 +791,6 @@ rpc_url = "https://eth.diy"
         assert!(summary.contains("two_hop_arb"));
         assert!(summary.contains("Flash loan:"));
         assert!(summary.contains("auto (Balancer"));
+        assert!(summary.contains("disabled"));
     }
 }

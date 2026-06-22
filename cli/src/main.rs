@@ -67,6 +67,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: Some(args.price_oracle_mode.clone()),
             token_prices: args.token_prices.clone(),
             proximity_window: Some(args.proximity_window),
+            capture_pending: Some(args.capture_pending),
+            cross_block_window: Some(args.cross_block_window),
         },
         Command::Fetch(args) => CliOverrides {
             days: args.block_range.days,
@@ -93,6 +95,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
         Command::Replay(args) => CliOverrides {
             days: None,
@@ -119,6 +123,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
         Command::Report(args) => CliOverrides {
             days: None,
@@ -145,6 +151,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
         Command::Config => CliOverrides {
             days: None,
@@ -171,6 +179,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
         Command::Discover(args) => CliOverrides {
             days: None,
@@ -197,6 +207,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
         Command::FactCheck(_) => CliOverrides {
             days: None,
@@ -223,6 +235,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             price_oracle_mode: None,
             token_prices: None,
             proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
         },
     }
 }
@@ -280,12 +294,17 @@ fn pool_name(pm: &PoolManager, addr: &alloy::primitives::Address) -> String {
 
 fn render_results_table(all_opportunities: &[mev_scout_core::mev::opportunity::MevOpportunity], pool_manager: Option<&PoolManager>) {
     let mut table = Table::new();
+    let has_confidence = all_opportunities.iter().any(|opp| opp.confidence.is_some());
 
     if pool_manager.is_some() {
-        table.set_header(vec![
+        let mut headers = vec![
             "Block", "Tx", "Strategy", "Pool A / Pool B",
             "Input", "Profit (token_out)", "Gas (wei)",
-        ]);
+        ];
+        if has_confidence {
+            headers.push("Confidence");
+        }
+        table.set_header(headers);
 
         for opp in all_opportunities {
             let pm = pool_manager.unwrap();
@@ -295,7 +314,7 @@ fn render_results_table(all_opportunities: &[mev_scout_core::mev::opportunity::M
             } else {
                 pool_name(pm, &opp.pool_b)
             };
-            table.add_row(vec![
+            let mut row = vec![
                 format!("{}", opp.block_number),
                 format!("{}", opp.tx_index),
                 format!("{}", opp.strategy),
@@ -303,23 +322,35 @@ fn render_results_table(all_opportunities: &[mev_scout_core::mev::opportunity::M
                 format!("{}", opp.input_amount),
                 format!("{}", opp.expected_profit),
                 format!("{}", opp.gas_cost_wei),
-            ]);
+            ];
+            if has_confidence {
+                row.push(opp.confidence.map_or("-".to_string(), |c| format!("{:.2}", c)));
+            }
+            table.add_row(row);
         }
     } else {
-        table.set_header(vec![
+        let mut headers = vec![
             "Block", "Tx", "Strategy",
             "Input", "Profit (token_out)", "Gas (wei)",
-        ]);
+        ];
+        if has_confidence {
+            headers.push("Confidence");
+        }
+        table.set_header(headers);
 
         for opp in all_opportunities {
-            table.add_row(vec![
+            let mut row = vec![
                 format!("{}", opp.block_number),
                 format!("{}", opp.tx_index),
                 format!("{}", opp.strategy),
                 format!("{}", opp.input_amount),
                 format!("{}", opp.expected_profit),
                 format!("{}", opp.gas_cost_wei),
-            ]);
+            ];
+            if has_confidence {
+                row.push(opp.confidence.map_or("-".to_string(), |c| format!("{:.2}", c)));
+            }
+            table.add_row(row);
         }
     }
 
@@ -331,23 +362,48 @@ fn render_block_summary_table(summaries: &[BlockReplayStats]) {
         return;
     }
     let mut table = Table::new();
-    table.set_header(vec!["Block", "Txs", "DEX txs"]);
+    let has_pending = summaries.iter().any(|s| s.pending_tx_count > 0);
+    if has_pending {
+        table.set_header(vec!["Block", "Txs", "DEX txs", "Pending"]);
+    } else {
+        table.set_header(vec!["Block", "Txs", "DEX txs"]);
+    }
     let mut total_tx = 0usize;
     let mut total_dex = 0usize;
+    let mut total_pending = 0usize;
     for s in summaries {
         total_tx += s.total_tx_count;
         total_dex += s.dex_tx_count;
+        total_pending += s.pending_tx_count;
+        if has_pending {
+            table.add_row(vec![
+                format!("{}", s.block_number),
+                format!("{}", s.total_tx_count),
+                format!("{}", s.dex_tx_count),
+                format!("{}", s.pending_tx_count),
+            ]);
+        } else {
+            table.add_row(vec![
+                format!("{}", s.block_number),
+                format!("{}", s.total_tx_count),
+                format!("{}", s.dex_tx_count),
+            ]);
+        }
+    }
+    if has_pending {
         table.add_row(vec![
-            format!("{}", s.block_number),
-            format!("{}", s.total_tx_count),
-            format!("{}", s.dex_tx_count),
+            format!("{}", "Total"),
+            format!("{}", total_tx),
+            format!("{}", total_dex),
+            format!("{}", total_pending),
+        ]);
+    } else {
+        table.add_row(vec![
+            format!("{}", "Total"),
+            format!("{}", total_tx),
+            format!("{}", total_dex),
         ]);
     }
-    table.add_row(vec![
-        format!("{}", "Total"),
-        format!("{}", total_tx),
-        format!("{}", total_dex),
-    ]);
     println!("\nBlock Summary");
     println!("{table}");
 }
@@ -594,7 +650,13 @@ async fn main() -> anyhow::Result<()> {
                 None
             };
             let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-                .with_proximity_window(config.proximity_window);
+                .with_proximity_window(config.proximity_window)
+                .with_capture_pending(config.capture_pending);
+
+            // L2: Enable cross-block MEV detection when window is configured
+            if config.cross_block_window > 0 {
+                runner = runner.with_cross_block(config.cross_block_window);
+            }
 
             // Pre-fetch Aave V3 reserve data for per-asset liquidation parameters (L1).
             // This populates the reserve cache so LiquidationDetector can use real
@@ -740,6 +802,16 @@ async fn main() -> anyhow::Result<()> {
 
             // Block summary table
             render_block_summary_table(&block_stats);
+
+            // H8 Phase 3: show mempool-only opportunity count
+            let mempool_opps: usize = block_stats.iter().map(|s| s.mempool_opp_count).sum();
+            if mempool_opps > 0 {
+                let mempool_txs: usize = block_stats.iter().map(|s| s.pending_tx_count).sum();
+                println!(
+                    "  Mempool: {} pending txs, {} mempool-only opportunities visible",
+                    mempool_txs, mempool_opps,
+                );
+            }
 
             // Print USD aggregation if computed (L3/L5)
             if let Some(ref agg) = aggregation {
@@ -976,16 +1048,17 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 OutputFormat::Csv => {
-                    println!("block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei");
+                    println!("block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence");
                     for opp in &results_file.opportunities {
                         println!(
-                            "{},{},{},{},{},{}",
+                            "{},{},{},{},{},{},{}",
                             opp.block_number,
                             opp.tx_index,
                             opp.strategy,
                             opp.input_amount,
                             opp.expected_profit,
                             opp.gas_cost_wei,
+                            opp.confidence.map_or("".to_string(), |c| format!("{:.2}", c)),
                         );
                     }
                 }

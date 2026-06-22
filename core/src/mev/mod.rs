@@ -2,9 +2,11 @@
 //! and PGA simulation for competition-adjusted profit estimates.
 
 pub mod block_builder;
+pub mod cross_block;
 pub mod jit;
 pub mod jit_arb;
 pub mod liquidation;
+pub mod mempool;
 pub mod sandwich;
 pub mod multi_hop;
 pub mod opportunity;

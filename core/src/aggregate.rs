@@ -75,6 +75,8 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
         Strategy::JitArb => "jitarb",
         Strategy::Sandwich => "sandwich",
         Strategy::Liquidation => "liquidation",
+        Strategy::CrossBlockArb => "crossblock",
+        Strategy::TimeBandit => "timebandit",
     }
 }
 
@@ -381,6 +383,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         }
     }
 

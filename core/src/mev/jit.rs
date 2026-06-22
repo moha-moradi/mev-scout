@@ -325,6 +325,8 @@ impl JitDetector {
             liquidity_amount: Some(mint.amount),
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         }
     }
 }

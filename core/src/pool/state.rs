@@ -124,6 +124,20 @@ impl UniswapV3PoolState {
     }
 }
 
+/// Curve pool variant — determines which quoting formula to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CurvePoolVariant {
+    #[default]
+    /// Standard StableSwap (Plain or Lending pools).
+    Plain,
+    /// Metapool — wraps a base pool LP token; needs base-pool nesting for quotes.
+    Meta,
+    /// CryptoSwap V2 (Tricrypto, Two-Asset, etc.) — uses gamma, price_scale, dynamic fee.
+    Crypto,
+    /// Catch-all for unsupported variants.
+    Other,
+}
+
 /// Runtime state for a Curve pool (stable-swap / crypto).
 #[derive(Debug, Clone)]
 pub struct CurvePoolState {
@@ -132,6 +146,14 @@ pub struct CurvePoolState {
     pub token_index: HashMap<Address, usize>,
     /// Amplification coefficient (A). Defaults to 100 if unknown.
     pub a_coeff: u128,
+    /// Pool variant — determines which quoting formula to use.
+    pub pool_variant: CurvePoolVariant,
+    /// Gamma parameter for CryptoSwap V2 pools (price-invariant-convergence).
+    pub gamma: Option<u128>,
+    /// Price scale for CryptoSwap V2 pools (one per non-first token).
+    pub price_scale: Vec<u128>,
+    /// Base pool address for metapools (None for plain/crypto pools).
+    pub base_pool: Option<Address>,
 }
 
 /// Balancer pool variant — determines which quoting formula to use.
@@ -160,6 +182,10 @@ pub struct BalancerPoolState {
     pub pool_variant: BalancerPoolVariant,
     /// Amplification parameter for Stable pools (None for Weighted pools).
     pub amplification: Option<u128>,
+    /// Scaling factors for each token (Composable Stable / Boosted pools).
+    pub scaling_factors: Vec<u128>,
+    /// Index of the pool's own BPT token in the token list (None for non-composable).
+    pub bpt_index: Option<usize>,
 }
 
 /// Runtime state for any tracked pool.
@@ -233,10 +259,10 @@ pub fn calldata_gas_estimate(pool_count: usize) -> u64 {
 enum PoolInitResult {
     V2Reserves(u128, u128),
     V3State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
-    /// (tokens, balances, weights, fee_bps, variant, amplification)
-    BalancerState(Vec<Address>, Vec<u128>, Vec<u128>, u32, BalancerPoolVariant, Option<u128>),
-    /// (tokens, balances, a_coeff, fee_bps)
-    CurveState(Vec<Address>, Vec<u128>, u128, u32),
+    /// (tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index)
+    BalancerState(Vec<Address>, Vec<u128>, Vec<u128>, u32, BalancerPoolVariant, Option<u128>, Vec<u128>, Option<usize>),
+    /// (tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool)
+    CurveState(Vec<Address>, Vec<u128>, u128, u32, CurvePoolVariant, Option<u128>, Vec<u128>, Option<Address>),
 }
 
 /// Event signature for Uniswap V2 Swap event
@@ -254,6 +280,22 @@ const CURVE_A_SELECTOR: [u8; 4] = [0x0f, 0x0b, 0x7c, 0x7e];
 
 /// fee() selector for Curve pools — swap fee (parts per 10¹⁰)
 const CURVE_FEE_SELECTOR: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43];
+
+/// get_A() selector for Curve CryptoSwap V2 pools
+const CURVE_GET_A_SELECTOR: [u8; 4] = [0x4d, 0x30, 0xa4, 0x7f];
+
+/// gamma() selector for Curve CryptoSwap V2 pools
+const CURVE_GAMMA_SELECTOR: [u8; 4] = [0x67, 0x1d, 0x47, 0x23];
+
+/// price_scale() selector for Curve CryptoSwap V2 pools (returns all scales as array)
+const CURVE_PRICE_SCALE_SELECTOR: [u8; 4] = [0x5e, 0x0d, 0x7a, 0x5a];
+
+/// price_oracle(uint256) selector for Curve CryptoSwap V2 pools
+#[allow(dead_code)]
+const CURVE_PRICE_ORACLE_SELECTOR: [u8; 4] = [0xaa, 0x1e, 0x29, 0x84];
+
+/// base_pool() selector for Curve Metapools
+const CURVE_BASE_POOL_SELECTOR: [u8; 4] = [0x9c, 0xec, 0x6e, 0xae];
 
 /// slot0() selector for Uniswap V3
 static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
@@ -286,6 +328,12 @@ static GET_SWAP_FEE_PERCENTAGE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
 /// getAmplificationParameter() selector for Balancer stable pools
 static GET_AMPLIFICATION_PARAMETER_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"getAmplificationParameter()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// getScalingFactors() selector for Balancer composable/boosted pools
+static GET_SCALING_FACTORS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getScalingFactors()");
     Bytes::copy_from_slice(&hash[..4])
 });
 
@@ -684,25 +732,23 @@ impl PoolManager {
                         }
                     }
                 }
-                Some(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification)) => {
+                Some(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index)) => {
                     if let Some(PoolState::Balancer(state)) = self.pools.get_mut(addr) {
                         state.balances = balances;
                         state.weights = weights;
                         state.info.fee = fee_bps;
                         state.pool_variant = variant;
                         state.amplification = amplification;
-                        // Update token0/token1 from on-chain data
+                        state.scaling_factors = scaling_factors;
+                        state.bpt_index = bpt_index;
                         if tokens.len() >= 2 {
                             state.info.token0 = tokens[0];
                             state.info.token1 = tokens[1];
                         }
-                        // Rebuild token_index from all tokens
                         state.token_index.clear();
                         for (i, token) in tokens.iter().enumerate() {
                             state.token_index.insert(*token, i);
                         }
-                        // Register all tokens in the pool manager's token_index so
-                        // multi-token pools are discoverable through arbitrage_pairs()
                         for token in &tokens {
                             if !token.is_zero() {
                                 self.token_index.entry(*token).or_default().push(*addr);
@@ -710,11 +756,15 @@ impl PoolManager {
                         }
                     }
                 }
-                Some(PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps)) => {
+                Some(PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool)) => {
                     if let Some(PoolState::Curve(state)) = self.pools.get_mut(addr) {
                         state.balances = balances;
                         state.a_coeff = a_coeff;
                         state.info.fee = fee_bps;
+                        state.pool_variant = variant;
+                        state.gamma = gamma;
+                        state.price_scale = price_scale;
+                        state.base_pool = base_pool;
                         state.token_index.clear();
                         for (i, token) in tokens.iter().enumerate() {
                             state.token_index.insert(*token, i);
@@ -724,8 +774,6 @@ impl PoolManager {
                                 state.info.token1 = *token;
                             }
                         }
-                        // Register all tokens in the pool manager's token_index so
-                        // multi-token pools are discoverable through arbitrage_pairs()
                         for token in &tokens {
                             if !token.is_zero() {
                                 self.token_index.entry(*token).or_default().push(*addr);
@@ -1315,35 +1363,10 @@ impl PoolManager {
         if token == native {
             return Some(amount);
         }
-        // 1. Try direct pair
+        // 1. Try direct pair via unified dispatcher
         if let Some(pool_addr) = self.find_pair_pool(&token, &native) {
             if let Some(pool) = self.get(&pool_addr) {
-                let result = match pool {
-                    PoolState::UniswapV2(v2) => {
-                        let (reserve_token, reserve_native) = if v2.info.token0 == token {
-                            (v2.reserve0, v2.reserve1)
-                        } else {
-                            (v2.reserve1, v2.reserve0)
-                        };
-                        if reserve_token == 0 { None } else {
-                            Some(amount.saturating_mul(reserve_native).saturating_div(reserve_token))
-                        }
-                    }
-                    PoolState::UniswapV3(v3) => {
-                        let zero_for_one = v3.info.token0 == token;
-                        crate::pool::v3_quote::quote_v3_exact_in(v3, amount, zero_for_one)
-                    }
-                    PoolState::Curve(curve) => {
-                        if curve.token_index.contains_key(&token) && curve.token_index.contains_key(&native) {
-                            crate::mev::two_hop::curve_output_amount(amount, curve, token, native)
-                        } else { None }
-                    }
-                    PoolState::Balancer(bal) => {
-                        if bal.token_index.contains_key(&token) && bal.token_index.contains_key(&native) {
-                            crate::mev::two_hop::balancer_quote_exact_in(amount, bal, token, native)
-                        } else { None }
-                    }
-                };
+                let result = crate::pool::math::quote_exact_in(pool, token, native, amount);
                 if result.is_some() {
                     return result;
                 }
@@ -1375,7 +1398,7 @@ impl PoolManager {
             if self.find_pair_pool(&intermediate, &native).is_none() {
                 continue;
             }
-            // Step 1: token -> intermediate via the first pool
+            // Step 1: token -> intermediate via unified dispatcher
             let mid_amount = match pool {
                 PoolState::UniswapV2(v2) => {
                     let (reserve_token, reserve_intermediate) = if v2.info.token0 == token {
@@ -1386,16 +1409,7 @@ impl PoolManager {
                     if reserve_token == 0 { continue; }
                     amount.saturating_mul(reserve_intermediate).saturating_div(reserve_token)
                 }
-                PoolState::UniswapV3(v3) => {
-                    let zero_for_one = v3.info.token0 == token;
-                    crate::pool::v3_quote::quote_v3_exact_in(v3, amount, zero_for_one)?
-                }
-                PoolState::Curve(curve) => {
-                    crate::mev::two_hop::curve_output_amount(amount, curve, token, intermediate)?
-                }
-                PoolState::Balancer(bal) => {
-                    crate::mev::two_hop::balancer_quote_exact_in(amount, bal, token, intermediate)?
-                }
+                other => crate::pool::math::quote_exact_in(other, token, intermediate, amount)?,
             };
             if mid_amount == 0 {
                 continue;
@@ -1600,27 +1614,64 @@ impl PoolManager {
             }
         };
 
-        // --- Step 4: Determine pool variant and fetch amplification if applicable ---
-        let (variant, amplification) = if !weights.is_empty() {
+        // --- Step 4: Fetch scaling factors from pool ---
+        let scaling_factors = {
+            let mut calldata = Vec::with_capacity(4);
+            calldata.extend_from_slice(&GET_SCALING_FACTORS_SELECTOR);
+            match rpc.call(pool, Bytes::from(calldata), block).await {
+                Ok(result) if result.0.len() >= 64 => {
+                    let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
+                    let count = if off + 32 <= result.0.len() {
+                        U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as usize
+                    } else { 0 };
+                    let start = off + 32;
+                    let mut sf = Vec::with_capacity(count);
+                    for j in 0..count {
+                        let pos = start + j * 32;
+                        if pos + 32 <= result.0.len() {
+                            sf.push(U256::from_be_slice(&result.0[pos..pos + 32]).as_limbs()[0] as u128);
+                        }
+                    }
+                    sf
+                }
+                _ => vec![],
+            }
+        };
+
+        // --- Step 5: Determine pool variant, amplification, and BPT index ---
+        let (variant, amplification, bpt_index) = if !weights.is_empty() {
             // Has normalized weights → Weighted pool
-            (BalancerPoolVariant::Weighted, None)
+            (BalancerPoolVariant::Weighted, None, None)
         } else {
             // No weights — try amplification parameter to detect Stable pool
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&GET_AMPLIFICATION_PARAMETER_SELECTOR);
             match rpc.call(pool, Bytes::from(calldata), block).await {
                 Ok(result) if result.0.len() >= 96 => {
-                    // ABI decode: (uint256 value, bool isUpdating, uint256 precision)
                     let value = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
                     let precision = U256::from_be_slice(&result.0[64..96]).as_limbs()[0] as u128;
                     let effective_a = if precision > 0 { value / precision } else { value };
-                    (BalancerPoolVariant::Stable, Some(effective_a))
+
+                    // Detect ComposableStable: has scaling factors and one token matches pool address
+                    let bpt_idx = if scaling_factors.len() == token_count {
+                        tokens.iter().position(|t| *t == pool)
+                    } else {
+                        None
+                    };
+
+                    let variant = if bpt_idx.is_some() {
+                        BalancerPoolVariant::ComposableStable
+                    } else {
+                        BalancerPoolVariant::Stable
+                    };
+
+                    (variant, Some(effective_a), bpt_idx)
                 }
-                _ => (BalancerPoolVariant::Other, None),
+                _ => (BalancerPoolVariant::Other, None, None),
             }
         };
 
-        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification))
+        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index))
     }
 
     /// Re-fetch a pool's on-chain state at a given block number (M3 fact-check support).
@@ -1662,7 +1713,7 @@ impl PoolManager {
             PoolState::Curve(curve) => {
                 let result = Self::fetch_curve_state(rpc, *addr, block).await?;
                 match result {
-                    PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps) => {
+                    PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool) => {
                         let token_index: HashMap<Address, usize> = tokens
                             .iter()
                             .enumerate()
@@ -1675,6 +1726,10 @@ impl PoolManager {
                             balances,
                             token_index,
                             a_coeff,
+                            pool_variant: variant,
+                            gamma,
+                            price_scale,
+                            base_pool,
                         }))
                     }
                     _ => None,
@@ -1685,7 +1740,7 @@ impl PoolManager {
                 let pool_id = bal.pool_id?;
                 let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block).await.ok()?;
                 match result {
-                    PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification) => {
+                    PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index) => {
                         let token_index: HashMap<Address, usize> = tokens
                             .iter()
                             .enumerate()
@@ -1701,6 +1756,8 @@ impl PoolManager {
                             weights,
                             pool_variant: variant,
                             amplification,
+                            scaling_factors,
+                            bpt_index,
                         }))
                     }
                     _ => None,
@@ -1711,7 +1768,7 @@ impl PoolManager {
 
     /// Fetch Curve pool state by calling `coins(int128)` and `balances(int128)` for each token index.
     /// Tries up to 16 token indices, stopping when a call returns zero address or fails.
-    /// This handles pools with 2–16 tokens (3pool, Tricrypto, 4pool, etc.).
+    /// Detects pool variant (Plain/Meta/Crypto) and fetches variant-specific state.
     async fn fetch_curve_state(
         rpc: &RpcClient,
         pool: Address,
@@ -1724,7 +1781,6 @@ impl PoolManager {
         let max_tokens = 16u8;
 
         for i in 0u8..max_tokens {
-            // Try coins(int128) first
             let token = {
                 let mut calldata = Vec::with_capacity(36);
                 calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
@@ -1738,7 +1794,6 @@ impl PoolManager {
                         addr
                     }
                     _ => {
-                        // Fallback: try coins(uint256)
                         let mut calldata2 = Vec::with_capacity(36);
                         calldata2.extend_from_slice(&CURVE_COINS_U256_SELECTOR);
                         let mut arg2 = [0u8; 32];
@@ -1756,7 +1811,6 @@ impl PoolManager {
                 }
             };
 
-            // Fetch balance for this token via balances(int128)
             let balance = {
                 let mut calldata = Vec::with_capacity(36);
                 calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
@@ -1779,15 +1833,26 @@ impl PoolManager {
             return None;
         }
 
-        // Fetch amplification coefficient A()
+        // Fetch amplification coefficient A() / get_A()
         let a_coeff = {
+            // Try get_A() first (CryptoSwap V2), fallback to A() (StableSwap V1)
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&CURVE_A_SELECTOR);
+            calldata.extend_from_slice(&CURVE_GET_A_SELECTOR);
             match rpc.call(pool, Bytes::from(calldata), block).await {
                 Ok(result) if result.0.len() >= 32 => {
                     U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                 }
-                _ => 100,
+                _ => {
+                    // Fallback to A()
+                    let mut calldata2 = Vec::with_capacity(4);
+                    calldata2.extend_from_slice(&CURVE_A_SELECTOR);
+                    match rpc.call(pool, Bytes::from(calldata2), block).await {
+                        Ok(result) if result.0.len() >= 32 => {
+                            U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                        }
+                        _ => 100,
+                    }
+                }
             }
         };
 
@@ -1804,7 +1869,75 @@ impl PoolManager {
             }
         };
 
-        Some(PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps))
+        // --- Variant detection ---
+        // Try gamma() — only CryptoSwap V2 pools have this
+        let is_crypto = {
+            let mut calldata = Vec::with_capacity(4);
+            calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
+            matches!(rpc.call(pool, Bytes::from(calldata), block).await, Ok(r) if r.0.len() >= 32 && !r.0[..32].iter().all(|&b| b == 0))
+        };
+
+        // Try base_pool() — only Metapools have this
+        let base_pool = if !is_crypto {
+            let mut calldata = Vec::with_capacity(4);
+            calldata.extend_from_slice(&CURVE_BASE_POOL_SELECTOR);
+            match rpc.call(pool, Bytes::from(calldata), block).await {
+                Ok(result) if result.0.len() >= 32 => {
+                    let addr = Address::from_slice(&result.0[12..32]);
+                    if !addr.is_zero() { Some(addr) } else { None }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // Fetch variant-specific fields
+        let (variant, gamma, price_scale) = if is_crypto {
+            // Gamma
+            let gamma_val = {
+                let mut calldata = Vec::with_capacity(4);
+                calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        Some(U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128)
+                    }
+                    _ => None,
+                }
+            };
+
+            // Price scale — returns a dynamic array of N-1 values
+            let price_scales = {
+                let mut calldata = Vec::with_capacity(4);
+                calldata.extend_from_slice(&CURVE_PRICE_SCALE_SELECTOR);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 64 => {
+                        let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
+                        let count = if off + 32 <= result.0.len() {
+                            U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as usize
+                        } else { 0 };
+                        let start = off + 32;
+                        let mut scales = Vec::with_capacity(count);
+                        for j in 0..count {
+                            let pos = start + j * 32;
+                            if pos + 32 <= result.0.len() {
+                                scales.push(U256::from_be_slice(&result.0[pos..pos + 32]).as_limbs()[0] as u128);
+                            }
+                        }
+                        scales
+                    }
+                    _ => vec![],
+                }
+            };
+
+            (CurvePoolVariant::Crypto, gamma_val, price_scales)
+        } else if base_pool.is_some() {
+            (CurvePoolVariant::Meta, None, vec![])
+        } else {
+            (CurvePoolVariant::Plain, None, vec![])
+        };
+
+        Some(PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool))
     }
 }
 

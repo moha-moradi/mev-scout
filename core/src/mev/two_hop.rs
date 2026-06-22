@@ -6,8 +6,10 @@ use alloy::primitives::{Address, U256};
 
 use crate::mev::opportunity::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
-use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, BalancerPoolVariant, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
 use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
+use crate::pool::curve_math;
+use crate::pool::balancer_math;
 use crate::types::{GasConfig, Strategy};
 
 /// Detects two-hop arbitrage opportunities across V2, V3, and mixed pools.
@@ -183,6 +185,8 @@ impl TwoHopArbDetector {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         })
     }
 }
@@ -435,160 +439,17 @@ fn arb_tokens(
     Some((token_in, token_out))
 }
 
-/// StableSwap output amount using Newton's method for the invariant D (C3).
-///
-/// Handles Curve pools with any number of tokens (n ≥ 2) by computing the
-/// generalized StableSwap invariant:
-///   A · nⁿ · Σxᵢ + D = A · nⁿ · D + Dⁿ⁺¹ / (nⁿ · Πxᵢ)
-///
-/// Uses f64 arithmetic — the result is a profit estimate, which does not
-/// require exact EVM precision. The Newton iteration converges quickly
-/// (typically < 32 steps) to machine epsilon.
+/// Curve output amount dispatcher — forwards to `curve_math::curve_output_amount`.
 pub fn curve_output_amount(
     amount_in: u128,
     pool: &CurvePoolState,
     token_in: Address,
     token_out: Address,
 ) -> Option<u128> {
-    let n = pool.balances.len();
-    if n < 2 || amount_in == 0 {
-        return None;
-    }
-    let idx_in = *pool.token_index.get(&token_in)?;
-    let idx_out = *pool.token_index.get(&token_out)?;
-    let balances: Vec<f64> = pool.balances.iter().map(|&b| b as f64).collect();
-    if balances[idx_in] <= 0.0 || balances[idx_out] <= 0.0 {
-        return None;
-    }
-
-    let a = pool.a_coeff as f64;
-    let nn = (n as f64).powf(n as f64); // nⁿ
-    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
-
-    // --- Phase 1: Compute invariant D from all balances (Newton's method) ---
-    // f(D) = D^(n+1) / (nⁿ * prod) + (A·nⁿ - 1)·D - A·nⁿ·sum = 0
-    // f'(D) = (n+1)·D^n / (nⁿ * prod) + (A·nⁿ - 1)
-    let sum: f64 = balances.iter().sum();
-    let prod: f64 = balances.iter().product();
-    if prod <= 0.0 {
-        return None;
-    }
-    let ann = a * nn;
-    let d_init = sum;
-    let d = newton_stableswap_invariant(n, ann, sum, prod, d_init)?;
-
-    // --- Phase 2: Apply fee to input ---
-    let x_in_new = balances[idx_in] + amount_in as f64 * fee_factor;
-
-    // --- Phase 3: Solve for x_out' (Newton) ---
-    // We need to find x_out' such that D is unchanged given x_in_new and all
-    // other balances.  The equation in x (the unknown output token balance) is:
-    //   A·nⁿ·(x + S) + D = A·nⁿ·D + Dⁿ⁺¹ / (nⁿ · x · P)
-    // where S = sum of other balances (including x_in_new), P = product of others.
-    let sum_others: f64 = balances.iter().enumerate()
-        .filter(|&(i, _)| i != idx_out)
-        .map(|(_, &v)| v)
-        .sum::<f64>() + (x_in_new - balances[idx_in]); // replace idx_in with x_in_new
-    let prod_others: f64 = balances.iter().enumerate()
-        .filter(|&(i, _)| i != idx_out && i != idx_in)
-        .map(|(_, &v)| v)
-        .product::<f64>() * x_in_new;
-    if prod_others <= 0.0 {
-        return None;
-    }
-
-    let x_out_new = newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
-
-    let output = balances[idx_out] - x_out_new;
-    if output <= 0.0 { None } else { Some(output as u128) }
+    curve_math::curve_output_amount(amount_in, pool, token_in, token_out)
 }
 
-/// Newton's method to find the StableSwap invariant D from N balances.
-///
-/// Solves:  f(D) = D^(n+1) / (nⁿ·P)  + (A·nⁿ - 1)·D - A·nⁿ·S = 0
-/// where S = sum(balances), P = prod(balances), n = number of tokens.
-fn newton_stableswap_invariant(
-    n: usize,
-    ann: f64,
-    sum: f64,
-    prod: f64,
-    guess: f64,
-) -> Option<f64> {
-    let nf = n as f64;
-    let np1 = (n + 1) as f64;
-    let denom = prod * nf.powf(nf); // nⁿ · P
-    if denom <= 0.0 {
-        return None;
-    }
-    let c = ann - 1.0;
-    let target = ann * sum;
-    let mut d = guess;
-    for _ in 0..128 {
-        let d_np1 = d.powf(np1);    // D^(n+1)
-        let d_n = d.powf(nf);       // D^n
-        let f = d_np1 / denom + c * d - target;
-        let deriv = np1 * d_n / denom + c;
-        if deriv.abs() < 1e-30 { break; }
-        let d_next = d - f / deriv;
-        if (d_next - d).abs() <= 1.0 { d = d_next; break; }
-        if d_next <= 0.0 { break; }
-        d = d_next;
-    }
-    if d <= 0.0 { None } else { Some(d) }
-}
-
-/// Newton's method to find the new output token balance after a swap.
-///
-/// Solves:  A·nⁿ·(x + S) + D = A·nⁿ·D + Dⁿ⁺¹ / (nⁿ · x · P)
-/// Rearranged: f(x) = A·nⁿ·x + A·nⁿ·(S - D) + D - Dⁿ⁺¹ / (nⁿ · P · x) = 0
-/// Or:  f(x) = ann·x + ann·(S - D) + D - K/x = 0  where K = Dⁿ⁺¹ / (nⁿ · P)
-/// f'(x) = ann + K/x²
-fn newton_stableswap_output(
-    n: usize,
-    ann: f64,
-    d: f64,
-    sum_others: f64,
-    prod_others: f64,
-) -> Option<f64> {
-    let nf = n as f64;
-    let np1 = (n + 1) as f64;
-    let denom = prod_others * nf.powf(nf); // nⁿ · P
-    if denom <= 0.0 {
-        return None;
-    }
-    let k = d.powf(np1) / denom;       // Dⁿ⁺¹ / (nⁿ · P)
-    let b = ann * (sum_others - d) + d; // constant term coefficient
-
-    // Initial guess: use quadratic approximation for the first step
-    // ann·x² + b·x - K = 0  →  x = (-b + sqrt(b² + 4·ann·K)) / (2·ann)
-    let disc = b * b + 4.0 * ann * k;
-    if disc < 0.0 {
-        return None;
-    }
-    let mut x = (-b + disc.sqrt()) / (2.0 * ann);
-    if x <= 0.0 {
-        return None;
-    }
-
-    // Newton refinement: f(x) = ann·x + b - K/x
-    // f'(x) = ann + K/x²
-    for _ in 0..64 {
-        let k_over_x = k / x;
-        let f = ann * x + b - k_over_x;
-        let deriv = ann + k_over_x / x; // ann + K/x²
-        if deriv.abs() < 1e-30 { break; }
-        let x_next = x - f / deriv;
-        if (x_next - x).abs() <= 0.5 { x = x_next; break; }
-        if x_next <= 0.0 { break; }
-        x = x_next;
-    }
-
-    if x <= 0.0 { None } else { Some(x) }
-}
-
-/// Balancer weighted pool output using the weighted product formula.
-/// `weights` are in the same order as reserves, in basis points (1e18 each).
-/// If `weights` is empty or wrong length, equal weights are assumed.
+/// Balancer weighted pool output — forwards to `balancer_math::balancer_output_amount`.
 pub fn balancer_output_amount(
     amount_in: u128,
     reserve_in: u128,
@@ -597,146 +458,17 @@ pub fn balancer_output_amount(
     weight_out: u128,
     fee: u32,
 ) -> Option<u128> {
-    if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
-        return None;
-    }
-    // Fee: Balancer charges fee on input
-    let fee_factor = 1_000_000u128 - fee as u128;
-    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 1_000_000;
-
-    // Weighted product invariant: (reserve_in / weight_in)^weight_in * (reserve_out / weight_out)^weight_out = const
-    // After swap: (reserve_in + amount_in)^weight_in * (reserve_out - amount_out)^weight_out = const
-    //
-    // amount_out = reserve_out * (1 - (reserve_in / (reserve_in + amount_in))^(weight_in/weight_out))
-    //
-    // Using U256 for intermediate computation.
-    let r_in = U256::from(reserve_in);
-    let r_out = U256::from(reserve_out);
-    let w_in = U256::from(if weight_in == 0 { 1e18 as u128 } else { weight_in });
-    let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
-    let amount = U256::from(amount_after_fee);
-
-    let numerator = r_in;
-    let denominator = r_in + amount;
-
-    if denominator.is_zero() { return None; }
-
-    // Compute ratio = reserve_in / (reserve_in + amount_in) in fixed-point
-    // Then raise to power (weight_in / weight_out)
-    // amount_out = reserve_out * (1 - ratio^(w_in/w_out))
-
-    // For simplicity, use f64 for the exponentiation
-    let ratio_f64 = numerator.as_limbs()[0] as f64 / denominator.as_limbs()[0] as f64;
-    let exp = w_in.as_limbs()[0] as f64 / w_out.as_limbs()[0] as f64;
-    let reduction = ratio_f64.powf(exp);
-
-    let output_f64 = r_out.as_limbs()[0] as f64 * (1.0 - reduction);
-    if output_f64 <= 0.0 { return None; }
-
-    Some(output_f64 as u128)
+    balancer_math::balancer_output_amount(amount_in, reserve_in, reserve_out, weight_in, weight_out, fee)
 }
 
-/// Balancer Stable pool output amount using the StableSwap invariant.
-///
-/// Uses the same Newton's method as Curve's StableSwap, but with the Balancer
-/// amplification parameter from `getAmplificationParameter()`.
-fn balancer_stable_output_amount(
-    amount_in: u128,
-    pool: &BalancerPoolState,
-    token_in: Address,
-    token_out: Address,
-) -> Option<u128> {
-    let n = pool.balances.len();
-    if n < 2 || amount_in == 0 {
-        return None;
-    }
-    let idx_in = *pool.token_index.get(&token_in)?;
-    let idx_out = *pool.token_index.get(&token_out)?;
-    let balances: Vec<f64> = pool.balances.iter().map(|&b| b as f64).collect();
-    if balances[idx_in] <= 0.0 || balances[idx_out] <= 0.0 {
-        return None;
-    }
-
-    let a = pool.amplification.unwrap_or(100) as f64;
-    let nn = (n as f64).powf(n as f64);
-    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
-
-    // Phase 1: Compute invariant D
-    let sum: f64 = balances.iter().sum();
-    let prod: f64 = balances.iter().product();
-    if prod <= 0.0 {
-        return None;
-    }
-    let ann = a * nn;
-    let d_init = sum;
-    let d = newton_stableswap_invariant(n, ann, sum, prod, d_init)?;
-
-    // Phase 2: Apply fee to input
-    let x_in_new = balances[idx_in] + amount_in as f64 * fee_factor;
-
-    // Phase 3: Solve for x_out'
-    let sum_others: f64 = balances.iter().enumerate()
-        .filter(|&(i, _)| i != idx_out)
-        .map(|(_, &v)| v)
-        .sum::<f64>() + (x_in_new - balances[idx_in]);
-    let prod_others: f64 = balances.iter().enumerate()
-        .filter(|&(i, _)| i != idx_out && i != idx_in)
-        .map(|(_, &v)| v)
-        .product::<f64>() * x_in_new;
-    if prod_others <= 0.0 {
-        return None;
-    }
-
-    let x_out_new = newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
-    let output = balances[idx_out] - x_out_new;
-    if output <= 0.0 { None } else { Some(output as u128) }
-}
-
-/// Dispatch to the correct Balancer quoting formula based on pool variant.
-/// Weighted pools use the weighted product formula; Stable pools use StableSwap.
+/// Balancer quote dispatcher — forwards to `balancer_math::balancer_quote_exact_in`.
 pub fn balancer_quote_exact_in(
     amount_in: u128,
     pool: &BalancerPoolState,
     token_in: Address,
     token_out: Address,
 ) -> Option<u128> {
-    match pool.pool_variant {
-        BalancerPoolVariant::Stable | BalancerPoolVariant::ComposableStable => {
-            balancer_stable_output_amount(amount_in, pool, token_in, token_out)
-        }
-        BalancerPoolVariant::Weighted | BalancerPoolVariant::Other => {
-            let (reserve_in, reserve_out, fee) = balancer_reserves(pool, token_in, token_out)?;
-            let (w_in, w_out) = balancer_weights(pool, token_in, token_out);
-            balancer_output_amount(amount_in, reserve_in, reserve_out, w_in, w_out, fee)
-        }
-    }
-}
-
-/// Extract Curve pool reserves for a specific token pair (token_in → token_out).
-/// Extract Balancer weights for a specific token pair (token_in → token_out).
-/// Returns (weight_in, weight_out). Falls back to equal weights (1e18 each)
-/// if the weights vector is empty or doesn't match the token count.
-fn balancer_weights(pool: &BalancerPoolState, token_in: Address, token_out: Address) -> (u128, u128) {
-    let default_w = 1_000_000_000_000_000_000u128;
-    if pool.weights.len() != pool.balances.len() || pool.weights.is_empty() {
-        return (default_w, default_w);
-    }
-    match (pool.token_index.get(&token_in), pool.token_index.get(&token_out)) {
-        (Some(&i), Some(&o)) => (pool.weights[i], pool.weights[o]),
-        _ => (default_w, default_w),
-    }
-}
-
-/// Extract Balancer pool reserves for a specific token pair (token_in → token_out).
-/// Correctly handles pools with any number of tokens.
-fn balancer_reserves(
-    pool: &BalancerPoolState,
-    token_in: Address,
-    token_out: Address,
-) -> Option<(u128, u128, u32)> {
-    let idx_in = *pool.token_index.get(&token_in)?;
-    let idx_out = *pool.token_index.get(&token_out)?;
-    Some((pool.balances[idx_in], pool.balances[idx_out], pool.info.fee))
+    balancer_math::balancer_quote_exact_in(amount_in, pool, token_in, token_out)
 }
 
 /// Extract V2 pool reserves for a given direction relative to `shared_token`.
@@ -966,6 +698,10 @@ mod tests {
             balances: vec![1_000_000, 1_000_000],
             token_index,
             a_coeff: 100,
+            pool_variant: crate::pool::state::CurvePoolVariant::Plain,
+            gamma: None,
+            price_scale: vec![],
+            base_pool: None,
         });
         let v2 = v2_pool(Address::ZERO, wmatic(), usdt(), 500_000, 1_000_000);
         // Curve-V2 combo should now be supported

@@ -4,9 +4,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
-use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
-use crate::pool::math::constant_product_output_amount;
-use crate::pool::v3_quote::quote_v3_exact_in;
+use crate::pool::math::{quote_exact_in, constant_product_output_amount};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::v3_quote::estimate_v3_swap_gas;
 use crate::mev::opportunity::MevOpportunity;
@@ -273,6 +271,8 @@ impl JitArbDetector {
             liquidity_amount: Some(mint.amount),
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         }
     }
 }
@@ -336,20 +336,8 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             constant_product_output_amount(swap.amount_in, reserve_in, reserve_out, v2.info.fee)
                 .unwrap_or(0)
         }
-        Some(PoolState::UniswapV3(v3)) => {
-            let zero_for_one = v3.info.token0 == swap.token_in;
-            quote_v3_exact_in(v3, swap.amount_in, zero_for_one).unwrap_or(0)
-        }
-        Some(PoolState::Curve(curve)) => {
-            if curve.token_index.contains_key(&swap.token_in)
-                && curve.token_index.contains_key(&shared)
-            {
-                curve_output_amount(swap.amount_in, curve, swap.token_in, shared)
-                    .unwrap_or(0)
-            } else { 0 }
-        }
-        Some(PoolState::Balancer(bal)) => {
-            balancer_quote_exact_in(swap.amount_in, bal, swap.token_in, shared).unwrap_or(0)
+        Some(pool) => {
+            quote_exact_in(pool, swap.token_in, shared, swap.amount_in).unwrap_or(0)
         }
         _ => 0,
     }

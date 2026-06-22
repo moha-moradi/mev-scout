@@ -2,10 +2,9 @@
 
 use alloy::primitives::{Address, U256};
 use crate::mev::opportunity::MevOpportunity;
-use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic};
+use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic, quote_exact_in};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
-use crate::pool::v3_quote::{quote_v3_exact_in, max_v3_tradeable_amount};
-use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
+use crate::pool::v3_quote::max_v3_tradeable_amount;
 use crate::types::{GasConfig, Strategy};
 
 /// Detects multi-hop arbitrage opportunities across connected pool paths.
@@ -293,6 +292,8 @@ impl MultiHopArbDetector {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         })
     }
 
@@ -322,24 +323,29 @@ impl MultiHopArbDetector {
                 };
                 constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
             }
-            PoolState::UniswapV3(v3) => {
-                let zero_for_one = v3.info.token0 == token_in;
-                if !zero_for_one && v3.info.token1 != token_in {
-                    return None;
-                }
-                quote_v3_exact_in(v3, amount_in, zero_for_one)
-            }
             PoolState::Curve(curve) => {
                 let token_out = curve.token_index.keys()
                     .filter(|k| **k != token_in)
                     .min()?;
-                curve_output_amount(amount_in, curve, token_in, *token_out)
+                quote_exact_in(pool, token_in, *token_out, amount_in)
             }
             PoolState::Balancer(bal) => {
                 let token_out = *bal.token_index.keys()
                     .filter(|k| **k != token_in)
                     .min()?;
-                balancer_quote_exact_in(amount_in, bal, token_in, token_out)
+                quote_exact_in(pool, token_in, token_out, amount_in)
+            }
+            _ => {
+                // For V3 and future pool types, use the unified dispatcher
+                // which determines token_out from the pool's second token
+                let token_out = if pool.info().token0 == token_in {
+                    pool.info().token1
+                } else if pool.info().token1 == token_in {
+                    pool.info().token0
+                } else {
+                    return None;
+                };
+                quote_exact_in(pool, token_in, token_out, amount_in)
             }
         }
     }

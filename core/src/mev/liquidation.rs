@@ -494,6 +494,8 @@ impl LiquidationDetector {
                 liquidity_amount: None,
                 victim_tx_index: None,
                 backrun_tx_index: None,
+                mempool_only: false,
+                confidence: None,
             });
         }
 
@@ -553,6 +555,8 @@ impl LiquidationDetector {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         })
     }
 }

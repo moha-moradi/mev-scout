@@ -9,7 +9,7 @@ use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
     V3_SWAP_TOPIC,
 };
-use crate::mev::two_hop::{balancer_quote_exact_in, curve_output_amount};
+use crate::pool::math::quote_exact_in;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in};
@@ -256,21 +256,13 @@ impl SandwichDetector {
             PoolState::UniswapV3(v3) => {
                 quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?
             }
-            PoolState::Curve(curve) => {
+            _ => {
                 let (ti, to) = if front_dir_is_t0t1 {
                     (token_in, token_out)
                 } else {
                     (token_out, token_in)
                 };
-                curve_output_amount(front_in_adj, curve, ti, to)?
-            }
-            PoolState::Balancer(bal) => {
-                let (ti, to) = if front_dir_is_t0t1 {
-                    (token_in, token_out)
-                } else {
-                    (token_out, token_in)
-                };
-                balancer_quote_exact_in(front_in_adj, bal, ti, to)?
+                quote_exact_in(pool, ti, to, front_in_adj)?
             }
         };
 
@@ -332,8 +324,9 @@ impl SandwichDetector {
         profit_raw: u128,
     ) -> Option<U256> {
         let ref_pool = pool_manager.find_pair_pool(&profit_token, &native_token)?;
-        let converted = match pool_manager.get(&ref_pool) {
-            Some(PoolState::UniswapV2(v2)) => {
+        let pool = pool_manager.get(&ref_pool)?;
+        let converted = match pool {
+            PoolState::UniswapV2(v2) => {
                 let (r_in, r_out) = if v2.info.token0 == profit_token {
                     (v2.reserve0, v2.reserve1)
                 } else {
@@ -341,17 +334,7 @@ impl SandwichDetector {
                 };
                 constant_product_output_amount(profit_raw, r_in, r_out, v2.info.fee)?
             }
-            Some(PoolState::UniswapV3(v3)) => {
-                let zero_for_one = v3.info.token0 == profit_token;
-                quote_v3_exact_in(v3, profit_raw, zero_for_one)?
-            }
-            Some(PoolState::Curve(curve)) => {
-                curve_output_amount(profit_raw, curve, profit_token, native_token)?
-            }
-            Some(PoolState::Balancer(bal)) => {
-                balancer_quote_exact_in(profit_raw, bal, profit_token, native_token)?
-            }
-            _ => return None,
+            _ => quote_exact_in(pool, profit_token, native_token, profit_raw)?,
         };
         Some(U256::from(converted))
     }
@@ -398,36 +381,10 @@ impl SandwichDetector {
                             profit_raw, reserve_in, reserve_out, v2.info.fee,
                         )
                     }
-                    Some(crate::pool::state::PoolState::UniswapV3(v3)) => {
-                        let zero_for_one = v3.info.token0 == profit_token;
-                        quote_v3_exact_in(v3, profit_raw, zero_for_one)
+                    Some(pool) => {
+                        quote_exact_in(pool, profit_token, native_token, profit_raw)
                     }
-                    Some(crate::pool::state::PoolState::Curve(curve)) => {
-                        if curve.token_index.contains_key(&profit_token)
-                            && curve.token_index.contains_key(&native_token)
-                        {
-                            curve_output_amount(profit_raw, curve, profit_token, native_token)
-                        } else { None }
-                    }
-                    Some(crate::pool::state::PoolState::Balancer(bal)) => {
-                        if bal.token_index.contains_key(&profit_token) && bal.token_index.contains_key(&native_token) {
-                            balancer_quote_exact_in(profit_raw, bal, profit_token, native_token)
-                        } else { None }
-                    }
-                    _ => {
-                        // Last resort: V2-style spot reserve ratio
-                        pool_manager.get_v2_state(&ref_pool).and_then(|state| {
-                            let (reserve_sell, reserve_buy) =
-                                if state.info.token0 == profit_token {
-                                    (state.reserve0, state.reserve1)
-                                } else {
-                                    (state.reserve1, state.reserve0)
-                                };
-                            if reserve_sell > 0 {
-                                Some(profit_raw.saturating_mul(reserve_buy).saturating_div(reserve_sell))
-                            } else { None }
-                        })
-                    }
+                    _ => None,
                 };
                 if let Some(converted) = converted {
                     return (U256::from(converted), Some(U256::from(profit_raw)));
@@ -562,6 +519,8 @@ impl SandwichDetector {
                     liquidity_amount: None,
                     victim_tx_index: Some(victim.tx_index),
                     backrun_tx_index: Some(back.tx_index),
+                    mempool_only: false,
+                    confidence: None,
                 });
             }
         }

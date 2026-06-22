@@ -4,6 +4,9 @@ use std::cell::RefCell;
 
 use crate::cache::SqliteStore;
 use crate::mev::opportunity::MevOpportunity;
+use crate::mev::cross_block::CrossBlockDetector;
+use crate::mev::mempool;
+use crate::mev::mempool::detect_pending_opportunities;
 use crate::pool::discovery::discover_pools_in_range;
 use crate::mev::jit::JitDetector;
 use crate::mev::liquidation::{AaveReserveCache, LiquidationDetector};
@@ -38,6 +41,9 @@ pub struct BacktestRunner {
     gas_config: GasConfig,
     proximity_window: usize,
     aave_reserve_cache: AaveReserveCache,
+    capture_pending: bool,
+    cross_block_window: usize,
+    cross_block_detector: Option<CrossBlockDetector>,
 }
 
 impl BacktestRunner {
@@ -64,6 +70,9 @@ impl BacktestRunner {
             gas_config,
             proximity_window: 3,
             aave_reserve_cache: AaveReserveCache::default(),
+            capture_pending: false,
+            cross_block_window: 3,
+            cross_block_detector: None,
         }
     }
 
@@ -78,6 +87,28 @@ impl BacktestRunner {
     pub fn with_aave_reserve_cache(mut self, cache: AaveReserveCache) -> Self {
         self.aave_reserve_cache = cache;
         self
+    }
+
+    /// Enable or disable pending transaction capture from the mempool.
+    /// When enabled, the runner fetches the pending block after processing
+    /// each block range and logs the pending tx count into per-block stats.
+    pub fn with_capture_pending(mut self, enabled: bool) -> Self {
+        self.capture_pending = enabled;
+        self
+    }
+
+    /// Enable cross-block MEV detection with the given sliding window size.
+    /// When enabled (> 1), the runner tracks pool price snapshots across
+    /// consecutive blocks and emits persistent arb and time-bandit opportunities.
+    pub fn with_cross_block(mut self, window: usize) -> Self {
+        self.cross_block_window = window.max(2);
+        self.cross_block_detector = Some(CrossBlockDetector::new(self.cross_block_window));
+        self
+    }
+
+    /// Returns true if cross-block detection is enabled.
+    pub fn cross_block_enabled(&self) -> bool {
+        self.cross_block_detector.is_some()
     }
 
     /// Expose a reference to the Aave reserve cache for inspection.
@@ -344,7 +375,7 @@ impl BacktestRunner {
         let (block_data, txs) = self.replayer.load_block_data(block_num)?;
         let total_tx_count = txs.len();
         if txs.is_empty() {
-            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0 }, Vec::new()));
+            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0, pending_tx_count: 0, mempool_opp_count: 0 }, Vec::new()));
         }
 
         let timestamp = block_data.timestamp;
@@ -523,6 +554,8 @@ impl BacktestRunner {
             block_number: block_num,
             total_tx_count,
             dex_tx_count: dex_tx_count.into_inner(),
+            pending_tx_count: 0, // populated at range level by run_range_with_pga
+            mempool_opp_count: 0, // populated at range level by run_range_with_pga
         }, gas_prices.into_inner()))
     }
 
@@ -582,19 +615,41 @@ impl BacktestRunner {
                         gas_dist.add_tx_gas_price(*price);
                     }
                     // Record block-level data for EIP-1559 forecasting
-                    match self.replayer.load_block_data(block_num) {
+                    let block_timestamp = match self.replayer.load_block_data(block_num) {
                         Ok((block, _)) => {
                             let base_fee = block.base_fee_per_gas.unwrap_or(0);
                             gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
+                            block.timestamp
                         }
                         Err(_) => {
                             gas_dist.record_block(0, 0, 30_000_000);
+                            0
                         }
-                    }
+                    };
                     gas_dist.finalize_block();
 
                     all.extend(opps);
                     all_stats.push(stats);
+
+                    // L2: Record pool state snapshot for cross-block detection
+                    if let Some(ref mut detector) = self.cross_block_detector {
+                        detector.record_block(block_num, &self.pool_manager);
+                        if detector.snapshot_count() >= 2 {
+                            let cross_opps = detector.detect(
+                                block_num,
+                                block_timestamp,
+                                self.gas_config,
+                            );
+                            if !cross_opps.is_empty() {
+                                tracing::info!(
+                                    "Block {}: {} cross-block opportunities detected",
+                                    block_num,
+                                    cross_opps.len(),
+                                );
+                                all.extend(cross_opps);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     // Restore pool state to the pre-block checkpoint so
@@ -604,6 +659,44 @@ impl BacktestRunner {
                 }
             }
         }
+        // H8 Phase 1+3: capture pending block and run mempool detection
+        if self.capture_pending {
+            let rpc = self.replayer.rpc().clone();
+            if let Some(capture) = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(mempool::capture_pending_block(&rpc))
+            }) {
+                tracing::info!(
+                    "Pending block captured: {} transactions in mempool (block #{})",
+                    capture.tx_count,
+                    capture.block_number,
+                );
+                if let Some(last) = all_stats.last_mut() {
+                    last.pending_tx_count = capture.tx_count;
+                }
+                // H8 Phase 3: run pool-state-based arb detection on pending state
+                let pending_opps = detect_pending_opportunities(
+                    &self.pool_manager,
+                    self.gas_config,
+                    capture.base_fee_per_gas,
+                    capture.timestamp,
+                    capture.block_number,
+                );
+                if !pending_opps.is_empty() {
+                    tracing::info!(
+                        "Mempool detection: {} opportunities visible in mempool (block #{})",
+                        pending_opps.len(),
+                        capture.block_number,
+                    );
+                    if let Some(last) = all_stats.last_mut() {
+                        last.mempool_opp_count = pending_opps.len();
+                    }
+                    all.extend(pending_opps);
+                }
+            } else {
+                tracing::warn!("Failed to capture pending block — mempool may be unavailable");
+            }
+        }
+
         let all = if let Some(cfg) = pga_config {
             tracing::info!("Applying PGA adjustment to {} opportunities", all.len());
             pga::adjust_opportunities(all, &cfg)
@@ -643,6 +736,10 @@ fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 balances: vec![],
                 token_index: std::collections::HashMap::new(),
                 a_coeff: 100,
+                pool_variant: crate::pool::state::CurvePoolVariant::Plain,
+                gamma: None,
+                price_scale: vec![],
+                base_pool: None,
             }));
         }
         crate::pool::dex_type::DexType::Balancer => {
@@ -655,6 +752,8 @@ fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                     weights: vec![],
                     pool_variant: crate::pool::state::BalancerPoolVariant::Weighted,
                     amplification: None,
+                    scaling_factors: vec![],
+                    bpt_index: None,
                 },
             ));
         }

@@ -143,6 +143,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         }
     }
 

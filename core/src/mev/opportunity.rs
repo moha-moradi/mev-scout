@@ -78,6 +78,14 @@ pub struct MevOpportunity {
     /// Transaction index of the backrun (sandwich attacks)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backrun_tx_index: Option<usize>,
+    /// Whether this opportunity was detected from mempool/pending transactions
+    /// rather than settled on-chain blocks.
+    #[serde(default)]
+    pub mempool_only: bool,
+    /// Confidence score (0.0–1.0) for speculative detection methods like
+    /// cross-block MEV. None = standard on-chain detected opportunity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
 }
 
 /// Build a canonical dedup string from the opportunity's key fields (L9).
@@ -140,6 +148,8 @@ impl MevOpportunity {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         }
     }
 
@@ -250,6 +260,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         };
         let json = serde_json::to_string(&opp).unwrap();
         let deserialized: MevOpportunity = serde_json::from_str(&json).unwrap();
@@ -285,6 +297,8 @@ mod tests {
             liquidity_amount: Some(500_000u128),
             victim_tx_index: None,
             backrun_tx_index: None,
+            mempool_only: false,
+            confidence: None,
         };
         let json = serde_json::to_string(&opp).unwrap();
         let deserialized: MevOpportunity = serde_json::from_str(&json).unwrap();
@@ -364,6 +378,8 @@ mod tests {
             liquidity_amount: None,
             victim_tx_index: Some(1),
             backrun_tx_index: Some(2),
+            mempool_only: false,
+            confidence: None,
         };
         let json = serde_json::to_string(&opp).unwrap();
         let deserialized: MevOpportunity = serde_json::from_str(&json).unwrap();

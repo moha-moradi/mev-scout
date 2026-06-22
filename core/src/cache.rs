@@ -158,6 +158,23 @@ impl SqliteStore {
                 flash_loan_provider TEXT NOT NULL
 
             );
+
+            CREATE TABLE IF NOT EXISTS pending_txs (
+                block_number INTEGER NOT NULL,
+                tx_index     INTEGER NOT NULL,
+                hash         BLOB NOT NULL,
+                from_addr    BLOB NOT NULL,
+                to_addr      BLOB,
+                input        BLOB NOT NULL,
+                value        BLOB NOT NULL,
+                gas_limit    INTEGER NOT NULL,
+                max_fee_per_gas INTEGER NOT NULL,
+                max_priority_fee_per_gas INTEGER,
+                nonce        INTEGER NOT NULL,
+                access_list  BLOB,
+                captured_at  INTEGER NOT NULL,
+                PRIMARY KEY (block_number, tx_index)
+            );
             ",
         )?;
         // L6: migration — add factory column to pool_info if missing (backward compat)
@@ -694,6 +711,65 @@ impl SqliteStore {
             Some(row) => Ok(Some(row.get::<_, i64>(0)? as u64)),
             None => Ok(None),
         }
+    }
+
+    // ---- Pending Transactions (H8) ----
+
+    /// Store pending transactions captured from the mempool.
+    /// The `captured_at` timestamp is the Unix epoch second of capture.
+    pub fn put_pending_txs(&self, txs: &[TxData], captured_at: u64) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Use a single block_number for all pending txs (the capture timestamp is a proxy)
+        let block_number: i64 = captured_at as i64;
+        let mut stmt = conn.prepare(
+            "INSERT OR REPLACE INTO pending_txs (block_number, tx_index, hash, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, captured_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )?;
+        for (i, tx) in txs.iter().enumerate() {
+            let access_list_blob = if tx.access_list.is_empty() {
+                None
+            } else {
+                Some(Self::serialize(&tx.access_list)?)
+            };
+            stmt.execute(rusqlite::params![
+                block_number,
+                i as i64,
+                Self::b256_to_blob(&tx.hash),
+                Self::addr_to_blob(&tx.from),
+                tx.to.map(|a| Self::addr_to_blob(&a)),
+                tx.input.to_vec(),
+                Self::u256_to_blob(&tx.value),
+                tx.gas_limit as i64,
+                tx.max_fee_per_gas as i64,
+                tx.max_priority_fee_per_gas.map(|v| v as i64),
+                tx.nonce as i64,
+                access_list_blob,
+                captured_at as i64,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Count pending transactions captured at the given timestamp.
+    pub fn count_pending_txs(&self, captured_at: u64) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_txs WHERE captured_at = ?1",
+            rusqlite::params![captured_at as i64],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
+    /// Count all pending transactions in the cache.
+    pub fn total_pending_txs(&self) -> anyhow::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_txs",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count as usize)
     }
 
     /// Flush pending writes (WAL checkpoint).

@@ -166,6 +166,19 @@ pub struct RunArgs {
     #[arg(long = "proximity-window", default_value = "3", value_name = "N", help_heading = "Strategies")]
     pub proximity_window: usize,
 
+    /// Capture pending transactions from the mempool (default: false).
+    /// Fetches the current pending block via eth_getBlockByNumber("pending")
+    /// after processing each block range and logs the pending tx count.
+    #[arg(long = "capture-pending", help_heading = "Mempool")]
+    pub capture_pending: bool,
+
+    /// Cross-block MEV detection window size (default: 0 = disabled).
+    /// When > 1, tracks pool price snapshots across consecutive blocks and
+    /// emits persistent arb (CrossBlockArb) and time-bandit (TimeBandit)
+    /// opportunities. Requires at least 2 blocks in the range.
+    #[arg(long = "cross-block-window", default_value = "0", value_name = "N", help_heading = "Strategies")]
+    pub cross_block_window: usize,
+
     /// Discover pools from factory events during backtest replay (live discovery).
     /// Scans each factory for PairCreated/PoolCreated events and adds new pools
     /// to the pool manager before processing the blocks they appear in.

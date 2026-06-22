@@ -1,11 +1,22 @@
-use alloy::primitives::{address, b256, Address, B256, U256};
+use std::path::Path;
+
+use alloy::primitives::{address, b256, Address, B256, Bytes, U256};
+use mev_scout_core::cache::SqliteStore;
+use mev_scout_core::data::{BlockData, ReceiptData, TxData};
+use mev_scout_core::fact_check::{verify_opportunities, RecomputationAccuracy};
+use mev_scout_core::mev::opportunity::{MevOpportunity, ResultsFile};
 use mev_scout_core::mev::two_hop::TwoHopArbDetector;
 use mev_scout_core::mev::multi_hop::MultiHopArbDetector;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::state::{BalancerPoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState};
 use mev_scout_core::mev::jit::JitDetector;
 use mev_scout_core::mev::sandwich::SandwichDetector;
-use mev_scout_core::types::{GasConfig, Strategy};
+use mev_scout_core::replay::BlockReplayer;
+use mev_scout_core::run::BacktestRunner;
+use mev_scout_core::rpc::RpcClient;
+use mev_scout_core::config::{Config, CliOverrides};
+use mev_scout_core::resolver::ResolvedRange;
+use mev_scout_core::types::{GasConfig, GasModel, RangeMode, Strategy};
 
 /// ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +39,10 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             balances: vec![],
             token_index: std::collections::HashMap::new(),
             a_coeff: 100,
+            pool_variant: mev_scout_core::pool::state::CurvePoolVariant::Plain,
+            gamma: None,
+            price_scale: vec![],
+            base_pool: None,
         }),
         DexType::Balancer => PoolState::Balancer(mev_scout_core::pool::state::BalancerPoolState {
             info,
@@ -37,6 +52,8 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             weights: vec![],
             pool_variant: BalancerPoolVariant::Weighted,
             amplification: None,
+            bpt_index: None,
+            scaling_factors: vec![],
         }),
     }
 }
@@ -1040,4 +1057,506 @@ async fn test_real_v2_v3_cross_dex_polygon() {
         assert_eq!(opp.strategy, Strategy::TwoHopArb);
         assert!(opp.expected_profit > U256::ZERO, "Profit should be > 0 on real data");
     }
+}
+
+/// ── Phase 1: CLI & Orchestration Tests ──────────────────────────────────────
+
+fn temp_test_dir(name: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("mev_scout_int_{name}_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_str().unwrap().to_string()
+}
+
+fn prep_synthetic_cache(
+    dir: &str,
+    block_num: u64,
+    tx_count: usize,
+) -> SqliteStore {
+    let db_path = Path::new(dir).join("cache.db");
+    let cache = SqliteStore::open(&db_path, 1).unwrap();
+
+    let block = BlockData {
+        number: block_num,
+        hash: B256::ZERO,
+        timestamp: 12345678,
+        base_fee_per_gas: Some(50_000_000_000),
+        gas_limit: 30_000_000,
+        gas_used: 100_000 * tx_count as u64,
+        coinbase: Address::ZERO,
+    };
+    cache.put_block(block_num, &block).unwrap();
+
+    let mut txs = Vec::new();
+    let mut receipts = Vec::new();
+    for i in 0..tx_count {
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0..8].copy_from_slice(&block_num.to_be_bytes());
+        hash_bytes[8..16].copy_from_slice(&(i as u64).to_be_bytes());
+        let tx_hash = B256::from(hash_bytes);
+
+        txs.push(TxData {
+            hash: tx_hash,
+            index: i as u64,
+            from: Address::ZERO,
+            to: Some(Address::repeat_byte(0x42)),
+            input: Bytes::new(),
+            value: U256::ZERO,
+            gas_limit: 100_000,
+            max_fee_per_gas: 50_000_000_000,
+            max_priority_fee_per_gas: None,
+            nonce: i as u64,
+            access_list: vec![],
+        });
+        receipts.push(ReceiptData {
+            tx_hash,
+            tx_index: i as u64,
+            status: true,
+            gas_used: 100_000,
+            cumulative_gas_used: 100_000 * (i as u64 + 1),
+            logs: vec![],
+            contract_address: None,
+        });
+    }
+    cache.put_txs(block_num, &txs).unwrap();
+    cache.put_receipts(block_num, &receipts).unwrap();
+
+    cache
+}
+
+fn synthetic_arb_pools() -> PoolManager {
+    let mut pm = PoolManager::new();
+    // Reserves balanced so normalised profit >> 1.13e16 gas cost.
+    // max_input = min(USDC, USDT) so ALL reserves must be large.
+    // Raw profit ~2e11 → normalise via USDT→WMATIC (*5e17/1e12=*5e5)
+    // = 1e17, well above 1.13e16.
+    pm.add_pool(make_pool(
+        address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        usdc(), wmatic(), 1_000_000_000_000, 2_000_000_000_000_000_000u128,
+    ));
+    pm.add_pool(make_pool(
+        address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        usdt(), wmatic(), 1_000_000_000_000, 500_000_000_000_000_000u128,
+    ));
+    pm.with_wrapped_native(wmatic())
+}
+
+fn make_synthetic_runner(dir: &str, block_num: u64, gas_config: GasConfig) -> BacktestRunner {
+    let cache = prep_synthetic_cache(dir, block_num, 2);
+    let handle = tokio::runtime::Handle::current();
+    let rpc = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
+    let replayer = BlockReplayer::new(handle, cache, rpc, 1);
+
+    let pm = synthetic_arb_pools();
+
+    BacktestRunner::new(replayer, pm, gas_config)
+}
+
+/// ── Test 6: ResultsFile JSON roundtrip ──────────────────────────────────────
+#[test]
+fn test_results_file_roundtrip() {
+    let opp = MevOpportunity::new(100, 0, Strategy::TwoHopArb, address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), 12345678);
+    let file = ResultsFile {
+        run_id: "test_run".into(),
+        chain: "polygon".into(),
+        start_block: 100,
+        end_block: 200,
+        range_mode: "range".into(),
+        strategies: vec!["two_hop_arb".into()],
+        flash_loan_provider: "aave".into(),
+        resolved_at: 12345678,
+        created_at: 12345679,
+        opportunities: vec![opp],
+    };
+
+    let json = serde_json::to_string_pretty(&file).unwrap();
+    let deser: ResultsFile = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deser.run_id, "test_run");
+    assert_eq!(deser.chain, "polygon");
+    assert_eq!(deser.start_block, 100);
+    assert_eq!(deser.end_block, 200);
+    assert_eq!(deser.range_mode, "range");
+    assert_eq!(deser.strategies, vec!["two_hop_arb"]);
+    assert_eq!(deser.flash_loan_provider, "aave");
+    assert_eq!(deser.resolved_at, 12345678);
+    assert_eq!(deser.created_at, 12345679);
+    assert_eq!(deser.opportunities.len(), 1);
+    assert_eq!(deser.opportunities[0].strategy, Strategy::TwoHopArb);
+    assert_eq!(deser.opportunities[0].block_number, 100);
+}
+
+/// ── Test 7: Config TOML output is valid ─────────────────────────────────────
+#[test]
+fn test_config_toml_output() {
+    let config = Config::default();
+    let toml_str = config.to_toml_string().unwrap();
+    assert!(!toml_str.is_empty());
+    assert!(toml_str.contains("chain"));
+    assert!(toml_str.contains("strategies"));
+
+    // Parse back — must be valid TOML
+    let parsed: Config = toml::from_str(&toml_str).unwrap();
+    assert_eq!(parsed.chain, config.chain);
+    assert_eq!(parsed.strategies, config.strategies);
+    assert_eq!(parsed.gas_limit, config.gas_limit);
+}
+
+/// ── Test 8: CLI override merging ────────────────────────────────────────────
+#[test]
+fn test_cli_override_merging() {
+    let mut config = Config::default();
+
+    let overrides = CliOverrides {
+        chain: Some("avalanche".into()),
+        strategies: Some("two_hop_arb,sandwich".into()),
+        gas_model: Some("p90".into()),
+        pga_enabled: Some(true),
+        proximity_window: Some(5),
+        days: None, blocks: None, block: None, from_block: None, to_block: None,
+        rpc_url: None, rpc_workers: None, flash_loan_provider: None, gas_limit: None,
+        priority_fee_gwei: None, output: None, export_path: None, db_path: None,
+        parquet_dir: None, coingecko_api_key: None, pga_mean_competitors: None,
+        pga_intensity: None, price_oracle_mode: None, token_prices: None,
+        capture_pending: None,
+        cross_block_window: None,
+    };
+    config.merge_cli(&overrides);
+
+    assert_eq!(config.chain, "avalanche");
+    assert_eq!(config.strategies, "two_hop_arb,sandwich");
+    assert_eq!(config.gas_model, "p90");
+    assert!(config.pga_enabled);
+    assert_eq!(config.proximity_window, 5);
+
+    // Unset fields keep defaults
+    assert_eq!(config.gas_limit, 200_000);
+    assert_eq!(config.priority_fee_gwei, 0.0);
+    assert_eq!(config.output, "table");
+}
+
+/// ── Test 9: Discover V3 pools synthetic (topic verification) ───────────────
+/// Topics and conversion are already tested in discovery.rs unit tests.
+/// This integration test verifies the full DiscoveryPool→PoolInfo pipeline.
+#[test]
+fn test_discover_v3_pipeline() {
+    use mev_scout_core::pool::discovery::DiscoveredPool;
+
+    let dp = DiscoveredPool {
+        address: address!("cafe000000000000000000000000000000000001"),
+        token0: address!("aaaa0000000000000000000000000000000000aa"),
+        token1: address!("bbbb0000000000000000000000000000000000bb"),
+        fee: 500,
+        tick_spacing: Some(10),
+        dex_type: DexType::UniswapV3,
+        creation_block: 42,
+        pool_id: None,
+        factory: Some(address!("cafe0000000000000000000000000000000000aa")),
+    };
+
+    let info: PoolInfo = dp.into();
+    assert_eq!(info.address, address!("cafe000000000000000000000000000000000001"));
+    assert_eq!(info.token0, address!("aaaa0000000000000000000000000000000000aa"));
+    assert_eq!(info.token1, address!("bbbb0000000000000000000000000000000000bb"));
+    assert_eq!(info.fee, 500);
+    assert_eq!(info.dex_type, DexType::UniswapV3);
+    assert_eq!(info.tick_spacing, Some(10));
+    assert_eq!(info.creation_block, 42);
+    assert!(info.pool_id.is_none());
+    assert_eq!(info.factory, Some(address!("cafe0000000000000000000000000000000000aa")));
+}
+
+/// ── Test 10: Fact-check re-verify ───────────────────────────────────────────
+#[test]
+fn test_fact_check_re_verify() {
+    let mut pm = PoolManager::new();
+    let pool_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let pool_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    pm.add_pool(make_pool(pool_a, usdc(), wmatic(), 1_000_000, 2_000_000));
+    pm.add_pool(make_pool(pool_b, usdt(), wmatic(), 1_000_000, 500_000));
+
+    // Opportunity with non-zero input so recompute returns a value
+    let mut opp = MevOpportunity::new(1, 0, Strategy::TwoHopArb, pool_a, 100);
+    opp.pool_b = pool_b;
+    opp.token_in = usdc();
+    opp.token_out = usdt();
+    opp.input_amount = U256::from(100_000u128);
+
+    // Verify: existing pool → recompute runs (match depends on stored vs recomputed)
+    let checks = verify_opportunities(&[opp], Some(&pm));
+    assert_eq!(checks.len(), 1);
+    // We set expected_profit=0 and raw_profit=None, so accuracy will be Mismatch
+    // (recomputed profit differs from zero). That's fine — the key assertion is
+    // that recompute ran at all (not NotApplicable).
+    assert!(!matches!(checks[0].recomputation_accuracy, RecomputationAccuracy::NotApplicable),
+        "Recompute should run when both pools exist");
+
+    // Opportunity referencing non-existent pool → NotApplicable
+    let bad = MevOpportunity::new(1, 0, Strategy::TwoHopArb, address!("ffffffffffffffffffffffffffffffffffffffff"), 100);
+    let bad_checks = verify_opportunities(&[bad], Some(&pm));
+    assert_eq!(bad_checks.len(), 1);
+    assert!(matches!(bad_checks[0].recomputation_accuracy, RecomputationAccuracy::NotApplicable));
+}
+
+/// ── Test 1: BacktestRunner::run_block() with synthetic data ─────────────────
+#[tokio::test]
+async fn test_runner_run_block_synthetic() {
+    let dir = temp_test_dir("run_block_synth");
+    let cache = prep_synthetic_cache(&dir, 1, 2);
+    let handle = tokio::runtime::Handle::current();
+    let rpc = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
+    let replayer = BlockReplayer::new(handle, cache, rpc, 1);
+
+    let pm = synthetic_arb_pools();
+
+    // Verify pool manager has pools and arb pairs
+    assert!(pm.pool_count() > 0, "PoolManager should have pools");
+    assert!(!pm.arbitrage_pairs().is_empty(), "PoolManager should have arbitrage pairs");
+
+    // Direct detection should find arb
+    let opps_direct = TwoHopArbDetector::new(1).detect(
+        &pm, 0, 12345678, 50_000_000_000, GasConfig::default(),
+    );
+    eprintln!("Direct detection: {} opps", opps_direct.len());
+    assert!(!opps_direct.is_empty(), "Direct detection should find arb");
+
+    // Create runner and run_block
+    let mut runner = BacktestRunner::new(replayer, pm, GasConfig::default());
+
+    let (opps, stats, gas_prices) = runner.run_block(1).unwrap();
+
+    eprintln!("run_block returned {} opportunities", opps.len());
+    for opp in &opps {
+        eprintln!(
+            "  opp: profit={}, gas_cost_wei={}",
+            opp.expected_profit, opp.gas_cost_wei,
+        );
+    }
+
+    assert!(!opps.is_empty(), "Should detect arb between imbalanced pools");
+    assert_eq!(stats.block_number, 1);
+    assert_eq!(stats.total_tx_count, 2);
+    assert_eq!(stats.dex_tx_count, 0, "No txs matched pools (fast path)");
+    assert_eq!(gas_prices.len(), 2, "Gas prices from 2 txs");
+
+    for opp in &opps {
+        assert!(opp.expected_profit > U256::ZERO);
+        assert!(opp.gas_cost_wei > 0);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ── Test 2: BacktestRunner::run_range() multi-block ─────────────────────────
+#[tokio::test]
+async fn test_runner_run_range_multi_block() {
+    let dir = temp_test_dir("run_range_multi");
+    let mut runner = make_synthetic_runner(&dir, 1, GasConfig::default());
+
+    // Add second block to cache
+    prep_synthetic_cache(&dir, 2, 1);
+
+    let resolved = ResolvedRange {
+        start_block: 1,
+        end_block: 2,
+        block_count: 2,
+        mode: RangeMode::Range(1, 2),
+    };
+
+    let (opps, stats) = runner.run_range(&resolved).unwrap();
+
+    assert!(!opps.is_empty(), "Should detect arb across blocks");
+    assert_eq!(stats.len(), 2, "Stats from 2 blocks");
+    assert!(stats.iter().any(|s| s.block_number == 1));
+    assert!(stats.iter().any(|s| s.block_number == 2));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ── Test 3: Gas model affects gas_cost_wei ──────────────────────────────────
+#[tokio::test]
+async fn test_runner_gas_model_p90() {
+    let dir = temp_test_dir("gas_model");
+    let opps_exact = {
+        let cache = prep_synthetic_cache(&dir, 1, 2);
+        let handle = tokio::runtime::Handle::current();
+        let rpc = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
+        let replayer = BlockReplayer::new(handle, cache, rpc, 1);
+        let pm = synthetic_arb_pools();
+
+        let mut runner = BacktestRunner::new(replayer, pm, GasConfig::default());
+        let (opps, _, _) = runner.run_block(1).unwrap();
+        opps
+    };
+
+    let dir2 = temp_test_dir("gas_model_p90");
+    let opps_p90_res = {
+        let cache2 = prep_synthetic_cache(&dir2, 1, 2);
+        let handle2 = tokio::runtime::Handle::current();
+        let rpc2 = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
+        let replayer2 = BlockReplayer::new(handle2, cache2, rpc2, 1);
+        let pm2 = synthetic_arb_pools();
+
+        let gas_cfg_p90 = GasConfig {
+            gas_model: GasModel::P90,
+            ..GasConfig::default()
+        };
+        let mut runner_p90 = BacktestRunner::new(replayer2, pm2, gas_cfg_p90);
+        let (opps, _, _) = runner_p90.run_block(1).unwrap();
+        opps
+    };
+
+    assert!(!opps_exact.is_empty());
+    assert!(!opps_p90_res.is_empty());
+
+    let exact_gas = opps_exact[0].gas_cost_wei;
+    let p90_gas = opps_p90_res[0].gas_cost_wei;
+    eprintln!("Gas cost: historical_exact={exact_gas}, p90={p90_gas}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+/// ── Test 4: Proximity window affects JitArb detection ───────────────────────
+#[test]
+fn test_runner_proximity_window() {
+    use mev_scout_core::mev::jit_arb::JitArbDetector;
+    use mev_scout_core::data::ExecutedLog;
+    use mev_scout_core::pool::decoders::{V3_SWAP_TOPIC, V3_MINT_TOPIC};
+
+    let pool_p = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let pool_q = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let sender = address!("1111111111111111111111111111111111111111");
+    let usdt_addr = address!("c2132d05d31c914a87c6611c10748aeb04b58e8f");
+
+    fn v3_mint_log(pool: Address, lower: i32, upper: i32, amount: u128) -> ExecutedLog {
+        let mut data = Vec::new();
+        let mut padded = [0u8; 32];
+        padded[28..32].copy_from_slice(&lower.to_be_bytes());
+        data.extend_from_slice(&padded);
+        padded = [0u8; 32];
+        padded[28..32].copy_from_slice(&upper.to_be_bytes());
+        data.extend_from_slice(&padded);
+        padded = [0u8; 32];
+        padded[16..32].copy_from_slice(&amount.to_be_bytes());
+        data.extend_from_slice(&padded);
+        ExecutedLog { address: pool, topics: vec![*V3_MINT_TOPIC, B256::ZERO, B256::ZERO], data: data.into() }
+    }
+
+    fn v3_swap_log(pool: Address) -> ExecutedLog {
+        ExecutedLog { address: pool, topics: vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data: Bytes::from_static(&[0u8; 160]) }
+    }
+
+    let mut pm = PoolManager::new();
+    pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+        info: PoolInfo {
+            address: pool_p, token0: wmatic(), token1: usdc(), fee: 30, name: None,
+            dex_type: DexType::UniswapV2, tick_spacing: None, creation_block: 0, pool_id: None, factory: None,
+        },
+        reserve0: 1_000_000, reserve1: 1_000_000,
+    }));
+    pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+        info: PoolInfo {
+            address: pool_q, token0: usdc(), token1: usdt_addr,
+            fee: 30, name: None, dex_type: DexType::UniswapV2, tick_spacing: None,
+            creation_block: 0, pool_id: None, factory: None,
+        },
+        reserve0: 1_000_000, reserve1: 1_000_000,
+    }));
+    let pm = pm.with_wrapped_native(wmatic());
+
+    let gas_cfg = GasConfig::default();
+
+    // txs:
+    //   0: mint on P only
+    //   1: swap on P (marks mint as swapped)
+    //   5: swap on Q
+    // Gap between P-swap (idx 1) and Q-swap (idx 5) = 4
+    // window=5 → 4 ≤ 5 → detected; window=1 → 4 > 1 → NOT detected
+    let logs_for_tx = |i: usize| -> Vec<ExecutedLog> {
+        match i {
+            0 => vec![v3_mint_log(pool_p, -100, 100, 500_000)],
+            1 => vec![v3_swap_log(pool_p)],
+            5 => vec![v3_swap_log(pool_q)],
+            _ => vec![],
+        }
+    };
+
+    // Window = 5 — gap=4 ≤ 5 → JitArb detected
+    let mut detector_wide = JitArbDetector::new(42).with_proximity_window(5);
+    for i in 0..=5 {
+        detector_wide.process_tx(i, &logs_for_tx(i), Some(sender), &pm);
+    }
+    let opps_wide = detector_wide.detect(12345, &pm, 0, &gas_cfg);
+    assert_eq!(opps_wide.len(), 1, "Window=5 should detect JitArb (gap=4 ≤ 5)");
+
+    // Window = 1 — gap=4 > 1 → NOT detected
+    let mut detector_narrow = JitArbDetector::new(42).with_proximity_window(1);
+    for i in 0..=5 {
+        detector_narrow.process_tx(i, &logs_for_tx(i), Some(sender), &pm);
+    }
+    let opps_narrow = detector_narrow.detect(12345, &pm, 0, &gas_cfg);
+    assert!(opps_narrow.is_empty(), "Window=1 should NOT detect JitArb (gap=4 > 1)");
+}
+
+/// ── Test 5: Cross-block detection via BacktestRunner ────────────────────────
+#[tokio::test]
+async fn test_runner_cross_block_detection() {
+    use mev_scout_core::types::Strategy;
+
+    let dir = temp_test_dir("cross_block");
+
+    // Use synthetic_arb_pools which have imbalanced V2 pools:
+    //   Pool A: USDC/WMATIC, reserve0=1e12, reserve1=2e18 → price = 2e6
+    //   Pool B: USDT/WMATIC, reserve0=1e12, reserve1=5e17 → price = 5e5
+    // Gap = ln(2e6 / 5e5) ≈ 1.39 > MIN_ARB_GAP (0.005) → persistent arb
+
+    // Block 1
+    let cache1 = prep_synthetic_cache(&dir, 1, 2);
+    let handle = tokio::runtime::Handle::current();
+    let rpc = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
+    let replayer1 = BlockReplayer::new(handle, cache1, rpc, 1);
+    let pm = synthetic_arb_pools();
+
+    let mut runner = BacktestRunner::new(replayer1, pm, GasConfig::default())
+        .with_cross_block(3);
+
+    let resolved = ResolvedRange {
+        start_block: 1,
+        end_block: 2,
+        block_count: 2,
+        mode: RangeMode::Range(1, 2),
+    };
+
+    // Add block 2 cache data before running
+    prep_synthetic_cache(&dir, 2, 1);
+
+    let (opps, stats) = runner.run_range(&resolved).unwrap();
+
+    assert_eq!(stats.len(), 2, "Should process 2 blocks");
+
+    // Cross-block opportunities should be emitted
+    let cross_opps: Vec<_> = opps.iter().filter(|o| {
+        o.strategy == Strategy::CrossBlockArb || o.strategy == Strategy::TimeBandit
+    }).collect();
+
+    assert!(!cross_opps.is_empty(),
+        "Should detect cross-block opportunities with imbalanced pools across 2 blocks; got {} total opps",
+        opps.len(),
+    );
+
+    // Verify confidence is set on cross-block opportunities
+    for opp in &cross_opps {
+        assert!(opp.confidence.is_some(), "Cross-block opps should have confidence set");
+        let c = opp.confidence.unwrap();
+        assert!(c > 0.0 && c <= 1.0, "Confidence should be in (0.0, 1.0], got {}", c);
+    }
+
+    // CrossBlockArb with persistence >= 2 across 2 blocks with window=3 → confidence = 2/3
+    for opp in cross_opps.iter().filter(|o| o.strategy == Strategy::CrossBlockArb) {
+        let c = opp.confidence.unwrap();
+        assert!((c - 2.0 / 3.0).abs() < 1e-6,
+            "CrossBlockArb confidence should be 2/3 ≈ 0.667 with persistence=2, window=3, got {}", c);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

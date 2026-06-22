@@ -283,6 +283,8 @@ pub enum Strategy {
     JitArb,
     Sandwich,
     Liquidation,
+    CrossBlockArb,
+    TimeBandit,
 }
 
 impl fmt::Display for Strategy {
@@ -294,6 +296,8 @@ impl fmt::Display for Strategy {
             Strategy::JitArb => write!(f, "jit_arb"),
             Strategy::Sandwich => write!(f, "sandwich"),
             Strategy::Liquidation => write!(f, "liquidation"),
+            Strategy::CrossBlockArb => write!(f, "cross_block_arb"),
+            Strategy::TimeBandit => write!(f, "time_bandit"),
         }
     }
 }
@@ -309,8 +313,10 @@ impl FromStr for Strategy {
             "jit_arb" => Ok(Strategy::JitArb),
             "sandwich" => Ok(Strategy::Sandwich),
             "liquidation" => Ok(Strategy::Liquidation),
+            "cross_block_arb" => Ok(Strategy::CrossBlockArb),
+            "time_bandit" => Ok(Strategy::TimeBandit),
             _ => Err(format!(
-                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, all"
+                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb, time_bandit, all"
             )),
         }
     }
@@ -325,6 +331,8 @@ impl Strategy {
             Strategy::JitArb,
             Strategy::Sandwich,
             Strategy::Liquidation,
+            Strategy::CrossBlockArb,
+            Strategy::TimeBandit,
         ]
     }
 
@@ -676,6 +684,8 @@ mod tests {
             (Strategy::JitArb, "jit_arb"),
             (Strategy::Sandwich, "sandwich"),
             (Strategy::Liquidation, "liquidation"),
+            (Strategy::CrossBlockArb, "cross_block_arb"),
+            (Strategy::TimeBandit, "time_bandit"),
         ] {
             assert_eq!(s.to_string(), *expected);
             assert_eq!(expected.parse::<Strategy>().unwrap(), *s);
@@ -701,7 +711,7 @@ mod tests {
 
     #[test]
     fn test_strategy_all_static() {
-        assert_eq!(Strategy::all().len(), 6);
+        assert_eq!(Strategy::all().len(), 8);
     }
 
     #[test]
