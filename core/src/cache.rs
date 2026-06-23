@@ -234,6 +234,167 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn put_block_data(
+        &self,
+        block_num: u64,
+        block: &BlockData,
+        txs: &[TxData],
+        receipts: &[ReceiptData],
+    ) -> anyhow::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                block_num as i64,
+                Self::b256_to_blob(&block.hash),
+                block.timestamp as i64,
+                block.base_fee_per_gas.map(|v| v as i64),
+                block.gas_limit as i64,
+                block.gas_used as i64,
+                Self::addr_to_blob(&block.coinbase),
+            ],
+        )?;
+
+        {
+            let mut tx_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )?;
+            for tx_data in txs {
+                let access_list_blob = if tx_data.access_list.is_empty() {
+                    None
+                } else {
+                    Some(Self::serialize(&tx_data.access_list)?)
+                };
+                tx_stmt.execute(rusqlite::params![
+                    Self::b256_to_blob(&tx_data.hash),
+                    block_num as i64,
+                    tx_data.index as i64,
+                    Self::addr_to_blob(&tx_data.from),
+                    tx_data.to.map(|a| Self::addr_to_blob(&a)),
+                    tx_data.input.to_vec(),
+                    Self::u256_to_blob(&tx_data.value),
+                    tx_data.gas_limit as i64,
+                    tx_data.max_fee_per_gas as i64,
+                    tx_data.max_priority_fee_per_gas.map(|v| v as i64),
+                    tx_data.nonce as i64,
+                    access_list_blob,
+                ])?;
+            }
+        }
+
+        {
+            let mut rc_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            for r in receipts {
+                let logs_blob = Self::serialize(&r.logs)?;
+                rc_stmt.execute(rusqlite::params![
+                    Self::b256_to_blob(&r.tx_hash),
+                    r.tx_index as i64,
+                    r.status as i64,
+                    r.gas_used as i64,
+                    r.cumulative_gas_used as i64,
+                    logs_blob,
+                    r.contract_address.map(|a| Self::addr_to_blob(&a)),
+                ])?;
+            }
+        }
+
+        tx.execute(
+            "INSERT OR REPLACE INTO block_meta (number, txs_fetched) VALUES (?1, 1)",
+            rusqlite::params![block_num as i64],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn put_block_data_batch(
+        &self,
+        batch: &[(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)],
+    ) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        {
+            let mut block_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            let mut tx_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )?;
+            let mut rc_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )?;
+            let mut meta_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO block_meta (number, txs_fetched) VALUES (?1, 1)",
+            )?;
+
+            for (block_num, block, txs, receipts) in batch {
+                block_stmt.execute(rusqlite::params![
+                    *block_num as i64,
+                    Self::b256_to_blob(&block.hash),
+                    block.timestamp as i64,
+                    block.base_fee_per_gas.map(|v| v as i64),
+                    block.gas_limit as i64,
+                    block.gas_used as i64,
+                    Self::addr_to_blob(&block.coinbase),
+                ])?;
+
+                for tx_data in txs {
+                    let access_list_blob = if tx_data.access_list.is_empty() {
+                        None
+                    } else {
+                        Some(Self::serialize(&tx_data.access_list)?)
+                    };
+                    tx_stmt.execute(rusqlite::params![
+                        Self::b256_to_blob(&tx_data.hash),
+                        *block_num as i64,
+                        tx_data.index as i64,
+                        Self::addr_to_blob(&tx_data.from),
+                        tx_data.to.map(|a| Self::addr_to_blob(&a)),
+                        tx_data.input.to_vec(),
+                        Self::u256_to_blob(&tx_data.value),
+                        tx_data.gas_limit as i64,
+                        tx_data.max_fee_per_gas as i64,
+                        tx_data.max_priority_fee_per_gas.map(|v| v as i64),
+                        tx_data.nonce as i64,
+                        access_list_blob,
+                    ])?;
+                }
+
+                for r in receipts {
+                    let logs_blob = Self::serialize(&r.logs)?;
+                    rc_stmt.execute(rusqlite::params![
+                        Self::b256_to_blob(&r.tx_hash),
+                        r.tx_index as i64,
+                        r.status as i64,
+                        r.gas_used as i64,
+                        r.cumulative_gas_used as i64,
+                        logs_blob,
+                        r.contract_address.map(|a| Self::addr_to_blob(&a)),
+                    ])?;
+                }
+
+                meta_stmt.execute(rusqlite::params![*block_num as i64])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn get_block(&self, block_num: u64) -> anyhow::Result<Option<BlockData>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -405,9 +566,22 @@ impl SqliteStore {
     }
 
     pub fn check_integrity(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT number FROM blocks
+             INNER JOIN block_meta USING(number)
+             WHERE number BETWEEN ?1 AND ?2 AND txs_fetched = 1
+             ORDER BY number",
+        )?;
+        let existing: std::collections::HashSet<u64> = stmt
+            .query_map(rusqlite::params![start as i64, end as i64], |row| {
+                row.get::<_, i64>(0).map(|v| v as u64)
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         let mut missing = Vec::new();
         for n in start..=end {
-            if !self.has_block(n)? {
+            if !existing.contains(&n) {
                 missing.push(n);
             }
         }
@@ -415,12 +589,35 @@ impl SqliteStore {
     }
 
     pub fn check_integrity_range(&self, blocks: &[u64]) -> anyhow::Result<Vec<u64>> {
-        let mut missing = Vec::new();
-        for &n in blocks {
-            if !self.has_block(n)? {
-                missing.push(n);
-            }
+        if blocks.is_empty() {
+            return Ok(Vec::new());
         }
+        let conn = self.conn.lock().unwrap();
+        let placeholders: Vec<String> = blocks.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "SELECT number FROM blocks
+             INNER JOIN block_meta USING(number)
+             WHERE number IN ({}) AND txs_fetched = 1",
+            placeholders.join(","),
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<rusqlite::types::Value> = blocks
+            .iter()
+            .map(|n| rusqlite::types::Value::Integer(*n as i64))
+            .collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+        let existing: std::collections::HashSet<u64> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                row.get::<_, i64>(0).map(|v| v as u64)
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        let missing: Vec<u64> = blocks
+            .iter()
+            .copied()
+            .filter(|n| !existing.contains(n))
+            .collect();
         Ok(missing)
     }
 

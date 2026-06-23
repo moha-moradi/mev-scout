@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use futures::future::try_join_all;
@@ -8,25 +9,59 @@ use tokio::sync::Semaphore;
 use alloy::primitives::Address;
 
 use crate::cache::SqliteStore;
+use crate::data::{BlockData, ReceiptData, TxData};
 use crate::parquet_writer::ParquetWriter;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
 use crate::scan::ActivityScanner;
+
+type WriteBatch = Vec<(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)>;
+
+#[derive(Debug, Default, Clone)]
+pub struct FetchTiming {
+    pub has_block_ms: f64,
+    pub get_block_ms: f64,
+    pub get_receipts_ms: f64,
+    pub write_ms: f64,
+    pub total_ms: f64,
+    pub count: u64,
+}
+
+impl FetchTiming {
+    fn record(&mut self, has_block: f64, rpc: f64, write: f64, total: f64) {
+        self.has_block_ms += has_block;
+        self.get_block_ms += rpc;
+        self.write_ms += write;
+        self.total_ms += total;
+        self.count += 1;
+    }
+
+    pub fn summary(&self) -> String {
+        if self.count == 0 {
+            return "no data".to_string();
+        }
+        format!(
+            "blocks={} avg(has_block={:.1}ms rpc={:.1}ms write={:.1}ms total={:.1}ms)",
+            self.count,
+            self.has_block_ms / self.count as f64,
+            self.get_block_ms / self.count as f64,
+            self.write_ms / self.count as f64,
+            self.total_ms / self.count as f64,
+        )
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct FetchSummary {
     pub total_blocks: u64,
     pub fetched: u64,
     pub cached: u64,
-    /// Number of blocks scanned for DEX activity (when using log-first fetch).
-    /// Equal to total_blocks when log-first is enabled, 0 when not used.
     pub scanned: u64,
-    /// Number of blocks found to have DEX activity (when using log-first fetch).
     pub relevant: u64,
-    /// Number of blocks skipped due to no DEX activity (when using log-first fetch).
     pub skipped: u64,
     pub elapsed_secs: f64,
     pub missing_after_fetch: Vec<u64>,
+    pub timing: FetchTiming,
 }
 
 pub struct Fetcher {
@@ -34,6 +69,9 @@ pub struct Fetcher {
     cache: SqliteStore,
     parallelism: usize,
     parquet: Option<ParquetWriter>,
+    timing: Arc<Mutex<FetchTiming>>,
+    write_buf: Arc<Mutex<WriteBatch>>,
+    batch_rpc: bool,
 }
 
 impl Fetcher {
@@ -43,11 +81,19 @@ impl Fetcher {
             cache,
             parallelism: 1,
             parquet: None,
+            timing: Arc::new(Mutex::new(FetchTiming::default())),
+            write_buf: Arc::new(Mutex::new(Vec::new())),
+            batch_rpc: true,
         }
     }
 
     pub fn with_parallelism(mut self, n: usize) -> Self {
         self.parallelism = n.max(1);
+        self
+    }
+
+    pub fn with_batch_rpc(mut self, enabled: bool) -> Self {
+        self.batch_rpc = enabled;
         self
     }
 
@@ -112,7 +158,7 @@ impl Fetcher {
         progress: Option<&F>,
     ) -> anyhow::Result<FetchSummary> {
         let start = Instant::now();
-        let cap = self.parallelism.min(20);
+        let cap = self.parallelism.min(50);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let mut summary = FetchSummary {
@@ -121,12 +167,14 @@ impl Fetcher {
         };
 
         // Process blocks using semaphore-based concurrency
+        let timing = self.timing.clone();
         let mut tasks = Vec::new();
         for block_num in range.start_block..=range.end_block {
             let sem = semaphore.clone();
+            let t = timing.clone();
             tasks.push(async move {
                 let _permit = sem.acquire_owned().await?;
-                self.fetch_one_block(block_num).await
+                self.fetch_one_block(block_num, t).await
             });
         }
 
@@ -142,31 +190,86 @@ impl Fetcher {
             }
         }
 
-        // Write Parquet cache from SQLite data
+        // Flush any remaining buffered writes, then write Parquet
+        self.flush_write_buf()?;
         self.flush_parquet(range.start_block, range.end_block)?;
 
         // Integrity check
+        let t_check = Instant::now();
         summary.missing_after_fetch = self
             .cache
             .check_integrity(range.start_block, range.end_block)?;
+        let check_ms = t_check.elapsed().as_secs_f64() * 1000.0;
+
+        let t_flush = Instant::now();
+        self.cache.flush()?;
+        let flush_ms = t_flush.elapsed().as_secs_f64() * 1000.0;
 
         summary.elapsed_secs = start.elapsed().as_secs_f64();
-        self.cache.flush()?;
+        if let Ok(t) = self.timing.lock() {
+            summary.timing = t.clone();
+        }
+        tracing::info!(
+            "fetch_range: {} blocks ({}/{}) check_integrity={:.1}ms flush={:.1}ms total={:.1}s | {}",
+            summary.total_blocks, summary.fetched, summary.cached,
+            check_ms, flush_ms, summary.elapsed_secs,
+            summary.timing.summary(),
+        );
         Ok(summary)
+    }
+
+    fn flush_write_buf(&self) -> anyhow::Result<()> {
+        let batch = {
+            let mut buf = self.write_buf.lock().unwrap();
+            if buf.is_empty() {
+                return Ok(());
+            }
+            std::mem::take(&mut *buf)
+        };
+        self.cache.put_block_data_batch(&batch)
     }
 
     async fn fetch_one_block(
         &self,
         block_num: u64,
+        timing: Arc<Mutex<FetchTiming>>,
     ) -> anyhow::Result<bool> {
-        if self.cache.has_block(block_num)? {
+        let t0 = Instant::now();
+        let cached = self.cache.has_block(block_num)?;
+        let t_has_block = t0.elapsed().as_secs_f64() * 1000.0;
+        if cached {
             return Ok(false);
         }
-        let (block, txs) = self.rpc.get_block(block_num).await?;
-        let receipts = self.rpc.get_receipts(block_num).await?;
-        self.cache.put_block(block_num, &block)?;
-        self.cache.put_txs(block_num, &txs)?;
-        self.cache.put_receipts(block_num, &receipts)?;
+
+        let t1 = Instant::now();
+        let (block, txs, receipts) = if self.batch_rpc {
+            self.rpc.get_block_and_receipts_batch(block_num).await?
+        } else {
+            let (block_res, receipts_res) = tokio::join!(
+                self.rpc.get_block(block_num),
+                self.rpc.get_receipts(block_num),
+            );
+            let (block, txs) = block_res?;
+            (block, txs, receipts_res?)
+        };
+        let t_rpc = t1.elapsed().as_secs_f64() * 1000.0;
+
+        let t2 = Instant::now();
+        {
+            let mut buf = self.write_buf.lock().unwrap();
+            buf.push((block_num, block, txs, receipts));
+            if buf.len() >= 10 {
+                let batch = std::mem::take(&mut *buf);
+                drop(buf);
+                self.cache.put_block_data_batch(&batch)?;
+            }
+        }
+        let t_write = t2.elapsed().as_secs_f64() * 1000.0;
+
+        let total = t0.elapsed().as_secs_f64() * 1000.0;
+        if let Ok(mut t) = timing.lock() {
+            t.record(t_has_block, t_rpc, t_write, total);
+        }
         Ok(true)
     }
 
@@ -224,7 +327,7 @@ impl Fetcher {
         let mut sorted: Vec<u64> = active_blocks.into_iter().collect();
         sorted.sort_unstable();
 
-        let cap = self.parallelism.min(20);
+        let cap = self.parallelism.min(50);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let mut summary = FetchSummary {
@@ -235,12 +338,14 @@ impl Fetcher {
             ..Default::default()
         };
 
+        let timing = self.timing.clone();
         let mut tasks = Vec::new();
         for &block_num in &sorted {
             let sem = semaphore.clone();
+            let t = timing.clone();
             tasks.push(async move {
                 let _permit = sem.acquire_owned().await?;
-                self.fetch_one_block(block_num).await
+                self.fetch_one_block(block_num, t).await
             });
         }
 
@@ -256,7 +361,8 @@ impl Fetcher {
             }
         }
 
-        // Write Parquet cache from SQLite data
+        // Flush any remaining buffered writes, then write Parquet
+        self.flush_write_buf()?;
         let min = sorted.first().copied().unwrap_or(range.start_block);
         let max = sorted.last().copied().unwrap_or(range.end_block);
         self.flush_parquet(min, max)?;
@@ -267,14 +373,18 @@ impl Fetcher {
             .check_integrity_range(&sorted)?;
 
         summary.elapsed_secs = start.elapsed().as_secs_f64();
+        if let Ok(t) = self.timing.lock() {
+            summary.timing = t.clone();
+        }
         self.cache.flush()?;
         Ok(summary)
     }
 
     pub async fn auto_refetch_gaps(&self, gaps: &[u64]) -> anyhow::Result<u64> {
         let mut refetched = 0u64;
+        let timing = self.timing.clone();
         for &block_num in gaps {
-            match self.fetch_one_block(block_num).await {
+            match self.fetch_one_block(block_num, timing.clone()).await {
                 Ok(true) => refetched += 1,
                 Ok(false) => {}
                 Err(e) => {

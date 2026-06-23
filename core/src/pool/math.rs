@@ -364,24 +364,6 @@ pub fn optimal_two_hop_arb_generic(
     })
 }
 
-fn simulate_two_hop_generic(
-    input_amount: u128,
-    quote_a: &impl Fn(u128) -> Option<u128>,
-    quote_b: &impl Fn(u128) -> Option<u128>,
-) -> Option<TwoHopArbResult> {
-    let intermediate = quote_a(input_amount)?;
-    let output = quote_b(intermediate)?;
-    if output <= input_amount {
-        return None;
-    }
-    Some(TwoHopArbResult {
-        input_amount,
-        intermediate_amount: intermediate,
-        output_amount: output,
-        profit: output - input_amount,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

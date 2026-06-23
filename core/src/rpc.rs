@@ -19,6 +19,7 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
+use alloy::rpc::client::{BatchRequest, Waiter};
 use serde_json::Value;
 use tokio::time::sleep;
 use url::Url;
@@ -360,6 +361,70 @@ impl RpcClient {
             .iter()
             .map(alloy_receipt_to_receipt_data)
             .collect())
+    }
+
+    /// Fetch block + receipts in a single JSON-RPC batch request.
+    ///
+    /// Sends `eth_getBlockByNumber` and `eth_getBlockReceipts` together in one
+    /// HTTP POST, cutting round-trips per block in half.
+    pub async fn get_block_and_receipts_batch(
+        &self,
+        block_number: u64,
+    ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
+        self.retry_call(|provider| async move {
+            let mut batch = BatchRequest::new(provider.client());
+
+            let block_waiter: Waiter<Value> = batch
+                .add_call(
+                    "eth_getBlockByNumber",
+                    &(BlockNumberOrTag::Number(block_number), true),
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            let receipts_waiter: Waiter<Vec<TransactionReceipt>> = batch
+                .add_call(
+                    "eth_getBlockReceipts",
+                    &(alloy::eips::BlockId::number(block_number),),
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
+
+            batch.send().await.map_err(|e| anyhow::anyhow!(e))?;
+
+            let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!(e))?;
+            if raw.is_null() {
+                return Err(anyhow::anyhow!("Block {} not found", block_number));
+            }
+            let mut raw = raw;
+            Self::clean_block_transactions(&mut raw);
+            let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!(e))?;
+
+            let receipts: Vec<TransactionReceipt> =
+                receipts_waiter.await.map_err(|e| anyhow::anyhow!(e))?;
+
+            let txs: Vec<TxData> = block
+                .transactions
+                .as_transactions()
+                .map(|txs| {
+                    txs.iter()
+                        .enumerate()
+                        .map(|(i, tx)| alloy_tx_to_tx_data(tx, i as u64))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let block_data = BlockData {
+                number: block.header.number,
+                hash: block.header.hash,
+                timestamp: block.header.timestamp,
+                base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
+                gas_limit: block.header.gas_limit,
+                gas_used: block.header.gas_used,
+                coinbase: block.header.beneficiary,
+            };
+
+            Ok((block_data, txs, receipts.iter().map(alloy_receipt_to_receipt_data).collect()))
+        })
+        .await
     }
 
     /// Fetch account proof via `eth_getProof`.

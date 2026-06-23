@@ -58,7 +58,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: Some(args.priority_fee),
             output: Some(args.output.clone()),
             export_path: Some(args.export_path.clone()),
-            db_path: Some(args.db_path.clone()),
+            db_path: args.db_path.clone(),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
             pga_enabled: Some(args.pga_enabled),
@@ -86,7 +86,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            db_path: Some(args.db_path.clone()),
+            db_path: args.db_path.clone(),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
             pga_enabled: None,
@@ -114,7 +114,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            db_path: Some(args.db_path.clone()),
+            db_path: args.db_path.clone(),
             parquet_dir: args.parquet_dir.clone(),
             coingecko_api_key: None,
             pga_enabled: None,
@@ -198,7 +198,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             priority_fee_gwei: None,
             output: None,
             export_path: None,
-            db_path: Some(args.db_path.clone()),
+            db_path: args.db_path.clone(),
             parquet_dir: None,
             coingecko_api_key: None,
             pga_enabled: None,
@@ -558,6 +558,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(workers) = config.rpc_workers {
                 fetcher = fetcher.with_parallelism(workers);
             }
+            fetcher = fetcher.with_batch_rpc(!args.chain_args.no_batch_rpc);
 
             let pb = indicatif::ProgressBar::new(resolved.block_count);
             pb.set_style(
@@ -896,7 +897,7 @@ async fn main() -> anyhow::Result<()> {
             let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
             rpc.check_connection(chain_id).await?;
 
-            let cache = SqliteStore::open(&args.db_path, chain_id)?;
+            let cache = SqliteStore::open(&config.db_path, chain_id)?;
 
             let range_mode = match validation::resolve_block_range(
                 args.block_range.days,
@@ -949,6 +950,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(workers) = config.rpc_workers {
                 fetcher = fetcher.with_parallelism(workers);
             }
+            fetcher = fetcher.with_batch_rpc(!args.chain_args.no_batch_rpc);
 
             let pb = ProgressBar::new(resolved.block_count);
             pb.set_style(
@@ -1417,7 +1419,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Save to cache if requested
             if args.save {
-            let cache = SqliteStore::open(&args.db_path, chain_id)?;
+            let cache = SqliteStore::open(&config.db_path, chain_id)?;
                 for pool in &all_pools {
                     let info: mev_scout_core::pool::state::PoolInfo = pool.clone().into();
                     let _ = cache.put_discovered_pool(&info);
@@ -1441,7 +1443,7 @@ async fn main() -> anyhow::Result<()> {
                         let _ = cache.put_discovery_cursor(&registry, to);
                     }
                 }
-                println!("  Saved to cache: {}", args.db_path);
+                println!("  Saved to cache: {}", config.db_path);
             }
         }
         Command::FactCheck(args) => {

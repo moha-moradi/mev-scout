@@ -87,6 +87,10 @@ pub struct ChainArgs {
     /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
     #[arg(long = "rpc-workers", default_value = "1", value_name = "N")]
     pub rpc_workers: usize,
+
+    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
+    #[arg(long = "no-batch-rpc")]
+    pub no_batch_rpc: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -125,9 +129,9 @@ pub struct RunArgs {
     #[arg(long, default_value = "./results", value_name = "PATH", help_heading = "Output")]
     pub export_path: String,
 
-    /// SQLite database path
-    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH", help_heading = "Output")]
-    pub db_path: String,
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
+    pub db_path: Option<String>,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH", help_heading = "Output")]
@@ -204,9 +208,9 @@ pub struct FetchArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// SQLite database path
-    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
-    pub db_path: String,
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH")]
+    pub db_path: Option<String>,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH")]
@@ -226,9 +230,9 @@ pub struct ReplayArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// SQLite database path
-    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
-    pub db_path: String,
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH")]
+    pub db_path: Option<String>,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH")]
@@ -294,7 +298,7 @@ pub struct DiscoverArgs {
     #[arg(long)]
     pub save: bool,
 
-    /// SQLite database path (used when --save is set)
-    #[arg(long = "db-path", default_value = "./cache", value_name = "PATH")]
-    pub db_path: String,
+    /// SQLite database path (used when --save is set, defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH")]
+    pub db_path: Option<String>,
 }

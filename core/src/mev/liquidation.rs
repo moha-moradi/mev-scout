@@ -145,6 +145,7 @@ struct LiquidationEvent {
     tx_index: usize,
     collateral_asset: Address,
     debt_asset: Address,
+    #[allow(dead_code)]
     user: Address,
     debt_to_cover: u128,
     liquidated_collateral_amount: u128,
