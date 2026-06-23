@@ -1,3 +1,4 @@
 chain = "polygon"
+#https://polygon-mainnet.infura.io/v3/5bd994ee8e1c486abbb0fc068b4cf304
 rpc_url = "https://polygon-mainnet.infura.io/v3/321ed86463f34136a6193fd48d0e7e31"
 db_path = "./cache/mev-scout.sqlite"
