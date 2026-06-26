@@ -9,7 +9,7 @@ use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::mev::opportunity::MevOpportunity;
 use mev_scout_core::mev::two_hop::TwoHopArbDetector;
 use mev_scout_core::pool::dex_type::DexType;
-use mev_scout_core::pool::discovery::discover_v2_pools;
+use mev_scout_core::pool::discovery::discover_pools;
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState,
     UniswapV3PoolState,
@@ -234,7 +234,7 @@ async fn test_e2e_fetch_and_cache() {
     assert!(integrity.is_empty(), "Integrity gaps: {integrity:?}");
 }
 
-/// Test 3: Pool discovery from factory event logs
+/// Test 3: Pool discovery from DEX activity + factory event logs
 #[tokio::test]
 async fn test_e2e_pool_discovery() {
     eprintln!("--- test_e2e_pool_discovery ---");
@@ -245,17 +245,21 @@ async fn test_e2e_pool_discovery() {
 
     let start = tip.saturating_sub(10000);
     let end = tip;
-    eprintln!("  Discovering V2 pools on QuickSwap factory [{start}..{end}]");
-    let pools = match discover_v2_pools(&rpc, quick_v2_factory(), start, end, None).await {
-        Ok(p) => p,
+    let v2_factories = vec![quick_v2_factory()];
+    eprintln!("  Discovering pools on QuickSwap factory [{start}..{end}]");
+    let (pools, _active) = match discover_pools(
+        &rpc, start, end, 2000, None, None,
+        Some(&v2_factories), None, None, None,
+    ).await {
+        Ok((p, a)) => (p, a),
         Err(e) => {
             eprintln!("  Pool discovery failed (archive RPC likely required): {e}");
             eprintln!("  SKIP: archive node needed for eth_getLogs");
             return;
         }
     };
-    eprintln!("  Found {} V2 pools", pools.len());
-    assert!(pools.len() > 0, "Should find at least 1 V2 pool in a 10K block range");
+    eprintln!("  Found {} pools (V2 from factory + DEX events)", pools.len());
+    assert!(pools.len() > 0, "Should find at least 1 pool in a 10K block range");
 
     for p in pools.iter().take(5) {
         eprintln!("  Pool {}: token0={:?} token1={:?} fee={}", p.address, p.token0, p.token1, p.fee);

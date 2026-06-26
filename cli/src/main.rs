@@ -415,60 +415,6 @@ fn render_block_summary_table(summaries: &[BlockReplayStats]) {
     println!("{table}");
 }
 
-fn resolve_v2_factories(
-    args: &mev_scout_core::cli::RunArgs,
-    validation_result: &mev_scout_core::validation::ValidationResult,
-) -> Vec<Address> {
-    let mut addrs = Vec::new();
-    if let Some(v2_str) = &args.v2_factories {
-        for s in v2_str.split(',') {
-            if let Ok(addr) = s.trim().parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    } else if let Some(factories) = validation_result.chain_config.uniswap_v2_factories.as_ref() {
-        for s in factories {
-            if let Ok(addr) = s.parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    } else {
-        for s in validation_result.chain_name.default_uniswap_v2_factories() {
-            if let Ok(addr) = s.parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    }
-    addrs
-}
-
-fn resolve_v3_factories(
-    args: &mev_scout_core::cli::RunArgs,
-    validation_result: &mev_scout_core::validation::ValidationResult,
-) -> Vec<Address> {
-    let mut addrs = Vec::new();
-    if let Some(v3_str) = &args.v3_factory {
-        for s in v3_str.split(',') {
-            if let Ok(addr) = s.trim().parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    } else if let Some(factories) = validation_result.chain_config.uniswap_v3_factories.as_ref() {
-        for s in factories {
-            if let Ok(addr) = s.parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    } else {
-        for s in validation_result.chain_name.default_uniswap_v3_factories() {
-            if let Ok(addr) = s.parse::<Address>() {
-                addrs.push(addr);
-            }
-        }
-    }
-    addrs
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -570,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
                     resolved.end_block,
                 );
 
-                match mev_scout_core::pool::discovery::discover_and_cache_from_swaps(
+                match mev_scout_core::pool::discovery::discover_and_cache(
                     &rpc,
                     &cache,
                     resolved.start_block,
@@ -578,6 +524,10 @@ async fn main() -> anyhow::Result<()> {
                     batch_size,
                     v2_fee,
                     vault,
+                    None, // v2_factories
+                    None, // v3_factories
+                    None, // v2_factory_fees
+                    None, // curve_registry
                 )
                 .await
                 {
@@ -736,36 +686,7 @@ async fn main() -> anyhow::Result<()> {
 
             let start = std::time::Instant::now();
 
-            let (all_opportunities, block_stats) = if args.live_discover {
-                let v2_addrs = resolve_v2_factories(args, &validation_result);
-                let v3_addrs = resolve_v3_factories(args, &validation_result);
-                if v2_addrs.is_empty() && v3_addrs.is_empty() {
-                    tracing::warn!("--live-discover set but no factory addresses found for chain");
-                    runner.run_range_with_pga(&resolved, pga_cfg)?
-                } else {
-                    let v2_fee_override = validation_result.chain_config.uniswap_v2_default_fee;
-                    let v2_factory_fees: Vec<Option<u32>> = v2_addrs.iter().map(|_| v2_fee_override).collect();
-                    let batch_size = validation_result
-                        .chain_config
-                        .pool_discovery_batch_size
-                        .unwrap_or(10);
-                    let chunk_size = 10_000;
-                    runner
-                        .run_range_with_live_discovery(
-                            &rpc,
-                            &resolved,
-                            pga_cfg,
-                            &v2_addrs,
-                            &v3_addrs,
-                            &v2_factory_fees,
-                            batch_size,
-                            chunk_size,
-                        )
-                        .await?
-                }
-            } else {
-                runner.run_range_with_pga(&resolved, pga_cfg)?
-            };
+            let (all_opportunities, block_stats) = runner.run_range_with_pga(&resolved, pga_cfg)?;
             let elapsed = start.elapsed();
 
             // L3/L5: Compute USD aggregation for detected opportunities
@@ -1292,8 +1213,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Discover(args) => {
-            use alloy::primitives::Address;
-            use mev_scout_core::pool::discovery::{discover_v2_pools, discover_v3_pools};
             use mev_scout_core::types::ChainName;
 
             let chain_name: ChainName = match args.chain_args.chain.parse() {
@@ -1313,212 +1232,93 @@ async fn main() -> anyhow::Result<()> {
             }
             rpc.check_connection(chain_id).await?;
 
-            let mut v2_addrs = Vec::new();
-            if let Some(v2_str) = &args.v2_factories {
-                for s in v2_str.split(',') {
-                    if let Ok(addr) = s.trim().parse::<Address>() {
-                        v2_addrs.push(addr);
-                    }
-                }
-            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v2_factories.as_ref()) {
-                for s in factories {
-                    if let Ok(addr) = s.parse::<Address>() {
-                        v2_addrs.push(addr);
-                    }
-                }
-            } else {
-                for s in chain_name.default_uniswap_v2_factories() {
-                    if let Ok(addr) = s.parse::<Address>() {
-                        v2_addrs.push(addr);
-                    }
-                }
-            }
-            let mut v3_addrs = Vec::new();
-            if let Some(v3_str) = &args.v3_factory {
-                for s in v3_str.split(',') {
-                    if let Ok(addr) = s.trim().parse::<Address>() {
-                        v3_addrs.push(addr);
-                    }
-                }
-            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v3_factories.as_ref()) {
-                for s in factories {
-                    if let Ok(addr) = s.parse::<Address>() {
-                        v3_addrs.push(addr);
-                    }
-                }
-            } else {
-                for s in chain_name.default_uniswap_v3_factories() {
-                    if let Ok(addr) = s.parse::<Address>() {
-                        v3_addrs.push(addr);
-                    }
-                }
-            }
-
-            if v2_addrs.is_empty() && v3_addrs.is_empty() {
-                eprintln!("Error: no factory addresses found for chain '{}'", args.chain_args.chain);
-                std::process::exit(1);
-            }
-
             let from = args.from_block;
             let to = args.to_block;
             let batch_size = args.batch_size;
+            let v2_fee = chain_config.and_then(|c| c.uniswap_v2_default_fee);
+            let vault = chain_config
+                .and_then(|c| c.balancer_vault.as_ref())
+                .and_then(|s| s.parse::<alloy::primitives::Address>().ok());
+            let registry = chain_config
+                .and_then(|c| c.curve_registry.as_ref())
+                .and_then(|s| s.parse::<alloy::primitives::Address>().ok());
+
+            // Resolve factory addresses from args, config, or defaults
+            let v2_factories: Vec<alloy::primitives::Address> = if let Some(v2_str) = &args.v2_factories {
+                v2_str.split(',').filter_map(|s| s.trim().parse().ok()).collect()
+            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v2_factories.as_ref()) {
+                factories.iter().filter_map(|s| s.parse().ok()).collect()
+            } else {
+                chain_name.default_uniswap_v2_factories().iter().filter_map(|s| s.parse().ok()).collect()
+            };
+            let v3_factories: Vec<alloy::primitives::Address> = if let Some(v3_str) = &args.v3_factory {
+                v3_str.split(',').filter_map(|s| s.trim().parse().ok()).collect()
+            } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v3_factories.as_ref()) {
+                factories.iter().filter_map(|s| s.parse().ok()).collect()
+            } else {
+                chain_name.default_uniswap_v3_factories().iter().filter_map(|s| s.parse().ok()).collect()
+            };
 
             println!();
-            println!("  Pool Discovery (on-chain)");
+            println!("  Pool Discovery (unified)");
             println!("  Chain:       {}", args.chain_args.chain);
             println!("  Block range: {from}–{to}");
-            println!("  V2 factories: {}", v2_addrs.len());
-            println!("  V3 factories: {}", v3_addrs.len());
+            println!("  DEX activity scan: yes");
+            if !v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some() {
+                println!("  Factory event scan: yes ({} V2, {} V3, Balancer: {}, Curve: {})",
+                    v2_factories.len(), v3_factories.len(), vault.is_some(), registry.is_some());
+            }
             if args.no_save {
                 println!("  Save to cache: no");
             }
             println!();
 
-            let mut all_pools = Vec::new();
-            let v2_fee_override = chain_config.and_then(|c| c.uniswap_v2_default_fee);
-
-            // V2 discovery batched
-            for &factory in &v2_addrs {
-                let mut current = from;
-                while current <= to {
-                    let end = (current + batch_size - 1).min(to);
-                    match discover_v2_pools(&rpc, factory, current, end, v2_fee_override).await {
-                        Ok(pools) => {
-                            for p in &pools {
-                                println!(
-                                    "  V2  {}  token0={}  token1={}",
-                                    p.address, p.token0, p.token1
-                                );
-                            }
-                            all_pools.extend(pools);
-                        }
-                        Err(e) => {
-                            eprintln!("  Error scanning V2 factory {factory} blocks {current}..{end}: {e}");
-                        }
-                    }
-                    if end == to { break; }
-                    current = end + 1;
-                }
-            }
-
-            // V3 discovery batched
-            for &factory in &v3_addrs {
-                let mut current = from;
-                while current <= to {
-                    let end = (current + batch_size - 1).min(to);
-                    match discover_v3_pools(&rpc, factory, current, end).await {
-                        Ok(pools) => {
-                            for p in &pools {
-                                println!(
-                                    "  V3  {}  token0={}  token1={}  fee={}  tickSpacing={}",
-                                    p.address, p.token0, p.token1, p.fee,
-                                    p.tick_spacing.unwrap_or(0),
-                                );
-                            }
-                            all_pools.extend(pools);
-                        }
-                        Err(e) => {
-                            eprintln!("  Error scanning V3 factory {factory} blocks {current}..{end}: {e}");
-                        }
-                    }
-                    if end == to { break; }
-                    current = end + 1;
-                }
-            }
-
-            // Balancer V2 pool discovery (optional)
-            if let Some(vault_str) = chain_config.and_then(|c| c.balancer_vault.as_ref()) {
-                if let Ok(vault) = vault_str.parse::<Address>() {
-                    let balancer_start = chain_config
-                        .and_then(|c| c.pool_discovery_start_block)
-                        .unwrap_or(from);
-                    println!();
-                    println!("  Balancer V2 vault: {}", vault);
-                    let mut current = balancer_start.max(from);
-                    while current <= to {
-                        let end = (current + batch_size - 1).min(to);
-                        match mev_scout_core::pool::discovery::discover_balancer_pools(
-                            &rpc, vault, current, end,
-                        ).await {
-                            Ok(pools) => {
-                                for p in &pools {
-                                    println!(
-                                        "  Balancer {}",
-                                        p.address,
-                                    );
-                                }
-                                all_pools.extend(pools);
-                            }
-                            Err(e) => {
-                                eprintln!("  Error scanning Balancer vault {vault} blocks {current}..{end}: {e}");
-                            }
-                        }
-                        if end == to { break; }
-                        current = end + 1;
-                    }
-                }
-            }
-
-            // Curve pool discovery (optional)
-            if let Some(registry_str) = chain_config.and_then(|c| c.curve_registry.as_ref()) {
-                if let Ok(registry) = registry_str.parse::<Address>() {
-                    let curve_start = chain_config
-                        .and_then(|c| c.pool_discovery_start_block)
-                        .unwrap_or(from);
-                    println!();
-                    println!("  Curve registry: {}", registry);
-                    let mut current = curve_start.max(from);
-                    while current <= to {
-                        let end = (current + batch_size - 1).min(to);
-                        match mev_scout_core::pool::discovery::discover_curve_pools(
-                            &rpc, registry, current, end,
-                        ).await {
-                            Ok(pools) => {
-                                for p in &pools {
-                                    println!("  Curve  {}", p.address);
-                                }
-                                all_pools.extend(pools);
-                            }
-                            Err(e) => {
-                                eprintln!("  Error scanning Curve registry {registry} blocks {current}..{end}: {e}");
-                            }
-                        }
-                        if end == to { break; }
-                        current = end + 1;
-                    }
-                }
-            }
-
-            println!();
-            println!("  Found {} pool(s)", all_pools.len());
-
-            // Save to cache by default
-            if !args.no_save {
             let cache = SqliteStore::open(&config.db_path, chain_id)?;
-                for pool in &all_pools {
-                    let info: mev_scout_core::pool::state::PoolInfo = pool.clone().into();
-                    let _ = cache.put_discovered_pool(&info);
-                }
-                // Save cursors
-                for &factory in &v2_addrs {
-                    let _ = cache.put_discovery_cursor(&factory, to);
-                }
-                for &factory in &v3_addrs {
-                    let _ = cache.put_discovery_cursor(&factory, to);
-                }
-                // Save Balancer vault cursor if present
-                if let Some(vault_str) = chain_config.and_then(|c| c.balancer_vault.as_ref()) {
-                    if let Ok(vault) = vault_str.parse::<Address>() {
-                        let _ = cache.put_discovery_cursor(&vault, to);
+
+            match mev_scout_core::pool::discovery::discover_and_cache(
+                &rpc,
+                &cache,
+                from,
+                to,
+                batch_size,
+                v2_fee,
+                vault,
+                if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
+                if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
+                None, // v2_factory_fees
+                registry,
+            )
+            .await
+            {
+                Ok((pools, active_blocks)) => {
+                    for p in &pools {
+                        match p.dex_type {
+                            mev_scout_core::pool::dex_type::DexType::UniswapV2 => {
+                                println!("  V2  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                            }
+                            mev_scout_core::pool::dex_type::DexType::UniswapV3 => {
+                                println!("  V3  {}  token0={}  token1={}  fee={}  tickSpacing={}",
+                                    p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
+                            }
+                            mev_scout_core::pool::dex_type::DexType::Balancer => {
+                                println!("  Balancer  {}", p.address);
+                            }
+                            mev_scout_core::pool::dex_type::DexType::Curve => {
+                                println!("  Curve  {}", p.address);
+                            }
+                        }
+                    }
+                    println!();
+                    println!("  Found {} pool(s) in {} active blocks", pools.len(), active_blocks.len());
+                    if args.no_save {
+                        println!("  (not saved to cache)");
+                    } else {
+                        println!("  Saved {} pool(s) to cache: {}", pools.len(), config.db_path);
                     }
                 }
-                // Save Curve registry cursor if present
-                if let Some(registry_str) = chain_config.and_then(|c| c.curve_registry.as_ref()) {
-                    if let Ok(registry) = registry_str.parse::<Address>() {
-                        let _ = cache.put_discovery_cursor(&registry, to);
-                    }
+                Err(e) => {
+                    eprintln!("  Pool discovery failed: {e:#}");
                 }
-                println!("  Saved {} pool(s) to cache: {}", all_pools.len(), config.db_path);
             }
         }
         Command::FactCheck(args) => {

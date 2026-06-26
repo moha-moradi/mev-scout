@@ -187,22 +187,6 @@ pub struct RunArgs {
     #[arg(long = "cross-block-window", default_value = "0", value_name = "N", help_heading = "Strategies")]
     pub cross_block_window: usize,
 
-    /// Discover pools from factory events during backtest replay (live discovery).
-    /// Scans each factory for PairCreated/PoolCreated events and adds new pools
-    /// to the pool manager before processing the blocks they appear in.
-    #[arg(long = "live-discover", help_heading = "Discovery")]
-    pub live_discover: bool,
-
-    /// Uniswap V2 factory addresses (comma-separated) for live discovery.
-    /// Overrides chain config defaults. Only used with --live-discover.
-    #[arg(long, value_name = "ADDRS", help_heading = "Discovery")]
-    pub v2_factories: Option<String>,
-
-    /// Uniswap V3 factory address for live discovery.
-    /// Overrides chain config defaults. Only used with --live-discover.
-    #[arg(long, value_name = "ADDR", help_heading = "Discovery")]
-    pub v3_factory: Option<String>,
-
 }
 
 #[derive(Args, Debug, Clone)]
