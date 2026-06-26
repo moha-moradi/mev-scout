@@ -4,6 +4,24 @@ use std::fmt;
 use std::str::FromStr;
 use alloy::primitives::Address;
 
+/// A known public RPC endpoint with metadata for rate-limit-aware load distribution.
+#[derive(Debug, Clone)]
+pub struct ProviderEndpoint {
+    pub url: &'static str,
+    /// Recommended safe requests-per-second. Derived from observed public-tier limits.
+    pub default_rps: f64,
+    /// Human-readable label (e.g. "publicnode", "sentio").
+    pub label: &'static str,
+    /// Whether this endpoint has been verified to support `eth_getProof` (archive).
+    pub archive: bool,
+}
+
+impl ProviderEndpoint {
+    pub const fn new(url: &'static str, default_rps: f64, label: &'static str, archive: bool) -> Self {
+        Self { url, default_rps, label, archive }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChainName {
     Polygon,
@@ -28,29 +46,55 @@ impl ChainName {
         }
     }
 
-    /// Public (free-tier) RPC endpoints — no API key required.
-    /// Returns a list; the first URL is used as the primary, and the rest serve as fallbacks.
-    pub fn public_rpc_urls(&self) -> &[&'static str] {
+    /// Public (free-tier) RPC endpoints with metadata (URL, RPS, archive support).
+    ///
+    /// Each entry includes an observed safe RPS for public-tier usage.
+    /// Endpoints are ordered by preference (fastest / most reliable first).
+    pub fn public_rpc_endpoints(&self) -> &[ProviderEndpoint] {
         match self {
             ChainName::Polygon => &[
-                "https://polygon-bor.publicnode.com",
-                "https://polygon-mainnet.core.chainstack.com/0eba37dcfe9dfb6f02273819eb9e0588",
-                "https://twilight-polished-sailboat.matic.quiknode.pro/ed3d9f40e68e4938394e9246f2b2953761491c7a",
-                "https://lb.drpc.live/polygon/AlEVHe8j40WBrjJdhDUkokDnXjIgaJkR8ZpCVjewFaCJ",
-                "https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs",
+                ProviderEndpoint::new("https://polygon.lava.build", 0.9, "lava", true),
+                ProviderEndpoint::new("https://rpc.sentio.xyz/matic", 0.6, "sentio", true),
+                ProviderEndpoint::new("https://matic.rpc.sentio.xyz", 0.8, "sentio-alt", true),
+                ProviderEndpoint::new("https://polygon-bor-rpc.publicnode.com", 1.0, "publicnode", true),
+                ProviderEndpoint::new("https://polygon-mainnet.infura.io/v3/2a1f4e35e07c40e18c7d1eddc5b18290", 0.7, "infura", true),
+                ProviderEndpoint::new("https://polygon.api.onfinality.io/public", 0.5, "onfinality", true),
+                ProviderEndpoint::new("https://rpc.satelink.network/rpc/polygon", 0.9, "satelink", true),
+                ProviderEndpoint::new("https://api.zan.top/polygon-mainnet", 0.5, "zan", false),
+                ProviderEndpoint::new("https://poly.api.pocket.network", 0.5, "pocket", false),
+                // Legacy URLs kept for backward compatibility
+                ProviderEndpoint::new("https://polygon-mainnet.core.chainstack.com/0eba37dcfe9dfb6f02273819eb9e0588", 0.5, "chainstack", true),
+                ProviderEndpoint::new("https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs", 0.5, "alchemy", true),
             ],
-            ChainName::Avalanche => &["https://avalanche-c-chain.publicnode.com"],
-            ChainName::Bsc => &["https://bsc.publicnode.com"],
-            ChainName::Arbitrum => &["https://arbitrum-one.publicnode.com"],
-            ChainName::Base => &["https://base.publicnode.com"],
-            ChainName::Ethereum => &["https://ethereum-rpc.publicnode.com"],
-            ChainName::Optimism => &["https://optimism-rpc.publicnode.com"],
+            ChainName::Avalanche => &[
+                ProviderEndpoint::new("https://avalanche-c-chain.publicnode.com", 1.0, "publicnode", true),
+            ],
+            ChainName::Bsc => &[
+                ProviderEndpoint::new("https://bsc.publicnode.com", 1.0, "publicnode", true),
+            ],
+            ChainName::Arbitrum => &[
+                ProviderEndpoint::new("https://arbitrum-one.publicnode.com", 1.0, "publicnode", true),
+            ],
+            ChainName::Base => &[
+                ProviderEndpoint::new("https://base.publicnode.com", 1.0, "publicnode", true),
+            ],
+            ChainName::Ethereum => &[
+                ProviderEndpoint::new("https://ethereum-rpc.publicnode.com", 1.0, "publicnode", true),
+            ],
+            ChainName::Optimism => &[
+                ProviderEndpoint::new("https://optimism-rpc.publicnode.com", 1.0, "publicnode", true),
+            ],
         }
     }
 
-    /// Primary public (free-tier) RPC endpoint — shortcut for `public_rpc_urls()[0]`.
+    /// Public (free-tier) RPC URLs — shortcut extracting URLs from `public_rpc_endpoints()`.
+    pub fn public_rpc_urls(&self) -> Vec<&'static str> {
+        self.public_rpc_endpoints().iter().map(|e| e.url).collect()
+    }
+
+    /// Primary public (free-tier) RPC endpoint — shortcut for `public_rpc_endpoints()[0].url`.
     pub fn public_rpc_url(&self) -> &'static str {
-        self.public_rpc_urls()[0]
+        self.public_rpc_endpoints()[0].url
     }
 
     /// Default Uniswap V2 factory addresses for this chain (built-in, no config file needed).
