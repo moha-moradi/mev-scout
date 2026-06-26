@@ -716,7 +716,7 @@ impl BacktestRunner {
 ///
 /// Adding a pool invalidates the cached arbitrage pairs (regenerated on
 /// next call to `arbitrage_pairs()`).
-fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
+pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
     match info.dex_type {
         crate::pool::dex_type::DexType::UniswapV2 => {
             pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {

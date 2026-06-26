@@ -103,8 +103,6 @@ pub fn aggregate_with_prices(
     dexes: &[DexMeta],
     token_prices: &std::collections::HashMap<Address, f64>,
 ) -> AggregationResult {
-    let usd_price = token_prices.get(&Address::ZERO).copied().unwrap_or(0.0);
-
     if opportunities.is_empty() {
         return AggregationResult {
             summary: SummaryMetrics {
@@ -156,6 +154,7 @@ pub fn aggregate_with_prices(
     let mut best_single_opp = 0.0_f64;
     let mut summary_gross_wei = 0_u128;
     let mut summary_gas_wei = 0_u128;
+    let mut summary_usd = 0.0_f64;
 
     // Deduplicate by canonical_id when available, falling back to
     // (block, pool pair, token pair) for backward compatibility (L9).
@@ -187,6 +186,12 @@ pub fn aggregate_with_prices(
         if profit_eth > best_single_opp {
             best_single_opp = profit_eth;
         }
+        // Per-token USD: use token_out price if available, else native fallback (L3)
+        let token_price = token_prices.get(&opp.token_out)
+            .or_else(|| token_prices.get(&Address::ZERO))
+            .copied()
+            .unwrap_or(0.0);
+        summary_usd += (profit_eth - gas_eth) * token_price;
 
         let sname = ui_strategy_name(opp.strategy).to_string();
         by_strategy.entry(sname).or_default().push(opp);
@@ -326,7 +331,7 @@ pub fn aggregate_with_prices(
             profitable: profitable_count,
             gross_revenue,
             net_profit,
-            net_profit_usd: net_profit * usd_price,
+            net_profit_usd: summary_usd,
             total_cost: total_gas,
             best_strategy,
             best_single_opp,

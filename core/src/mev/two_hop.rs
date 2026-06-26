@@ -5,7 +5,7 @@ use std::cmp;
 use alloy::primitives::{Address, U256};
 
 use crate::mev::opportunity::MevOpportunity;
-use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, TwoHopArbResult};
+use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, quote_exact_in, TwoHopArbResult};
 use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
 use crate::pool::v3_quote::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::pool::curve_math;
@@ -386,8 +386,9 @@ fn two_hop_profit_at(
 /// given two pools that share a common token.
 ///
 /// For multi-token pools (Curve 3pool, Balancer weighted pools with 3+ tokens),
-/// falls back to the pool's `token_index` map when the shared token is not
-/// in the first two positions, picking the first eligible non-shared token.
+/// evaluates all candidate non-shared token pairs and picks the most profitable
+/// one using a quick test estimate. Falls back to deterministic address-order
+/// selection if all candidates are unprofitable (C3 fix).
 fn arb_tokens(
     pool_a: &PoolState,
     pool_b: &PoolState,
@@ -396,47 +397,103 @@ fn arb_tokens(
     let info_a = pool_a.info();
     let info_b = pool_b.info();
 
-    let token_in = if info_a.token0 == shared_token {
-        info_a.token1
+    let token_in_fast = if info_a.token0 == shared_token {
+        Some(info_a.token1)
     } else if info_a.token1 == shared_token {
-        info_a.token0
+        Some(info_a.token0)
     } else {
-        // Multi-token pool: pick the smallest non-shared token address
-        // for deterministic selection (avoids HashMap iteration order).
-        let non_shared = match pool_a {
-            PoolState::Curve(c) => c.token_index.keys()
-                .filter(|k| **k != shared_token && !k.is_zero())
-                .min()
-                .copied(),
-            PoolState::Balancer(b) => b.token_index.keys()
-                .filter(|k| **k != shared_token && !k.is_zero())
-                .min()
-                .copied(),
-            _ => None,
-        };
-        non_shared?
+        None
     };
 
-    let token_out = if info_b.token0 == shared_token {
-        info_b.token1
+    let token_out_fast = if info_b.token0 == shared_token {
+        Some(info_b.token1)
     } else if info_b.token1 == shared_token {
-        info_b.token0
+        Some(info_b.token0)
     } else {
-        let non_shared = match pool_b {
-            PoolState::Curve(c) => c.token_index.keys()
-                .filter(|k| **k != shared_token && !k.is_zero())
-                .min()
-                .copied(),
-            PoolState::Balancer(b) => b.token_index.keys()
-                .filter(|k| **k != shared_token && !k.is_zero())
-                .min()
-                .copied(),
-            _ => None,
-        };
-        non_shared?
+        None
     };
 
-    Some((token_in, token_out))
+    // Fast path: both pools are 2-token — no multi-token ambiguity
+    if let (Some(ti), Some(to)) = (token_in_fast, token_out_fast) {
+        return Some((ti, to));
+    }
+
+    // Multi-token path: gather all candidate non-shared tokens from each pool
+    let candidates_a: Vec<Address> = match pool_a {
+        PoolState::Curve(c) => c.token_index.keys()
+            .filter(|k| **k != shared_token && !k.is_zero())
+            .copied()
+            .collect(),
+        PoolState::Balancer(b) => b.token_index.keys()
+            .filter(|k| **k != shared_token && !k.is_zero())
+            .copied()
+            .collect(),
+        _ => token_in_fast.into_iter().collect(),
+    };
+
+    let candidates_b: Vec<Address> = match pool_b {
+        PoolState::Curve(c) => c.token_index.keys()
+            .filter(|k| **k != shared_token && !k.is_zero())
+            .copied()
+            .collect(),
+        PoolState::Balancer(b) => b.token_index.keys()
+            .filter(|k| **k != shared_token && !k.is_zero())
+            .copied()
+            .collect(),
+        _ => token_out_fast.into_iter().collect(),
+    };
+
+    if candidates_a.is_empty() || candidates_b.is_empty() {
+        return None;
+    }
+
+    // Evaluate each candidate pair and pick the most profitable (C3)
+    let mut best: Option<(Address, Address)> = None;
+    let mut best_profit: u128 = 0;
+
+    for &ti in &candidates_a {
+        for &to in &candidates_b {
+            if let Some(profit) = estimate_arb_pair_profit(pool_a, pool_b, shared_token, ti, to) {
+                if profit > best_profit {
+                    best_profit = profit;
+                    best = Some((ti, to));
+                }
+            }
+        }
+    }
+
+    // Fallback: deterministic address-order selection if no pair is profitable
+    best.or_else(|| {
+        let ti = candidates_a.into_iter().min()?;
+        let to = candidates_b.into_iter().min()?;
+        Some((ti, to))
+    })
+}
+
+/// Quick profit estimate for a candidate (token_in, token_out) pair, using a
+/// small test input (0.1% of pool A's reserve for token_in). Used by `arb_tokens`
+/// to select the most profitable pair in multi-token pools (C3).
+fn estimate_arb_pair_profit(
+    pool_a: &PoolState,
+    pool_b: &PoolState,
+    shared_token: Address,
+    token_in: Address,
+    token_out: Address,
+) -> Option<u128> {
+    let max_input = match pool_a {
+        PoolState::Curve(c) => c.balances[*c.token_index.get(&token_in)?],
+        PoolState::Balancer(b) => b.balances[*b.token_index.get(&token_in)?],
+        PoolState::UniswapV2(v2) => {
+            if v2.info.token0 == token_in { v2.reserve0 } else { v2.reserve1 }
+        }
+        PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
+    };
+    let test_input = (max_input / 1000).max(1);
+
+    let intermediate = quote_exact_in(pool_a, token_in, shared_token, test_input)?;
+    let output = quote_exact_in(pool_b, shared_token, token_out, intermediate)?;
+
+    if output > test_input { Some(output - test_input) } else { None }
 }
 
 /// Curve output amount dispatcher — forwards to `curve_math::curve_output_amount`.

@@ -10,7 +10,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use alloy::consensus::Transaction;
 use alloy::eips::BlockNumberOrTag;
@@ -21,37 +20,70 @@ use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
 use alloy::rpc::client::{BatchRequest, Waiter};
 use serde_json::Value;
-use tokio::time::sleep;
 use url::Url;
 
 use crate::data::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 
-/// Retry configuration for RPC calls.
+/// Token-bucket rate limiter for throttling RPC requests.
 ///
-/// Uses exponential backoff: `delay = base_delay_ms * 2^attempt`, capped at `max_delay_ms`.
-/// Default: 5 retries, 200ms base, 5s cap.
-#[derive(Debug, Clone)]
-pub struct RetryConfig {
-    pub max_retries: u32,
-    pub base_delay_ms: u64,
-    pub max_delay_ms: u64,
+/// Maintains a token bucket that refills at `rate` tokens per second.
+/// Each `acquire()` call consumes one token, blocking until one is available.
+/// Up to `burst` tokens can accumulate for short bursts.
+///
+/// Thread-safe and designed for shared use across concurrent tasks.
+#[derive(Debug)]
+pub struct RateLimiter {
+    state: tokio::sync::Mutex<RateLimiterState>,
+    rate: f64,
+    burst: f64,
 }
 
-impl Default for RetryConfig {
-    fn default() -> Self {
-        RetryConfig {
-            max_retries: 5,
-            base_delay_ms: 200,
-            max_delay_ms: 5000,
+#[derive(Debug)]
+struct RateLimiterState {
+    tokens: f64,
+    last_refill: tokio::time::Instant,
+}
+
+impl RateLimiter {
+    pub fn new(rate: f64, burst: f64) -> Self {
+        Self {
+            state: tokio::sync::Mutex::new(RateLimiterState {
+                tokens: burst,
+                last_refill: tokio::time::Instant::now(),
+            }),
+            rate,
+            burst,
+        }
+    }
+
+    /// Acquire one token, blocking until available.
+    pub async fn acquire(&self) {
+        loop {
+            let sleep_dur = {
+                let mut state = self.state.lock().await;
+                let now = tokio::time::Instant::now();
+                let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+                state.tokens = (state.tokens + elapsed * self.rate).min(self.burst);
+                state.last_refill = now;
+
+                if state.tokens >= 1.0 {
+                    state.tokens -= 1.0;
+                    return;
+                }
+
+                let deficit = 1.0 - state.tokens;
+                tokio::time::Duration::from_secs_f64(deficit / self.rate)
+            };
+            tokio::time::sleep(sleep_dur).await;
         }
     }
 }
 
-/// EVM RPC client with built-in retry, multi-URL rotation, and connection validation.
+/// EVM RPC client with provider fallback, rate limiting, and connection validation.
 ///
 /// Wraps one or more `alloy` `RootProvider` instances and provides:
-/// - Automatic retry with exponential backoff for transient RPC failures
-/// - Automatic fallback to the next provider when all retries on the current URL are exhausted
+/// - Round-robin fallback to the next provider when the current one fails
+/// - Optional token-bucket rate limiting to stay under a cap (e.g. 500 RPS)
 /// - Pre-flight connection checks that verify archive-node requirements
 /// - Conversion helpers from alloy types to internal `data` types
 ///
@@ -60,8 +92,8 @@ impl Default for RetryConfig {
 pub struct RpcClient {
     providers: Vec<RootProvider>,
     chain_id: u64,
-    retry: RetryConfig,
     current: Arc<AtomicUsize>,
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl RpcClient {
@@ -74,8 +106,8 @@ impl RpcClient {
 
     /// Create a new RPC client from one or more URLs.
     ///
-    /// The first URL is the primary endpoint. If all retries on the current provider
-    /// are exhausted, the client automatically falls back to the next URL in the list.
+    /// The first URL is the primary endpoint. If it fails, the client
+    /// automatically falls back to the next URL in the list (round-robin).
     pub fn from_urls(urls: &[&str], chain_id: u64) -> anyhow::Result<Self> {
         if urls.is_empty() {
             return Err(anyhow::anyhow!("At least one RPC URL is required"));
@@ -91,8 +123,8 @@ impl RpcClient {
         Ok(RpcClient {
             providers,
             chain_id,
-            retry: RetryConfig::default(),
             current: Arc::new(AtomicUsize::new(0)),
+            rate_limiter: None,
         })
     }
 
@@ -106,44 +138,29 @@ impl RpcClient {
         self.current.store(0, Ordering::Relaxed);
     }
 
-    /// Override the default retry configuration.
-    pub fn with_retry(mut self, retry: RetryConfig) -> Self {
-        self.retry = retry;
-        self
-    }
-
     /// Returns the chain ID this client is configured for.
     pub fn chain_id(&self) -> u64 {
         self.chain_id
     }
 
-    /// Execute an RPC call with exponential-backoff retry and multi-URL fallback.
+    /// Enable token-bucket rate limiting at `requests_per_second`.
+    /// Burst capacity is set equal to the rate (allows up to 1s worth of tokens).
+    pub fn with_rate_limit(mut self, requests_per_second: f64) -> Self {
+        let rps = requests_per_second.max(1.0);
+        self.rate_limiter = Some(Arc::new(RateLimiter::new(rps, rps)));
+        self
+    }
+
+    /// Execute an RPC call with rate limiting and round-robin provider fallback.
     ///
-    /// Retries up to `max_retries` times on each provider with delays doubling each attempt.
-    /// If all retries on the current provider are exhausted, falls back to the next provider
-    /// in the list. Returns immediately for non-retryable errors (e.g. bad request, auth).
-    /// Returns the last error if all providers are exhausted.
+    /// If a rate limiter is configured (`with_rate_limit`), a token is acquired before
+    /// the request. Tries each provider at most once. Returns the first success or the
+    /// last error if all providers fail.
     async fn retry_call<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        fn is_retryable(e: &anyhow::Error) -> bool {
-            let err_str = format!("{e:#}");
-            // Non-retryable: bad request, auth failure, method not found, parse errors
-            if err_str.contains("status code 400")
-                || err_str.contains("status code 401")
-                || err_str.contains("status code 403")
-                || err_str.contains("status code 404")
-                || err_str.contains("method not found")
-                || err_str.contains("parse error")
-                || err_str.contains("deserialize")
-            {
-                return false;
-            }
-            true
-        }
-
         let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
 
@@ -151,38 +168,25 @@ impl RpcClient {
             let idx = (start + offset) % self.providers.len();
             let provider = self.providers[idx].clone();
 
-            for attempt in 0..=self.retry.max_retries {
-                match f(provider.clone()).await {
-                    Ok(val) => {
-                        self.current.store(idx, Ordering::Relaxed);
-                        return Ok(val);
-                    }
-                    Err(e) => {
-                        if !is_retryable(&e) {
-                            return Err(e);
-                        }
-                        tracing::warn!(
-                            "RPC call failed (provider {idx}, attempt {}/{})",
-                            attempt + 1,
-                            self.retry.max_retries + 1,
-                        );
-                        last_err = Some(e);
-                        if attempt < self.retry.max_retries {
-                            let delay = (self.retry.base_delay_ms * 2u64.pow(attempt))
-                                .min(self.retry.max_delay_ms);
-                            sleep(Duration::from_millis(delay)).await;
-                        }
-                    }
-                }
+            // Rate-limit: acquire a token before firing the request
+            if let Some(rl) = &self.rate_limiter {
+                rl.acquire().await;
             }
 
-            tracing::warn!(
-                "RPC provider {idx} exhausted, falling back to next provider"
-            );
+            match f(provider).await {
+                Ok(val) => {
+                    self.current.store(idx, Ordering::Relaxed);
+                    return Ok(val);
+                }
+                Err(e) => {
+                    tracing::warn!("RPC call failed on provider {idx}: {e:#}");
+                    last_err = Some(e);
+                }
+            }
         }
 
         Err(anyhow::anyhow!(
-            "All RPC providers failed after retries: {:?}",
+            "All RPC providers failed: {:?}",
             last_err.unwrap()
         ))
     }
@@ -526,7 +530,11 @@ impl RpcClient {
     /// Fetch code at a historical block with no retry.
     /// Useful for non-critical lookups (e.g. precompile detection)
     /// where unavailability should just produce empty code.
+    /// Still respects the rate limiter if configured.
     pub async fn get_code_no_retry(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
+        if let Some(rl) = &self.rate_limiter {
+            rl.acquire().await;
+        }
         self.providers[0]
             .get_code_at(address)
             .number(block)
@@ -688,14 +696,6 @@ fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_retry_config_defaults() {
-        let cfg = RetryConfig::default();
-        assert_eq!(cfg.max_retries, 5);
-        assert_eq!(cfg.base_delay_ms, 200);
-        assert_eq!(cfg.max_delay_ms, 5000);
-    }
 
     #[test]
     fn test_rpc_client_invalid_url() {

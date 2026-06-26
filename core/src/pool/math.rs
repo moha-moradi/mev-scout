@@ -260,10 +260,13 @@ fn golden_section_maximize(
     else { None }
 }
 
-/// Coarse grid scan followed by golden-section refinement.
+/// Coarse grid scan followed by golden-section refinement and random restarts.
 ///
 /// Samples `grid_points` evenly-spaced points in [0, max_input], picks the
 /// best one, then refines with golden-section search around that region.
+/// Finally, runs multiple random-restart golden-section searches to escape
+/// local optima in non-convex profit landscapes (V3 step-function liquidity).
+///
 /// This handles non-convex profit functions (e.g. V3 with tick boundaries)
 /// much better than pure ternary/golden-section search.
 fn grid_plus_refine(
@@ -311,7 +314,41 @@ fn grid_plus_refine(
     if let Some(refined) = golden_section_maximize(lo, hi, quote_fn, 40) {
         if let Some(output) = quote_fn(refined) {
             if output > refined && output - refined > best_profit {
-                return Some((refined, output));
+                best_profit = output - refined;
+                best_input = refined;
+                best_output = output;
+            }
+        }
+    }
+
+    // Phase 3: random restarts to find additional local optima (H1 fix).
+    // V3 step-function liquidity creates multiple local maxima across the
+    // input range; a single grid + refine can miss peaks between grid points.
+    // Multiple golden-section searches from random start points provide
+    // stochastic coverage of the full search space.
+    let num_restarts = 5;
+    for i in 0..num_restarts {
+        let ratio = ((i as f64 + 1.0) * 0.618033988749895).fract();
+        let start = ((max_input as f64) * ratio) as u128;
+        if start == 0 || start >= max_input {
+            continue;
+        }
+        let r_radius = max_input / 8;
+        let r_lo = start.saturating_sub(r_radius).max(1);
+        let r_hi = (start + r_radius).min(max_input);
+        if r_lo >= r_hi {
+            continue;
+        }
+        if let Some(x) = golden_section_maximize(r_lo, r_hi, quote_fn, 30) {
+            if let Some(output) = quote_fn(x) {
+                if output > x {
+                    let profit = output - x;
+                    if profit > best_profit {
+                        best_profit = profit;
+                        best_input = x;
+                        best_output = output;
+                    }
+                }
             }
         }
     }

@@ -30,11 +30,10 @@ use crate::pool::dex_type::DexType;
 use crate::rpc::RpcClient;
 use crate::utils::u128_from_be_bytes;
 
-/// Static pool information loaded from the registry JSON file.
+/// Static pool information loaded from the discovery cache or subgraph.
 ///
-/// Registry files (e.g. `pools/polygon.json`) contain the canonical list of
-/// pools to track. `PoolInfo` is deserialized directly from these files and
-/// from the discovery cache.
+/// `PoolInfo` is deserialized from the discovery cache (SQLite) after
+/// pools are discovered via subgraph (default) or on-chain eth_getLogs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolInfo {
     pub address: Address,
@@ -855,20 +854,8 @@ impl PoolManager {
         }
     }
 
-    async fn call_with_retry(rpc: &RpcClient, pool: Address, data: Bytes, block: u64, max_retries: u32) -> Result<Bytes, ()> {
-        let mut last_err = ();
-        for attempt in 0..max_retries {
-            match rpc.call(pool, data.clone(), block).await {
-                Ok(result) => return Ok(result),
-                Err(_) => {
-                    last_err = ();
-                    if attempt + 1 < max_retries {
-                        tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
-                    }
-                }
-            }
-        }
-        Err(last_err)
+    async fn call_once(rpc: &RpcClient, pool: Address, data: Bytes, block: u64) -> Result<Bytes, ()> {
+        rpc.call(pool, data, block).await.map_err(|_| ())
     }
 
     async fn fetch_v2_reserves(
@@ -893,7 +880,7 @@ impl PoolManager {
 
         // Fallback: eth_call getReserves()
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
-        if let Ok(result) = Self::call_with_retry(rpc, pool, data, block, 3).await {
+        if let Ok(result) = Self::call_once(rpc, pool, data, block).await {
             if result.len() >= 64 {
                 let r0 = Self::decode_u128_from_abi_word(&result[..32]);
                 let r1 = Self::decode_u128_from_abi_word(&result[32..64]);
@@ -975,8 +962,8 @@ impl PoolManager {
         block: u64,
         tick_spacing: i32,
     ) -> Option<(U256, i32, u128, std::collections::BTreeMap<i32, i128>)> {
-        let slot0_result = Self::call_with_retry(rpc, pool, V3_SLOT0_SELECTOR.clone(), block, 3).await;
-        let liq_result = Self::call_with_retry(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), block, 3).await;
+        let slot0_result = Self::call_once(rpc, pool, V3_SLOT0_SELECTOR.clone(), block).await;
+        let liq_result = Self::call_once(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), block).await;
         if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
             if slot0.len() >= 96 && liq.len() >= 32 {
                 let mut buf = [0u8; 32];
@@ -1059,7 +1046,7 @@ impl PoolManager {
             }
             calldata.extend_from_slice(&arg);
 
-            let bitmap_bytes = match Self::call_with_retry(rpc, pool, Bytes::from(calldata), block, 2).await {
+            let bitmap_bytes = match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
                 Ok(b) if b.len() >= 32 => b,
                 _ => continue,
             };
@@ -1129,7 +1116,7 @@ impl PoolManager {
         }
         calldata.extend_from_slice(&arg);
 
-        let result = Self::call_with_retry(rpc, pool, Bytes::from(calldata), block, 2).await.ok()?;
+        let result = Self::call_once(rpc, pool, Bytes::from(calldata), block).await.ok()?;
 
         // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
         // Tuple with ABIEncoderV2: 8 fields × 32 bytes = 256 bytes

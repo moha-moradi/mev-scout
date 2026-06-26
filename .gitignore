@@ -4,3 +4,5 @@ tmp_error.txt
 tmp_output.txt
 *.log
 *.txt
+mev-scout.toml
+mev-scout.example.toml

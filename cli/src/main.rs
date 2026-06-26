@@ -51,6 +51,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
+            rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: Some(args.flash_loan_provider.clone()),
             strategies: Some(args.strategies.clone()),
             gas_model: Some(args.gas_model.clone()),
@@ -79,6 +80,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
+            rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -107,6 +109,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
+            rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -126,7 +129,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             capture_pending: None,
             cross_block_window: None,
         },
-        Command::Report(args) => CliOverrides {
+        Command::Report(_args) => CliOverrides {
             days: None,
             blocks: None,
             block: None,
@@ -135,13 +138,14 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: None,
             rpc_url: None,
             rpc_workers: None,
+            rps_limit: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
             gas_limit: None,
             priority_fee_gwei: None,
-            output: Some(args.output.clone()),
-            export_path: Some(args.export_path.clone()),
+            output: None,
+            export_path: None,
             db_path: None,
             parquet_dir: None,
             coingecko_api_key: None,
@@ -163,6 +167,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: None,
             rpc_url: None,
             rpc_workers: None,
+            rps_limit: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -191,6 +196,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
+            rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -219,6 +225,7 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             chain: None,
             rpc_url: None,
             rpc_workers: None,
+            rps_limit: None,
             flash_loan_provider: None,
             strategies: None,
             gas_model: None,
@@ -467,9 +474,14 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     setup_logging(cli.verbose, cli.quiet);
 
-    // Load config
-    let config_path = cli.config.as_deref().unwrap_or("mev-scout.toml");
-    let mut config = Config::load_or_default(config_path);
+    // Load config (zero-config by default — only load TOML if --config is given)
+    let mut config = match &cli.config {
+        Some(path) => Config::load(path).unwrap_or_else(|e| {
+            eprintln!("Error: failed to load config '{path}': {e}");
+            std::process::exit(1);
+        }),
+        None => Config::default(),
+    };
 
     // Merge CLI overrides
     let overrides = build_overrides(&cli);
@@ -487,9 +499,12 @@ async fn main() -> anyhow::Result<()> {
             };
             print_startup_plan(&validation_result, &config);
 
-            let rpc_urls_owned = config.effective_rpc_urls(validation_result.chain_name);
+            let rpc_urls_owned = config.effective_rpc_urls()?;
             let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
-            let rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
+            let mut rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
+            if config.rps_limit > 0.0 {
+                rpc = rpc.with_rate_limit(config.rps_limit);
+            }
             rpc.check_connection(validation_result.chain_config.chain_id).await?;
             let cache = SqliteStore::open(&config.db_path, validation_result.chain_config.chain_id)?;
 
@@ -532,6 +547,56 @@ async fn main() -> anyhow::Result<()> {
             println!("Run ID: {}", run_id);
             println!("{}", resolved.summary());
             println!();
+
+            // Pool discovery from DEX events (Swap/Sync/Mint/Burn).
+            // Scans all contracts in the block range, discovers pool addresses
+            // from event emitters, and saves them to cache. No factory addresses
+            // or pre-indexing required — this is the default discovery mode.
+            {
+                let batch_size = validation_result
+                    .chain_config
+                    .pool_discovery_batch_size
+                    .unwrap_or(200);
+                let v2_fee = validation_result.chain_config.uniswap_v2_default_fee;
+                let vault = validation_result
+                    .chain_config
+                    .balancer_vault
+                    .as_ref()
+                    .and_then(|s| s.parse::<alloy::primitives::Address>().ok());
+
+                tracing::info!(
+                    "Discovering pools from DEX events in blocks {}..{}...",
+                    resolved.start_block,
+                    resolved.end_block,
+                );
+
+                match mev_scout_core::pool::discovery::discover_and_cache_from_swaps(
+                    &rpc,
+                    &cache,
+                    resolved.start_block,
+                    resolved.end_block,
+                    batch_size,
+                    v2_fee,
+                    vault,
+                )
+                .await
+                {
+                    Ok((discovered, active)) => {
+                        if !discovered.is_empty() {
+                            tracing::info!(
+                                "Discovered {} pools from DEX events in {} active blocks",
+                                discovered.len(),
+                                active.len(),
+                            );
+                        } else {
+                            tracing::info!("No DEX activity found in block range");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Pool discovery from DEX events failed: {e:#}");
+                    }
+                }
+            }
 
             // Load pool addresses from cache for log-first fetch optimization
             let pool_addresses: Vec<alloy::primitives::Address> = cache
@@ -612,6 +677,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             let prev_block = resolved.start_block.saturating_sub(1);
+
             if !validation_result.strategies.is_empty() {
                 BacktestRunner::init_pools(
                     &mut pool_manager,
@@ -836,7 +902,10 @@ async fn main() -> anyhow::Result<()> {
             if args.fact_check && !all_opportunities.is_empty() {
                 println!("\nFact-Check Report ({}):", fact_check_mode);
                 let checks = if args.evm_fact_check {
-                    let rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
+                    let mut rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
+                    if config.rps_limit > 0.0 {
+                        rpc = rpc.with_rate_limit(config.rps_limit);
+                    }
                     verify_opportunities_from_chain(&all_opportunities, &runner.pool_manager, &rpc).await
                 } else {
                     verify_opportunities(&all_opportunities, Some(&runner.pool_manager))
@@ -1082,9 +1151,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let rpc_urls_owned = config.effective_rpc_urls(chain_name);
+            let rpc_urls_owned = config.effective_rpc_urls()?;
             let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
-            let rpc = RpcClient::from_urls(&rpc_urls, chain_config.chain_id)?;
+            let mut rpc = RpcClient::from_urls(&rpc_urls, chain_config.chain_id)?;
+            if config.rps_limit > 0.0 {
+                rpc = rpc.with_rate_limit(config.rps_limit);
+            }
             rpc.check_connection(chain_config.chain_id).await?;
             let cache = SqliteStore::open(&config.db_path, chain_config.chain_id)?;
 
@@ -1231,11 +1303,14 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             };
-            let rpc_urls_owned = config.effective_rpc_urls(chain_name);
-            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
             let chain_config = config.chains.get(&args.chain_args.chain);
             let chain_id = chain_name.chain_id();
-            let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
+            let rpc_urls_owned = config.effective_rpc_urls()?;
+            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
+            let mut rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
+            if config.rps_limit > 0.0 {
+                rpc = rpc.with_rate_limit(config.rps_limit);
+            }
             rpc.check_connection(chain_id).await?;
 
             let mut v2_addrs = Vec::new();
@@ -1289,13 +1364,13 @@ async fn main() -> anyhow::Result<()> {
             let batch_size = args.batch_size;
 
             println!();
-            println!("  Pool Discovery");
+            println!("  Pool Discovery (on-chain)");
             println!("  Chain:       {}", args.chain_args.chain);
-            println!("  Block range: {}–{}", from, to);
+            println!("  Block range: {from}–{to}");
             println!("  V2 factories: {}", v2_addrs.len());
             println!("  V3 factories: {}", v3_addrs.len());
-            if args.save {
-                println!("  Save to cache: yes");
+            if args.no_save {
+                println!("  Save to cache: no");
             }
             println!();
 
@@ -1417,8 +1492,8 @@ async fn main() -> anyhow::Result<()> {
             println!();
             println!("  Found {} pool(s)", all_pools.len());
 
-            // Save to cache if requested
-            if args.save {
+            // Save to cache by default
+            if !args.no_save {
             let cache = SqliteStore::open(&config.db_path, chain_id)?;
                 for pool in &all_pools {
                     let info: mev_scout_core::pool::state::PoolInfo = pool.clone().into();
@@ -1443,7 +1518,7 @@ async fn main() -> anyhow::Result<()> {
                         let _ = cache.put_discovery_cursor(&registry, to);
                     }
                 }
-                println!("  Saved to cache: {}", config.db_path);
+                println!("  Saved {} pool(s) to cache: {}", all_pools.len(), config.db_path);
             }
         }
         Command::FactCheck(args) => {

@@ -1,8 +1,11 @@
 //! Pool discovery — scans chain event logs to find and register new DEX pools.
 
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::LazyLock;
 
-use alloy::primitives::{keccak256, Address, B256};
+use alloy::primitives::{keccak256, Address, B256, Bytes};
 use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +13,7 @@ use crate::cache::SqliteStore;
 use crate::pool::dex_type::DexType;
 use crate::pool::state::PoolInfo;
 use crate::rpc::RpcClient;
+use crate::scan::topics;
 
 pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,address,uint256)")
@@ -482,6 +486,313 @@ pub async fn discover_pools_in_range(
     }
 
     all_pools
+}
+
+/// Discover pools from DEX events in a block range, without needing factory addresses.
+///
+/// Scans for all DEX event topics (V2 Swap/Sync, V3 Swap/Mint/Burn, Curve, Balancer)
+/// across all contracts, collects unique emitting pool addresses, and fetches pool
+/// metadata via RPC. Returns discovered pools and the set of active block numbers.
+///
+/// This is the default discovery mode — it enables backtesting without any
+/// pre-configured pool or factory knowledge. Only pools that were actually active
+/// in the block range are discovered, minimizing RPC overhead.
+///
+/// By including V2 Sync and V3 Mint/Burn events alongside Swap events, this captures
+/// pools that had liquidity changes even if no direct swap occurred, ensuring
+/// arbitrage pathfinders can find all possible routes.
+///
+/// ## Type-specific behavior
+///
+/// | DEX | RPC calls needed per pool | Notes |
+/// |-----|--------------------------|-------|
+/// | V2  | `token0()`, `token1()`   | Fee defaults to 30 bps or `v2_fee_override` |
+/// | V3  | `token0()`, `token1()`, `fee()`, `tickSpacing()` | Full metadata on-chain |
+/// | Curve | (none — populated by `init_from_rpc`) | Requires `fetch_curve_state` during pool init |
+/// | Balancer | (none for tokens — from event topics) | Requires vault from config for full state |
+///
+/// ## RPC requirements
+/// This uses `eth_getLogs` with topic-only filters (no address restriction).
+/// Some public RPC providers may reject this over large ranges. Use a private
+/// archive node or reduce batch sizes if needed.
+pub async fn discover_pools_from_swap_events(
+    rpc: &RpcClient,
+    from_block: u64,
+    to_block: u64,
+    batch_size: u64,
+    v2_fee_override: Option<u32>,
+    _balancer_vault: Option<Address>,
+) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
+    let mut active_blocks = HashSet::new();
+    // (pool_address, dex_type, optional_balancer_pool_id, optional_tokens_from_event)
+    let mut pool_hits: HashMap<
+        Address,
+        (DexType, Option<[u8; 32]>, Option<(Address, Address)>),
+    > = HashMap::new();
+
+    // ── Phase 1: Scan for DEX events (topic-only) ──
+    let dex_topics = vec![
+        topics::V2_SWAP,
+        topics::V2_SYNC,
+        topics::V3_SWAP,
+        *topics::V3_MINT,
+        topics::V3_BURN,
+        *topics::CURVE_TOKEN_EXCHANGE,
+        *topics::CURVE_V2_TOKEN_EXCHANGE,
+        *topics::BALANCER_SWAP,
+    ];
+
+    let mut current = from_block;
+    while current <= to_block {
+        let batch_end = (current + batch_size - 1).min(to_block);
+        // Fast path: V2/V3 Swap, V2 Sync, V3 Mint/Burn (covers >95% of DEX activity)
+        let fast_topics: Vec<B256> = vec![
+            topics::V2_SWAP,
+            topics::V2_SYNC,
+            topics::V3_SWAP,
+            *topics::V3_MINT,
+            topics::V3_BURN,
+        ];
+        let fast_filter = Filter::new()
+            .event_signature(fast_topics)
+            .from_block(current)
+            .to_block(batch_end);
+
+        let fast_logs = rpc.get_logs(&fast_filter).await;
+        match fast_logs {
+            Ok(logs) => {
+                for log in &logs {
+                    if let Some(bn) = log.block_number {
+                        active_blocks.insert(bn);
+                    }
+                    let addr = log.address();
+                    let topic0 = log.topics()[0];
+                    let dex_type = if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
+                        DexType::UniswapV2
+                    } else {
+                        DexType::UniswapV3
+                    };
+                    pool_hits.entry(addr).or_insert((dex_type, None, None));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Swap scan fast path failed for blocks {current}..{batch_end}: {e:#}. \
+                     Trying full topic set."
+                );
+                // Fall back to the full topic set (including Curve/Balancer)
+                let full_filter = Filter::new()
+                    .event_signature(dex_topics.clone())
+                    .from_block(current)
+                    .to_block(batch_end);
+                match rpc.get_logs(&full_filter).await {
+                    Ok(logs) => {
+                        for log in &logs {
+                            if let Some(bn) = log.block_number {
+                                active_blocks.insert(bn);
+                            }
+                            let addr = log.address();
+                            let topic0 = log.topics()[0];
+                            if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
+                                pool_hits.entry(addr).or_insert((DexType::UniswapV2, None, None));
+                            } else if topic0 == topics::V3_SWAP
+                                || topic0 == *topics::V3_MINT
+                                || topic0 == topics::V3_BURN
+                            {
+                                pool_hits.entry(addr).or_insert((DexType::UniswapV3, None, None));
+                            } else if topic0 == *topics::CURVE_TOKEN_EXCHANGE
+                                || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
+                            {
+                                pool_hits.entry(addr).or_insert((DexType::Curve, None, None));
+                            } else if topic0 == *topics::BALANCER_SWAP {
+                                // Balancer: pool_id and token addresses are in the topics
+                                let topics = log.topics();
+                                if topics.len() >= 4 {
+                                    let mut pool_id = [0u8; 32];
+                                    pool_id.copy_from_slice(topics[1].as_slice());
+                                    let token_in = Address::from_slice(&topics[2][12..]);
+                                    let token_out = Address::from_slice(&topics[3][12..]);
+                                    pool_hits.entry(addr).or_insert((
+                                        DexType::Balancer,
+                                        Some(pool_id),
+                                        Some((token_in, token_out)),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Err(e2) => {
+                        tracing::warn!(
+                            "Swap scan full topic set also failed for blocks {current}..{batch_end}: {e2:#}. \
+                             Skipping batch."
+                        );
+                    }
+                }
+            }
+        }
+
+        if batch_end == to_block {
+            break;
+        }
+        current = batch_end + 1;
+    }
+
+    if pool_hits.is_empty() {
+        return Ok((Vec::new(), active_blocks));
+    }
+
+    tracing::info!(
+        "Swap event scan: found {} unique pool addresses, {} active blocks",
+        pool_hits.len(),
+        active_blocks.len(),
+    );
+
+    // ── Phase 2: Fetch pool metadata ──
+    // Standard ERC-20 / Uniswap selectors for eth_call
+    let token0_selector = Bytes::from_static(&[0x0d, 0xfe, 0x16, 0x81]); // token0()
+    let token1_selector = Bytes::from_static(&[0xd2, 0x12, 0x20, 0xa7]); // token1()
+    let fee_selector = Bytes::from_static(&[0xdd, 0xca, 0x3f, 0x43]);    // fee() — V3 only
+    let tick_spacing_selector = Bytes::from_static(&[0x37, 0xcf, 0xda, 0xca]); // tickSpacing() — V3 only
+
+    let ref_block = to_block.min(from_block + 1_000_000);
+
+    type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>)> + Send>>;
+
+    let mut discovered_pools = Vec::new();
+    let mut fetch_tasks: Vec<FetchTask> = Vec::new();
+
+    for (addr, (dex_type, _balancer_pool_id, balancer_tokens)) in pool_hits.iter() {
+        match dex_type {
+            DexType::UniswapV2 => {
+                let rpc = rpc.clone();
+                let addr = *addr;
+                let sel0 = token0_selector.clone();
+                let sel1 = token1_selector.clone();
+                fetch_tasks.push(Box::pin(async move {
+                    let token0 = rpc.call(addr, sel0, ref_block).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                    let token1 = rpc.call(addr, sel1, ref_block).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                    (addr, DexType::UniswapV2, token0, token1, None, None)
+                }));
+            }
+            DexType::UniswapV3 => {
+                let rpc = rpc.clone();
+                let addr = *addr;
+                let sel0 = token0_selector.clone();
+                let sel1 = token1_selector.clone();
+                let sel_fee = fee_selector.clone();
+                let sel_ts = tick_spacing_selector.clone();
+                fetch_tasks.push(Box::pin(async move {
+                    let (token0, token1, fee, tick_spacing) = futures::future::join4(
+                        async {
+                            rpc.call(addr, sel0, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call(addr, sel1, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call(addr, sel_fee, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| {
+                                    u32::from_be_bytes([b[28], b[29], b[30], b[31]])
+                                }))
+                        },
+                        async {
+                            rpc.call(addr, sel_ts, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| {
+                                    let mut ts = [0u8; 4];
+                                    ts.copy_from_slice(&b[28..32]);
+                                    i32::from_be_bytes(ts) as u32
+                                }))
+                        },
+                    ).await;
+                    (addr, DexType::UniswapV3, token0, token1, fee, tick_spacing)
+                }));
+            }
+            DexType::Curve | DexType::Balancer => {
+                // Curve: tokens are discovered by fetch_curve_state during pool init.
+                // Balancer: tokens from event topics (but need vault for full init).
+                let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                let addr = *addr;
+                let dt = *dex_type;
+                fetch_tasks.push(Box::pin(async move {
+                    (addr, dt, Some(t0), Some(t1), None, None)
+                }));
+            }
+        }
+    }
+
+    // Phase 3: Await all metadata fetches
+    use futures::future::join_all;
+    let results = join_all(fetch_tasks).await;
+
+    for (addr, dex_type, token0_opt, token1_opt, fee_opt, tick_spacing) in results {
+        let token0 = token0_opt.unwrap_or(Address::ZERO);
+        let token1 = token1_opt.unwrap_or(Address::ZERO);
+        let fee = match dex_type {
+            DexType::UniswapV2 => v2_fee_override.unwrap_or(30),
+            DexType::UniswapV3 => fee_opt.unwrap_or(3000),
+            DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
+        };
+        let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _)| *pid);
+
+        discovered_pools.push(DiscoveredPool {
+            address: addr,
+            token0,
+            token1,
+            fee,
+            tick_spacing: tick_spacing.map(|ts| ts as i32),
+            dex_type,
+            creation_block: 0, // unknown — set to 0, init_from_rpc handles it
+            pool_id,
+            factory: None,
+        });
+    }
+
+    tracing::info!(
+        "Swap discovery: resolved {} pools ({} unique addresses)",
+        discovered_pools.len(),
+        pool_hits.len(),
+    );
+
+    Ok((discovered_pools, active_blocks))
+}
+
+/// Discover pools from Swap events and save them to the cache.
+/// This is the default discovery mode in `mev-scout run`.
+pub async fn discover_and_cache_from_swaps(
+    rpc: &RpcClient,
+    cache: &SqliteStore,
+    from_block: u64,
+    to_block: u64,
+    batch_size: u64,
+    v2_fee_override: Option<u32>,
+    balancer_vault: Option<Address>,
+) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
+    let (pools, active_blocks) = discover_pools_from_swap_events(
+        rpc,
+        from_block,
+        to_block,
+        batch_size,
+        v2_fee_override,
+        balancer_vault,
+    )
+    .await?;
+
+    let pool_count = pools.len();
+    for pool in &pools {
+        let info: PoolInfo = pool.clone().into();
+        if let Err(e) = cache.put_discovered_pool(&info) {
+            tracing::warn!("Failed to cache pool {}: {}", pool.address, e);
+        }
+    }
+    if pool_count > 0 {
+        tracing::info!("Cached {} pools from DEX event discovery", pool_count);
+    }
+
+    Ok((pools, active_blocks))
 }
 
 #[cfg(test)]

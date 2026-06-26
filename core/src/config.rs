@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::pool::subgraph_discovery::{SubgraphEndpoint, SubgraphEndpoints};
 use crate::types::{
     ChainName, FlashLoanProvider, RangeMode, Strategy,
 };
@@ -23,8 +24,6 @@ pub struct ChainConfig {
     /// Uniswap V3 factory addresses for on-chain pool discovery
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v3_factories: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pools_registry_path: Option<String>,
     /// Uniswap V2 factory addresses for on-chain pool discovery
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v2_factories: Option<Vec<String>>,
@@ -46,6 +45,10 @@ pub struct ChainConfig {
     /// When set, `PoolAdded` events are scanned to discover Curve pools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve_registry: Option<String>,
+    /// Subgraph endpoints for off-chain pool discovery (default).
+    /// Falls back to built-in defaults when not configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgraphs: Option<SubgraphEndpoints>,
 }
 
 /// Top-level runtime configuration for MEV backtest runs.
@@ -121,6 +124,9 @@ pub struct Config {
     /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_workers: Option<usize>,
+    /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
+    #[serde(default = "default_rps_limit")]
+    pub rps_limit: f64,
     /// Enable PGA (Priority Gas Auction) simulation to adjust profits for competition.
     /// When enabled, expected_profit is replaced with the post-auction estimate.
     #[serde(default)]
@@ -150,6 +156,7 @@ pub struct Config {
     pub cross_block_window: usize,
 }
 
+fn default_rps_limit() -> f64 { 500.0 }
 fn default_pga_mean_competitors() -> f64 { 3.0 }
 fn default_pga_intensity() -> f64 { 0.5 }
 
@@ -186,7 +193,7 @@ fn default_export_path() -> String {
 }
 
 fn default_db_path() -> String {
-    "./cache".to_string()
+    "./cache/mev-scout.sqlite".to_string()
 }
 
 fn default_max_pairs_per_token() -> usize {
@@ -220,6 +227,7 @@ impl Default for Config {
             gas_limits: std::collections::HashMap::new(),
             max_pairs_per_token: default_max_pairs_per_token(),
             rpc_workers: None,
+            rps_limit: default_rps_limit(),
             pga_enabled: false,
             pga_mean_competitors: default_pga_mean_competitors(),
             pga_intensity: default_pga_intensity(),
@@ -251,13 +259,24 @@ fn default_chains() -> HashMap<String, ChainConfig> {
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
                 "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09".to_string(), // QuickSwap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(polygon_factories),
             pool_discovery_start_block: Some(49_100_000), // QuickSwap factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon")
+                        .with_label("Uniswap V3"),
+                ],
+                balancer: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2")
+                        .with_label("Balancer V2"),
+                ],
+                curve: vec![],
+            }),
         },
     );
     let avalanche_factories = vec![
@@ -273,13 +292,21 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(avalanche_factories),
             pool_discovery_start_block: Some(4_200_000), // SushiSwap / Trader Joe deploy era
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/avalanche-dev")
+                        .with_label("Uniswap V3"),
+                ],
+                balancer: vec![],
+                curve: vec![],
+            }),
         },
     );
     let bsc_factories = vec![
@@ -295,13 +322,24 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(bsc_factories),
             pool_discovery_start_block: Some(5_063_800), // PancakeSwap V2 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".to_string()),
             uniswap_v2_default_fee: Some(25), // PancakeSwap V2 uses 0.25%
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/pancakeswap/pairs")
+                        .with_fee(25).with_label("PancakeSwap V2"),
+                ],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v3")
+                        .with_label("PancakeSwap V3"),
+                ],
+                balancer: vec![],
+                curve: vec![],
+            }),
         },
     );
     let arbitrum_factories = vec![
@@ -316,13 +354,21 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(arbitrum_factories),
             pool_discovery_start_block: Some(172_000), // Uniswap V3 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/arbitrum-dev")
+                        .with_label("Uniswap V3"),
+                ],
+                balancer: vec![],
+                curve: vec![],
+            }),
         },
     );
     let base_factories = vec![
@@ -337,13 +383,18 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x33128a8fC17869897dcE68Ed026d694621f6FDfD".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(base_factories),
             pool_discovery_start_block: Some(96_000), // Aerodrome factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![],
+                v3: vec![],
+                balancer: vec![],
+                curve: vec![],
+            }),
         },
     );
     let ethereum_factories = vec![
@@ -360,13 +411,30 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(ethereum_factories),
             pool_discovery_start_block: Some(10_008_335), // Uniswap V2 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/uniswapv2")
+                        .with_fee(30).with_label("Uniswap V2"),
+                ],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3")
+                        .with_label("Uniswap V3"),
+                ],
+                balancer: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-v2")
+                        .with_label("Balancer V2"),
+                ],
+                curve: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/curvefi/curve")
+                        .with_label("Curve"),
+                ],
+            }),
         },
     );
     let optimism_factories = vec![
@@ -381,13 +449,21 @@ fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(), // Uniswap V3
             ]),
-            pools_registry_path: None,
             uniswap_v2_factories: Some(optimism_factories),
             pool_discovery_start_block: Some(10_827_000), // Uniswap V3 factory deploy
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
+            subgraphs: Some(SubgraphEndpoints {
+                v2: vec![],
+                v3: vec![
+                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/optimism-dev")
+                        .with_label("Uniswap V3"),
+                ],
+                balancer: vec![],
+                curve: vec![],
+            }),
         },
     );
     m
@@ -412,6 +488,12 @@ impl Config {
     pub fn load_or_default(path: &str) -> Self {
         let mut cfg = Self::load(path).unwrap_or_default();
         cfg.config_path = Some(PathBuf::from(path));
+        // Merge default chain configs so any chain referenced in cfg.chain
+        // has a fallback, even if the TOML file has no [chains.*] section.
+        let defaults = default_chains();
+        for (name, default_cfg) in defaults {
+            cfg.chains.entry(name).or_insert(default_cfg);
+        }
         cfg
     }
 
@@ -420,29 +502,11 @@ impl Config {
         Config::default()
     }
 
-    /// Resolved RPC URL: user-provided value, or the public fallback for the target chain.    
-    pub fn effective_rpc_url(&self, chain: ChainName) -> String {
-        self.rpc_url
-            .clone()
-            .unwrap_or_else(|| chain.public_rpc_url().to_string())
-    }
-
-    /// Resolved RPC URL list: user-provided override first, then built-in fallbacks.
-    /// When the user provides an RPC URL, it is tried first; the built-in list serves as fallback.
-    pub fn effective_rpc_urls(&self, chain: ChainName) -> Vec<String> {
-        let built_in: Vec<String> = chain
-            .public_rpc_urls()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+    /// Resolved RPC URL list: only the user-provided override, or error if none.
+    pub fn effective_rpc_urls(&self) -> anyhow::Result<Vec<String>> {
         match &self.rpc_url {
-            Some(custom) => {
-                let mut urls = vec![custom.clone()];
-                urls.extend(built_in);
-                urls.dedup();
-                urls
-            }
-            None => built_in,
+            Some(custom) => Ok(vec![custom.clone()]),
+            None => Err(anyhow::anyhow!("No RPC URL provided. Use --rpc <URL> or set rpc_url in config.")),
         }
     }
 
@@ -485,7 +549,7 @@ Parquet dir:         {}
 "#,
             chain_name,
             chain_cfg.chain_id,
-            self.effective_rpc_url(chain_name),
+            self.rpc_url.clone().unwrap_or_else(|| "RPC not set".to_string()),
             range_mode,
             range_mode.resolve_description(),
             strat_list,
@@ -508,6 +572,7 @@ pub struct CliOverrides {
     pub chain: Option<String>,
     pub rpc_url: Option<String>,
     pub rpc_workers: Option<usize>,
+    pub rps_limit: Option<f64>,
     pub flash_loan_provider: Option<String>,
     pub strategies: Option<String>,
     pub gas_model: Option<String>,
@@ -584,6 +649,9 @@ impl Config {
         if let Some(v) = overrides.rpc_workers {
             self.rpc_workers = Some(v);
         }
+        if let Some(v) = overrides.rps_limit {
+            self.rps_limit = v;
+        }
         if let Some(v) = overrides.pga_enabled {
             self.pga_enabled = v;
         }
@@ -656,18 +724,18 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_rpc_url_uses_override() {
+    fn test_effective_rpc_urls_uses_override() {
         let cfg = Config {
             rpc_url: Some("https://my-rpc.example.com".into()),
             ..Config::default()
         };
-        assert_eq!(cfg.effective_rpc_url(ChainName::Polygon), "https://my-rpc.example.com");
+        assert_eq!(cfg.effective_rpc_urls().unwrap(), vec!["https://my-rpc.example.com"]);
     }
 
     #[test]
-    fn test_effective_rpc_url_falls_back_to_public() {
+    fn test_effective_rpc_urls_errors_without_override() {
         let cfg = Config::default();
-        assert!(cfg.effective_rpc_url(ChainName::Polygon).contains("publicnode.com"));
+        assert!(cfg.effective_rpc_urls().is_err());
     }
 
     #[test]
@@ -714,6 +782,7 @@ rpc_url = "https://eth.diy"
             chain: Some("ethereum".into()),
             rpc_url: Some("https://custom".into()),
             rpc_workers: None,
+            rps_limit: None,
             flash_loan_provider: Some("aave".into()),
             strategies: Some("two_hop_arb".into()),
             gas_model: Some("fixed".into()),
@@ -756,6 +825,7 @@ rpc_url = "https://eth.diy"
             days: Some(7),
             blocks: None, block: None, from_block: None, to_block: None,
             chain: None, rpc_url: None, rpc_workers: None,
+            rps_limit: None,
             flash_loan_provider: None, strategies: None,
             gas_model: None, gas_limit: None, priority_fee_gwei: None,
             output: None, export_path: None, db_path: None, parquet_dir: None,

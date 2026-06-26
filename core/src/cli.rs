@@ -88,6 +88,10 @@ pub struct ChainArgs {
     #[arg(long = "rpc-workers", default_value = "1", value_name = "N")]
     pub rpc_workers: usize,
 
+    /// RPC requests per second rate limit (default: 500). 0 = unlimited.
+    #[arg(long = "rps-limit", default_value = "500", value_name = "RPS")]
+    pub rps_limit: f64,
+
     /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
     #[arg(long = "no-batch-rpc")]
     pub no_batch_rpc: bool,
@@ -198,6 +202,7 @@ pub struct RunArgs {
     /// Overrides chain config defaults. Only used with --live-discover.
     #[arg(long, value_name = "ADDR", help_heading = "Discovery")]
     pub v3_factory: Option<String>,
+
 }
 
 #[derive(Args, Debug, Clone)]
@@ -269,6 +274,7 @@ pub struct ReportArgs {
     pub export_path: String,
 }
 
+
 #[derive(Args, Debug, Clone)]
 pub struct DiscoverArgs {
     #[command(flatten)]
@@ -294,11 +300,11 @@ pub struct DiscoverArgs {
     #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,
 
-    /// Save discovered pools to the SQLite cache
-    #[arg(long)]
-    pub save: bool,
+    /// Skip saving discovered pools to the SQLite cache (saved by default).
+    #[arg(long = "no-save")]
+    pub no_save: bool,
 
-    /// SQLite database path (used when --save is set, defaults to config's db_path or ./cache)
+    /// SQLite database path (overrides config's db_path, default: ./cache/mev-scout.sqlite)
     #[arg(long = "db-path", value_name = "PATH")]
     pub db_path: Option<String>,
 }
