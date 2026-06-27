@@ -12,6 +12,8 @@ flowchart TB
     cli --> core
     cli --> clap
     cli --> tracing
+    cli --> indicatif
+    cli --> comfy_table["comfy-table"]
     core --> revm
     core --> alloy
     core --> rusqlite
@@ -20,6 +22,10 @@ flowchart TB
     core --> serde
     core --> reqwest
     core --> clap_core["clap (arg defs)"]
+    core --> bincode
+    core --> futures
+    core --> thiserror
+    core --> anyhow
 ```
 
 ## 2. End-to-End Data Pipeline
@@ -45,6 +51,11 @@ flowchart LR
 
     Replayer --> PoolMgr["pool/state.rs\nPoolManager"]
 
+    subgraph Discover["Pool Discovery"]
+        Disc["pool/discovery.rs\non-chain discovery"] --> PoolMgr
+        Subgraph["pool/subgraph_discovery.rs\nsubgraph endpoints"] --> Disc
+    end
+
     subgraph Detect["Detection Phase (per block)"]
         PoolMgr --> TwoHop["mev/two_hop.rs\nTwoHopArbDetector"]
         PoolMgr --> MultiHop["mev/multi_hop.rs\nMultiHopArbDetector"]
@@ -52,6 +63,7 @@ flowchart LR
         PoolMgr --> JIT["mev/jit.rs\nJitDetector"]
         PoolMgr --> JitArb["mev/jit_arb.rs\nJitArbDetector"]
         PoolMgr --> Liq["mev/liquidation.rs\nLiquidationDetector"]
+        PoolMgr --> CrossBlock["mev/cross_block.rs\nCrossBlockDetector"]
         Replayer --> PGA["mev/pga.rs\nPGA Simulator"]
         Replayer --> TwoHop
         Replayer --> MultiHop
@@ -59,6 +71,14 @@ flowchart LR
         Replayer --> JIT
         Replayer --> JitArb
         Replayer --> Liq
+        Replayer --> CrossBlock
+    end
+
+    subgraph Pending["Mempool / Pending Block"]
+        Mempool["mev/mempool.rs\nPendingBlockCapture"] --> RPC
+        Mempool --> PoolMgr
+        Mempool --> MultiHop
+        Mempool --> TwoHop
     end
 
     TwoHop --> Opportunities["mev/opportunity.rs\nMevOpportunity[]"]
@@ -68,6 +88,8 @@ flowchart LR
     JitArb --> Opportunities
     Liq --> Opportunities
     PGA --> Opportunities
+    CrossBlock --> Opportunities
+    Mempool --> Opportunities
 
     Opportunities --> FactCheck["fact_check.rs\nverify_opportunities()"]
     FactCheck --> RPC
@@ -77,6 +99,12 @@ flowchart LR
     Aggregator --> GasDist["gas_distribution.rs\nGasPriceDistribution\n(H10 percentiles)"]
 
     Aggregator --> Output["Results\n(JSON / CSV / Table)"]
+
+    subgraph Live["Live Mode"]
+        LiveRunner["live.rs\nLiveRunner"] --> Run["run.rs\nBacktestRunner"]
+        LiveRunner --> Mempool
+        LiveRunner --> Replayer
+    end
 ```
 
 ## 3. Core Module Hierarchy
@@ -91,6 +119,7 @@ flowchart TB
         data["data.rs\nBlockData, TxData,\nReceiptData, LogData"]
         utils["utils.rs\nu128_from_be_bytes"]
         gas_dist["gas_distribution.rs\nGasPriceDistribution"]
+        live["live.rs\nLiveRunner, LiveConfig"]
 
         subgraph infra["Infrastructure"]
             rpc["rpc.rs\nRpcClient"]
@@ -106,6 +135,9 @@ flowchart TB
             v3_quote["v3_quote.rs\nV3 exact-in/out\nquoting"]
             decoders["decoders.rs\nEvent log decoders"]
             discovery["discovery.rs\nPool discovery"]
+            subgraph_disc["subgraph_discovery.rs\nSubgraphEndpoint config"]
+            curve_math["curve_math.rs\nCurve AMM formulas"]
+            balancer_math["balancer_math.rs\nBalancer AMM formulas"]
             dex_type["dex_type.rs\nDexType enum"]
         end
 
@@ -119,6 +151,8 @@ flowchart TB
             pga["pga.rs\nPGA simulation"]
             block_builder["block_builder.rs\nBundle packing"]
             opportunity["opportunity.rs\nMevOpportunity"]
+            cross_block["cross_block.rs\nCross-block arb\n+ time-bandit"]
+            mempool["mempool.rs\nPending block capture\n+ mempool arb detection"]
         end
 
         replay["replay.rs\nBlockReplayer"]
@@ -130,12 +164,13 @@ flowchart TB
     end
 
     subgraph cli_app["cli/"]
-        main["main.rs\nEntry point,\n7 subcommands"]
+        main["main.rs\nEntry point,\n8 subcommands"]
     end
 
     main --> run
     main --> fetch
     main --> fact_check
+    main --> live
     run --> state
     run --> replay
     run --> two_hop
@@ -145,6 +180,8 @@ flowchart TB
     run --> jit_arb
     run --> liquidation
     run --> pga
+    run --> cross_block
+    run --> mempool
     run --> discovery
     run --> resolver
     run --> rpc
@@ -162,10 +199,33 @@ flowchart TB
     replay --> rpc
     replay --> data
 
+    live --> run
+    live --> mempool
+    live --> rpc
+    live --> cache
+    live --> replay
+
     state --> rpc
     state --> decoders
     state --> dex_type
     state --> utils
+    state --> data
+
+    math --> state
+    math --> v3_quote
+    math --> curve_math
+    math --> balancer_math
+
+    discovery --> cache
+    discovery --> dex_type
+    discovery --> rpc
+    discovery --> scan
+
+    subgraph_disc --> dex_type
+    subgraph_disc --> discovery
+
+    curve_math --> state
+    balancer_math --> state
 
     two_hop --> state
     two_hop --> math
@@ -176,6 +236,45 @@ flowchart TB
     multi_hop --> math
     multi_hop --> v3_quote
     multi_hop --> opportunity
+
+    sandwich --> state
+    sandwich --> math
+    sandwich --> v3_quote
+    sandwich --> opportunity
+    sandwich --> data
+    sandwich --> decoders
+    sandwich --> utils
+
+    jit --> state
+    jit --> v3_quote
+    jit --> opportunity
+    jit --> data
+    jit --> decoders
+
+    jit_arb --> state
+    jit_arb --> math
+    jit_arb --> v3_quote
+    jit_arb --> opportunity
+    jit_arb --> data
+    jit_arb --> decoders
+
+    liquidation --> state
+    liquidation --> opportunity
+    liquidation --> rpc
+    liquidation --> data
+
+    cross_block --> opportunity
+    cross_block --> state
+    cross_block --> types
+
+    mempool --> state
+    mempool --> math
+    mempool --> rpc
+    mempool --> two_hop
+    mempool --> multi_hop
+    mempool --> opportunity
+    mempool --> data
+    mempool --> utils
 
     aggregate --> opportunity
     aggregate --> coingecko
@@ -208,6 +307,14 @@ flowchart TB
         pool_state --> jit_detect["JitDetector\ndetect()"]
         pool_state --> jitarb_detect["JitArbDetector\ndetect()"]
         pool_state --> liq_detect["LiquidationDetector\ndetect()"]
+        pool_state --> xblock_detect["CrossBlockDetector\ndetect()"]
+    end
+
+    subgraph mempool_flow["Mempool Detection"]
+        pending["PendingBlockCapture\ncapture_pending_block()"] --> pending_decode["Decode pending\ntransactions"]
+        pending_decode --> pending_pool["PoolState\n(speculative)"]
+        pending_pool --> mempool_2hop["Mempool two-hop\ndetection"]
+        pending_pool --> mempool_mhop["Mempool multi-hop\ndetection"]
     end
 
     subgraph output["Opportunity Collection"]
@@ -217,6 +324,9 @@ flowchart TB
         jit_detect --> opps
         jitarb_detect --> opps
         liq_detect --> opps
+        xblock_detect --> opps
+        mempool_2hop --> opps
+        mempool_mhop --> opps
 
         opps --> pga_sim["mev/pga.rs\nsimulate_pga()"]
         opps --> reuse["reused for\nnext block"]
@@ -246,6 +356,8 @@ classDiagram
         JitArb
         Sandwich
         Liquidation
+        CrossBlockArb
+        TimeBandit
     }
 
     class DexType {
@@ -286,6 +398,18 @@ classDiagram
         +replay_block() -> ExecutedBlock
     }
 
+    class CrossBlockDetector {
+        window_size: u64
+        snapshots: Vec~PoolSnapshot~
+        +detect() -> Vec~MevOpportunity~
+    }
+
+    class LiveRunner {
+        config: LiveConfig
+        state: LiveRunnerState
+        +run_live() -> ExecutionRecord[]
+    }
+
     PoolManager --> PoolState
     PoolManager --> DexType
     MevOpportunity --> Strategy
@@ -304,6 +428,7 @@ flowchart LR
         ReplayCmd["Replay\n(single block)"]
         Discover["Discover\n(pools)"]
         FactCheck["FactCheck\n(verify)"]
+        LiveCmd["Live\n(live MEV bot)"]
     end
 
     subgraph ConfigFile["config.toml"]
@@ -313,6 +438,7 @@ flowchart LR
         flashloan["flash loan\nprovider + fee"]
         price["price oracle\nmode"]
         range["block range\nmode"]
+        live_cfg["live mode\nwallet, RPC, mempool"]
     end
 
     ConfigFile --> validation["validation.rs\nvalidate_and_resolve()"]
@@ -325,7 +451,10 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph init["Pool Initialization"]
-        discover["discovery.rs\ndiscover_pools_in_range()"] --> pool_addrs["DiscoveredPool[]"]
+        subgraph_disc["subgraph_discovery.rs\nSubgraphEndpoints\n(per-chain config)"]
+        discover["discovery.rs\ndiscover_pools_in_range()"]
+        subgraph_disc --> discover
+        discover --> pool_addrs["DiscoveredPool[]"]
         pool_addrs --> state_init["state.rs\ninit_from_rpc()"]
         state_init --> eth_call["eth_call\n(live state)"]
         state_init --> storage_fallback["eth_getStorageAt\n(fallback)"]
@@ -348,7 +477,12 @@ flowchart TB
 
     subgraph quoting["Quoting"]
         pool_state --> v3_quote["v3_quote.rs\nquote_v3_exact_in()\nquote_v3_exact_out()"]
-        pool_state --> math["math.rs\nconstant_product_*()\noptimal_two_hop_arb()"]
+        pool_state --> curve_math["curve_math.rs\ncurve_output_amount()"]
+        pool_state --> balancer_math["balancer_math.rs\nbalancer_quote_exact_in()"]
+        pool_state --> math["math.rs\nquote_exact_in()\nconstant_product_*()\noptimal_two_hop_arb()"]
+        math --> v3_quote
+        math --> curve_math
+        math --> balancer_math
     end
 ```
 
@@ -356,19 +490,45 @@ flowchart TB
 
 | File | Lines | Module | Purpose |
 |---|---|---|---|
-| `pool/state.rs` | ~2,215 | Core | Pool manager + all pool state structs |
-| `replay.rs` | ~1,344 | Core | EVM block replayer + CachedRpcDb |
-| `fact_check.rs` | ~1,327 | Core | On-chain opportunity verification |
-| `v3_quote.rs` | ~1,088 | Core | Uniswap V3 quoting engine |
-| `integration.rs` | ~1,041 | Tests | Integration tests |
-| `liquidation.rs` | ~903 | MEV | Aave V3 liquidation detection |
-| `two_hop.rs` | ~951 | MEV | Two-hop arbitrage detection |
-| `jit_arb.rs` | ~627 | MEV | JIT arbitrage detection |
-| `jit.rs` | ~598 | MEV | JIT liquidity detection |
-| `sandwich.rs` | ~680 | MEV | Sandwich attack detection |
-| `aggregate.rs` | ~571 | Core | USD aggregation + metrics |
-| `discovery.rs` | ~569 | Pool | Pool discovery |
-| `multi_hop.rs` | ~489 | MEV | Multi-hop arbitrage |
-| `math.rs` | ~472 | Pool | AMM math formulas |
-| `decoders.rs` | ~395 | Pool | Event log decoders |
-| `main.rs` | ~1,800 | CLI | CLI entry point |
+| `pool/state.rs` | ~2,255 | Core | Pool manager + all pool state structs |
+| `integration.rs` | ~1,324 | Tests | Integration tests |
+| `fact_check.rs` | ~1,225 | Core | On-chain opportunity verification |
+| `replay.rs` | ~1,176 | Core | EVM block replayer + CachedRpcDb |
+| `cache.rs` | ~1,151 | Core | SQLite-backed block/state cache |
+| `pool/v3_quote.rs` | ~1,031 | Pool | Uniswap V3 quoting engine |
+| `config.rs` | ~990 | Core | Config struct, chain configs, CLI overrides |
+| `rpc.rs` | ~982 | Infra | Multi-provider RPC client + rate limiter |
+| `liquidation.rs` | ~930 | MEV | Aave V3 liquidation detection |
+| `types.rs` | ~915 | Core | ChainName, Strategy, GasConfig, etc. |
+| `two_hop.rs` | ~806 | MEV | Two-hop arbitrage detection |
+| `sandwich.rs` | ~791 | MEV | Sandwich attack detection |
+| `run.rs` | ~667 | Core | BacktestRunner orchestration |
+| `pool/discovery.rs` | ~659 | Pool | Pool discovery |
+| `live.rs` | ~646 | Core | Live MEV bot runner |
+| `jit_arb.rs` | ~617 | MEV | JIT arbitrage detection |
+| `jit.rs` | ~605 | MEV | JIT liquidity detection |
+| `aggregate.rs` | ~580 | Core | USD aggregation + metrics |
+| `pool/subgraph_discovery.rs` | ~572 | Pool | Subgraph endpoint configuration |
+| `pool/math.rs` | ~545 | Pool | AMM math + unified quote_exact_in |
+| `mev/mempool.rs` | ~538 | MEV | Pending block capture + mempool arb |
+| `parquet_writer.rs` | ~510 | Infra | Parquet (ZSTD) block data writer |
+| `validation.rs` | ~506 | Core | Config validation + resolution |
+| `multi_hop.rs` | ~487 | MEV | Multi-hop arbitrage detection |
+| `fetch.rs` | ~423 | Core | Fetcher — block data fetching |
+| `mev/opportunity.rs` | ~400 | MEV | MevOpportunity struct + ResultsFile |
+| `pool/decoders.rs` | ~395 | Pool | Event log decoders |
+| `pool/curve_math.rs` | ~355 | Pool | Curve AMM math (StableSwap + CryptoSwap) |
+| `coingecko.rs` | ~319 | Core | CoinGecko USD pricing with cache |
+| `data.rs` | ~287 | Core | Wire-format data types |
+| `cli.rs` | ~282 | Core | CLI argument parsing (clap) |
+| `mev/cross_block.rs` | ~252 | MEV | Cross-block MEV detection |
+| `pool/balancer_math.rs` | ~249 | Pool | Balancer AMM math |
+| `mev/block_builder.rs` | ~217 | MEV | Bundle packing into blocks |
+| `gas_distribution.rs` | ~183 | Core | Gas price distribution |
+| `resolver.rs` | ~180 | Infra | Block range resolution |
+| `scan.rs` | ~145 | Infra | DEX activity scanner |
+| `mev/pga.rs` | ~141 | MEV | PGA simulation |
+| `utils.rs` | ~46 | Core | u128_from_be_bytes utility |
+| `pool/dex_type.rs` | ~31 | Pool | DexType enum |
+| `main.rs` | ~1,520 | CLI | CLI entry point |
+| `e2e.rs` | ~492 | Tests | End-to-end tests |
