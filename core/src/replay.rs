@@ -62,7 +62,7 @@ impl DBErrorMarker for DbError {
 }
 
 use crate::cache::SqliteStore;
-use crate::data::{AccountData, BlockData, ExecutedLog, ExecutedTx, LogData, TxData};
+use crate::data::{AccountData, BlockData, ExecutedLog, ExecutedTx, LogData, ReceiptData, TxData};
 use crate::rpc::RpcClient;
 
 /// Polygon BLS12-377 precompile addresses (Heimdall fork)
@@ -703,6 +703,40 @@ impl BlockReplayer {
         ))
     }
 
+    fn build_executed_tx(
+        tx: &TxData,
+        exec_result: &ExecutionResult,
+        receipt: Option<&ReceiptData>,
+        block_num: u64,
+    ) -> ExecutedTx {
+        let mismatch = match receipt {
+            Some(r) => Self::verify_receipt(exec_result, r, tx.hash, block_num),
+            None => Some("receipt not found".to_string()),
+        };
+        if let Some(ref msg) = mismatch {
+            tracing::warn!("{}", msg);
+        }
+        let output_bytes = exec_result.output().cloned().unwrap_or_default();
+        ExecutedTx {
+            tx_hash: tx.hash,
+            index: 0,
+            status: exec_result.is_success(),
+            gas_used: exec_result.tx_gas_used(),
+            gas_effective: tx.max_fee_per_gas,
+            logs: exec_result
+                .logs()
+                .iter()
+                .map(|l| ExecutedLog {
+                    address: l.address,
+                    topics: l.data.topics().to_vec(),
+                    data: l.data.data.clone(),
+                })
+                .collect(),
+            output: output_bytes,
+            error: mismatch,
+        }
+    }
+
     /// Replay all transactions in a block up to and including `tx_index`.
     ///
     /// Used primarily by the CLI `replay` command for receipt verification
@@ -717,7 +751,7 @@ impl BlockReplayer {
         block_num: u64,
         tx_index: usize,
     ) -> anyhow::Result<(CacheDB<CachedRpcDb>, Vec<ExecutedTx>)> {
-        let (block, txs) = self.load_block_data(block_num)?;
+        let (_block, txs) = self.load_block_data(block_num)?;
         let receipts = self.load_receipts(block_num)?;
 
         let actual_tx_count = txs.len();
@@ -745,7 +779,7 @@ impl BlockReplayer {
         }
 
         let cfg_env = self.build_cfg_env(block_num);
-        let block_env = self.build_block_env(&block);
+        let block_env = self.build_block_env(&_block);
 
         let ctx = Context::mainnet()
             .with_db(cache_db)
@@ -759,7 +793,6 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate().take(end + 1) {
             let tx_env = self.tx_data_to_tx_env(tx);
-
             let exec_result = match evm.transact_commit(tx_env) {
                 Ok(r) => r,
                 Err(e) => {
@@ -777,39 +810,13 @@ impl BlockReplayer {
                     }
                 }
             };
-
-            let receipt = receipts.get(i);
-            let mismatch = match receipt {
-                Some(r) => Self::verify_receipt(&exec_result, r, tx.hash, block_num),
-                None => Some("receipt not found".to_string()),
-            };
-
-            if let Some(msg) = &mismatch {
+            let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
+            executed.index = i as u64;
+            if executed.error.is_some() {
                 total_mismatch += 1;
-                tracing::warn!("{}", msg);
             } else {
                 total_match += 1;
             }
-
-            let output_bytes = exec_result.output().cloned().unwrap_or_default();
-            let executed = ExecutedTx {
-                tx_hash: tx.hash,
-                index: i as u64,
-                status: exec_result.is_success(),
-                gas_used: exec_result.tx_gas_used(),
-                gas_effective: tx.max_fee_per_gas,
-                logs: exec_result
-                    .logs()
-                    .iter()
-                    .map(|l| ExecutedLog {
-                        address: l.address,
-                        topics: l.data.topics().to_vec(),
-                        data: l.data.data.clone(),
-                    })
-                    .collect(),
-                output: output_bytes,
-                error: mismatch.clone(),
-            };
             results.push(executed);
         }
 
@@ -880,7 +887,6 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate() {
             let tx_env = self.tx_data_to_tx_env(tx);
-
             let exec_result = match evm.transact_commit(tx_env) {
                 Ok(r) => r,
                 Err(e) => {
@@ -898,37 +904,8 @@ impl BlockReplayer {
                     }
                 }
             };
-
-            let receipt = receipts.get(i);
-            let mismatch = match receipt {
-                Some(r) => Self::verify_receipt(&exec_result, r, tx.hash, block_num),
-                None => Some("receipt not found".to_string()),
-            };
-
-            if let Some(ref msg) = mismatch {
-                tracing::warn!("{}", msg);
-            }
-
-            let output_bytes = exec_result.output().cloned().unwrap_or_default();
-            let executed = ExecutedTx {
-                tx_hash: tx.hash,
-                index: i as u64,
-                status: exec_result.is_success(),
-                gas_used: exec_result.tx_gas_used(),
-                gas_effective: tx.max_fee_per_gas,
-                logs: exec_result
-                    .logs()
-                    .iter()
-                    .map(|l| ExecutedLog {
-                        address: l.address,
-                        topics: l.data.topics().to_vec(),
-                        data: l.data.data.clone(),
-                    })
-                    .collect(),
-                output: output_bytes,
-                error: mismatch,
-            };
-
+            let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
+            executed.index = i as u64;
             on_tx(i, &executed, &evm.ctx.journaled_state.database)?;
         }
 
@@ -991,7 +968,7 @@ impl BlockReplayer {
                 .map(|r| r.logs.as_slice())
                 .unwrap_or_default();
 
-            let executed = if filter(tx, receipt_logs) {
+            let mut executed = if filter(tx, receipt_logs) {
                 let tx_env = self.tx_data_to_tx_env(tx);
                 let exec_result = match evm.transact_commit(tx_env) {
                     Ok(r) => r,
@@ -1010,64 +987,42 @@ impl BlockReplayer {
                         }
                     }
                 };
-
-                let receipt = receipts.get(i);
-                let mismatch = match receipt {
-                    Some(r) => Self::verify_receipt(&exec_result, r, tx.hash, block_num),
-                    None => Some("receipt not found".to_string()),
-                };
-                if let Some(ref msg) = mismatch {
-                    tracing::warn!("{}", msg);
-                }
-
-                let output_bytes = exec_result.output().cloned().unwrap_or_default();
-                ExecutedTx {
-                    tx_hash: tx.hash,
-                    index: i as u64,
-                    status: exec_result.is_success(),
-                    gas_used: exec_result.tx_gas_used(),
-                    gas_effective: tx.max_fee_per_gas,
-                    logs: exec_result
-                        .logs()
-                        .iter()
-                        .map(|l| ExecutedLog {
-                            address: l.address,
-                            topics: l.data.topics().to_vec(),
-                            data: l.data.data.clone(),
-                        })
-                        .collect(),
-                    output: output_bytes,
-                    error: mismatch,
-                }
+                Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
             } else {
-                let receipt = receipts.get(i);
-                ExecutedTx {
-                    tx_hash: tx.hash,
-                    index: i as u64,
-                    status: receipt.map(|r| r.status).unwrap_or(false),
-                    gas_used: receipt.map(|r| r.gas_used).unwrap_or(0),
-                    gas_effective: tx.max_fee_per_gas,
-                    logs: receipt
-                        .map(|r| {
-                            r.logs
-                                .iter()
-                                .map(|l| ExecutedLog {
-                                    address: l.address,
-                                    topics: l.topics.clone(),
-                                    data: l.data.clone(),
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    output: Bytes::new(),
-                    error: Some("skipped".to_string()),
-                }
+                Self::synthesize_tx(tx, receipts.get(i))
             };
+            executed.index = i as u64;
 
             on_tx(i, &executed, &evm.ctx.journaled_state.database)?;
         }
 
         Ok(())
+    }
+
+    /// Build an `ExecutedTx` from cached receipt data without EVM execution.
+    /// Used by `replay_each_filtered` for the fast path (non-pool txs).
+    fn synthesize_tx(tx: &TxData, receipt: Option<&ReceiptData>) -> ExecutedTx {
+        ExecutedTx {
+            tx_hash: tx.hash,
+            index: 0,
+            status: receipt.map(|r| r.status).unwrap_or(false),
+            gas_used: receipt.map(|r| r.gas_used).unwrap_or(0),
+            gas_effective: tx.max_fee_per_gas,
+            logs: receipt
+                .map(|r| {
+                    r.logs
+                        .iter()
+                        .map(|l| ExecutedLog {
+                            address: l.address,
+                            topics: l.topics.clone(),
+                            data: l.data.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            output: Bytes::new(),
+            error: Some("skipped".to_string()),
+        }
     }
 }
 

@@ -245,7 +245,7 @@ impl Fetcher {
 
     fn flush_write_buf(&self) -> anyhow::Result<()> {
         let batch = {
-            let mut buf = self.write_buf.lock().unwrap();
+            let mut buf = self.write_buf.lock().expect("write_buf mutex poisoned");
             if buf.is_empty() {
                 return Ok(());
             }
@@ -281,7 +281,7 @@ impl Fetcher {
 
         let t2 = Instant::now();
         {
-            let mut buf = self.write_buf.lock().unwrap();
+            let mut buf = self.write_buf.lock().expect("write_buf mutex poisoned");
             buf.push((block_num, block, txs, receipts));
             if buf.len() >= 10 {
                 let batch = std::mem::take(&mut *buf);

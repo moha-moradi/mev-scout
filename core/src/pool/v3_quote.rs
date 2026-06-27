@@ -82,62 +82,37 @@ fn compute_sqrt_ratio_at_tick(tick: i32) -> U256 {
         U256::from(1u128) << 128
     };
     let one_128 = U256::from(1u128) << 128;
-    if (abs_tick & 0x2) != 0 {
-        ratio = mul_div(ratio, U256::from(0xfff97272373d413259a46990580e213au128), one_128).unwrap();
+    // Uniswap V3 tick-to-sqrt-price multipliers (from Solidity reference)
+    const TICK_MATH_CONSTANTS: [(u32, u128); 18] = [
+        (0x2, 0xfff97272373d413259a46990580e213a),
+        (0x4, 0xfff2e50f5f656932ef12357cf3c7fdcc),
+        (0x8, 0xffe5caca7e10e4e61c3624eaa0941cd0),
+        (0x10, 0xffcb9843d60f6159c9db58835c926644),
+        (0x20, 0xff973b41fa98c081472e6896dfb254c0),
+        (0x40, 0xff2ea16466c96a3843ec78b326b52861),
+        (0x80, 0xfe5dee046a99a2a811c461f1969c3053),
+        (0x100, 0xfcbe86c7900a88aedcffc83b479aa3a4),
+        (0x200, 0xf987a7253ac413176f2b074cf7815e54),
+        (0x400, 0xf3392b0822b70005940c7a398e4b70f3),
+        (0x800, 0xe7159475a2c29b7443b29c7fa6e889d9),
+        (0x1000, 0xd097f3bdfd2022b8845ad8f792aa5825),
+        (0x2000, 0xa9f746462d870fdf8a65dc1f90e061e5),
+        (0x4000, 0x70d869a156d2a1b890bb3df62baf32f7),
+        (0x8000, 0x31be135f97d08fd981231505542fcfa6),
+        (0x10000, 0x9aa508b5b7a84e1c677de54f3e99bc9),
+        (0x20000, 0x5d6af8dedb81196699c329225ee604),
+        (0x40000, 0x2216e584f5fa1ea926041bedfe98),
+    ];
+    for (bit, constant) in &TICK_MATH_CONSTANTS {
+        if (abs_tick & bit) != 0 {
+            ratio = mul_div(ratio, U256::from(*constant), one_128)
+                .expect("V3 tick math constant invariant");
+        }
     }
-    if (abs_tick & 0x4) != 0 {
-        ratio = mul_div(ratio, U256::from(0xfff2e50f5f656932ef12357cf3c7fdccu128), one_128).unwrap();
-    }
-    if (abs_tick & 0x8) != 0 {
-        ratio = mul_div(ratio, U256::from(0xffe5caca7e10e4e61c3624eaa0941cd0u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x10) != 0 {
-        ratio = mul_div(ratio, U256::from(0xffcb9843d60f6159c9db58835c926644u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x20) != 0 {
-        ratio = mul_div(ratio, U256::from(0xff973b41fa98c081472e6896dfb254c0u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x40) != 0 {
-        ratio = mul_div(ratio, U256::from(0xff2ea16466c96a3843ec78b326b52861u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x80) != 0 {
-        ratio = mul_div(ratio, U256::from(0xfe5dee046a99a2a811c461f1969c3053u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x100) != 0 {
-        ratio = mul_div(ratio, U256::from(0xfcbe86c7900a88aedcffc83b479aa3a4u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x200) != 0 {
-        ratio = mul_div(ratio, U256::from(0xf987a7253ac413176f2b074cf7815e54u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x400) != 0 {
-        ratio = mul_div(ratio, U256::from(0xf3392b0822b70005940c7a398e4b70f3u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x800) != 0 {
-        ratio = mul_div(ratio, U256::from(0xe7159475a2c29b7443b29c7fa6e889d9u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x1000) != 0 {
-        ratio = mul_div(ratio, U256::from(0xd097f3bdfd2022b8845ad8f792aa5825u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x2000) != 0 {
-        ratio = mul_div(ratio, U256::from(0xa9f746462d870fdf8a65dc1f90e061e5u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x4000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x70d869a156d2a1b890bb3df62baf32f7u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x8000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x31be135f97d08fd981231505542fcfa6u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x10000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x9aa508b5b7a84e1c677de54f3e99bc9u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x20000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x5d6af8dedb81196699c329225ee604u128), one_128).unwrap();
-    }
-    if (abs_tick & 0x40000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x2216e584f5fa1ea926041bedfe98u128), one_128).unwrap();
-    }
+    // 0x80000 is the last multiplier (too large for 128-bit but fits in U256)
     if (abs_tick & 0x80000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x48a170391f7dc42444e8fa2u128), one_128).unwrap();
+        ratio = mul_div(ratio, U256::from(0x48a170391f7dc42444e8fa2u128), one_128)
+            .expect("V3 tick math constant invariant");
     }
     if tick > 0 {
         ratio = U256::MAX / ratio;

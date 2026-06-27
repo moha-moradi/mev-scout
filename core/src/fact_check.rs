@@ -120,7 +120,7 @@ pub struct FactCheckReport {
 async fn fetch_token_decimals(rpc: &RpcClient, token: Address, block: u64) -> Option<u8> {
     // Check cache first
     {
-        let cache = DECIMALS_CACHE.lock().unwrap();
+        let cache = DECIMALS_CACHE.lock().expect("DECIMALS_CACHE mutex poisoned");
         if let Some(&d) = cache.get(&token) {
             return Some(d);
         }
@@ -138,7 +138,7 @@ async fn fetch_token_decimals(rpc: &RpcClient, token: Address, block: u64) -> Op
         return None;
     }
     let val = result[31]; // uint8, right-aligned in 32-byte word
-    DECIMALS_CACHE.lock().unwrap().insert(token, val);
+    DECIMALS_CACHE.lock().expect("DECIMALS_CACHE mutex poisoned").insert(token, val);
     Some(val)
 }
 
@@ -278,14 +278,14 @@ const BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 static QUOTE_EXACT_INPUT_SINGLE_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
     keccak256(b"quoteExactInputSingle(address,address,uint24,uint256,uint160)")[..4]
         .try_into()
-        .unwrap()
+        .expect("keccak256 output is always >= 4 bytes")
 });
 
 /// Function selector for Curve `get_dy(int128,int128,uint256)`
 static GET_DY_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
     keccak256(b"get_dy(int128,int128,uint256)")[..4]
         .try_into()
-        .unwrap()
+        .expect("keccak256 output is always >= 4 bytes")
 });
 
 /// Standard Uniswap V3 Quoter address (same on Ethereum, Polygon, Arbitrum, Optimism, etc.)
@@ -295,7 +295,7 @@ const V3_QUOTER: Address = alloy::primitives::address!("b27308f9F90D607463bb33eA
 static GET_AMOUNTS_OUT_SELECTOR: LazyLock<[u8; 4]> = LazyLock::new(|| {
     keccak256(b"getAmountsOut(uint256,address[])")[..4]
         .try_into()
-        .unwrap()
+        .expect("keccak256 output is always >= 4 bytes")
 });
 
 /// ABI-encode `quoteExactInputSingle(address,address,uint24,uint256,uint160)`.

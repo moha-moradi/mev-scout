@@ -40,6 +40,14 @@ pub struct SqliteStore {
     chain_id: u64,
 }
 
+impl SqliteStore {
+    /// Acquire the SQLite connection mutex guard.
+    /// Panics with a clear message if the mutex is poisoned (process state corrupted).
+    fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn.lock().expect("SQLite connection mutex poisoned")
+    }
+}
+
 
 
 impl SqliteStore {
@@ -57,7 +65,7 @@ impl SqliteStore {
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS blocks (
@@ -217,7 +225,7 @@ impl SqliteStore {
     // ---- Block ----
 
     pub fn put_block(&self, block_num: u64, block: &BlockData) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -241,7 +249,7 @@ impl SqliteStore {
         txs: &[TxData],
         receipts: &[ReceiptData],
     ) -> anyhow::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
 
         tx.execute(
@@ -321,7 +329,7 @@ impl SqliteStore {
         if batch.is_empty() {
             return Ok(());
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.conn();
         let tx = conn.transaction()?;
 
         {
@@ -396,7 +404,7 @@ impl SqliteStore {
     }
 
     pub fn get_block(&self, block_num: u64) -> anyhow::Result<Option<BlockData>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase FROM blocks WHERE number = ?1",
         )?;
@@ -418,7 +426,7 @@ impl SqliteStore {
     // ---- Txs ----
 
     pub fn put_txs(&self, block_num: u64, txs: &[TxData]) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -452,7 +460,7 @@ impl SqliteStore {
     }
 
     pub fn get_txs(&self, block_num: u64) -> anyhow::Result<Option<Vec<TxData>>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         if !Self::block_txs_fetched(&conn, block_num) {
             return Ok(None);
         }
@@ -487,7 +495,7 @@ impl SqliteStore {
     // ---- Receipts ----
 
     pub fn put_receipts(&self, _block_num: u64, receipts: &[ReceiptData]) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -508,7 +516,7 @@ impl SqliteStore {
     }
 
     pub fn get_receipts(&self, block_num: u64) -> anyhow::Result<Option<Vec<ReceiptData>>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         if !Self::block_txs_fetched(&conn, block_num) {
             return Ok(None);
         }
@@ -539,7 +547,7 @@ impl SqliteStore {
     // ---- Check integrity ----
 
     pub fn has_block(&self, block_num: u64) -> anyhow::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM blocks WHERE number = ?1",
             rusqlite::params![block_num as i64],
@@ -566,7 +574,7 @@ impl SqliteStore {
     }
 
     pub fn check_integrity(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT number FROM blocks
              INNER JOIN block_meta USING(number)
@@ -592,7 +600,7 @@ impl SqliteStore {
         if blocks.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let placeholders: Vec<String> = blocks.iter().map(|_| "?".to_string()).collect();
         let sql = format!(
             "SELECT number FROM blocks
@@ -629,7 +637,7 @@ impl SqliteStore {
         address: Address,
         account: &AccountData,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO accounts (block_number, address, nonce, balance, code_hash)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -649,7 +657,7 @@ impl SqliteStore {
         block_num: u64,
         address: Address,
     ) -> anyhow::Result<Option<AccountData>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT nonce, balance, code_hash FROM accounts WHERE block_number = ?1 AND address = ?2",
         )?;
@@ -671,7 +679,7 @@ impl SqliteStore {
         slot: U256,
         value: U256,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO storage_slots (block_number, address, slot, value)
              VALUES (?1, ?2, ?3, ?4)",
@@ -691,7 +699,7 @@ impl SqliteStore {
         address: Address,
         slot: U256,
     ) -> anyhow::Result<Option<U256>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT value FROM storage_slots WHERE block_number = ?1 AND address = ?2 AND slot = ?3",
         )?;
@@ -707,7 +715,7 @@ impl SqliteStore {
     }
 
     pub fn put_code(&self, address: Address, code: &Bytes) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO contract_code (address, code) VALUES (?1, ?2)",
             rusqlite::params![Self::addr_to_blob(&address), code.to_vec()],
@@ -716,7 +724,7 @@ impl SqliteStore {
     }
 
     pub fn get_code(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT code FROM contract_code WHERE address = ?1",
         )?;
@@ -730,7 +738,7 @@ impl SqliteStore {
     // ---- RunManifest ----
 
     pub fn put_manifest(&self, manifest: &RunManifest) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO run_manifests (run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -749,7 +757,7 @@ impl SqliteStore {
     }
 
     pub fn get_manifest(&self, run_id: &str) -> anyhow::Result<Option<RunManifest>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider
              FROM run_manifests WHERE run_id = ?1",
@@ -771,7 +779,7 @@ impl SqliteStore {
     }
 
     pub fn list_manifests(&self) -> anyhow::Result<Vec<(String, RunManifest)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider
              FROM run_manifests ORDER BY resolved_at DESC",
@@ -798,7 +806,7 @@ impl SqliteStore {
     // ---- Pool Discovery ----
 
     pub fn put_discovered_pool(&self, pool: &PoolInfo) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let pool_id_blob = pool.pool_id.map(|id| id.to_vec());
         let factory_blob = pool.factory.map(|f| f.to_vec());
         conn.execute(
@@ -820,7 +828,7 @@ impl SqliteStore {
     }
 
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
              FROM pool_info WHERE address = ?1",
@@ -856,7 +864,7 @@ impl SqliteStore {
     }
 
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
              FROM pool_info",
@@ -890,7 +898,7 @@ impl SqliteStore {
     }
 
     pub fn put_discovery_cursor(&self, factory: &Address, block: u64) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute(
             "INSERT OR REPLACE INTO discovery_cursors (factory, block_number) VALUES (?1, ?2)",
             rusqlite::params![Self::addr_to_blob(factory), block as i64],
@@ -899,7 +907,7 @@ impl SqliteStore {
     }
 
     pub fn get_discovery_cursor(&self, factory: &Address) -> anyhow::Result<Option<u64>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT block_number FROM discovery_cursors WHERE factory = ?1",
         )?;
@@ -915,7 +923,7 @@ impl SqliteStore {
     /// Store pending transactions captured from the mempool.
     /// The `captured_at` timestamp is the Unix epoch second of capture.
     pub fn put_pending_txs(&self, txs: &[TxData], captured_at: u64) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         // Use a single block_number for all pending txs (the capture timestamp is a proxy)
         let block_number: i64 = captured_at as i64;
         let mut stmt = conn.prepare(
@@ -949,7 +957,7 @@ impl SqliteStore {
 
     /// Count pending transactions captured at the given timestamp.
     pub fn count_pending_txs(&self, captured_at: u64) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pending_txs WHERE captured_at = ?1",
             rusqlite::params![captured_at as i64],
@@ -960,7 +968,7 @@ impl SqliteStore {
 
     /// Count all pending transactions in the cache.
     pub fn total_pending_txs(&self) -> anyhow::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pending_txs",
             [],
@@ -971,7 +979,7 @@ impl SqliteStore {
 
     /// Flush pending writes (WAL checkpoint).
     pub fn flush(&self) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }

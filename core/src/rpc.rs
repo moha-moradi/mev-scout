@@ -351,7 +351,7 @@ impl RpcClient {
 
         Err(anyhow::anyhow!(
             "All RPC providers failed: {:?}",
-            last_err.unwrap()
+            last_err.expect("at least one provider was attempted before failing")
         ))
     }
 
@@ -405,7 +405,7 @@ impl RpcClient {
             let label = state.label.clone();
             let result = Self::check_single_provider(&provider, &label, expected_chain_id).await;
             results.push(result);
-            if let Err(ref e) = results.last().unwrap() {
+            if let Some(Err(ref e)) = results.last() {
                 tracing::warn!("Provider {i} ({label}) failed validation: {e}");
             }
         }

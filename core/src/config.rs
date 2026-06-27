@@ -650,6 +650,34 @@ Parquet dir:         {}
     }
 }
 
+/// Merge an optional CLI override into a config field.
+macro_rules! merge_opt {
+    // Non-Copy types: override Option<T> → config T (clone out)
+    ($cfg:expr, $cli:expr, $field:ident) => {
+        if let Some(ref v) = $cli.$field {
+            $cfg.$field = v.clone();
+        }
+    };
+    // Non-Copy types: override Option<T> → config Option<T>
+    ($cfg:expr, $cli:expr, $field:ident, into_option) => {
+        if let Some(ref v) = $cli.$field {
+            $cfg.$field = Some(v.clone());
+        }
+    };
+    // Copy types: override Option<Copy> → config Copy
+    ($cfg:expr, $cli:expr, $field:ident, copy) => {
+        if let Some(v) = $cli.$field {
+            $cfg.$field = v;
+        }
+    };
+    // Copy types: override Option<Copy> → config Option<Copy>
+    ($cfg:expr, $cli:expr, $field:ident, copy_some) => {
+        if let Some(v) = $cli.$field {
+            $cfg.$field = Some(v);
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 pub struct CliOverrides {
     pub days: Option<u64>,
@@ -691,105 +719,39 @@ pub struct CliOverrides {
 
 impl Config {
     pub fn merge_cli(&mut self, overrides: &CliOverrides) {
-        if let Some(v) = &overrides.days {
-            self.days = Some(*v);
-        }
-        if let Some(v) = &overrides.blocks {
-            self.blocks = Some(*v);
-        }
-        if let Some(v) = &overrides.block {
-            self.block = Some(*v);
-        }
-        if let Some(v) = &overrides.from_block {
-            self.from_block = Some(*v);
-        }
-        if let Some(v) = &overrides.to_block {
-            self.to_block = Some(*v);
-        }
-        if let Some(v) = &overrides.chain {
-            self.chain = v.clone();
-        }
-        if let Some(v) = &overrides.rpc_url {
-            self.rpc_url = Some(v.clone());
-        }
-        if let Some(v) = &overrides.rpc_urls {
-            self.rpc_urls = v.clone();
-        }
-        if let Some(v) = &overrides.rpc_rps {
-            self.rpc_rps = v.clone();
-        }
-        if let Some(v) = &overrides.flash_loan_provider {
-            self.flash_loan_provider = v.clone();
-        }
-        if let Some(v) = &overrides.strategies {
-            self.strategies = v.clone();
-        }
-        if let Some(v) = &overrides.gas_model {
-            self.gas_model = v.clone();
-        }
-        if let Some(v) = overrides.gas_limit {
-            self.gas_limit = v;
-        }
-        if let Some(v) = overrides.priority_fee_gwei {
-            self.priority_fee_gwei = v;
-        }
-        if let Some(v) = &overrides.output {
-            self.output = v.clone();
-        }
-        if let Some(v) = &overrides.export_path {
-            self.export_path = v.clone();
-        }
-        if let Some(v) = &overrides.db_path {
-            self.db_path = v.clone();
-        }
-        if let Some(v) = &overrides.parquet_dir {
-            self.parquet_dir = Some(v.clone());
-        }
-        if let Some(v) = &overrides.coingecko_api_key {
-            self.coingecko_api_key = Some(v.clone());
-        }
-        if let Some(v) = overrides.rpc_workers {
-            self.rpc_workers = Some(v);
-        }
-        if let Some(v) = overrides.rps_limit {
-            self.rps_limit = v;
-        }
-        if let Some(v) = overrides.pga_enabled {
-            self.pga_enabled = v;
-        }
-        if let Some(v) = overrides.pga_mean_competitors {
-            self.pga_mean_competitors = v;
-        }
-        if let Some(v) = overrides.pga_intensity {
-            self.pga_intensity = v;
-        }
-        if let Some(v) = &overrides.price_oracle_mode {
-            self.price_oracle_mode = v.clone();
-        }
-        if let Some(v) = &overrides.token_prices {
-            self.token_prices = Some(v.clone());
-        }
-        if let Some(v) = overrides.proximity_window {
-            self.proximity_window = v;
-        }
-        if let Some(v) = overrides.capture_pending {
-            self.capture_pending = v;
-        }
-        if let Some(v) = overrides.cross_block_window {
-            self.cross_block_window = v;
-        }
-        if let Some(v) = overrides.initial_balance {
-            self.initial_balance = v;
-        }
-        if let Some(v) = overrides.min_profit_threshold {
-            self.min_profit_threshold = v;
-        }
-        if let Some(v) = overrides.poll_interval_ms {
-            self.poll_interval_ms = v;
-        }
-        if let Some(v) = overrides.max_executions {
-            self.max_executions = Some(v);
-        }
+        merge_opt!(self, overrides, days, copy_some);
+        merge_opt!(self, overrides, blocks, copy_some);
+        merge_opt!(self, overrides, block, copy_some);
+        merge_opt!(self, overrides, from_block, copy_some);
+        merge_opt!(self, overrides, to_block, copy_some);
+        merge_opt!(self, overrides, chain);
+        merge_opt!(self, overrides, rpc_url, into_option);
+        merge_opt!(self, overrides, rpc_urls);
+        merge_opt!(self, overrides, rpc_rps);
+        merge_opt!(self, overrides, flash_loan_provider);
+        merge_opt!(self, overrides, strategies);
+        merge_opt!(self, overrides, gas_model);
+        merge_opt!(self, overrides, gas_limit, copy);
+        merge_opt!(self, overrides, priority_fee_gwei, copy);
+        merge_opt!(self, overrides, output);
+        merge_opt!(self, overrides, export_path);
+        merge_opt!(self, overrides, db_path);
+        merge_opt!(self, overrides, parquet_dir, into_option);
+        merge_opt!(self, overrides, coingecko_api_key, into_option);
+        merge_opt!(self, overrides, rpc_workers, copy_some);
+        merge_opt!(self, overrides, rps_limit, copy);
+        merge_opt!(self, overrides, pga_enabled, copy);
+        merge_opt!(self, overrides, pga_mean_competitors, copy);
+        merge_opt!(self, overrides, pga_intensity, copy);
+        merge_opt!(self, overrides, price_oracle_mode);
+        merge_opt!(self, overrides, token_prices, into_option);
+        merge_opt!(self, overrides, proximity_window, copy);
+        merge_opt!(self, overrides, capture_pending, copy);
+        merge_opt!(self, overrides, cross_block_window, copy);
+        merge_opt!(self, overrides, initial_balance, copy);
+        merge_opt!(self, overrides, min_profit_threshold, copy);
+        merge_opt!(self, overrides, poll_interval_ms, copy);
+        merge_opt!(self, overrides, max_executions, copy_some);
     }
 
     /// Parse the `--token-price` value (e.g. "0xABC=0.999,0xDEF=1800") into a

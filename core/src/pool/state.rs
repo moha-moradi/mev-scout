@@ -457,7 +457,7 @@ impl PoolManager {
                 .or_default()
                 .push(addr);
         }
-        *self.pairs_cache.lock().unwrap() = None;
+        *self.pairs_cache.lock().expect("pairs_cache mutex poisoned") = None;
     }
 
     /// Look up a pool by address.
@@ -536,7 +536,7 @@ impl PoolManager {
     /// `max_pairs_per_token`, so high-volume pairs are preferred over low-volume ones.
     /// Result is cached and invalidated on add_pool.
     pub fn arbitrage_pairs(&self) -> Vec<(Address, Address, Address)> {
-        if let Some(cached) = &*self.pairs_cache.lock().unwrap() {
+        if let Some(cached) = &*self.pairs_cache.lock().expect("pairs_cache mutex poisoned") {
             return cached.clone();
         }
         let mut pairs = Vec::new();
@@ -565,7 +565,7 @@ impl PoolManager {
             }
         }
 
-        *self.pairs_cache.lock().unwrap() = Some(pairs.clone());
+        *self.pairs_cache.lock().expect("pairs_cache mutex poisoned") = Some(pairs.clone());
         pairs
     }
 
@@ -1930,7 +1930,7 @@ impl PoolManager {
 
 impl Clone for PoolManager {
     fn clone(&self) -> Self {
-        let cache = self.pairs_cache.lock().unwrap().clone();
+        let cache = self.pairs_cache.lock().expect("pairs_cache mutex poisoned").clone();
         PoolManager {
             pools: self.pools.clone(),
             token_index: self.token_index.clone(),

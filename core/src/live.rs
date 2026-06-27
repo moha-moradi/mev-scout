@@ -632,7 +632,7 @@ impl LiveRunner {
             "live_{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("System clock went backwards")
                 .as_secs()
         );
         let dir = std::path::Path::new(&self.config.export_path);
