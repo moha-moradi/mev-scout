@@ -50,9 +50,9 @@ impl ChainName {
     ///
     /// Each entry includes an observed safe RPS for public-tier usage.
     /// Endpoints are ordered by preference (fastest / most reliable first).
-    pub fn public_rpc_endpoints(&self) -> &[ProviderEndpoint] {
+    pub fn public_rpc_endpoints(&self) -> Vec<ProviderEndpoint> {
         match self {
-            ChainName::Polygon => &[
+            ChainName::Polygon => vec![
                 ProviderEndpoint::new("https://polygon.lava.build", 0.9, "lava", true),
                 ProviderEndpoint::new("https://rpc.sentio.xyz/matic", 0.6, "sentio", true),
                 ProviderEndpoint::new("https://matic.rpc.sentio.xyz", 0.8, "sentio-alt", true),
@@ -66,22 +66,22 @@ impl ChainName {
                 ProviderEndpoint::new("https://polygon-mainnet.core.chainstack.com/0eba37dcfe9dfb6f02273819eb9e0588", 0.5, "chainstack", true),
                 ProviderEndpoint::new("https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs", 0.5, "alchemy", true),
             ],
-            ChainName::Avalanche => &[
+            ChainName::Avalanche => vec![
                 ProviderEndpoint::new("https://avalanche-c-chain.publicnode.com", 1.0, "publicnode", true),
             ],
-            ChainName::Bsc => &[
+            ChainName::Bsc => vec![
                 ProviderEndpoint::new("https://bsc.publicnode.com", 1.0, "publicnode", true),
             ],
-            ChainName::Arbitrum => &[
+            ChainName::Arbitrum => vec![
                 ProviderEndpoint::new("https://arbitrum-one.publicnode.com", 1.0, "publicnode", true),
             ],
-            ChainName::Base => &[
+            ChainName::Base => vec![
                 ProviderEndpoint::new("https://base.publicnode.com", 1.0, "publicnode", true),
             ],
-            ChainName::Ethereum => &[
+            ChainName::Ethereum => vec![
                 ProviderEndpoint::new("https://ethereum-rpc.publicnode.com", 1.0, "publicnode", true),
             ],
-            ChainName::Optimism => &[
+            ChainName::Optimism => vec![
                 ProviderEndpoint::new("https://optimism-rpc.publicnode.com", 1.0, "publicnode", true),
             ],
         }

@@ -64,6 +64,14 @@ pub struct Config {
     /// Custom RPC endpoint; falls back to publicnode if unset
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
+    /// Additional RPC URLs for multi-provider load distribution (comma-separated in CLI).
+    /// When set alongside `rpc_url`, all URLs are used for load distribution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rpc_urls: Vec<String>,
+    /// Per-provider RPS limits, one per entry in the combined `effective_rpc_urls` list.
+    /// Empty = use default RPS from `ProviderEndpoint` metadata.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rpc_rps: Vec<f64>,
     /// Flash loan provider: "auto", "balancer", "aave", or "uniswap"
     #[serde(default = "default_flash_loan_provider")]
     pub flash_loan_provider: String,
@@ -207,6 +215,8 @@ impl Default for Config {
         Config {
             chain: default_chain(),
             rpc_url: None,
+            rpc_urls: Vec::new(),
+            rpc_rps: Vec::new(),
             flash_loan_provider: default_flash_loan_provider(),
             strategies: default_strategies(),
             gas_model: default_gas_model(),
@@ -502,12 +512,68 @@ impl Config {
         Config::default()
     }
 
-    /// Resolved RPC URL list: only the user-provided override, or error if none.
+    /// Resolved RPC URL list: user override(s) first, then public fallbacks for known chains.
+    ///
+    /// Returns URLs from `rpc_urls` first, then `rpc_url` (legacy single), then public endpoints.
+    /// Errors only if no RPC source is available (no user URL and unknown chain).
     pub fn effective_rpc_urls(&self) -> anyhow::Result<Vec<String>> {
-        match &self.rpc_url {
-            Some(custom) => Ok(vec![custom.clone()]),
-            None => Err(anyhow::anyhow!("No RPC URL provided. Use --rpc <URL> or set rpc_url in config.")),
+        let mut urls = self.rpc_urls.clone();
+        if let Some(single) = &self.rpc_url {
+            if !urls.iter().any(|u| u == single) {
+                urls.push(single.clone());
+            }
         }
+        if urls.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config."
+            ));
+        }
+        Ok(urls)
+    }
+
+    /// Build full provider configs by merging user-supplied URLs with public fallbacks.
+    ///
+    /// Returns `Vec<(String, Option<f64>)>` — URL and optional per-provider RPS limit.
+    /// When `rpc_rps` has matching entries, those are used; otherwise defaults from
+    /// `ChainName::public_rpc_endpoints()` are used for public endpoints.
+    pub fn effective_provider_configs(&self, chain_name: crate::types::ChainName) -> anyhow::Result<Vec<(String, Option<f64>)>> {
+        let urls = self.effective_rpc_urls()?;
+        let public_endpoints = chain_name.public_rpc_endpoints();
+
+        let result: Vec<(String, Option<f64>)> = urls
+            .into_iter()
+            .enumerate()
+            .map(|(i, url)| {
+                let rps = self.rpc_rps.get(i).copied();
+                if rps.is_some() {
+                    return (url, rps);
+                }
+                // Look up default RPS from public endpoints metadata
+                let default_rps = public_endpoints
+                    .iter()
+                    .find(|e| url.contains(e.url) || e.url.contains(&url))
+                    .map(|e| e.default_rps);
+                (url, default_rps)
+            })
+            .collect();
+        Ok(result)
+    }
+
+    /// Return only the user-specified RPC URLs (no public fallbacks), for backward compat.
+    /// Errors if no user URL is provided.
+    pub fn user_rpc_urls(&self) -> anyhow::Result<Vec<String>> {
+        let mut urls = self.rpc_urls.clone();
+        if let Some(single) = &self.rpc_url {
+            if !urls.iter().any(|u| u == single) {
+                urls.push(single.clone());
+            }
+        }
+        if urls.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config."
+            ));
+        }
+        Ok(urls)
     }
 
     pub fn to_toml_string(&self) -> anyhow::Result<String> {
@@ -571,6 +637,8 @@ pub struct CliOverrides {
     pub to_block: Option<u64>,
     pub chain: Option<String>,
     pub rpc_url: Option<String>,
+    pub rpc_urls: Option<Vec<String>>,
+    pub rpc_rps: Option<Vec<f64>>,
     pub rpc_workers: Option<usize>,
     pub rps_limit: Option<f64>,
     pub flash_loan_provider: Option<String>,
@@ -615,6 +683,12 @@ impl Config {
         }
         if let Some(v) = &overrides.rpc_url {
             self.rpc_url = Some(v.clone());
+        }
+        if let Some(v) = &overrides.rpc_urls {
+            self.rpc_urls = v.clone();
+        }
+        if let Some(v) = &overrides.rpc_rps {
+            self.rpc_rps = v.clone();
         }
         if let Some(v) = &overrides.flash_loan_provider {
             self.flash_loan_provider = v.clone();
@@ -735,7 +809,44 @@ mod tests {
     #[test]
     fn test_effective_rpc_urls_errors_without_override() {
         let cfg = Config::default();
+        // No rpc_url, no rpc_urls set — should error
         assert!(cfg.effective_rpc_urls().is_err());
+    }
+
+    #[test]
+    fn test_effective_rpc_urls_with_rpc_urls_field() {
+        let cfg = Config {
+            rpc_urls: vec!["https://a.io".into(), "https://b.io".into()],
+            ..Config::default()
+        };
+        let result = cfg.effective_rpc_urls().unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0], "https://a.io");
+        assert_eq!(result[1], "https://b.io");
+    }
+
+    #[test]
+    fn test_effective_rpc_urls_deduplicates() {
+        let cfg = Config {
+            rpc_urls: vec!["https://a.io".into()],
+            rpc_url: Some("https://a.io".into()),
+            ..Config::default()
+        };
+        let result = cfg.effective_rpc_urls().unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_effective_provider_configs_with_rps() {
+        let cfg = Config {
+            rpc_urls: vec!["https://a.io".into(), "https://b.io".into()],
+            rpc_rps: vec![5.0, 10.0],
+            ..Config::default()
+        };
+        let result = cfg.effective_provider_configs(crate::types::ChainName::Polygon).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1, Some(5.0));
+        assert_eq!(result[1].1, Some(10.0));
     }
 
     #[test]
@@ -781,6 +892,8 @@ rpc_url = "https://eth.diy"
             from_block: None, to_block: None,
             chain: Some("ethereum".into()),
             rpc_url: Some("https://custom".into()),
+            rpc_urls: None,
+            rpc_rps: None,
             rpc_workers: None,
             rps_limit: None,
             flash_loan_provider: Some("aave".into()),
@@ -824,7 +937,8 @@ rpc_url = "https://eth.diy"
         let overrides = CliOverrides {
             days: Some(7),
             blocks: None, block: None, from_block: None, to_block: None,
-            chain: None, rpc_url: None, rpc_workers: None,
+            chain: None, rpc_url: None, rpc_urls: None, rpc_rps: None,
+            rpc_workers: None,
             rps_limit: None,
             flash_loan_provider: None, strategies: None,
             gas_model: None, gas_limit: None, priority_fee_gwei: None,

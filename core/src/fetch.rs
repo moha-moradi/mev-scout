@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -51,7 +52,7 @@ impl FetchTiming {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FetchSummary {
     pub total_blocks: u64,
     pub fetched: u64,
@@ -152,70 +153,94 @@ impl Fetcher {
         Ok(())
     }
 
+    /// Fetch all blocks in the range, distributing work across providers.
+    ///
+    /// Uses `RpcClient::distribute_blocks()` to shard the range by provider weight.
+    /// Each shard runs with its own concurrency semaphore. Results are merged into
+    /// a single `FetchSummary`.
     pub async fn fetch_range<F: Fn() + Sync>(
         &self,
         range: &ResolvedRange,
-        progress: Option<&F>,
+        _progress: Option<&F>,
     ) -> anyhow::Result<FetchSummary> {
         let start = Instant::now();
         let cap = self.parallelism.min(50);
-        let semaphore = Arc::new(Semaphore::new(cap));
 
-        let mut summary = FetchSummary {
+        let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {
             total_blocks: range.block_count,
             ..Default::default()
-        };
+        }));
 
-        // Process blocks using semaphore-based concurrency
-        let timing = self.timing.clone();
-        let mut tasks = Vec::new();
-        for block_num in range.start_block..=range.end_block {
-            let sem = semaphore.clone();
-            let t = timing.clone();
-            tasks.push(async move {
-                let _permit = sem.acquire_owned().await?;
-                self.fetch_one_block(block_num, t).await
-            });
-        }
+        // Distribute block range across providers
+        let shards = self.rpc.distribute_blocks(range.start_block, range.end_block).await;
 
-        let results: Vec<bool> = try_join_all(tasks).await?;
-        for fetched in results {
-            if fetched {
-                summary.fetched += 1;
+        let mut shard_handles = Vec::new();
+        for (_provider_idx, blocks) in &shards {
+            if blocks.is_empty() {
+                continue;
+            }
+
+            // Allocate semaphore capacity proportional to provider weight
+            let total_weight: f64 = shards.iter().map(|(_, b)| b.len() as f64).sum();
+            let shard_cap = if total_weight > 0.0 {
+                ((blocks.len() as f64 / total_weight) * cap as f64).ceil().max(1.0) as usize
             } else {
-                summary.cached += 1;
-            }
-            if let Some(tick) = progress {
-                tick();
+                1
+            };
+            let semaphore = Arc::new(Semaphore::new(shard_cap.min(cap)));
+
+            let timing = self.timing.clone();
+            let fetch = self as *const Self; // safe: &self outlives tasks
+
+            for &block_num in blocks {
+                let sem = semaphore.clone();
+                let t = timing.clone();
+                let summary_clone = summary.clone();
+                shard_handles.push(async move {
+                    let _permit = sem.acquire_owned().await?;
+                    let fetched = unsafe { &*fetch }.fetch_one_block(block_num, t).await?;
+                    let mut s = summary_clone.lock().await;
+                    if fetched {
+                        s.fetched += 1;
+                    } else {
+                        s.cached += 1;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                });
             }
         }
+
+        try_join_all(shard_handles).await.map_err(|e| {
+            tracing::warn!("Block fetch task failed: {e:#}");
+            e
+        })?;
 
         // Flush any remaining buffered writes, then write Parquet
         self.flush_write_buf()?;
         self.flush_parquet(range.start_block, range.end_block)?;
 
         // Integrity check
-        let t_check = Instant::now();
-        summary.missing_after_fetch = self
+        let missing = self
             .cache
             .check_integrity(range.start_block, range.end_block)?;
-        let check_ms = t_check.elapsed().as_secs_f64() * 1000.0;
 
         let t_flush = Instant::now();
         self.cache.flush()?;
         let flush_ms = t_flush.elapsed().as_secs_f64() * 1000.0;
 
-        summary.elapsed_secs = start.elapsed().as_secs_f64();
+        let mut final_summary = summary.lock().await.deref().clone();
+        final_summary.missing_after_fetch = missing;
+        final_summary.elapsed_secs = start.elapsed().as_secs_f64();
         if let Ok(t) = self.timing.lock() {
-            summary.timing = t.clone();
+            final_summary.timing = t.clone();
         }
         tracing::info!(
-            "fetch_range: {} blocks ({}/{}) check_integrity={:.1}ms flush={:.1}ms total={:.1}s | {}",
-            summary.total_blocks, summary.fetched, summary.cached,
-            check_ms, flush_ms, summary.elapsed_secs,
-            summary.timing.summary(),
+            "fetch_range: {} blocks ({}/{}) flush={:.1}ms total={:.1}s | {}",
+            final_summary.total_blocks, final_summary.fetched, final_summary.cached,
+            flush_ms, final_summary.elapsed_secs,
+            final_summary.timing.summary(),
         );
-        Ok(summary)
+        Ok(final_summary)
     }
 
     fn flush_write_buf(&self) -> anyhow::Result<()> {

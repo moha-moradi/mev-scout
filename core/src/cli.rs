@@ -92,6 +92,16 @@ pub struct ChainArgs {
     #[arg(long = "rps-limit", default_value = "500", value_name = "RPS")]
     pub rps_limit: f64,
 
+    /// Additional RPC URLs for multi-provider load distribution (comma-separated).
+    /// Each URL is used alongside --rpc for concurrent block fetching.
+    #[arg(long = "rpc-urls", value_name = "URLS", value_delimiter = ',')]
+    pub rpc_urls: Option<Vec<String>>,
+
+    /// Per-provider RPS limits, one per entry in the combined URL list (comma-separated).
+    /// Maps 1:1 in order: --rpc (first), then --rpc-urls entries, then public fallbacks.
+    #[arg(long = "rpc-rps", value_name = "RPS", value_delimiter = ',')]
+    pub rpc_rps: Option<Vec<f64>>,
+
     /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
     #[arg(long = "no-batch-rpc")]
     pub no_batch_rpc: bool,

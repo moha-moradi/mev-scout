@@ -60,14 +60,22 @@ fn resolve_chain(config: &Config) -> Result<(ChainName, ChainConfig), Validation
 fn validate_rpc_url(url: &str) -> Result<(), ValidationError> {
     if url.trim().is_empty() {
         return Err(ValidationError::Message(
-            "Error: --rpc URL cannot be empty.".to_string(),
+            "Error: RPC URL cannot be empty.".to_string(),
         ));
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ValidationError::Message(format!(
-            "Error: --rpc URL '{}' must start with http:// or https://.",
+            "Error: RPC URL '{}' must start with http:// or https://.",
             url
         )));
+    }
+    Ok(())
+}
+
+/// Validate all RPC URLs in a list. Returns error on the first invalid URL.
+pub fn validate_rpc_urls(urls: &[String]) -> Result<(), ValidationError> {
+    for url in urls {
+        validate_rpc_url(url)?;
     }
     Ok(())
 }
@@ -267,9 +275,12 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> Resu
     // 4. Validate block range
     let range_mode = check_range_conflicts(config)?;
 
-    // 5. Validate RPC URL
+    // 5. Validate all RPC URLs (single + multi)
     if let Some(url) = &config.rpc_url {
         validate_rpc_url(url)?;
+    }
+    if !config.rpc_urls.is_empty() {
+        validate_rpc_urls(&config.rpc_urls)?;
     }
 
     // 7. Validate gas model

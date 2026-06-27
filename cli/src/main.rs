@@ -50,6 +50,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: args.block_range.to_block,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_urls: args.chain_args.rpc_urls.clone(),
+            rpc_rps: args.chain_args.rpc_rps.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
             rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: Some(args.flash_loan_provider.clone()),
@@ -79,6 +81,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: args.block_range.to_block,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_urls: args.chain_args.rpc_urls.clone(),
+            rpc_rps: args.chain_args.rpc_rps.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
             rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
@@ -108,6 +112,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_urls: args.chain_args.rpc_urls.clone(),
+            rpc_rps: args.chain_args.rpc_rps.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
             rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
@@ -137,6 +143,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_urls: None,
+            rpc_rps: None,
             rpc_workers: None,
             rps_limit: None,
             flash_loan_provider: None,
@@ -166,6 +174,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_urls: None,
+            rpc_rps: None,
             rpc_workers: None,
             rps_limit: None,
             flash_loan_provider: None,
@@ -195,6 +205,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: Some(args.to_block),
             chain: Some(args.chain_args.chain.clone()),
             rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_urls: args.chain_args.rpc_urls.clone(),
+            rpc_rps: args.chain_args.rpc_rps.clone(),
             rpc_workers: Some(args.chain_args.rpc_workers),
             rps_limit: Some(args.chain_args.rps_limit),
             flash_loan_provider: None,
@@ -224,6 +236,8 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             to_block: None,
             chain: None,
             rpc_url: None,
+            rpc_urls: None,
+            rpc_rps: None,
             rpc_workers: None,
             rps_limit: None,
             flash_loan_provider: None,
@@ -445,12 +459,10 @@ async fn main() -> anyhow::Result<()> {
             };
             print_startup_plan(&validation_result, &config);
 
-            let rpc_urls_owned = config.effective_rpc_urls()?;
-            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
-            let mut rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
-            if config.rps_limit > 0.0 {
-                rpc = rpc.with_rate_limit(config.rps_limit);
-            }
+            let provider_configs = config.effective_provider_configs(validation_result.chain_name)?;
+            let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+            let rpc = RpcClient::from_urls(&rpc_refs, validation_result.chain_config.chain_id)?;
+            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
             rpc.check_connection(validation_result.chain_config.chain_id).await?;
             let cache = SqliteStore::open(&config.db_path, validation_result.chain_config.chain_id)?;
 
@@ -823,10 +835,8 @@ async fn main() -> anyhow::Result<()> {
             if args.fact_check && !all_opportunities.is_empty() {
                 println!("\nFact-Check Report ({}):", fact_check_mode);
                 let checks = if args.evm_fact_check {
-                    let mut rpc = RpcClient::from_urls(&rpc_urls, validation_result.chain_config.chain_id)?;
-                    if config.rps_limit > 0.0 {
-                        rpc = rpc.with_rate_limit(config.rps_limit);
-                    }
+                    let rpc = RpcClient::from_urls(&rpc_refs, validation_result.chain_config.chain_id)?;
+                    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
                     verify_opportunities_from_chain(&all_opportunities, &runner.pool_manager, &rpc).await
                 } else {
                     verify_opportunities(&all_opportunities, Some(&runner.pool_manager))
@@ -868,23 +878,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let mut rpc_urls: Vec<&str> = Vec::new();
-            match &args.chain_args.rpc_url {
-                Some(url) if !url.trim().is_empty() && (url.starts_with("http://") || url.starts_with("https://")) => {
-                    rpc_urls.push(url.as_str());
-                    rpc_urls.extend(chain_name.public_rpc_urls().iter().copied());
-                }
-                Some(url) => {
-                    eprintln!("Error: --rpc URL '{}' must be non-empty and start with http:// or https://.", url);
-                    std::process::exit(1);
-                }
-                None => {
-                    rpc_urls.extend(chain_name.public_rpc_urls().iter().copied());
-                }
-            };
-
+            let provider_configs = config.effective_provider_configs(chain_name)?;
             let chain_id = chain_name.chain_id();
-            let rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
+            let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+            let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
+            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
             rpc.check_connection(chain_id).await?;
 
             let cache = SqliteStore::open(&config.db_path, chain_id)?;
@@ -1072,12 +1070,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            let rpc_urls_owned = config.effective_rpc_urls()?;
-            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
-            let mut rpc = RpcClient::from_urls(&rpc_urls, chain_config.chain_id)?;
-            if config.rps_limit > 0.0 {
-                rpc = rpc.with_rate_limit(config.rps_limit);
-            }
+            let provider_configs = config.effective_provider_configs(chain_name)?;
+            let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+            let rpc = RpcClient::from_urls(&rpc_refs, chain_config.chain_id)?;
+            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
             rpc.check_connection(chain_config.chain_id).await?;
             let cache = SqliteStore::open(&config.db_path, chain_config.chain_id)?;
 
@@ -1224,12 +1220,10 @@ async fn main() -> anyhow::Result<()> {
             };
             let chain_config = config.chains.get(&args.chain_args.chain);
             let chain_id = chain_name.chain_id();
-            let rpc_urls_owned = config.effective_rpc_urls()?;
-            let rpc_urls: Vec<&str> = rpc_urls_owned.iter().map(String::as_str).collect();
-            let mut rpc = RpcClient::from_urls(&rpc_urls, chain_id)?;
-            if config.rps_limit > 0.0 {
-                rpc = rpc.with_rate_limit(config.rps_limit);
-            }
+            let provider_configs = config.effective_provider_configs(chain_name)?;
+            let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+            let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
+            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
             rpc.check_connection(chain_id).await?;
 
             let from = args.from_block;

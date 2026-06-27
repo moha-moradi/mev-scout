@@ -30,6 +30,9 @@ csv = "1"
 arrow = { version = "59", default-features = false, features = ["ipc"] }
 parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
 
+# Random selection for weighted provider pick
+rand = "0.9"
+
 # EVM state replay
 revm = "40.0.3"
 reqwest = { version = "0.12", features = ["json"] }
