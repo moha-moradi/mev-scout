@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use alloy::primitives::{address, Address, U256};
-use mev_scout_core::aggregate::{aggregate, DexMeta};
 use mev_scout_core::cache::SqliteStore;
-use mev_scout_core::fact_check::verify_opportunities;
 use mev_scout_core::fetch::Fetcher;
-use mev_scout_core::mev::opportunity::MevOpportunity;
-use mev_scout_core::mev::two_hop::TwoHopArbDetector;
+use mev_scout_core::pipeline::{self, DexMeta};
+use mev_scout_core::types::MevOpportunity;
+use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
+use mev_scout_core::mev::verify::fact_check::verify_opportunities;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::discovery::discover_pools;
 use mev_scout_core::pool::state::{
@@ -469,7 +469,7 @@ async fn test_e2e_detection_aggregation_factcheck() {
             pool_addresses: vec![sushi_wmatic_usdt()],
         },
     ];
-    let result = aggregate(&opps, &dexes, 0.0);
+    let result = pipeline::aggregate::aggregate(&opps, &dexes, 0.0);
     eprintln!("  Aggregate: {} total, {} profitable, net={}",
         result.summary.total,
         result.summary.profitable,
@@ -483,7 +483,7 @@ async fn test_e2e_detection_aggregation_factcheck() {
     assert_eq!(fact_checks.len(), opps.len());
 
     let matched = fact_checks.iter().filter(|fc| {
-        matches!(fc.recomputation_accuracy, mev_scout_core::fact_check::RecomputationAccuracy::Match)
+        matches!(fc.recomputation_accuracy, mev_scout_core::mev::verify::fact_check::RecomputationAccuracy::Match)
     }).count();
     eprintln!("  Fact-check matches: {}/{}", matched, fact_checks.len());
 }

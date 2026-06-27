@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::error;
 use crate::rpc::RpcClient;
 use crate::types::RangeMode;
 
@@ -44,7 +45,7 @@ impl RangeResolver {
         &self.rpc
     }
 
-    pub async fn resolve(&self, mode: &RangeMode) -> anyhow::Result<ResolvedRange> {
+    pub async fn resolve(&self, mode: &RangeMode) -> error::Result<ResolvedRange> {
         match mode {
             RangeMode::Days(n) => self.resolve_days(*n).await,
             RangeMode::Blocks(n) => self.resolve_blocks(*n).await,
@@ -63,7 +64,7 @@ impl RangeResolver {
         }
     }
 
-    async fn resolve_days(&self, days: u64) -> anyhow::Result<ResolvedRange> {
+    async fn resolve_days(&self, days: u64) -> error::Result<ResolvedRange> {
         let tip = self.rpc.get_block_number().await?;
         let now = Utc::now().timestamp() as u64;
         let target_ts = now - days * 86400;
@@ -102,7 +103,7 @@ impl RangeResolver {
         })
     }
 
-    async fn resolve_blocks(&self, blocks: u64) -> anyhow::Result<ResolvedRange> {
+    async fn resolve_blocks(&self, blocks: u64) -> error::Result<ResolvedRange> {
         let tip = self.rpc.get_block_number().await?;
         let start = if blocks > tip { 0 } else { tip - blocks + 1 };
 
@@ -126,7 +127,7 @@ impl RangeResolver {
         target_ts: u64,
         mut lo: u64,
         mut hi: u64,
-    ) -> anyhow::Result<u64> {
+    ) -> error::Result<u64> {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let ts = self.rpc.get_block_timestamp(mid).await?;

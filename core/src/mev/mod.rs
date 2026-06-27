@@ -1,14 +1,9 @@
 //! MEV detection strategies: JIT liquidity, sandwich attacks, arbitrage (two-hop, multi-hop, JIT arb),
 //! and PGA simulation for competition-adjusted profit estimates.
 
-pub mod block_builder;
-pub mod cross_block;
-pub mod jit;
-pub mod jit_arb;
-pub mod liquidation;
-pub mod mempool;
-pub mod sandwich;
-pub mod multi_hop;
-pub mod opportunity;
-pub mod two_hop;
-pub mod pga;
+pub mod detectors;
+pub mod execution;
+pub mod verify;
+pub use detectors::*;
+pub use execution::*;
+pub use verify::*;

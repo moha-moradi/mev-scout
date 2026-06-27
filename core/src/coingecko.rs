@@ -211,7 +211,7 @@ impl PriceCache {
     }
 
     /// Execute the HTTP request to CoinGecko for native token price.
-    async fn fetch_native_price(&self, asset_id: &str) -> Result<f64, anyhow::Error> {
+    async fn fetch_native_price(&self, asset_id: &str) -> anyhow::Result<f64> {
         let url = format!(
             "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
             asset_id
@@ -236,7 +236,7 @@ impl PriceCache {
     }
 
     /// Execute the HTTP request to CoinGecko for an ERC20 token price.
-    async fn fetch_token_price(&self, chain: ChainName, token_hex: &str) -> Result<f64, anyhow::Error> {
+    async fn fetch_token_price(&self, chain: ChainName, token_hex: &str) -> anyhow::Result<f64> {
         let platform = coingecko_platform(chain);
         let url = format!(
             "https://api.coingecko.com/api/v3/simple/token_price/{}?contract_addresses={}&vs_currencies=usd",

@@ -19,7 +19,7 @@ use crate::cache::SqliteStore;
 use crate::pool::dex_type::DexType;
 use crate::pool::state::PoolInfo;
 use crate::rpc::RpcClient;
-use crate::scan::topics;
+use crate::pipeline::topics;
 
 pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,address,uint256)")
