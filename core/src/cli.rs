@@ -46,6 +46,9 @@ pub enum Command {
     /// Verify a previous run's results
     FactCheck(FactCheckArgs),
 
+    /// Live mode — connect to the live chain and run as a virtual MEV bot
+    Live(LiveArgs),
+
 }
 
 #[derive(Args, Debug, Clone)]
@@ -268,6 +271,68 @@ pub struct ReportArgs {
     pub export_path: String,
 }
 
+
+#[derive(Args, Debug, Clone)]
+pub struct LiveArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Starting virtual balance in native token (e.g., 10.0 ETH)
+    #[arg(long = "initial-balance", default_value = "10.0", value_name = "AMOUNT", help_heading = "Wallet")]
+    pub initial_balance: f64,
+
+    /// Minimum profit in native token to execute a virtual trade
+    #[arg(long = "min-profit", default_value = "0.001", value_name = "AMOUNT", help_heading = "Wallet")]
+    pub min_profit: f64,
+
+    /// How often (ms) to poll the mempool
+    #[arg(long = "poll-interval", default_value_t = 1000, value_name = "MS", help_heading = "Mempool")]
+    pub poll_interval: u64,
+
+    /// Maximum number of virtual executions before auto-stop (default: unlimited)
+    #[arg(long = "max-executions", value_name = "N", help_heading = "Wallet")]
+    pub max_executions: Option<u64>,
+
+    /// Detection strategies (comma-separated)
+    #[arg(long, default_value = "two_hop_arb,multi_hop_arb", value_name = "LIST", help_heading = "Strategies")]
+    pub strategies: String,
+
+    /// Gas limit per virtual trade
+    #[arg(long = "gas-limit", default_value_t = 200_000, value_name = "GAS", help_heading = "Gas Model")]
+    pub gas_limit: u64,
+
+    /// Priority fee in gwei
+    #[arg(long = "priority-fee", default_value_t = 1.0, value_name = "GWEI", help_heading = "Gas Model")]
+    pub priority_fee: f64,
+
+    /// Gas model: live (fetch from chain) or fixed (use --priority-fee only)
+    #[arg(long = "gas-model", default_value = "live", value_name = "MODEL", help_heading = "Gas Model")]
+    pub gas_model: String,
+
+    /// Number of poll cycles between full pool state resyncs
+    #[arg(long = "resync-interval", default_value_t = 60, value_name = "N", help_heading = "Mempool")]
+    pub resync_interval: u64,
+
+    /// Price oracle mode: coingecko, onchain, or hybrid (only used for dashboard)
+    #[arg(long = "price-oracle", default_value = "coingecko", value_name = "MODE", help_heading = "Pricing")]
+    pub price_oracle_mode: String,
+
+    /// Per-token USD prices (only used for dashboard)
+    #[arg(long = "token-price", value_name = "PAIRS", help_heading = "Pricing")]
+    pub token_prices: Option<String>,
+
+    /// Output directory for execution logs
+    #[arg(long = "export-path", default_value = "./results", value_name = "PATH", help_heading = "Output")]
+    pub export_path: String,
+
+    /// Path to a recorded pending-tx JSON file for offline replay (disables live RPC polling)
+    #[arg(long = "replay-file", value_name = "PATH", help_heading = "Mempool")]
+    pub replay_file: Option<String>,
+
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
+    pub db_path: Option<String>,
+}
 
 #[derive(Args, Debug, Clone)]
 pub struct DiscoverArgs {

@@ -436,6 +436,12 @@ pub enum GasModel {
     /// uses the 90th percentile from recent blocks' effective gas prices.
     #[serde(rename = "distribution")]
     Distribution(u8),
+    /// Live mode — fetches base fee and priority fee from the chain in real-time.
+    /// Uses `eth_gasPrice` (or base fee from the pending block) and
+    /// `eth_maxPriorityFeePerGas` to build a realistic gas price estimate.
+    /// No historical distribution is used.
+    #[serde(rename = "live")]
+    Live,
 }
 
 impl fmt::Display for GasModel {
@@ -445,6 +451,7 @@ impl fmt::Display for GasModel {
             GasModel::P90 => write!(f, "p90"),
             GasModel::Fixed => write!(f, "fixed"),
             GasModel::Distribution(p) => write!(f, "distribution_{p}"),
+            GasModel::Live => write!(f, "live"),
         }
     }
 }
@@ -458,6 +465,7 @@ impl FromStr for GasModel {
             "historical_exact" => Ok(GasModel::HistoricalExact),
             "p90" => Ok(GasModel::P90),
             "fixed" => Ok(GasModel::Fixed),
+            "live" => Ok(GasModel::Live),
             _ => {
                 if let Some(rest) = lower.strip_prefix("distribution_") {
                     if let Ok(p) = rest.parse::<u8>() {
@@ -474,7 +482,7 @@ impl FromStr for GasModel {
                     }
                 }
                 Err(format!(
-                    "unknown gas model '{s}'. Supported: historical_exact, p90, fixed, distribution_N (1-99)"
+                    "unknown gas model '{s}'. Supported: historical_exact, p90, fixed, live, distribution_N (1-99)"
                 ))
             }
         }
@@ -489,6 +497,7 @@ impl GasModel {
         match self {
             GasModel::P90 => Some(90),
             GasModel::Distribution(p) => Some(*p),
+            GasModel::Live => None,
             _ => None,
         }
     }
@@ -548,6 +557,7 @@ impl GasConfig {
                     })
                     .saturating_add(pf_wei)
             }
+            GasModel::Live => base_fee_per_gas.saturating_add(pf_wei),
         };
         (gas_limit as u128).saturating_mul(effective_price)
     }

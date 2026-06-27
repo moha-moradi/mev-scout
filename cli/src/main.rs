@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::{keccak256, Address};
+use alloy::primitives::{keccak256, Address, U256};
 use clap::Parser;
 use comfy_table::Table;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -21,7 +21,7 @@ use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::mev::opportunity::ResultsFile;
 
 use mev_scout_core::run::BacktestRunner;
-use mev_scout_core::types::{GasConfig, OutputFormat};
+use mev_scout_core::types::{GasConfig, OutputFormat, Strategy};
 use mev_scout_core::validation;
 
 fn setup_logging(verbose: bool, quiet: bool) {
@@ -72,6 +72,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: Some(args.proximity_window),
             capture_pending: Some(args.capture_pending),
             cross_block_window: Some(args.cross_block_window),
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
         Command::Fetch(args) => CliOverrides {
             days: args.block_range.days,
@@ -103,6 +107,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
         Command::Replay(args) => CliOverrides {
             days: None,
@@ -134,6 +142,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
         Command::Report(_args) => CliOverrides {
             days: None,
@@ -165,6 +177,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
         Command::Config => CliOverrides {
             days: None,
@@ -196,6 +212,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
         Command::Discover(args) => CliOverrides {
             days: None,
@@ -227,6 +247,45 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
+        },
+        Command::Live(args) => CliOverrides {
+            days: None,
+            blocks: None,
+            block: None,
+            from_block: None,
+            to_block: None,
+            chain: Some(args.chain_args.chain.clone()),
+            rpc_url: args.chain_args.rpc_url.clone(),
+            rpc_urls: args.chain_args.rpc_urls.clone(),
+            rpc_rps: args.chain_args.rpc_rps.clone(),
+            rpc_workers: Some(args.chain_args.rpc_workers),
+            rps_limit: Some(args.chain_args.rps_limit),
+            flash_loan_provider: None,
+            strategies: Some(args.strategies.clone()),
+            gas_model: Some(args.gas_model.clone()),
+            gas_limit: Some(args.gas_limit),
+            priority_fee_gwei: Some(args.priority_fee),
+            output: Some("json".to_string()),
+            export_path: Some(args.export_path.clone()),
+            db_path: args.db_path.clone(),
+            parquet_dir: None,
+            coingecko_api_key: None,
+            pga_enabled: None,
+            pga_mean_competitors: None,
+            pga_intensity: None,
+            price_oracle_mode: Some(args.price_oracle_mode.clone()),
+            token_prices: args.token_prices.clone(),
+            proximity_window: None,
+            capture_pending: None,
+            cross_block_window: None,
+            initial_balance: Some(args.initial_balance),
+            min_profit_threshold: Some(args.min_profit),
+            poll_interval_ms: Some(args.poll_interval),
+            max_executions: args.max_executions,
         },
         Command::FactCheck(_) => CliOverrides {
             days: None,
@@ -258,6 +317,10 @@ fn build_overrides(cli: &Cli) -> CliOverrides {
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         },
     }
 }
@@ -1378,6 +1441,140 @@ async fn main() -> anyhow::Result<()> {
                 let _ = std::fs::write(&report_path, json);
                 println!("  Report saved to {}", report_path.display());
             }
+        }
+        Command::Live(args) => {
+            use mev_scout_core::live::{LiveConfig, LiveRunner};
+            use mev_scout_core::types::GasModel;
+
+            let chain_name: mev_scout_core::types::ChainName = match args.chain_args.chain.parse() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let provider_configs = config.effective_provider_configs(chain_name)?;
+            let chain_id = chain_name.chain_id();
+            let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+            let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
+            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
+            rpc.check_connection(chain_id).await?;
+
+            let cache = SqliteStore::open(&config.db_path, chain_id)?;
+
+            // Resolve strategies
+            let strategies = Strategy::from_comma_list(&args.strategies)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error parsing strategies: {e}");
+                    std::process::exit(1);
+                });
+
+            // Resolve gas model
+            let gas_model: GasModel = args.gas_model.parse().unwrap_or(GasModel::Live);
+
+            // Build gas config
+            let gas_config = GasConfig {
+                gas_limit: args.gas_limit,
+                gas_model,
+                priority_fee_gwei: args.priority_fee,
+                ..GasConfig::default()
+            };
+
+            // Init pool manager
+            let mut pool_manager = PoolManager::new();
+            if let Some(vault_str) = config.chains.get(&chain_name.to_string())
+                .and_then(|c| c.balancer_vault.as_ref())
+            {
+                if let Ok(vault_addr) = vault_str.parse::<Address>() {
+                    pool_manager = pool_manager.with_balancer_vault(vault_addr);
+                }
+            }
+            if let Some(native_str) = config.chains.get(&chain_name.to_string())
+                .and_then(|c| c.wrapped_native_token.as_ref())
+            {
+                if let Ok(native_addr) = native_str.parse::<Address>() {
+                    pool_manager = pool_manager.with_wrapped_native(native_addr);
+                }
+            }
+
+            // Fetch latest block for initialization
+            let latest_block = rpc.get_block_number().await.unwrap_or(0);
+            let init_block = latest_block.saturating_sub(1);
+
+            if !strategies.is_empty() {
+                BacktestRunner::init_pools(
+                    &mut pool_manager,
+                    &rpc,
+                    init_block,
+                    Some(&cache),
+                ).await;
+            }
+
+            // Build replayer
+            let replayer = BlockReplayer::new(
+                tokio::runtime::Handle::current(),
+                cache.clone(),
+                rpc.clone(),
+                chain_id,
+            );
+
+            // Build backtest runner
+            let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
+            if strategies.contains(&Strategy::CrossBlockArb) || strategies.contains(&Strategy::TimeBandit) {
+                runner = runner.with_cross_block(3);
+            }
+
+            // Set pool_manager back after runner construction
+            let pool_manager = std::mem::take(&mut runner.pool_manager);
+
+            // Build live config
+            let initial_balance_wei = U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
+            let min_profit_wei = U256::from((config.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
+
+            let live_config = LiveConfig {
+                initial_balance_wei,
+                min_profit_threshold_wei: min_profit_wei,
+                poll_interval_ms: config.poll_interval_ms,
+                max_executions: config.max_executions,
+                strategies: strategies.clone(),
+                gas_config,
+                resync_interval: args.resync_interval,
+                export_path: config.export_path.clone(),
+                replay_file: args.replay_file.clone(),
+            };
+
+            // Create live runner
+            let block_replayer = BlockReplayer::new(
+                tokio::runtime::Handle::current(),
+                cache.clone(),
+                rpc.clone(),
+                chain_id,
+            );
+
+            let mut live_runner = LiveRunner::new(
+                live_config,
+                rpc,
+                cache,
+                pool_manager,
+                runner,
+                block_replayer,
+                chain_id,
+            ).await;
+
+            // Set up signal handling for graceful shutdown
+            let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+            // Handle Ctrl+C
+            let cancel_on_signal = cancel_tx.clone();
+            tokio::spawn(async move {
+                tokio::signal::ctrl_c().await.ok();
+                tracing::info!("Ctrl+C received, shutting down live mode...");
+                let _ = cancel_on_signal.send(true);
+            });
+
+            // Run live mode
+            live_runner.run(cancel_rx).await?;
         }
     }
 

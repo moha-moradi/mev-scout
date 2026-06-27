@@ -162,7 +162,25 @@ pub struct Config {
     /// When > 1, tracks pool price snapshots across consecutive blocks.
     #[serde(default)]
     pub cross_block_window: usize,
+
+    // ── Live mode fields ──────────────────────────────────────────────
+    /// Starting virtual balance (native token, e.g. 10.0 ETH).
+    #[serde(default = "default_initial_balance")]
+    pub initial_balance: f64,
+    /// Minimum profit threshold (native token) to execute a virtual trade.
+    #[serde(default = "default_min_profit_threshold")]
+    pub min_profit_threshold: f64,
+    /// Mempool poll interval in milliseconds.
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    /// Optional cap on virtual executions (None = unlimited).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_executions: Option<u64>,
 }
+
+fn default_initial_balance() -> f64 { 10.0 }
+fn default_min_profit_threshold() -> f64 { 0.001 }
+fn default_poll_interval_ms() -> u64 { 1000 }
 
 fn default_rps_limit() -> f64 { 500.0 }
 fn default_pga_mean_competitors() -> f64 { 3.0 }
@@ -246,6 +264,10 @@ impl Default for Config {
             proximity_window: default_proximity_window(),
             capture_pending: false,
             cross_block_window: 0,
+            initial_balance: default_initial_balance(),
+            min_profit_threshold: default_min_profit_threshold(),
+            poll_interval_ms: default_poll_interval_ms(),
+            max_executions: None,
         }
     }
 }
@@ -659,6 +681,12 @@ pub struct CliOverrides {
     pub proximity_window: Option<usize>,
     pub capture_pending: Option<bool>,
     pub cross_block_window: Option<usize>,
+
+    // ── Live mode overrides ───────────────────────────────────────────
+    pub initial_balance: Option<f64>,
+    pub min_profit_threshold: Option<f64>,
+    pub poll_interval_ms: Option<u64>,
+    pub max_executions: Option<u64>,
 }
 
 impl Config {
@@ -749,6 +777,18 @@ impl Config {
         }
         if let Some(v) = overrides.cross_block_window {
             self.cross_block_window = v;
+        }
+        if let Some(v) = overrides.initial_balance {
+            self.initial_balance = v;
+        }
+        if let Some(v) = overrides.min_profit_threshold {
+            self.min_profit_threshold = v;
+        }
+        if let Some(v) = overrides.poll_interval_ms {
+            self.poll_interval_ms = v;
+        }
+        if let Some(v) = overrides.max_executions {
+            self.max_executions = Some(v);
         }
     }
 
@@ -914,6 +954,10 @@ rpc_url = "https://eth.diy"
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -952,6 +996,10 @@ rpc_url = "https://eth.diy"
             proximity_window: None,
             capture_pending: None,
             cross_block_window: None,
+            initial_balance: None,
+            min_profit_threshold: None,
+            poll_interval_ms: None,
+            max_executions: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));

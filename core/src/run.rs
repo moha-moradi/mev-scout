@@ -43,6 +43,7 @@ pub struct BacktestRunner {
     capture_pending: bool,
     cross_block_window: usize,
     cross_block_detector: Option<CrossBlockDetector>,
+    pub last_processed_block: u64,
 }
 
 impl BacktestRunner {
@@ -72,6 +73,7 @@ impl BacktestRunner {
             capture_pending: false,
             cross_block_window: 3,
             cross_block_detector: None,
+            last_processed_block: 0,
         }
     }
 
@@ -113,6 +115,18 @@ impl BacktestRunner {
     /// Expose a reference to the Aave reserve cache for inspection.
     pub fn aave_reserve_cache(&self) -> &AaveReserveCache {
         &self.aave_reserve_cache
+    }
+
+    /// Run cross-block detection on the accumulated sliding window.
+    /// Returns detected CrossBlockArb / TimeBandit opportunities.
+    /// Must have called `with_cross_block()` and processed at least 2 blocks.
+    pub fn detect_cross_block(&self) -> Vec<MevOpportunity> {
+        if let Some(ref detector) = self.cross_block_detector {
+            if detector.snapshot_count() >= 2 {
+                return detector.detect(self.last_processed_block, 0, self.gas_config);
+            }
+        }
+        Vec::new()
     }
 
     /// Pre-fetch Aave V3 reserve data for all known token addresses.
@@ -435,6 +449,13 @@ impl BacktestRunner {
         }
 
         self.pool_manager = pool_manager.into_inner();
+        self.last_processed_block = block_num;
+
+        // Record cross-block snapshot if enabled
+        if let Some(ref mut detector) = self.cross_block_detector {
+            detector.record_block(block_num, &self.pool_manager);
+        }
+
         Ok((all_opportunities, BlockReplayStats {
             block_number: block_num,
             total_tx_count,
