@@ -12,7 +12,7 @@ use crate::pool::{PoolManager, PoolState};
 use crate::replay::BlockReplayer;
 use crate::rpc::RpcClient;
 use crate::pipeline::BacktestRunner;
-use crate::types::{GasConfig, Strategy};
+use crate::types::{GasConfig, PriceOracleMode, Strategy};
 
 /// Runtime configuration for live mode operation.
 #[derive(Debug, Clone)]
@@ -26,6 +26,9 @@ pub struct LiveConfig {
     pub resync_interval: u64,
     pub export_path: String,
     pub replay_file: Option<String>,
+    pub chain_display_name: String,
+    pub price_oracle_mode: PriceOracleMode,
+    pub token_prices: HashMap<Address, f64>,
 }
 
 /// Record of a single virtual execution (settled or mempool-originated).
@@ -88,7 +91,6 @@ impl LiveRunnerState {
 /// Connects to the live chain, processes settled blocks for authoritative
 /// state sync and full MEV detection, and scans the mempool for arb
 /// opportunities. Tracks a virtual wallet with P&L — no real transactions.
-#[allow(dead_code)]
 pub struct LiveRunner {
     config: LiveConfig,
     rpc: RpcClient,
@@ -100,6 +102,11 @@ pub struct LiveRunner {
     last_processed_block: u64,
     last_resync_block: u64,
     chain_id: u64,
+    total_mempool_txs_seen: u64,
+    best_trade_profit: U256,
+    best_trade_desc: Option<String>,
+    settled_strategy_counts: HashMap<Strategy, u64>,
+    mempool_strategy_counts: HashMap<Strategy, u64>,
 }
 
 impl LiveRunner {
@@ -130,6 +137,11 @@ impl LiveRunner {
             last_processed_block: latest_block,
             last_resync_block: latest_block,
             chain_id,
+            total_mempool_txs_seen: 0,
+            best_trade_profit: U256::ZERO,
+            best_trade_desc: None,
+            settled_strategy_counts: HashMap::new(),
+            mempool_strategy_counts: HashMap::new(),
         }
     }
 
@@ -148,9 +160,9 @@ impl LiveRunner {
         if let Some(ref replay_path) = self.config.replay_file {
             tracing::info!("Replay-file mode: loading txs from {}", replay_path);
             let file_content = std::fs::read_to_string(replay_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read replay file: {}", e)))?;
+                .map_err(|e| anyhow::anyhow!("Failed to read replay file: {}", e))?;
             let pending_txs: Vec<crate::data::TxData> = serde_json::from_str(&file_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse replay file: {}", e)))?;
+                .map_err(|e| anyhow::anyhow!("Failed to parse replay file: {}", e))?;
             tracing::info!("Loaded {} pending txs from replay file", pending_txs.len());
 
             // Skip settled block processing in replay mode — just use current pool state
@@ -285,10 +297,21 @@ impl LiveRunner {
                 self.resync_pool_state().await;
             }
 
+            // Fetch live gas prices for this cycle
+            let (live_base_fee, live_priority_fee) = self.fetch_live_gas_prices().await;
+            let mempool_gas_config = if let (Some(_base_fee), Some(pf_gwei)) = (live_base_fee, live_priority_fee) {
+                let mut gc = self.config.gas_config;
+                gc.priority_fee_gwei = pf_gwei;
+                gc
+            } else {
+                self.config.gas_config
+            };
+
             let pending = self.capture_pending_block().await;
             if let Some(ref pending) = pending {
+                self.total_mempool_txs_seen += pending.tx_count as u64;
                 if !pending.txs.is_empty() {
-                    let opps = self.run_mempool_detection(pending);
+                    let opps = self.run_mempool_detection(pending, mempool_gas_config, live_base_fee).await;
                     if !opps.is_empty() {
                         tracing::info!(
                             "Mempool: {} arb opportunities from {} pending txs",
@@ -304,7 +327,11 @@ impl LiveRunner {
             }
 
             // ── Bankruptcy check ───────────────────────────────────────
-            let min_gas = U256::from(self.config.gas_config.gas_limit as u128 * 10_000_000_000u128);
+            let min_gas_cost = self.config.gas_config.compute_gas_cost_with_limit(
+                self.config.gas_config.gas_limit,
+                0, // base_fee = 0 to get pure priority-fee cost floor
+            );
+            let min_gas = U256::from(min_gas_cost).max(U256::from(1_000_000_000_000u128)); // at least 1e12 wei
             if self.wallet.is_bankrupt(min_gas) {
                 tracing::warn!(
                     "Wallet bankrupt (native={} wei), stopping live mode",
@@ -344,7 +371,7 @@ impl LiveRunner {
         Ok(())
     }
 
-    /// Update wallet state from settled opportunities.
+    /// Update wallet state and strategy counts from settled opportunities.
     fn process_settled_opportunities(&mut self, opportunities: Vec<MevOpportunity>) {
         // In settled block mode, opportunities are informational (pool state
         // already reflects execution). We record them to track what was visible.
@@ -353,6 +380,8 @@ impl LiveRunner {
                 self.wallet.total_profit_wei =
                     self.wallet.total_profit_wei.saturating_add(opp.expected_profit);
             }
+            // Track strategy counts for settled opportunities
+            *self.settled_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
         }
     }
 
@@ -376,21 +405,47 @@ impl LiveRunner {
     }
 
     /// Run arbitrage detection on the mempool state (forked from settled state).
-    fn run_mempool_detection(&mut self, pending: &mempool::PendingBlockCapture) -> Vec<MevOpportunity> {
+    /// Uses RPC simulation (revm via eth_call) as primary, calldata parsing as fallback.
+    async fn run_mempool_detection(
+        &mut self,
+        pending: &mempool::PendingBlockCapture,
+        mut gas_config: GasConfig,
+        _live_base_fee: Option<u128>,
+    ) -> Vec<MevOpportunity> {
         let base_fee = pending.base_fee_per_gas;
         let timestamp = pending.timestamp;
         let block_number = pending.block_number;
 
-        // Create a gas config with live gas pricing
-        let gas_config = self.config.gas_config;
+        // Update gas config with pending block's base fee if available
+        if base_fee > 0 {
+            // Set the gas config's model to Live for realistic cost estimation
+            gas_config.gas_model = crate::types::GasModel::Live;
+        }
 
         // Clone pool manager for speculative state
         let mut speculative_state = self.pool_manager.clone();
 
         // Apply pending tx effects to the speculative pool state
+        // Primary: RPC simulation (revm via eth_call) — filters out reverting txs
+        // Fallback: calldata parsing — when RPC is slow or unavailable
         for tx in &pending.txs {
-            let effects = mempool::estimate_pending_tx_pool_impact(tx, &speculative_state);
-            self.apply_pool_effects(&mut speculative_state, &effects);
+            let effects = mempool::simulate_pending_tx_pool_impact(
+                tx,
+                &speculative_state,
+                &self.rpc,
+                self.chain_id,
+                block_number,
+            )
+            .await;
+            if effects.is_empty() {
+                // Fallback to calldata-only estimation
+                let fallback = mempool::estimate_pending_tx_pool_impact(tx, &speculative_state);
+                if !fallback.is_empty() {
+                    self.apply_pool_effects(&mut speculative_state, &fallback);
+                }
+            } else {
+                self.apply_pool_effects(&mut speculative_state, &effects);
+            }
         }
 
         // Run arb-only detection
@@ -447,6 +502,45 @@ impl LiveRunner {
         }
     }
 
+    /// Fetch live gas prices from the chain for the current cycle.
+    /// Returns (base_fee_gwei, priority_fee_gwei) or (None, None) on failure.
+    async fn fetch_live_gas_prices(&self) -> (Option<u128>, Option<f64>) {
+        let base_fee = self.rpc.get_gas_price().await.ok();
+        let priority_fee = self.rpc.get_max_priority_fee().await.ok();
+        if let (Some(bf), Some(pf)) = (base_fee, priority_fee) {
+            let pf_gwei = pf as f64 / 1_000_000_000.0;
+            (Some(bf), Some(pf_gwei))
+        } else {
+            (base_fee, priority_fee.map(|pf| pf as f64 / 1_000_000_000.0))
+        }
+    }
+
+    /// Helper: transfer native balance to wrapped-native token balance.
+    /// Used when an arbitrage path routes through WETH/WMATIC/WBNB.
+    fn wrap_native(&mut self, amount: U256) {
+        let actual = amount.min(self.wallet.native_balance_wei);
+        if actual == U256::ZERO { return; }
+        self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_sub(actual);
+        let wrapped = self.pool_manager.wrapped_native();
+        if let Some(wn) = wrapped {
+            let balance = self.wallet.token_balances.entry(wn).or_insert(U256::ZERO);
+            *balance = balance.saturating_add(actual);
+        }
+    }
+
+    /// Helper: transfer wrapped-native token balance back to native balance.
+    fn unwrap_native(&mut self, amount: U256) {
+        let wrapped = self.pool_manager.wrapped_native();
+        if let Some(wn) = wrapped {
+            let current = self.wallet.token_balances.get(&wn).copied().unwrap_or(U256::ZERO);
+            let actual = amount.min(current);
+            if actual == U256::ZERO { return; }
+            let balance = self.wallet.token_balances.entry(wn).or_insert(U256::ZERO);
+            *balance = balance.saturating_sub(actual);
+            self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_add(actual);
+        }
+    }
+
     /// Execute a mempool opportunity against the virtual wallet.
     fn execute_mempool_opportunity(&mut self, opp: MevOpportunity, _pending: &mempool::PendingBlockCapture) {
         let profit = opp.expected_profit;
@@ -480,6 +574,24 @@ impl LiveRunner {
         // Update native balance from profit (assumes profit is in native or WETH-equivalent)
         self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_add(profit);
         self.wallet.total_profit_wei = self.wallet.total_profit_wei.saturating_add(profit);
+
+        // Track best trade
+        if profit > self.best_trade_profit {
+            self.best_trade_profit = profit;
+            let native_unit = U256::from(1_000_000_000_000_000_000u128);
+            let profit_whole = profit / native_unit;
+            let profit_frac = (profit % native_unit) / U256::from(10_000_000_000_000_000u128);
+            self.best_trade_desc = Some(format!(
+                "+{}.{:04} native ({} @ {})",
+                profit_whole,
+                profit_frac,
+                opp.strategy,
+                opp.block_number,
+            ));
+        }
+
+        // Track strategy count
+        *self.mempool_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
 
         let success = true;
         if success {
@@ -523,10 +635,25 @@ impl LiveRunner {
         self.last_resync_block = self.last_processed_block;
     }
 
+    /// Format strategy counts map into a compact string like "two_hop:3 multi:1"
+    fn fmt_strategy_counts(counts: &HashMap<Strategy, u64>) -> String {
+        if counts.is_empty() {
+            return "none".to_string();
+        }
+        let mut parts: Vec<String> = counts
+            .iter()
+            .filter(|(_, &c)| c > 0)
+            .map(|(s, c)| format!("{}:{}", s, c))
+            .collect();
+        parts.sort();
+        parts.join(" ")
+    }
+
     /// Print the live dashboard.
     fn print_dashboard(&self, settled_blocks: u64, mempool_scans: u64) {
-        let native_whole = self.wallet.native_balance_wei / U256::from(1_000_000_000_000_000_000u128);
-        let native_frac = (self.wallet.native_balance_wei % U256::from(1_000_000_000_000_000_000u128))
+        let native_unit = U256::from(1_000_000_000_000_000_000u128);
+        let native_whole = self.wallet.native_balance_wei / native_unit;
+        let native_frac = (self.wallet.native_balance_wei % native_unit)
             / U256::from(10_000_000_000_000_000u128);
 
         let pnl = if self.wallet.initial_native_balance_wei > U256::ZERO {
@@ -534,8 +661,8 @@ impl LiveRunner {
             let pct = raw * U256::from(10000) / self.wallet.initial_native_balance_wei;
             format!(
                 "{:+}.{:04} native ({:+}.{:02}%)",
-                raw / U256::from(1_000_000_000_000_000_000u128),
-                (raw % U256::from(1_000_000_000_000_000_000u128)) / U256::from(10_000_000_000_000u128),
+                raw / native_unit,
+                (raw % native_unit) / U256::from(10_000_000_000_000u128),
                 pct / U256::from(100),
                 pct % U256::from(100),
             )
@@ -544,6 +671,13 @@ impl LiveRunner {
         };
 
         println!("\n=== MEV Scout - Live Mode ===");
+        println!("Chain: {} | Block: {} | Pending: {} txs",
+            self.config.chain_display_name,
+            self.last_processed_block,
+            self.total_mempool_txs_seen,
+        );
+        println!("Settled blks:   {} | Mempool scans: {}", settled_blocks, mempool_scans);
+        println!("----------------------------------------");
         println!("Native Balance: {}.{:04} native", native_whole, native_frac);
         println!("Tokens Held:    {} tokens", self.wallet.token_balances.len());
         if self.wallet.total_executions > 0 {
@@ -552,15 +686,22 @@ impl LiveRunner {
                 self.wallet.successful_executions,
                 self.wallet.failed_executions,
             );
+            let settled_strats = Self::fmt_strategy_counts(&self.settled_strategy_counts);
+            let mempool_strats = Self::fmt_strategy_counts(&self.mempool_strategy_counts);
+            println!("  Settled:      {} | {}", settled_blocks, settled_strats);
+            println!("  Mempool:      {} | {}", mempool_scans, mempool_strats);
         }
-        println!("Settled blks:   {} | Mempool scans: {}", settled_blocks, mempool_scans);
-        println!("Total Profit:   {} native", pnl);
+        println!("Total Profit:   {}", pnl);
         println!("Total Gas:      {}.{:04} native",
-            U256::from(self.wallet.total_gas_spent_wei) / U256::from(1_000_000_000_000_000_000u128),
-            (U256::from(self.wallet.total_gas_spent_wei) % U256::from(1_000_000_000_000_000_000u128))
+            U256::from(self.wallet.total_gas_spent_wei) / native_unit,
+            (U256::from(self.wallet.total_gas_spent_wei) % native_unit)
                 / U256::from(10_000_000_000_000_000u128),
         );
         println!("Net P&L:        {}", pnl);
+        // Show best trade if any
+        if let Some(ref best) = self.best_trade_desc {
+            println!("Best Trade:     {}", best);
+        }
     }
 
     /// Print final summary on shutdown.
@@ -587,10 +728,18 @@ impl LiveRunner {
             "0.0000 native".to_string()
         };
 
+        // Build strategy breakdown strings
+        let settled_strats = Self::fmt_strategy_counts(&self.settled_strategy_counts);
+        let mempool_strats = Self::fmt_strategy_counts(&self.mempool_strategy_counts);
+
+        // Count settled blocks that had opportunities
+        let settled_with_opps: u64 = self.settled_strategy_counts.values().copied().sum();
+
         println!("\n=== MEV Scout - Live Mode (shutdown) ===");
         println!("Runtime:          {}h {}m {}s", hours, mins, secs_rem);
-        println!("Settled blocks:   {} | Mempool scans: {}", settled_blocks, mempool_scans);
-        println!("Total txs seen:   ~{}", mempool_scans * 100);
+        println!("Settled blocks:   {} ({} with opps)", settled_blocks, settled_with_opps);
+        println!("Mempool scans:    {}", mempool_scans);
+        println!("Total txs seen:   {}", self.total_mempool_txs_seen);
         println!("----------------------------------------");
         println!("Initial Balance:  {}.{:04} native",
             self.wallet.initial_native_balance_wei / native_unit,
@@ -608,10 +757,15 @@ impl LiveRunner {
         );
         if self.wallet.total_executions > 0 {
             let avg_profit = self.wallet.total_profit_wei / U256::from(self.wallet.total_executions);
+            println!("  Settled:        {} ({})", settled_with_opps, settled_strats);
+            println!("  Mempool:        {} ({})", self.wallet.total_executions - settled_with_opps, mempool_strats);
             println!("Avg Profit/Trade: {}.{:04} native",
                 avg_profit / native_unit,
                 (avg_profit % native_unit) / U256::from(10_000_000_000_000_000u128),
             );
+            if let Some(ref best) = self.best_trade_desc {
+                println!("Best Trade:      {}", best);
+            }
         }
         println!("Total Gas Spent:  {}.{:04} native",
             gas_native / native_unit,

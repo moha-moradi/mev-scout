@@ -104,25 +104,53 @@ pub struct PendingPoolEffect {
     pub reserve_delta: i128,
 }
 
-/// Run a pending tx through revm against an RPC-forked state and extract
-/// pool state changes (reserve updates, price changes) from the resulting
-/// EVM state diff. Returns pool effects for all known pools touched.
+/// Run a pending tx through RPC simulation (`eth_call`) and estimate its
+/// pool impact via calldata parsing.
 ///
-/// Currently a stub that returns an empty vec. Full revm simulation requires
-/// an RPC-forked EVM state which is non-trivial to set up. The real
-/// implementation would:
-/// 1. Create a `CachedRpcDb` at the pending block
-/// 2. Run the tx through revm
-/// 3. Diff storage writes to known pool contracts
-/// 4. Decode storage changes into reserve/price updates
-pub fn simulate_pending_tx_pool_impact(
-    _tx: &TxData,
-    _pool_manager: &PoolManager,
-    _rpc: &RpcClient,
+/// This is the primary approach: first identify pool interactions via
+/// calldata parsing, then validate the tx doesn't revert via `eth_call`
+/// against the node's EVM (which uses an RPC-forked state at the given
+/// block). If validation passes, the calldata-estimated pool effects
+/// are returned. If the tx reverts or no DEX interaction is detected,
+/// returns an empty vec.
+///
+/// The caller should fall back to [`estimate_pending_tx_pool_impact`]
+/// (calldata-only, no eth_call validation) if this returns empty
+/// and the RPC is rate-limited or unavailable.
+pub async fn simulate_pending_tx_pool_impact(
+    tx: &TxData,
+    pool_manager: &PoolManager,
+    rpc: &RpcClient,
     _chain_id: u64,
+    block_number: u64,
 ) -> Vec<PendingPoolEffect> {
-    // Stub — returns empty. Full revm simulation will be added in a follow-up.
-    Vec::new()
+    // Step 1: Identify pool interactions via calldata parsing
+    let effects = estimate_pending_tx_pool_impact(tx, pool_manager);
+    if effects.is_empty() {
+        return Vec::new();
+    }
+
+    // Step 2: Validate the tx doesn't revert via eth_call
+    // Use block_number (parent of pending block) as the state to simulate against
+    let sim_block = block_number.saturating_sub(1).max(1);
+    match tx.to {
+        Some(to) => {
+            match rpc.call(to, tx.input.clone(), sim_block).await {
+                Ok(ref result) if !result.is_empty() || true => {
+                    // Tx succeeded — return estimated pool effects
+                    effects
+                }
+                _ => {
+                    // Tx reverted or call failed — no pool effects
+                    Vec::new()
+                }
+            }
+        }
+        None => {
+            // Contract creation — has no pool effects from calldata parsing
+            Vec::new()
+        }
+    }
 }
 
 // ── ABI decoding helpers ───────────────────────────────────────────

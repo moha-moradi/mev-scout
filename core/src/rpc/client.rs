@@ -304,7 +304,7 @@ impl RpcClient {
         let actual_chain_id = provider
             .get_chain_id()
             .await
-            .map_err(|e| anyhow::anyhow!("{label}: eth_chainId failed: {e}")))?;
+            .map_err(|e| anyhow::anyhow!("{label}: eth_chainId failed: {e}"))?;
 
         if actual_chain_id != expected_chain_id {
             anyhow::bail!(
@@ -315,14 +315,14 @@ impl RpcClient {
         let tip = provider
             .get_block_number()
             .await
-            .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}")))?;
+            .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}"))?;
 
         // eth_getProof probe — needed by CachedRpcDb
         provider
             .get_proof(Address::ZERO, vec![])
             .number(tip)
             .await
-            .map_err(|e| anyhow::anyhow!("{label}: eth_getProof failed (archive required): {e}")))?;
+            .map_err(|e| anyhow::anyhow!("{label}: eth_getProof failed (archive required): {e}"))?;
 
         tracing::info!("{label}: OK chain_id={actual_chain_id} tip={tip} archive=supported");
         Ok(())
@@ -350,7 +350,7 @@ impl RpcClient {
                 .hashes()
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
-                .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number)))?;
+                .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))?;
             Ok(block.header.timestamp)
         })
         .await
@@ -761,6 +761,36 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
+        })
+        .await
+    }
+
+    /// Fetch the current gas price from the chain via `eth_gasPrice`.
+    ///
+    /// Returns the current base fee per gas in wei.
+    pub async fn get_gas_price(&self) -> anyhow::Result<u128> {
+        self.retry_call(|provider| async move {
+            let raw: U256 = provider
+                .client()
+                .request("eth_gasPrice", ())
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok(raw.to::<u128>())
+        })
+        .await
+    }
+
+    /// Fetch the current max priority fee per gas via `eth_maxPriorityFeePerGas`.
+    ///
+    /// Returns the priority fee in wei.
+    pub async fn get_max_priority_fee(&self) -> anyhow::Result<u128> {
+        self.retry_call(|provider| async move {
+            let raw: U256 = provider
+                .client()
+                .request("eth_maxPriorityFeePerGas", ())
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok(raw.to::<u128>())
         })
         .await
     }

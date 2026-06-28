@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use alloy::primitives::{Address, U256};
 
 use crate::cli::LiveArgs;
@@ -8,7 +10,7 @@ use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::rpc::RpcClient;
-use mev_scout_core::types::{ChainName, GasConfig, GasModel, Strategy};
+use mev_scout_core::types::{ChainName, GasConfig, GasModel, PriceOracleMode, Strategy};
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let chain_name: ChainName = match args.chain_args.chain.parse() {
@@ -82,6 +84,18 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let initial_balance_wei = U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
     let min_profit_wei = U256::from((config.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
 
+    let oracle_mode: PriceOracleMode = match config.price_oracle_mode.parse() {
+        Ok(m) => m,
+        Err(_) => {
+            tracing::warn!(
+                "Invalid price_oracle_mode '{}', falling back to coingecko",
+                config.price_oracle_mode,
+            );
+            PriceOracleMode::CoinGeckoOnly
+        }
+    };
+    let token_prices: HashMap<Address, f64> = config.parse_token_prices();
+
     let live_config = LiveConfig {
         initial_balance_wei,
         min_profit_threshold_wei: min_profit_wei,
@@ -92,6 +106,9 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         resync_interval: args.resync_interval,
         export_path: config.export_path.clone(),
         replay_file: args.replay_file.clone(),
+        chain_display_name: chain_name.to_string(),
+        price_oracle_mode: oracle_mode,
+        token_prices,
     };
 
     let block_replayer = BlockReplayer::new(

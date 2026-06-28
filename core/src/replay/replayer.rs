@@ -213,7 +213,7 @@ impl BlockReplayer {
         let block = self
             .cache
             .get_block(block_num)?
-            .ok_or_else(|| anyhow::anyhow!("Block {} not found in cache", block_num)))?;
+            .ok_or_else(|| anyhow::anyhow!("Block {} not found in cache", block_num))?;
         let txs = self
             .cache
             .get_txs(block_num)?
