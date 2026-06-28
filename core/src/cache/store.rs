@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use alloy::primitives::{Address, Bytes, B256, U256};
+use alloy::primitives::{b256, Address, Bytes, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,10 @@ pub struct RunManifest {
     pub strategies: Vec<String>,
     pub flash_loan_provider: String,
 }
+
+/// Transfer(address,address,uint256) event topic hash
+pub const TRANSFER_EVENT_TOPIC: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 
 /// SQLite-backed persistent cache for block data, EVM state, and run metadata.
 ///
@@ -167,6 +171,23 @@ impl SqliteStore {
 
             );
 
+            CREATE TABLE IF NOT EXISTS logs (
+                block_number INTEGER NOT NULL,
+                tx_index     INTEGER NOT NULL,
+                log_index    INTEGER NOT NULL,
+                address      BLOB NOT NULL,
+                topic0       BLOB,
+                topic1       BLOB,
+                topic2       BLOB,
+                topic3       BLOB,
+                data         BLOB NOT NULL,
+                erc20_amount BLOB,
+                event_sig    TEXT,
+                PRIMARY KEY (block_number, log_index)
+            );
+            CREATE INDEX IF NOT EXISTS idx_logs_address ON logs(address);
+            CREATE INDEX IF NOT EXISTS idx_logs_topic0 ON logs(topic0);
+
             CREATE TABLE IF NOT EXISTS pending_txs (
                 block_number INTEGER NOT NULL,
                 tx_index     INTEGER NOT NULL,
@@ -187,6 +208,9 @@ impl SqliteStore {
         )?;
         // L6: migration -- add factory column to pool_info if missing (backward compat)
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN factory BLOB;");
+        // Phase 3: add signature columns to transactions (idempotent)
+        let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_hash BLOB;");
+        let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_name TEXT;");
         Ok(())
     }
 
@@ -222,6 +246,16 @@ impl SqliteStore {
         B256::from_slice(blob)
     }
 
+    /// Extract ERC20 Transfer amount from a log's data bytes.
+    /// Returns None if the log is not an ERC20 Transfer event or if data is too short.
+    pub fn decode_erc20_amount(log: &crate::data::LogData) -> Option<U256> {
+        if log.topics.first() == Some(&TRANSFER_EVENT_TOPIC) && log.data.len() >= 32 {
+            Some(U256::from_be_slice(&log.data[log.data.len() - 32..]))
+        } else {
+            None
+        }
+    }
+
     // ---- Block ----
 
     pub fn put_block(&self, block_num: u64, block: &BlockData) -> anyhow::Result<()> {
@@ -248,6 +282,8 @@ impl SqliteStore {
         block: &BlockData,
         txs: &[TxData],
         receipts: &[ReceiptData],
+        tx_sigs: Option<&[([u8; 4], Option<String>)]>,
+        event_sigs: Option<&[Vec<Option<String>>]>,
     ) -> anyhow::Result<()> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -268,15 +304,18 @@ impl SqliteStore {
 
         {
             let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
-            for tx_data in txs {
+            for (i, tx_data) in txs.iter().enumerate() {
                 let access_list_blob = if tx_data.access_list.is_empty() {
                     None
                 } else {
                     Some(Self::serialize(&tx_data.access_list)?)
                 };
+                let (sig_hash, sig_name) = tx_sigs.and_then(|s| s.get(i)).map(|&(ref sel, ref name)| {
+                    (Some(sel.to_vec()), name.clone())
+                }).unwrap_or((None, None));
                 tx_stmt.execute(rusqlite::params![
                     Self::b256_to_blob(&tx_data.hash),
                     block_num as i64,
@@ -290,6 +329,8 @@ impl SqliteStore {
                     tx_data.max_priority_fee_per_gas.map(|v| v as i64),
                     tx_data.nonce as i64,
                     access_list_blob,
+                    sig_hash,
+                    sig_name,
                 ])?;
             }
         }
@@ -299,7 +340,11 @@ impl SqliteStore {
                 "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
-            for r in receipts {
+            let mut log_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO logs (block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+            for (ri, r) in receipts.iter().enumerate() {
                 let logs_blob = Self::serialize(&r.logs)?;
                 rc_stmt.execute(rusqlite::params![
                     Self::b256_to_blob(&r.tx_hash),
@@ -310,6 +355,30 @@ impl SqliteStore {
                     logs_blob,
                     r.contract_address.map(|a| Self::addr_to_blob(&a)),
                 ])?;
+                for (log_index, log_entry) in r.logs.iter().enumerate() {
+                    let amount = Self::decode_erc20_amount(log_entry);
+                    let topic0 = log_entry.topics.get(0).map(|t| t.as_slice().to_vec());
+                    let topic1 = log_entry.topics.get(1).map(|t| t.as_slice().to_vec());
+                    let topic2 = log_entry.topics.get(2).map(|t| t.as_slice().to_vec());
+                    let topic3 = log_entry.topics.get(3).map(|t| t.as_slice().to_vec());
+                    let event_sig = event_sigs
+                        .and_then(|es| es.get(ri))
+                        .and_then(|tx_es| tx_es.get(log_index))
+                        .and_then(|s| s.clone());
+                    log_stmt.execute(rusqlite::params![
+                        block_num as i64,
+                        r.tx_index as i64,
+                        log_index as i64,
+                        Self::addr_to_blob(&log_entry.address),
+                        topic0,
+                        topic1,
+                        topic2,
+                        topic3,
+                        log_entry.data.to_vec(),
+                        amount.map(|a| a.to_be_bytes::<32>().to_vec()),
+                        event_sig,
+                    ])?;
+                }
             }
         }
 
@@ -325,6 +394,8 @@ impl SqliteStore {
     pub fn put_block_data_batch(
         &self,
         batch: &[(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)],
+        tx_sigs_batch: Option<&[Vec<([u8; 4], Option<String>)>]>,
+        event_sigs_batch: Option<&[Vec<Vec<Option<String>>>]>,
     ) -> anyhow::Result<()> {
         if batch.is_empty() {
             return Ok(());
@@ -338,18 +409,22 @@ impl SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             let mut rc_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
+            let mut log_stmt = tx.prepare(
+                "INSERT OR REPLACE INTO logs (block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
             let mut meta_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO block_meta (number, txs_fetched) VALUES (?1, 1)",
             )?;
 
-            for (block_num, block, txs, receipts) in batch {
+            for (block_idx, (block_num, block, txs, receipts)) in batch.iter().enumerate() {
                 block_stmt.execute(rusqlite::params![
                     *block_num as i64,
                     Self::b256_to_blob(&block.hash),
@@ -360,12 +435,18 @@ impl SqliteStore {
                     Self::addr_to_blob(&block.coinbase),
                 ])?;
 
-                for tx_data in txs {
+                let block_tx_sigs = tx_sigs_batch.and_then(|b| b.get(block_idx));
+                let block_event_sigs = event_sigs_batch.and_then(|b| b.get(block_idx));
+
+                for (tx_i, tx_data) in txs.iter().enumerate() {
                     let access_list_blob = if tx_data.access_list.is_empty() {
                         None
                     } else {
                         Some(Self::serialize(&tx_data.access_list)?)
                     };
+                    let (sig_hash, sig_name) = block_tx_sigs.and_then(|s| s.get(tx_i))
+                        .map(|(ref sel, ref name)| (Some(sel.to_vec()), name.clone()))
+                        .unwrap_or((None, None));
                     tx_stmt.execute(rusqlite::params![
                         Self::b256_to_blob(&tx_data.hash),
                         *block_num as i64,
@@ -379,10 +460,12 @@ impl SqliteStore {
                         tx_data.max_priority_fee_per_gas.map(|v| v as i64),
                         tx_data.nonce as i64,
                         access_list_blob,
+                        sig_hash,
+                        sig_name,
                     ])?;
                 }
 
-                for r in receipts {
+                for (ri, r) in receipts.iter().enumerate() {
                     let logs_blob = Self::serialize(&r.logs)?;
                     rc_stmt.execute(rusqlite::params![
                         Self::b256_to_blob(&r.tx_hash),
@@ -393,6 +476,30 @@ impl SqliteStore {
                         logs_blob,
                         r.contract_address.map(|a| Self::addr_to_blob(&a)),
                     ])?;
+                    for (log_index, log_entry) in r.logs.iter().enumerate() {
+                        let amount = Self::decode_erc20_amount(log_entry);
+                        let topic0 = log_entry.topics.get(0).map(|t| t.as_slice().to_vec());
+                        let topic1 = log_entry.topics.get(1).map(|t| t.as_slice().to_vec());
+                        let topic2 = log_entry.topics.get(2).map(|t| t.as_slice().to_vec());
+                        let topic3 = log_entry.topics.get(3).map(|t| t.as_slice().to_vec());
+                        let event_sig = block_event_sigs
+                            .and_then(|es| es.get(ri))
+                            .and_then(|tx_es| tx_es.get(log_index))
+                            .and_then(|s| s.clone());
+                        log_stmt.execute(rusqlite::params![
+                            *block_num as i64,
+                            r.tx_index as i64,
+                            log_index as i64,
+                            Self::addr_to_blob(&log_entry.address),
+                            topic0,
+                            topic1,
+                            topic2,
+                            topic3,
+                            log_entry.data.to_vec(),
+                            amount.map(|a| a.to_be_bytes::<32>().to_vec()),
+                            event_sig,
+                        ])?;
+                    }
                 }
 
                 meta_stmt.execute(rusqlite::params![*block_num as i64])?;
@@ -542,6 +649,104 @@ impl SqliteStore {
             });
         }
         Ok(Some(receipts))
+    }
+
+    // ---- Normalized Logs ----
+
+    /// Return all normalized logs for a given block.
+    pub fn get_logs_for_block(&self, block_num: u64) -> anyhow::Result<Vec<crate::data::NormalizedLog>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig
+             FROM logs WHERE block_number = ?1 ORDER BY log_index",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
+        let mut logs = Vec::new();
+        while let Some(row) = rows.next()? {
+            logs.push(crate::data::NormalizedLog {
+                block_number: row.get::<_, i64>(0)? as u64,
+                tx_index: row.get::<_, i64>(1)? as u64,
+                log_index: row.get::<_, i64>(2)? as u64,
+                address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(3)?),
+                topic0: row.get::<_, Option<Vec<u8>>>(4)?.map(|b| Self::blob_to_b256(&b)),
+                topic1: row.get::<_, Option<Vec<u8>>>(5)?.map(|b| Self::blob_to_b256(&b)),
+                topic2: row.get::<_, Option<Vec<u8>>>(6)?.map(|b| Self::blob_to_b256(&b)),
+                topic3: row.get::<_, Option<Vec<u8>>>(7)?.map(|b| Self::blob_to_b256(&b)),
+                data: row.get::<_, Vec<u8>>(8)?.into(),
+                erc20_amount: row.get::<_, Option<Vec<u8>>>(9)?.map(|b| Self::blob_to_u256(&b)),
+                event_sig: row.get::<_, Option<String>>(10)?,
+            });
+        }
+        Ok(logs)
+    }
+
+    /// Return all normalized logs for a specific transaction.
+    pub fn get_logs_for_tx(&self, tx_hash: &B256) -> anyhow::Result<Vec<crate::data::NormalizedLog>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT l.block_number, l.tx_index, l.log_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data, l.erc20_amount, l.event_sig
+             FROM logs l
+             INNER JOIN transactions t ON t.block_number = l.block_number AND t.tx_index = l.tx_index
+             WHERE t.hash = ?1
+             ORDER BY l.log_index",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![Self::b256_to_blob(tx_hash)])?;
+        let mut logs = Vec::new();
+        while let Some(row) = rows.next()? {
+            logs.push(crate::data::NormalizedLog {
+                block_number: row.get::<_, i64>(0)? as u64,
+                tx_index: row.get::<_, i64>(1)? as u64,
+                log_index: row.get::<_, i64>(2)? as u64,
+                address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(3)?),
+                topic0: row.get::<_, Option<Vec<u8>>>(4)?.map(|b| Self::blob_to_b256(&b)),
+                topic1: row.get::<_, Option<Vec<u8>>>(5)?.map(|b| Self::blob_to_b256(&b)),
+                topic2: row.get::<_, Option<Vec<u8>>>(6)?.map(|b| Self::blob_to_b256(&b)),
+                topic3: row.get::<_, Option<Vec<u8>>>(7)?.map(|b| Self::blob_to_b256(&b)),
+                data: row.get::<_, Vec<u8>>(8)?.into(),
+                erc20_amount: row.get::<_, Option<Vec<u8>>>(9)?.map(|b| Self::blob_to_u256(&b)),
+                event_sig: row.get::<_, Option<String>>(10)?,
+            });
+        }
+        Ok(logs)
+    }
+
+    // ---- Batch missing-block query (Phase 1) ----
+
+    /// Single query: return all cached block numbers in [start, end].
+    pub fn get_cached_blocks_in_range(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT number FROM blocks
+             INNER JOIN block_meta USING(number)
+             WHERE number BETWEEN ?1 AND ?2 AND txs_fetched = 1
+             ORDER BY number",
+        )?;
+        let blocks = stmt
+            .query_map(rusqlite::params![start as i64, end as i64], |row| {
+                row.get::<_, i64>(0).map(|v| v as u64)
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(blocks)
+    }
+
+    /// Returns blocks in [start, end] that are NOT in the cache.
+    pub fn missing_blocks_in_range(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
+        let cached = self.get_cached_blocks_in_range(start, end)?;
+        let set: std::collections::HashSet<u64> = cached.into_iter().collect();
+        Ok((start..=end).filter(|n| !set.contains(n)).collect())
+    }
+
+    /// Group sorted, deduped block numbers into contiguous (start, end) inclusive ranges.
+    pub fn contiguous_ranges(blocks: &[u64]) -> Vec<(u64, u64)> {
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        for &block in blocks {
+            match ranges.last_mut() {
+                Some(last) if block == last.1 + 1 => last.1 = block,
+                _ => ranges.push((block, block)),
+            }
+        }
+        ranges
     }
 
     // ---- Check integrity ----
@@ -1243,6 +1448,213 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].0, "run-2");
         assert_eq!(list[1].0, "run-1");
+    }
+
+    // ---- Phase 1: contiguous_ranges ----
+
+    #[test]
+    fn test_contiguous_ranges_empty() {
+        let ranges = SqliteStore::contiguous_ranges(&[]);
+        assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn test_contiguous_ranges_single() {
+        let ranges = SqliteStore::contiguous_ranges(&[5]);
+        assert_eq!(ranges, vec![(5, 5)]);
+    }
+
+    #[test]
+    fn test_contiguous_ranges_no_gaps() {
+        let ranges = SqliteStore::contiguous_ranges(&[1, 2, 3, 4, 5]);
+        assert_eq!(ranges, vec![(1, 5)]);
+    }
+
+    #[test]
+    fn test_contiguous_ranges_with_gaps() {
+        let ranges = SqliteStore::contiguous_ranges(&[1, 2, 5, 6, 10]);
+        assert_eq!(ranges, vec![(1, 2), (5, 6), (10, 10)]);
+    }
+
+    #[test]
+    fn test_contiguous_ranges_unsorted() {
+        let ranges = SqliteStore::contiguous_ranges(&[5, 1, 2, 10, 11]);
+        assert_eq!(ranges, vec![(5, 5), (1, 2), (10, 11)]);
+    }
+
+    // ---- Phase 1: get_cached_blocks_in_range & missing_blocks_in_range ----
+
+    #[test]
+    fn test_cached_blocks_in_range() {
+        let store = temp_store();
+        for n in [10, 11, 12, 20, 21] {
+            let block = BlockData {
+                number: n, hash: B256::ZERO, timestamp: 0,
+                base_fee_per_gas: None, gas_limit: 0, gas_used: 0, coinbase: Address::ZERO,
+            };
+            store.put_block(n, &block).unwrap();
+            store.put_txs(n, &[]).unwrap();
+        }
+        let cached = store.get_cached_blocks_in_range(5, 25).unwrap();
+        assert_eq!(cached, vec![10, 11, 12, 20, 21]);
+    }
+
+    #[test]
+    fn test_cached_blocks_in_range_empty() {
+        let store = temp_store();
+        let cached = store.get_cached_blocks_in_range(1, 100).unwrap();
+        assert!(cached.is_empty());
+    }
+
+    #[test]
+    fn test_missing_blocks_in_range_none_cached() {
+        let store = temp_store();
+        let missing = store.missing_blocks_in_range(1, 10).unwrap();
+        assert_eq!(missing.len(), 10);
+        assert_eq!(missing, (1..=10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_missing_blocks_in_range_some_cached() {
+        let store = temp_store();
+        for n in [1, 2, 3, 8, 9, 10] {
+            let block = BlockData {
+                number: n, hash: B256::ZERO, timestamp: 0,
+                base_fee_per_gas: None, gas_limit: 0, gas_used: 0, coinbase: Address::ZERO,
+            };
+            store.put_block(n, &block).unwrap();
+            store.put_txs(n, &[]).unwrap();
+        }
+        let missing = store.missing_blocks_in_range(1, 10).unwrap();
+        assert_eq!(missing, vec![4, 5, 6, 7]);
+    }
+
+    // ---- Phase 2: normalized log storage ----
+
+    fn sample_block(number: u64) -> BlockData {
+        BlockData {
+            number, hash: B256::ZERO, timestamp: 0,
+            base_fee_per_gas: None, gas_limit: 0, gas_used: 0, coinbase: Address::ZERO,
+        }
+    }
+
+    fn sample_receipts(tx_index: u64) -> Vec<ReceiptData> {
+        let data = alloy::primitives::Bytes::from(vec![0u8; 32]);
+        let topic = b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+        vec![ReceiptData {
+            tx_hash: B256::ZERO,
+            tx_index,
+            status: true,
+            gas_used: 21_000,
+            cumulative_gas_used: 21_000,
+            contract_address: None,
+            logs: vec![crate::data::types::LogData {
+                address: address!("aaaa000000000000000000000000000000000001"),
+                data,
+                topics: vec![topic],
+            }],
+        }]
+    }
+
+    fn sample_txs(index: u64) -> Vec<TxData> {
+        vec![TxData {
+            hash: B256::ZERO,
+            index,
+            from: Address::ZERO,
+            to: None,
+            input: Bytes::default(),
+            value: U256::ZERO,
+            gas_limit: 100_000,
+            max_fee_per_gas: 0,
+            max_priority_fee_per_gas: None,
+            nonce: 0,
+            access_list: vec![],
+        }]
+    }
+
+    #[test]
+    fn test_put_block_data_with_logs() {
+        let store = temp_store();
+        let number = 500;
+        store.put_block_data(
+            number,
+            &sample_block(number),
+            &sample_txs(0),
+            &sample_receipts(0),
+            None,
+            None,
+        ).unwrap();
+
+        let logs = store.get_logs_for_block(number).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].block_number, number);
+        assert_eq!(logs[0].log_index, 0);
+        assert_eq!(logs[0].tx_index, 0);
+        assert!(logs[0].topic0 == Some(TRANSFER_EVENT_TOPIC));
+    }
+
+    #[test]
+    fn test_get_logs_for_tx() {
+        let store = temp_store();
+        let number = 501;
+        store.put_block_data(
+            number,
+            &sample_block(number),
+            &sample_txs(0),
+            &sample_receipts(0),
+            None,
+            None,
+        ).unwrap();
+
+        let logs = store.get_logs_for_tx(&B256::ZERO).unwrap();
+        assert_eq!(logs.len(), 1);
+    }
+
+    // ---- Phase 3: sig_hash / sig_name columns on transactions ----
+
+    #[test]
+    fn test_put_block_data_with_sigs() {
+        let store = temp_store();
+        let number = 600;
+
+        let sel = [0xa9, 0x05, 0x9c, 0xbb]; // transfer(address,address,uint256) 4-byte selector
+        let tx_sigs: Vec<([u8; 4], Option<String>)> = vec![(sel, Some("transfer(address,address,uint256)".into()))];
+        let receipt_sigs: Vec<Vec<Option<String>>> = vec![vec![Some("Transfer(address,address,uint256)".into())]];
+
+        store.put_block_data(
+            number,
+            &sample_block(number),
+            &sample_txs(0),
+            &sample_receipts(0),
+            Some(&tx_sigs),
+            Some(&receipt_sigs),
+        ).unwrap();
+
+        let conn = store.conn();
+        let sig_name: Option<String> = conn.query_row(
+            "SELECT sig_name FROM transactions WHERE block_number = ?1 AND tx_index = ?2",
+            rusqlite::params![number as i64, 0i64],
+            |row| row.get(0),
+        ).ok();
+        assert_eq!(sig_name.as_deref(), Some("transfer(address,address,uint256)"));
+    }
+
+    // ---- Phase 1: batch put_block_data ----
+
+    #[test]
+    fn test_put_block_data_batch() {
+        let store = temp_store();
+        let mut batch = Vec::new();
+        for n in 700..705u64 {
+            batch.push((n, sample_block(n), sample_txs(0), sample_receipts(0)));
+        }
+        store.put_block_data_batch(&batch, None, None).unwrap();
+
+        for n in 700..705u64 {
+            assert!(store.has_block(n).unwrap());
+        }
+        let cached = store.get_cached_blocks_in_range(700, 704).unwrap();
+        assert_eq!(cached.len(), 5);
     }
 }
 

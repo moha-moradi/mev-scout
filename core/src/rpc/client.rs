@@ -796,6 +796,18 @@ impl RpcClient {
     }
 }
 
+/// Extract the first 4 bytes of transaction calldata as a method selector.
+/// Returns `None` if input is shorter than 4 bytes (plain ETH transfer or CREATE).
+pub(crate) fn extract_selector(input: &Bytes) -> Option<[u8; 4]> {
+    if input.len() >= 4 {
+        let mut sel = [0u8; 4];
+        sel.copy_from_slice(&input[..4]);
+        Some(sel)
+    } else {
+        None
+    }
+}
+
 fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {
     TxData {
         hash: *tx.inner.hash(),

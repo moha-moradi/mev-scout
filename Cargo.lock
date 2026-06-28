@@ -3225,11 +3225,13 @@ dependencies = [
  "comfy-table",
  "csv",
  "futures",
+ "hex",
  "parquet",
  "rand 0.9.4",
  "reqwest 0.12.28",
  "revm",
  "rusqlite",
+ "ruzstd",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -3564,7 +3566,7 @@ dependencies = [
  "num-traits",
  "paste",
  "seq-macro",
- "twox-hash",
+ "twox-hash 2.1.2",
  "zstd",
 ]
 
@@ -4525,6 +4527,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruzstd"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fad02996bfc73da3e301efe90b1837be9ed8f4a462b6ed410aa35d00381de89f"
+dependencies = [
+ "twox-hash 1.6.3",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5462,6 +5473,16 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "twox-hash"
+version = "1.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+dependencies = [
+ "cfg-if",
+ "static_assertions",
+]
 
 [[package]]
 name = "twox-hash"

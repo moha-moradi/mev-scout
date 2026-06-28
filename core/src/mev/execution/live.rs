@@ -367,7 +367,7 @@ impl LiveRunner {
         }
         tracing::debug!("Fetching block {} from RPC (read-through cache)", block_num);
         let (block, txs, receipts) = self.rpc.get_block_and_receipts_batch(block_num).await?;
-        self.cache.put_block_data(block_num, &block, &txs, &receipts)?;
+        self.cache.put_block_data(block_num, &block, &txs, &receipts, None, None)?;
         Ok(())
     }
 

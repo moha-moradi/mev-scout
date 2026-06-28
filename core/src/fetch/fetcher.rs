@@ -13,10 +13,17 @@ use crate::cache::SqliteStore;
 use crate::data::{BlockData, ReceiptData, TxData};
 use crate::fetch::ParquetWriter;
 use crate::resolver::ResolvedRange;
+use crate::rpc::client::extract_selector;
 use crate::rpc::RpcClient;
 use crate::pipeline::ActivityScanner;
+use crate::sigs::SignatureResolver;
 
 type WriteBatch = Vec<(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)>;
+
+/// Helper type: per-transaction signature data (4-byte selector, optional method name).
+type TxSigEntry = ([u8; 4], Option<String>);
+/// Helper type: per-receipt per-log event signature.
+type EventSigEntry = Option<String>;
 
 #[derive(Debug, Default, Clone)]
 pub struct FetchTiming {
@@ -68,6 +75,7 @@ pub struct FetchSummary {
 pub struct Fetcher {
     rpc: RpcClient,
     cache: SqliteStore,
+    sig_resolver: Option<SignatureResolver>,
     parallelism: usize,
     parquet: Option<ParquetWriter>,
     timing: Arc<Mutex<FetchTiming>>,
@@ -80,6 +88,7 @@ impl Fetcher {
         Fetcher {
             rpc,
             cache,
+            sig_resolver: None,
             parallelism: 1,
             parquet: None,
             timing: Arc::new(Mutex::new(FetchTiming::default())),
@@ -95,6 +104,13 @@ impl Fetcher {
 
     pub fn with_batch_rpc(mut self, enabled: bool) -> Self {
         self.batch_rpc = enabled;
+        self
+    }
+
+    /// Enable signature resolution. When set, 4-byte selectors and event topic
+    /// hashes are resolved to human-readable names during fetch.
+    pub fn with_sig_resolver(mut self, resolver: SignatureResolver) -> Self {
+        self.sig_resolver = Some(resolver);
         self
     }
 
@@ -153,65 +169,68 @@ impl Fetcher {
         Ok(())
     }
 
-    /// Fetch all blocks in the range, distributing work across providers.
+    /// Fetch all blocks in the range, using batch missing-block query + contiguous range batching.
     ///
-    /// Uses `RpcClient::distribute_blocks()` to shard the range by provider weight.
-    /// Each shard runs with its own concurrency semaphore. Results are merged into
-    /// a single `FetchSummary`.
+    /// 1. Single DB query to determine exactly which blocks are missing
+    /// 2. Group missing blocks into contiguous runs
+    /// 3. Fetch each contiguous run sequentially (better for RPC node caches)
+    /// 4. Wait for all range tasks, integrity check
     pub async fn fetch_range<F: Fn() + Sync>(
         &self,
         range: &ResolvedRange,
-        _progress: Option<&F>,
+        progress: Option<&F>,
     ) -> anyhow::Result<FetchSummary> {
         let start = Instant::now();
-        let cap = self.parallelism.min(50);
+
+        // Phase 1: Single DB query — determine exactly which blocks are missing
+        let missing = self.cache.missing_blocks_in_range(range.start_block, range.end_block)?;
+        let cached_count = range.block_count.saturating_sub(missing.len() as u64);
+
+        if missing.is_empty() {
+            return Ok(FetchSummary {
+                total_blocks: range.block_count,
+                fetched: 0,
+                cached: cached_count,
+                elapsed_secs: start.elapsed().as_secs_f64(),
+                ..Default::default()
+            });
+        }
+
+        // Phase 2: Group missing blocks into contiguous runs
+        let ranges = crate::cache::SqliteStore::contiguous_ranges(&missing);
+
+        // Phase 3: Spawn one task per contiguous range
+        let cap = self.parallelism.min(50).max(1);
+        let semaphore = Arc::new(Semaphore::new(cap));
 
         let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {
             total_blocks: range.block_count,
+            cached: cached_count,
             ..Default::default()
         }));
 
-        // Distribute block range across providers
-        let shards = self.rpc.distribute_blocks(range.start_block, range.end_block).await;
+        let timing = self.timing.clone();
+        let fetch = self as *const Self;
 
-        let mut shard_handles = Vec::new();
-        for (_provider_idx, blocks) in &shards {
-            if blocks.is_empty() {
-                continue;
-            }
-
-            // Allocate semaphore capacity proportional to provider weight
-            let total_weight: f64 = shards.iter().map(|(_, b)| b.len() as f64).sum();
-            let shard_cap = if total_weight > 0.0 {
-                ((blocks.len() as f64 / total_weight) * cap as f64).ceil().max(1.0) as usize
-            } else {
-                1
-            };
-            let semaphore = Arc::new(Semaphore::new(shard_cap.min(cap)));
-
-            let timing = self.timing.clone();
-            let fetch = self as *const Self; // safe: &self outlives tasks
-
-            for &block_num in blocks {
-                let sem = semaphore.clone();
-                let t = timing.clone();
-                let summary_clone = summary.clone();
-                shard_handles.push(async move {
-                    let _permit = sem.acquire_owned().await?;
-                    let fetched = unsafe { &*fetch }.fetch_one_block(block_num, t).await?;
-                    let mut s = summary_clone.lock().await;
-                    if fetched {
-                        s.fetched += 1;
-                    } else {
-                        s.cached += 1;
-                    }
-                    Ok::<_, anyhow::Error>(())
-                });
-            }
+        let mut range_handles = Vec::new();
+        for &(run_start, run_end) in &ranges {
+            let sem = semaphore.clone();
+            let s = summary.clone();
+            let t = timing.clone();
+            range_handles.push(async move {
+                let _permit = sem.acquire_owned().await?;
+                let n = unsafe { &*fetch }.fetch_contiguous_range(run_start, run_end, t, progress).await?;
+                let mut sum = s.lock().await;
+                sum.fetched += n;
+                if let Some(tick) = progress {
+                    tick();
+                }
+                Ok::<_, anyhow::Error>(())
+            });
         }
 
-        try_join_all(shard_handles).await.map_err(|e| {
-            tracing::warn!("Block fetch task failed: {e:#}");
+        try_join_all(range_handles).await.map_err(|e| {
+            tracing::warn!("Range fetch task failed: {e:#}");
             e
         })?;
 
@@ -220,7 +239,7 @@ impl Fetcher {
         self.flush_parquet(range.start_block, range.end_block)?;
 
         // Integrity check
-        let missing = self
+        let missing_after = self
             .cache
             .check_integrity(range.start_block, range.end_block)?;
 
@@ -229,15 +248,15 @@ impl Fetcher {
         let flush_ms = t_flush.elapsed().as_secs_f64() * 1000.0;
 
         let mut final_summary = summary.lock().await.deref().clone();
-        final_summary.missing_after_fetch = missing;
+        final_summary.missing_after_fetch = missing_after;
         final_summary.elapsed_secs = start.elapsed().as_secs_f64();
         if let Ok(t) = self.timing.lock() {
             final_summary.timing = t.clone();
         }
         tracing::info!(
-            "fetch_range: {} blocks ({}/{}) flush={:.1}ms total={:.1}s | {}",
+            "fetch_range: {} blocks ({}/{}) ranges={} flush={:.1}ms total={:.1}s | {}",
             final_summary.total_blocks, final_summary.fetched, final_summary.cached,
-            flush_ms, final_summary.elapsed_secs,
+            ranges.len(), flush_ms, final_summary.elapsed_secs,
             final_summary.timing.summary(),
         );
         Ok(final_summary)
@@ -251,7 +270,62 @@ impl Fetcher {
             }
             std::mem::take(&mut *buf)
         };
-        self.cache.put_block_data_batch(&batch)
+        self.cache.put_block_data_batch(&batch, None, None)
+    }
+
+    /// Fetch a contiguous range of blocks sequentially (no has_block checks).
+    ///
+    /// All blocks in `start..=end` are assumed missing — the caller must have
+    /// filtered them already (e.g. via `missing_blocks_in_range`).
+    /// Returns the number of blocks successfully fetched.
+    async fn fetch_contiguous_range<F: Fn() + Sync>(
+        &self,
+        start: u64,
+        end: u64,
+        timing: Arc<Mutex<FetchTiming>>,
+        progress: Option<&F>,
+    ) -> anyhow::Result<u64> {
+        let mut fetched = 0u64;
+        for block_num in start..=end {
+            let t0 = Instant::now();
+            let (block, txs, receipts) = if self.batch_rpc {
+                self.rpc.get_block_and_receipts_batch(block_num).await?
+            } else {
+                let (block_res, receipts_res) = tokio::join!(
+                    self.rpc.get_block(block_num),
+                    self.rpc.get_receipts(block_num),
+                );
+                let (block, txs) = block_res?;
+                (block, txs, receipts_res?)
+            };
+            let t_rpc = t0.elapsed().as_secs_f64() * 1000.0;
+
+            let t2 = Instant::now();
+            if let Some(ref resolver) = self.sig_resolver {
+                let tx_sigs = resolve_tx_sigs(&txs, resolver);
+                let event_sigs = resolve_event_sigs(&receipts, resolver);
+                self.cache.put_block_data(block_num, &block, &txs, &receipts, Some(&tx_sigs), Some(&event_sigs))?;
+            } else {
+                let mut buf = self.write_buf.lock().expect("write_buf mutex poisoned");
+                buf.push((block_num, block, txs, receipts));
+                if buf.len() >= 10 {
+                    let batch = std::mem::take(&mut *buf);
+                    drop(buf);
+                    self.cache.put_block_data_batch(&batch, None, None)?;
+                }
+            }
+            let t_write = t2.elapsed().as_secs_f64() * 1000.0;
+
+            let total = t0.elapsed().as_secs_f64() * 1000.0;
+            if let Ok(mut t) = timing.lock() {
+                t.record(0.0, t_rpc, t_write, total);
+            }
+            if let Some(tick) = progress {
+                tick();
+            }
+            fetched += 1;
+        }
+        Ok(fetched)
     }
 
     async fn fetch_one_block(
@@ -280,13 +354,17 @@ impl Fetcher {
         let t_rpc = t1.elapsed().as_secs_f64() * 1000.0;
 
         let t2 = Instant::now();
-        {
+        if let Some(ref resolver) = self.sig_resolver {
+            let tx_sigs = resolve_tx_sigs(&txs, resolver);
+            let event_sigs = resolve_event_sigs(&receipts, resolver);
+            self.cache.put_block_data(block_num, &block, &txs, &receipts, Some(&tx_sigs), Some(&event_sigs))?;
+        } else {
             let mut buf = self.write_buf.lock().expect("write_buf mutex poisoned");
             buf.push((block_num, block, txs, receipts));
             if buf.len() >= 10 {
                 let batch = std::mem::take(&mut *buf);
                 drop(buf);
-                self.cache.put_block_data_batch(&batch)?;
+                self.cache.put_block_data_batch(&batch, None, None)?;
             }
         }
         let t_write = t2.elapsed().as_secs_f64() * 1000.0;
@@ -348,43 +426,39 @@ impl Fetcher {
             });
         }
 
-        // Phase 2: Fetch only the active blocks
+        // Phase 2: Group active blocks into contiguous ranges and fetch
         let mut sorted: Vec<u64> = active_blocks.into_iter().collect();
         sorted.sort_unstable();
+        let ranges = crate::cache::SqliteStore::contiguous_ranges(&sorted);
 
-        let cap = self.parallelism.min(50);
+        let cap = self.parallelism.min(50).max(1);
         let semaphore = Arc::new(Semaphore::new(cap));
 
-        let mut summary = FetchSummary {
+        let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {
             total_blocks: range.block_count,
             scanned: range.block_count,
             relevant,
             skipped,
             ..Default::default()
-        };
+        }));
 
         let timing = self.timing.clone();
-        let mut tasks = Vec::new();
-        for &block_num in &sorted {
+        let fetch = self as *const Self;
+        let mut range_handles = Vec::new();
+        for &(run_start, run_end) in &ranges {
             let sem = semaphore.clone();
+            let s = summary.clone();
             let t = timing.clone();
-            tasks.push(async move {
+            range_handles.push(async move {
                 let _permit = sem.acquire_owned().await?;
-                self.fetch_one_block(block_num, t).await
+                let n = unsafe { &*fetch }.fetch_contiguous_range(run_start, run_end, t, progress).await?;
+                let mut sum = s.lock().await;
+                sum.fetched += n;
+                Ok::<_, anyhow::Error>(())
             });
         }
 
-        let results: Vec<bool> = try_join_all(tasks).await?;
-        for fetched in results {
-            if fetched {
-                summary.fetched += 1;
-            } else {
-                summary.cached += 1;
-            }
-            if let Some(tick) = progress {
-                tick();
-            }
-        }
+        try_join_all(range_handles).await?;
 
         // Flush any remaining buffered writes, then write Parquet
         self.flush_write_buf()?;
@@ -393,16 +467,18 @@ impl Fetcher {
         self.flush_parquet(min, max)?;
 
         // Integrity check only on the blocks we attempted to fetch
-        summary.missing_after_fetch = self
+        let missing_after = self
             .cache
             .check_integrity_range(&sorted)?;
 
-        summary.elapsed_secs = start.elapsed().as_secs_f64();
+        let mut final_summary = summary.lock().await.deref().clone();
+        final_summary.missing_after_fetch = missing_after;
+        final_summary.elapsed_secs = start.elapsed().as_secs_f64();
         if let Ok(t) = self.timing.lock() {
-            summary.timing = t.clone();
+            final_summary.timing = t.clone();
         }
         self.cache.flush()?;
-        Ok(summary)
+        Ok(final_summary)
     }
 
     pub async fn auto_refetch_gaps(&self, gaps: &[u64]) -> anyhow::Result<u64> {
@@ -421,3 +497,39 @@ impl Fetcher {
         Ok(refetched)
     }
 }
+
+// ---- Signature resolution helpers (Phase 3) ----
+
+/// Resolve 4-byte selectors for all transactions in a block.
+fn resolve_tx_sigs(txs: &[TxData], resolver: &SignatureResolver) -> Vec<TxSigEntry> {
+    txs.iter()
+        .map(|tx| {
+            match extract_selector(&tx.input) {
+                Some(sel) => {
+                    let name = resolver.resolve_method(&sel).ok().flatten();
+                    (sel, name)
+                }
+                None => ([0u8; 4], None),
+            }
+        })
+        .collect()
+}
+
+/// Resolve event signatures for all logs in a block's receipts.
+fn resolve_event_sigs(receipts: &[ReceiptData], resolver: &SignatureResolver) -> Vec<Vec<EventSigEntry>> {
+    receipts
+        .iter()
+        .map(|r| {
+            r.logs
+                .iter()
+                .map(|log| {
+                    log.topics
+                        .first()
+                        .and_then(|topic| resolver.resolve_event(topic).ok().flatten())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+

@@ -143,6 +143,20 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         fetcher = fetcher.with_parallelism(workers);
     }
     fetcher = fetcher.with_batch_rpc(!args.chain_args.no_batch_rpc);
+    if !args.no_sig_resolve {
+        match mev_scout_core::sigs::ensure_signature_db(None).await {
+            Ok(sig_db_path) => {
+                match mev_scout_core::sigs::SignatureResolver::new(&sig_db_path) {
+                    Ok(resolver) => {
+                        fetcher = fetcher.with_sig_resolver(resolver);
+                        tracing::info!("Signature resolution enabled");
+                    }
+                    Err(e) => tracing::warn!("Failed to load signature DB: {e} — continuing without sig resolution"),
+                }
+            }
+            Err(e) => tracing::warn!("Failed to ensure signature DB: {e} — continuing without sig resolution"),
+        }
+    }
 
     let pb = ProgressBar::new(resolved.block_count);
     pb.set_style(

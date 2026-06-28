@@ -64,6 +64,22 @@ pub struct LogData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Normalized log entry stored in the `logs` table.
+pub struct NormalizedLog {
+    pub block_number: u64,
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub address: Address,
+    pub topic0: Option<B256>,
+    pub topic1: Option<B256>,
+    pub topic2: Option<B256>,
+    pub topic3: Option<B256>,
+    pub data: Bytes,
+    pub erc20_amount: Option<U256>,
+    pub event_sig: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountData {
     pub nonce: u64,
     pub balance: U256,

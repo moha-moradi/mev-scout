@@ -12,5 +12,6 @@ pub mod pool;
 pub mod replay;
 pub mod resolver;
 pub mod rpc;
+pub mod sigs;
 pub mod types;
 pub mod utils;
