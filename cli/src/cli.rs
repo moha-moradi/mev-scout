@@ -200,6 +200,13 @@ pub struct RunArgs {
     #[arg(long = "cross-block-window", default_value = "0", value_name = "N", help_heading = "Strategies")]
     pub cross_block_window: usize,
 
+    /// Enable competitor extraction analysis (default: false).
+    /// Analyzes replayed transactions to identify actual MEV extraction
+    /// events and attribute them to searcher addresses. Outputs per-block
+    /// competitor activity and top searcher profiles.
+    #[arg(long = "competition", help_heading = "Competition")]
+    pub competition: bool,
+
 }
 
 #[derive(Args, Debug, Clone)]

@@ -3,6 +3,7 @@ use alloy::primitives::Address;
 
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
+use mev_scout_core::mev::competition::CompetitionReport;
 use mev_scout_core::mev::verify::BlockReplayStats;
 use mev_scout_core::pool::state::{PoolManager, PoolState};
 use mev_scout_core::types::ResultsFile;
@@ -172,4 +173,73 @@ pub fn render_block_summary_table(summaries: &[BlockReplayStats]) {
     }
     println!("\nBlock Summary");
     println!("{table}");
+}
+
+pub fn render_competition_table(report: &CompetitionReport) {
+    if report.total_extractions == 0 {
+        return;
+    }
+
+    println!("\nCompetitor Activity");
+    println!("  Total searchers found: {}", report.total_searchers_found);
+    println!("  Total extractions: {}", report.total_extractions);
+
+    if !report.by_strategy.is_empty() {
+        println!("  By strategy:");
+        let mut strategies: Vec<_> = report.by_strategy.iter().collect();
+        strategies.sort_by(|a, b| b.1.cmp(a.1));
+        for (strategy, count) in strategies {
+            println!("    {}: {}", strategy, count);
+        }
+    }
+
+    if !report.top_searchers.is_empty() {
+        let mut table = Table::new();
+        table.set_header(vec![
+            "Searcher",
+            "Extractions",
+            "Gas Paid (wei)",
+            "Gross Profit (wei)",
+            "Avg Priority Fee (wei)",
+            "Strategies",
+        ]);
+        for profile in report.top_searchers.iter().take(10) {
+            let strategies: Vec<&str> = profile.by_strategy
+                .keys()
+                .map(|et| match et {
+                    mev_scout_core::mev::competition::ExtractionType::TwoHopArb => "arb",
+                    mev_scout_core::mev::competition::ExtractionType::MultiHopArb => "marb",
+                    mev_scout_core::mev::competition::ExtractionType::Jit => "jit",
+                    mev_scout_core::mev::competition::ExtractionType::JitArb => "jitarb",
+                    mev_scout_core::mev::competition::ExtractionType::Sandwich => "sw",
+                    mev_scout_core::mev::competition::ExtractionType::Liquidation => "liq",
+                    mev_scout_core::mev::competition::ExtractionType::UnknownMev => "?",
+                })
+                .collect();
+            table.add_row(vec![
+                format!("{:#x}", profile.searcher),
+                format!("{}", profile.total_extractions),
+                format!("{}", profile.total_gas_spent_wei),
+                format!("{}", profile.total_gross_profit_wei),
+                format!("{}", profile.avg_priority_fee_wei),
+                strategies.join(","),
+            ]);
+        }
+        println!("{table}");
+    }
+
+    // PGA calibration summary
+    let cal = &report.pga_calibration;
+    if !cal.mean_competitors.is_empty() {
+        println!("\nPGA Calibration (from observed data):");
+        for (strategy, mean) in &cal.mean_competitors {
+            let intensity = cal.bid_to_value_ratio.get(strategy)
+                .copied()
+                .unwrap_or(0.5);
+            println!(
+                "  {}: mean_competitors={:.2}, intensity={:.3} (blocks={}, extractions={})",
+                strategy, mean, intensity, cal.blocks_analyzed, cal.total_extractions,
+            );
+        }
+    }
 }

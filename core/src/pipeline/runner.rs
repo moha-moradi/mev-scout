@@ -12,6 +12,7 @@ use crate::mev::detectors::SandwichDetector;
 use crate::mev::detectors::JitArbDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
+use crate::mev::competition::{BlockCompetition, CompetitionAnalyzer, CompetitionReport};
 use crate::mev::detectors::{pga, PgaConfig};
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
@@ -44,6 +45,8 @@ pub struct BacktestRunner {
     cross_block_window: usize,
     cross_block_detector: Option<CrossBlockDetector>,
     pub last_processed_block: u64,
+    competition_analyzer: Option<CompetitionAnalyzer>,
+    block_competitions: Vec<BlockCompetition>,
 }
 
 impl BacktestRunner {
@@ -74,6 +77,8 @@ impl BacktestRunner {
             cross_block_window: 3,
             cross_block_detector: None,
             last_processed_block: 0,
+            competition_analyzer: None,
+            block_competitions: Vec::new(),
         }
     }
 
@@ -105,6 +110,37 @@ impl BacktestRunner {
         self.cross_block_window = window.max(2);
         self.cross_block_detector = Some(CrossBlockDetector::new(self.cross_block_window));
         self
+    }
+
+    /// Enable competitor extraction analysis.
+    /// When enabled, each block's replayed transactions are analyzed to identify
+    /// actual MEV extraction events and attribute them to searcher addresses.
+    pub fn with_competition(mut self) -> Self {
+        self.competition_analyzer = Some(CompetitionAnalyzer::new());
+        self
+    }
+
+    /// Returns true if competition analysis is enabled.
+    pub fn competition_enabled(&self) -> bool {
+        self.competition_analyzer.is_some()
+    }
+
+    /// Build and return the aggregated competition report, if any data exists.
+    pub fn build_competition_report(&self) -> Option<CompetitionReport> {
+        if self.block_competitions.is_empty() {
+            None
+        } else {
+            Some(CompetitionReport::new(self.block_competitions.clone()))
+        }
+    }
+
+    /// Consume the runner and return the competition report.
+    pub fn into_competition_report(self) -> Option<CompetitionReport> {
+        if self.block_competitions.is_empty() {
+            None
+        } else {
+            Some(CompetitionReport::new(self.block_competitions))
+        }
     }
 
     /// Returns true if cross-block detection is enabled.
@@ -301,6 +337,10 @@ impl BacktestRunner {
         let pool_manager = std::mem::take(&mut self.pool_manager);
         let pool_manager = RefCell::new(pool_manager);
 
+        // Take competition analyzer for closure access
+        let competition_analyzer = std::mem::take(&mut self.competition_analyzer);
+        let competition_analyzer = RefCell::new(competition_analyzer);
+
         // Shared cell bridging TxData.from from filter closure to on_tx closure
         let current_tx_from: RefCell<Option<Address>> =
             RefCell::new(None);
@@ -427,6 +467,13 @@ impl BacktestRunner {
                 // Apply this tx's log updates to pool state AFTER detection
                 pm.update_from_logs(&tx.logs);
 
+                // Feed tx into competition analyzer (if enabled)
+                if let Some(ref mut ca) = *competition_analyzer.borrow_mut() {
+                    if let Some(s) = sender {
+                        ca.process_tx(i, s, tx.gas_used, tx.gas_effective, &tx.logs, &pm);
+                    }
+                }
+
                 Ok(())
             },
         )?;
@@ -454,6 +501,16 @@ impl BacktestRunner {
         // Record cross-block snapshot if enabled
         if let Some(ref mut detector) = self.cross_block_detector {
             detector.record_block(block_num, &self.pool_manager);
+        }
+
+        // Finalize competition analysis for this block
+        let comp_result = competition_analyzer.into_inner().map(|mut ca| {
+            ca.finalize_block(block_num, &block_data, &self.pool_manager, &all_opportunities)
+        });
+        if let Some(bc) = comp_result {
+            if bc.unique_searchers > 0 || !bc.extractions.is_empty() {
+                self.block_competitions.push(bc);
+            }
         }
 
         Ok((all_opportunities, BlockReplayStats {

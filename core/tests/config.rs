@@ -30,6 +30,7 @@ fn test_results_file_roundtrip() {
         resolved_at: 12345678,
         created_at: 12345679,
         opportunities: vec![opp],
+        competition: None,
     };
 
     let json = serde_json::to_string_pretty(&file).unwrap();

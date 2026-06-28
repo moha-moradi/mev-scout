@@ -5,7 +5,7 @@ use comfy_table::Table;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::RunArgs;
-use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json};
+use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json, render_competition_table};
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::coingecko::PriceCache;
 use mev_scout_core::config::validation;
@@ -235,6 +235,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.proximity_window)
         .with_capture_pending(config.capture_pending);
+    if args.competition {
+        runner = runner.with_competition();
+    }
 
     if config.cross_block_window > 0 {
         runner = runner.with_cross_block(config.cross_block_window);
@@ -301,6 +304,12 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         .duration_since(UNIX_EPOCH)
         .expect("System clock went backwards")
         .as_secs();
+    let competition_report = if args.competition {
+        runner.build_competition_report()
+    } else {
+        None
+    };
+
     let results_file = ResultsFile {
         run_id: run_id.clone(),
         chain: validation_result.chain_name.to_string(),
@@ -312,6 +321,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         resolved_at: manifest.resolved_at,
         created_at,
         opportunities: all_opportunities.clone(),
+        competition: competition_report.clone(),
     };
     if let Err(e) = save_results_json(&config.export_path, &run_id, &results_file) {
         tracing::warn!("Failed to save results: {}", e);
@@ -341,6 +351,11 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     }
 
     render_block_summary_table(&block_stats);
+
+    // Render competition analysis results
+    if let Some(ref comp) = competition_report {
+        render_competition_table(comp);
+    }
 
     let mempool_opps: usize = block_stats.iter().map(|s| s.mempool_opp_count).sum();
     if mempool_opps > 0 {

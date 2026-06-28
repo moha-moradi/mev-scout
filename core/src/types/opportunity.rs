@@ -5,7 +5,8 @@
 
 use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
-use crate::types::Strategy;
+use crate::types::strategy::Strategy;
+use crate::mev::competition::report::CompetitionReport;
 
 /// A detected MEV opportunity from backtesting.
 ///
@@ -221,6 +222,9 @@ pub struct ResultsFile {
     pub resolved_at: u64,
     pub created_at: u64,
     pub opportunities: Vec<MevOpportunity>,
+    /// Competition analysis results (optional, only populated when --competition is enabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub competition: Option<CompetitionReport>,
 }
 
 #[cfg(test)]
