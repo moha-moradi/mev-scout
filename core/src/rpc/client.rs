@@ -232,10 +232,10 @@ impl RpcClient {
             }
         }
 
-        anyhow::bail!(
-            "All RPC providers failed: {:?}",
-            last_err.expect("at least one provider was attempted before failing")
-        )
+        match last_err {
+            Some(e) => anyhow::bail!("All RPC providers failed: {e:#}"),
+            None => anyhow::bail!("All RPC providers exhausted or in cooldown"),
+        }
     }
 
     /// Distribute a block range across providers by weight.
