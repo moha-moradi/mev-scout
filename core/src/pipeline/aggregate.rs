@@ -48,11 +48,34 @@ pub struct DexMetrics {
     pub total_gas_cost_wei: u128,
 }
 
+/// Competition metrics for aggregation output.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct CompetitionMetrics {
+    pub total_searchers: usize,
+    pub total_extractions: usize,
+    pub by_strategy: std::collections::HashMap<String, usize>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AggregationResult {
     pub summary: SummaryMetrics,
     pub by_strategy: std::collections::HashMap<String, StrategyMetrics>,
     pub by_dex: Vec<DexMetrics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub competition: Option<CompetitionMetrics>,
+}
+
+impl AggregationResult {
+    /// Attach competition metrics from a CompetitionReport.
+    pub fn with_competition(mut self, report: &crate::mev::competition::CompetitionReport) -> Self {
+        let by_strategy = report.by_strategy.clone();
+        self.competition = Some(CompetitionMetrics {
+            total_searchers: report.total_searchers_found,
+            total_extractions: report.total_extractions,
+            by_strategy,
+        });
+        self
+    }
 }
 
 pub struct DexMeta {
@@ -131,6 +154,7 @@ pub fn aggregate_with_prices(
                 net_profit_wei: 0,
                 total_gas_cost_wei: 0,
             }).collect(),
+            competition: None,
         };
     }
 
@@ -341,6 +365,7 @@ pub fn aggregate_with_prices(
         },
         by_strategy: strategy_metrics,
         by_dex: dex_metrics,
+        competition: None,
     }
 }
 

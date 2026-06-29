@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, U256};
 
 use crate::cache::SqliteStore;
+use crate::mev::competition::{BlockCompetition, CompetitorProfile};
 use crate::mev::detectors::mempool;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
@@ -13,6 +14,87 @@ use crate::replay::BlockReplayer;
 use crate::rpc::RpcClient;
 use crate::pipeline::BacktestRunner;
 use crate::types::{GasConfig, PriceOracleMode, Strategy};
+
+/// Tracks competitor searcher activity during live operation.
+pub struct LiveCompetitionState {
+    /// Known searcher profiles (persisted across runs).
+    pub known_searchers: HashMap<Address, CompetitorProfile>,
+    /// Recent competitor activity (sliding window of 100 blocks).
+    pub recent_activity: VecDeque<BlockCompetition>,
+    /// Active searchers in current mempool.
+    pub active_in_mempool: HashSet<Address>,
+    /// Total extractions tracked this session.
+    pub total_extractions: u64,
+    /// Total unique searchers seen this session.
+    pub active_searchers: HashSet<Address>,
+}
+
+impl LiveCompetitionState {
+    pub fn new() -> Self {
+        LiveCompetitionState {
+            known_searchers: HashMap::new(),
+            recent_activity: VecDeque::with_capacity(100),
+            active_in_mempool: HashSet::new(),
+            total_extractions: 0,
+            active_searchers: HashSet::new(),
+        }
+    }
+
+    /// Load known searcher profiles from a previous backtest report file.
+    pub fn load_from_backtest(path: &str) -> anyhow::Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let report: crate::mev::competition::CompetitionReport = serde_json::from_str(&content)?;
+        let mut state = LiveCompetitionState::new();
+        for profile in report.top_searchers {
+            state.known_searchers.insert(profile.searcher, profile);
+        }
+        Ok(state)
+    }
+
+    /// Load known searcher profiles from a competition SQLite database.
+    pub fn load_from_db(store: &SqliteStore) -> Self {
+        let mut state = LiveCompetitionState::new();
+        if let Ok(profiles) = store.get_competitor_profiles() {
+            for profile in profiles {
+                state.known_searchers.insert(profile.searcher, profile);
+            }
+        }
+        state
+    }
+
+    /// Record a settled block's competition data.
+    pub fn record_block(&mut self, comp: BlockCompetition) {
+        self.total_extractions += comp.extractions.len() as u64;
+        for ext in &comp.extractions {
+            self.active_searchers.insert(ext.searcher);
+        }
+        self.recent_activity.push_back(comp);
+        // Keep sliding window at 100 blocks
+        while self.recent_activity.len() > 100 {
+            self.recent_activity.pop_front();
+        }
+    }
+
+    /// Check which known competitors are active in the pending tx set.
+    pub fn check_mempool(&mut self, pending: &mempool::PendingBlockCapture) {
+        self.active_in_mempool.clear();
+        for tx in &pending.txs {
+            if self.known_searchers.contains_key(&tx.from) {
+                self.active_in_mempool.insert(tx.from);
+            }
+        }
+    }
+
+    /// Number of active competitors in the current mempool.
+    pub fn active_competitors(&self) -> usize {
+        self.active_in_mempool.len()
+    }
+
+    /// Total known unique searchers.
+    pub fn known_count(&self) -> usize {
+        self.known_searchers.len()
+    }
+}
 
 /// Runtime configuration for live mode operation.
 #[derive(Debug, Clone)]
@@ -107,6 +189,7 @@ pub struct LiveRunner {
     best_trade_desc: Option<String>,
     settled_strategy_counts: HashMap<Strategy, u64>,
     mempool_strategy_counts: HashMap<Strategy, u64>,
+    pub competition_state: LiveCompetitionState,
 }
 
 impl LiveRunner {
@@ -142,6 +225,7 @@ impl LiveRunner {
             best_trade_desc: None,
             settled_strategy_counts: HashMap::new(),
             mempool_strategy_counts: HashMap::new(),
+            competition_state: LiveCompetitionState::new(),
         }
     }
 
@@ -270,6 +354,20 @@ impl LiveRunner {
                         if !opportunities.is_empty() {
                             self.process_settled_opportunities(opportunities);
                         }
+                        // Track competitor activity from settled block
+                        if self.backtest_runner.competition_enabled() {
+                            if let Some(comp) = self.backtest_runner.last_block_competition() {
+                                self.competition_state.record_block(comp.clone());
+                                if comp.unique_searchers > 0 {
+                                    tracing::debug!(
+                                        "Block {}: {} competitor extractions by {} searchers",
+                                        block_num,
+                                        comp.extractions.len(),
+                                        comp.unique_searchers,
+                                    );
+                                }
+                            }
+                        }
                         settled_blocks_processed += 1;
                     }
                     Err(e) => {
@@ -310,6 +408,16 @@ impl LiveRunner {
             let pending = self.capture_pending_block().await;
             if let Some(ref pending) = pending {
                 self.total_mempool_txs_seen += pending.tx_count as u64;
+
+                // Check for known competitors in the mempool
+                self.competition_state.check_mempool(pending);
+                if self.competition_state.active_competitors() > 0 {
+                    tracing::info!(
+                        "Known competitors active in mempool: {} searchers",
+                        self.competition_state.active_competitors(),
+                    );
+                }
+
                 if !pending.txs.is_empty() {
                     let opps = self.run_mempool_detection(pending, mempool_gas_config, live_base_fee).await;
                     if !opps.is_empty() {
@@ -677,6 +785,11 @@ impl LiveRunner {
             self.total_mempool_txs_seen,
         );
         println!("Settled blks:   {} | Mempool scans: {}", settled_blocks, mempool_scans);
+        println!("Competitors:    {} active | {} known | {} extractions",
+            self.competition_state.active_competitors(),
+            self.competition_state.known_count(),
+            self.competition_state.total_extractions,
+        );
         println!("----------------------------------------");
         println!("Native Balance: {}.{:04} native", native_whole, native_frac);
         println!("Tokens Held:    {} tokens", self.wallet.token_balances.len());
@@ -775,6 +888,11 @@ impl LiveRunner {
         if !self.wallet.token_balances.is_empty() {
             println!("Token Holdings:   {} tokens held", self.wallet.token_balances.len());
         }
+    }
+
+    /// Load competitor profiles from a competition SQLite database.
+    pub fn with_competition_db(&mut self, store: &SqliteStore) {
+        self.competition_state = LiveCompetitionState::load_from_db(store);
     }
 
     /// Save execution history to JSON.

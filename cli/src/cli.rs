@@ -207,6 +207,22 @@ pub struct RunArgs {
     #[arg(long = "competition", help_heading = "Competition")]
     pub competition: bool,
 
+    /// After backtest, print calibrated PGA parameters derived from observed
+    /// competitor extraction data. Requires --competition.
+    #[arg(long = "calibrate-pga", help_heading = "Competition")]
+    pub calibrate_pga: bool,
+
+    /// Path to save/load PGA calibration JSON (save after backtest, load on
+    /// subsequent runs to override --pga-mean-competitors / --pga-intensity).
+    #[arg(long = "pga-calibration-file", value_name = "PATH", help_heading = "Competition")]
+    pub pga_calibration_file: Option<String>,
+
+    /// Path to SQLite database for competitor profile persistence across runs.
+    /// When set, competitor profiles are saved to / loaded from this database
+    /// in addition to the main cache.
+    #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
+    pub competition_db: Option<String>,
+
     /// Skip method/event signature resolution (downloads ~3MB DB on first run)
     #[arg(long = "no-sig-resolve")]
     pub no_sig_resolve: bool,
@@ -264,10 +280,6 @@ pub struct FactCheckArgs {
     /// Run ID to fact-check (e.g. "run_1712345678")
     #[arg(required = true, value_name = "RUN_ID")]
     pub run_id: String,
-
-    /// Re-load block data from cache and re-verify pool state (requires cached blocks)
-    #[arg(long)]
-    pub re_verify: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -346,6 +358,14 @@ pub struct LiveArgs {
     /// SQLite database path (defaults to config's db_path or ./cache)
     #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
     pub db_path: Option<String>,
+
+    /// Enable competitor extraction analysis during settled block processing.
+    #[arg(long = "competition", help_heading = "Competition")]
+    pub competition: bool,
+
+    /// Path to SQLite database for competitor profile persistence.
+    #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
+    pub competition_db: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

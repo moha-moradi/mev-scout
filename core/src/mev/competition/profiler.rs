@@ -5,7 +5,7 @@ use crate::types::Strategy;
 use super::extraction::{BlockCompetition, ExtractionType};
 
 /// Compiled profile of a single competitor searcher across blocks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CompetitorProfile {
     pub searcher: Address,
     pub total_extractions: u64,

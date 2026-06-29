@@ -79,6 +79,11 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         runner = runner.with_cross_block(3);
     }
 
+    // Enable competitor extraction if requested
+    if args.competition {
+        runner = runner.with_competition();
+    }
+
     let pool_manager = std::mem::take(&mut runner.pool_manager);
 
     let initial_balance_wei = U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
@@ -127,6 +132,20 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         block_replayer,
         chain_id,
     ).await;
+
+    // Load known competitor profiles from competition-db if provided
+    if let Some(ref comp_db_path) = args.competition_db {
+        match SqliteStore::open(comp_db_path, chain_id) {
+            Ok(comp_store) => {
+                live_runner.with_competition_db(&comp_store);
+                tracing::info!(
+                    "Loaded {} known competitor profiles from competition DB",
+                    live_runner.competition_state.known_count(),
+                );
+            }
+            Err(e) => tracing::warn!("Failed to open competition DB: {}", e),
+        }
+    }
 
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 

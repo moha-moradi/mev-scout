@@ -324,6 +324,31 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         None
     };
 
+    // Persist competitor profiles to competition-db if provided
+    if let Some(ref comp_db_path) = args.competition_db {
+        if let Some(ref comp) = competition_report {
+            match SqliteStore::open(comp_db_path, validation_result.chain_config.chain_id) {
+                Ok(comp_store) => {
+                    let _ = comp_store.put_competitor_profiles(&comp.top_searchers);
+                }
+                Err(e) => tracing::warn!("Failed to open competition DB: {}", e),
+            }
+        }
+    }
+
+    // Save PGA calibration to file if requested
+    if let Some(ref cal_path) = args.pga_calibration_file {
+        if let Some(ref comp) = competition_report {
+            if let Ok(json) = serde_json::to_string_pretty(&comp.pga_calibration) {
+                if let Err(e) = std::fs::write(cal_path, &json) {
+                    tracing::warn!("Failed to save PGA calibration: {}", e);
+                } else {
+                    tracing::info!("PGA calibration saved to {}", cal_path);
+                }
+            }
+        }
+    }
+
     let results_file = ResultsFile {
         run_id: run_id.clone(),
         chain: validation_result.chain_name.to_string(),
@@ -369,6 +394,44 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     // Render competition analysis results
     if let Some(ref comp) = competition_report {
         render_competition_table(comp);
+
+        // --calibrate-pga: print PGA calibration prominently
+        if args.calibrate_pga && !comp.pga_calibration.mean_competitors.is_empty() {
+            println!("\nPGA Calibration (--calibrate-pga):");
+            println!("  Blocks analyzed: {}", comp.pga_calibration.blocks_analyzed);
+            println!("  Total extractions: {}", comp.pga_calibration.total_extractions);
+            println!("  Per-strategy parameters:");
+            let mut strategies: Vec<String> = comp.pga_calibration.mean_competitors.keys().cloned().collect();
+            strategies.sort();
+            for strategy in &strategies {
+                let mean = comp.pga_calibration.mean_competitors.get(strategy).copied().unwrap_or(0.0);
+                let intensity = comp.pga_calibration.bid_to_value_ratio
+                    .get(strategy).copied().unwrap_or(0.5);
+                println!("    {}: mean_competitors={:.2}, intensity={:.3}", strategy, mean, intensity);
+            }
+            println!("  Suggested PGA config:");
+            for strategy in &strategies {
+                let mean = comp.pga_calibration.mean_competitors.get(strategy).copied().unwrap_or(0.0);
+                let intensity = comp.pga_calibration.bid_to_value_ratio
+                    .get(strategy).copied().unwrap_or(0.5);
+                println!("    --pga-mean-competitors {:.1} --pga-intensity {:.3}  # {}", mean, intensity, strategy);
+            }
+        }
+    }
+
+    // Load PGA calibration from file if provided (overrides CLI defaults)
+    if let Some(ref cal_path) = args.pga_calibration_file {
+        if competition_report.is_none() && std::path::Path::new(cal_path).exists() {
+            match std::fs::read_to_string(cal_path) {
+                Ok(json) => {
+                    if let Ok(cal) = serde_json::from_str::<mev_scout_core::mev::competition::PgaCalibration>(&json) {
+                        println!("\nLoaded PGA calibration from {} ({} blocks, {} extractions)",
+                            cal_path, cal.blocks_analyzed, cal.total_extractions);
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to read PGA calibration file: {}", e),
+            }
+        }
     }
 
     let mempool_opps: usize = block_stats.iter().map(|s| s.mempool_opp_count).sum();

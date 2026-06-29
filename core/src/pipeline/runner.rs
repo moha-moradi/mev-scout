@@ -134,6 +134,11 @@ impl BacktestRunner {
         }
     }
 
+    /// Return the competition data for the last processed block, if any.
+    pub fn last_block_competition(&self) -> Option<&BlockCompetition> {
+        self.block_competitions.last()
+    }
+
     /// Consume the runner and return the competition report.
     pub fn into_competition_report(self) -> Option<CompetitionReport> {
         if self.block_competitions.is_empty() {

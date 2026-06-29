@@ -5,6 +5,7 @@ use crate::data::ExecutedLog;
 use crate::pool::decoders;
 use crate::pool::state::PoolManager;
 use crate::types::MevOpportunity;
+use crate::types::Strategy;
 use crate::utils::u128_from_be_bytes;
 
 /// V2 Swap event topic: Swap(address,uint256,uint256,uint256,uint256,address)
@@ -304,6 +305,29 @@ fn match_opportunity(
 
 /// Extract competitor information from a single block's replayed transactions.
 /// Called after all transactions in a block have been processed.
+/// Build a set of sandwich-related tx indices from opportunities.
+/// Returns just the tx indices (sender matching is verified separately).
+fn sandwich_tx_index_set(opportunities: &[MevOpportunity]) -> HashSet<usize> {
+    opportunities
+        .iter()
+        .filter(|opp| opp.strategy == Strategy::Sandwich)
+        .flat_map(|opp| {
+            let mut indices = Vec::new();
+            if let Some(victim) = opp.victim_tx_index {
+                if victim > 0 {
+                    indices.push(victim - 1); // frontrun
+                }
+            }
+            if let Some(backrun) = opp.backrun_tx_index {
+                indices.push(backrun);
+            }
+            indices
+        })
+        .collect()
+}
+
+/// Extract competitor information from a single block's replayed transactions.
+/// Called after all transactions in a block have been processed.
 pub fn analyze_block(
     block_number: u64,
     txs: &[(usize, Address, u64, u128, Vec<ExecutedLog>)],
@@ -312,11 +336,18 @@ pub fn analyze_block(
     base_fee_per_gas: u128,
     builder: Address,
 ) -> BlockCompetition {
+    // Pre-compute sandwich-related tx indices from detected opportunities
+    let sandwich_indices = sandwich_tx_index_set(opportunities);
+
     let mut extractions = Vec::new();
     let mut searchers_seen = HashSet::new();
 
     for (tx_index, sender, gas_used, gas_effective, logs) in txs {
-        let (extraction_type, confidence) = classify_extraction(logs, *sender, pool_manager);
+        let (extraction_type, confidence) = if sandwich_indices.contains(tx_index) {
+            (ExtractionType::Sandwich, 0.90)
+        } else {
+            classify_extraction(logs, *sender, pool_manager)
+        };
 
         if confidence < 0.25 {
             continue;
@@ -332,7 +363,7 @@ pub fn analyze_block(
         }
 
         let net_profit_wei = (gross_profit_wei as i128).saturating_sub(gas_cost_wei as i128);
-        if net_profit_wei <= 0 && extraction_type != ExtractionType::Liquidation {
+        if net_profit_wei <= 0 && extraction_type != ExtractionType::Liquidation && extraction_type != ExtractionType::Sandwich {
             continue;
         }
 

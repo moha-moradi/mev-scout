@@ -109,6 +109,7 @@ mev-scout run [FLAGS]
 | `--parquet-dir PATH` | string | — | Parquet intermediate directory (optional) |
 | `--fact-check` | bool | false | Print detailed fact-check report |
 | `--evm-fact-check` | bool | false | EVM-based fact-check (requires `--fact-check`) |
+| `--no-sig-resolve` | bool | false | Skip method/event signature resolution |
 
 ### PGA (Priority Gas Auction)
 
@@ -159,9 +160,10 @@ mev-scout run --blocks 100 -n base -r <RPC> \
   --strategies sandwich,jit,jit_arb \
   --proximity-window 5
 
-# Multi-provider RPC with per-provider rate limits
+# Multi-provider RPC with workers and global rate limit
 mev-scout run --days 1 -n polygon -r <RPC1> \
-  --rpc-urls <RPC2>,<RPC3> --rpc-rps 10,20,30
+  --rpc-urls <RPC2>,<RPC3> --rpc-rps 10,20,30 \
+  --rpc-workers 5 --rps-limit 100
 
 # Custom token prices with on-chain oracle
 mev-scout run --block 50000000 -n avalanche -r <RPC> \
@@ -172,13 +174,18 @@ mev-scout run --block 50000000 -n avalanche -r <RPC> \
 mev-scout run --days 3 -n optimism -r <RPC> \
   --fact-check --evm-fact-check
 
-# Competitor analysis + PGA calibration
+# Competitor analysis with calibrated PGA parameters
 mev-scout run --blocks 200 -n ethereum -r <RPC> \
-  --competition --pga --output json
+  --competition --pga --pga-mean-competitors 5 --pga-intensity 0.7 \
+  --output json
 
 # Capture pending mempool txs alongside backtest
 mev-scout run --days 1 -n polygon -r <RPC> \
   --capture-pending
+
+# Fast scan with batching disabled and no signature resolution
+mev-scout run --days 1 -n polygon -r <RPC> \
+  --no-batch-rpc --no-sig-resolve
 ```
 
 ---
@@ -197,11 +204,17 @@ mev-scout fetch [FLAGS]
 
 Same **Block Range**, **Chain & Connection**, `--db-path`, and `--parquet-dir` as `run`.
 
+Additionally:
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--no-sig-resolve` | bool | false | Skip method/event signature resolution |
+
 ### Examples
 
 ```bash
-# Pre-cache 7 days of Polygon blocks
-mev-scout fetch --days 7 -n polygon -r https://polygon-rpc.publicnode.com
+# Pre-cache 7 days of Polygon blocks (skip signature resolution)
+mev-scout fetch --days 7 -n polygon -r https://polygon-rpc.publicnode.com --no-sig-resolve
 
 # Pre-cache a specific Ethereum block range
 mev-scout fetch --from-block 19000000 --to-block 19000100 -n ethereum -r <RPC>
@@ -287,7 +300,13 @@ mev-scout replay --block NUMBER [FLAGS]
 | `--block NUMBER` | u64 | **yes** | Block number to replay |
 | `--tx-index INDEX` | usize | no | Replay up to this tx index (default: all) |
 | `--analyze` | bool | no | Show DEX interaction analysis per tx |
+| `-n, --chain NAME` | string | no | Target chain (default: `polygon`) |
 | `--rpc URL` | string | varies | Archive node RPC endpoint |
+| `--rpc-workers N` | usize | no | Concurrent RPC workers |
+| `--rps-limit RPS` | f64 | no | RPC requests per second limit |
+| `--rpc-urls URLS` | string | no | Additional RPC URLs (comma-separated) |
+| `--rpc-rps RPS` | string | no | Per-provider RPS limits (comma-separated) |
+| `--no-batch-rpc` | bool | false | Disable JSON-RPC batching |
 | `--db-path PATH` | string | no | Custom SQLite cache path |
 | `--parquet-dir PATH` | string | no | Parquet directory |
 
@@ -305,6 +324,12 @@ mev-scout replay --block 50000000 -n polygon -r <RPC> --analyze
 
 # Replay from cached data
 mev-scout replay --block 50000000 -n polygon --db-path ./cache/mev-scout.sqlite
+
+# Replay with custom RPC workers, rate limiting, and Parquet output
+mev-scout replay --block 50000000 -n polygon -r <RPC> \
+  --rpc-urls <RPC2>,<RPC3> --rpc-rps 10,20,30 \
+  --rpc-workers 3 --rps-limit 100 --no-batch-rpc \
+  --parquet-dir ./parquet-debug
 ```
 
 ---
@@ -326,7 +351,7 @@ mev-scout discover --from-block NUMBER --to-block NUMBER [FLAGS]
 | `--from-block NUMBER` | u64 | **yes** | Start block for log scanning |
 | `--to-block NUMBER` | u64 | **yes** | End block (inclusive) |
 | `--v2-factories ADDRS` | string | no | V2 factory addresses (comma-separated, overrides config) |
-| `--v3-factory ADDR` | string | no | V3 factory address (overrides config) |
+| `--v3-factory ADDRS` | string | no | V3 factory address(es) (comma-separated, overrides config) |
 | `--batch-size N` | u64 | 10 | Batch size for `eth_getLogs` requests |
 | `--no-save` | bool | false | Skip saving to SQLite |
 | `--db-path PATH` | string | no | SQLite database path |
@@ -354,18 +379,25 @@ mev-scout discover -n ethereum -r <RPC> \
 mev-scout discover -n bsc -r <RPC> \
   --from-block 40000000 --to-block 40000500 \
   --v2-factories 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73
+
+# Discover with custom DB path, RPC workers, and rate limiting
+mev-scout discover -n polygon -r <RPC> \
+  --from-block 58000000 --to-block 58002000 \
+  --db-path ./custom-cache.sqlite \
+  --rpc-urls <RPC2>,<RPC3> --rpc-rps 10,20,30 \
+  --rpc-workers 5 --rps-limit 200 --no-batch-rpc
 ```
 
 ---
 
 ## 8. `mev-scout fact-check` — Verify Results
 
-Verifies a previous run's detected opportunities against on-chain state. Structural check verifies pool math; `--re-verify` re-fetches block data from cache and re-runs pool state initialization.
+Verifies a previous run's detected opportunities via structural checks (profit > gas, pool math).
 
 ### Syntax
 
 ```bash
-mev-scout fact-check <RUN_ID> [FLAGS]
+mev-scout fact-check <RUN_ID>
 ```
 
 ### Arguments
@@ -374,20 +406,11 @@ mev-scout fact-check <RUN_ID> [FLAGS]
 |-----|------|----------|-------------|
 | `RUN_ID` | string | **yes** | Run ID to fact-check (e.g. `run_1712345678`) |
 
-### Flags
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--re-verify` | bool | false | Re-load block data from cache and re-verify |
-
 ### Examples
 
 ```bash
 # Basic fact-check
 mev-scout fact-check run_1712345678
-
-# Fact-check with re-verification from cached blocks
-mev-scout fact-check run_1712345678 --re-verify
 ```
 
 ---
@@ -467,6 +490,19 @@ mev-scout live -n bsc -r <RPC> \
 # Live mode with fixed gas model
 mev-scout live -n arbitrum -r <RPC> \
   --gas-model fixed --priority-fee 0.1
+
+# Live mode with on-chain pricing, custom resync, and export path
+mev-scout live -n ethereum -r <RPC> \
+  --initial-balance 20 --min-profit 0.05 \
+  --price-oracle onchain --token-price "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2=3000" \
+  --resync-interval 120 --export-path ./live-logs \
+  --rpc-workers 3 --rps-limit 50 \
+  --db-path ./live-cache.sqlite
+
+# Live mode with multi-provider RPC
+mev-scout live -n polygon -r <RPC1> \
+  --rpc-urls <RPC2>,<RPC3> --rpc-rps 10,20,30 \
+  --initial-balance 50 --min-profit 0.01
 ```
 
 ---
@@ -925,7 +961,7 @@ mev-scout run --days 7 -n polygon -r <RPC> --output json --fact-check
 mev-scout report --run-id run_1712345678 --output csv
 
 # 6. Fact-check a previous run
-mev-scout fact-check run_1712345678 --re-verify
+mev-scout fact-check run_1712345678
 
 # 7. Debug a suspicious block
 mev-scout replay --block 58000000 -n polygon -r <RPC> --analyze
