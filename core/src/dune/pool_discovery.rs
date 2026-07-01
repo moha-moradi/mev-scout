@@ -134,8 +134,8 @@ pub async fn discover_v3_pools_from_dune(
 
 /// Discover all active pools in a block range from `dex.trades` via Dune.
 ///
-/// Expected Dune query columns: `pool_address`, `token0`, `token1`,
-/// `fee`, `project`, `blockchain`
+/// Expected Dune query columns: `pool_address`(0), `token0`(1), `token1`(2),
+/// `project`(3), `project_type`(4), `last_active_block`(5), `fee`(6)
 pub async fn discover_active_pools_from_dune(
     client: &DuneClient,
     query_id: u64,
@@ -166,7 +166,7 @@ pub async fn discover_active_pools_from_dune(
         let address = DuneClient::col_as_address(row, 0);
         let token0 = DuneClient::col_as_address(row, 1);
         let token1 = DuneClient::col_as_address(row, 2);
-        let project = DuneClient::col_as_string(row, 4).unwrap_or_default().to_lowercase();
+        let project = DuneClient::col_as_string(row, 3).unwrap_or_default().to_lowercase();
 
         let (addr, t0, t1) = match (address, token0, token1) {
             (Some(a), Some(t0), Some(t1)) if !seen.contains(&a) => (a, t0, t1),
@@ -175,13 +175,13 @@ pub async fn discover_active_pools_from_dune(
         seen.insert(addr);
 
         let (dex_type, fee) = if project.contains("v3") {
-            (DexType::UniswapV3, DuneClient::col_as_u64(row, 3).unwrap_or(3000) as u32)
+            (DexType::UniswapV3, DuneClient::col_as_u64(row, 6).unwrap_or(3000) as u32)
         } else if project.contains("curve") {
             (DexType::Curve, 0)
         } else if project.contains("balancer") {
             (DexType::Balancer, 0)
         } else {
-            (DexType::UniswapV2, DuneClient::col_as_u64(row, 3).unwrap_or(30) as u32)
+            (DexType::UniswapV2, DuneClient::col_as_u64(row, 6).unwrap_or(30) as u32)
         };
 
         pools.push(DiscoveredPool {
