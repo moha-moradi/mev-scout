@@ -1,3 +1,4 @@
+mod audit;
 mod config;
 mod discover;
 mod fact_check;
@@ -7,6 +8,7 @@ mod replay;
 mod report;
 mod run;
 
+pub use audit::cmd_audit;
 pub use config::cmd_config;
 pub use discover::cmd_discover;
 pub use fact_check::cmd_factcheck;

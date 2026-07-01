@@ -82,5 +82,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Discover(args) => commands::cmd_discover(&config, args).await,
         Command::FactCheck(args) => commands::cmd_factcheck(&config, args).await,
         Command::Live(args) => commands::cmd_live(&config, args).await,
+        Command::Audit(args) => commands::cmd_audit(&config, args).await,
     }
 }

@@ -100,6 +100,16 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.gas_multiplier = Some(args.gas_multiplier);
         }
         Command::FactCheck(_) => {}
+        Command::Audit(args) => {
+            o.chain = Some(args.chain_args.chain.clone());
+            o.rpc_url = args.chain_args.rpc_url.clone();
+            o.rpc_urls = args.chain_args.rpc_urls.clone();
+            o.rpc_rps = args.chain_args.rpc_rps.clone();
+            o.rpc_workers = Some(args.chain_args.rpc_workers);
+            o.rps_limit = Some(args.chain_args.rps_limit);
+            o.from_block = Some(args.from_block);
+            o.to_block = Some(args.to_block);
+        }
     }
     o
 }

@@ -192,3 +192,104 @@ WHERE p.contract_address = '{token_address}'
 ORDER BY p.minute DESC
 LIMIT 1
 "#;
+
+// ── MEV Event Queries ─────────────────────────────────────────────────────
+
+/// Fetch all known sandwich attacks in a block range from `dex.sandwiches`.
+///
+/// Dune's curated dataset captures frontrun+ victim+ backrun tx hashes per sandwich.
+///
+/// Columns: `block_number`, `victim_tx_hash`, `front_tx_hash`, `back_tx_hash`,
+/// `sandwich_type`, `pool_address`, `mev_profit_eth`
+pub const QUERY_SANDWICHES_BY_RANGE: &str = r#"
+SELECT
+  s.block_number,
+  s.victim_tx_hash,
+  s.front_tx_hash,
+  s.back_tx_hash,
+  s.sandwich_type,
+  s.pool_address,
+  s.mev_profit_eth
+FROM dex.sandwiches s
+WHERE s.blockchain = '{chain}'
+  AND s.block_number >= {from_block}
+  AND s.block_number <= {to_block}
+ORDER BY s.block_number, s.victim_tx_hash
+"#;
+
+/// Fetch arbitrage transactions from Dune's curated dataset or detect them
+/// from `dex.trades` using the pattern: one tx swaps through >= 2 pools.
+///
+/// Columns: `block_number`, `tx_hash`, `pool_a`, `pool_b`, `token_in`,
+/// `token_out`, `profit_usd`, `profit_eth`
+pub const QUERY_ARBITRAGES_BY_RANGE: &str = r#"
+WITH tx_pools AS (
+  SELECT
+    t.blockchain,
+    t.block_number,
+    t.tx_hash,
+    t.pool_address,
+    t.token_bought_address,
+    t.token_sold_address,
+    t.amount_usd,
+    t.tx_index,
+    COUNT(*) OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash) AS pool_count
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+)
+SELECT DISTINCT
+  tp.block_number,
+  tp.tx_hash,
+  FIRST_VALUE(tp.pool_address) OVER (PARTITION BY tp.block_number, tp.tx_hash ORDER BY tp.tx_index) AS pool_a,
+  LAST_VALUE(tp.pool_address) OVER (PARTITION BY tp.block_number, tp.tx_hash ORDER BY tp.tx_index) AS pool_b,
+  FIRST_VALUE(tp.token_sold_address) OVER (PARTITION BY tp.block_number, tp.tx_hash ORDER BY tp.tx_index) AS token_in,
+  LAST_VALUE(tp.token_bought_address) OVER (PARTITION BY tp.block_number, tp.tx_hash ORDER BY tp.tx_index) AS token_out,
+  tp.amount_usd
+FROM tx_pools tp
+WHERE tp.pool_count >= 2
+ORDER BY tp.block_number, tp.tx_hash
+"#;
+
+/// Fetch all flash loan events from Dune.
+///
+/// Columns: `block_number`, `tx_hash`, `protocol`, `token_address`, `amount_usd`,
+/// `amount`, `fee`
+pub const QUERY_FLASH_LOANS_BY_RANGE: &str = r#"
+SELECT
+  f.block_number,
+  f.tx_hash,
+  f.protocol,
+  f.token_address,
+  f.amount_usd,
+  f.amount,
+  f.fee
+FROM lending.flashloans f
+WHERE f.blockchain = '{chain}'
+  AND f.block_number >= {from_block}
+  AND f.block_number <= {to_block}
+ORDER BY f.block_number, f.tx_hash
+"#;
+
+/// Fetch pool liquidity snapshots from Dune — returns TVL and reserve info
+/// for DEX pools at a given block range end.
+///
+/// Columns: `pool_address`, `project`, `token0_address`, `token1_address`,
+/// `reserve0`, `reserve1`, `tvl_usd`
+pub const QUERY_POOL_LIQUIDITY: &str = r#"
+SELECT DISTINCT ON (t.pool_address)
+  t.pool_address,
+  t.project,
+  t.token_bought_address AS token0_address,
+  t.token_sold_address AS token1_address,
+  SUM(t.amount_bought) OVER (PARTITION BY t.pool_address, t.token_bought_address) AS reserve0,
+  SUM(t.amount_sold) OVER (PARTITION BY t.pool_address, t.token_sold_address) AS reserve1,
+  t.tvl_usd
+FROM dex.trades t
+WHERE t.blockchain = '{chain}'
+  AND t.block_number <= {to_block}
+  AND t.block_number >= {to_block} - 1000
+  AND t.tvl_usd IS NOT NULL
+ORDER BY t.pool_address, t.block_number DESC
+"#;

@@ -162,6 +162,15 @@ pub struct Config {
     /// When true, use Dune pool discovery as the primary source instead of subgraphs.
     #[serde(default)]
     pub dune_primary_pool_discovery: bool,
+    /// Dune saved query ID for sandwich events by block range (dex.sandwiches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_sandwich_query_id: Option<u64>,
+    /// Dune saved query ID for arbitrage events by block range (dex.trades multi-pool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_arbitrage_query_id: Option<u64>,
+    /// Dune saved query ID for flash loan events by block range (lending.flashloans).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_flash_loan_query_id: Option<u64>,
 
     // ── Execution fields (on-chain broadcast) ─────────────────────────
     /// Private key for signing. Read from env MEV_SCOUT_PK.
@@ -294,6 +303,9 @@ impl Default for Config {
             dune_verify_trade_query_id: None,
             dune_verify_sandwich_query_id: None,
             dune_primary_pool_discovery: false,
+            dune_sandwich_query_id: None,
+            dune_arbitrage_query_id: None,
+            dune_flash_loan_query_id: None,
             wallet_key: None,
             broadcast_mode: default_broadcast_mode(),
             executor_factory: None,
@@ -528,6 +540,9 @@ pub struct CliOverrides {
     pub dune_verify_trade_query_id: Option<u64>,
     pub dune_verify_sandwich_query_id: Option<u64>,
     pub dune_primary_pool_discovery: Option<bool>,
+    pub dune_sandwich_query_id: Option<u64>,
+    pub dune_arbitrage_query_id: Option<u64>,
+    pub dune_flash_loan_query_id: Option<u64>,
 
     // ── Execution overrides ───────────────────────────────────────────
     pub wallet_key: Option<String>,
@@ -579,6 +594,9 @@ impl Config {
         merge_opt!(self, overrides, dune_verify_trade_query_id, copy_some);
         merge_opt!(self, overrides, dune_verify_sandwich_query_id, copy_some);
         merge_opt!(self, overrides, dune_primary_pool_discovery, copy);
+        merge_opt!(self, overrides, dune_sandwich_query_id, copy_some);
+        merge_opt!(self, overrides, dune_arbitrage_query_id, copy_some);
+        merge_opt!(self, overrides, dune_flash_loan_query_id, copy_some);
         merge_opt!(self, overrides, wallet_key, into_option);
         merge_opt!(self, overrides, broadcast_mode);
         merge_opt!(self, overrides, executor_factory, into_option);
@@ -759,6 +777,9 @@ rpc_url = "https://eth.diy"
             dune_verify_trade_query_id: None,
             dune_verify_sandwich_query_id: None,
             dune_primary_pool_discovery: None,
+            dune_sandwich_query_id: None,
+            dune_arbitrage_query_id: None,
+            dune_flash_loan_query_id: None,
             wallet_key: None,
             broadcast_mode: None,
             executor_factory: None,
@@ -813,6 +834,9 @@ rpc_url = "https://eth.diy"
             dune_verify_trade_query_id: None,
             dune_verify_sandwich_query_id: None,
             dune_primary_pool_discovery: None,
+            dune_sandwich_query_id: None,
+            dune_arbitrage_query_id: None,
+            dune_flash_loan_query_id: None,
             wallet_key: None,
             broadcast_mode: None,
             executor_factory: None,

@@ -49,6 +49,11 @@ pub enum Command {
     /// Live mode — connect to the live chain and run as a virtual MEV bot
     Live(LiveArgs),
 
+    /// Audit a previous run against Dune Analytics data.
+    /// Compares MEV Scout's detected opportunities with Dune's curated
+    /// datasets (dex.sandwiches, dex.trades, etc.). Requires configured
+    /// Dune query IDs in the config file.
+    Audit(AuditArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -426,4 +431,27 @@ pub struct DiscoverArgs {
     /// Requires configured dune_api_key and query IDs in config for "dune" or "all" sources.
     #[arg(long, default_value = "onchain", value_name = "SOURCE")]
     pub source: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AuditArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Start block for audit range
+    #[arg(long, value_name = "NUMBER")]
+    pub from_block: u64,
+
+    /// End block for audit range (inclusive)
+    #[arg(long, value_name = "NUMBER")]
+    pub to_block: u64,
+
+    /// Run ID from a previous run to compare against Dune.
+    /// If provided, loads saved opportunities instead of running detection again.
+    #[arg(long, value_name = "RUN_ID")]
+    pub run_id: Option<String>,
+
+    /// Path to results file (alternative to --run-id).
+    #[arg(long, value_name = "PATH")]
+    pub results_file: Option<String>,
 }
