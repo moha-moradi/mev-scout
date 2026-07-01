@@ -21,7 +21,7 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     let rpc = RpcClient::from_urls(&rpc_refs, chain_config.chain_id)?;
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_config.chain_id).await?;
-    let cache = SqliteStore::open(&config.db_path, chain_config.chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_config.chain_id)?;
 
     let block_num = args.block;
     let tx_index = args.tx_index.unwrap_or(usize::MAX);

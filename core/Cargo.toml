@@ -17,7 +17,7 @@ comfy-table = "7"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Data ingestion & caching
-alloy = { version = "2", features = ["providers", "rpc-types", "transport-http", "rpc-client", "consensus", "reqwest-default-tls"] }
+alloy = { version = "2", features = ["providers", "rpc-types", "transport-http", "rpc-client", "consensus", "reqwest-default-tls", "signers", "dyn-abi", "rlp", "eips"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 bincode = "1"
 futures = "0.3"

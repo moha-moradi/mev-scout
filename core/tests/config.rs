@@ -105,6 +105,18 @@ fn test_cli_override_merging() {
         min_profit_threshold: None,
         poll_interval_ms: None,
         max_executions: None,
+        dune_api_key: None,
+        dune_v2_pools_query_id: None,
+        dune_v3_pools_query_id: None,
+        dune_active_pools_query_id: None,
+        dune_verify_trade_query_id: None,
+        dune_verify_sandwich_query_id: None,
+        dune_primary_pool_discovery: None,
+        wallet_key: None,
+        broadcast_mode: None,
+        executor_factory: None,
+        relay_url: None,
+        gas_multiplier: None,
     };
     config.merge_cli(&overrides);
 

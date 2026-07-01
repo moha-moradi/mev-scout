@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
 use crate::pool::subgraph_discovery::{SubgraphEndpoint, SubgraphEndpoints};
+use crate::types::ExecutorType;
 
 /// Per-chain runtime parameters loaded from the configuration file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub chain_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,4 +259,14 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
         },
     );
     m
+}
+
+/// Returns default executor addresses per chain.
+/// These are placeholder addresses populated after initial Foundry deployment.
+pub fn default_executor_addresses() -> HashMap<String, HashMap<ExecutorType, Address>> {
+    let mut map = HashMap::new();
+    for (name, _) in default_chains() {
+        map.insert(name, HashMap::new());
+    }
+    map
 }

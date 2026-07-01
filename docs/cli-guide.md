@@ -105,7 +105,7 @@ mev-scout run [FLAGS]
 |------|------|---------|-------------|
 | `--output FORMAT` | string | `table` | `table`, `csv`, `json` |
 | `--export-path PATH` | string | `./results` | Directory for exports |
-| `--db-path PATH` | string | `./cache/mev-scout.sqlite` | SQLite database path |
+| `--db-path PATH` | string | `./cache/{chain}-mev-scout.sqlite` | SQLite database path |
 | `--parquet-dir PATH` | string | — | Parquet intermediate directory (optional) |
 | `--fact-check` | bool | false | Print detailed fact-check report |
 | `--evm-fact-check` | bool | false | EVM-based fact-check (requires `--fact-check`) |
@@ -895,7 +895,7 @@ liquidation = 500000
 # ── Output ────────────────────────────────────────────────────
 output = "table"
 export_path = "./results"
-db_path = "./cache/mev-scout.sqlite"
+db_path = "./cache/{chain}-mev-scout.sqlite"  # per chain; e.g. polygon-mev-scout.sqlite
 parquet_dir = "./parquet"
 
 # ── Pricing ──────────────────────────────────────────────────
@@ -976,6 +976,6 @@ mev-scout live -n polygon -r <RPC> --initial-balance 10 --min-profit 0.01
 
 - **RPC requirements:** An archive node RPC is strongly recommended for historical backtesting. Public RPCs work but are rate-limited (use `--rps-limit` and `--rpc-workers` conservatively).
 - **Data freshness:** `--days` and `--blocks` resolve at runtime from chain tip. For reproducible results, use explicit `--from-block` / `--to-block` or `--block`.
-- **Storage:** Block data is cached in SQLite (`./cache/mev-scout.sqlite` by default). Parquet output is optional and adds ZSTD-compressed columnar storage.
+- **Storage:** Block data is cached per-chain in SQLite (`./cache/{chain}-mev-scout.sqlite` by default). Parquet output is optional and adds ZSTD-compressed columnar storage.
 - **Live mode:** Press Ctrl+C to gracefully shut down. Logs are written to `live_<timestamp>.log` when `-v` is used.
 - **Performance:** For large ranges, use multiple RPC providers via `--rpc-urls` and increase `--rpc-workers` (10-20 for private RPCs). The tool fetches blocks in parallel using concurrent workers.

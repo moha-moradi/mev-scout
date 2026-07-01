@@ -24,7 +24,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_id).await?;
 
-    let cache = SqliteStore::open(&config.db_path, chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
 
     let range_mode = match validation::resolve_block_range(
         args.block_range.days,

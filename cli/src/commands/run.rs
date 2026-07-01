@@ -34,7 +34,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let rpc = RpcClient::from_urls(&rpc_refs, validation_result.chain_config.chain_id)?;
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
     rpc.check_connection(validation_result.chain_config.chain_id).await?;
-    let cache = SqliteStore::open(&config.db_path, validation_result.chain_config.chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&validation_result.chain_name), validation_result.chain_config.chain_id)?;
 
     let resolver = RangeResolver::new(rpc.clone());
     let resolved = match resolver.resolve(&validation_result.range_mode).await {
@@ -87,21 +87,26 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
             resolved.end_block,
         );
 
-        match mev_scout_core::pool::discovery::discover_and_cache(
-            &rpc,
-            &cache,
-            resolved.start_block,
-            resolved.end_block,
-            batch_size,
-            v2_fee,
-            vault,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        {
+        let discovery_result = {
+            let dune_enabled = config.dune_api_key.is_some() && config.dune_primary_pool_discovery;
+            if dune_enabled {
+                mev_scout_core::pool::discovery::discover_pools_with_sources(
+                    &rpc, &cache, config,
+                    validation_result.chain_name,
+                    resolved.start_block, resolved.end_block,
+                    batch_size, v2_fee, vault,
+                    None, None, None, None,
+                ).await
+            } else {
+                mev_scout_core::pool::discovery::discover_and_cache(
+                    &rpc, &cache,
+                    resolved.start_block, resolved.end_block,
+                    batch_size, v2_fee, vault,
+                    None, None, None, None,
+                ).await
+            }
+        };
+        match discovery_result {
             Ok((discovered, active)) => {
                 if !discovered.is_empty() {
                     tracing::info!(

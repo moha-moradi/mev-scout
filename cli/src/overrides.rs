@@ -93,6 +93,11 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.min_profit_threshold = Some(args.min_profit);
             o.poll_interval_ms = Some(args.poll_interval);
             o.max_executions = args.max_executions;
+            o.wallet_key = args.wallet_key.clone();
+            o.broadcast_mode = Some(args.broadcast_mode.clone());
+            o.executor_factory = args.executor_factory.clone();
+            o.relay_url = args.relay_url.clone();
+            o.gas_multiplier = Some(args.gas_multiplier);
         }
         Command::FactCheck(_) => {}
     }

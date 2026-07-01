@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::defaults::{ChainConfig, default_chains};
 use crate::error;
+
 use crate::types::{
     ChainName, FlashLoanProvider, RangeMode, Strategy,
 };
@@ -136,7 +137,52 @@ pub struct Config {
     /// Optional cap on virtual executions (None = unlimited).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_executions: Option<u64>,
+
+    // ── Dune Analytics integration ───────────────────────────────────────
+    /// Dune Analytics API key. If set, enables Dune-based pool discovery and
+    /// cross-validation features. Optional — all features gracefully degrade
+    /// when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_api_key: Option<String>,
+    /// Dune saved query ID for V2 pool discovery (PairCreated events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_v2_pools_query_id: Option<u64>,
+    /// Dune saved query ID for V3 pool discovery (PoolCreated events).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_v3_pools_query_id: Option<u64>,
+    /// Dune saved query ID for active pool discovery (from dex.trades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_active_pools_query_id: Option<u64>,
+    /// Dune saved query ID for trade verification by tx_hash (dex.trades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_verify_trade_query_id: Option<u64>,
+    /// Dune saved query ID for sandwich verification (dex.sandwiches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_verify_sandwich_query_id: Option<u64>,
+    /// When true, use Dune pool discovery as the primary source instead of subgraphs.
+    #[serde(default)]
+    pub dune_primary_pool_discovery: bool,
+
+    // ── Execution fields (on-chain broadcast) ─────────────────────────
+    /// Private key for signing. Read from env MEV_SCOUT_PK.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_key: Option<String>,
+    /// Broadcast mode: public, flashbots, mevshare.
+    #[serde(default = "default_broadcast_mode")]
+    pub broadcast_mode: String,
+    /// Deployed ExecutorFactory address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_factory: Option<String>,
+    /// Custom relay URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_url: Option<String>,
+    /// Gas limit multiplier for safety buffer.
+    #[serde(default = "default_gas_multiplier")]
+    pub gas_multiplier: f64,
 }
+
+fn default_broadcast_mode() -> String { "public".to_string() }
+fn default_gas_multiplier() -> f64 { 1.2 }
 
 fn default_initial_balance() -> f64 { 10.0 }
 fn default_min_profit_threshold() -> f64 { 0.001 }
@@ -179,7 +225,20 @@ fn default_export_path() -> String {
 }
 
 fn default_db_path() -> String {
-    "./cache/mev-scout.sqlite".to_string()
+    String::new() // empty = resolve to per-chain default
+}
+
+impl Config {
+    /// Return the effective database path for the given chain.
+    /// If the user provided a custom path via config or CLI, use that.
+    /// Otherwise, use a per-chain path: `./cache/{chain}-mev-scout.sqlite`.
+    pub fn effective_db_path(&self, chain: &ChainName) -> String {
+        if self.db_path.is_empty() {
+            format!("./cache/{}-mev-scout.sqlite", chain)
+        } else {
+            self.db_path.clone()
+        }
+    }
 }
 
 fn default_max_pairs_per_token() -> usize {
@@ -228,6 +287,18 @@ impl Default for Config {
             min_profit_threshold: default_min_profit_threshold(),
             poll_interval_ms: default_poll_interval_ms(),
             max_executions: None,
+            dune_api_key: None,
+            dune_v2_pools_query_id: None,
+            dune_v3_pools_query_id: None,
+            dune_active_pools_query_id: None,
+            dune_verify_trade_query_id: None,
+            dune_verify_sandwich_query_id: None,
+            dune_primary_pool_discovery: false,
+            wallet_key: None,
+            broadcast_mode: default_broadcast_mode(),
+            executor_factory: None,
+            relay_url: None,
+            gas_multiplier: default_gas_multiplier(),
         }
     }
 }
@@ -377,7 +448,7 @@ Parquet dir:         {}
             provider_desc,
             self.gas_model,
             if self.cross_block_window > 0 { format!("{} blocks", self.cross_block_window) } else { "disabled".to_string() },
-            self.db_path,
+            self.effective_db_path(&chain_name),
             self.parquet_dir.as_deref().unwrap_or("(none)"),
         )
     }
@@ -448,6 +519,22 @@ pub struct CliOverrides {
     pub min_profit_threshold: Option<f64>,
     pub poll_interval_ms: Option<u64>,
     pub max_executions: Option<u64>,
+
+    // ── Dune overrides ─────────────────────────────────────────────────
+    pub dune_api_key: Option<String>,
+    pub dune_v2_pools_query_id: Option<u64>,
+    pub dune_v3_pools_query_id: Option<u64>,
+    pub dune_active_pools_query_id: Option<u64>,
+    pub dune_verify_trade_query_id: Option<u64>,
+    pub dune_verify_sandwich_query_id: Option<u64>,
+    pub dune_primary_pool_discovery: Option<bool>,
+
+    // ── Execution overrides ───────────────────────────────────────────
+    pub wallet_key: Option<String>,
+    pub broadcast_mode: Option<String>,
+    pub executor_factory: Option<String>,
+    pub relay_url: Option<String>,
+    pub gas_multiplier: Option<f64>,
 }
 
 impl Config {
@@ -485,6 +572,18 @@ impl Config {
         merge_opt!(self, overrides, min_profit_threshold, copy);
         merge_opt!(self, overrides, poll_interval_ms, copy);
         merge_opt!(self, overrides, max_executions, copy_some);
+        merge_opt!(self, overrides, dune_api_key, into_option);
+        merge_opt!(self, overrides, dune_v2_pools_query_id, copy_some);
+        merge_opt!(self, overrides, dune_v3_pools_query_id, copy_some);
+        merge_opt!(self, overrides, dune_active_pools_query_id, copy_some);
+        merge_opt!(self, overrides, dune_verify_trade_query_id, copy_some);
+        merge_opt!(self, overrides, dune_verify_sandwich_query_id, copy_some);
+        merge_opt!(self, overrides, dune_primary_pool_discovery, copy);
+        merge_opt!(self, overrides, wallet_key, into_option);
+        merge_opt!(self, overrides, broadcast_mode);
+        merge_opt!(self, overrides, executor_factory, into_option);
+        merge_opt!(self, overrides, relay_url, into_option);
+        merge_opt!(self, overrides, gas_multiplier, copy);
     }
 
     /// Parse the `--token-price` value (e.g. "0xABC=0.999,0xDEF=1800") into a
@@ -653,6 +752,18 @@ rpc_url = "https://eth.diy"
             min_profit_threshold: None,
             poll_interval_ms: None,
             max_executions: None,
+            dune_api_key: None,
+            dune_v2_pools_query_id: None,
+            dune_v3_pools_query_id: None,
+            dune_active_pools_query_id: None,
+            dune_verify_trade_query_id: None,
+            dune_verify_sandwich_query_id: None,
+            dune_primary_pool_discovery: None,
+            wallet_key: None,
+            broadcast_mode: None,
+            executor_factory: None,
+            relay_url: None,
+            gas_multiplier: None,
         };
         let mut cfg = Config::default();
         cfg.merge_cli(&overrides);
@@ -695,6 +806,18 @@ rpc_url = "https://eth.diy"
             min_profit_threshold: None,
             poll_interval_ms: None,
             max_executions: None,
+            dune_api_key: None,
+            dune_v2_pools_query_id: None,
+            dune_v3_pools_query_id: None,
+            dune_active_pools_query_id: None,
+            dune_verify_trade_query_id: None,
+            dune_verify_sandwich_query_id: None,
+            dune_primary_pool_discovery: None,
+            wallet_key: None,
+            broadcast_mode: None,
+            executor_factory: None,
+            relay_url: None,
+            gas_multiplier: None,
         };
         cfg.merge_cli(&overrides);
         assert_eq!(cfg.days, Some(7));

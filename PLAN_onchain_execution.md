@@ -53,11 +53,15 @@ contracts/
 
 **Interface**:
 ```solidity
-contract FlashLoanArbitrage {
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract FlashLoanArbitrage is ReentrancyGuard {
     error NotOwner();
     error FlashLoanFailed();
     error SwapFailed();
     error NotProfitable(uint256 profit, uint256 minProfit);
+
+    address public owner;
 
     event ArbitrageExecuted(
         address indexed tokenIn,
@@ -67,7 +71,19 @@ contract FlashLoanArbitrage {
         FlashLoanProvider provider
     );
 
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
     /// Execute arbitrage using the best available flash loan provider.
+    /// `FlashLoanProvider.Auto` is resolved to a concrete provider by the
+    /// Rust backend before building calldata — the contract does NOT try
+    /// providers in order; it uses whatever `provider` is passed in.
     /// @param provider         Which flash loan provider to use
     /// @param tokenIn          Token to borrow and swap from
     /// @param tokenOut         Token to end with (profit token)
@@ -81,19 +97,25 @@ contract FlashLoanArbitrage {
         uint256 amountIn,
         uint256 minProfit,
         bytes calldata swapPath
-    ) external;
+    ) external nonReentrant;
 
     /// Withdraw accumulated profits (owner only).
-    function withdraw(address token, uint256 amount) external;
+    function withdraw(address token, uint256 amount) external onlyOwner;
 
     /// Change owner (owner only).
-    function transferOwnership(address newOwner) external;
+    function transferOwnership(address newOwner) external onlyOwner;
 }
 ```
 
 **Execution flow**:
 1. Request flash loan from the chosen provider
-2. In the callback (`receiveFlashLoan` / `executeOperation`):
+2. In the provider-specific callback:
+   - **Balancer V2**: `receiveFlashLoan(IERC20[] tokens, uint256[] amounts, uint256[] feeAmounts, bytes calldata userData)`
+   - **Aave V3**: `executeOperation(address[] assets, uint256[] amounts, uint256[] premiums, address initiator, bytes calldata params)`
+   - **Uniswap V2**: `uniswapV2Call(address sender, uint256 amount0, uint256 amount1, bytes calldata data)`
+   - **Uniswap V3**: `uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data)`
+   
+   Inside the callback:
    a. Swap borrowed token through the encoded swap path
    b. Verify `outputAmount > amountIn + flashLoanFee + gasReserve`
    c. Approve flash loan repayment
@@ -106,16 +128,31 @@ contract FlashLoanArbitrage {
 
 **Interface**:
 ```solidity
-contract SandwichExecutor {
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract SandwichExecutor is ReentrancyGuard {
     error NotOwner();
     error FrontRunFailed();
     error BackRunFailed();
     error NotProfitable();
 
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
     /// Execute a two-phase sandwich attack.
     /// Phase 1 (front-run): buy tokenIn before victim tx
     /// Phase 2 (back-run): sell tokenOut after victim tx
     /// Both phases must be in the same block with sequential nonces.
+    /// NOTE: Requires a bundle relay (Flashbots/MEV-Share); Public mode
+    /// cannot guarantee atomic multi-tx ordering in the same block.
     /// @param tokenIn         Token to buy
     /// @param tokenOut        Token to sell back to
     /// @param amountIn        Amount of tokenIn to buy
@@ -129,10 +166,10 @@ contract SandwichExecutor {
         address pool,
         address router,
         uint256 minProfit
-    ) external returns (uint256 profit);
+    ) external nonReentrant returns (uint256 profit);
 
     /// Withdraw accumulated profits (owner only).
-    function withdraw(address token, uint256 amount) external;
+    function withdraw(address token, uint256 amount) external onlyOwner;
 }
 ```
 
@@ -141,16 +178,32 @@ contract SandwichExecutor {
 2. **Victim tx** (not ours, monitored from mempool)
 3. **Back-run tx**: Swap `tokenIn → tokenOut` at the inflated price
 
+**Broadcast requirement**: Must use `submit_bundle()` via Flashbots or MEV-Share.
+`TxBroadcaster` in `Public` mode should reject sandwich strategy with an error.
+
 ### 1.4 LiquidationExecutor.sol
 
 **Purpose**: Execute Aave V3 liquidations with flash-loan-funded capital.
 
 **Interface**:
 ```solidity
-contract LiquidationExecutor {
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract LiquidationExecutor is ReentrancyGuard {
     error NotOwner();
     error LiquidationCallFailed();
     error SwapFailed();
+
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
 
     /// Liquidate an Aave V3 position. Borrows liquidation capital via
     /// flash loan, calls Aave's liquidationCall(), then swaps seized
@@ -170,10 +223,10 @@ contract LiquidationExecutor {
         address aavePool,
         FlashLoanProvider flashLoanProvider,
         uint256 minProfit
-    ) external;
+    ) external nonReentrant;
 
     /// Withdraw (owner only).
-    function withdraw(address token, uint256 amount) external;
+    function withdraw(address token, uint256 amount) external onlyOwner;
 }
 ```
 
@@ -192,17 +245,32 @@ contract LiquidationExecutor {
 
 **Interface**:
 ```solidity
-contract JitLiquidityExecutor {
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract JitLiquidityExecutor is ReentrancyGuard {
     error NotOwner();
     error MintFailed();
     error BurnFailed();
     error SwapFailed();
 
+    address public owner;
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
     /// Provide JIT liquidity: mint a concentrated position before a
     /// large swap, collect fees during the swap, burn after.
+    /// NOTE: Requires a bundle relay (Flashbots/MEV-Share); Public mode
+    /// cannot guarantee atomic multi-tx ordering in the same block.
     /// @param pool           Uniswap V3 pool
-    /// @param tickLower      Lower tick of the position
-    /// @param tickUpper      Upper tick of the position
+    /// @param tickLower      Lower tick of the position (int24, ABI-encoded as int256 by Rust)
+    /// @param tickUpper      Upper tick of the position (int24, ABI-encoded as int256 by Rust)
     /// @param amount0Desired Amount of token0 to provide
     /// @param amount1Desired Amount of token1 to provide
     /// @param swapRouter     Router to swap profits back to native
@@ -213,10 +281,10 @@ contract JitLiquidityExecutor {
         uint256 amount0Desired,
         uint256 amount1Desired,
         address swapRouter
-    ) external returns (uint256 profit);
+    ) external nonReentrant returns (uint256 profit);
 
     /// Withdraw (owner only).
-    function withdraw(address token, uint256 amount) external;
+    function withdraw(address token, uint256 amount) external onlyOwner;
 }
 ```
 
@@ -224,6 +292,9 @@ contract JitLiquidityExecutor {
 1. **Mint tx**: Call `pool.mint()` to add liquidity in the target tick range
 2. **Victim swap tx** (passes through, paying fees)
 3. **Burn tx**: Call `pool.burn()` to remove liquidity + collect fees
+
+**Broadcast requirement**: Must use `submit_bundle()` via Flashbots or MEV-Share.
+`TxBroadcaster` in `Public` mode should reject JIT strategy with an error.
 
 ### 1.6 ExecutorFactory.sol
 
@@ -244,11 +315,16 @@ contract ExecutorFactory {
         JitLiquidity
     }
 
-    /// Deploy an executor contract (permissionless or owner-restricted).
+    /// Deploy a new executor contract (permissionless or owner-restricted).
+    /// `initParams` is passed to the executor's constructor.
     function deployExecutor(ExecutorType kind, bytes calldata initParams)
         external returns (address executor);
 
-    /// Get the latest deployed executor address for a given type.
+    /// Register an already-deployed executor address.
+    /// Useful for upgrading or when the factory is deployed after the executors.
+    function registerExecutor(ExecutorType kind, address executor) external;
+
+    /// Get the latest deployed/registered executor address for a given type.
     function getExecutor(ExecutorType kind) external view returns (address);
 }
 ```
@@ -277,6 +353,7 @@ interface IDEXRouter {
 interface IExecutorFactory {
     enum ExecutorType { FlashLoanArbitrage, Sandwich, Liquidation, JitLiquidity }
     function deployExecutor(ExecutorType kind, bytes calldata initParams) external returns (address);
+    function registerExecutor(ExecutorType kind, address executor) external;
     function getExecutor(ExecutorType kind) external view returns (address);
 }
 ```
@@ -286,6 +363,10 @@ interface IExecutorFactory {
 ## Phase 2 — Rust Backend Changes
 
 ### 2.1 New module: `core/src/execution/`
+
+> **Note**: Consider placing this under `core/src/mev/execution/` instead of
+> `core/src/execution/`, since `live.rs` already lives there and all execution
+> concerns would be co-located.
 
 ```
 core/src/execution/
@@ -324,6 +405,11 @@ pub struct TxBuilder {
 }
 
 impl TxBuilder {
+    /// Build a fully populated TransactionRequest with calldata, value,
+    /// EIP-1559 fee fields (max_fee_per_gas, max_priority_fee_per_gas
+    /// fetched from the chain via RPC), nonce, chain_id, and gas limit.
+    fn build_base_tx(&self, to: Address, data: Bytes) -> Result<TransactionRequest>;
+
     /// Build calldata for flash loan arbitrage.
     pub fn build_arbitrage_tx(
         &self,
@@ -348,6 +434,9 @@ impl TxBuilder {
     ) -> Result<TransactionRequest>;
 
     /// Build calldata for JIT liquidity.
+    /// `tick_lower` / `tick_upper` must be ABI-encoded as int256 (32 bytes)
+    /// even though the Solidity function uses int24. The alloy ABI encoder
+    /// handles this automatically when using `SolCall` derive macros.
     pub fn build_jit_txs(
         &self,
         opp: &MevOpportunity,
@@ -359,6 +448,11 @@ impl TxBuilder {
 ```
 
 ### 2.4 Broadcaster (Private Relay Integration)
+
+**Chain-specific relay defaults**:
+- Ethereum: Flashbots, MEV-Share, and Public all available
+- Polygon, BSC, Arbitrum, Avalanche, Base, Optimism: Public only;
+  Flashbots/MEV-Share selection falls back to Public with a warning
 
 ```rust
 // core/src/execution/broadcaster.rs
@@ -373,6 +467,12 @@ pub enum BroadcastMode {
     CustomRelay(String),
 }
 
+impl BroadcastMode {
+    /// Returns the effective mode for the given chain.
+    /// Non-Ethereum chains fall back to Public if Flashbots/MEV-Share is selected.
+    pub fn for_chain(self, chain_id: u64) -> Self;
+}
+
 pub struct TxBroadcaster {
     mode: BroadcastMode,
     rpc: RpcClient,
@@ -381,10 +481,14 @@ pub struct TxBroadcaster {
 }
 
 impl TxBroadcaster {
+    /// Simulate a tx via eth_call before broadcasting (saves gas on reverts).
+    pub async fn simulate_tx(&self, tx: &TransactionRequest) -> Result<SimulatedReturn>;
+
     /// Submit a single tx. Returns tx hash.
     pub async fn submit_tx(&self, tx: TransactionRequest) -> Result<FixedBytes<32>>;
 
     /// Submit a bundle of txs (for sandwich: front-run + back-run).
+    /// Panics if mode is Public (not supported).
     pub async fn submit_bundle(&self, txs: Vec<TransactionRequest>) -> Result<FixedBytes<32>>;
 
     /// Wait for tx confirmation (poll receipt up to `max_blocks`).
@@ -417,11 +521,20 @@ fn execute_mempool_opportunity(&mut self, opp: MevOpportunity, pending: &Pending
             .unwrap()
             .build_arbitrage_tx(&opp, FlashLoanProvider::Auto, self.config.min_profit_threshold_wei)
             .unwrap();
+        // Pre-simulate via eth_call (saves gas on reverting txs)
+        let simulation = self.broadcaster.as_ref().unwrap().simulate_tx(&tx).await;
+        if simulation.is_err() {
+            tracing::warn!("Pre-simulation failed, skipping broadcast");
+            return;
+        }
         let tx_hash = self.broadcaster.as_ref().unwrap().submit_tx(tx).await;
         let receipt = self.broadcaster.as_ref().unwrap().wait_for_confirmation(tx_hash, 5).await;
-        // Update wallet from receipt
-        self.wallet.native_balance_wei = receipt.effective_gas_price * receipt.gas_used;
+        // Update wallet from receipt: deduct gas cost, add profit
+        let gas_cost = receipt.effective_gas_price * receipt.gas_used;
+        self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_sub(gas_cost);
         // Record execution
+        // NOTE: do NOT also call process_settled_opportunities() for this block,
+        // otherwise profits will be double-counted (once from receipt, once from replayed block).
     } else {
         // ── SIMULATION (existing logic) ─────────────────────────────
         self.execute_virtual(opp);
@@ -431,9 +544,12 @@ fn execute_mempool_opportunity(&mut self, opp: MevOpportunity, pending: &Pending
 
 ### 2.6 Config additions
 
-In `core/src/config/settings.rs`:
+The `ExecutionConfig` struct lives in `core/src/execution/config.rs` (not in `settings.rs`)
+and is referenced by `SettingsConfig` via a new `execution` field. This keeps the
+execution config co-located with the execution module.
 
 ```rust
+// core/src/execution/config.rs
 pub struct ExecutionConfig {
     pub private_key: Option<String>,       // MEV_SCOUT_PK env var
     pub broadcast_mode: BroadcastMode,
@@ -588,7 +704,7 @@ pub fn default_executor_addresses() -> HashMap<String, HashMap<ExecutorType, Add
 | `core/src/execution/config.rs` | **Create** |
 | `core/src/mev/execution/live.rs` | **Modify** — add real tx path |
 | `core/src/types/strategy.rs` | **Modify** — add `BroadcastMode`, `ExecutorType` |
-| `core/src/config/settings.rs` | **Modify** — add `ExecutionConfig` |
+| `core/src/config/settings.rs` | **Modify** — add `execution: ExecutionConfig` field |
 | `core/src/config/defaults.rs` | **Modify** — add executor addresses per chain |
 | `core/src/lib.rs` | **Modify** — add `pub mod execution;` |
 | `cli/src/cli.rs` | **Modify** — add wallet/relay CLI args |

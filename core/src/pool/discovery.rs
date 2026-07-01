@@ -575,6 +575,111 @@ pub async fn discover_and_cache(
     Ok((pools, active_blocks))
 }
 
+/// Discover pools from multiple sources with configurable priority.
+///
+/// If `dune_primary_pool_discovery` is true in config and a Dune API key is
+/// available, Dune pool discovery runs first and its results are supplemented
+/// by on-chain event scanning. Otherwise, only on-chain discovery is used.
+///
+/// All discovered pools are cached via `discover_and_cache`.
+pub async fn discover_pools_with_sources(
+    rpc: &RpcClient,
+    cache: &SqliteStore,
+    config: &crate::config::Config,
+    chain_name: crate::types::ChainName,
+    from_block: u64,
+    to_block: u64,
+    batch_size: u64,
+    v2_fee_override: Option<u32>,
+    balancer_vault: Option<Address>,
+    v2_factories: Option<&[Address]>,
+    v3_factories: Option<&[Address]>,
+    v2_factory_fees: Option<&[Option<u32>]>,
+    curve_registry: Option<Address>,
+) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
+    let use_dune = config.dune_primary_pool_discovery && config.dune_api_key.is_some();
+    let chain_str = chain_name.to_string();
+
+    let mut all_pools: Vec<DiscoveredPool> = Vec::new();
+
+    if use_dune {
+        let api_key = config.dune_api_key.as_ref().expect("checked above");
+        let dune = crate::dune::DuneClient::new(api_key.clone());
+
+        if let Some(qid) = config.dune_v2_pools_query_id {
+            let fee = v2_fee_override.unwrap_or(30);
+            match crate::dune::pool_discovery::discover_v2_pools_from_dune(
+                &dune, qid, &chain_str, from_block, to_block, fee,
+            ).await {
+                Ok(pools) => {
+                    tracing::info!("[pipeline] Dune V2: {} pools", pools.len());
+                    all_pools.extend(pools);
+                }
+                Err(e) => tracing::warn!("[pipeline] Dune V2 discovery failed: {e:#}"),
+            }
+        }
+        if let Some(qid) = config.dune_v3_pools_query_id {
+            match crate::dune::pool_discovery::discover_v3_pools_from_dune(
+                &dune, qid, &chain_str, from_block, to_block,
+            ).await {
+                Ok(pools) => {
+                    tracing::info!("[pipeline] Dune V3: {} pools", pools.len());
+                    all_pools.extend(pools);
+                }
+                Err(e) => tracing::warn!("[pipeline] Dune V3 discovery failed: {e:#}"),
+            }
+        }
+        if let Some(qid) = config.dune_active_pools_query_id {
+            match crate::dune::pool_discovery::discover_active_pools_from_dune(
+                &dune, qid, &chain_str, from_block, to_block,
+            ).await {
+                Ok(pools) => {
+                    tracing::info!("[pipeline] Dune active: {} pools", pools.len());
+                    all_pools.extend(pools);
+                }
+                Err(e) => tracing::warn!("[pipeline] Dune active pool discovery failed: {e:#}"),
+            }
+        }
+
+        // Dedup Dune results by address, cache them
+        let mut seen = std::collections::HashSet::new();
+        let mut deduped = Vec::with_capacity(all_pools.len());
+        let taken = std::mem::take(&mut all_pools);
+        for pool in taken {
+            if seen.insert(pool.address) {
+                let info: crate::pool::state::PoolInfo = pool.clone().into();
+                if let Err(e) = cache.put_discovered_pool(&info) {
+                    tracing::warn!("Failed to cache Dune pool {}: {}", pool.address, e);
+                }
+                deduped.push(pool);
+            }
+        }
+        all_pools = deduped;
+    }
+
+    // Always run on-chain discovery to catch pools Dune may have missed
+    let (onchain_pools, active_blocks) = discover_and_cache(
+        rpc, cache, from_block, to_block, batch_size,
+        v2_fee_override, balancer_vault, v2_factories, v3_factories,
+        v2_factory_fees, curve_registry,
+    ).await?;
+
+    // Merge: on-chain pools take priority (richer metadata), but keep all
+    let mut seen: std::collections::HashSet<Address> = all_pools.iter().map(|p| p.address).collect();
+    for pool in onchain_pools {
+        if seen.insert(pool.address) {
+            all_pools.push(pool);
+        }
+    }
+
+    tracing::info!(
+        "[pipeline] Total pools after multi-source discovery: {}",
+        all_pools.len(),
+    );
+
+    Ok((all_pools, active_blocks))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

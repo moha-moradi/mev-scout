@@ -366,6 +366,27 @@ pub struct LiveArgs {
     /// Path to SQLite database for competitor profile persistence.
     #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
     pub competition_db: Option<String>,
+
+    // ── On-chain execution args ───────────────────────────────────────
+    /// Private key for signing (env: MEV_SCOUT_PK)
+    #[arg(long = "wallet-key", env = "MEV_SCOUT_PK", value_name = "KEY", help_heading = "Execution")]
+    pub wallet_key: Option<String>,
+
+    /// Broadcast mode: public, flashbots, mevshare
+    #[arg(long = "broadcast-mode", default_value = "public", value_name = "MODE", help_heading = "Execution")]
+    pub broadcast_mode: String,
+
+    /// Deployed ExecutorFactory address
+    #[arg(long = "executor-factory", value_name = "ADDRESS", help_heading = "Execution")]
+    pub executor_factory: Option<String>,
+
+    /// Custom relay URL (for custom broadcast mode)
+    #[arg(long = "relay-url", value_name = "URL", help_heading = "Execution")]
+    pub relay_url: Option<String>,
+
+    /// Gas limit multiplier (safety buffer)
+    #[arg(long = "gas-multiplier", default_value_t = 1.2, value_name = "MULT", help_heading = "Execution")]
+    pub gas_multiplier: f64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -397,7 +418,12 @@ pub struct DiscoverArgs {
     #[arg(long = "no-save")]
     pub no_save: bool,
 
-    /// SQLite database path (overrides config's db_path, default: ./cache/mev-scout.sqlite)
+    /// SQLite database path (overrides config's default: ./cache/{chain}-mev-scout.sqlite)
     #[arg(long = "db-path", value_name = "PATH")]
     pub db_path: Option<String>,
+
+    /// Pool discovery source: onchain (event logs), dune (Dune Analytics), or all (merge both).
+    /// Requires configured dune_api_key and query IDs in config for "dune" or "all" sources.
+    #[arg(long, default_value = "onchain", value_name = "SOURCE")]
+    pub source: String,
 }

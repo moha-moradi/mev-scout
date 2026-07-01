@@ -424,6 +424,37 @@ impl FromStr for OutputFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ExecutorType {
+    FlashLoanArbitrage,
+    Sandwich,
+    Liquidation,
+    JitLiquidity,
+}
+
+impl fmt::Display for ExecutorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecutorType::FlashLoanArbitrage => write!(f, "flash_loan_arbitrage"),
+            ExecutorType::Sandwich => write!(f, "sandwich"),
+            ExecutorType::Liquidation => write!(f, "liquidation"),
+            ExecutorType::JitLiquidity => write!(f, "jit_liquidity"),
+        }
+    }
+}
+
+impl ExecutorType {
+    pub fn from_strategy(strategy: Strategy) -> Option<Self> {
+        match strategy {
+            Strategy::TwoHopArb | Strategy::MultiHopArb => Some(ExecutorType::FlashLoanArbitrage),
+            Strategy::Sandwich => Some(ExecutorType::Sandwich),
+            Strategy::Liquidation => Some(ExecutorType::Liquidation),
+            Strategy::Jit | Strategy::JitArb => Some(ExecutorType::JitLiquidity),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
