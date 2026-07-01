@@ -7,70 +7,75 @@ pub struct DuneApiError {
     pub error: String,
 }
 
-/// Generic column metadata from Dune results.
+/// Results metadata from Dune API.
 #[derive(Debug, Deserialize)]
-pub struct DuneColumn {
-    pub name: String,
+pub struct DuneResultMetadata {
+    pub column_names: Vec<String>,
+    pub column_types: Vec<String>,
+    pub row_count: Option<u64>,
+    pub total_row_count: Option<u64>,
+    pub result_set_bytes: Option<u64>,
+    pub total_result_set_bytes: Option<u64>,
+    pub datapoint_count: Option<u64>,
+    pub execution_time_millis: Option<u64>,
+    pub pending_time_millis: Option<u64>,
+}
+
+/// Raw response from execute endpoint.
+#[derive(Debug, Deserialize)]
+pub struct DuneExecutionResponse {
+    pub execution_id: String,
+    pub state: Option<String>,
+}
+
+/// Error detail from a failed execution.
+#[derive(Debug, Deserialize)]
+pub struct DuneExecutionError {
     #[serde(rename = "type")]
-    pub col_type: String,
+    pub error_type: Option<String>,
+    pub message: String,
+    pub metadata: Option<serde_json::Value>,
 }
 
-/// Execution state returned by Dune API.
+/// Status response from execution status endpoint.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum ExecutionState {
-    Queued,
-    Pending,
-    Executing,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-/// Execution metadata from Dune API.
-#[derive(Debug, Deserialize)]
-pub struct ExecutionMetadata {
+pub struct DuneExecutionStatus {
     pub execution_id: String,
+    pub state: String,
     pub query_id: Option<u64>,
-    pub state: ExecutionState,
-    #[serde(default)]
-    pub submitted_at: String,
-    #[serde(default)]
-    pub expires_at: String,
-    #[serde(default)]
+    pub is_execution_finished: Option<bool>,
+    pub submitted_at: Option<String>,
+    pub expires_at: Option<String>,
     pub execution_started_at: Option<String>,
-    #[serde(default)]
     pub execution_ended_at: Option<String>,
-    #[serde(default)]
-    pub error: Option<String>,
+    pub error: Option<DuneExecutionError>,
 }
 
-/// Execution response from execute endpoint.
-#[derive(Debug, Deserialize)]
-pub struct ExecutionResponse {
-    pub execution_id: String,
-}
-
-/// A single row from Dune query results,
-/// represented as a sequence of optional raw JSON values.
-pub type DuneRow = Vec<Option<serde_json::Value>>;
+/// A single row from Dune query results — a map of column-name → value.
+pub type DuneRow = serde_json::Map<String, serde_json::Value>;
 
 /// Results from a completed Dune query execution.
 #[derive(Debug, Deserialize)]
 pub struct DuneResults {
-    pub columns: Vec<DuneColumn>,
+    pub metadata: DuneResultMetadata,
     pub rows: Vec<DuneRow>,
 }
 
-/// Full status+results response from Dune API.
+/// Full result response from Dune API (from /results endpoint).
 #[derive(Debug, Deserialize)]
 pub struct DuneExecutionResult {
     pub execution_id: String,
-    pub state: ExecutionState,
-    #[serde(default)]
-    pub error: Option<String>,
-    #[serde(default)]
+    pub state: String,
+    pub query_id: Option<u64>,
+    pub is_execution_finished: Option<bool>,
+    pub submitted_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub execution_started_at: Option<String>,
+    pub execution_ended_at: Option<String>,
+    pub error: Option<DuneExecutionError>,
     pub result: Option<DuneResults>,
+    pub next_offset: Option<u64>,
+    pub next_uri: Option<String>,
 }
 
 // ── Pool Discovery Types ───────────────────────────────────────────────
@@ -178,13 +183,9 @@ pub struct DuneCrossValidation {
     pub block_number: u64,
     pub tx_index: usize,
     pub strategy: String,
-    /// Whether Dune confirmed the on-chain trade existed
     pub trade_confirmed: Option<bool>,
-    /// Whether Dune confirmed a sandwich attack
     pub sandwich_confirmed: Option<bool>,
-    /// The profit according to Dune price data
     pub dune_profit_usd: Option<f64>,
-    /// Any error or info message from Dune lookups
     pub message: Option<String>,
 }
 

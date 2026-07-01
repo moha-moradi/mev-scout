@@ -16,12 +16,13 @@ MEV Scout is an MEV opportunity scanner, backtester, and live simulator for EVM-
 6. [`mev-scout replay` — Debug a Single Block](#6-mev-scout-replay--debug-a-single-block)
 7. [`mev-scout discover` — Pool Discovery](#7-mev-scout-discover--pool-discovery)
 8. [`mev-scout fact-check` — Verify Results](#8-mev-scout-fact-check--verify-results)
-9. [`mev-scout live` — Live MEV Bot Mode](#9-mev-scout-live--live-mev-bot-mode)
-10. [Practical Examples by Chain](#10-practical-examples-by-chain)
-11. [Strategy Reference](#11-strategy-reference)
-12. [Gas Model Reference](#12-gas-model-reference)
-13. [DEX Support Matrix](#13-dex-support-matrix)
-14. [Configuration File Reference](#14-configuration-file-reference)
+9. [`mev-scout audit` — Compare Results with Dune](#9-mev-scout-audit--compare-results-with-dune)
+10. [`mev-scout live` — Live MEV Bot Mode](#10-mev-scout-live--live-mev-bot-mode)
+11. [Practical Examples by Chain](#11-practical-examples-by-chain)
+12. [Strategy Reference](#12-strategy-reference)
+13. [Gas Model Reference](#13-gas-model-reference)
+14. [DEX Support Matrix](#14-dex-support-matrix)
+15. [Configuration File Reference](#15-configuration-file-reference)
 
 ---
 
@@ -336,7 +337,7 @@ mev-scout replay --block 50000000 -n polygon -r <RPC> \
 
 ## 7. `mev-scout discover` — Pool Discovery
 
-Discovers DEX pools from factory events by scanning logs via the RPC endpoint. Found pools are printed to stdout and optionally saved to the SQLite cache.
+Discovers DEX pools from factory events by scanning logs via the RPC endpoint and/or via Dune Analytics queries. Found pools are printed to stdout and optionally saved to the SQLite cache.
 
 ### Syntax
 
@@ -350,6 +351,7 @@ mev-scout discover --from-block NUMBER --to-block NUMBER [FLAGS]
 |------|------|----------|-------------|
 | `--from-block NUMBER` | u64 | **yes** | Start block for log scanning |
 | `--to-block NUMBER` | u64 | **yes** | End block (inclusive) |
+| `--source SOURCE` | string | no | Pool source: `onchain`, `dune`, `all` (default: `onchain` when Dune not configured, `all` when Dune is configured) |
 | `--v2-factories ADDRS` | string | no | V2 factory addresses (comma-separated, overrides config) |
 | `--v3-factory ADDRS` | string | no | V3 factory address(es) (comma-separated, overrides config) |
 | `--batch-size N` | u64 | 10 | Batch size for `eth_getLogs` requests |
@@ -357,11 +359,27 @@ mev-scout discover --from-block NUMBER --to-block NUMBER [FLAGS]
 | `--db-path PATH` | string | no | SQLite database path |
 | Chain & Connection flags | — | — | Same as `run` |
 
+### Source Modes
+
+| Mode | Description |
+|------|-------------|
+| `onchain` | Scan factory events via `eth_getLogs` (original behavior). Requires an archive RPC node. |
+| `dune` | Fetch pools from Dune Analytics saved queries. Requires Dune API key + query IDs in config. |
+| `all` | **Recommended.** Merges results from both sources and deduplicates by pool address. |
+
 ### Examples
 
 ```bash
-# Discover pools from default factories on Polygon
+# Discover pools from default factories on Polygon (on-chain only)
 mev-scout discover -n polygon -r <RPC> \
+  --from-block 50000000 --to-block 50001000
+
+# Discover pools via Dune Analytics (no RPC needed for discovery)
+mev-scout discover -n polygon --source dune \
+  --from-block 50000000 --to-block 50001000
+
+# Discover from both sources and merge (most comprehensive)
+mev-scout discover -n polygon -r <RPC> --source all \
   --from-block 50000000 --to-block 50001000
 
 # Discover with custom V3 factory on Arbitrum, no save
@@ -415,7 +433,77 @@ mev-scout fact-check run_1712345678
 
 ---
 
-## 9. `mev-scout live` — Live MEV Bot Mode
+## 9. `mev-scout audit` — Compare Results with Dune
+
+Compares MEV opportunities detected by Scout's pipeline against Dune Analytics' indexed data (sandwiches, arbitrages, flash loans). Run this **after** a backtest to cross-validate results.
+
+### Syntax
+
+```bash
+mev-scout audit [FLAGS]
+```
+
+### Flags
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `-n, --chain NAME` | string | **yes** | Target chain |
+| `--from-block NUMBER` | u64 | **yes** | Start block |
+| `--to-block NUMBER` | u64 | **yes** | End block (inclusive) |
+| `--run-id ID` | string | no | Run ID from a previous `mev-scout run` (e.g. `run_1712345678`). Mutually exclusive with `--results-file`. |
+| `--results-file PATH` | string | no | Direct path to a results JSON file. Mutually exclusive with `--run-id`. |
+| Chain & Connection flags | — | — | Same as `run` (used to resolve Dune chain name) |
+
+Exactly one of `--run-id` or `--results-file` must be provided. The selected results file is loaded and compared block-by-block against Dune data for the given range.
+
+### Output
+
+The audit prints a comparison table:
+
+| Column | Description |
+|--------|-------------|
+| `Strategy` | Scout's detection strategy name |
+| `Block` | Block number |
+| `Confirmed` | ✅ Opportunity verified by Dune |
+| `Both` | Same event in both Scout + Dune |
+| `Unmatched (Scout)` | Found by Scout but not in Dune |
+| `Unmatched (Dune)` | Found in Dune but not by Scout |
+| `Message` | Detail on mismatches |
+
+### Examples
+
+```bash
+# Audit a previous run ID against Dune
+mev-scout audit -n polygon \
+  --from-block 50000000 --to-block 50001000 \
+  --run-id run_1712345678
+
+# Audit from a specific results file
+mev-scout audit -n ethereum \
+  --from-block 20000000 --to-block 20000500 \
+  --results-file ./results/ethereum-run_1712345678.json
+
+# Audit with verbose logging
+mev-scout audit -n bsc -v \
+  --from-block 40000000 --to-block 40001000 \
+  --run-id run_1712345678
+```
+
+### Dune Query Requirements
+
+The `audit` command requires 3 saved queries in your Dune account:
+
+| Config Key | Dune Query Purpose |
+|------------|-------------------|
+| `dune_sandwich_query_id` | `dex.sandwiches` filtered by block range |
+| `dune_arbitrage_query_id` | `dex.trades` with multi-pool CTE (pool_count >= 2) |
+| `dune_flash_loan_query_id` | `lending.flashloans` filtered by block range |
+
+See `mev-scout.toml` for the full SQL templates. Create these queries on [dune.com/queries](https://dune.com/queries) and add the numeric IDs to your config.
+
+---
+
+## 10. `mev-scout live` — Live MEV Bot Mode
 
 Connects to the live chain and runs as a virtual MEV bot with a simulated wallet. Polls the mempool for pending txs, runs detection, and optionally executes virtual trades.
 
@@ -507,7 +595,7 @@ mev-scout live -n polygon -r <RPC1> \
 
 ---
 
-## 10. Practical Examples by Chain
+## 11. Practical Examples by Chain
 
 ### Polygon (Chain ID: 137)
 
@@ -742,6 +830,14 @@ mev-scout run --days 7 -n ethereum \
   --rpc-urls https://eth.merkle.io,https://rpc.ankr.com/eth \
   --rpc-rps 1.0,5.0,3.0
 
+# Dune-powered pool discovery + audit validation
+mev-scout discover -n polygon --source all -r <RPC> \
+  --from-block 50000000 --to-block 50001000
+mev-scout run --from-block 50000000 --to-block 50001000 \
+  -n polygon -r <RPC> --output json --fact-check
+mev-scout audit -n polygon --from-block 50000000 --to-block 50001000 \
+  --run-id run_<TIMESTAMP>
+
 # Full pipeline: fetch → discover → run → fact-check
 mev-scout fetch --from-block 58000000 --to-block 58001000 -n polygon -r <RPC>
 mev-scout discover -n polygon -r <RPC> --from-block 58000000 --to-block 58001000
@@ -752,7 +848,7 @@ mev-scout fact-check run_<TIMESTAMP>
 
 ---
 
-## 11. Strategy Reference
+## 12. Strategy Reference
 
 | Strategy | CLI Name | Description | Key Tuning | Default |
 |----------|----------|-------------|------------|---------|
@@ -788,7 +884,7 @@ mev-scout fact-check run_<TIMESTAMP>
 
 ---
 
-## 12. Gas Model Reference
+## 13. Gas Model Reference
 
 | Model | CLI Value | Description | Best For |
 |-------|-----------|-------------|----------|
@@ -827,7 +923,7 @@ liquidation = 500000
 
 ---
 
-## 13. DEX Support Matrix
+## 14. DEX Support Matrix
 
 | DEX | Type | Polygon | Avalanche | BSC | Arbitrum | Base | Ethereum | Optimism |
 |-----|------|---------|-----------|-----|----------|------|----------|----------|
@@ -851,7 +947,7 @@ liquidation = 500000
 
 ---
 
-## 14. Configuration File Reference
+## 15. Configuration File Reference
 
 A TOML config file can be used to set persistent defaults instead of passing CLI flags every time.
 
@@ -915,6 +1011,18 @@ initial_balance = 10.0
 min_profit_threshold = 0.001
 poll_interval_ms = 1000
 
+# ── Dune Analytics ────────────────────────────────────────────
+dune_api_key = "YOUR_DUNE_API_KEY"            # Required for Dune features
+dune_primary_pool_discovery = false           # Use Dune as first source for pool discovery
+dune_v2_pools_query_id = 0                    # Query ID for Uniswap V2 pool discovery
+dune_v3_pools_query_id = 0                    # Query ID for Uniswap V3 pool discovery
+dune_active_pools_query_id = 0                # Query ID for active pool discovery (dex.trades)
+dune_verify_trade_query_id = 0                # Query ID for trade verification
+dune_verify_sandwich_query_id = 0             # Query ID for sandwich verification
+dune_sandwich_query_id = 0                    # Query ID for audit: dex.sandwiches
+dune_arbitrage_query_id = 0                   # Query ID for audit: multi-pool arbitrages
+dune_flash_loan_query_id = 0                  # Query ID for audit: lending.flashloans
+
 # ── Per-Chain Overrides ──────────────────────────────────────
 [chains.polygon]
 chain_id = 137
@@ -944,6 +1052,8 @@ chain_id = 1
 
 ## Quick Reference: Common Workflows
 
+> **Tip:** For pool discovery with Dune (no RPC needed), use `--source dune` or `--source all` on the `discover` command. For cross-validation, use `audit` after a backtest run.
+
 ```bash
 # 1. First-time setup — verify config
 mev-scout config -v
@@ -951,22 +1061,28 @@ mev-scout config -v
 # 2. Pool discovery for a new chain / range
 mev-scout discover -n polygon -r <RPC> --from-block X --to-block Y
 
-# 3. Pre-cache data
+# 3. Pool discovery via Dune (no RPC needed)
+mev-scout discover -n polygon --source dune --from-block X --to-block Y
+
+# 4. Pre-cache data
 mev-scout fetch --days 7 -n polygon -r <RPC>
 
-# 4. Run backtest
+# 5. Run backtest
 mev-scout run --days 7 -n polygon -r <RPC> --output json --fact-check
 
-# 5. Re-render saved results in a different format
+# 6. Cross-validate results against Dune
+mev-scout audit -n polygon --from-block X --to-block Y --run-id run_1712345678
+
+# 7. Re-render saved results in a different format
 mev-scout report --run-id run_1712345678 --output csv
 
-# 6. Fact-check a previous run
+# 8. Fact-check a previous run
 mev-scout fact-check run_1712345678
 
-# 7. Debug a suspicious block
+# 9. Debug a suspicious block
 mev-scout replay --block 58000000 -n polygon -r <RPC> --analyze
 
-# 8. Go live
+# 10. Go live
 mev-scout live -n polygon -r <RPC> --initial-balance 10 --min-profit 0.01
 ```
 
@@ -979,3 +1095,5 @@ mev-scout live -n polygon -r <RPC> --initial-balance 10 --min-profit 0.01
 - **Storage:** Block data is cached per-chain in SQLite (`./cache/{chain}-mev-scout.sqlite` by default). Parquet output is optional and adds ZSTD-compressed columnar storage.
 - **Live mode:** Press Ctrl+C to gracefully shut down. Logs are written to `live_<timestamp>.log` when `-v` is used.
 - **Performance:** For large ranges, use multiple RPC providers via `--rpc-urls` and increase `--rpc-workers` (10-20 for private RPCs). The tool fetches blocks in parallel using concurrent workers.
+- **Dune Analytics:** To use Dune features, create saved queries on [dune.com/queries](https://dune.com/queries) using the SQL templates in `core/src/dune/queries.rs`. Add the query IDs to `mev-scout.toml` under `[dune]`. The Dune API key can be obtained from your Dune account settings.
+- **Dune rate limits:** The free Dune API plan allows ~1000 query executions/hour. Use `--source dune` sparingly for large ranges, or rely on the SQLite cache to avoid re-executing identical queries.

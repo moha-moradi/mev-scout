@@ -45,10 +45,10 @@ pub async fn discover_v2_pools_from_dune(
 
     let mut pools = Vec::with_capacity(rows.len());
     for row in rows {
-        let address = DuneClient::col_as_address(row, 0);
-        let token0 = DuneClient::col_as_address(row, 1);
-        let token1 = DuneClient::col_as_address(row, 2);
-        let creation_block = DuneClient::col_as_u64(row, 3).unwrap_or(0);
+        let address = DuneClient::col_as_address(row, "pool_address");
+        let token0 = DuneClient::col_as_address(row, "token0");
+        let token1 = DuneClient::col_as_address(row, "token1");
+        let creation_block = DuneClient::col_as_u64(row, "creation_block").unwrap_or(0);
 
         if let (Some(addr), Some(t0), Some(t1)) = (address, token0, token1) {
             pools.push(DiscoveredPool {
@@ -102,12 +102,12 @@ pub async fn discover_v3_pools_from_dune(
 
     let mut pools = Vec::with_capacity(rows.len());
     for row in rows {
-        let address = DuneClient::col_as_address(row, 0);
-        let token0 = DuneClient::col_as_address(row, 1);
-        let token1 = DuneClient::col_as_address(row, 2);
-        let fee = DuneClient::col_as_u64(row, 3).unwrap_or(3000) as u32;
-        let tick_spacing = DuneClient::col_as_u64(row, 4).map(|ts| ts as i32);
-        let creation_block = DuneClient::col_as_u64(row, 5).unwrap_or(0);
+        let address = DuneClient::col_as_address(row, "pool_address");
+        let token0 = DuneClient::col_as_address(row, "token0");
+        let token1 = DuneClient::col_as_address(row, "token1");
+        let fee = DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32;
+        let tick_spacing = DuneClient::col_as_u64(row, "tick_spacing").map(|ts| ts as i32);
+        let creation_block = DuneClient::col_as_u64(row, "creation_block").unwrap_or(0);
 
         if let (Some(addr), Some(t0), Some(t1)) = (address, token0, token1) {
             pools.push(DiscoveredPool {
@@ -163,10 +163,10 @@ pub async fn discover_active_pools_from_dune(
     let mut pools = Vec::new();
 
     for row in rows {
-        let address = DuneClient::col_as_address(row, 0);
-        let token0 = DuneClient::col_as_address(row, 1);
-        let token1 = DuneClient::col_as_address(row, 2);
-        let project = DuneClient::col_as_string(row, 3).unwrap_or_default().to_lowercase();
+        let address = DuneClient::col_as_address(row, "pool_address");
+        let token0 = DuneClient::col_as_address(row, "token0");
+        let token1 = DuneClient::col_as_address(row, "token1");
+        let project = DuneClient::col_as_string(row, "project").unwrap_or_default().to_lowercase();
 
         let (addr, t0, t1) = match (address, token0, token1) {
             (Some(a), Some(t0), Some(t1)) if !seen.contains(&a) => (a, t0, t1),
@@ -175,13 +175,13 @@ pub async fn discover_active_pools_from_dune(
         seen.insert(addr);
 
         let (dex_type, fee) = if project.contains("v3") {
-            (DexType::UniswapV3, DuneClient::col_as_u64(row, 6).unwrap_or(3000) as u32)
+            (DexType::UniswapV3, DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32)
         } else if project.contains("curve") {
             (DexType::Curve, 0)
         } else if project.contains("balancer") {
             (DexType::Balancer, 0)
         } else {
-            (DexType::UniswapV2, DuneClient::col_as_u64(row, 6).unwrap_or(30) as u32)
+            (DexType::UniswapV2, DuneClient::col_as_u64(row, "fee").unwrap_or(30) as u32)
         };
 
         pools.push(DiscoveredPool {

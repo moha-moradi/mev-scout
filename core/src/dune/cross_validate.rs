@@ -161,7 +161,7 @@ async fn verify_trade_by_tx(
         return Ok(None);
     }
 
-    let amount_usd = DuneClient::col_as_f64(&rows[0], 6);
+    let amount_usd = DuneClient::col_as_f64(&rows[0], "amount_usd");
     Ok(Some(DuneTradeCheck { amount_usd }))
 }
 

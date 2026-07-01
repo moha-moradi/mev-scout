@@ -9,7 +9,7 @@ use super::types::*;
 ///
 /// Supports two execution modes:
 /// 1. **Query by ID** — execute a pre-saved Dune query by its numeric ID.
-/// 2. **Raw SQL** — execute arbitrary SQL directly (Dune Plus/Enterprise plan required).
+/// 2. **Raw SQL** — execute arbitrary SQL directly.
 ///
 /// # Rate Limits
 /// - Free tier: 1 query result / 5 seconds, 1,000 executions / hour
@@ -35,7 +35,7 @@ impl DuneClient {
             api_key: api_key.into(),
             http: reqwest::Client::builder()
                 .user_agent("mev-scout/0.1")
-                .timeout(Duration::from_secs(120))
+                .timeout(Duration::from_secs(180))
                 .build()
                 .expect("reqwest Client::new"),
             base_url: Self::DUNE_API_BASE.to_string(),
@@ -52,10 +52,10 @@ impl DuneClient {
 
     /// Execute a pre-saved Dune query by its numeric ID.
     ///
-    /// `params` is an optional list of query parameter overrides as JSON objects
-    /// with `key` and `value` fields.
+    /// `params` is a flat map of query parameter key-value pairs (Dune's
+    /// `{{param}}` syntax in the saved SQL).
     ///
-    /// Polls until execution completes (with 1s backoff, up to 120s).
+    /// Polls until execution completes (with 1s backoff, up to 180s).
     pub async fn execute_query_by_id(
         &self,
         query_id: u64,
@@ -64,15 +64,14 @@ impl DuneClient {
         let url = format!("{}/query/{}/execute", self.base_url, query_id);
 
         let mut body = serde_json::Map::new();
-        if !params.is_empty() {
-            let query_params: Vec<Value> = params
-                .iter()
-                .map(|(k, v)| serde_json::json!({"key": k, "value": v}))
-                .collect();
-            body.insert("params".into(), Value::Array(query_params));
+        for (k, v) in params {
+            body.insert(
+                (*k).to_string(),
+                Value::String((*v).to_string()),
+            );
         }
 
-        let resp: ExecutionResponse = self
+        let resp: DuneExecutionResponse = self
             .http
             .post(&url)
             .header("x-dune-api-key", &self.api_key)
@@ -88,20 +87,19 @@ impl DuneClient {
         self.poll_execution(&resp.execution_id).await
     }
 
-    /// Execute raw SQL directly on Dune (requires Plus/Enterprise plan).
-    ///
-    /// When `query_id` is provided with raw SQL, it acts as a namespace hint.
+    /// Execute raw SQL directly on Dune.
     pub async fn execute_raw_sql(
         &self,
         sql: &str,
     ) -> anyhow::Result<DuneExecutionResult> {
-        let url = format!("{}/execute", self.base_url);
+        let url = format!("{}/sql/execute", self.base_url);
 
         let body = serde_json::json!({
-            "query": sql,
+            "sql": sql,
+            "performance": "small",
         });
 
-        let resp: ExecutionResponse = self
+        let resp: DuneExecutionResponse = self
             .http
             .post(&url)
             .header("x-dune-api-key", &self.api_key)
@@ -133,7 +131,7 @@ impl DuneClient {
 
         let max_polls = 120; // 120 seconds max
         for _ in 0..max_polls {
-            let status: DuneExecutionResult = self
+            let status: DuneExecutionStatus = self
                 .http
                 .get(&status_url)
                 .header("x-dune-api-key", &self.api_key)
@@ -144,8 +142,8 @@ impl DuneClient {
                 .json()
                 .await?;
 
-            match status.state {
-                ExecutionState::Completed => {
+            match status.state.as_str() {
+                "QUERY_STATE_COMPLETED" => {
                     let results: DuneExecutionResult = self
                         .http
                         .get(&results_url)
@@ -158,14 +156,22 @@ impl DuneClient {
                         .await?;
                     return Ok(results);
                 }
-                ExecutionState::Failed => {
-                    return Err(anyhow::anyhow!(
-                        "Dune query failed: {}",
-                        status.error.unwrap_or_default()
-                    ));
+                "QUERY_STATE_COMPLETED_PARTIAL" => {
+                    let results: DuneExecutionResult = self
+                        .http
+                        .get(&results_url)
+                        .header("x-dune-api-key", &self.api_key)
+                        .send()
+                        .await
+                        .context("Failed to fetch Dune query results")?
+                        .error_for_status()?
+                        .json()
+                        .await?;
+                    return Ok(results);
                 }
-                ExecutionState::Cancelled => {
-                    return Err(anyhow::anyhow!("Dune query was cancelled"));
+                s if s == "QUERY_STATE_FAILED" || s == "QUERY_STATE_CANCELED" || s == "QUERY_STATE_EXPIRED" => {
+                    let msg = status.error.map(|e| e.message).unwrap_or_default();
+                    return Err(anyhow::anyhow!("Dune query {}: {}", s, msg));
                 }
                 _ => {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -181,17 +187,14 @@ impl DuneClient {
 
     // ── Convenience helpers ──────────────────────────────────────────────
 
-    /// Extract a typed column from a Dune result row.
-    pub fn col_as_string(row: &DuneRow, col_idx: usize) -> Option<String> {
-        row.get(col_idx)
-            .and_then(|v| v.as_ref())
+    pub fn col_as_string(row: &DuneRow, col_name: &str) -> Option<String> {
+        row.get(col_name)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
 
-    pub fn col_as_u64(row: &DuneRow, col_idx: usize) -> Option<u64> {
-        row.get(col_idx)
-            .and_then(|v| v.as_ref())
+    pub fn col_as_u64(row: &DuneRow, col_name: &str) -> Option<u64> {
+        row.get(col_name)
             .and_then(|v| {
                 if let Some(n) = v.as_u64() {
                     return Some(n);
@@ -199,18 +202,20 @@ impl DuneClient {
                 if let Some(s) = v.as_str() {
                     return s.parse::<u64>().ok();
                 }
+                if let Some(n) = v.as_f64() {
+                    return Some(n as u64);
+                }
                 None
             })
     }
 
-    pub fn col_as_address(row: &DuneRow, col_idx: usize) -> Option<Address> {
-        Self::col_as_string(row, col_idx)
+    pub fn col_as_address(row: &DuneRow, col_name: &str) -> Option<Address> {
+        Self::col_as_string(row, col_name)
             .and_then(|s| s.parse::<Address>().ok())
     }
 
-    pub fn col_as_f64(row: &DuneRow, col_idx: usize) -> Option<f64> {
-        row.get(col_idx)
-            .and_then(|v| v.as_ref())
+    pub fn col_as_f64(row: &DuneRow, col_name: &str) -> Option<f64> {
+        row.get(col_name)
             .and_then(|v| {
                 if let Some(n) = v.as_f64() {
                     return Some(n);

@@ -111,13 +111,13 @@ pub async fn fetch_sandwiches_from_dune(
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         events.push(DuneSandwichEvent {
-            block_number: DuneClient::col_as_u64(row, 0).unwrap_or(0),
-            victim_tx_hash: DuneClient::col_as_string(row, 1).unwrap_or_default(),
-            front_tx_hash: DuneClient::col_as_string(row, 2).unwrap_or_default(),
-            back_tx_hash: DuneClient::col_as_string(row, 3).unwrap_or_default(),
-            sandwich_type: DuneClient::col_as_string(row, 4),
-            pool_address: DuneClient::col_as_address(row, 5),
-            mev_profit_eth: DuneClient::col_as_f64(row, 6),
+            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+            victim_tx_hash: DuneClient::col_as_string(row, "victim_tx_hash").unwrap_or_default(),
+            front_tx_hash: DuneClient::col_as_string(row, "front_tx_hash").unwrap_or_default(),
+            back_tx_hash: DuneClient::col_as_string(row, "back_tx_hash").unwrap_or_default(),
+            sandwich_type: DuneClient::col_as_string(row, "sandwich_type"),
+            pool_address: DuneClient::col_as_address(row, "pool_address"),
+            mev_profit_eth: DuneClient::col_as_f64(row, "mev_profit_eth"),
         });
     }
     Ok(events)
@@ -147,13 +147,13 @@ pub async fn fetch_arbitrages_from_dune(
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         events.push(DuneArbitrageEvent {
-            block_number: DuneClient::col_as_u64(row, 0).unwrap_or(0),
-            tx_hash: DuneClient::col_as_string(row, 1).unwrap_or_default(),
-            pool_a: DuneClient::col_as_address(row, 2),
-            pool_b: DuneClient::col_as_address(row, 3),
-            token_in: DuneClient::col_as_address(row, 4),
-            token_out: DuneClient::col_as_address(row, 5),
-            amount_usd: DuneClient::col_as_f64(row, 6),
+            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+            tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
+            pool_a: DuneClient::col_as_address(row, "pool_a"),
+            pool_b: DuneClient::col_as_address(row, "pool_b"),
+            token_in: DuneClient::col_as_address(row, "token_in"),
+            token_out: DuneClient::col_as_address(row, "token_out"),
+            amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
         });
     }
     Ok(events)
@@ -183,13 +183,13 @@ pub async fn fetch_flash_loans_from_dune(
     let mut events = Vec::with_capacity(rows.len());
     for row in rows {
         events.push(DuneFlashLoanEvent {
-            block_number: DuneClient::col_as_u64(row, 0).unwrap_or(0),
-            tx_hash: DuneClient::col_as_string(row, 1).unwrap_or_default(),
-            protocol: DuneClient::col_as_string(row, 2),
-            token_address: DuneClient::col_as_address(row, 3),
-            amount_usd: DuneClient::col_as_f64(row, 4),
-            amount: DuneClient::col_as_string(row, 5),
-            fee: DuneClient::col_as_string(row, 6),
+            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+            tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
+            protocol: DuneClient::col_as_string(row, "protocol"),
+            token_address: DuneClient::col_as_address(row, "token_address"),
+            amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
+            amount: DuneClient::col_as_string(row, "amount"),
+            fee: DuneClient::col_as_string(row, "fee"),
         });
     }
     Ok(events)
