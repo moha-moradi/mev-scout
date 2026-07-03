@@ -66,7 +66,7 @@ impl SignatureResolver {
         }
 
         let http_client = HttpClient::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(2))
             .user_agent("mev-scout/0.1.0")
             .build()
             .ok();
@@ -182,7 +182,8 @@ impl SignatureResolver {
 
     /// Resolve a 32-byte event topic hash to a human-readable event signature.
     ///
-    /// Checks the in-memory cache first, then queries the sig DB.
+    /// Checks the in-memory cache first, then queries the sig DB,
+    /// then falls back to 4byte.directory API.
     /// Returns `Ok(None)` if the topic is unknown.
     pub fn resolve_event(&self, topic: &B256) -> anyhow::Result<Option<String>> {
         // Check cache
@@ -191,24 +192,91 @@ impl SignatureResolver {
         }
 
         // Query DB
-        let conn = self.conn.lock().unwrap();
-        let result: Option<String> = conn
-            .query_row(
+        let result: Option<String> = {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
                 "SELECT signature FROM events WHERE topic = ?1",
                 rusqlite::params![topic.as_slice().to_vec()],
                 |row| row.get(0),
             )
-            .ok();
+            .ok()
+        };
 
-        // Cache result
-        {
+        if result.is_some() {
+            // Cache positive result and return
             let mut cache = self.event_cache.write().unwrap();
             if cache.len() >= CACHE_CAPACITY {
                 cache.clear();
             }
             cache.insert(*topic, result.clone());
+            return Ok(result);
         }
 
-        Ok(result)
+        // Fallback: query 4byte.directory API
+        let api_result = self.resolve_event_from_api(topic);
+
+        // Cache whatever we got (even None to avoid repeated API calls)
+        {
+            let mut cache = self.event_cache.write().unwrap();
+            if cache.len() >= CACHE_CAPACITY {
+                cache.clear();
+            }
+            cache.insert(*topic, api_result.clone());
+        }
+
+        Ok(api_result)
+    }
+
+    /// Query 4byte.directory API for a 32-byte event topic hash.
+    fn resolve_event_from_api(&self, topic: &B256) -> Option<String> {
+        let client = self.http_client.as_ref()?;
+        let hex_topic = hex::encode(topic);
+        let url = format!("{}?hex_signature=0x{}", FOURBYTE_API, hex_topic);
+
+        // Rate limit
+        {
+            let mut last = self.last_api_call.lock().unwrap();
+            let elapsed = last.elapsed();
+            if elapsed < API_RATE_LIMIT {
+                std::thread::sleep(API_RATE_LIMIT - elapsed);
+            }
+            *last = Instant::now();
+        }
+
+        // Use block_in_place since we're already inside a tokio runtime.
+        let resp = tokio::task::block_in_place(|| {
+            let handle = tokio::runtime::Handle::current();
+            handle.block_on(client.get(&url).send())
+        });
+        match resp {
+            Ok(resp) if resp.status().is_success() => {
+                let data = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(resp.json::<FourByteResponse>())
+                });
+                match data {
+                    Ok(data) => {
+                        let count = data.count.unwrap_or(0);
+                        if count > 0 {
+                            data.results.into_iter().next().map(|r| r.text_signature)
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        tracing::trace!("4byte.directory JSON parse error: {e}");
+                        None
+                    }
+                }
+            }
+            Ok(resp) => {
+                tracing::trace!("4byte.directory HTTP {} for topic hash", resp.status());
+                None
+            }
+            Err(e) => {
+                tracing::trace!("4byte.directory request failed for topic hash: {e}");
+                None
+            }
+        }
     }
 }
