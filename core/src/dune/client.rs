@@ -96,21 +96,29 @@ impl DuneClient {
 
         let body = serde_json::json!({
             "sql": sql,
-            "performance": "small",
+            "performance": "medium",
         });
 
-        let resp: DuneExecutionResponse = self
+        let response = self
             .http
             .post(&url)
             .header("x-dune-api-key", &self.api_key)
             .json(&body)
             .send()
             .await
-            .context("Failed to execute raw Dune SQL")?
-            .error_for_status()
-            .context("Dune raw SQL execution rejected")?
-            .json()
-            .await?;
+            .context("Failed to execute raw Dune SQL")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body_text = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "Dune raw SQL execution rejected (HTTP {}): {}",
+                status,
+                body_text
+            );
+        }
+
+        let resp: DuneExecutionResponse = response.json().await?;
 
         self.poll_execution(&resp.execution_id).await
     }

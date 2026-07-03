@@ -67,7 +67,17 @@ async fn main() -> anyhow::Result<()> {
             eprintln!("Error: failed to load config '{path}': {e}");
             std::process::exit(1);
         }),
-        None => Config::default(),
+        None => {
+            let default_path = "mev-scout.toml";
+            if std::path::Path::new(default_path).exists() {
+                Config::load(default_path).unwrap_or_else(|e| {
+                    eprintln!("Error: failed to load config '{default_path}': {e}");
+                    std::process::exit(1);
+                })
+            } else {
+                Config::default()
+            }
+        }
     };
 
     let overrides = overrides::build_overrides(&cli);
@@ -83,5 +93,6 @@ async fn main() -> anyhow::Result<()> {
         Command::FactCheck(args) => commands::cmd_factcheck(&config, args).await,
         Command::Live(args) => commands::cmd_live(&config, args).await,
         Command::Audit(args) => commands::cmd_audit(&config, args).await,
+        Command::DuneCheck(args) => commands::cmd_dune_check(&config, args).await,
     }
 }

@@ -110,6 +110,10 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.from_block = Some(args.from_block);
             o.to_block = Some(args.to_block);
         }
+        Command::DuneCheck(args) => {
+            o.chain = Some(args.chain.clone());
+            o.dune_api_key = args.dune_api_key.clone();
+        }
     }
     o
 }

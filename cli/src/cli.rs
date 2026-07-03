@@ -54,6 +54,11 @@ pub enum Command {
     /// datasets (dex.sandwiches, dex.trades, etc.). Requires configured
     /// Dune query IDs in the config file.
     Audit(AuditArgs),
+
+    /// Query Dune Analytics for Uniswap V2/V3 trade counts in a block.
+    /// Executes raw SQL against Dune's dex.trades dataset and prints
+    /// per-project transaction and swap counts for the given block.
+    DuneCheck(DuneCheckArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -447,4 +452,19 @@ pub struct AuditArgs {
     /// Path to results file (alternative to --run-id).
     #[arg(long, value_name = "PATH")]
     pub results_file: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DuneCheckArgs {
+    /// Block number to check for Uniswap V2/V3 trades
+    #[arg(short = 'b', long = "block", required = true, value_name = "NUMBER")]
+    pub block: u64,
+
+    /// Chain name (default: polygon)
+    #[arg(short = 'n', long = "chain", default_value = "polygon", value_name = "NAME")]
+    pub chain: String,
+
+    /// Dune API key (overrides config file)
+    #[arg(long = "dune-api-key", value_name = "KEY")]
+    pub dune_api_key: Option<String>,
 }
