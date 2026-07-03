@@ -110,7 +110,6 @@ mev-scout run [FLAGS]
 | `--parquet-dir PATH` | string | — | Parquet intermediate directory (optional) |
 | `--fact-check` | bool | false | Print detailed fact-check report |
 | `--evm-fact-check` | bool | false | EVM-based fact-check (requires `--fact-check`) |
-| `--no-sig-resolve` | bool | false | Skip method/event signature resolution |
 
 ### PGA (Priority Gas Auction)
 
@@ -184,9 +183,9 @@ mev-scout run --blocks 200 -n ethereum -r <RPC> \
 mev-scout run --days 1 -n polygon -r <RPC> \
   --capture-pending
 
-# Fast scan with batching disabled and no signature resolution
+# Fast scan with batching disabled
 mev-scout run --days 1 -n polygon -r <RPC> \
-  --no-batch-rpc --no-sig-resolve
+  --no-batch-rpc
 ```
 
 ---
@@ -209,13 +208,11 @@ Additionally:
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--no-sig-resolve` | bool | false | Skip method/event signature resolution |
-
 ### Examples
 
 ```bash
-# Pre-cache 7 days of Polygon blocks (skip signature resolution)
-mev-scout fetch --days 7 -n polygon -r https://polygon-rpc.publicnode.com --no-sig-resolve
+# Pre-cache 7 days of Polygon blocks
+mev-scout fetch --days 7 -n polygon -r https://polygon-rpc.publicnode.com
 
 # Pre-cache a specific Ethereum block range
 mev-scout fetch --from-block 19000000 --to-block 19000100 -n ethereum -r <RPC>

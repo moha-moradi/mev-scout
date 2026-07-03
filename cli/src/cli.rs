@@ -228,9 +228,6 @@ pub struct RunArgs {
     #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
     pub competition_db: Option<String>,
 
-    /// Skip method/event signature resolution (downloads ~3MB DB on first run)
-    #[arg(long = "no-sig-resolve")]
-    pub no_sig_resolve: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -248,10 +245,6 @@ pub struct FetchArgs {
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH")]
     pub parquet_dir: Option<String>,
-
-    /// Skip method/event signature resolution (downloads ~3MB DB on first run)
-    #[arg(long = "no-sig-resolve")]
-    pub no_sig_resolve: bool,
 }
 
 #[derive(Args, Debug, Clone)]

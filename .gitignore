@@ -6,5 +6,4 @@ tmp_output.txt
 *.txt
 mev-scout.toml
 mev-scout.example.toml
-opencode.json
 /results
