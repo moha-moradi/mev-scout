@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
-use crate::pool::subgraph_discovery::{SubgraphEndpoint, SubgraphEndpoints};
 use crate::types::ExecutorType;
 
 /// Per-chain runtime parameters loaded from the configuration file.
@@ -28,8 +27,6 @@ pub struct ChainConfig {
     pub uniswap_v2_default_fee: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve_registry: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subgraphs: Option<SubgraphEndpoints>,
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
@@ -57,18 +54,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon")
-                        .with_label("Uniswap V3"),
-                ],
-                balancer: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2")
-                        .with_label("Balancer V2"),
-                ],
-                curve: vec![],
-            }),
         },
     );
     let avalanche_factories = vec![
@@ -90,15 +75,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/avalanche-dev")
-                        .with_label("Uniswap V3"),
-                ],
-                balancer: vec![],
-                curve: vec![],
-            }),
         },
     );
     let bsc_factories = vec![
@@ -120,18 +96,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".to_string()),
             uniswap_v2_default_fee: Some(25),
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/pancakeswap/pairs")
-                        .with_fee(25).with_label("PancakeSwap V2"),
-                ],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/pancakeswap/exchange-v3")
-                        .with_label("PancakeSwap V3"),
-                ],
-                balancer: vec![],
-                curve: vec![],
-            }),
         },
     );
     let arbitrum_factories = vec![
@@ -152,15 +116,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/arbitrum-dev")
-                        .with_label("Uniswap V3"),
-                ],
-                balancer: vec![],
-                curve: vec![],
-            }),
         },
     );
     let base_factories = vec![
@@ -181,12 +136,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![],
-                v3: vec![],
-                balancer: vec![],
-                curve: vec![],
-            }),
         },
     );
     let ethereum_factories = vec![
@@ -209,24 +158,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/uniswapv2")
-                        .with_fee(30).with_label("Uniswap V2"),
-                ],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3")
-                        .with_label("Uniswap V3"),
-                ],
-                balancer: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-v2")
-                        .with_label("Balancer V2"),
-                ],
-                curve: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/curvefi/curve")
-                        .with_label("Curve"),
-                ],
-            }),
         },
     );
     let optimism_factories = vec![
@@ -247,15 +178,6 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
             curve_registry: None,
-            subgraphs: Some(SubgraphEndpoints {
-                v2: vec![],
-                v3: vec![
-                    SubgraphEndpoint::new("https://api.thegraph.com/subgraphs/name/ianlapham/optimism-dev")
-                        .with_label("Uniswap V3"),
-                ],
-                balancer: vec![],
-                curve: vec![],
-            }),
         },
     );
     m
@@ -270,3 +192,6 @@ pub fn default_executor_addresses() -> HashMap<String, HashMap<ExecutorType, Add
     }
     map
 }
+
+
+

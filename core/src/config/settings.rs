@@ -159,7 +159,7 @@ pub struct Config {
     /// Dune saved query ID for sandwich verification (dex.sandwiches).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dune_verify_sandwich_query_id: Option<u64>,
-    /// When true, use Dune pool discovery as the primary source instead of subgraphs.
+    /// When true, use Dune pool discovery as the primary source (on-chain fallback always runs).
     #[serde(default)]
     pub dune_primary_pool_discovery: bool,
     /// Dune saved query ID for sandwich events by block range (dex.sandwiches).
@@ -868,3 +868,4 @@ rpc_url = "https://eth.diy"
         assert!(summary.contains("disabled"));
     }
 }
+

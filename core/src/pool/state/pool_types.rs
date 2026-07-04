@@ -3,10 +3,10 @@ use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 use crate::pool::dex_type::DexType;
 
-/// Static pool information loaded from the discovery cache or subgraph.
+/// Static pool information loaded from the discovery cache (on-chain or Dune).
 ///
 /// `PoolInfo` is deserialized from the discovery cache (SQLite) after
-/// pools are discovered via subgraph (default) or on-chain eth_getLogs.
+/// pools are discovered via on-chain eth_getLogs or Dune Analytics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolInfo {
     pub address: Address,
@@ -226,3 +226,4 @@ impl PoolState {
 pub fn calldata_gas_estimate(pool_count: usize) -> u64 {
     21_000 + (pool_count as u64) * 2_800
 }
+

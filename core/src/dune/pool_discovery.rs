@@ -206,7 +206,7 @@ pub async fn discover_active_pools_from_dune(
 }
 
 /// Convert discovered pools into a lookup map by DexType for easy merging
-/// with subgraph-discovered and RPC-discovered pools.
+/// with on-chain and RPC-discovered pools.
 pub fn group_pools_by_dex_type(pools: Vec<DiscoveredPool>) -> HashMap<DexType, Vec<DiscoveredPool>> {
     let mut map = HashMap::new();
     for pool in pools {
@@ -214,3 +214,4 @@ pub fn group_pools_by_dex_type(pools: Vec<DiscoveredPool>) -> HashMap<DexType, V
     }
     map
 }
+
