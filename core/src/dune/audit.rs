@@ -5,9 +5,17 @@ use serde::{Deserialize, Serialize};
 use tracing;
 
 use super::client::DuneClient;
+use super::queries;
 use crate::dune::pool_discovery::dune_chain_label;
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
+
+fn render_query(template: &str, chain: &str, from_block: u64, to_block: u64) -> String {
+    template
+        .replace("{chain}", &dune_chain_label(chain))
+        .replace("{from_block}", &from_block.to_string())
+        .replace("{to_block}", &to_block.to_string())
+}
 
 /// A sandwich attack as recorded in Dune's `dex.sandwiches`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,21 +96,15 @@ pub struct DuneUnmatchedEvent {
 }
 
 /// Fetch all sandwich events from Dune for a block range.
+/// Uses the built-in `QUERY_SANDWICHES_BY_RANGE` query.
 pub async fn fetch_sandwiches_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneSandwichEvent>> {
-    let dune_chain = dune_chain_label(chain);
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_block.to_string()),
-        ("to_block", &to_block.to_string()),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_SANDWICHES_BY_RANGE, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
     let rows = match result.result {
         Some(ref r) => &r.rows,
         None => return Ok(Vec::new()),
@@ -124,21 +126,15 @@ pub async fn fetch_sandwiches_from_dune(
 }
 
 /// Fetch arbitrage events from Dune for a block range.
+/// Uses the built-in `QUERY_ARBITRAGES_BY_RANGE` query.
 pub async fn fetch_arbitrages_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneArbitrageEvent>> {
-    let dune_chain = dune_chain_label(chain);
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_block.to_string()),
-        ("to_block", &to_block.to_string()),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_ARBITRAGES_BY_RANGE, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
     let rows = match result.result {
         Some(ref r) => &r.rows,
         None => return Ok(Vec::new()),
@@ -160,21 +156,15 @@ pub async fn fetch_arbitrages_from_dune(
 }
 
 /// Fetch flash loan events from Dune for a block range.
+/// Uses the built-in `QUERY_FLASH_LOANS_BY_RANGE` query.
 pub async fn fetch_flash_loans_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneFlashLoanEvent>> {
-    let dune_chain = dune_chain_label(chain);
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_block.to_string()),
-        ("to_block", &to_block.to_string()),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_FLASH_LOANS_BY_RANGE, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
     let rows = match result.result {
         Some(ref r) => &r.rows,
         None => return Ok(Vec::new()),
@@ -204,38 +194,20 @@ pub async fn fetch_flash_loans_from_dune(
 ///   involving one of the same pools
 pub async fn run_audit(
     client: &DuneClient,
-    config: &DuneAuditConfig,
     scout_opportunities: &[MevOpportunity],
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<DuneAuditReport> {
     let dune_chain = dune_chain_label(chain);
-    let _from_str = from_block.to_string();
-    let _to_str = to_block.to_string();
 
     // ── Fetch all Dune events ──────────────────────────────────────────
-    let dune_sandwiches = if let Some(qid) = config.sandwich_query_id {
-        let r = fetch_sandwiches_from_dune(client, qid, &dune_chain, from_block, to_block).await?;
-        tracing::info!("Dune audit: fetched {} sandwiches", r.len());
-        r
-    } else {
-        Vec::new()
-    };
-    let dune_arbitrages = if let Some(qid) = config.arbitrage_query_id {
-        let r = fetch_arbitrages_from_dune(client, qid, &dune_chain, from_block, to_block).await?;
-        tracing::info!("Dune audit: fetched {} arbitrages", r.len());
-        r
-    } else {
-        Vec::new()
-    };
-    let dune_flash_loans = if let Some(qid) = config.flash_loan_query_id {
-        let r = fetch_flash_loans_from_dune(client, qid, &dune_chain, from_block, to_block).await?;
-        tracing::info!("Dune audit: fetched {} flash loans", r.len());
-        r
-    } else {
-        Vec::new()
-    };
+    let dune_sandwiches = fetch_sandwiches_from_dune(client, &dune_chain, from_block, to_block).await?;
+    tracing::info!("Dune audit: fetched {} sandwiches", dune_sandwiches.len());
+    let dune_arbitrages = fetch_arbitrages_from_dune(client, &dune_chain, from_block, to_block).await?;
+    tracing::info!("Dune audit: fetched {} arbitrages", dune_arbitrages.len());
+    let dune_flash_loans = fetch_flash_loans_from_dune(client, &dune_chain, from_block, to_block).await?;
+    tracing::info!("Dune audit: fetched {} flash loans", dune_flash_loans.len());
 
     // ── Index Dune pools by block for matching ─────────────────────────
     let dune_sandwich_pools: HashMap<u64, HashSet<Address>> = {
@@ -348,21 +320,4 @@ pub async fn run_audit(
     })
 }
 
-/// Configuration for a Dune audit run.
-#[derive(Debug, Clone, Default)]
-pub struct DuneAuditConfig {
-    pub sandwich_query_id: Option<u64>,
-    pub arbitrage_query_id: Option<u64>,
-    pub flash_loan_query_id: Option<u64>,
-}
 
-impl From<&crate::config::Config> for DuneAuditConfig {
-    fn from(cfg: &crate::config::Config) -> Self {
-        Self {
-            // Re-use existing query IDs (user creates saved queries from templates)
-            sandwich_query_id: cfg.dune_verify_sandwich_query_id,
-            arbitrage_query_id: cfg.dune_v2_pools_query_id, // temporary — user sets this to arbitrage query ID
-            flash_loan_query_id: None,
-        }
-    }
-}

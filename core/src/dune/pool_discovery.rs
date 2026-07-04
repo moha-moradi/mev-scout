@@ -3,8 +3,16 @@ use std::collections::HashMap;
 use tracing;
 
 use super::client::DuneClient;
+use super::queries;
 use crate::pool::dex_type::DexType;
 use crate::pool::discovery::DiscoveredPool;
+
+fn render_query(template: &str, chain: &str, from_block: u64, to_block: u64) -> String {
+    template
+        .replace("{chain}", &dune_chain_label(chain))
+        .replace("{from_block}", &from_block.to_string())
+        .replace("{to_block}", &to_block.to_string())
+}
 
 /// Map of chain names to DuneSQL chain labels.
 /// Returns a `String` to handle non-static mappings (e.g. "avalanche" → "avalanche_c").
@@ -15,28 +23,18 @@ pub fn dune_chain_label(chain: &str) -> String {
     }
 }
 
-/// Discover V2-style pools by executing a Dune SQL query.
+/// Discover V2-style pools via the built-in Dune query (`QUERY_V2_POOLS_BY_FACTORY`).
 ///
-/// The caller must have created a Dune query (by ID) that returns columns:
-/// `pool_address`, `token0`, `token1`, `creation_block`, `factory` (optional).
+/// Expected Dune columns: `pool_address`, `token0`, `token1`, `creation_block`, `factory` (optional).
 pub async fn discover_v2_pools_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
     fee_override: u32,
 ) -> anyhow::Result<Vec<DiscoveredPool>> {
-    let dune_chain = dune_chain_label(chain);
-    let from_str = from_block.to_string();
-    let to_str = to_block.to_string();
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_str),
-        ("to_block", &to_str),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_V2_POOLS_BY_FACTORY, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
 
     let rows = match result.result {
         Some(ref r) => &r.rows,
@@ -66,34 +64,24 @@ pub async fn discover_v2_pools_from_dune(
     }
 
     tracing::info!(
-        "Dune V2 discovery: found {} pools from query {}",
+        "Dune V2 discovery: found {} pools from QUERY_V2_POOLS_BY_FACTORY",
         pools.len(),
-        query_id
     );
     Ok(pools)
 }
 
-/// Discover V3 pools via Dune.
+/// Discover V3 pools via the built-in Dune query (`QUERY_V3_POOLS_BY_FACTORY`).
 ///
-/// Expected columns: `pool_address`, `token0`, `token1`, `fee`, `tick_spacing`,
+/// Expected Dune columns: `pool_address`, `token0`, `token1`, `fee`, `tick_spacing`,
 /// `creation_block`, `factory` (optional)
 pub async fn discover_v3_pools_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<Vec<DiscoveredPool>> {
-    let dune_chain = dune_chain_label(chain);
-    let from_str = from_block.to_string();
-    let to_str = to_block.to_string();
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_str),
-        ("to_block", &to_str),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_V3_POOLS_BY_FACTORY, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
 
     let rows = match result.result {
         Some(ref r) => &r.rows,
@@ -125,34 +113,26 @@ pub async fn discover_v3_pools_from_dune(
     }
 
     tracing::info!(
-        "Dune V3 discovery: found {} pools from query {}",
+        "Dune V3 discovery: found {} pools from QUERY_V3_POOLS_BY_FACTORY",
         pools.len(),
-        query_id
     );
     Ok(pools)
 }
 
 /// Discover all active pools in a block range from `dex.trades` via Dune.
 ///
-/// Expected Dune query columns: `pool_address`(0), `token0`(1), `token1`(2),
-/// `project`(3), `project_type`(4), `last_active_block`(5), `fee`(6)
+/// Uses the built-in `QUERY_ALL_ACTIVE_POOLS` query.
+///
+/// Expected Dune columns: `pool_address`, `token0`, `token1`,
+/// `project`, `project_type`, `last_active_block`, `fee`
 pub async fn discover_active_pools_from_dune(
     client: &DuneClient,
-    query_id: u64,
     chain: &str,
     from_block: u64,
     to_block: u64,
 ) -> anyhow::Result<Vec<DiscoveredPool>> {
-    let dune_chain = dune_chain_label(chain);
-    let from_str = from_block.to_string();
-    let to_str = to_block.to_string();
-    let params: &[(&str, &str)] = &[
-        ("chain", dune_chain.as_str()),
-        ("from_block", &from_str),
-        ("to_block", &to_str),
-    ];
-
-    let result = client.execute_query_by_id(query_id, params).await?;
+    let sql = render_query(queries::QUERY_ALL_ACTIVE_POOLS, chain, from_block, to_block);
+    let result = client.execute_raw_sql(&sql).await?;
 
     let rows = match result.result {
         Some(ref r) => &r.rows,
@@ -198,9 +178,8 @@ pub async fn discover_active_pools_from_dune(
     }
 
     tracing::info!(
-        "Dune active pool discovery: found {} unique pools from query {}",
+        "Dune active pool discovery: found {} unique pools from QUERY_ALL_ACTIVE_POOLS",
         pools.len(),
-        query_id
     );
     Ok(pools)
 }

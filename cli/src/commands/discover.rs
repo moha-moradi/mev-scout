@@ -60,39 +60,33 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         let dune = DuneClient::new(api_key.clone());
         tracing::info!("Starting Dune pool discovery for {}", args.chain_args.chain);
 
-        if let Some(qid) = config.dune_v2_pools_query_id {
-            let fee = chain_config.and_then(|c| c.uniswap_v2_default_fee).unwrap_or(30);
-            match mev_scout_core::dune::pool_discovery::discover_v2_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, from, to, fee,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("Dune V2: found {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => eprintln!("  Warning: Dune V2 discovery failed: {e:#}"),
+        let fee = chain_config.and_then(|c| c.uniswap_v2_default_fee).unwrap_or(30);
+        match mev_scout_core::dune::pool_discovery::discover_v2_pools_from_dune(
+            &dune, &args.chain_args.chain, from, to, fee,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("Dune V2: found {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => eprintln!("  Warning: Dune V2 discovery failed: {e:#}"),
         }
-        if let Some(qid) = config.dune_v3_pools_query_id {
-            match mev_scout_core::dune::pool_discovery::discover_v3_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, from, to,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("Dune V3: found {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => eprintln!("  Warning: Dune V3 discovery failed: {e:#}"),
+        match mev_scout_core::dune::pool_discovery::discover_v3_pools_from_dune(
+            &dune, &args.chain_args.chain, from, to,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("Dune V3: found {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => eprintln!("  Warning: Dune V3 discovery failed: {e:#}"),
         }
-        if let Some(qid) = config.dune_active_pools_query_id {
-            match mev_scout_core::dune::pool_discovery::discover_active_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, from, to,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("Dune active pools: found {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => eprintln!("  Warning: Dune active pool discovery failed: {e:#}"),
+        match mev_scout_core::dune::pool_discovery::discover_active_pools_from_dune(
+            &dune, &args.chain_args.chain, from, to,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("Dune active pools: found {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => eprintln!("  Warning: Dune active pool discovery failed: {e:#}"),
         }
     }
 

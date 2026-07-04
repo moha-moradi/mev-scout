@@ -1,6 +1,6 @@
 use comfy_table::Table;
 use mev_scout_core::config::Config;
-use mev_scout_core::dune::audit::{DuneAuditConfig, run_audit};
+use mev_scout_core::dune::audit::run_audit;
 use mev_scout_core::dune::DuneClient;
 use mev_scout_core::types::ResultsFile;
 
@@ -11,16 +11,6 @@ pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> 
         Some(k) => k,
         None => anyhow::bail!("Dune API key not configured. Set dune_api_key in config."),
     };
-
-    let has_queries = config.dune_sandwich_query_id.is_some()
-        || config.dune_arbitrage_query_id.is_some()
-        || config.dune_flash_loan_query_id.is_some();
-    if !has_queries {
-        anyhow::bail!(
-            "No Dune audit queries configured. Set at least dune_sandwich_query_id \
-             or dune_arbitrage_query_id in config."
-        );
-    }
 
     let client = DuneClient::new(dune_api_key.clone());
     let chain = args.chain_args.chain.clone();
@@ -46,26 +36,14 @@ pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> 
         Vec::new()
     };
 
-    let audit_config = DuneAuditConfig {
-        sandwich_query_id: config.dune_sandwich_query_id,
-        arbitrage_query_id: config.dune_arbitrage_query_id,
-        flash_loan_query_id: config.dune_flash_loan_query_id,
-    };
-
     println!();
     println!("  Dune Audit Report");
     println!("  Chain:       {chain}");
     println!("  Block range: {from_block}–{to_block}");
     println!("  Scout opps:  {}", scout_opportunities.len());
-    if config.dune_sandwich_query_id.is_some() {
-        println!("  Sandwiches:  query ID {}", config.dune_sandwich_query_id.unwrap());
-    }
-    if config.dune_arbitrage_query_id.is_some() {
-        println!("  Arbitrages:  query ID {}", config.dune_arbitrage_query_id.unwrap());
-    }
     println!();
 
-    let report = run_audit(&client, &audit_config, &scout_opportunities, &chain, from_block, to_block).await?;
+    let report = run_audit(&client, &scout_opportunities, &chain, from_block, to_block).await?;
 
     // ── Summary ──
     println!("  ┌──────────────────────────────────────────┐");

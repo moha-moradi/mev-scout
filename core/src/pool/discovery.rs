@@ -718,39 +718,33 @@ pub async fn discover_pools_with_sources(
         let api_key = config.dune_api_key.as_ref().expect("checked above");
         let dune = crate::dune::DuneClient::new(api_key.clone());
 
-        if let Some(qid) = config.dune_v2_pools_query_id {
-            let fee = v2_fee_override.unwrap_or(30);
-            match crate::dune::pool_discovery::discover_v2_pools_from_dune(
-                &dune, qid, &chain_str, from_block, to_block, fee,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("[pipeline] Dune V2: {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => tracing::warn!("[pipeline] Dune V2 discovery failed: {e:#}"),
+        let fee = v2_fee_override.unwrap_or(30);
+        match crate::dune::pool_discovery::discover_v2_pools_from_dune(
+            &dune, &chain_str, from_block, to_block, fee,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("[pipeline] Dune V2: {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => tracing::warn!("[pipeline] Dune V2 discovery failed: {e:#}"),
         }
-        if let Some(qid) = config.dune_v3_pools_query_id {
-            match crate::dune::pool_discovery::discover_v3_pools_from_dune(
-                &dune, qid, &chain_str, from_block, to_block,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("[pipeline] Dune V3: {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => tracing::warn!("[pipeline] Dune V3 discovery failed: {e:#}"),
+        match crate::dune::pool_discovery::discover_v3_pools_from_dune(
+            &dune, &chain_str, from_block, to_block,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("[pipeline] Dune V3: {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => tracing::warn!("[pipeline] Dune V3 discovery failed: {e:#}"),
         }
-        if let Some(qid) = config.dune_active_pools_query_id {
-            match crate::dune::pool_discovery::discover_active_pools_from_dune(
-                &dune, qid, &chain_str, from_block, to_block,
-            ).await {
-                Ok(pools) => {
-                    tracing::info!("[pipeline] Dune active: {} pools", pools.len());
-                    all_pools.extend(pools);
-                }
-                Err(e) => tracing::warn!("[pipeline] Dune active pool discovery failed: {e:#}"),
+        match crate::dune::pool_discovery::discover_active_pools_from_dune(
+            &dune, &chain_str, from_block, to_block,
+        ).await {
+            Ok(pools) => {
+                tracing::info!("[pipeline] Dune active: {} pools", pools.len());
+                all_pools.extend(pools);
             }
+            Err(e) => tracing::warn!("[pipeline] Dune active pool discovery failed: {e:#}"),
         }
 
         // Dedup Dune results by address, cache them

@@ -144,33 +144,9 @@ pub struct Config {
     /// when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dune_api_key: Option<String>,
-    /// Dune saved query ID for V2 pool discovery (PairCreated events).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_v2_pools_query_id: Option<u64>,
-    /// Dune saved query ID for V3 pool discovery (PoolCreated events).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_v3_pools_query_id: Option<u64>,
-    /// Dune saved query ID for active pool discovery (from dex.trades).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_active_pools_query_id: Option<u64>,
-    /// Dune saved query ID for trade verification by tx_hash (dex.trades).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_verify_trade_query_id: Option<u64>,
-    /// Dune saved query ID for sandwich verification (dex.sandwiches).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_verify_sandwich_query_id: Option<u64>,
     /// When true, use Dune pool discovery as the primary source (on-chain fallback always runs).
     #[serde(default)]
     pub dune_primary_pool_discovery: bool,
-    /// Dune saved query ID for sandwich events by block range (dex.sandwiches).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_sandwich_query_id: Option<u64>,
-    /// Dune saved query ID for arbitrage events by block range (dex.trades multi-pool).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_arbitrage_query_id: Option<u64>,
-    /// Dune saved query ID for flash loan events by block range (lending.flashloans).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_flash_loan_query_id: Option<u64>,
 
     // ── Execution fields (on-chain broadcast) ─────────────────────────
     /// Private key for signing. Read from env MEV_SCOUT_PK.
@@ -297,15 +273,7 @@ impl Default for Config {
             poll_interval_ms: default_poll_interval_ms(),
             max_executions: None,
             dune_api_key: None,
-            dune_v2_pools_query_id: None,
-            dune_v3_pools_query_id: None,
-            dune_active_pools_query_id: None,
-            dune_verify_trade_query_id: None,
-            dune_verify_sandwich_query_id: None,
             dune_primary_pool_discovery: false,
-            dune_sandwich_query_id: None,
-            dune_arbitrage_query_id: None,
-            dune_flash_loan_query_id: None,
             wallet_key: None,
             broadcast_mode: default_broadcast_mode(),
             executor_factory: None,
@@ -534,15 +502,7 @@ pub struct CliOverrides {
 
     // ── Dune overrides ─────────────────────────────────────────────────
     pub dune_api_key: Option<String>,
-    pub dune_v2_pools_query_id: Option<u64>,
-    pub dune_v3_pools_query_id: Option<u64>,
-    pub dune_active_pools_query_id: Option<u64>,
-    pub dune_verify_trade_query_id: Option<u64>,
-    pub dune_verify_sandwich_query_id: Option<u64>,
     pub dune_primary_pool_discovery: Option<bool>,
-    pub dune_sandwich_query_id: Option<u64>,
-    pub dune_arbitrage_query_id: Option<u64>,
-    pub dune_flash_loan_query_id: Option<u64>,
 
     // ── Execution overrides ───────────────────────────────────────────
     pub wallet_key: Option<String>,
@@ -588,15 +548,7 @@ impl Config {
         merge_opt!(self, overrides, poll_interval_ms, copy);
         merge_opt!(self, overrides, max_executions, copy_some);
         merge_opt!(self, overrides, dune_api_key, into_option);
-        merge_opt!(self, overrides, dune_v2_pools_query_id, copy_some);
-        merge_opt!(self, overrides, dune_v3_pools_query_id, copy_some);
-        merge_opt!(self, overrides, dune_active_pools_query_id, copy_some);
-        merge_opt!(self, overrides, dune_verify_trade_query_id, copy_some);
-        merge_opt!(self, overrides, dune_verify_sandwich_query_id, copy_some);
         merge_opt!(self, overrides, dune_primary_pool_discovery, copy);
-        merge_opt!(self, overrides, dune_sandwich_query_id, copy_some);
-        merge_opt!(self, overrides, dune_arbitrage_query_id, copy_some);
-        merge_opt!(self, overrides, dune_flash_loan_query_id, copy_some);
         merge_opt!(self, overrides, wallet_key, into_option);
         merge_opt!(self, overrides, broadcast_mode);
         merge_opt!(self, overrides, executor_factory, into_option);
