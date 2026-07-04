@@ -49,9 +49,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         v
     };
     println!("  Sources:     {}", sources.join(" + "));
-    if args.no_save {
-        println!("  Save to cache: no");
-    }
     println!();
 
     let mut all_pools: Vec<DiscoveredPool> = Vec::new();
@@ -110,16 +107,12 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             .and_then(|c| c.curve_registry.as_ref())
             .and_then(|s| s.parse::<Address>().ok());
 
-        let v2_factories: Vec<Address> = if let Some(v2_str) = &args.v2_factories {
-            v2_str.split(',').filter_map(|s| s.trim().parse().ok()).collect()
-        } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v2_factories.as_ref()) {
+        let v2_factories: Vec<Address> = if let Some(factories) = chain_config.and_then(|c| c.uniswap_v2_factories.as_ref()) {
             factories.iter().filter_map(|s| s.parse().ok()).collect()
         } else {
             chain_name.default_uniswap_v2_factories().iter().filter_map(|s| s.parse().ok()).collect()
         };
-        let v3_factories: Vec<Address> = if let Some(v3_str) = &args.v3_factory {
-            v3_str.split(',').filter_map(|s| s.trim().parse().ok()).collect()
-        } else if let Some(factories) = chain_config.and_then(|c| c.uniswap_v3_factories.as_ref()) {
+        let v3_factories: Vec<Address> = if let Some(factories) = chain_config.and_then(|c| c.uniswap_v3_factories.as_ref()) {
             factories.iter().filter_map(|s| s.parse().ok()).collect()
         } else {
             chain_name.default_uniswap_v3_factories().iter().filter_map(|s| s.parse().ok()).collect()
@@ -183,19 +176,17 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     println!();
     println!("  Found {} pool(s) in {} active blocks", pools.len(), all_active_blocks.len());
 
-    if !args.no_save && (use_onchain || !pools.is_empty()) {
-        let cache_path = config.effective_db_path(&chain_name);
-        if let Ok(cache) = SqliteStore::open(&cache_path, chain_id) {
-            let mut saved = 0usize;
-            for p in &pools {
-                let info: mev_scout_core::pool::state::PoolInfo = p.clone().into();
-                if cache.put_discovered_pool(&info).is_ok() {
-                    saved += 1;
-                }
+    let cache_path = config.effective_db_path(&chain_name);
+    if let Ok(cache) = SqliteStore::open(&cache_path, chain_id) {
+        let mut saved = 0usize;
+        for p in &pools {
+            let info: mev_scout_core::pool::state::PoolInfo = p.clone().into();
+            if cache.put_discovered_pool(&info).is_ok() {
+                saved += 1;
             }
-            if saved > 0 {
-                println!("  Saved {saved} pool(s) to cache: {cache_path}");
-            }
+        }
+        if saved > 0 {
+            println!("  Saved {saved} pool(s) to cache: {cache_path}");
         }
     }
 

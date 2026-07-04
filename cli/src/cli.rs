@@ -39,8 +39,9 @@ pub enum Command {
     /// Replay a specific block for debugging
     Replay(ReplayArgs),
 
-    /// Discover pools from factory events via the RPC endpoint.
-    /// Found pools are printed to stdout and optionally saved to the local cache.
+    /// Discover pools from on-chain events and/or Dune Analytics.
+    /// Factory addresses are resolved from the chain config.
+    /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
 
     /// Verify a previous run's results
@@ -397,21 +398,9 @@ pub struct DiscoverArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Uniswap V2 factory addresses (comma-separated)
-    #[arg(long, value_name = "ADDRS")]
-    pub v2_factories: Option<String>,
-
-    /// Uniswap V3 factory address
-    #[arg(long, value_name = "ADDR")]
-    pub v3_factory: Option<String>,
-
     /// Batch size for each getLogs request
     #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,
-
-    /// Skip saving discovered pools to the SQLite cache (saved by default).
-    #[arg(long = "no-save")]
-    pub no_save: bool,
 
     /// SQLite database path (overrides config's default: ./cache/{chain}-mev-scout.sqlite)
     #[arg(long = "db-path", value_name = "PATH")]
