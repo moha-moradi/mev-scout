@@ -398,6 +398,9 @@ pub struct DiscoverArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
+    #[command(flatten)]
+    pub block_range: BlockRangeArgs,
+
     /// Batch size for each getLogs request
     #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,

@@ -8,8 +8,9 @@ use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
 use mev_scout_core::pool::discovery::DiscoveredPool;
 use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::RpcClient;
-use mev_scout_core::types::ChainName;
+use mev_scout_core::types::{ChainName, RangeMode};
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
     let chain_name: ChainName = match args.chain_args.chain.parse() {
@@ -33,10 +34,36 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         rpc.check_connection(chain_id).await?;
     }
 
-    let from = chain_config
-        .and_then(|c| c.pool_discovery_start_block)
-        .unwrap_or(0);
-    let to = rpc.get_block_number().await?;
+    // Determine block range: explicit CLI flags override the default start block
+    let (from, to) = {
+        let has_range = args.block_range.days.is_some()
+            || args.block_range.blocks.is_some()
+            || args.block_range.block.is_some()
+            || (args.block_range.from_block.is_some() && args.block_range.to_block.is_some());
+
+        if has_range {
+            let mode = if let Some(days) = args.block_range.days {
+                RangeMode::Days(days)
+            } else if let Some(blocks) = args.block_range.blocks {
+                RangeMode::Blocks(blocks)
+            } else if let Some(block) = args.block_range.block {
+                RangeMode::Single(block)
+            } else if let (Some(from), Some(to)) = (args.block_range.from_block, args.block_range.to_block) {
+                RangeMode::Range(from, to)
+            } else {
+                anyhow::bail!("Incomplete block range: --from-block requires --to-block and vice versa");
+            };
+            let resolver = RangeResolver::new(rpc.clone());
+            let resolved = resolver.resolve(&mode).await?;
+            (resolved.start_block, resolved.end_block)
+        } else {
+            let from = chain_config
+                .and_then(|c| c.pool_discovery_start_block)
+                .unwrap_or(0);
+            let to = rpc.get_block_number().await?;
+            (from, to)
+        }
+    };
 
     println!();
     println!("  Pool Discovery");
