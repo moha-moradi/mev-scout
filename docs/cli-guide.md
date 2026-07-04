@@ -16,13 +16,14 @@ MEV Scout is an MEV opportunity scanner, backtester, and live simulator for EVM-
 6. [`mev-scout replay` — Debug a Single Block](#6-mev-scout-replay--debug-a-single-block)
 7. [`mev-scout discover` — Pool Discovery](#7-mev-scout-discover--pool-discovery)
 8. [`mev-scout fact-check` — Verify Results](#8-mev-scout-fact-check--verify-results)
-9. [`mev-scout audit` — Compare Results with Dune](#9-mev-scout-audit--compare-results-with-dune)
+ 9. [`mev-scout audit` — Compare Results with Dune](#9-mev-scout-audit--compare-results-with-dune)
 10. [`mev-scout live` — Live MEV Bot Mode](#10-mev-scout-live--live-mev-bot-mode)
-11. [Practical Examples by Chain](#11-practical-examples-by-chain)
-12. [Strategy Reference](#12-strategy-reference)
-13. [Gas Model Reference](#13-gas-model-reference)
-14. [DEX Support Matrix](#14-dex-support-matrix)
-15. [Configuration File Reference](#15-configuration-file-reference)
+11. [`mev-scout dune-check` — Query Dune for Trade Counts](#11-mev-scout-dune-check--query-dune-for-trade-counts)
+12. [Practical Examples by Chain](#12-practical-examples-by-chain)
+13. [Strategy Reference](#13-strategy-reference)
+14. [Gas Model Reference](#14-gas-model-reference)
+15. [DEX Support Matrix](#15-dex-support-matrix)
+16. [Configuration File Reference](#16-configuration-file-reference)
 
 ---
 
@@ -118,6 +119,15 @@ mev-scout run [FLAGS]
 | `--pga` | bool | false | Enable PGA simulation |
 | `--pga-mean-competitors N` | f64 | 3.0 | Mean competing searchers |
 | `--pga-intensity F` | f64 | 0.5 | Fraction of surplus dissipated |
+
+### Competition
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--competition` | bool | false | Enable competitor extraction analysis |
+| `--calibrate-pga` | bool | false | After backtest, print calibrated PGA parameters (requires `--competition`) |
+| `--pga-calibration-file PATH` | string | — | Path to save/load PGA calibration JSON |
+| `--competition-db PATH` | string | — | Path to SQLite database for competitor profile persistence |
 
 ### Pricing
 
@@ -348,11 +358,8 @@ mev-scout discover --from-block NUMBER --to-block NUMBER [FLAGS]
 |------|------|----------|-------------|
 | `--from-block NUMBER` | u64 | **yes** | Start block for log scanning |
 | `--to-block NUMBER` | u64 | **yes** | End block (inclusive) |
-| `--source SOURCE` | string | no | Pool source: `onchain`, `dune`, `all` (default: `onchain` when Dune not configured, `all` when Dune is configured) |
-| `--v2-factories ADDRS` | string | no | V2 factory addresses (comma-separated, overrides config) |
-| `--v3-factory ADDRS` | string | no | V3 factory address(es) (comma-separated, overrides config) |
-| `--batch-size N` | u64 | 10 | Batch size for `eth_getLogs` requests |
-| `--no-save` | bool | false | Skip saving to SQLite |
+| `--source SOURCE` | string | no | Pool source: `onchain`, `dune`, `all` (default: `onchain`) |
+| `--batch-size N` | u64 | no | Batch size for `eth_getLogs` requests (default: 10) |
 | `--db-path PATH` | string | no | SQLite database path |
 | Chain & Connection flags | — | — | Same as `run` |
 
@@ -379,21 +386,19 @@ mev-scout discover -n polygon --source dune \
 mev-scout discover -n polygon -r <RPC> --source all \
   --from-block 50000000 --to-block 50001000
 
-# Discover with custom V3 factory on Arbitrum, no save
-mev-scout discover -n arbitrum -r <RPC> \
-  --from-block 200000000 --to-block 200002000 \
-  --v3-factory 0x1F98431c8aD98523631AE4a59f267346ea31F984 \
-  --no-save
-
 # Discover with small batch size for low-rate-limit RPCs
 mev-scout discover -n ethereum -r <RPC> \
   --from-block 19000000 --to-block 19001000 \
   --batch-size 5
 
-# Discover V2 pools only
+# Discover with Dune source on Arbitrum
+mev-scout discover -n arbitrum -r <RPC> \
+  --from-block 200000000 --to-block 200002000 \
+  --source onchain
+
+# Discover PancakeSwap V2 pools on BSC
 mev-scout discover -n bsc -r <RPC> \
-  --from-block 40000000 --to-block 40000500 \
-  --v2-factories 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73
+  --from-block 40000000 --to-block 40000500
 
 # Discover with custom DB path, RPC workers, and rate limiting
 mev-scout discover -n polygon -r <RPC> \
@@ -553,6 +558,23 @@ mev-scout live [FLAGS]
 
 Same as `run`: `-n/--chain`, `-r/--rpc`, `--rpc-workers`, `--rps-limit`, `--rpc-urls`, `--rpc-rps`.
 
+### Competition
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--competition` | bool | false | Enable competitor extraction analysis during settled block processing |
+| `--competition-db PATH` | string | — | Path to SQLite database for competitor profile persistence |
+
+### Execution
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--wallet-key KEY` | string | — | Private key for signing (env: `MEV_SCOUT_PK`) |
+| `--broadcast-mode MODE` | string | `public` | Broadcast mode: `public`, `flashbots`, `mevshare` |
+| `--executor-factory ADDRESS` | string | — | Deployed ExecutorFactory address |
+| `--relay-url URL` | string | — | Custom relay URL (for custom broadcast mode) |
+| `--gas-multiplier MULT` | f64 | 1.2 | Gas limit multiplier (safety buffer) |
+
 ### Examples
 
 ```bash
@@ -592,7 +614,37 @@ mev-scout live -n polygon -r <RPC1> \
 
 ---
 
-## 11. Practical Examples by Chain
+## 11. `mev-scout dune-check` — Query Dune for Trade Counts
+
+Queries Dune Analytics for Uniswap V2/V3 trade counts in a specific block. Useful for quick data validation without running the full audit pipeline.
+
+### Syntax
+
+```bash
+mev-scout dune-check --block NUMBER [FLAGS]
+```
+
+### Flags
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `-b, --block NUMBER` | u64 | **yes** | Block number to check for Uniswap V2/V3 trades |
+| `-n, --chain NAME` | string | no | Chain name (default: `polygon`) |
+| `--dune-api-key KEY` | string | no | Dune API key (overrides config file) |
+
+### Examples
+
+```bash
+# Check block 50000000 on Polygon
+mev-scout dune-check -b 50000000 -n polygon
+
+# Check block on Ethereum with custom API key
+mev-scout dune-check -b 20000000 -n ethereum --dune-api-key YOUR_KEY
+```
+
+---
+
+## 12. Practical Examples by Chain
 
 ### Polygon (Chain ID: 137)
 
@@ -620,10 +672,9 @@ mev-scout live -n polygon -r <RPC> \
   --initial-balance 50 --min-profit 0.5 \
   --strategies sandwich,two_hop_arb,multi_hop_arb
 
-# Pool discovery for QuickSwap V2
+# Pool discovery on Polygon (on-chain)
 mev-scout discover -n polygon -r <RPC> \
-  --from-block 58000000 --to-block 58001000 \
-  --v2-factories 0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32
+  --from-block 58000000 --to-block 58001000
 ```
 
 ---
@@ -692,10 +743,9 @@ mev-scout live -n bsc -r <RPC> \
 mev-scout fetch --days 14 -n bsc -r <RPC> \
   --parquet-dir ./bsc-parquet
 
-# Discover PancakeSwap V2 pools
+# Discover pools on BSC
 mev-scout discover -n bsc -r <RPC> \
-  --from-block 40000000 --to-block 40000500 \
-  --v2-factories 0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73
+  --from-block 40000000 --to-block 40000500
 ```
 
 ---
@@ -845,7 +895,7 @@ mev-scout fact-check run_<TIMESTAMP>
 
 ---
 
-## 12. Strategy Reference
+## 13. Strategy Reference
 
 | Strategy | CLI Name | Description | Key Tuning | Default |
 |----------|----------|-------------|------------|---------|
@@ -881,7 +931,7 @@ mev-scout fact-check run_<TIMESTAMP>
 
 ---
 
-## 13. Gas Model Reference
+## 14. Gas Model Reference
 
 | Model | CLI Value | Description | Best For |
 |-------|-----------|-------------|----------|
@@ -920,7 +970,7 @@ liquidation = 500000
 
 ---
 
-## 14. DEX Support Matrix
+## 15. DEX Support Matrix
 
 | DEX | Type | Polygon | Avalanche | BSC | Arbitrum | Base | Ethereum | Optimism |
 |-----|------|---------|-----------|-----|----------|------|----------|----------|
@@ -944,7 +994,7 @@ liquidation = 500000
 
 ---
 
-## 15. Configuration File Reference
+## 16. Configuration File Reference
 
 A TOML config file can be used to set persistent defaults instead of passing CLI flags every time.
 
