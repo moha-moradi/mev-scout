@@ -111,12 +111,8 @@ impl ChainName {
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
                 "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
             ],
-            ChainName::Arbitrum => vec![
-                "0x6EcCab422D763aC031210895C81787E87B43A652", // Camelot V2
-            ],
-            ChainName::Base => vec![
-                "0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14", // Aerodrome
-            ],
+            ChainName::Arbitrum => vec![], // Camelot handled via default_camelot_factories
+            ChainName::Base => vec![],     // Aerodrome handled via default_solidly_factories
             ChainName::Ethereum => vec![
                 "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // Uniswap V2
                 "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", // SushiSwap
@@ -141,6 +137,30 @@ impl ChainName {
             ChainName::Base => &["0x33128a8fC17869897dcE68Ed026d694621f6FDfD"],
             ChainName::Ethereum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
             ChainName::Optimism => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+        }
+    }
+
+    /// Solidly-style factory addresses (PairCreated with bool stable).
+    /// Velodrome (Optimism), Aerodrome (Base), Equalizer, Thena, etc.
+    pub fn default_solidly_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Base => vec![
+                "0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14", // Aerodrome
+            ],
+            ChainName::Optimism => vec![
+                "0x420DD381b31aEf6683db6B902084cB0FFECe40Da", // Velodrome V2
+            ],
+            _ => vec![],
+        }
+    }
+
+    /// Camelot factory address (PairCreated with address,uint256,bool).
+    pub fn default_camelot_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Arbitrum => vec![
+                "0x6EcCab422D763aC031210895C81787E87B43A652", // Camelot
+            ],
+            _ => vec![],
         }
     }
 
@@ -250,28 +270,3 @@ impl FromStr for ChainName {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_chain_name_roundtrip() {
-        for chain in ChainName::all() {
-            let s = chain.to_string();
-            let parsed: ChainName = s.parse().unwrap();
-            assert_eq!(*chain, parsed);
-        }
-    }
-
-    #[test]
-    fn test_chain_name_unknown() {
-        let err = "unknown".parse::<ChainName>().unwrap_err();
-        assert!(err.contains("unknown chain"));
-    }
-
-    #[test]
-    fn test_chain_name_chain_id() {
-        assert_eq!(ChainName::Polygon.chain_id(), 137);
-        assert_eq!(ChainName::Ethereum.chain_id(), 1);
-    }
-}

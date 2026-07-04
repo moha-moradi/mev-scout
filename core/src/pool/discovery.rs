@@ -37,6 +37,24 @@ pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PoolAdded(address,uint256)")
 });
 
+// Solidly-style PairCreated (bool stable, address pair) — Velodrome, Aerodrome, Equalizer, Thena
+pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"PairCreated(address,address,bool,address)")
+});
+
+// Camelot PairCreated (address pair, uint256 fee, bool stable)
+pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"PairCreated(address,address,address,uint256,bool)")
+});
+
+// Curve exchange_underlying emits separate event variants
+pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
+});
+pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
+});
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPool {
     pub address: Address,
@@ -109,6 +127,8 @@ pub async fn discover_pools(
     v3_factories: Option<&[Address]>,
     _v2_factory_fees: Option<&[Option<u32>]>,
     curve_registry: Option<Address>,
+    solidly_factories: Option<&[Address]>,
+    camelot_factories: Option<&[Address]>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let mut active_blocks = HashSet::new();
     // Pools discovered via DEX activity events (may need metadata fetch)
@@ -128,6 +148,8 @@ pub async fn discover_pools(
         topics::V3_BURN,
         *topics::CURVE_TOKEN_EXCHANGE,
         *topics::CURVE_V2_TOKEN_EXCHANGE,
+        *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
+        *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
         *topics::BALANCER_SWAP,
     ];
 
@@ -190,6 +212,8 @@ pub async fn discover_pools(
                                 pool_hits.entry(addr).or_insert((DexType::UniswapV3, None, None));
                             } else if topic0 == *topics::CURVE_TOKEN_EXCHANGE
                                 || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
+                                || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
+                                || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING
                             {
                                 pool_hits.entry(addr).or_insert((DexType::Curve, None, None));
                             } else if topic0 == *topics::BALANCER_SWAP {
@@ -390,6 +414,88 @@ pub async fn discover_pools(
             }
         }
 
+        // ── Solidly-style factory creation scan (PairCreated with bool stable) ──
+        if let Some(factories) = solidly_factories {
+            if !factories.is_empty() {
+                let filter = Filter::new()
+                    .address(factories.to_vec())
+                    .event_signature(*SOLIDLY_PAIR_CREATED_TOPIC)
+                    .from_block(current)
+                    .to_block(batch_end);
+                if let Ok(logs) = rpc.get_logs(&filter).await {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let log_data = log.data();
+                        let topics = log.topics();
+                        if log_data.data.len() < 64 || topics.len() < 3 {
+                            continue;
+                        }
+                        let pair_addr = Address::from_slice(&log_data.data[44..64]);
+                        if factory_pools.contains_key(&pair_addr) {
+                            continue;
+                        }
+                        let token0 = Address::from_slice(&topics[1][12..]);
+                        let token1 = Address::from_slice(&topics[2][12..]);
+                        let creation_block = log.block_number.unwrap_or(to_block);
+                        factory_pools.insert(pair_addr, DiscoveredPool {
+                            address: pair_addr,
+                            token0,
+                            token1,
+                            fee: v2_fee_override.unwrap_or(30),
+                            tick_spacing: None,
+                            dex_type: DexType::UniswapV2,
+                            creation_block,
+                            pool_id: None,
+                            factory: Some(log.address()),
+                        });
+                    }
+                }
+            }
+        }
+
+        // ── Camelot factory creation scan (PairCreated with address,uint256,bool) ──
+        if let Some(factories) = camelot_factories {
+            if !factories.is_empty() {
+                let filter = Filter::new()
+                    .address(factories.to_vec())
+                    .event_signature(*CAMELOT_PAIR_CREATED_TOPIC)
+                    .from_block(current)
+                    .to_block(batch_end);
+                if let Ok(logs) = rpc.get_logs(&filter).await {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let log_data = log.data();
+                        let topics = log.topics();
+                        if log_data.data.len() < 96 || topics.len() < 3 {
+                            continue;
+                        }
+                        let pair_addr = Address::from_slice(&log_data.data[12..32]);
+                        if factory_pools.contains_key(&pair_addr) {
+                            continue;
+                        }
+                        let token0 = Address::from_slice(&topics[1][12..]);
+                        let token1 = Address::from_slice(&topics[2][12..]);
+                        let creation_block = log.block_number.unwrap_or(to_block);
+                        factory_pools.insert(pair_addr, DiscoveredPool {
+                            address: pair_addr,
+                            token0,
+                            token1,
+                            fee: v2_fee_override.unwrap_or(30),
+                            tick_spacing: None,
+                            dex_type: DexType::UniswapV2,
+                            creation_block,
+                            pool_id: None,
+                            factory: Some(log.address()),
+                        });
+                    }
+                }
+            }
+        }
+
         if batch_end == to_block {
             break;
         }
@@ -546,6 +652,8 @@ pub async fn discover_and_cache(
     v3_factories: Option<&[Address]>,
     _v2_factory_fees: Option<&[Option<u32>]>,
     curve_registry: Option<Address>,
+    solidly_factories: Option<&[Address]>,
+    camelot_factories: Option<&[Address]>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let (pools, active_blocks) = discover_pools(
         rpc,
@@ -558,6 +666,8 @@ pub async fn discover_and_cache(
         v3_factories,
         _v2_factory_fees,
         curve_registry,
+        solidly_factories,
+        camelot_factories,
     )
     .await?;
 
@@ -596,6 +706,8 @@ pub async fn discover_pools_with_sources(
     v3_factories: Option<&[Address]>,
     v2_factory_fees: Option<&[Option<u32>]>,
     curve_registry: Option<Address>,
+    solidly_factories: Option<&[Address]>,
+    camelot_factories: Option<&[Address]>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let use_dune = config.dune_primary_pool_discovery && config.dune_api_key.is_some();
     let chain_str = chain_name.to_string();
@@ -661,7 +773,7 @@ pub async fn discover_pools_with_sources(
     let (onchain_pools, active_blocks) = discover_and_cache(
         rpc, cache, from_block, to_block, batch_size,
         v2_fee_override, balancer_vault, v2_factories, v3_factories,
-        v2_factory_fees, curve_registry,
+        v2_factory_fees, curve_registry, solidly_factories, camelot_factories,
     ).await?;
 
     // Merge: on-chain pools take priority (richer metadata), but keep all

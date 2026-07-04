@@ -18,6 +18,10 @@ pub struct ChainConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v2_factories: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solidly_factories: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camelot_factories: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_start_block: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_batch_size: Option<u64>,
@@ -53,6 +57,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: None,
+            camelot_factories: None,
             curve_registry: None,
         },
     );
@@ -74,6 +80,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: None,
+            camelot_factories: None,
             curve_registry: None,
         },
     );
@@ -95,12 +103,11 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c".to_string()),
             uniswap_v2_default_fee: Some(25),
+            solidly_factories: None,
+            camelot_factories: None,
             curve_registry: None,
         },
     );
-    let arbitrum_factories = vec![
-        "0x6EcCab422D763aC031210895C81787E87B43A652".to_string(),
-    ];
     m.insert(
         "arbitrum".to_string(),
         ChainConfig {
@@ -110,17 +117,18 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(),
             ]),
-            uniswap_v2_factories: Some(arbitrum_factories),
+            uniswap_v2_factories: None,
             pool_discovery_start_block: Some(172_000),
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x82aF49447D8a07e3bd95BD0d56f35241523fBab1".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: None,
+            camelot_factories: Some(vec![
+                "0x6EcCab422D763aC031210895C81787E87B43A652".to_string(),
+            ]),
             curve_registry: None,
         },
     );
-    let base_factories = vec![
-        "0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14".to_string(),
-    ];
     m.insert(
         "base".to_string(),
         ChainConfig {
@@ -130,11 +138,15 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x33128a8fC17869897dcE68Ed026d694621f6FDfD".to_string(),
             ]),
-            uniswap_v2_factories: Some(base_factories),
+            uniswap_v2_factories: None,
             pool_discovery_start_block: Some(96_000),
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: Some(vec![
+                "0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14".to_string(),
+            ]),
+            camelot_factories: None,
             curve_registry: None,
         },
     );
@@ -157,12 +169,11 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: None,
+            camelot_factories: None,
             curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
         },
     );
-    let optimism_factories = vec![
-        "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b".to_string(),
-    ];
     m.insert(
         "optimism".to_string(),
         ChainConfig {
@@ -172,11 +183,17 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             uniswap_v3_factories: Some(vec![
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984".to_string(),
             ]),
-            uniswap_v2_factories: Some(optimism_factories),
+            uniswap_v2_factories: Some(vec![
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b".to_string(), // SushiSwap
+            ]),
             pool_discovery_start_block: Some(10_827_000),
             pool_discovery_batch_size: None,
             wrapped_native_token: Some("0x4200000000000000000000000000000000000006".to_string()),
             uniswap_v2_default_fee: None,
+            solidly_factories: Some(vec![
+                "0x420DD381b31aEf6683db6B902084cB0FFECe40Da".to_string(), // Velodrome V2
+            ]),
+            camelot_factories: None,
             curve_registry: None,
         },
     );

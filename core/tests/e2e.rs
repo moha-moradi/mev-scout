@@ -249,7 +249,7 @@ async fn test_e2e_pool_discovery() {
     eprintln!("  Discovering pools on QuickSwap factory [{start}..{end}]");
     let (pools, _active) = match discover_pools(
         &rpc, start, end, 2000, None, None,
-        Some(&v2_factories), None, None, None,
+        Some(&v2_factories), None, None, None, None, None,
     ).await {
         Ok((p, a)) => (p, a),
         Err(e) => {

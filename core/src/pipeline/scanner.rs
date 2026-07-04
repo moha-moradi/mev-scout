@@ -37,6 +37,12 @@ pub mod topics {
     pub static BALANCER_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
 
+    // Curve TokenExchangeUnderlying events (exchange_underlying path)
+    pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> =
+        LazyLock::new(|| keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)"));
+    pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> =
+        LazyLock::new(|| keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)"));
+
     /// All DEX event topic hashes for activity scanning.
     pub fn all_topics() -> Vec<B256> {
         vec![
@@ -47,6 +53,8 @@ pub mod topics {
             V3_BURN,
             *CURVE_TOKEN_EXCHANGE,
             *CURVE_V2_TOKEN_EXCHANGE,
+            *CURVE_TOKEN_EXCHANGE_UNDERLYING,
+            *CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
             *BALANCER_SWAP,
         ]
     }

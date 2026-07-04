@@ -118,9 +118,24 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             chain_name.default_uniswap_v3_factories().iter().filter_map(|s| s.parse().ok()).collect()
         };
 
-        if !v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some() {
-            tracing::info!("On-chain: {} V2 factories, {} V3 factories, Balancer: {}, Curve: {}",
-                v2_factories.len(), v3_factories.len(), vault.is_some(), registry.is_some());
+        let solidly_factories: Vec<Address> = if let Some(factories) = chain_config.and_then(|c| c.solidly_factories.as_ref()) {
+            factories.iter().filter_map(|s| s.parse().ok()).collect()
+        } else {
+            chain_name.default_solidly_factories().iter().filter_map(|s| s.parse().ok()).collect()
+        };
+
+        let camelot_factories: Vec<Address> = if let Some(factories) = chain_config.and_then(|c| c.camelot_factories.as_ref()) {
+            factories.iter().filter_map(|s| s.parse().ok()).collect()
+        } else {
+            chain_name.default_camelot_factories().iter().filter_map(|s| s.parse().ok()).collect()
+        };
+
+        if !v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
+            || !solidly_factories.is_empty() || !camelot_factories.is_empty()
+        {
+            tracing::info!("On-chain: {} V2 factories, {} V3 factories, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
+                v2_factories.len(), v3_factories.len(), solidly_factories.len(), camelot_factories.len(),
+                vault.is_some(), registry.is_some());
         }
 
         let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
@@ -130,6 +145,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
             if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
             None, registry,
+            if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
+            if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
         ).await {
             Ok((pools, active_blocks)) => {
                 tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
