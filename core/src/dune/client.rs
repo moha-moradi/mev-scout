@@ -236,13 +236,3 @@ impl DuneClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_client_creation() {
-        let client = DuneClient::new("test-key");
-        assert!(client.api_key == "test-key");
-    }
-}

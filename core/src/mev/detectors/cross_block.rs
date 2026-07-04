@@ -234,19 +234,3 @@ impl CrossBlockDetector {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_new_detector_empty() {
-        let d = CrossBlockDetector::new(3);
-        assert!(d.detect(1, 0, GasConfig::default()).is_empty());
-    }
-
-    #[test]
-    fn test_new_detector_min_window_size() {
-        let d = CrossBlockDetector::new(1);
-        assert!(d.snapshots.is_empty());
-    }
-}

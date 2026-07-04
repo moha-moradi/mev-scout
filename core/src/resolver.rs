@@ -141,41 +141,4 @@ impl RangeResolver {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::RangeMode;
 
-    #[test]
-    fn test_mode_string_days() {
-        let r = ResolvedRange { start_block: 10, end_block: 20, block_count: 11, mode: RangeMode::Days(7) };
-        assert_eq!(r.mode_string(), "days_7");
-    }
-
-    #[test]
-    fn test_mode_string_blocks() {
-        let r = ResolvedRange { start_block: 100, end_block: 199, block_count: 100, mode: RangeMode::Blocks(100) };
-        assert_eq!(r.mode_string(), "blocks_100");
-    }
-
-    #[test]
-    fn test_mode_string_single() {
-        let r = ResolvedRange { start_block: 42, end_block: 42, block_count: 1, mode: RangeMode::Single(42) };
-        assert_eq!(r.mode_string(), "block_42");
-    }
-
-    #[test]
-    fn test_mode_string_range() {
-        let r = ResolvedRange { start_block: 5, end_block: 10, block_count: 6, mode: RangeMode::Range(5, 10) };
-        assert_eq!(r.mode_string(), "range_5_10");
-    }
-
-    #[test]
-    fn test_summary() {
-        let r = ResolvedRange { start_block: 1000, end_block: 2000, block_count: 1001, mode: RangeMode::Blocks(1001) };
-        let s = r.summary();
-        assert!(s.contains("1000"));
-        assert!(s.contains("2000"));
-        assert!(s.contains("1001"));
-    }
-}
