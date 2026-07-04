@@ -69,61 +69,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     println!("{}", resolved.summary());
     println!();
 
-    {
-        let batch_size = validation_result
-            .chain_config
-            .pool_discovery_batch_size
-            .unwrap_or(200);
-        let v2_fee = validation_result.chain_config.uniswap_v2_default_fee;
-        let vault = validation_result
-            .chain_config
-            .balancer_vault
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-
-        tracing::info!(
-            "Discovering pools from DEX events in blocks {}..{}...",
-            resolved.start_block,
-            resolved.end_block,
-        );
-
-        let discovery_result = {
-            let dune_enabled = config.dune_api_key.is_some() && config.dune_primary_pool_discovery;
-            if dune_enabled {
-                mev_scout_core::pool::discovery::discover_pools_with_sources(
-                    &rpc, &cache, config,
-                    validation_result.chain_name,
-                    resolved.start_block, resolved.end_block,
-                    batch_size, v2_fee, vault,
-                    None, None, None, None,
-                ).await
-            } else {
-                mev_scout_core::pool::discovery::discover_and_cache(
-                    &rpc, &cache,
-                    resolved.start_block, resolved.end_block,
-                    batch_size, v2_fee, vault,
-                    None, None, None, None,
-                ).await
-            }
-        };
-        match discovery_result {
-            Ok((discovered, active)) => {
-                if !discovered.is_empty() {
-                    tracing::info!(
-                        "Discovered {} pools from DEX events in {} active blocks",
-                        discovered.len(),
-                        active.len(),
-                    );
-                } else {
-                    tracing::info!("No DEX activity found in block range");
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Pool discovery from DEX events failed: {e:#}");
-            }
-        }
-    }
-
     let pool_addresses: Vec<Address> = cache
         .list_discovered_pools()
         .unwrap_or_default()

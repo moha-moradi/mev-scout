@@ -405,14 +405,6 @@ pub struct DiscoverArgs {
     #[arg(long, value_name = "ADDR")]
     pub v3_factory: Option<String>,
 
-    /// Start block for discovery scan
-    #[arg(long, value_name = "NUMBER")]
-    pub from_block: u64,
-
-    /// End block for discovery scan (inclusive)
-    #[arg(long, value_name = "NUMBER")]
-    pub to_block: u64,
-
     /// Batch size for each getLogs request
     #[arg(long, default_value = "10", value_name = "NUMBER")]
     pub batch_size: u64,

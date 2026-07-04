@@ -63,8 +63,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
         Command::Report(_) => {}
         Command::Config => {}
         Command::Discover(args) => {
-            o.from_block = Some(args.from_block);
-            o.to_block = Some(args.to_block);
             o.chain = Some(args.chain_args.chain.clone());
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();

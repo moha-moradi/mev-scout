@@ -23,10 +23,25 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let use_onchain = source == "onchain" || source == "all";
     let use_dune = (source == "dune" || source == "all") && config.dune_api_key.is_some();
 
+    let provider_configs = config.effective_provider_configs(chain_name)?;
+    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+    let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
+    rpc.with_provider_rps(
+        &provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>(),
+    ).await;
+    if use_onchain {
+        rpc.check_connection(chain_id).await?;
+    }
+
+    let from = chain_config
+        .and_then(|c| c.pool_discovery_start_block)
+        .unwrap_or(0);
+    let to = rpc.get_block_number().await?;
+
     println!();
     println!("  Pool Discovery");
     println!("  Chain:       {}", args.chain_args.chain);
-    println!("  Block range: {}–{}", args.from_block, args.to_block);
+    println!("  Block range: {}–{}", from, to);
     let sources: Vec<&str> = {
         let mut v = Vec::new();
         if use_dune { v.push("Dune Analytics"); }
@@ -51,7 +66,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         if let Some(qid) = config.dune_v2_pools_query_id {
             let fee = chain_config.and_then(|c| c.uniswap_v2_default_fee).unwrap_or(30);
             match mev_scout_core::dune::pool_discovery::discover_v2_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, args.from_block, args.to_block, fee,
+                &dune, qid, &args.chain_args.chain, from, to, fee,
             ).await {
                 Ok(pools) => {
                     tracing::info!("Dune V2: found {} pools", pools.len());
@@ -62,7 +77,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
         if let Some(qid) = config.dune_v3_pools_query_id {
             match mev_scout_core::dune::pool_discovery::discover_v3_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, args.from_block, args.to_block,
+                &dune, qid, &args.chain_args.chain, from, to,
             ).await {
                 Ok(pools) => {
                     tracing::info!("Dune V3: found {} pools", pools.len());
@@ -73,7 +88,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
         if let Some(qid) = config.dune_active_pools_query_id {
             match mev_scout_core::dune::pool_discovery::discover_active_pools_from_dune(
-                &dune, qid, &args.chain_args.chain, args.from_block, args.to_block,
+                &dune, qid, &args.chain_args.chain, from, to,
             ).await {
                 Ok(pools) => {
                     tracing::info!("Dune active pools: found {} pools", pools.len());
@@ -86,16 +101,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
     // ── Phase 2: On-chain event scan discovery ──
     if use_onchain {
-        let provider_configs = config.effective_provider_configs(chain_name)?;
-        let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
-        let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-        rpc.with_provider_rps(
-            &provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>(),
-        ).await;
-        rpc.check_connection(chain_id).await?;
-
-        let from = args.from_block;
-        let to = args.to_block;
         let batch_size = args.batch_size;
         let v2_fee = chain_config.and_then(|c| c.uniswap_v2_default_fee);
         let vault = chain_config
