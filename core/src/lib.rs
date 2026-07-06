@@ -6,7 +6,6 @@ pub mod coingecko;
 pub mod config;
 pub mod dune;
 pub mod data;
-pub mod execution;
 pub mod fetch;
 pub mod mev;
 pub mod pipeline;

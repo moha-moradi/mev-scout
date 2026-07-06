@@ -44,9 +44,6 @@ pub enum Command {
     /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
 
-    /// Verify a previous run's results
-    FactCheck(FactCheckArgs),
-
     /// Live mode — connect to the live chain and run as a virtual MEV bot
     Live(LiveArgs),
 
@@ -174,18 +171,6 @@ pub struct RunArgs {
     #[arg(long, help_heading = "Output")]
     pub evm_fact_check: bool,
 
-    /// Enable PGA (Priority Gas Auction) simulation (default: false)
-    #[arg(long = "pga", help_heading = "PGA")]
-    pub pga_enabled: bool,
-
-    /// Mean number of competing searchers for PGA simulation (default: 3.0)
-    #[arg(long = "pga-mean-competitors", default_value = "3.0", value_name = "N", help_heading = "PGA")]
-    pub pga_mean_competitors: f64,
-
-    /// PGA intensity — fraction of auction surplus dissipated (default: 0.5)
-    #[arg(long = "pga-intensity", default_value = "0.5", value_name = "F", help_heading = "PGA")]
-    pub pga_intensity: f64,
-
     /// Price oracle mode: coingecko, onchain, or hybrid (default: coingecko)
     #[arg(long = "price-oracle", default_value = "coingecko", value_name = "MODE", help_heading = "Pricing")]
     pub price_oracle_mode: String,
@@ -210,29 +195,6 @@ pub struct RunArgs {
     /// opportunities. Requires at least 2 blocks in the range.
     #[arg(long = "cross-block-window", default_value = "0", value_name = "N", help_heading = "Strategies")]
     pub cross_block_window: usize,
-
-    /// Enable competitor extraction analysis (default: false).
-    /// Analyzes replayed transactions to identify actual MEV extraction
-    /// events and attribute them to searcher addresses. Outputs per-block
-    /// competitor activity and top searcher profiles.
-    #[arg(long = "competition", help_heading = "Competition")]
-    pub competition: bool,
-
-    /// After backtest, print calibrated PGA parameters derived from observed
-    /// competitor extraction data. Requires --competition.
-    #[arg(long = "calibrate-pga", help_heading = "Competition")]
-    pub calibrate_pga: bool,
-
-    /// Path to save/load PGA calibration JSON (save after backtest, load on
-    /// subsequent runs to override --pga-mean-competitors / --pga-intensity).
-    #[arg(long = "pga-calibration-file", value_name = "PATH", help_heading = "Competition")]
-    pub pga_calibration_file: Option<String>,
-
-    /// Path to SQLite database for competitor profile persistence across runs.
-    /// When set, competitor profiles are saved to / loaded from this database
-    /// in addition to the main cache.
-    #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
-    pub competition_db: Option<String>,
 
 }
 
@@ -277,13 +239,6 @@ pub struct ReplayArgs {
     /// Show DEX interaction analysis per transaction
     #[arg(long)]
     pub analyze: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct FactCheckArgs {
-    /// Run ID to fact-check (e.g. "run_1712345678")
-    #[arg(required = true, value_name = "RUN_ID")]
-    pub run_id: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -363,34 +318,6 @@ pub struct LiveArgs {
     #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
     pub db_path: Option<String>,
 
-    /// Enable competitor extraction analysis during settled block processing.
-    #[arg(long = "competition", help_heading = "Competition")]
-    pub competition: bool,
-
-    /// Path to SQLite database for competitor profile persistence.
-    #[arg(long = "competition-db", value_name = "PATH", help_heading = "Competition")]
-    pub competition_db: Option<String>,
-
-    // ── On-chain execution args ───────────────────────────────────────
-    /// Private key for signing (env: MEV_SCOUT_PK)
-    #[arg(long = "wallet-key", env = "MEV_SCOUT_PK", value_name = "KEY", help_heading = "Execution")]
-    pub wallet_key: Option<String>,
-
-    /// Broadcast mode: public, flashbots, mevshare
-    #[arg(long = "broadcast-mode", default_value = "public", value_name = "MODE", help_heading = "Execution")]
-    pub broadcast_mode: String,
-
-    /// Deployed ExecutorFactory address
-    #[arg(long = "executor-factory", value_name = "ADDRESS", help_heading = "Execution")]
-    pub executor_factory: Option<String>,
-
-    /// Custom relay URL (for custom broadcast mode)
-    #[arg(long = "relay-url", value_name = "URL", help_heading = "Execution")]
-    pub relay_url: Option<String>,
-
-    /// Gas limit multiplier (safety buffer)
-    #[arg(long = "gas-multiplier", default_value_t = 1.2, value_name = "MULT", help_heading = "Execution")]
-    pub gas_multiplier: f64,
 }
 
 #[derive(Args, Debug, Clone)]

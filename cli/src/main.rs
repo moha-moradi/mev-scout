@@ -90,7 +90,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Config => commands::cmd_config(&config).await,
         Command::Replay(args) => commands::cmd_replay(&config, args).await,
         Command::Discover(args) => commands::cmd_discover(&config, args).await,
-        Command::FactCheck(args) => commands::cmd_factcheck(&config, args).await,
         Command::Live(args) => commands::cmd_live(&config, args).await,
         Command::Audit(args) => commands::cmd_audit(&config, args).await,
         Command::DuneCheck(args) => commands::cmd_dune_check(&config, args).await,

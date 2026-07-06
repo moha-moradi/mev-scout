@@ -1,13 +1,6 @@
-use std::collections::HashMap;
-
-use alloy::primitives::{Address, U256};
-
 use crate::cli::LiveArgs;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::Config;
-use mev_scout_core::execution::{
-    BroadcastMode, ExecutionConfig, ExecutionSigner, TxBroadcaster,
-};
 use mev_scout_core::mev::execution::{LiveConfig, LiveRunner};
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
@@ -46,14 +39,14 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     if let Some(vault_str) = config.chains.get(&chain_name.to_string())
         .and_then(|c| c.balancer_vault.as_ref())
     {
-        if let Ok(vault_addr) = vault_str.parse::<Address>() {
+        if let Ok(vault_addr) = vault_str.parse::<alloy::primitives::Address>() {
             pool_manager = pool_manager.with_balancer_vault(vault_addr);
         }
     }
     if let Some(native_str) = config.chains.get(&chain_name.to_string())
         .and_then(|c| c.wrapped_native_token.as_ref())
     {
-        if let Ok(native_addr) = native_str.parse::<Address>() {
+        if let Ok(native_addr) = native_str.parse::<alloy::primitives::Address>() {
             pool_manager = pool_manager.with_wrapped_native(native_addr);
         }
     }
@@ -82,14 +75,10 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         runner = runner.with_cross_block(3);
     }
 
-    if args.competition {
-        runner = runner.with_competition();
-    }
-
     let pool_manager = std::mem::take(&mut runner.pool_manager);
 
-    let initial_balance_wei = U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
-    let min_profit_wei = U256::from((config.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
+    let initial_balance_wei = alloy::primitives::U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
+    let min_profit_wei = alloy::primitives::U256::from((config.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
 
     let oracle_mode: PriceOracleMode = match config.price_oracle_mode.parse() {
         Ok(m) => m,
@@ -101,33 +90,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
             PriceOracleMode::CoinGeckoOnly
         }
     };
-    let token_prices: HashMap<Address, f64> = config.parse_token_prices();
-
-    // ── Build execution config & signer ─────────────────────────────
-    let wallet_key = config.wallet_key.clone().or_else(|| std::env::var("MEV_SCOUT_PK").ok());
-
-    let execution_config = wallet_key.as_ref().map(|_| ExecutionConfig {
-        private_key: wallet_key.clone(),
-        broadcast_mode: config.broadcast_mode.parse().unwrap_or(BroadcastMode::Public),
-        executor_factory: config.executor_factory.as_ref().and_then(|s| s.parse().ok()),
-        flashbots_relay_url: Some("https://relay.flashbots.net".into()),
-        mevshare_relay_url: Some("https://mev-share.flashbots.net".into()),
-        confirmation_blocks: 1,
-        gas_limit_multiplier: config.gas_multiplier,
-    });
-
-    let execution_signer = wallet_key.as_ref().and_then(|key| {
-        ExecutionSigner::from_private_key(key, chain_id).ok()
-    });
-
-    let broadcaster = execution_config.as_ref().map(|cfg| {
-        let mode = cfg.broadcast_mode.for_chain(chain_id);
-        TxBroadcaster::new(
-            mode,
-            cfg.flashbots_relay_url.clone(),
-            cfg.mevshare_relay_url.clone(),
-        )
-    });
+    let token_prices: std::collections::HashMap<alloy::primitives::Address, f64> = config.parse_token_prices();
 
     let chain_defaults = config.chains.get(&chain_name.to_string()).cloned().unwrap_or_default();
 
@@ -163,23 +126,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         runner,
         block_replayer,
         chain_id,
-        execution_signer,
-        execution_config,
-        broadcaster,
     ).await;
-
-    if let Some(ref comp_db_path) = args.competition_db {
-        match SqliteStore::open(comp_db_path, chain_id) {
-            Ok(comp_store) => {
-                live_runner.with_competition_db(&comp_store);
-                tracing::info!(
-                    "Loaded {} known competitor profiles from competition DB",
-                    live_runner.competition_state.known_count(),
-                );
-            }
-            Err(e) => tracing::warn!("Failed to open competition DB: {}", e),
-        }
-    }
 
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 

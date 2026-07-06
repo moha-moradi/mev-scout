@@ -1,26 +1,20 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::Address;
-use comfy_table::Table;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::RunArgs;
-use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json, render_competition_table};
+use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json};
 use mev_scout_core::cache::{RunManifest, SqliteStore};
-use mev_scout_core::coingecko::PriceCache;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
-use mev_scout_core::mev::verify::{
-    compute_block_summaries, FactCheckReport, verify_opportunities,
-    verify_opportunities_from_chain,
-};
-use mev_scout_core::pipeline::{aggregate_with_prices, BacktestRunner, DexMeta};
+use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::RpcClient;
-use mev_scout_core::types::{GasConfig, PriceOracleMode, ResultsFile};
+use mev_scout_core::types::{GasConfig, ResultsFile};
 
 pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let validation_result = match validation::validate_and_resolve(config) {
@@ -90,18 +84,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         fetcher = fetcher.with_parallelism(workers);
     }
     fetcher = fetcher.with_batch_rpc(!args.chain_args.no_batch_rpc);
-    match mev_scout_core::sigs::ensure_signature_db(None).await {
-        Ok(sig_db_path) => {
-            match mev_scout_core::sigs::SignatureResolver::new(&sig_db_path) {
-                Ok(resolver) => {
-                    fetcher = fetcher.with_sig_resolver(resolver);
-                    tracing::info!("Signature resolution enabled");
-                }
-                Err(e) => tracing::warn!("Failed to load signature DB: {e} — continuing without sig resolution"),
-            }
-        }
-        Err(e) => tracing::warn!("Failed to ensure signature DB: {e} — continuing without sig resolution"),
-    }
 
     let pb = ProgressBar::new(resolved.block_count);
     pb.set_style(
@@ -171,7 +153,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         validation_result.chain_config.chain_id,
     );
 
-    let mut gas_config = GasConfig {
+    let gas_config = GasConfig {
         gas_limit: config.gas_limit,
         gas_model: validation_result.gas_model,
         priority_fee_gwei: config.priority_fee_gwei,
@@ -179,24 +161,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         winning_bid_premium: 0.0,
         percentile_gas_price: None,
     };
-    let pga_cfg = if config.pga_enabled {
-        gas_config = gas_config.with_winning_bid_premium(
-            config.pga_mean_competitors,
-            config.pga_intensity,
-        );
-        Some(mev_scout_core::mev::pga::PgaConfig::new(
-            config.pga_mean_competitors,
-            config.pga_intensity,
-        ))
-    } else {
-        None
-    };
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.proximity_window)
         .with_capture_pending(config.capture_pending);
-    if args.competition {
-        runner = runner.with_competition();
-    }
 
     if config.cross_block_window > 0 {
         runner = runner.with_cross_block(config.cross_block_window);
@@ -210,89 +177,8 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     let start = std::time::Instant::now();
 
-    let (all_opportunities, block_stats) = runner.run_range_with_pga(&resolved, pga_cfg)?;
+    let (all_opportunities, block_stats) = runner.run_range(&resolved)?;
     let elapsed = start.elapsed();
-
-    let aggregation = if !all_opportunities.is_empty() {
-        let oracle_mode: PriceOracleMode = match config.price_oracle_mode.parse() {
-            Ok(m) => m,
-            Err(_) => {
-                tracing::warn!(
-                    "Invalid price_oracle_mode '{}', falling back to coingecko",
-                    config.price_oracle_mode,
-                );
-                PriceOracleMode::CoinGeckoOnly
-            }
-        };
-
-        let mut token_prices = config.parse_token_prices();
-        let mut price_cache = PriceCache::new(config.coingecko_api_key.clone());
-
-        let native_price = price_cache.resolve_native_price(
-            oracle_mode,
-            validation_result.chain_name,
-            &runner.pool_manager,
-            resolved.start_block,
-        ).await;
-        if let Some(price) = native_price {
-            token_prices.insert(Address::ZERO, price);
-        }
-
-        let dexes: Vec<DexMeta> = runner.pool_manager.all_pools().map(|pool| {
-            let info = pool.info();
-            DexMeta {
-                name: info.name.clone().unwrap_or_else(|| format!("{:#x}", info.address)),
-                fork: format!("{:?}", info.dex_type),
-                tx_count: 0,
-                pool_addresses: vec![info.address],
-            }
-        }).collect();
-
-        let agg = aggregate_with_prices(&all_opportunities, &dexes, &token_prices);
-        tracing::info!(
-            "USD aggregation: {} opportunities, net_profit_usd=${:.2}",
-            agg.summary.total,
-            agg.summary.net_profit_usd,
-        );
-        Some(agg)
-    } else {
-        None
-    };
-
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("System clock went backwards")
-        .as_secs();
-    let competition_report = if args.competition {
-        runner.build_competition_report()
-    } else {
-        None
-    };
-
-    // Persist competitor profiles to competition-db if provided
-    if let Some(ref comp_db_path) = args.competition_db {
-        if let Some(ref comp) = competition_report {
-            match SqliteStore::open(comp_db_path, validation_result.chain_config.chain_id) {
-                Ok(comp_store) => {
-                    let _ = comp_store.put_competitor_profiles(&comp.top_searchers);
-                }
-                Err(e) => tracing::warn!("Failed to open competition DB: {}", e),
-            }
-        }
-    }
-
-    // Save PGA calibration to file if requested
-    if let Some(ref cal_path) = args.pga_calibration_file {
-        if let Some(ref comp) = competition_report {
-            if let Ok(json) = serde_json::to_string_pretty(&comp.pga_calibration) {
-                if let Err(e) = std::fs::write(cal_path, &json) {
-                    tracing::warn!("Failed to save PGA calibration: {}", e);
-                } else {
-                    tracing::info!("PGA calibration saved to {}", cal_path);
-                }
-            }
-        }
-    }
 
     let results_file = ResultsFile {
         run_id: run_id.clone(),
@@ -303,24 +189,14 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         strategies: manifest.strategies.clone(),
         flash_loan_provider: manifest.flash_loan_provider.clone(),
         resolved_at: manifest.resolved_at,
-        created_at,
+        created_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("System clock went backwards")
+            .as_secs(),
         opportunities: all_opportunities.clone(),
-        competition: competition_report.clone(),
     };
     if let Err(e) = save_results_json(&config.export_path, &run_id, &results_file) {
         tracing::warn!("Failed to save results: {}", e);
-    }
-
-    if let Some(ref agg) = aggregation {
-        let agg_path = std::path::Path::new(&config.export_path)
-            .join(format!("{}_aggregation.json", run_id));
-        if let Ok(json) = serde_json::to_string_pretty(agg) {
-            if let Err(e) = std::fs::write(&agg_path, json) {
-                tracing::warn!("Failed to save aggregation: {}", e);
-            } else {
-                tracing::info!("Aggregation saved to {}", agg_path.display());
-            }
-        }
     }
 
     if all_opportunities.is_empty() {
@@ -336,49 +212,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     render_block_summary_table(&block_stats);
 
-    // Render competition analysis results
-    if let Some(ref comp) = competition_report {
-        render_competition_table(comp);
-
-        // --calibrate-pga: print PGA calibration prominently
-        if args.calibrate_pga && !comp.pga_calibration.mean_competitors.is_empty() {
-            println!("\nPGA Calibration (--calibrate-pga):");
-            println!("  Blocks analyzed: {}", comp.pga_calibration.blocks_analyzed);
-            println!("  Total extractions: {}", comp.pga_calibration.total_extractions);
-            println!("  Per-strategy parameters:");
-            let mut strategies: Vec<String> = comp.pga_calibration.mean_competitors.keys().cloned().collect();
-            strategies.sort();
-            for strategy in &strategies {
-                let mean = comp.pga_calibration.mean_competitors.get(strategy).copied().unwrap_or(0.0);
-                let intensity = comp.pga_calibration.bid_to_value_ratio
-                    .get(strategy).copied().unwrap_or(0.5);
-                println!("    {}: mean_competitors={:.2}, intensity={:.3}", strategy, mean, intensity);
-            }
-            println!("  Suggested PGA config:");
-            for strategy in &strategies {
-                let mean = comp.pga_calibration.mean_competitors.get(strategy).copied().unwrap_or(0.0);
-                let intensity = comp.pga_calibration.bid_to_value_ratio
-                    .get(strategy).copied().unwrap_or(0.5);
-                println!("    --pga-mean-competitors {:.1} --pga-intensity {:.3}  # {}", mean, intensity, strategy);
-            }
-        }
-    }
-
-    // Load PGA calibration from file if provided (overrides CLI defaults)
-    if let Some(ref cal_path) = args.pga_calibration_file {
-        if competition_report.is_none() && std::path::Path::new(cal_path).exists() {
-            match std::fs::read_to_string(cal_path) {
-                Ok(json) => {
-                    if let Ok(cal) = serde_json::from_str::<mev_scout_core::mev::competition::PgaCalibration>(&json) {
-                        println!("\nLoaded PGA calibration from {} ({} blocks, {} extractions)",
-                            cal_path, cal.blocks_analyzed, cal.total_extractions);
-                    }
-                }
-                Err(e) => tracing::warn!("Failed to read PGA calibration file: {}", e),
-            }
-        }
-    }
-
     let mempool_opps: usize = block_stats.iter().map(|s| s.mempool_opp_count).sum();
     if mempool_opps > 0 {
         let mempool_txs: usize = block_stats.iter().map(|s| s.pending_tx_count).sum();
@@ -386,56 +219,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
             "  Mempool: {} pending txs, {} mempool-only opportunities visible",
             mempool_txs, mempool_opps,
         );
-    }
-
-    if let Some(ref agg) = aggregation {
-        println!("\nUSD Aggregation:");
-        let mut agg_table = Table::new();
-        agg_table.set_header(vec!["Metric".to_string(), "Value".to_string()]);
-        agg_table.add_row(vec!["Total".to_string(), agg.summary.total.to_string()]);
-        agg_table.add_row(vec!["Profitable".to_string(), agg.summary.profitable.to_string()]);
-        agg_table.add_row(vec!["Gross (ETH)".to_string(), format!("{:.6}", agg.summary.gross_revenue)]);
-        agg_table.add_row(vec!["Gas (ETH)".to_string(), format!("{:.6}", agg.summary.total_cost)]);
-        agg_table.add_row(vec!["Net (ETH)".to_string(), format!("{:.6}", agg.summary.net_profit)]);
-        agg_table.add_row(vec!["Net (USD)".to_string(), format!("${:.2}", agg.summary.net_profit_usd)]);
-        if let Some(ref best) = agg.summary.best_strategy {
-            agg_table.add_row(vec!["Best strategy".to_string(), best.clone()]);
-        }
-        println!("{agg_table}");
-    }
-
-    let fact_check_mode = if args.evm_fact_check { "EVM" } else { "structural" };
-    if args.fact_check && !all_opportunities.is_empty() {
-        println!("\nFact-Check Report ({}):", fact_check_mode);
-        let checks = if args.evm_fact_check {
-            let rpc = RpcClient::from_urls(&rpc_refs, validation_result.chain_config.chain_id)?;
-            rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
-            verify_opportunities_from_chain(&all_opportunities, &runner.pool_manager, &rpc).await
-        } else {
-            verify_opportunities(&all_opportunities, Some(&runner.pool_manager))
-        };
-        let passed = checks.iter().filter(|c| c.profit_gt_gas).count();
-        let failed = checks.len().saturating_sub(passed);
-        let summaries = compute_block_summaries(&all_opportunities, &block_stats);
-        let report = FactCheckReport {
-            run_id: run_id.clone(),
-            chain: validation_result.chain_name.to_string(),
-            block_count: block_stats.len(),
-            total_opportunities: all_opportunities.len(),
-            passed,
-            failed,
-            block_summaries: summaries,
-            opportunity_checks: checks,
-        };
-
-        println!("  Opportunities: {} total, {} passed, {} failed", report.total_opportunities, report.passed, report.failed);
-
-        let report_path = std::path::Path::new(&config.export_path)
-            .join(format!("{}_factcheck.json", run_id));
-        if let Ok(json) = serde_json::to_string_pretty(&report) {
-            let _ = std::fs::write(&report_path, json);
-            println!("  Report saved to {}", report_path.display());
-        }
     }
 
     Ok(())

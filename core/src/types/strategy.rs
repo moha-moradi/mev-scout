@@ -247,10 +247,6 @@ pub struct GasConfig {
     pub gas_model: GasModel,
     pub priority_fee_gwei: f64,
     pub flash_loan_provider: FlashLoanProvider,
-    /// Premium multiplier on top of priority fee to account for PGA dynamics.
-    /// 0.0 = no premium (base priority fee). 0.5 = 50% premium.
-    /// When PGA is enabled, this is set from `PgaConfig` to model the
-    /// winning bid premium needed to outbid competitors (H10).
     pub winning_bid_premium: f64,
     /// Pre-computed N-th percentile effective gas price from the historical
     /// gas price distribution (H10). When set, `GasModel::Distribution(p)`
@@ -308,18 +304,6 @@ impl GasConfig {
         input_amount.saturating_mul(bps).saturating_div(10_000)
     }
 
-    /// Set the winning bid premium from PGA configuration (H10).
-    /// Returns self for chaining.
-    ///
-    /// Premium formula: `intensity × mean_competitors / (mean_competitors + 1)`.
-    /// With mean_competitors=3, intensity=0.5: premium ≈ 37.5%
-    /// With mean_competitors=10, intensity=1.0: premium ≈ 91%
-    pub fn with_winning_bid_premium(mut self, mean_competitors: f64, intensity: f64) -> Self {
-        let n = mean_competitors.max(1.0);
-        let premium = intensity * (n / (n + 1.0));
-        self.winning_bid_premium = premium.min(10.0); // cap at 10x
-        self
-    }
 }
 
 impl Default for GasConfig {

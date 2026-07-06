@@ -1,6 +1,5 @@
 use alloy::primitives::{address, U256};
 use mev_scout_core::config::{CliOverrides, Config};
-use mev_scout_core::mev::verify::fact_check::{verify_opportunities, RecomputationAccuracy};
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::discovery::DiscoveredPool;
 use mev_scout_core::pool::state::{PoolInfo, PoolManager};
@@ -30,7 +29,6 @@ fn test_results_file_roundtrip() {
         resolved_at: 12345678,
         created_at: 12345679,
         opportunities: vec![opp],
-        competition: None,
     };
 
     let json = serde_json::to_string_pretty(&file).unwrap();
@@ -75,7 +73,6 @@ fn test_cli_override_merging() {
         chain: Some("avalanche".into()),
         strategies: Some("two_hop_arb,sandwich".into()),
         gas_model: Some("p90".into()),
-        pga_enabled: Some(true),
         proximity_window: Some(5),
         days: None,
         blocks: None,
@@ -95,8 +92,6 @@ fn test_cli_override_merging() {
         db_path: None,
         parquet_dir: None,
         coingecko_api_key: None,
-        pga_mean_competitors: None,
-        pga_intensity: None,
         price_oracle_mode: None,
         token_prices: None,
         capture_pending: None,
@@ -107,18 +102,12 @@ fn test_cli_override_merging() {
         max_executions: None,
         dune_api_key: None,
         dune_primary_pool_discovery: None,
-        wallet_key: None,
-        broadcast_mode: None,
-        executor_factory: None,
-        relay_url: None,
-        gas_multiplier: None,
     };
     config.merge_cli(&overrides);
 
     assert_eq!(config.chain, "avalanche");
     assert_eq!(config.strategies, "two_hop_arb,sandwich");
     assert_eq!(config.gas_model, "p90");
-    assert!(config.pga_enabled);
     assert_eq!(config.proximity_window, 5);
 
     // Unset fields keep defaults
@@ -154,36 +143,4 @@ fn test_discover_v3_pipeline() {
     assert_eq!(info.factory, Some(address!("cafe0000000000000000000000000000000000aa")));
 }
 
-/// ── Test 10: Fact-check re-verify ───────────────────────────────────────────
-#[test]
-fn test_fact_check_re_verify() {
-    let mut pm = PoolManager::new();
-    let pool_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    let pool_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-    pm.add_pool(make_pool(pool_a, usdc(), wmatic(), 1_000_000, 2_000_000));
-    pm.add_pool(make_pool(pool_b, usdt(), wmatic(), 1_000_000, 500_000));
 
-    // Opportunity with non-zero input so recompute returns a value
-    let mut opp = MevOpportunity::new(1, 0, Strategy::TwoHopArb, pool_a, 100);
-    opp.pool_b = pool_b;
-    opp.token_in = usdc();
-    opp.token_out = usdt();
-    opp.input_amount = U256::from(100_000u128);
-
-    // Verify: existing pool → recompute runs (match depends on stored vs recomputed)
-    let checks = verify_opportunities(&[opp], Some(&pm));
-    assert_eq!(checks.len(), 1);
-    // We set expected_profit=0 and raw_profit=None, so accuracy will be Mismatch
-    // (recomputed profit differs from zero). That's fine — the key assertion is
-    // that recompute ran at all (not NotApplicable).
-    assert!(
-        !matches!(checks[0].recomputation_accuracy, RecomputationAccuracy::NotApplicable),
-        "Recompute should run when both pools exist"
-    );
-
-    // Opportunity referencing non-existent pool → NotApplicable
-    let bad = MevOpportunity::new(1, 0, Strategy::TwoHopArb, address!("ffffffffffffffffffffffffffffffffffffffff"), 100);
-    let bad_checks = verify_opportunities(&[bad], Some(&pm));
-    assert_eq!(bad_checks.len(), 1);
-    assert!(matches!(bad_checks[0].recomputation_accuracy, RecomputationAccuracy::NotApplicable));
-}

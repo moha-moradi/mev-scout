@@ -510,7 +510,6 @@ impl SandwichDetector {
                     profit_slippage_m1: sandwich_slippage(99),
                     profit_slippage_p2: sandwich_slippage(102),
                     profit_slippage_m2: sandwich_slippage(98),
-                    pga_adjusted_profit: None,
                     gas_cost_wei,
                     timestamp,
                     path: None,

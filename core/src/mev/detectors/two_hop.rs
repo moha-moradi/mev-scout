@@ -148,7 +148,6 @@ impl TwoHopArbDetector {
             profit_slippage_m1,
             profit_slippage_p2,
             profit_slippage_m2,
-            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: None,

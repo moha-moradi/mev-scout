@@ -6,7 +6,6 @@
 use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 use crate::types::strategy::Strategy;
-use crate::mev::competition::report::CompetitionReport;
 
 /// A detected MEV opportunity from backtesting.
 ///
@@ -54,9 +53,6 @@ pub struct MevOpportunity {
     /// Profit estimate with -2% slippage — None if not computed
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profit_slippage_m2: Option<U256>,
-    /// Profit after PGA simulation (competition-adjusted) — None if not computed
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pga_adjusted_profit: Option<U256>,
     /// Estimated gas cost in wei
     pub gas_cost_wei: u128,
     /// Timestamp of the block
@@ -140,7 +136,6 @@ impl MevOpportunity {
             profit_slippage_m1: None,
             profit_slippage_p2: None,
             profit_slippage_m2: None,
-            pga_adjusted_profit: None,
             gas_cost_wei: 0,
             timestamp,
             path: None,
@@ -222,9 +217,6 @@ pub struct ResultsFile {
     pub resolved_at: u64,
     pub created_at: u64,
     pub opportunities: Vec<MevOpportunity>,
-    /// Competition analysis results (optional, only populated when --competition is enabled).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub competition: Option<CompetitionReport>,
 }
 
 

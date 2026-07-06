@@ -25,9 +25,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.export_path = Some(args.export_path.clone());
             o.db_path = args.db_path.clone();
             o.parquet_dir = args.parquet_dir.clone();
-            o.pga_enabled = Some(args.pga_enabled);
-            o.pga_mean_competitors = Some(args.pga_mean_competitors);
-            o.pga_intensity = Some(args.pga_intensity);
             o.price_oracle_mode = Some(args.price_oracle_mode.clone());
             o.token_prices = args.token_prices.clone();
             o.proximity_window = Some(args.proximity_window);
@@ -91,13 +88,7 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.min_profit_threshold = Some(args.min_profit);
             o.poll_interval_ms = Some(args.poll_interval);
             o.max_executions = args.max_executions;
-            o.wallet_key = args.wallet_key.clone();
-            o.broadcast_mode = Some(args.broadcast_mode.clone());
-            o.executor_factory = args.executor_factory.clone();
-            o.relay_url = args.relay_url.clone();
-            o.gas_multiplier = Some(args.gas_multiplier);
         }
-        Command::FactCheck(_) => {}
         Command::Audit(args) => {
             o.chain = Some(args.chain_args.chain.clone());
             o.rpc_url = args.chain_args.rpc_url.clone();

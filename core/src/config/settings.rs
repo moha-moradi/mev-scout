@@ -96,16 +96,6 @@ pub struct Config {
     /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
     #[serde(default = "default_rps_limit")]
     pub rps_limit: f64,
-    /// Enable PGA (Priority Gas Auction) simulation to adjust profits for competition.
-    /// When enabled, expected_profit is replaced with the post-auction estimate.
-    #[serde(default)]
-    pub pga_enabled: bool,
-    /// Mean number of competing searchers for PGA simulation (default: 3.0).
-    #[serde(default = "default_pga_mean_competitors")]
-    pub pga_mean_competitors: f64,
-    /// PGA intensity — fraction of auction surplus dissipated (default: 0.5).
-    #[serde(default = "default_pga_intensity")]
-    pub pga_intensity: f64,
     /// Price oracle mode: "coingecko", "onchain", or "hybrid" (default: "coingecko").
     #[serde(default)]
     pub price_oracle_mode: String,
@@ -148,34 +138,13 @@ pub struct Config {
     #[serde(default)]
     pub dune_primary_pool_discovery: bool,
 
-    // ── Execution fields (on-chain broadcast) ─────────────────────────
-    /// Private key for signing. Read from env MEV_SCOUT_PK.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wallet_key: Option<String>,
-    /// Broadcast mode: public, flashbots, mevshare.
-    #[serde(default = "default_broadcast_mode")]
-    pub broadcast_mode: String,
-    /// Deployed ExecutorFactory address.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub executor_factory: Option<String>,
-    /// Custom relay URL.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relay_url: Option<String>,
-    /// Gas limit multiplier for safety buffer.
-    #[serde(default = "default_gas_multiplier")]
-    pub gas_multiplier: f64,
 }
-
-fn default_broadcast_mode() -> String { "public".to_string() }
-fn default_gas_multiplier() -> f64 { 1.2 }
 
 fn default_initial_balance() -> f64 { 10.0 }
 fn default_min_profit_threshold() -> f64 { 0.001 }
 fn default_poll_interval_ms() -> u64 { 1000 }
 
 fn default_rps_limit() -> f64 { 500.0 }
-fn default_pga_mean_competitors() -> f64 { 3.0 }
-fn default_pga_intensity() -> f64 { 0.5 }
 
 fn default_chain() -> String {
     "polygon".to_string()
@@ -260,9 +229,6 @@ impl Default for Config {
             max_pairs_per_token: default_max_pairs_per_token(),
             rpc_workers: None,
             rps_limit: default_rps_limit(),
-            pga_enabled: false,
-            pga_mean_competitors: default_pga_mean_competitors(),
-            pga_intensity: default_pga_intensity(),
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
             proximity_window: default_proximity_window(),
@@ -274,11 +240,6 @@ impl Default for Config {
             max_executions: None,
             dune_api_key: None,
             dune_primary_pool_discovery: false,
-            wallet_key: None,
-            broadcast_mode: default_broadcast_mode(),
-            executor_factory: None,
-            relay_url: None,
-            gas_multiplier: default_gas_multiplier(),
         }
     }
 }
@@ -485,9 +446,6 @@ pub struct CliOverrides {
     pub db_path: Option<String>,
     pub parquet_dir: Option<String>,
     pub coingecko_api_key: Option<String>,
-    pub pga_enabled: Option<bool>,
-    pub pga_mean_competitors: Option<f64>,
-    pub pga_intensity: Option<f64>,
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
     pub proximity_window: Option<usize>,
@@ -503,13 +461,6 @@ pub struct CliOverrides {
     // ── Dune overrides ─────────────────────────────────────────────────
     pub dune_api_key: Option<String>,
     pub dune_primary_pool_discovery: Option<bool>,
-
-    // ── Execution overrides ───────────────────────────────────────────
-    pub wallet_key: Option<String>,
-    pub broadcast_mode: Option<String>,
-    pub executor_factory: Option<String>,
-    pub relay_url: Option<String>,
-    pub gas_multiplier: Option<f64>,
 }
 
 impl Config {
@@ -535,9 +486,6 @@ impl Config {
         merge_opt!(self, overrides, coingecko_api_key, into_option);
         merge_opt!(self, overrides, rpc_workers, copy_some);
         merge_opt!(self, overrides, rps_limit, copy);
-        merge_opt!(self, overrides, pga_enabled, copy);
-        merge_opt!(self, overrides, pga_mean_competitors, copy);
-        merge_opt!(self, overrides, pga_intensity, copy);
         merge_opt!(self, overrides, price_oracle_mode);
         merge_opt!(self, overrides, token_prices, into_option);
         merge_opt!(self, overrides, proximity_window, copy);
@@ -549,11 +497,6 @@ impl Config {
         merge_opt!(self, overrides, max_executions, copy_some);
         merge_opt!(self, overrides, dune_api_key, into_option);
         merge_opt!(self, overrides, dune_primary_pool_discovery, copy);
-        merge_opt!(self, overrides, wallet_key, into_option);
-        merge_opt!(self, overrides, broadcast_mode);
-        merge_opt!(self, overrides, executor_factory, into_option);
-        merge_opt!(self, overrides, relay_url, into_option);
-        merge_opt!(self, overrides, gas_multiplier, copy);
     }
 
     /// Parse the `--token-price` value (e.g. "0xABC=0.999,0xDEF=1800") into a

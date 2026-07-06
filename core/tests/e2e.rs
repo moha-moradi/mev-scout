@@ -4,10 +4,9 @@ use std::path::Path;
 use alloy::primitives::{address, Address, U256};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::fetch::Fetcher;
-use mev_scout_core::pipeline::{self, DexMeta};
+
 use mev_scout_core::types::MevOpportunity;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
-use mev_scout_core::mev::verify::fact_check::verify_opportunities;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::discovery::discover_pools;
 use mev_scout_core::pool::state::{
@@ -416,77 +415,7 @@ async fn test_e2e_cross_dex_arbitrage() {
     }
 }
 
-/// Test 7: Detection + aggregation + fact-check pipeline (no EVM replay)
-/// Reuses TwoHopArb detection results then tests aggregate and verify_opportunities
-#[tokio::test]
-async fn test_e2e_detection_aggregation_factcheck() {
-    eprintln!("--- test_e2e_detection_aggregation_factcheck ---");
-    let (rpc, tip) = match try_rpc().await {
-        Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
-    };
 
-    let block_num = tip.saturating_sub(1);
-    let mut pm = PoolManager::new();
-    pm.add_pool(pool_info_to_state(pool_info(
-        quick_wmatic_usdc(), wmatic(), usdc(), "QuickSwap WMATIC/USDC",
-    )));
-    pm.add_pool(pool_info_to_state(pool_info(
-        sushi_wmatic_usdt(), wmatic(), usdt(), "SushiSwap WMATIC/USDT",
-    )));
-
-    pm.init_from_rpc(&rpc, block_num).await;
-    let initialized = pm.initialized_count();
-    eprintln!("  Initialized {initialized} pools at block {block_num}");
-    if initialized < 2 {
-        eprintln!("  SKIP: too few initialized pools");
-        return;
-    }
-
-    // Run TwoHopArb detection
-    let mut detector = TwoHopArbDetector::new(block_num);
-    let opps = detector.detect(&pm, 0, block_num, 50_000_000_000, default_gas_config());
-    eprintln!("  TwoHopArb found {} opportunities", opps.len());
-    print_opportunities(&opps);
-
-    if opps.is_empty() {
-        eprintln!("  WARNING: no opportunities to aggregate/fact-check");
-        return;
-    }
-
-    // Aggregation
-    let dexes = vec![
-        DexMeta {
-            name: "QuickSwap V2".into(),
-            fork: "UniswapV2".into(),
-            tx_count: 0,
-            pool_addresses: vec![quick_wmatic_usdc()],
-        },
-        DexMeta {
-            name: "SushiSwap V2".into(),
-            fork: "UniswapV2".into(),
-            tx_count: 0,
-            pool_addresses: vec![sushi_wmatic_usdt()],
-        },
-    ];
-    let result = pipeline::aggregate::aggregate(&opps, &dexes, 0.0);
-    eprintln!("  Aggregate: {} total, {} profitable, net={}",
-        result.summary.total,
-        result.summary.profitable,
-        result.summary.net_profit,
-    );
-    assert_eq!(result.summary.total, opps.len(), "Aggregate count mismatch");
-
-    // Fact-checking
-    let fact_checks = verify_opportunities(&opps, Some(&pm));
-    eprintln!("  Fact checks: {} total", fact_checks.len());
-    assert_eq!(fact_checks.len(), opps.len());
-
-    let matched = fact_checks.iter().filter(|fc| {
-        matches!(fc.recomputation_accuracy, mev_scout_core::mev::verify::fact_check::RecomputationAccuracy::Match)
-    }).count();
-    eprintln!("  Fact-check matches: {}/{}", matched, fact_checks.len());
-}
 
 /// Test 8: Opportunity serialization roundtrip (no RPC needed)
 #[test]

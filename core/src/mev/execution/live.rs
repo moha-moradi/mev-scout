@@ -1,15 +1,9 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::{Address, Bytes, FixedBytes, U256};
-use std::str::FromStr;
+use alloy::primitives::{Address, U256};
 
 use crate::cache::SqliteStore;
-use crate::config::ChainConfig;
-use crate::execution::{
-    ExecutionConfig, ExecutionSigner, TxBroadcaster, TxBuilder,
-};
-use crate::mev::competition::{BlockCompetition, CompetitorProfile};
 use crate::mev::detectors::mempool;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
@@ -18,88 +12,7 @@ use crate::pool::{PoolManager, PoolState};
 use crate::replay::BlockReplayer;
 use crate::rpc::RpcClient;
 use crate::pipeline::BacktestRunner;
-use crate::types::{GasConfig, PriceOracleMode, Strategy};
-
-/// Tracks competitor searcher activity during live operation.
-pub struct LiveCompetitionState {
-    /// Known searcher profiles (persisted across runs).
-    pub known_searchers: HashMap<Address, CompetitorProfile>,
-    /// Recent competitor activity (sliding window of 100 blocks).
-    pub recent_activity: VecDeque<BlockCompetition>,
-    /// Active searchers in current mempool.
-    pub active_in_mempool: HashSet<Address>,
-    /// Total extractions tracked this session.
-    pub total_extractions: u64,
-    /// Total unique searchers seen this session.
-    pub active_searchers: HashSet<Address>,
-}
-
-impl LiveCompetitionState {
-    pub fn new() -> Self {
-        LiveCompetitionState {
-            known_searchers: HashMap::new(),
-            recent_activity: VecDeque::with_capacity(100),
-            active_in_mempool: HashSet::new(),
-            total_extractions: 0,
-            active_searchers: HashSet::new(),
-        }
-    }
-
-    /// Load known searcher profiles from a previous backtest report file.
-    pub fn load_from_backtest(path: &str) -> anyhow::Result<Self> {
-        let content = std::fs::read_to_string(path)?;
-        let report: crate::mev::competition::CompetitionReport = serde_json::from_str(&content)?;
-        let mut state = LiveCompetitionState::new();
-        for profile in report.top_searchers {
-            state.known_searchers.insert(profile.searcher, profile);
-        }
-        Ok(state)
-    }
-
-    /// Load known searcher profiles from a competition SQLite database.
-    pub fn load_from_db(store: &SqliteStore) -> Self {
-        let mut state = LiveCompetitionState::new();
-        if let Ok(profiles) = store.get_competitor_profiles() {
-            for profile in profiles {
-                state.known_searchers.insert(profile.searcher, profile);
-            }
-        }
-        state
-    }
-
-    /// Record a settled block's competition data.
-    pub fn record_block(&mut self, comp: BlockCompetition) {
-        self.total_extractions += comp.extractions.len() as u64;
-        for ext in &comp.extractions {
-            self.active_searchers.insert(ext.searcher);
-        }
-        self.recent_activity.push_back(comp);
-        // Keep sliding window at 100 blocks
-        while self.recent_activity.len() > 100 {
-            self.recent_activity.pop_front();
-        }
-    }
-
-    /// Check which known competitors are active in the pending tx set.
-    pub fn check_mempool(&mut self, pending: &mempool::PendingBlockCapture) {
-        self.active_in_mempool.clear();
-        for tx in &pending.txs {
-            if self.known_searchers.contains_key(&tx.from) {
-                self.active_in_mempool.insert(tx.from);
-            }
-        }
-    }
-
-    /// Number of active competitors in the current mempool.
-    pub fn active_competitors(&self) -> usize {
-        self.active_in_mempool.len()
-    }
-
-    /// Total known unique searchers.
-    pub fn known_count(&self) -> usize {
-        self.known_searchers.len()
-    }
-}
+use crate::types::{GasConfig, GasModel, PriceOracleMode, Strategy};
 
 /// Runtime configuration for live mode operation.
 #[derive(Debug, Clone)]
@@ -116,11 +29,7 @@ pub struct LiveConfig {
     pub chain_display_name: String,
     pub price_oracle_mode: PriceOracleMode,
     pub token_prices: HashMap<Address, f64>,
-
-    // ── On-chain execution ────────────────────────────────────────────
-    /// Per-chain protocol addresses (vaults, factories, etc.)
-    pub chain_defaults: ChainConfig,
-    /// RPC URL for public transaction submission
+    pub chain_defaults: crate::config::ChainConfig,
     pub rpc_url: String,
 }
 
@@ -200,12 +109,6 @@ pub struct LiveRunner {
     best_trade_desc: Option<String>,
     settled_strategy_counts: HashMap<Strategy, u64>,
     mempool_strategy_counts: HashMap<Strategy, u64>,
-    pub competition_state: LiveCompetitionState,
-
-    // ── On-chain execution ────────────────────────────────────────────
-    pub execution_signer: Option<ExecutionSigner>,
-    pub execution_config: Option<ExecutionConfig>,
-    pub broadcaster: Option<TxBroadcaster>,
 }
 
 impl LiveRunner {
@@ -219,9 +122,6 @@ impl LiveRunner {
         backtest_runner: BacktestRunner,
         block_replayer: BlockReplayer,
         chain_id: u64,
-        execution_signer: Option<ExecutionSigner>,
-        execution_config: Option<ExecutionConfig>,
-        broadcaster: Option<TxBroadcaster>,
     ) -> Self {
         // Determine starting block from the latest finalized block
         let latest_block = rpc.get_block_number().await.unwrap_or(0);
@@ -244,10 +144,6 @@ impl LiveRunner {
             best_trade_desc: None,
             settled_strategy_counts: HashMap::new(),
             mempool_strategy_counts: HashMap::new(),
-            competition_state: LiveCompetitionState::new(),
-            execution_signer,
-            execution_config,
-            broadcaster,
         }
     }
 
@@ -312,13 +208,7 @@ impl LiveRunner {
             if !opps.is_empty() {
                 tracing::info!("Replay: {} arb opportunities detected", opps.len());
                 for opp in opps {
-                    self.execute_mempool_opportunity(opp, &mempool::PendingBlockCapture {
-                        block_number,
-                        txs: pending_txs.clone(),
-                        tx_count: pending_txs.len(),
-                        base_fee_per_gas: 0,
-                        timestamp,
-                    }).await;
+                    self.execute_virtual_trade(opp).await;
                 }
             }
 
@@ -376,20 +266,6 @@ impl LiveRunner {
                         if !opportunities.is_empty() {
                             self.process_settled_opportunities(opportunities);
                         }
-                        // Track competitor activity from settled block
-                        if self.backtest_runner.competition_enabled() {
-                            if let Some(comp) = self.backtest_runner.last_block_competition() {
-                                self.competition_state.record_block(comp.clone());
-                                if comp.unique_searchers > 0 {
-                                    tracing::debug!(
-                                        "Block {}: {} competitor extractions by {} searchers",
-                                        block_num,
-                                        comp.extractions.len(),
-                                        comp.unique_searchers,
-                                    );
-                                }
-                            }
-                        }
                         settled_blocks_processed += 1;
                     }
                     Err(e) => {
@@ -431,15 +307,6 @@ impl LiveRunner {
             if let Some(ref pending) = pending {
                 self.total_mempool_txs_seen += pending.tx_count as u64;
 
-                // Check for known competitors in the mempool
-                self.competition_state.check_mempool(pending);
-                if self.competition_state.active_competitors() > 0 {
-                    tracing::info!(
-                        "Known competitors active in mempool: {} searchers",
-                        self.competition_state.active_competitors(),
-                    );
-                }
-
                 if !pending.txs.is_empty() {
                     let opps = self.run_mempool_detection(pending, mempool_gas_config, live_base_fee).await;
                     if !opps.is_empty() {
@@ -448,9 +315,8 @@ impl LiveRunner {
                             opps.len(),
                             pending.tx_count,
                         );
-                        // Execute mempool opportunities against wallet
                         for opp in opps {
-                            self.execute_mempool_opportunity(opp, pending).await;
+                            self.execute_virtual_trade(opp).await;
                         }
                     }
                 }
@@ -503,21 +369,17 @@ impl LiveRunner {
 
     /// Update wallet state and strategy counts from settled opportunities.
     fn process_settled_opportunities(&mut self, opportunities: Vec<MevOpportunity>) {
-        // In settled block mode, opportunities are informational (pool state
-        // already reflects execution). We record them to track what was visible.
         for opp in &opportunities {
             if opp.expected_profit > U256::ZERO {
                 self.wallet.total_profit_wei =
                     self.wallet.total_profit_wei.saturating_add(opp.expected_profit);
             }
-            // Track strategy counts for settled opportunities
             *self.settled_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
         }
     }
 
     /// Handle chain reorg by reinitializing pool state at the new latest block.
     async fn handle_reorg(&mut self, latest_block: u64) {
-        // Reinitialize pool manager at the reorg block
         BacktestRunner::init_pools(
             &mut self.pool_manager,
             &self.rpc,
@@ -535,7 +397,6 @@ impl LiveRunner {
     }
 
     /// Run arbitrage detection on the mempool state (forked from settled state).
-    /// Uses RPC simulation (revm via eth_call) as primary, calldata parsing as fallback.
     async fn run_mempool_detection(
         &mut self,
         pending: &mempool::PendingBlockCapture,
@@ -546,18 +407,12 @@ impl LiveRunner {
         let timestamp = pending.timestamp;
         let block_number = pending.block_number;
 
-        // Update gas config with pending block's base fee if available
         if base_fee > 0 {
-            // Set the gas config's model to Live for realistic cost estimation
-            gas_config.gas_model = crate::types::GasModel::Live;
+            gas_config.gas_model = GasModel::Live;
         }
 
-        // Clone pool manager for speculative state
         let mut speculative_state = self.pool_manager.clone();
 
-        // Apply pending tx effects to the speculative pool state
-        // Primary: RPC simulation (revm via eth_call) — filters out reverting txs
-        // Fallback: calldata parsing — when RPC is slow or unavailable
         for tx in &pending.txs {
             let effects = mempool::simulate_pending_tx_pool_impact(
                 tx,
@@ -568,7 +423,6 @@ impl LiveRunner {
             )
             .await;
             if effects.is_empty() {
-                // Fallback to calldata-only estimation
                 let fallback = mempool::estimate_pending_tx_pool_impact(tx, &speculative_state);
                 if !fallback.is_empty() {
                     self.apply_pool_effects(&mut speculative_state, &fallback);
@@ -578,7 +432,6 @@ impl LiveRunner {
             }
         }
 
-        // Run arb-only detection
         let mut results = Vec::new();
 
         if self.config.strategies.contains(&Strategy::TwoHopArb) {
@@ -621,9 +474,6 @@ impl LiveRunner {
                         }
                     }
                     PoolState::UniswapV3(state) => {
-                        // V3 price impact estimation is complex — skip per-token reserve
-                        // updates for V3 pools. The user relies on settled block replay
-                        // (Phase A) for authoritative V3 state.
                         let _ = state;
                     }
                     _ => {}
@@ -646,7 +496,6 @@ impl LiveRunner {
     }
 
     /// Helper: transfer native balance to wrapped-native token balance.
-    /// Used when an arbitrage path routes through WETH/WMATIC/WBNB.
     fn wrap_native(&mut self, amount: U256) {
         let actual = amount.min(self.wallet.native_balance_wei);
         if actual == U256::ZERO { return; }
@@ -671,65 +520,11 @@ impl LiveRunner {
         }
     }
 
-    /// Execute a mempool opportunity — either on-chain (if signer configured) or virtual.
-    async fn execute_mempool_opportunity(&mut self, opp: MevOpportunity, _pending: &mempool::PendingBlockCapture) {
-        // ── ON-CHAIN EXECUTION ──────────────────────────────────────
-        let cloned_signer = self.execution_signer.clone();
-        if let Some(ref signer) = cloned_signer {
-            let exec_cfg = match self.execution_config.clone() {
-                Some(c) => c,
-                None => { tracing::warn!("Execution config missing"); return; }
-            };
-            let factory = match exec_cfg.executor_factory {
-                Some(addr) => addr,
-                None => { tracing::warn!("Executor factory address not set"); return; }
-            };
-            let tx_builder = TxBuilder::new(factory, self.config.chain_defaults.clone());
-            let submit_url: String = match exec_cfg.broadcast_mode {
-                crate::execution::BroadcastMode::Flashbots =>
-                    exec_cfg.flashbots_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone()),
-                crate::execution::BroadcastMode::MevShare =>
-                    exec_cfg.mevshare_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone()),
-                crate::execution::BroadcastMode::Public => self.config.rpc_url.clone(),
-            };
-
-            let result = match opp.strategy {
-                Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::CrossBlockArb =>
-                    self.build_and_send_arb_tx(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
-                Strategy::Sandwich =>
-                    self.build_and_send_sandwich_txs(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
-                Strategy::Jit | Strategy::JitArb =>
-                    self.build_and_send_jit_txs(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
-                Strategy::Liquidation => {
-                    let aave_str = self.config.chain_defaults.aave_v3_pool.clone()
-                        .unwrap_or_default();
-                    let aave_pool = Address::from_str(&aave_str).unwrap_or(Address::ZERO);
-                    self.build_and_send_liquidation_tx(&tx_builder, signer, &exec_cfg, &opp, aave_pool, &submit_url).await
-                }
-            };
-
-            match result {
-                Ok(tx_hash) => {
-                    tracing::info!("On-chain execution submitted: tx={:?} strategy={} profit={}",
-                        tx_hash, opp.strategy, opp.expected_profit);
-                    self.wallet.total_executions += 1;
-                    self.wallet.successful_executions += 1;
-                    *self.mempool_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
-                }
-                Err(e) => {
-                    tracing::error!("On-chain execution failed: {} (strategy={})", e, opp.strategy);
-                    self.wallet.total_executions += 1;
-                    self.wallet.failed_executions += 1;
-                }
-            }
-            return;
-        }
-
-        // ── SIMULATION (fallback when no signer) ────────────────────
+    /// Execute a virtual trade using wallet state (simulation only, no on-chain tx).
+    async fn execute_virtual_trade(&mut self, opp: MevOpportunity) {
         let profit = opp.expected_profit;
         let gas_cost = U256::from(opp.gas_cost_wei);
 
-        // Check wallet constraints
         if profit < self.config.min_profit_threshold_wei {
             return;
         }
@@ -737,14 +532,11 @@ impl LiveRunner {
             return;
         }
 
-        // Deduct gas cost from native balance
         self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_sub(gas_cost);
         self.wallet.total_gas_spent_wei = self.wallet.total_gas_spent_wei.saturating_add(opp.gas_cost_wei);
 
-        // For arb opportunities, output = input + profit (gross)
         let output_amount = opp.input_amount.saturating_add(profit);
 
-        // Update token balances
         if opp.token_in != Address::ZERO {
             let balance = self.wallet.token_balances.entry(opp.token_in).or_insert(U256::ZERO);
             *balance = balance.saturating_sub(opp.input_amount);
@@ -754,11 +546,9 @@ impl LiveRunner {
             *balance = balance.saturating_add(output_amount);
         }
 
-        // Update native balance from profit (assumes profit is in native or WETH-equivalent)
         self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_add(profit);
         self.wallet.total_profit_wei = self.wallet.total_profit_wei.saturating_add(profit);
 
-        // Track best trade
         if profit > self.best_trade_profit {
             self.best_trade_profit = profit;
             let native_unit = U256::from(1_000_000_000_000_000_000u128);
@@ -773,15 +563,9 @@ impl LiveRunner {
             ));
         }
 
-        // Track strategy count
         *self.mempool_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
 
-        let success = true;
-        if success {
-            self.wallet.successful_executions += 1;
-        } else {
-            self.wallet.failed_executions += 1;
-        }
+        self.wallet.successful_executions += 1;
         self.wallet.total_executions += 1;
 
         let record = ExecutionRecord {
@@ -793,11 +577,10 @@ impl LiveRunner {
             output_amount,
             block_number: opp.block_number,
             timestamp: opp.timestamp,
-            success,
+            success: true,
             opportunity: opp,
         };
 
-        // Cap history at 10k records
         if self.wallet.execution_history.len() >= 10_000 {
             self.wallet.execution_history.remove(0);
         }
@@ -844,11 +627,6 @@ impl LiveRunner {
             self.total_mempool_txs_seen,
         );
         println!("Settled blks:   {} | Mempool scans: {}", settled_blocks, mempool_scans);
-        println!("Competitors:    {} active | {} known | {} extractions",
-            self.competition_state.active_competitors(),
-            self.competition_state.known_count(),
-            self.competition_state.total_extractions,
-        );
         println!("----------------------------------------");
         println!("Native Balance: {}.{:04} native", native_whole, native_frac);
         println!("Tokens Held:    {} tokens", self.wallet.token_balances.len());
@@ -867,7 +645,6 @@ impl LiveRunner {
         let (gas_whole, gas_frac) = self.format_native_balance(U256::from(self.wallet.total_gas_spent_wei));
         println!("Total Gas:      {}.{:04} native", gas_whole, gas_frac);
         println!("Net P&L:        {}", pnl);
-        // Show best trade if any
         if let Some(ref best) = self.best_trade_desc {
             println!("Best Trade:     {}", best);
         }
@@ -946,11 +723,6 @@ impl LiveRunner {
         }
     }
 
-    /// Load competitor profiles from a competition SQLite database.
-    pub fn with_competition_db(&mut self, store: &SqliteStore) {
-        self.competition_state = LiveCompetitionState::load_from_db(store);
-    }
-
     /// Save execution history to JSON.
     fn save_execution_history(&self) -> anyhow::Result<()> {
         if self.wallet.execution_history.is_empty() {
@@ -970,134 +742,5 @@ impl LiveRunner {
         std::fs::write(&path, json)?;
         tracing::info!("Execution history saved to {}", path.display());
         Ok(())
-    }
-
-    // ── On-chain helper methods ────────────────────────────────────────
-
-    /// Sign and broadcast a single transaction with gas estimation and nonce management.
-    async fn sign_and_broadcast_tx(
-        &mut self,
-        signer: &ExecutionSigner,
-        exec_cfg: &ExecutionConfig,
-        calldata: Bytes,
-        gas_cost_wei: u128,
-        safety_floor: u64,
-        submit_url: &str,
-    ) -> anyhow::Result<FixedBytes<32>> {
-        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
-        let gas_limit = (gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
-        let gas_limit = gas_limit.max(safety_floor);
-        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
-        let signed = signer
-            .sign_eip1559(factory, U256::ZERO, calldata, nonce, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        let tx_hash = broadcaster.submit_tx(signed, submit_url).await
-            .map_err(|e| anyhow::anyhow!("broadcast: {e}"))?;
-        Ok(tx_hash)
-    }
-
-    /// Build, sign, and broadcast a single arbitrage transaction.
-    async fn build_and_send_arb_tx(
-        &mut self,
-        tx_builder: &TxBuilder,
-        signer: &ExecutionSigner,
-        exec_cfg: &ExecutionConfig,
-        opp: &MevOpportunity,
-        submit_url: &str,
-    ) -> anyhow::Result<FixedBytes<32>> {
-        let calldata = tx_builder
-            .build_arbitrage_tx(opp, crate::types::FlashLoanProvider::Auto, opp.expected_profit)
-            .map_err(|e| anyhow::anyhow!("build_arbitrage_tx: {e}"))?;
-        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 150_000, submit_url).await
-    }
-
-    /// Build, sign, and broadcast front-run and back-run sandwich transactions.
-    async fn build_and_send_sandwich_txs(
-        &mut self,
-        tx_builder: &TxBuilder,
-        signer: &ExecutionSigner,
-        exec_cfg: &ExecutionConfig,
-        opp: &MevOpportunity,
-        submit_url: &str,
-    ) -> anyhow::Result<FixedBytes<32>> {
-        let pool = opp.pool_a;
-        let (front_calldata, back_calldata) = tx_builder
-            .build_sandwich_txs(opp, pool)
-            .map_err(|e| anyhow::anyhow!("build_sandwich_txs: {e}"))?;
-
-        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
-        let gas_limit = (opp.gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
-        let gas_limit = gas_limit.max(150_000);
-        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
-
-        // Front-run tx
-        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-        let front_signed = signer
-            .sign_eip1559(factory, U256::ZERO, front_calldata.into(), nonce, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign front: {e}"))?;
-
-        // Back-run tx
-        let nonce2 = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-        let back_signed = signer
-            .sign_eip1559(factory, U256::ZERO, back_calldata.into(), nonce2, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign back: {e}"))?;
-
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        let _ = broadcaster.submit_tx(front_signed, submit_url).await
-            .map_err(|e| anyhow::anyhow!("broadcast front: {e}"))?;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let back_hash = broadcaster.submit_tx(back_signed, submit_url).await
-            .map_err(|e| anyhow::anyhow!("broadcast back: {e}"))?;
-        Ok(back_hash)
-    }
-
-    /// Build, sign, and broadcast JIT liquidity transactions.
-    async fn build_and_send_jit_txs(
-        &mut self,
-        tx_builder: &TxBuilder,
-        signer: &ExecutionSigner,
-        exec_cfg: &ExecutionConfig,
-        opp: &MevOpportunity,
-        submit_url: &str,
-    ) -> anyhow::Result<FixedBytes<32>> {
-        let pool = opp.pool_a;
-        let tick_lower = opp.tick_lower.unwrap_or(-887272);
-        let tick_upper = opp.tick_upper.unwrap_or(887272);
-        let (_add, _remove) = tx_builder
-            .build_jit_txs(opp, pool, tick_lower, tick_upper)
-            .map_err(|e| anyhow::anyhow!("build_jit_txs: {e}"))?;
-        let calldata = tx_builder
-            .build_arbitrage_tx(opp, crate::types::FlashLoanProvider::Auto, opp.expected_profit)
-            .map_err(|e| anyhow::anyhow!("build_arbitrage_tx (jit fallback): {e}"))?;
-        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 300_000, submit_url).await
-    }
-
-    /// Build, sign, and broadcast a liquidation transaction.
-    async fn build_and_send_liquidation_tx(
-        &mut self,
-        tx_builder: &TxBuilder,
-        signer: &ExecutionSigner,
-        exec_cfg: &ExecutionConfig,
-        opp: &MevOpportunity,
-        aave_pool: Address,
-        submit_url: &str,
-    ) -> anyhow::Result<FixedBytes<32>> {
-        let user = opp.pool_a;
-        let calldata = tx_builder
-            .build_liquidation_tx(opp, user, aave_pool)
-            .map_err(|e| anyhow::anyhow!("build_liquidation_tx: {e}"))?;
-        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 200_000, submit_url).await
-    }
-
-    /// Fetch current gas prices for transaction construction.
-    async fn fetch_gas_for_tx(&self) -> (u128, u128) {
-        let base = self.rpc.get_gas_price().await.unwrap_or(20_000_000_000u128); // 20 gwei fallback
-        let priority = self.rpc.get_max_priority_fee().await.unwrap_or(1_000_000_000u128); // 1 gwei fallback
-        (base + priority, priority)
     }
 }

@@ -211,33 +211,7 @@ impl SqliteStore {
         // Phase 3: add signature columns to transactions (idempotent)
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_hash BLOB;");
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_name TEXT;");
-        // Phase 3/competition: competitor profiles and extraction tables
-        let _ = conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS competitor_profiles (
-                address     BLOB PRIMARY KEY,
-                first_seen  INTEGER NOT NULL,
-                last_seen   INTEGER NOT NULL,
-                total_extractions INTEGER NOT NULL,
-                total_gas_wei    INTEGER NOT NULL,
-                total_profit_wei INTEGER NOT NULL,
-                json_blob   BLOB
-            );
-
-            CREATE TABLE IF NOT EXISTS extractions (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                block       INTEGER NOT NULL,
-                tx_index    INTEGER NOT NULL,
-                searcher    BLOB NOT NULL,
-                ext_type    INTEGER NOT NULL,
-                gas_wei     INTEGER NOT NULL,
-                profit_wei  INTEGER NOT NULL,
-                opportunity_id TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_extractions_searcher ON extractions(searcher);
-            CREATE INDEX IF NOT EXISTS idx_extractions_block ON extractions(block);
-            ",
-        );
+        // Phase 3/competition: competitor profiles and extraction tables (removed)
         Ok(())
     }
 
@@ -1112,81 +1086,7 @@ impl SqliteStore {
         Ok(count as usize)
     }
 
-    // ---- Competitor Profiles ----
-
-    /// Store competitor profiles (replace-all for the set of known searchers).
-    pub fn put_competitor_profiles(&self, profiles: &[crate::mev::competition::CompetitorProfile]) -> anyhow::Result<()> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO competitor_profiles (address, first_seen, last_seen, total_extractions, total_gas_wei, total_profit_wei, json_blob)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )?;
-        for profile in profiles {
-            let json_blob = serde_json::to_vec(profile).ok();
-            stmt.execute(rusqlite::params![
-                Self::addr_to_blob(&profile.searcher),
-                profile.first_seen_block as i64,
-                profile.last_seen_block as i64,
-                profile.total_extractions as i64,
-                profile.total_gas_spent_wei as i64,
-                profile.total_gross_profit_wei as i64,
-                json_blob,
-            ])?;
-        }
-        Ok(())
-    }
-
-    /// Load all known competitor profiles from the cache.
-    pub fn get_competitor_profiles(&self) -> anyhow::Result<Vec<crate::mev::competition::CompetitorProfile>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT address, first_seen, last_seen, total_extractions, total_gas_wei, total_profit_wei, json_blob
-             FROM competitor_profiles",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut profiles = Vec::new();
-        while let Some(row) = rows.next()? {
-            // Try deserializing from json_blob first, fall back to column data
-            if let Some(blob) = row.get::<_, Option<Vec<u8>>>(6)? {
-                if let Ok(profile) = serde_json::from_slice::<crate::mev::competition::CompetitorProfile>(&blob) {
-                    profiles.push(profile);
-                    continue;
-                }
-            }
-            // Fallback: construct minimal profile from columns
-            profiles.push(crate::mev::competition::CompetitorProfile {
-                searcher: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
-                first_seen_block: row.get::<_, i64>(1)? as u64,
-                last_seen_block: row.get::<_, i64>(2)? as u64,
-                total_extractions: row.get::<_, i64>(3)? as u64,
-                total_gas_spent_wei: row.get::<_, i64>(4)? as u128,
-                total_gross_profit_wei: row.get::<_, i64>(5)? as u128,
-                ..Default::default()
-            });
-        }
-        Ok(profiles)
-    }
-
-    /// Store a batch of extractions.
-    pub fn put_extractions(&self, block: u64, extractions: &[crate::mev::competition::CompetitorExtraction]) -> anyhow::Result<()> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO extractions (block, tx_index, searcher, ext_type, gas_wei, profit_wei, opportunity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )?;
-        for ext in extractions {
-            stmt.execute(rusqlite::params![
-                block as i64,
-                ext.tx_index as i64,
-                Self::addr_to_blob(&ext.searcher),
-                ext.extraction_type as i64,
-                ext.gas_cost_wei as i64,
-                ext.gross_profit_wei as i64,
-                ext.matched_opportunity_id,
-            ])?;
-        }
-        Ok(())
-    }
+    // ---- Competitor Profiles ---- (removed)
 
     /// Flush pending writes (WAL checkpoint).
     pub fn flush(&self) -> anyhow::Result<()> {

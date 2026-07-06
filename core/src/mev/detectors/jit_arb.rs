@@ -262,7 +262,6 @@ impl JitArbDetector {
             profit_slippage_m1: jit_arb_slippage(99),
             profit_slippage_p2: jit_arb_slippage(102),
             profit_slippage_m2: jit_arb_slippage(98),
-            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: Some(vec![jit_pool, arb_pool]),

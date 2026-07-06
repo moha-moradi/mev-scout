@@ -256,7 +256,6 @@ impl MultiHopArbDetector {
             profit_slippage_m1: m1,
             profit_slippage_p2: p2,
             profit_slippage_m2: m2,
-            pga_adjusted_profit: None,
             gas_cost_wei,
             timestamp,
             path: Some(path.to_vec()),
