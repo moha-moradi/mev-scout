@@ -99,7 +99,6 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
         Strategy::Sandwich => "sandwich",
         Strategy::Liquidation => "liquidation",
         Strategy::CrossBlockArb => "crossblock",
-        Strategy::TimeBandit => "timebandit",
     }
 }
 

@@ -1,3 +1,4 @@
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use alloy::primitives::{Address, U256};
@@ -443,4 +444,29 @@ impl Default for PoolManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check whether a dedup entry has changed sufficiently to re-emit an opportunity.
+/// Returns true if the entry is new or pool reserves changed by >0.1%.
+pub fn check_dedup_key(
+    seen: &mut HashMap<(Address, Address, Address, Address), (u128, u128)>,
+    key: &(Address, Address, Address, Address),
+    pm: &PoolManager,
+    pool_a: Address,
+    pool_b: Address,
+) -> bool {
+    let la = pm.pool_liquidity_estimate(&pool_a);
+    let lb = pm.pool_liquidity_estimate(&pool_b);
+    let new_snapshot = (la, lb);
+
+    if let Some(&(prev_la, prev_lb)) = seen.get(key) {
+        let threshold_a = cmp::max(prev_la / 1000, 1);
+        let threshold_b = cmp::max(prev_lb / 1000, 1);
+        if la.abs_diff(prev_la) <= threshold_a && lb.abs_diff(prev_lb) <= threshold_b {
+            return false;
+        }
+    }
+
+    seen.insert(*key, new_snapshot);
+    true
 }

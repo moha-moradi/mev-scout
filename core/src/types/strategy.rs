@@ -75,7 +75,6 @@ pub enum Strategy {
     Sandwich,
     Liquidation,
     CrossBlockArb,
-    TimeBandit,
 }
 
 impl fmt::Display for Strategy {
@@ -88,7 +87,6 @@ impl fmt::Display for Strategy {
             Strategy::Sandwich => write!(f, "sandwich"),
             Strategy::Liquidation => write!(f, "liquidation"),
             Strategy::CrossBlockArb => write!(f, "cross_block_arb"),
-            Strategy::TimeBandit => write!(f, "time_bandit"),
         }
     }
 }
@@ -105,9 +103,8 @@ impl FromStr for Strategy {
             "sandwich" => Ok(Strategy::Sandwich),
             "liquidation" => Ok(Strategy::Liquidation),
             "cross_block_arb" => Ok(Strategy::CrossBlockArb),
-            "time_bandit" => Ok(Strategy::TimeBandit),
             _ => Err(format!(
-                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb, time_bandit, all"
+                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb, all"
             )),
         }
     }
@@ -123,7 +120,6 @@ impl Strategy {
             Strategy::Sandwich,
             Strategy::Liquidation,
             Strategy::CrossBlockArb,
-            Strategy::TimeBandit,
         ]
     }
 
@@ -173,8 +169,6 @@ pub enum GasModel {
     #[serde(rename = "historical_exact")]
     #[default]
     HistoricalExact,
-    #[serde(rename = "p90")]
-    P90,
     #[serde(rename = "fixed")]
     Fixed,
     /// Use the N-th percentile effective gas price from the historical
@@ -195,7 +189,6 @@ impl fmt::Display for GasModel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GasModel::HistoricalExact => write!(f, "historical_exact"),
-            GasModel::P90 => write!(f, "p90"),
             GasModel::Fixed => write!(f, "fixed"),
             GasModel::Distribution(p) => write!(f, "distribution_{p}"),
             GasModel::Live => write!(f, "live"),
@@ -210,7 +203,7 @@ impl FromStr for GasModel {
         let lower = s.to_lowercase();
         match lower.as_str() {
             "historical_exact" => Ok(GasModel::HistoricalExact),
-            "p90" => Ok(GasModel::P90),
+            "p90" => Ok(GasModel::Distribution(90)),
             "fixed" => Ok(GasModel::Fixed),
             "live" => Ok(GasModel::Live),
             _ => {
@@ -229,7 +222,7 @@ impl FromStr for GasModel {
                     }
                 }
                 Err(format!(
-                    "unknown gas model '{s}'. Supported: historical_exact, p90, fixed, live, distribution_N (1-99)"
+                    "unknown gas model '{s}'. Supported: historical_exact, fixed, live, distribution_N (1-99)"
                 ))
             }
         }
@@ -238,11 +231,9 @@ impl FromStr for GasModel {
 
 impl GasModel {
     /// Return the target percentile for this gas model.
-    /// For `P90` returns 90. For `Distribution(p)` returns p.
-    /// For `HistoricalExact` and `Fixed` returns `None`.
+    /// For `Distribution(p)` returns p. For `HistoricalExact` and `Fixed` returns `None`.
     pub fn target_percentile(&self) -> Option<u8> {
         match self {
-            GasModel::P90 => Some(90),
             GasModel::Distribution(p) => Some(*p),
             GasModel::Live => None,
             _ => None,
@@ -262,8 +253,8 @@ pub struct GasConfig {
     /// winning bid premium needed to outbid competitors (H10).
     pub winning_bid_premium: f64,
     /// Pre-computed N-th percentile effective gas price from the historical
-    /// gas price distribution (H10). When set, `GasModel::P90` and
-    /// `GasModel::Distribution(p)` use this value instead of the crude
+    /// gas price distribution (H10). When set, `GasModel::Distribution(p)`
+    /// uses this value instead of the crude
     /// `base_fee * 150%` multiplier. Set by `BacktestRunner` before each
     /// block based on recent blocks' effective gas prices.
     pub percentile_gas_price: Option<u128>,
@@ -282,7 +273,7 @@ impl GasConfig {
     /// When `winning_bid_premium > 0`, the priority fee is inflated to
     /// model the cost of winning inclusion in a competitive auction.
     ///
-    /// For `GasModel::P90` and `GasModel::Distribution(p)`, uses the
+    /// For `GasModel::Distribution(p)`, uses the
     /// pre-computed `percentile_gas_price` from the historical distribution
     /// when available, falling back to the crude `base_fee * 150%` multiplier
     /// when distribution data has not been collected yet (H10).
@@ -295,7 +286,7 @@ impl GasConfig {
         let effective_price = match self.gas_model {
             GasModel::HistoricalExact => base_fee_per_gas.saturating_add(pf_wei),
             GasModel::Fixed => pf_wei,
-            GasModel::P90 | GasModel::Distribution(_) => {
+            GasModel::Distribution(_) => {
                 // Use histogram-derived percentile when available (H10),
                 // fall back to the crude 150% multiplier while collecting data.
                 self.percentile_gas_price

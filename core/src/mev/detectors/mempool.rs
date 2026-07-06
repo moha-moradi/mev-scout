@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 
 use crate::data::TxData;
 use crate::mev::detectors::MultiHopArbDetector;
@@ -8,7 +8,7 @@ use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState};
 use crate::rpc::RpcClient;
 use crate::types::GasConfig;
-use crate::utils::u128_from_be_bytes;
+use crate::utils::{abi_decode_address, abi_decode_u128, abi_decode_u256};
 
 /// Result of capturing the pending block from the mempool.
 #[derive(Debug, Clone)]
@@ -151,32 +151,6 @@ pub async fn simulate_pending_tx_pool_impact(
             Vec::new()
         }
     }
-}
-
-// ── ABI decoding helpers ───────────────────────────────────────────
-
-/// Decode a u128 from a 32-byte ABI word (right-aligned).
-fn abi_decode_u128(data: &[u8], offset: usize) -> Option<u128> {
-    if offset + 32 > data.len() {
-        return None;
-    }
-    Some(u128_from_be_bytes(&data[offset..offset + 32]))
-}
-
-/// Decode an Address from a 32-byte ABI word (right-aligned).
-fn abi_decode_address(data: &[u8], offset: usize) -> Option<Address> {
-    if offset + 32 > data.len() {
-        return None;
-    }
-    Some(Address::from_slice(&data[offset + 12..offset + 32]))
-}
-
-/// Decode a U256 from a 32-byte ABI word.
-fn abi_decode_u256(data: &[u8], offset: usize) -> Option<U256> {
-    if offset + 32 > data.len() {
-        return None;
-    }
-    Some(U256::from_be_slice(&data[offset..offset + 32]))
 }
 
 // ── V2 calldata parsing ────────────────────────────────────────────

@@ -4,6 +4,7 @@
 pub mod competition;
 pub mod detectors;
 pub mod execution;
+pub mod pga;
 pub mod verify;
 pub use competition::*;
 pub use detectors::*;

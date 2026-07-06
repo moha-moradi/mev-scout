@@ -312,110 +312,13 @@ impl SqliteStore {
         tx_sigs: Option<&[([u8; 4], Option<String>)]>,
         event_sigs: Option<&[Vec<Option<String>>]>,
     ) -> anyhow::Result<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-
-        tx.execute(
-            "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                block_num as i64,
-                Self::b256_to_blob(&block.hash),
-                block.timestamp as i64,
-                block.base_fee_per_gas.map(|v| v as i64),
-                block.gas_limit as i64,
-                block.gas_used as i64,
-                Self::addr_to_blob(&block.coinbase),
-            ],
-        )?;
-
-        {
-            let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            )?;
-            for (i, tx_data) in txs.iter().enumerate() {
-                let access_list_blob = if tx_data.access_list.is_empty() {
-                    None
-                } else {
-                    Some(Self::serialize(&tx_data.access_list)?)
-                };
-                let (sig_hash, sig_name) = tx_sigs.and_then(|s| s.get(i)).map(|&(ref sel, ref name)| {
-                    (Some(sel.to_vec()), name.clone())
-                }).unwrap_or((None, None));
-                tx_stmt.execute(rusqlite::params![
-                    Self::b256_to_blob(&tx_data.hash),
-                    block_num as i64,
-                    tx_data.index as i64,
-                    Self::addr_to_blob(&tx_data.from),
-                    tx_data.to.map(|a| Self::addr_to_blob(&a)),
-                    tx_data.input.to_vec(),
-                    Self::u256_to_blob(&tx_data.value),
-                    tx_data.gas_limit as i64,
-                    tx_data.max_fee_per_gas as i64,
-                    tx_data.max_priority_fee_per_gas.map(|v| v as i64),
-                    tx_data.nonce as i64,
-                    access_list_blob,
-                    sig_hash,
-                    sig_name,
-                ])?;
-            }
-        }
-
-        {
-            let mut rc_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )?;
-            let mut log_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO logs (block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            )?;
-            for (ri, r) in receipts.iter().enumerate() {
-                let logs_blob = Self::serialize(&r.logs)?;
-                rc_stmt.execute(rusqlite::params![
-                    Self::b256_to_blob(&r.tx_hash),
-                    r.tx_index as i64,
-                    r.status as i64,
-                    r.gas_used as i64,
-                    r.cumulative_gas_used as i64,
-                    logs_blob,
-                    r.contract_address.map(|a| Self::addr_to_blob(&a)),
-                ])?;
-                for (log_index, log_entry) in r.logs.iter().enumerate() {
-                    let amount = Self::decode_erc20_amount(log_entry);
-                    let topic0 = log_entry.topics.get(0).map(|t| t.as_slice().to_vec());
-                    let topic1 = log_entry.topics.get(1).map(|t| t.as_slice().to_vec());
-                    let topic2 = log_entry.topics.get(2).map(|t| t.as_slice().to_vec());
-                    let topic3 = log_entry.topics.get(3).map(|t| t.as_slice().to_vec());
-                    let event_sig = event_sigs
-                        .and_then(|es| es.get(ri))
-                        .and_then(|tx_es| tx_es.get(log_index))
-                        .and_then(|s| s.clone());
-                    log_stmt.execute(rusqlite::params![
-                        block_num as i64,
-                        r.tx_index as i64,
-                        log_index as i64,
-                        Self::addr_to_blob(&log_entry.address),
-                        topic0,
-                        topic1,
-                        topic2,
-                        topic3,
-                        log_entry.data.to_vec(),
-                        amount.map(|a| a.to_be_bytes::<32>().to_vec()),
-                        event_sig,
-                    ])?;
-                }
-            }
-        }
-
-        tx.execute(
-            "INSERT OR REPLACE INTO block_meta (number, txs_fetched) VALUES (?1, 1)",
-            rusqlite::params![block_num as i64],
-        )?;
-
-        tx.commit()?;
-        Ok(())
+        let tx_sigs_batch = tx_sigs.map(|s| vec![s.to_vec()]);
+        let event_sigs_batch = event_sigs.map(|es| vec![es.to_vec()]);
+        self.put_block_data_batch(
+            &[(block_num, block.clone(), txs.to_vec(), receipts.to_vec())],
+            tx_sigs_batch.as_deref(),
+            event_sigs_batch.as_deref(),
+        )
     }
 
     pub fn put_block_data_batch(

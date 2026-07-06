@@ -1,12 +1,11 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
-use std::cmp;
-
 use alloy::primitives::{Address, U256};
+use std::cmp;
 
 use crate::types::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, quote_exact_in, TwoHopArbResult};
-use crate::pool::state::{calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::pool::math::curve as curve_math;
 use crate::pool::math::balancer as balancer_math;
@@ -57,7 +56,7 @@ impl TwoHopArbDetector {
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if Self::check_and_update_seen(
+                if check_dedup_key(
                     &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
                 ) {
                     opportunities.push(opp);
@@ -69,7 +68,7 @@ impl TwoHopArbDetector {
                 base_fee_per_gas, gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if Self::check_and_update_seen(
+                if check_dedup_key(
                     &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
                 ) {
                     opportunities.push(opp);
@@ -78,33 +77,6 @@ impl TwoHopArbDetector {
         }
 
         opportunities
-    }
-
-    /// Check whether a dedup key should be emitted, and update the seen set.
-    /// Returns true if the opportunity should be emitted (new entry or reserves
-    /// changed by >0.1%). When reserves change significantly, the old entry is
-    /// removed and the new snapshot is stored.
-    fn check_and_update_seen(
-        seen: &mut std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
-        key: &(Address, Address, Address, Address),
-        pm: &PoolManager,
-        pool_a: Address,
-        pool_b: Address,
-    ) -> bool {
-        let la = pm.pool_liquidity_estimate(&pool_a);
-        let lb = pm.pool_liquidity_estimate(&pool_b);
-        let new_snapshot = (la, lb);
-
-        if let Some(&(prev_la, prev_lb)) = seen.get(key) {
-            let threshold_a = std::cmp::max(prev_la / 1000, 1);
-            let threshold_b = std::cmp::max(prev_lb / 1000, 1);
-            if la.abs_diff(prev_la) <= threshold_a && lb.abs_diff(prev_lb) <= threshold_b {
-                return false;
-            }
-        }
-
-        seen.insert(*key, new_snapshot);
-        true
     }
 
     #[allow(clippy::too_many_arguments)]

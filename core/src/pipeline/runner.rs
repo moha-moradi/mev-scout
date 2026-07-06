@@ -13,7 +13,7 @@ use crate::mev::detectors::JitArbDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use crate::mev::competition::{BlockCompetition, CompetitionAnalyzer, CompetitionReport};
-use crate::mev::detectors::{pga, PgaConfig};
+use crate::mev::pga::{self, PgaConfig};
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use crate::replay::BlockReplayer;

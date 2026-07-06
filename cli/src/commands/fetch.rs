@@ -68,9 +68,6 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     println!();
 
     let mut fetcher = Fetcher::new(rpc, cache);
-    if let Some(pq_dir) = &config.parquet_dir {
-        fetcher = fetcher.with_parquet(pq_dir);
-    }
     if let Some(workers) = config.rpc_workers {
         fetcher = fetcher.with_parallelism(workers);
     }

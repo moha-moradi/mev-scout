@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::{Address, FixedBytes, U256};
+use alloy::primitives::{Address, Bytes, FixedBytes, U256};
 use std::str::FromStr;
 
 use crate::cache::SqliteStore;
@@ -674,7 +674,8 @@ impl LiveRunner {
     /// Execute a mempool opportunity — either on-chain (if signer configured) or virtual.
     async fn execute_mempool_opportunity(&mut self, opp: MevOpportunity, _pending: &mempool::PendingBlockCapture) {
         // ── ON-CHAIN EXECUTION ──────────────────────────────────────
-        if let Some(ref signer) = self.execution_signer.clone() {
+        let cloned_signer = self.execution_signer.clone();
+        if let Some(ref signer) = cloned_signer {
             let exec_cfg = match self.execution_config.clone() {
                 Some(c) => c,
                 None => { tracing::warn!("Execution config missing"); return; }
@@ -683,42 +684,27 @@ impl LiveRunner {
                 Some(addr) => addr,
                 None => { tracing::warn!("Executor factory address not set"); return; }
             };
-
             let tx_builder = TxBuilder::new(factory, self.config.chain_defaults.clone());
-
-            // Pick submission URL based on broadcast mode
             let submit_url: String = match exec_cfg.broadcast_mode {
-                crate::execution::BroadcastMode::Flashbots => {
-                    exec_cfg.flashbots_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone())
-                }
-                crate::execution::BroadcastMode::MevShare => {
-                    exec_cfg.mevshare_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone())
-                }
-                crate::execution::BroadcastMode::Public => {
-                    self.config.rpc_url.clone()
-                }
+                crate::execution::BroadcastMode::Flashbots =>
+                    exec_cfg.flashbots_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone()),
+                crate::execution::BroadcastMode::MevShare =>
+                    exec_cfg.mevshare_relay_url.clone().unwrap_or_else(|| self.config.rpc_url.clone()),
+                crate::execution::BroadcastMode::Public => self.config.rpc_url.clone(),
             };
 
-            // Build and submit appropriate tx(s) based on strategy type
             let result = match opp.strategy {
-                Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::CrossBlockArb => {
-                    self.build_and_send_arb_tx(&tx_builder, signer.clone(), &exec_cfg, &opp, &submit_url).await
-                }
-                Strategy::Sandwich => {
-                    self.build_and_send_sandwich_txs(&tx_builder, signer.clone(), &exec_cfg, &opp, &submit_url).await
-                }
-                Strategy::Jit | Strategy::JitArb => {
-                    self.build_and_send_jit_txs(&tx_builder, signer.clone(), &exec_cfg, &opp, &submit_url).await
-                }
+                Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::CrossBlockArb =>
+                    self.build_and_send_arb_tx(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
+                Strategy::Sandwich =>
+                    self.build_and_send_sandwich_txs(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
+                Strategy::Jit | Strategy::JitArb =>
+                    self.build_and_send_jit_txs(&tx_builder, signer, &exec_cfg, &opp, &submit_url).await,
                 Strategy::Liquidation => {
                     let aave_str = self.config.chain_defaults.aave_v3_pool.clone()
                         .unwrap_or_default();
                     let aave_pool = Address::from_str(&aave_str).unwrap_or(Address::ZERO);
-                    self.build_and_send_liquidation_tx(&tx_builder, signer.clone(), &exec_cfg, &opp, aave_pool, &submit_url).await
-                }
-                _ => {
-                    tracing::warn!("No on-chain handler for strategy {:?}", opp.strategy);
-                    return;
+                    self.build_and_send_liquidation_tx(&tx_builder, signer, &exec_cfg, &opp, aave_pool, &submit_url).await
                 }
             };
 
@@ -726,7 +712,6 @@ impl LiveRunner {
                 Ok(tx_hash) => {
                     tracing::info!("On-chain execution submitted: tx={:?} strategy={} profit={}",
                         tx_hash, opp.strategy, opp.expected_profit);
-                    // Track as successful execution
                     self.wallet.total_executions += 1;
                     self.wallet.successful_executions += 1;
                     *self.mempool_strategy_counts.entry(opp.strategy).or_insert(0) += 1;
@@ -740,7 +725,7 @@ impl LiveRunner {
             return;
         }
 
-        // ── SIMULATION (existing logic below) ───────────────────────
+        // ── SIMULATION (fallback when no signer) ────────────────────
         let profit = opp.expected_profit;
         let gas_cost = U256::from(opp.gas_cost_wei);
 
@@ -849,24 +834,8 @@ impl LiveRunner {
 
     /// Print the live dashboard.
     fn print_dashboard(&self, settled_blocks: u64, mempool_scans: u64) {
-        let native_unit = U256::from(1_000_000_000_000_000_000u128);
-        let native_whole = self.wallet.native_balance_wei / native_unit;
-        let native_frac = (self.wallet.native_balance_wei % native_unit)
-            / U256::from(10_000_000_000_000_000u128);
-
-        let pnl = if self.wallet.initial_native_balance_wei > U256::ZERO {
-            let raw = self.wallet.native_balance_wei.saturating_sub(self.wallet.initial_native_balance_wei);
-            let pct = raw * U256::from(10000) / self.wallet.initial_native_balance_wei;
-            format!(
-                "{:+}.{:04} native ({:+}.{:02}%)",
-                raw / native_unit,
-                (raw % native_unit) / U256::from(10_000_000_000_000u128),
-                pct / U256::from(100),
-                pct % U256::from(100),
-            )
-        } else {
-            "0.0000 native".to_string()
-        };
+        let (native_whole, native_frac) = self.format_native_balance(self.wallet.native_balance_wei);
+        let pnl = self.format_pnl(self.wallet.native_balance_wei, self.wallet.initial_native_balance_wei);
 
         println!("\n=== MEV Scout - Live Mode ===");
         println!("Chain: {} | Block: {} | Pending: {} txs",
@@ -895,15 +864,36 @@ impl LiveRunner {
             println!("  Mempool:      {} | {}", mempool_scans, mempool_strats);
         }
         println!("Total Profit:   {}", pnl);
-        println!("Total Gas:      {}.{:04} native",
-            U256::from(self.wallet.total_gas_spent_wei) / native_unit,
-            (U256::from(self.wallet.total_gas_spent_wei) % native_unit)
-                / U256::from(10_000_000_000_000_000u128),
-        );
+        let (gas_whole, gas_frac) = self.format_native_balance(U256::from(self.wallet.total_gas_spent_wei));
+        println!("Total Gas:      {}.{:04} native", gas_whole, gas_frac);
         println!("Net P&L:        {}", pnl);
         // Show best trade if any
         if let Some(ref best) = self.best_trade_desc {
             println!("Best Trade:     {}", best);
+        }
+    }
+
+    fn format_native_balance(&self, wei: U256) -> (U256, U256) {
+        let native_unit = U256::from(1_000_000_000_000_000_000u128);
+        let whole = wei / native_unit;
+        let frac = (wei % native_unit) / U256::from(10_000_000_000_000_000u128);
+        (whole, frac)
+    }
+
+    fn format_pnl(&self, current: U256, initial: U256) -> String {
+        let native_unit = U256::from(1_000_000_000_000_000_000u128);
+        if initial > U256::ZERO {
+            let raw = current.saturating_sub(initial);
+            let pct = raw * U256::from(10000) / initial;
+            format!(
+                "{:+}.{:04} native ({:+}.{:02}%)",
+                raw / native_unit,
+                (raw % native_unit) / U256::from(10_000_000_000_000u128),
+                pct / U256::from(100),
+                pct % U256::from(100),
+            )
+        } else {
+            "0.0000 native".to_string()
         }
     }
 
@@ -915,28 +905,16 @@ impl LiveRunner {
         let mins = (secs % 3600) / 60;
         let secs_rem = secs % 60;
 
-        let native_unit = U256::from(1_000_000_000_000_000_000u128);
-        let gas_native = U256::from(self.wallet.total_gas_spent_wei);
-        let net_pnl = if self.wallet.initial_native_balance_wei > U256::ZERO {
-            let raw = self.wallet.native_balance_wei.saturating_sub(self.wallet.initial_native_balance_wei);
-            let pct = raw * U256::from(10000) / self.wallet.initial_native_balance_wei;
-            format!(
-                "{:+}.{:04} native ({:+}.{:02}%)",
-                raw / native_unit,
-                (raw % native_unit) / U256::from(10_000_000_000_000_000u128),
-                pct / U256::from(100),
-                pct % U256::from(100),
-            )
-        } else {
-            "0.0000 native".to_string()
-        };
+        let net_pnl = self.format_pnl(self.wallet.native_balance_wei, self.wallet.initial_native_balance_wei);
 
-        // Build strategy breakdown strings
         let settled_strats = Self::fmt_strategy_counts(&self.settled_strategy_counts);
         let mempool_strats = Self::fmt_strategy_counts(&self.mempool_strategy_counts);
 
-        // Count settled blocks that had opportunities
         let settled_with_opps: u64 = self.settled_strategy_counts.values().copied().sum();
+
+        let (init_whole, init_frac) = self.format_native_balance(self.wallet.initial_native_balance_wei);
+        let (final_whole, final_frac) = self.format_native_balance(self.wallet.native_balance_wei);
+        let (gas_whole, gas_frac) = self.format_native_balance(U256::from(self.wallet.total_gas_spent_wei));
 
         println!("\n=== MEV Scout - Live Mode (shutdown) ===");
         println!("Runtime:          {}h {}m {}s", hours, mins, secs_rem);
@@ -944,14 +922,8 @@ impl LiveRunner {
         println!("Mempool scans:    {}", mempool_scans);
         println!("Total txs seen:   {}", self.total_mempool_txs_seen);
         println!("----------------------------------------");
-        println!("Initial Balance:  {}.{:04} native",
-            self.wallet.initial_native_balance_wei / native_unit,
-            (self.wallet.initial_native_balance_wei % native_unit) / U256::from(10_000_000_000_000_000u128),
-        );
-        println!("Final Balance:    {}.{:04} native",
-            self.wallet.native_balance_wei / native_unit,
-            (self.wallet.native_balance_wei % native_unit) / U256::from(10_000_000_000_000_000u128),
-        );
+        println!("Initial Balance:  {}.{:04} native", init_whole, init_frac);
+        println!("Final Balance:    {}.{:04} native", final_whole, final_frac);
         println!("Net P&L:          {}", net_pnl);
         println!("Total Executions: {} ({} ok, {} fail)",
             self.wallet.total_executions,
@@ -960,21 +932,15 @@ impl LiveRunner {
         );
         if self.wallet.total_executions > 0 {
             let avg_profit = self.wallet.total_profit_wei / U256::from(self.wallet.total_executions);
+            let (avg_whole, avg_frac) = self.format_native_balance(avg_profit);
             println!("  Settled:        {} ({})", settled_with_opps, settled_strats);
             println!("  Mempool:        {} ({})", self.wallet.total_executions - settled_with_opps, mempool_strats);
-            println!("Avg Profit/Trade: {}.{:04} native",
-                avg_profit / native_unit,
-                (avg_profit % native_unit) / U256::from(10_000_000_000_000_000u128),
-            );
+            println!("Avg Profit/Trade: {}.{:04} native", avg_whole, avg_frac);
             if let Some(ref best) = self.best_trade_desc {
                 println!("Best Trade:      {}", best);
             }
         }
-        println!("Total Gas Spent:  {}.{:04} native",
-            gas_native / native_unit,
-            (gas_native % native_unit) / U256::from(10_000_000_000_000_000u128),
-        );
-        // Show token holdings
+        println!("Total Gas Spent:  {}.{:04} native", gas_whole, gas_frac);
         if !self.wallet.token_balances.is_empty() {
             println!("Token Holdings:   {} tokens held", self.wallet.token_balances.len());
         }
@@ -1008,11 +974,36 @@ impl LiveRunner {
 
     // ── On-chain helper methods ────────────────────────────────────────
 
+    /// Sign and broadcast a single transaction with gas estimation and nonce management.
+    async fn sign_and_broadcast_tx(
+        &mut self,
+        signer: &ExecutionSigner,
+        exec_cfg: &ExecutionConfig,
+        calldata: Bytes,
+        gas_cost_wei: u128,
+        safety_floor: u64,
+        submit_url: &str,
+    ) -> anyhow::Result<FixedBytes<32>> {
+        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
+        let gas_limit = (gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
+        let gas_limit = gas_limit.max(safety_floor);
+        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
+        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
+        let signed = signer
+            .sign_eip1559(factory, U256::ZERO, calldata, nonce, gas_limit, max_fee, max_priority)
+            .await
+            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
+        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
+        let tx_hash = broadcaster.submit_tx(signed, submit_url).await
+            .map_err(|e| anyhow::anyhow!("broadcast: {e}"))?;
+        Ok(tx_hash)
+    }
+
     /// Build, sign, and broadcast a single arbitrage transaction.
     async fn build_and_send_arb_tx(
         &mut self,
         tx_builder: &TxBuilder,
-        signer: ExecutionSigner,
+        signer: &ExecutionSigner,
         exec_cfg: &ExecutionConfig,
         opp: &MevOpportunity,
         submit_url: &str,
@@ -1020,29 +1011,14 @@ impl LiveRunner {
         let calldata = tx_builder
             .build_arbitrage_tx(opp, crate::types::FlashLoanProvider::Auto, opp.expected_profit)
             .map_err(|e| anyhow::anyhow!("build_arbitrage_tx: {e}"))?;
-
-        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
-        let gas_limit = (opp.gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
-        let gas_limit = gas_limit.max(150_000); // safety floor
-        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-
-        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
-
-        let signed = signer
-            .sign_eip1559(factory, U256::ZERO, calldata.into(), nonce, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
-
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        let tx_hash = broadcaster.submit_tx(signed, submit_url).await?;
-        Ok(tx_hash)
+        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 150_000, submit_url).await
     }
 
     /// Build, sign, and broadcast front-run and back-run sandwich transactions.
     async fn build_and_send_sandwich_txs(
         &mut self,
         tx_builder: &TxBuilder,
-        signer: ExecutionSigner,
+        signer: &ExecutionSigner,
         exec_cfg: &ExecutionConfig,
         opp: &MevOpportunity,
         submit_url: &str,
@@ -1064,7 +1040,7 @@ impl LiveRunner {
             .await
             .map_err(|e| anyhow::anyhow!("sign front: {e}"))?;
 
-        // Back-run tx (same nonce+1)
+        // Back-run tx
         let nonce2 = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
         let back_signed = signer
             .sign_eip1559(factory, U256::ZERO, back_calldata.into(), nonce2, gas_limit, max_fee, max_priority)
@@ -1072,30 +1048,19 @@ impl LiveRunner {
             .map_err(|e| anyhow::anyhow!("sign back: {e}"))?;
 
         let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        // Submit both in a bundle if Flashbots/MevShare, otherwise sequentially
-        match exec_cfg.broadcast_mode {
-            crate::execution::BroadcastMode::Flashbots | crate::execution::BroadcastMode::MevShare => {
-                // Bundle mode needs TransactionRequest — use raw tx refs by submitting individually
-                let _ = broadcaster.submit_tx(front_signed, submit_url).await?;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let back_hash = broadcaster.submit_tx(back_signed, submit_url).await?;
-                Ok(back_hash)
-            }
-            _ => {
-                // Public: submit sequentially (same nonce ordering)
-                let _ = broadcaster.submit_tx(front_signed, submit_url).await?;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let back_hash = broadcaster.submit_tx(back_signed, submit_url).await?;
-                Ok(back_hash)
-            }
-        }
+        let _ = broadcaster.submit_tx(front_signed, submit_url).await
+            .map_err(|e| anyhow::anyhow!("broadcast front: {e}"))?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let back_hash = broadcaster.submit_tx(back_signed, submit_url).await
+            .map_err(|e| anyhow::anyhow!("broadcast back: {e}"))?;
+        Ok(back_hash)
     }
 
     /// Build, sign, and broadcast JIT liquidity transactions.
     async fn build_and_send_jit_txs(
         &mut self,
         tx_builder: &TxBuilder,
-        signer: ExecutionSigner,
+        signer: &ExecutionSigner,
         exec_cfg: &ExecutionConfig,
         opp: &MevOpportunity,
         submit_url: &str,
@@ -1106,57 +1071,27 @@ impl LiveRunner {
         let (_add, _remove) = tx_builder
             .build_jit_txs(opp, pool, tick_lower, tick_upper)
             .map_err(|e| anyhow::anyhow!("build_jit_txs: {e}"))?;
-
-        // JIT uses a single combined call for now
         let calldata = tx_builder
             .build_arbitrage_tx(opp, crate::types::FlashLoanProvider::Auto, opp.expected_profit)
             .map_err(|e| anyhow::anyhow!("build_arbitrage_tx (jit fallback): {e}"))?;
-
-        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
-        let gas_limit = (opp.gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
-        let gas_limit = gas_limit.max(300_000);
-        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
-
-        let signed = signer
-            .sign_eip1559(factory, U256::ZERO, calldata.into(), nonce, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
-
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        let tx_hash = broadcaster.submit_tx(signed, submit_url).await?;
-        Ok(tx_hash)
+        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 300_000, submit_url).await
     }
 
     /// Build, sign, and broadcast a liquidation transaction.
     async fn build_and_send_liquidation_tx(
         &mut self,
         tx_builder: &TxBuilder,
-        signer: ExecutionSigner,
+        signer: &ExecutionSigner,
         exec_cfg: &ExecutionConfig,
         opp: &MevOpportunity,
         aave_pool: Address,
         submit_url: &str,
     ) -> anyhow::Result<FixedBytes<32>> {
-        let user = opp.pool_a; // liquidation target address stored in pool_a
+        let user = opp.pool_a;
         let calldata = tx_builder
             .build_liquidation_tx(opp, user, aave_pool)
             .map_err(|e| anyhow::anyhow!("build_liquidation_tx: {e}"))?;
-
-        let factory = exec_cfg.executor_factory.ok_or_else(|| anyhow::anyhow!("no factory address"))?;
-        let gas_limit = (opp.gas_cost_wei as f64 * exec_cfg.gas_limit_multiplier.ceil()) as u64;
-        let gas_limit = gas_limit.max(200_000);
-        let nonce = self.execution_signer.as_mut().map(|s| s.next_nonce()).unwrap_or(0);
-        let (max_fee, max_priority) = self.fetch_gas_for_tx().await;
-
-        let signed = signer
-            .sign_eip1559(factory, U256::ZERO, calldata.into(), nonce, gas_limit, max_fee, max_priority)
-            .await
-            .map_err(|e| anyhow::anyhow!("sign: {e}"))?;
-
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| anyhow::anyhow!("no broadcaster"))?;
-        let tx_hash = broadcaster.submit_tx(signed, submit_url).await?;
-        Ok(tx_hash)
+        self.sign_and_broadcast_tx(signer, exec_cfg, calldata.into(), opp.gas_cost_wei, 200_000, submit_url).await
     }
 
     /// Fetch current gas prices for transaction construction.

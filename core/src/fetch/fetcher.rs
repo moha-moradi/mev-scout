@@ -1,5 +1,4 @@
 use std::ops::Deref;
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -11,7 +10,6 @@ use alloy::primitives::Address;
 
 use crate::cache::SqliteStore;
 use crate::data::{BlockData, ReceiptData, TxData};
-use crate::fetch::ParquetWriter;
 use crate::resolver::ResolvedRange;
 use crate::rpc::client::extract_selector;
 use crate::rpc::RpcClient;
@@ -77,7 +75,6 @@ pub struct Fetcher {
     cache: SqliteStore,
     sig_resolver: Option<SignatureResolver>,
     parallelism: usize,
-    parquet: Option<ParquetWriter>,
     timing: Arc<Mutex<FetchTiming>>,
     write_buf: Arc<Mutex<WriteBatch>>,
     batch_rpc: bool,
@@ -90,7 +87,6 @@ impl Fetcher {
             cache,
             sig_resolver: None,
             parallelism: 1,
-            parquet: None,
             timing: Arc::new(Mutex::new(FetchTiming::default())),
             write_buf: Arc::new(Mutex::new(Vec::new())),
             batch_rpc: true,
@@ -114,59 +110,12 @@ impl Fetcher {
         self
     }
 
-    /// Enable Parquet output. Writes one file per type under `dir`.
-    pub fn with_parquet(mut self, dir: impl AsRef<Path>) -> Self {
-        self.parquet = Some(ParquetWriter::new(dir));
-        self
-    }
-
     pub fn rpc_client(&self) -> &RpcClient {
         &self.rpc
     }
 
     pub fn cache_store(&self) -> &SqliteStore {
         &self.cache
-    }
-
-    /// Write all cached data in `start..=end` to Parquet files.
-    fn flush_parquet(&self, start: u64, end: u64) -> anyhow::Result<()> {
-        let pw = match &self.parquet {
-            Some(pw) => pw,
-            None => return Ok(()),
-        };
-
-        let mut blocks = Vec::new();
-        let mut all_txs = Vec::new();
-        let mut all_receipts = Vec::new();
-        for n in start..=end {
-            if let Some(block) = self.cache.get_block(n)? {
-                blocks.push(block);
-            }
-            if let Some(txs) = self.cache.get_txs(n)? {
-                all_txs.push(txs);
-            }
-            if let Some(receipts) = self.cache.get_receipts(n)? {
-                all_receipts.push(receipts);
-            }
-        }
-
-        if !blocks.is_empty() {
-            pw.write_all_blocks(&blocks)?;
-        }
-        if !all_txs.is_empty() {
-            pw.write_all_txs(&all_txs)?;
-        }
-        if !all_receipts.is_empty() {
-            pw.write_all_receipts(&all_receipts)?;
-        }
-
-        tracing::info!(
-            "Wrote Parquet cache: {} blocks, {} tx batches, {} receipt batches",
-            blocks.len(),
-            all_txs.len(),
-            all_receipts.len(),
-        );
-        Ok(())
     }
 
     /// Fetch all blocks in the range, using batch missing-block query + contiguous range batching.
@@ -234,9 +183,8 @@ impl Fetcher {
             e
         })?;
 
-        // Flush any remaining buffered writes, then write Parquet
+        // Flush any remaining buffered writes
         self.flush_write_buf()?;
-        self.flush_parquet(range.start_block, range.end_block)?;
 
         // Integrity check
         let missing_after = self
@@ -460,11 +408,8 @@ impl Fetcher {
 
         try_join_all(range_handles).await?;
 
-        // Flush any remaining buffered writes, then write Parquet
+        // Flush any remaining buffered writes
         self.flush_write_buf()?;
-        let min = sorted.first().copied().unwrap_or(range.start_block);
-        let max = sorted.last().copied().unwrap_or(range.end_block);
-        self.flush_parquet(min, max)?;
 
         // Integrity check only on the blocks we attempted to fetch
         let missing_after = self

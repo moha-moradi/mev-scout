@@ -657,7 +657,7 @@ pub async fn simulate_opportunity_evm(
             Some(U256::from(back - input))
         }
         Strategy::Jit | Strategy::JitArb | Strategy::Liquidation => None,
-        Strategy::CrossBlockArb | Strategy::TimeBandit => None,
+        Strategy::CrossBlockArb => None,
     }
 }
 
@@ -792,7 +792,7 @@ pub fn recompute_opportunity_profit(
             let total = U256::from(arb_profit.saturating_add(jit_fee));
             if total.is_zero() { None } else { Some(total) }
         }
-        Strategy::CrossBlockArb | Strategy::TimeBandit => None,
+        Strategy::CrossBlockArb => None,
     }
 }
 

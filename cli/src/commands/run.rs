@@ -86,9 +86,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     }
 
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
-    if let Some(pq_dir) = &config.parquet_dir {
-        fetcher = fetcher.with_parquet(pq_dir);
-    }
     if let Some(workers) = config.rpc_workers {
         fetcher = fetcher.with_parallelism(workers);
     }
@@ -187,7 +184,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
             config.pga_mean_competitors,
             config.pga_intensity,
         );
-        Some(mev_scout_core::mev::detectors::pga::PgaConfig::new(
+        Some(mev_scout_core::mev::pga::PgaConfig::new(
             config.pga_mean_competitors,
             config.pga_intensity,
         ))

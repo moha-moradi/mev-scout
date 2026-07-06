@@ -79,4 +79,3 @@ pub fn adjust_opportunities(opps: Vec<MevOpportunity>, config: &PgaConfig) -> Ve
         .map(|opp| adjust_opportunity(opp, config))
         .collect()
 }
-

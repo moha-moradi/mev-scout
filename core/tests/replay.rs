@@ -240,7 +240,7 @@ async fn test_runner_gas_model_p90() {
         let pm2 = synthetic_arb_pools();
 
         let gas_cfg_p90 = GasConfig {
-            gas_model: GasModel::P90,
+            gas_model: GasModel::Distribution(90),
             ..GasConfig::default()
         };
         let mut runner_p90 = BacktestRunner::new(replayer2, pm2, gas_cfg_p90);
@@ -398,7 +398,7 @@ async fn test_runner_cross_block_detection() {
     // Cross-block opportunities should be emitted
     let cross_opps: Vec<_> = opps
         .iter()
-        .filter(|o| o.strategy == Strategy::CrossBlockArb || o.strategy == Strategy::TimeBandit)
+        .filter(|o| o.strategy == Strategy::CrossBlockArb)
         .collect();
 
     assert!(

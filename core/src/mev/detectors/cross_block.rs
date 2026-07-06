@@ -135,13 +135,13 @@ impl CrossBlockDetector {
                     if price_gap > prev_gap * 1.1 {
                         // Gap widened by >=10%
                         let confidence = 0.4; // inherently speculative
-                        let mut opp = MevOpportunity::new(
-                            block_number,
-                            0,
-                            Strategy::TimeBandit,
-                            pool_a,
-                            timestamp,
-                        );
+                            let mut opp = MevOpportunity::new(
+                                block_number,
+                                0,
+                                Strategy::CrossBlockArb,
+                                pool_a,
+                                timestamp,
+                            );
                         opp.pool_b = pool_b;
                         opp.token_in = token_in;
                         opp.token_out = token_out;
