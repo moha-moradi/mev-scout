@@ -124,7 +124,7 @@ pub async fn discover_v3_pools_from_dune(
 /// Uses the built-in `QUERY_ALL_ACTIVE_POOLS` query.
 ///
 /// Expected Dune columns: `pool_address`, `token0`, `token1`,
-/// `project`, `project_type`, `last_active_block`, `fee`
+/// `project`, `version`, `last_active_block`, `fee`
 pub async fn discover_active_pools_from_dune(
     client: &DuneClient,
     chain: &str,
@@ -147,6 +147,7 @@ pub async fn discover_active_pools_from_dune(
         let token0 = DuneClient::col_as_address(row, "token0");
         let token1 = DuneClient::col_as_address(row, "token1");
         let project = DuneClient::col_as_string(row, "project").unwrap_or_default().to_lowercase();
+        let version = DuneClient::col_as_string(row, "version").unwrap_or_default().to_lowercase();
 
         let (addr, t0, t1) = match (address, token0, token1) {
             (Some(a), Some(t0), Some(t1)) if !seen.contains(&a) => (a, t0, t1),
@@ -154,12 +155,16 @@ pub async fn discover_active_pools_from_dune(
         };
         seen.insert(addr);
 
-        let (dex_type, fee) = if project.contains("v3") {
+        let (dex_type, fee) = if version.contains("v3") || version == "3" {
             (DexType::UniswapV3, DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32)
         } else if project.contains("curve") {
             (DexType::Curve, 0)
         } else if project.contains("balancer") {
             (DexType::Balancer, 0)
+        } else if project.contains("dodo") {
+            (DexType::Dodo, 0)
+        } else if project.contains("clipper") {
+            (DexType::Clipper, 0)
         } else {
             (DexType::UniswapV2, DuneClient::col_as_u64(row, "fee").unwrap_or(30) as u32)
         };

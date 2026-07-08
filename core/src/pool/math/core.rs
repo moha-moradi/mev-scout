@@ -51,6 +51,7 @@ pub fn quote_exact_in(
             }
             balancer::balancer_quote_exact_in(amount_in, bal, token_in, token_out)
         }
+        PoolState::Dodo(_) | PoolState::Clipper(_) => None,
     }
 }
 

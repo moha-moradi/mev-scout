@@ -19,39 +19,70 @@
 // Section 1: Pool Discovery
 // ══════════════════════════════════════════════════════════════════════════
 
-/// V2-style pools via PairCreated event (Uniswap V2, PancakeSwap V2, QuickSwap, SushiSwap, etc.).
+/// V2-style pools via dex.trades (Uniswap V2, PancakeSwap V2, QuickSwap, SushiSwap, etc.).
 ///
-/// Columns: `pool_address`(0), `token0`(1), `token1`(2), `creation_block`(3), `factory`(4)
+/// Uses DuneSQL V2 `dex.trades` table. Columns: `pool_address`(0), `token0`(1), `token1`(2),
+/// `creation_block`(3), `factory`(4)
 pub const QUERY_V2_POOLS_BY_FACTORY: &str = r#"
+WITH v2_pools AS (
+  SELECT
+    t.project_contract_address AS pool_address,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_bought_address ELSE t.token_sold_address END AS token0,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_sold_address ELSE t.token_bought_address END AS token1,
+    MIN(t.block_number) AS creation_block
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND t.version = '2'
+  GROUP BY 1, 2, 3
+)
 SELECT
-  p.pair AS pool_address,
-  p.token0,
-  p.token1,
-  p.evt_block_number AS creation_block,
-  p.contract_address AS factory
-FROM uniswap_v2_{chain}.Factory_evt_PairCreated p
-WHERE p.evt_block_number >= {from_block}
-  AND p.evt_block_number <= {to_block}
-ORDER BY p.evt_block_number ASC
+  pool_address,
+  token0,
+  token1,
+  creation_block,
+  NULL AS factory
+FROM v2_pools
+ORDER BY creation_block ASC
 "#;
 
-/// V3 pools via PoolCreated event (Uniswap V3, PancakeSwap V3, QuickSwap V3, etc.).
+/// V3 pools via dex.trades (Uniswap V3, PancakeSwap V3, QuickSwap V3, etc.).
 ///
-/// Columns: `pool_address`(0), `token0`(1), `token1`(2), `fee`(3), `tick_spacing`(4),
-///          `creation_block`(5), `factory`(6)
+/// Uses DuneSQL V2 `dex.trades` table. Columns: `pool_address`(0), `token0`(1), `token1`(2),
+/// `fee`(3), `tick_spacing`(4), `creation_block`(5), `factory`(6)
 pub const QUERY_V3_POOLS_BY_FACTORY: &str = r#"
+WITH v3_pools AS (
+  SELECT
+    t.project_contract_address AS pool_address,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_bought_address ELSE t.token_sold_address END AS token0,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_sold_address ELSE t.token_bought_address END AS token1,
+    CAST(t.fee AS BIGINT) AS fee,
+    CASE CAST(t.fee AS BIGINT)
+      WHEN 100 THEN 1
+      WHEN 500 THEN 10
+      WHEN 3000 THEN 60
+      WHEN 10000 THEN 200
+      ELSE NULL
+    END AS tick_spacing,
+    MIN(t.block_number) AS creation_block
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND t.version = '3'
+  GROUP BY 1, 2, 3, 4, 5
+)
 SELECT
-  p.pool AS pool_address,
-  p.token0,
-  p.token1,
-  p.fee,
-  p.tick_spacing,
-  p.evt_block_number AS creation_block,
-  p.contract_address AS factory
-FROM uniswap_v3_{chain}.Factory_evt_PoolCreated p
-WHERE p.evt_block_number >= {from_block}
-  AND p.evt_block_number <= {to_block}
-ORDER BY p.evt_block_number ASC
+  pool_address,
+  token0,
+  token1,
+  fee,
+  tick_spacing,
+  creation_block,
+  NULL AS factory
+FROM v3_pools
+ORDER BY creation_block ASC
 "#;
 
 /// Curve pools via `PoolAdded` events from Curve's Registry and PoolRegistry contracts.
@@ -110,18 +141,19 @@ ORDER BY p.evt_block_number ASC
 /// Discover all DEX pools from `dex.trades` — extracts unique pool addresses with metadata.
 /// This is the most reliable catch-all query (works even without decoded event tables).
 ///
-/// Columns: `pool_address`(0), `token_bought_address`(1), `token_sold_address`(2),
-///          `project`(3), `project_type`(4), `last_active_block`(5), `min_fee`(6)
+/// DuneSQL V2: uses `project_contract_address` instead of `pool_address`. 
+/// Columns: `pool_address`(0), `token0`(1), `token1`(2), `project`(3), `version`(4),
+///          `last_active_block`(5), `fee`(6)
 pub const QUERY_ALL_ACTIVE_POOLS: &str = r#"
 WITH pool_stats AS (
   SELECT
-    t.pool_address,
-    t.token_bought_address AS token0,
-    t.token_sold_address AS token1,
+    t.project_contract_address AS pool_address,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_bought_address ELSE t.token_sold_address END AS token0,
+    CASE WHEN t.token_bought_address < t.token_sold_address THEN t.token_sold_address ELSE t.token_bought_address END AS token1,
     t.project,
-    t.project_type,
+    t.version,
     MAX(t.block_number) AS last_active_block,
-    MIN(t.fee) AS min_fee
+    MIN(t.fee) AS fee
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_number >= {from_block}
@@ -133,9 +165,9 @@ SELECT
   ps.token0,
   ps.token1,
   ps.project,
-  ps.project_type,
+  ps.version,
   ps.last_active_block,
-  COALESCE(ps.min_fee, 0) AS fee
+  COALESCE(ps.fee, 0) AS fee
 FROM pool_stats ps
 ORDER BY ps.last_active_block DESC
 "#;

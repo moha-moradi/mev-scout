@@ -645,5 +645,11 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 },
             ));
         }
+        crate::pool::dex_type::DexType::Dodo => {
+            pool_manager.add_pool(PoolState::Dodo(info));
+        }
+        crate::pool::dex_type::DexType::Clipper => {
+            pool_manager.add_pool(PoolState::Clipper(info));
+        }
     }
 }

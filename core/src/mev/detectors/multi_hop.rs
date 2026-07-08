@@ -280,6 +280,7 @@ impl MultiHopArbDetector {
             PoolState::Balancer(b) => {
                 b.balances.iter().fold(0u128, |a, &b| a.max(b))
             }
+            PoolState::Dodo(_) | PoolState::Clipper(_) => 0,
         }
     }
 

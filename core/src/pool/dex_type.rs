@@ -13,6 +13,10 @@ pub enum DexType {
     Curve,
     #[serde(rename = "balancer")]
     Balancer,
+    #[serde(rename = "dodo")]
+    Dodo,
+    #[serde(rename = "clipper")]
+    Clipper,
 }
 
 impl DexType {
@@ -26,6 +30,8 @@ impl DexType {
             DexType::UniswapV3 => "UniswapV3",
             DexType::Curve => "Curve",
             DexType::Balancer => "Balancer",
+            DexType::Dodo => "Dodo",
+            DexType::Clipper => "Clipper",
         }
     }
 }

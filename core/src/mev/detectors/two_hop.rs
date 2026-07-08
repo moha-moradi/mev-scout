@@ -331,6 +331,7 @@ fn two_hop_profit_at(
         PoolState::Balancer(a) => {
             balancer_quote_exact_in(input_amount, a, token_in, shared_token)?
         }
+        PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
 
     let output = match pool_b {
@@ -348,6 +349,7 @@ fn two_hop_profit_at(
         PoolState::Balancer(b) => {
             balancer_quote_exact_in(intermediate, b, shared_token, token_out)?
         }
+        PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
 
     if output > input_amount { Some(output - input_amount) } else { None }
@@ -458,6 +460,7 @@ fn estimate_arb_pair_profit(
             if v2.info.token0 == token_in { v2.reserve0 } else { v2.reserve1 }
         }
         PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
+        PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
     let test_input = (max_input / 1000).max(1);
 

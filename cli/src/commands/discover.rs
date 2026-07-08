@@ -209,6 +209,12 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             DexType::Curve => {
                 println!("  Curve  {}", p.address);
             }
+            DexType::Dodo => {
+                println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+            }
+            DexType::Clipper => {
+                println!("  Clipper  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+            }
         }
     }
     println!();

@@ -108,26 +108,33 @@ impl PoolManager {
 
         // Snapshot pool metadata before spawning tasks
         let vault = self.balancer_vault;
-        let pool_meta: Vec<(DexType, Option<[u8; 32]>, i32, Option<Address>)> = pool_addrs
-            .iter()
-            .map(|addr| match self.pools.get(addr) {
-                Some(PoolState::UniswapV2(s)) => (DexType::UniswapV2, None, 0, s.info.factory),
-                Some(PoolState::UniswapV3(state)) => (
-                    DexType::UniswapV3,
-                    None,
-                    state.info.tick_spacing.unwrap_or(60) as i32,
-                    None,
-                ),
-                Some(PoolState::Curve(_)) => (DexType::Curve, None, 0, None),
-                Some(PoolState::Balancer(_)) => (DexType::Balancer, None, 0, None),
-                None => (DexType::UniswapV2, None, 0, None),
-            })
-            .collect();
+        let pool_meta: Vec<(Address, DexType, Option<[u8; 32]>, i32, Option<Address>, bool)> =
+            pool_addrs
+                .iter()
+                .map(|addr| match self.pools.get(addr) {
+                    Some(PoolState::UniswapV2(s)) => {
+                        (*addr, DexType::UniswapV2, None, 0, s.info.factory, true)
+                    }
+                    Some(PoolState::UniswapV3(state)) => (
+                        *addr,
+                        DexType::UniswapV3,
+                        None,
+                        state.info.tick_spacing.unwrap_or(60) as i32,
+                        None,
+                        true,
+                    ),
+                    Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true),
+                    Some(PoolState::Balancer(_)) => (*addr, DexType::Balancer, None, 0, None, true),
+                    Some(PoolState::Dodo(_)) => (*addr, DexType::Dodo, None, 0, None, false),
+                    Some(PoolState::Clipper(_)) => (*addr, DexType::Clipper, None, 0, None, false),
+                    None => (*addr, DexType::UniswapV2, None, 0, None, false),
+                })
+                .collect();
 
-        let tasks: Vec<_> = pool_addrs
+        let tasks: Vec<_> = pool_meta
             .iter()
-            .zip(pool_meta.iter())
-            .map(|(addr, (dt, pool_id, tick_spacing, factory))| {
+            .filter(|(_, _, _, _, _, needs_init)| *needs_init)
+            .map(|(addr, dt, pool_id, tick_spacing, factory, _)| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
@@ -137,23 +144,23 @@ impl PoolManager {
                 let factory = *factory;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num).await
+                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num).await)
                 }
             })
             .collect();
 
         let results = join_all(tasks).await;
 
-        for (addr, result) in pool_addrs.iter().zip(results) {
+        for (addr, result) in results {
             match result {
                 Some(PoolInitResult::V2Reserves(r0, r1)) => {
-                    if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(addr) {
+                    if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(&addr) {
                         state.reserve0 = r0;
                         state.reserve1 = r1;
                     }
                 }
                 Some(PoolInitResult::V3State(sqrt, tick, liq, initialized_ticks)) => {
-                    if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(addr) {
+                    if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(&addr) {
                         state.sqrt_price_x96 = sqrt;
                         state.tick = tick;
                         state.liquidity = liq;
@@ -169,7 +176,7 @@ impl PoolManager {
                     }
                 }
                 Some(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index)) => {
-                    if let Some(PoolState::Balancer(state)) = self.pools.get_mut(addr) {
+                    if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&addr) {
                         state.balances = balances;
                         state.weights = weights;
                         state.info.fee = fee_bps;
@@ -187,13 +194,13 @@ impl PoolManager {
                         }
                         for token in &tokens {
                             if !token.is_zero() {
-                                self.token_index.entry(*token).or_default().push(*addr);
+                                self.token_index.entry(*token).or_default().push(addr);
                             }
                         }
                     }
                 }
                 Some(PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool)) => {
-                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(addr) {
+                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
                         state.balances = balances;
                         state.a_coeff = a_coeff;
                         state.info.fee = fee_bps;
@@ -212,7 +219,7 @@ impl PoolManager {
                         }
                         for token in &tokens {
                             if !token.is_zero() {
-                                self.token_index.entry(*token).or_default().push(*addr);
+                                self.token_index.entry(*token).or_default().push(addr);
                             }
                         }
                     }
@@ -288,6 +295,7 @@ impl PoolManager {
             DexType::Curve => {
                 Self::fetch_curve_state(rpc, pool, block).await
             }
+            DexType::Dodo | DexType::Clipper => None,
         }
     }
 
@@ -860,6 +868,8 @@ impl PoolManager {
                     _ => None,
                 }
             }
+            PoolState::Dodo(info) => Some(PoolState::Dodo(info.clone())),
+            PoolState::Clipper(info) => Some(PoolState::Clipper(info.clone())),
         }
     }
 

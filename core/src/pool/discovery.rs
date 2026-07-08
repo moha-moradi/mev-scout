@@ -151,6 +151,8 @@ pub async fn discover_pools(
         *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
         *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
         *topics::BALANCER_SWAP,
+        *topics::DODO_SWAP,
+        *topics::CLIPPER_SWAPPED,
     ];
 
     let mut current = from_block;
@@ -164,6 +166,8 @@ pub async fn discover_pools(
             topics::V3_SWAP,
             *topics::V3_MINT,
             topics::V3_BURN,
+            *topics::DODO_SWAP,
+            *topics::CLIPPER_SWAPPED,
         ];
         let fast_filter = Filter::new()
             .event_signature(fast_topics)
@@ -180,6 +184,25 @@ pub async fn discover_pools(
                     let topic0 = log.topics()[0];
                     let dex_type = if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
                         DexType::UniswapV2
+                    } else if topic0 == *topics::DODO_SWAP {
+                        DexType::Dodo
+                    } else if topic0 == *topics::CLIPPER_SWAPPED {
+                        // Extract inAsset from topic3 for Clipper pool metadata
+                        let topics = log.topics();
+                        let tokens = if topics.len() >= 4 {
+                            let token_in = Address::from_slice(&topics[3][12..]);
+                            // outAsset is first 32 bytes of data (non-indexed)
+                            let token_out = if log.data().data.len() >= 32 {
+                                Address::from_slice(&log.data().data[12..32])
+                            } else {
+                                Address::ZERO
+                            };
+                            Some((token_in, token_out))
+                        } else {
+                            None
+                        };
+                        pool_hits.entry(addr).or_insert((DexType::Clipper, None, tokens));
+                        continue;
                     } else {
                         DexType::UniswapV3
                     };
@@ -229,6 +252,22 @@ pub async fn discover_pools(
                                         Some((token_in, token_out)),
                                     ));
                                 }
+                            } else if topic0 == *topics::DODO_SWAP {
+                                pool_hits.entry(addr).or_insert((DexType::Dodo, None, None));
+                            } else if topic0 == *topics::CLIPPER_SWAPPED {
+                                let topics = log.topics();
+                                let tokens = if topics.len() >= 4 {
+                                    let token_in = Address::from_slice(&topics[3][12..]);
+                                    let token_out = if log.data().data.len() >= 32 {
+                                        Address::from_slice(&log.data().data[12..32])
+                                    } else {
+                                        Address::ZERO
+                                    };
+                                    Some((token_in, token_out))
+                                } else {
+                                    None
+                                };
+                                pool_hits.entry(addr).or_insert((DexType::Clipper, None, tokens));
                             }
                         }
                     }
@@ -591,6 +630,29 @@ pub async fn discover_pools(
                     (addr, dt, Some(t0), Some(t1), None, None)
                 }));
             }
+            DexType::Dodo => {
+                let rpc = rpc.clone();
+                let addr = *addr;
+                // DODO pools use _BASE_TOKEN_() and _QUOTE_TOKEN_() instead of standard token0()/token1()
+                let sel_base = Bytes::from_static(&[0xe1, 0x50, 0x31, 0x08]); // _BASE_TOKEN_()
+                let sel_quote = Bytes::from_static(&[0x0f, 0xd8, 0xba, 0xfe]); // _QUOTE_TOKEN_()
+                fetch_tasks.push(Box::pin(async move {
+                    let token0 = rpc.call(addr, sel_base, ref_block).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                    let token1 = rpc.call(addr, sel_quote, ref_block).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                    (addr, DexType::Dodo, token0, token1, None, None)
+                }));
+            }
+            DexType::Clipper => {
+                // Clipper is a single multi-asset pool; extract tokens from event if available
+                let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                let addr = *addr;
+                let dt = *dex_type;
+                fetch_tasks.push(Box::pin(async move {
+                    (addr, dt, Some(t0), Some(t1), None, None)
+                }));
+            }
         }
     }
 
@@ -614,6 +676,8 @@ pub async fn discover_pools(
             DexType::UniswapV2 => v2_fee_override.unwrap_or(30),
             DexType::UniswapV3 => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
+            DexType::Dodo => fee_opt.unwrap_or(0),
+            DexType::Clipper => fee_opt.unwrap_or(0),
         };
         let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _)| *pid);
 

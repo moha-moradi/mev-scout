@@ -170,6 +170,10 @@ pub enum PoolState {
     UniswapV3(UniswapV3PoolState),
     Curve(CurvePoolState),
     Balancer(BalancerPoolState),
+    /// DODO pools (no MEV detection support — passive discovery only)
+    Dodo(PoolInfo),
+    /// Clipper pools (no MEV detection support — passive discovery only)
+    Clipper(PoolInfo),
 }
 
 impl PoolState {
@@ -179,6 +183,8 @@ impl PoolState {
             PoolState::UniswapV3(s) => s.info.address,
             PoolState::Curve(s) => s.info.address,
             PoolState::Balancer(s) => s.info.address,
+            PoolState::Dodo(s) => s.address,
+            PoolState::Clipper(s) => s.address,
         }
     }
 
@@ -188,6 +194,8 @@ impl PoolState {
             PoolState::UniswapV3(s) => &s.info,
             PoolState::Curve(s) => &s.info,
             PoolState::Balancer(s) => &s.info,
+            PoolState::Dodo(s) => s,
+            PoolState::Clipper(s) => s,
         }
     }
 
@@ -197,6 +205,8 @@ impl PoolState {
             PoolState::UniswapV3(s) => &mut s.info,
             PoolState::Curve(s) => &mut s.info,
             PoolState::Balancer(s) => &mut s.info,
+            PoolState::Dodo(s) => s,
+            PoolState::Clipper(s) => s,
         }
     }
 
@@ -216,6 +226,8 @@ impl PoolState {
             PoolState::UniswapV3(_) => 120_000,
             PoolState::Curve(_) => 100_000,
             PoolState::Balancer(_) => 100_000,
+            PoolState::Dodo(_) => 0,
+            PoolState::Clipper(_) => 0,
         }
     }
 }

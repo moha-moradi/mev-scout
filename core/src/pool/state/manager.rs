@@ -182,6 +182,7 @@ impl PoolManager {
             Some(PoolState::UniswapV3(v3)) => v3.liquidity,
             Some(PoolState::Curve(c)) => c.balances.iter().sum(),
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
+            Some(PoolState::Dodo(_)) | Some(PoolState::Clipper(_)) => 0,
             None => 0,
         }
     }
@@ -232,6 +233,7 @@ impl PoolManager {
             PoolState::UniswapV3(s) => s.liquidity > 0,
             PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
             PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
+            PoolState::Dodo(_) | PoolState::Clipper(_) => false,
         })
         .count()
     }
@@ -398,6 +400,7 @@ impl PoolManager {
                     let bal_stable = bal.balances.get(*idx_stable)?;
                     (*bal_native, *bal_stable)
                 }
+                PoolState::Dodo(_) | PoolState::Clipper(_) => continue,
             };
             let tvl = reserve_native.saturating_mul(reserve_stable).max(1);
             if tvl > best_tvl {
