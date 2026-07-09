@@ -303,27 +303,36 @@ impl Config {
     /// Returns `Vec<(String, Option<f64>)>` — URL and optional per-provider RPS limit.
     /// When `rpc_rps` has matching entries, those are used; otherwise defaults from
     /// `ChainName::public_rpc_endpoints()` are used for public endpoints.
+    /// Falls back to public endpoints for known chains if no user RPC is provided.
     pub fn effective_provider_configs(&self, chain_name: crate::types::ChainName) -> error::Result<Vec<(String, Option<f64>)>> {
-        let urls = self.effective_rpc_urls()?;
-        let public_endpoints = chain_name.public_rpc_endpoints();
-
-        let result: Vec<(String, Option<f64>)> = urls
-            .into_iter()
-            .enumerate()
-            .map(|(i, url)| {
-                let rps = self.rpc_rps.get(i).copied();
-                if rps.is_some() {
-                    return (url, rps);
-                }
-                // Look up default RPS from public endpoints metadata
-                let default_rps = public_endpoints
-                    .iter()
-                    .find(|e| url.contains(e.url) || e.url.contains(&url))
-                    .map(|e| e.default_rps);
-                (url, default_rps)
-            })
-            .collect();
-        Ok(result)
+        let urls = self.effective_rpc_urls().unwrap_or_default();
+        if !urls.is_empty() {
+            let public_endpoints = chain_name.public_rpc_endpoints();
+            let result: Vec<(String, Option<f64>)> = urls
+                .into_iter()
+                .enumerate()
+                .map(|(i, url)| {
+                    let rps = self.rpc_rps.get(i).copied();
+                    if rps.is_some() {
+                        return (url, rps);
+                    }
+                    let default_rps = public_endpoints
+                        .iter()
+                        .find(|e| url.contains(e.url) || e.url.contains(&url))
+                        .map(|e| e.default_rps);
+                    (url, default_rps)
+                })
+                .collect();
+            Ok(result)
+        } else {
+            let public = chain_name.public_rpc_endpoints();
+            if public.is_empty() {
+                return Err(error::Error::Other(
+                    "No RPC URL provided and no public endpoints available for this chain. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
+                ));
+            }
+            Ok(public.into_iter().map(|e| (e.url.to_string(), Some(e.default_rps))).collect())
+        }
     }
 
     /// Return only the user-specified RPC URLs (no public fallbacks), for backward compat.

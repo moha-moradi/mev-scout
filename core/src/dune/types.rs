@@ -263,6 +263,7 @@ pub struct DuneGasPrice {
 // ── Failed Transaction Types ───────────────────────────────────────────
 
 /// A failed/reverted transaction that carried value (potential MEV signal).
+/// Uses the curated `gas.fees` table (cross-chain).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuneFailedTx {
     pub block_number: u64,
@@ -273,4 +274,103 @@ pub struct DuneFailedTx {
     pub gas_used: u64,
     pub gas_price_gwei: f64,
     pub error_reason: Option<String>,
+}
+
+// ── New Curated Table Types ────────────────────────────────────────────
+
+/// A victim trade that was sandwiched (from `dex.sandwiched`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneSandwichedVictim {
+    pub block_number: u64,
+    pub tx_hash: String,
+    pub victim: Address,
+    pub token_bought_symbol: String,
+    pub token_sold_symbol: String,
+    pub amount_usd: Option<f64>,
+    pub pool_address: Address,
+}
+
+/// An aggregator-routed trade (from `dex_aggregator.trades`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneAggregatorTrade {
+    pub block_number: u64,
+    pub tx_hash: String,
+    pub project: String,
+    pub token_bought_address: Address,
+    pub token_sold_address: Address,
+    pub token_bought_amount: String,
+    pub token_sold_amount: String,
+    pub amount_usd: Option<f64>,
+    pub taker: Address,
+    pub block_time: Option<String>,
+}
+
+/// An address label from Dune's `labels.addresses` dataset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneAddressLabel {
+    pub address: Address,
+    pub name: String,
+    pub category: String,
+    pub blockchain: String,
+}
+
+/// A lending borrow event (includes liquidations) from `lending.borrow`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneLendingBorrowEvent {
+    pub block_number: u64,
+    pub tx_hash: String,
+    pub protocol: String,
+    pub transaction_type: String,
+    pub borrower: Address,
+    pub token_address: Address,
+    pub amount: String,
+    pub amount_usd: Option<f64>,
+    pub block_time: Option<String>,
+}
+
+/// A lending supply event (deposits/withdrawals) from `lending.supply`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneLendingSupplyEvent {
+    pub block_number: u64,
+    pub tx_hash: String,
+    pub protocol: String,
+    pub transaction_type: String,
+    pub supplier: Address,
+    pub token_address: Address,
+    pub amount: String,
+    pub amount_usd: Option<f64>,
+    pub block_time: Option<String>,
+}
+
+/// Latest token price from `prices.latest` (hybrid Coinpaprika + DEX).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneLatestPrice {
+    pub price: f64,
+    pub symbol: String,
+    pub decimals: u8,
+    pub source: String,
+}
+
+/// DEX-native flash loan (Balancer, Uniswap V3, dYdX) from `dex.flashloans`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneDexFlashLoan {
+    pub block_number: u64,
+    pub tx_hash: String,
+    pub project: String,
+    pub token_address: Address,
+    pub amount_usd: Option<f64>,
+    pub amount: Option<String>,
+    pub fee: Option<String>,
+}
+
+/// Utility day from `utils.days`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneUtilsDay {
+    pub day: String,
+}
+
+/// Utility hour from `utils.hours`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneUtilsHour {
+    pub hour: String,
 }

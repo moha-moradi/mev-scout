@@ -368,7 +368,7 @@ mev-scout discover --from-block NUMBER --to-block NUMBER [FLAGS]
 | Mode | Description |
 |------|-------------|
 | `onchain` | Scan factory events via `eth_getLogs` (original behavior). Requires an archive RPC node. |
-| `dune` | Fetch pools from Dune Analytics saved queries. Requires Dune API key + query IDs in config. |
+| `dune` | Fetch pools from Dune Analytics saved queries. Requires Dune API key + query IDs in config. Dune has a ~2–4 hour indexing delay; recent blocks return 0 pools. |
 | `all` | **Recommended.** Merges results from both sources and deduplicates by pool address. |
 
 ### Examples
@@ -1144,3 +1144,4 @@ mev-scout live -n polygon -r <RPC> --initial-balance 10 --min-profit 0.01
 - **Performance:** For large ranges, use multiple RPC providers via `--rpc-urls` and increase `--rpc-workers` (10-20 for private RPCs). The tool fetches blocks in parallel using concurrent workers.
 - **Dune Analytics:** To use Dune features, create saved queries on [dune.com/queries](https://dune.com/queries) using the SQL templates in `core/src/dune/queries.rs`. Add the query IDs to `mev-scout.toml` under `[dune]`. The Dune API key can be obtained from your Dune account settings.
 - **Dune rate limits:** The free Dune API plan allows ~1000 query executions/hour. Use `--source dune` sparingly for large ranges, or rely on the SQLite cache to avoid re-executing identical queries.
+- **Dune indexing delay:** Dune has a ~2–4 hour delay before new blocks are indexed. `--source dune` returns 0 pools for blocks within this window. Use `--source onchain` or `--source all` for recent blocks.

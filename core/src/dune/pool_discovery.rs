@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use alloy::primitives::Address;
 use tracing;
 
 use super::client::DuneClient;
@@ -8,10 +9,31 @@ use crate::pool::dex_type::DexType;
 use crate::pool::discovery::DiscoveredPool;
 
 fn render_query(template: &str, chain: &str, from_block: u64, to_block: u64) -> String {
+    let chain_label = dune_chain_label(chain);
+    let block_month_min = approx_block_month_min(from_block, &chain_label);
     template
-        .replace("{chain}", &dune_chain_label(chain))
+        .replace("{chain}", &chain_label)
+        .replace("{block_month_min}", &block_month_min)
         .replace("{from_block}", &from_block.to_string())
         .replace("{to_block}", &to_block.to_string())
+}
+
+fn approx_block_month_min(block_number: u64, chain: &str) -> String {
+    let (genesis_block, genesis_ts, secs_per_block) = match chain {
+        "ethereum" => (0, 1438269988, 12.0),
+        "polygon" => (0, 1591031691, 2.1),
+        "bsc"      => (0, 1597734000, 3.0),
+        "avalanche_c" => (0, 1624402800, 2.0),
+        "arbitrum" => (0, 1630812600, 0.26),
+        "base"     => (0, 1686787200, 2.0),
+        "optimism" => (0, 1631808000, 2.0),
+        _ => (0, 1609459200, 12.0),
+    };
+    let elapsed = (block_number.saturating_sub(genesis_block)) as f64 * secs_per_block;
+    let approx_ts = genesis_ts as i64 + elapsed as i64;
+    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
+        .unwrap_or_default();
+    naive.format("%Y-%m-%d").to_string()
 }
 
 /// Map of chain names to DuneSQL chain labels.
@@ -20,6 +42,18 @@ pub fn dune_chain_label(chain: &str) -> String {
     match chain.to_lowercase().as_str() {
         "avalanche" => "avalanche_c".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// Derive tick_spacing from a Uniswap V3 fee tier.
+/// Standard mapping across most V3 forks (Uniswap, PancakeSwap, QuickSwap, etc.).
+pub fn tick_spacing_from_fee(fee: u32) -> i32 {
+    match fee {
+        100 => 10,
+        500 => 10,
+        3000 => 60,
+        10000 => 200,
+        _ => 60,
     }
 }
 
@@ -49,6 +83,9 @@ pub async fn discover_v2_pools_from_dune(
         let creation_block = DuneClient::col_as_u64(row, "creation_block").unwrap_or(0);
 
         if let (Some(addr), Some(t0), Some(t1)) = (address, token0, token1) {
+            if t0 == Address::ZERO || t1 == Address::ZERO || t0 == t1 {
+                continue;
+            }
             pools.push(DiscoveredPool {
                 address: addr,
                 token0: t0,
@@ -95,9 +132,13 @@ pub async fn discover_v3_pools_from_dune(
         let token1 = DuneClient::col_as_address(row, "token1");
         let fee = DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32;
         let tick_spacing = DuneClient::col_as_u64(row, "tick_spacing").map(|ts| ts as i32);
+        let tick_spacing = tick_spacing.or_else(|| Some(tick_spacing_from_fee(fee)));
         let creation_block = DuneClient::col_as_u64(row, "creation_block").unwrap_or(0);
 
         if let (Some(addr), Some(t0), Some(t1)) = (address, token0, token1) {
+            if t0 == Address::ZERO || t1 == Address::ZERO || t0 == t1 {
+                continue;
+            }
             pools.push(DiscoveredPool {
                 address: addr,
                 token0: t0,
@@ -124,7 +165,7 @@ pub async fn discover_v3_pools_from_dune(
 /// Uses the built-in `QUERY_ALL_ACTIVE_POOLS` query.
 ///
 /// Expected Dune columns: `pool_address`, `token0`, `token1`,
-/// `project`, `version`, `last_active_block`, `fee`
+/// `project`, `version`, `creation_block`, `last_active_block`, `fee`
 pub async fn discover_active_pools_from_dune(
     client: &DuneClient,
     chain: &str,
@@ -148,11 +189,15 @@ pub async fn discover_active_pools_from_dune(
         let token1 = DuneClient::col_as_address(row, "token1");
         let project = DuneClient::col_as_string(row, "project").unwrap_or_default().to_lowercase();
         let version = DuneClient::col_as_string(row, "version").unwrap_or_default().to_lowercase();
+        let creation_block = DuneClient::col_as_u64(row, "creation_block").unwrap_or(0);
 
         let (addr, t0, t1) = match (address, token0, token1) {
             (Some(a), Some(t0), Some(t1)) if !seen.contains(&a) => (a, t0, t1),
             _ => continue,
         };
+        if t0 == Address::ZERO || t1 == Address::ZERO || t0 == t1 {
+            continue;
+        }
         seen.insert(addr);
 
         let (dex_type, fee) = if version.contains("v3") || version == "3" {
@@ -169,14 +214,19 @@ pub async fn discover_active_pools_from_dune(
             (DexType::UniswapV2, DuneClient::col_as_u64(row, "fee").unwrap_or(30) as u32)
         };
 
+        let ts = match dex_type {
+            DexType::UniswapV3 => Some(tick_spacing_from_fee(fee)),
+            _ => None,
+        };
+
         pools.push(DiscoveredPool {
             address: addr,
             token0: t0,
             token1: t1,
             fee,
-            tick_spacing: None,
+            tick_spacing: ts,
             dex_type,
-            creation_block: 0,
+            creation_block,
             pool_id: None,
             factory: None,
         });

@@ -11,10 +11,31 @@ use crate::types::MevOpportunity;
 use crate::types::Strategy;
 
 fn render_query(template: &str, chain: &str, from_block: u64, to_block: u64) -> String {
+    let chain_label = dune_chain_label(chain);
+    let block_month_min = approx_block_month_min(from_block, &chain_label);
     template
-        .replace("{chain}", &dune_chain_label(chain))
+        .replace("{chain}", &chain_label)
+        .replace("{block_month_min}", &block_month_min)
         .replace("{from_block}", &from_block.to_string())
         .replace("{to_block}", &to_block.to_string())
+}
+
+fn approx_block_month_min(block_number: u64, chain: &str) -> String {
+    let (genesis_block, genesis_ts, secs_per_block) = match chain {
+        "ethereum" => (0, 1438269988, 12.0),
+        "polygon" => (0, 1591031691, 2.1),
+        "bsc"      => (0, 1597734000, 3.0),
+        "avalanche_c" => (0, 1624402800, 2.0),
+        "arbitrum" => (0, 1630812600, 0.26),
+        "base"     => (0, 1686787200, 2.0),
+        "optimism" => (0, 1631808000, 2.0),
+        _ => (0, 1609459200, 12.0),
+    };
+    let elapsed = (block_number.saturating_sub(genesis_block)) as f64 * secs_per_block;
+    let approx_ts = genesis_ts as i64 + elapsed as i64;
+    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
+        .unwrap_or_default();
+    naive.format("%Y-%m-%d").to_string()
 }
 
 /// A sandwich attack as recorded in Dune's `dex.sandwiches`.

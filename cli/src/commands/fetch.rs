@@ -71,7 +71,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     if let Some(workers) = config.rpc_workers {
         fetcher = fetcher.with_parallelism(workers);
     }
-    fetcher = fetcher.with_batch_rpc(!args.chain_args.no_batch_rpc);
+    fetcher = fetcher.with_batch_rpc(!args.no_batch_rpc);
     match mev_scout_core::sigs::ensure_signature_db(None).await {
         Ok(sig_db_path) => {
             match mev_scout_core::sigs::SignatureResolver::new(&sig_db_path) {

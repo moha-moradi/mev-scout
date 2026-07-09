@@ -113,9 +113,6 @@ pub struct ChainArgs {
     #[arg(long = "rpc-rps", value_name = "RPS", value_delimiter = ',')]
     pub rpc_rps: Option<Vec<f64>>,
 
-    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
-    #[arg(long = "no-batch-rpc")]
-    pub no_batch_rpc: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -157,6 +154,10 @@ pub struct RunArgs {
     /// SQLite database path (defaults to config's db_path or ./cache)
     #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
     pub db_path: Option<String>,
+
+    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
+    #[arg(long = "no-batch-rpc", help_heading = "RPC")]
+    pub no_batch_rpc: bool,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH", help_heading = "Output")]
@@ -209,6 +210,10 @@ pub struct FetchArgs {
     /// SQLite database path (defaults to config's db_path or ./cache)
     #[arg(long = "db-path", value_name = "PATH")]
     pub db_path: Option<String>,
+
+    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
+    #[arg(long = "no-batch-rpc")]
+    pub no_batch_rpc: bool,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH")]

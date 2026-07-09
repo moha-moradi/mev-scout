@@ -66,11 +66,17 @@ impl RangeResolver {
 
     async fn resolve_days(&self, days: u64) -> error::Result<ResolvedRange> {
         let tip = self.rpc.get_block_number().await?;
-        let now = Utc::now().timestamp() as u64;
-        let target_ts = now - days * 86400;
+        let tip_ts = self.rpc.get_block_timestamp(tip).await?;
+        let target_ts = tip_ts.saturating_sub(days * 86400);
+
+        let estimated_blocks = self.estimate_window_blocks(tip, tip_ts, target_ts).await?;
+        let estimated_start = tip.saturating_sub(estimated_blocks);
+        let margin = (estimated_blocks / 2).max(100_000);
+        let lo = estimated_start.saturating_sub(margin);
+        let hi = std::cmp::min(estimated_start + margin, tip);
 
         let start = self
-            .binary_search_timestamp(target_ts, 0, tip)
+            .binary_search_timestamp(target_ts, lo, hi)
             .await?;
 
         let start_dt: DateTime<Utc> =
@@ -120,6 +126,26 @@ impl RangeResolver {
             block_count: tip - start + 1,
             mode: RangeMode::Blocks(blocks),
         })
+    }
+
+    /// Estimate the number of blocks in the time window `[target_ts, tip_ts]`
+    /// by sampling the last 1000 blocks (or fewer if the chain is young) and
+    /// extrapolating the block production rate.
+    ///
+    /// Uses integer arithmetic throughout so sub-second block times are handled
+    /// correctly without precision loss: `estimated_blocks = total_elapsed * sample_count / sample_elapsed`.
+    async fn estimate_window_blocks(&self, tip: u64, tip_ts: u64, target_ts: u64) -> error::Result<u64> {
+        const SAMPLE_SIZE: u64 = 1000;
+        let sample = if tip > SAMPLE_SIZE { tip - SAMPLE_SIZE } else { 0 };
+        let sample_ts = self.rpc.get_block_timestamp(sample).await?;
+        let sample_elapsed = tip_ts.saturating_sub(sample_ts);
+        let sample_count = tip - sample;
+        let total_elapsed = tip_ts.saturating_sub(target_ts);
+        if sample_elapsed == 0 {
+            Ok(sample_count)
+        } else {
+            Ok(total_elapsed * sample_count / sample_elapsed)
+        }
     }
 
     async fn binary_search_timestamp(

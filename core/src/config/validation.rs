@@ -21,7 +21,7 @@ pub struct ValidationResult {
     pub gas_model: GasModel,
 }
 
-fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
+pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
     let chain_name: ChainName = config
         .chain
         .parse()
@@ -41,7 +41,7 @@ fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainConfig
     Ok((chain_name, chain_config))
 }
 
-fn validate_rpc_url(url: &str) -> std::result::Result<(), ConfigError> {
+pub fn validate_rpc_url(url: &str) -> std::result::Result<(), ConfigError> {
     if url.trim().is_empty() {
         return Err(ConfigError::Validation(
             "Error: RPC URL cannot be empty.".to_string(),

@@ -60,6 +60,11 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
         Command::Report(_) => {}
         Command::Config => {}
         Command::Discover(args) => {
+            o.days = args.block_range.days;
+            o.blocks = args.block_range.blocks;
+            o.block = args.block_range.block;
+            o.from_block = args.block_range.from_block;
+            o.to_block = args.block_range.to_block;
             o.chain = Some(args.chain_args.chain.clone());
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();

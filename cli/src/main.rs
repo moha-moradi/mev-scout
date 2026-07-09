@@ -63,17 +63,11 @@ async fn main() -> anyhow::Result<()> {
     setup_logging(cli.verbose, cli.quiet, log_file);
 
     let mut config = match &cli.config {
-        Some(path) => Config::load(path).unwrap_or_else(|e| {
-            eprintln!("Error: failed to load config '{path}': {e}");
-            std::process::exit(1);
-        }),
+        Some(path) => Config::load_or_default(path),
         None => {
             let default_path = "mev-scout.toml";
             if std::path::Path::new(default_path).exists() {
-                Config::load(default_path).unwrap_or_else(|e| {
-                    eprintln!("Error: failed to load config '{default_path}': {e}");
-                    std::process::exit(1);
-                })
+                Config::load_or_default(default_path)
             } else {
                 Config::default()
             }

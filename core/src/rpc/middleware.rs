@@ -107,11 +107,8 @@ impl ProviderState {
 
     pub fn record_failure(&mut self) {
         self.consecutive_failures += 1;
-        let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(60);
+        let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(300);
         self.cooldown_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
-        if self.consecutive_failures >= 3 {
-            self.is_alive = false;
-        }
     }
 
     /// Acquire a rate-limiter token if configured.

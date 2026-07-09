@@ -558,7 +558,7 @@ pub async fn discover_pools(
     let fee_selector = Bytes::from_static(&[0xdd, 0xca, 0x3f, 0x43]);
     let tick_spacing_selector = Bytes::from_static(&[0x37, 0xcf, 0xda, 0xca]);
 
-    let ref_block = to_block.min(from_block + 1_000_000);
+    let ref_block = to_block;
 
     type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>)> + Send>>;
 
