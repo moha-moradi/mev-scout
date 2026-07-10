@@ -84,6 +84,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         fetcher = fetcher.with_parallelism(workers);
     }
     fetcher = fetcher.with_batch_rpc(!args.no_batch_rpc);
+    fetcher = fetcher.with_block_concurrency(args.block_concurrency);
 
     let pb = ProgressBar::new(resolved.block_count);
     pb.set_style(

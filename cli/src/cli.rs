@@ -123,6 +123,12 @@ pub struct RunArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
+    /// Concurrent blocks to fetch within a single contiguous range.
+    /// Higher values pipeline RPC requests for better throughput.
+    /// The RPS limiter still applies across all concurrent workers.
+    #[arg(long = "block-concurrency", default_value = "5", value_name = "N", help_heading = "Performance")]
+    pub block_concurrency: usize,
+
     /// Flash loan provider strategy: auto, balancer, aave, uniswap
     #[arg(long, default_value = "auto", value_name = "PROVIDER", help_heading = "Flash Loan")]
     pub flash_loan_provider: String,
@@ -207,6 +213,12 @@ pub struct FetchArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
+    /// Concurrent blocks to fetch within a single contiguous range.
+    /// Higher values pipeline RPC requests for better throughput.
+    /// The RPS limiter still applies across all concurrent workers.
+    #[arg(long = "block-concurrency", default_value = "5", value_name = "N", help_heading = "Performance")]
+    pub block_concurrency: usize,
+
     /// SQLite database path (defaults to config's db_path or ./cache)
     #[arg(long = "db-path", value_name = "PATH")]
     pub db_path: Option<String>,
@@ -214,6 +226,10 @@ pub struct FetchArgs {
     /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
     #[arg(long = "no-batch-rpc")]
     pub no_batch_rpc: bool,
+
+    /// Skip 4-byte signature resolution (much faster, no 4byte.directory API calls)
+    #[arg(long = "no-sig-resolve")]
+    pub no_sig_resolve: bool,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH")]

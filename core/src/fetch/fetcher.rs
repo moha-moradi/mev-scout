@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use futures::future::try_join_all;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use tokio::sync::Semaphore;
 
 use alloy::primitives::Address;
@@ -73,8 +75,9 @@ pub struct FetchSummary {
 pub struct Fetcher {
     rpc: RpcClient,
     cache: SqliteStore,
-    sig_resolver: Option<SignatureResolver>,
+    sig_resolver: Option<Arc<SignatureResolver>>,
     parallelism: usize,
+    block_concurrency: usize,
     timing: Arc<Mutex<FetchTiming>>,
     write_buf: Arc<Mutex<WriteBatch>>,
     batch_rpc: bool,
@@ -87,6 +90,7 @@ impl Fetcher {
             cache,
             sig_resolver: None,
             parallelism: 1,
+            block_concurrency: 1,
             timing: Arc::new(Mutex::new(FetchTiming::default())),
             write_buf: Arc::new(Mutex::new(Vec::new())),
             batch_rpc: true,
@@ -98,6 +102,14 @@ impl Fetcher {
         self
     }
 
+    /// Set how many blocks are fetched concurrently within a single contiguous range.
+    /// Default is 1 (sequential). Increase to pipeline RPC requests for higher throughput.
+    /// The RPC client's rate limiter will still throttle to the configured RPS limit.
+    pub fn with_block_concurrency(mut self, n: usize) -> Self {
+        self.block_concurrency = n.max(1);
+        self
+    }
+
     pub fn with_batch_rpc(mut self, enabled: bool) -> Self {
         self.batch_rpc = enabled;
         self
@@ -106,7 +118,7 @@ impl Fetcher {
     /// Enable signature resolution. When set, 4-byte selectors and event topic
     /// hashes are resolved to human-readable names during fetch.
     pub fn with_sig_resolver(mut self, resolver: SignatureResolver) -> Self {
-        self.sig_resolver = Some(resolver);
+        self.sig_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -221,12 +233,120 @@ impl Fetcher {
         self.cache.put_block_data_batch(&batch, None, None)
     }
 
-    /// Fetch a contiguous range of blocks sequentially (no has_block checks).
+    /// Fetch a contiguous range of blocks concurrently (no has_block checks).
     ///
     /// All blocks in `start..=end` are assumed missing — the caller must have
     /// filtered them already (e.g. via `missing_blocks_in_range`).
     /// Returns the number of blocks successfully fetched.
+    ///
+    /// Blocks are fetched concurrently up to `self.block_concurrency` at a time.
+    /// The RPC client's rate limiter enforces the RPS limit across all concurrent
+    /// workers, so the effective throughput is bottlenecked by RPS × latency,
+    /// not by sequential blocking.
     async fn fetch_contiguous_range<F: Fn() + Sync>(
+        &self,
+        start: u64,
+        end: u64,
+        timing: Arc<Mutex<FetchTiming>>,
+        progress: Option<&F>,
+    ) -> anyhow::Result<u64> {
+        let total_blocks = end.saturating_sub(start) + 1;
+        let cap = self.block_concurrency.max(1).min(total_blocks as usize);
+        if cap <= 1 {
+            // Fall back to simple sequential fetch when concurrency is 1
+            return self.fetch_contiguous_range_sequential(start, end, timing, progress).await;
+        }
+
+        // Clone shared state for concurrent tasks
+        let rpc = self.rpc.clone();
+        let cache = self.cache.clone();
+        let write_buf = self.write_buf.clone();
+        let batch_rpc = self.batch_rpc;
+        let sig_resolver = self.sig_resolver.clone();
+
+        let sem = Arc::new(Semaphore::new(cap));
+        let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();
+        let mut completed = 0u64;
+
+        for block_num in start..=end {
+            let permit = sem.clone().acquire_owned().await?;
+            let rpc = rpc.clone();
+            let cache = cache.clone();
+            let write_buf = write_buf.clone();
+            let t = timing.clone();
+            let sig = sig_resolver.clone();
+
+            tasks.push(async move {
+                let _permit = permit;
+                let t0 = Instant::now();
+
+                let (block, txs, receipts) = if batch_rpc {
+                    rpc.get_block_and_receipts_batch(block_num).await?
+                } else {
+                    let (block_res, receipts_res) = tokio::join!(
+                        rpc.get_block(block_num),
+                        rpc.get_receipts(block_num),
+                    );
+                    let (block, txs) = block_res?;
+                    (block, txs, receipts_res?)
+                };
+                let t_rpc = t0.elapsed().as_secs_f64() * 1000.0;
+
+                let t2 = Instant::now();
+                if let Some(ref resolver) = sig {
+                    let resolver: &SignatureResolver = resolver.as_ref();
+                    let tx_sigs = resolve_tx_sigs(&txs, resolver);
+                    let event_sigs = resolve_event_sigs(&receipts, resolver);
+                    cache.put_block_data(block_num, &block, &txs, &receipts, Some(&tx_sigs), Some(&event_sigs))?;
+                } else {
+                    let mut buf = write_buf.lock().expect("write_buf mutex poisoned");
+                    buf.push((block_num, block, txs, receipts));
+                    if buf.len() >= 10 {
+                        let batch = std::mem::take(&mut *buf);
+                        drop(buf);
+                        cache.put_block_data_batch(&batch, None, None)?;
+                    }
+                }
+                let t_write = t2.elapsed().as_secs_f64() * 1000.0;
+
+                let total = t0.elapsed().as_secs_f64() * 1000.0;
+                if let Ok(mut tm) = t.lock() {
+                    tm.record(0.0, t_rpc, t_write, total);
+                }
+
+                Ok::<_, anyhow::Error>(())
+            });
+
+            // Drain completed tasks as they finish to keep memory bounded
+            // Poll whenever we hit the concurrency cap or it's the last block
+            while tasks.len() >= cap || (block_num == end && !tasks.is_empty()) {
+                match tasks.next().await {
+                    Some(Ok(())) => {
+                        if let Some(tick) = progress { tick(); }
+                        completed += 1;
+                    }
+                    Some(Err(e)) => return Err(e),
+                    None => break,
+                }
+            }
+        }
+
+        // Drain remaining tasks
+        while let Some(result) = tasks.next().await {
+            match result {
+                Ok(()) => {
+                    if let Some(tick) = progress { tick(); }
+                    completed += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(completed)
+    }
+
+    /// Sequential fallback for `fetch_contiguous_range` when `block_concurrency` is 1.
+    async fn fetch_contiguous_range_sequential<F: Fn() + Sync>(
         &self,
         start: u64,
         end: u64,
@@ -250,6 +370,7 @@ impl Fetcher {
 
             let t2 = Instant::now();
             if let Some(ref resolver) = self.sig_resolver {
+                let resolver: &SignatureResolver = resolver.as_ref();
                 let tx_sigs = resolve_tx_sigs(&txs, resolver);
                 let event_sigs = resolve_event_sigs(&receipts, resolver);
                 self.cache.put_block_data(block_num, &block, &txs, &receipts, Some(&tx_sigs), Some(&event_sigs))?;
