@@ -21,7 +21,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     let chain_id = chain_name.chain_id();
     let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(1.0)).collect::<Vec<_>>()).await;
+    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_id).await?;
 
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;

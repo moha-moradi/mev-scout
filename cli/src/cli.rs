@@ -99,8 +99,8 @@ pub struct ChainArgs {
     #[arg(long = "rpc-workers", default_value = "1", value_name = "N")]
     pub rpc_workers: usize,
 
-    /// RPC requests per second rate limit (default: 500). 0 = unlimited.
-    #[arg(long = "rps-limit", default_value = "500", value_name = "RPS")]
+    /// RPC requests per second rate limit (default: 1). 0 = unlimited.
+    #[arg(long = "rps-limit", default_value = "1.0", value_name = "RPS")]
     pub rps_limit: f64,
 
     /// Additional RPC URLs for multi-provider load distribution (comma-separated).

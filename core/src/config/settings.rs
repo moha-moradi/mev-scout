@@ -144,7 +144,7 @@ fn default_initial_balance() -> f64 { 10.0 }
 fn default_min_profit_threshold() -> f64 { 0.001 }
 fn default_poll_interval_ms() -> u64 { 1000 }
 
-fn default_rps_limit() -> f64 { 500.0 }
+fn default_rps_limit() -> f64 { 1.0 }
 
 fn default_chain() -> String {
     "polygon".to_string()
@@ -319,8 +319,9 @@ impl Config {
                     let default_rps = public_endpoints
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
-                        .map(|e| e.default_rps);
-                    (url, default_rps)
+                        .map(|e| e.default_rps)
+                        .unwrap_or(self.rps_limit);
+                    (url, Some(default_rps))
                 })
                 .collect();
             Ok(result)
