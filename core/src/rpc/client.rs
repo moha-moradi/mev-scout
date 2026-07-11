@@ -380,10 +380,21 @@ impl RpcClient {
                 tx_array.retain(|tx| {
                     tx.get("type")
                         .and_then(|t| t.as_str())
-                        .map(|t| matches!(t, "0x0" | "0x1" | "0x2" | "0x3" | "0x4"))
+                        .map(|t| matches!(t, "0x0" | "0x00" | "0x01" | "0x1" | "0x02" | "0x2" | "0x03" | "0x3" | "0x04" | "0x4"))
                         .unwrap_or(true)
                 });
             }
+        }
+    }
+
+    fn clean_receipts(raw: &mut Value) {
+        if let Some(receipts) = raw.as_array_mut() {
+            receipts.retain(|r| {
+                r.get("type")
+                    .and_then(|t| t.as_str())
+                    .map(|t| matches!(t, "0x0" | "0x00" | "0x01" | "0x1" | "0x02" | "0x2" | "0x03" | "0x3" | "0x04" | "0x4"))
+                    .unwrap_or(true)
+            });
         }
     }
 
@@ -520,7 +531,7 @@ impl RpcClient {
                 )
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            let receipts_waiter: Waiter<Vec<TransactionReceipt>> = batch
+            let receipts_waiter: Waiter<Value> = batch
                 .add_call(
                     "eth_getBlockReceipts",
                     &(alloy::eips::BlockId::number(block_number),),
@@ -537,8 +548,11 @@ impl RpcClient {
             Self::clean_block_transactions(&mut raw);
             let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-            let receipts: Vec<TransactionReceipt> =
+            let mut receipts_raw: Value =
                 receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+            Self::clean_receipts(&mut receipts_raw);
+            let receipts: Vec<TransactionReceipt> =
+                serde_json::from_value(receipts_raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
             let txs: Vec<TxData> = block
                 .transactions
