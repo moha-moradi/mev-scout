@@ -1,17 +1,13 @@
 dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 
 chain = "polygon"
-# Working RPCs (verified 2026-07-11)
-# publicnode (1 RPS), drpc (1 RPS), nodies (1 RPS), quiknode (5 RPS)
-# Removed: polygon-rpc.com (401), 1rpc.io (403), omniatech (429), lava (no receipts),
-#          owlracle (401), zan (429), mev-x (truncated responses / missing field errors)
 rpc_urls = [
   "https://polygon-bor-rpc.publicnode.com",
   "https://polygon.drpc.org",
   "https://polygon-public.nodies.app"
 ]
 
-# Per-provider RPS limits (matches rpc_urls order) - no actual rate limits found
+# Per-provider RPS limits (matches rpc_urls order)
 rpc_rps = [5.0, 5.0, 5.0]
 
 # Global default RPS (used when rpc_rps is not set for a provider)
