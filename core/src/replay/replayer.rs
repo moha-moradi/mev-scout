@@ -265,7 +265,7 @@ impl BlockReplayer {
             None => TxKind::Create,
         };
         TxEnv {
-            tx_type: 0,
+            tx_type: tx.tx_type,
             caller: tx.from,
             kind,
             value: tx.value,

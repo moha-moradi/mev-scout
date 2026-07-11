@@ -25,6 +25,8 @@ pub struct BlockData {
 pub struct TxData {
     pub hash: B256,
     pub index: u64,
+    #[serde(default)]
+    pub tx_type: u8,
     pub from: Address,
     pub to: Option<Address>,
     pub input: Bytes,

@@ -3,8 +3,8 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 chain = "polygon"
 rpc_urls = [
   "https://polygon-bor-rpc.publicnode.com",
-  "https://polygon.drpc.org",
-  "https://polygon-public.nodies.app"
+  "https://polygon-public.nodies.app",
+  "https://polygon.gateway.tenderly.co"
 ]
 
 # Per-provider RPS limits (matches rpc_urls order)
@@ -13,8 +13,8 @@ rpc_rps = [20.0, 20.0, 20.0]
 # Global default RPS (used when rpc_rps is not set for a provider)
 rps_limit = 60.0
 
-# Concurrent RPC workers
-rpc_workers = 5
+# Concurrent RPC workers (matches provider count)
+rpc_workers = 3
 
 # Block-level concurrency within each provider shard
 block_concurrency = 25

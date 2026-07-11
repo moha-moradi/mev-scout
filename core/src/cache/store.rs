@@ -102,8 +102,19 @@ impl SqliteStore {
                 access_list BLOB
             );
             CREATE INDEX IF NOT EXISTS idx_txs_block ON transactions(block_number);
+            ",
+        )?;
 
-            CREATE TABLE IF NOT EXISTS receipts (
+        // Migration: add tx_type column if missing (EIP-7702 support)
+        let has_tx_type: bool = conn
+            .prepare("SELECT tx_type FROM transactions LIMIT 0")
+            .is_ok();
+        if !has_tx_type {
+            conn.execute_batch("ALTER TABLE transactions ADD COLUMN tx_type INTEGER NOT NULL DEFAULT 0")?;
+        }
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS receipts (
                 tx_hash    BLOB PRIMARY KEY,
                 tx_index   INTEGER NOT NULL,
                 status     INTEGER NOT NULL,
@@ -313,8 +324,8 @@ impl SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             )?;
             let mut rc_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
@@ -355,6 +366,7 @@ impl SqliteStore {
                         Self::b256_to_blob(&tx_data.hash),
                         *block_num as i64,
                         tx_data.index as i64,
+                        tx_data.tx_type as i64,
                         Self::addr_to_blob(&tx_data.from),
                         tx_data.to.map(|a| Self::addr_to_blob(&a)),
                         tx_data.input.to_vec(),
@@ -439,8 +451,8 @@ impl SqliteStore {
     pub fn put_txs(&self, block_num: u64, txs: &[TxData]) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
         for tx in txs {
             let access_list_blob = if tx.access_list.is_empty() {
@@ -452,6 +464,7 @@ impl SqliteStore {
                 Self::b256_to_blob(&tx.hash),
                 block_num as i64,
                 tx.index as i64,
+                tx.tx_type as i64,
                 Self::addr_to_blob(&tx.from),
                 tx.to.map(|a| Self::addr_to_blob(&a)),
                 tx.input.to_vec(),
@@ -476,27 +489,28 @@ impl SqliteStore {
             return Ok(None);
         }
         let mut stmt = conn.prepare(
-            "SELECT hash, tx_index, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list
+            "SELECT hash, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list
              FROM transactions WHERE block_number = ?1 ORDER BY tx_index",
         )?;
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
         let mut txs = Vec::new();
         while let Some(row) = rows.next()? {
-            let access_list = match row.get::<_, Option<Vec<u8>>>(10)? {
+            let access_list = match row.get::<_, Option<Vec<u8>>>(11)? {
                 Some(bytes) => Self::deserialize(&bytes).unwrap_or_default(),
                 None => Vec::new(),
             };
             txs.push(TxData {
                 hash: Self::blob_to_b256(&row.get::<_, Vec<u8>>(0)?),
                 index: row.get::<_, i64>(1)? as u64,
-                from: Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?),
-                to: row.get::<_, Option<Vec<u8>>>(3)?.map(|b| Self::blob_to_addr(&b)),
-                input: row.get::<_, Vec<u8>>(4)?.into(),
-                value: Self::blob_to_u256(&row.get::<_, Vec<u8>>(5)?),
-                gas_limit: row.get::<_, i64>(6)? as u64,
-                max_fee_per_gas: row.get::<_, i64>(7)? as u128,
-                max_priority_fee_per_gas: row.get::<_, Option<i64>>(8)?.map(|v| v as u128),
-                nonce: row.get::<_, i64>(9)? as u64,
+                tx_type: row.get::<_, i64>(2)? as u8,
+                from: Self::blob_to_addr(&row.get::<_, Vec<u8>>(3)?),
+                to: row.get::<_, Option<Vec<u8>>>(4)?.map(|b| Self::blob_to_addr(&b)),
+                input: row.get::<_, Vec<u8>>(5)?.into(),
+                value: Self::blob_to_u256(&row.get::<_, Vec<u8>>(6)?),
+                gas_limit: row.get::<_, i64>(7)? as u64,
+                max_fee_per_gas: row.get::<_, i64>(8)? as u128,
+                max_priority_fee_per_gas: row.get::<_, Option<i64>>(9)?.map(|v| v as u128),
+                nonce: row.get::<_, i64>(10)? as u64,
                 access_list,
             });
         }

@@ -432,7 +432,14 @@ impl Fetcher {
         progress: Option<&F>,
     ) -> anyhow::Result<u64> {
         let total_blocks = end.saturating_sub(start) + 1;
-        let cap = self.block_concurrency.max(1).min(total_blocks as usize);
+        // Size the semaphore to the provider's RPS rather than the global
+        // block_concurrency. This avoids spawning more tasks than the rate
+        // limiter can serve, reducing queueing overhead and memory pressure.
+        let provider_rps = self.rpc.get_provider_rps(provider_idx).await;
+        let cap = (self.block_concurrency.max(1))
+            .min(provider_rps.ceil() as usize)
+            .min(total_blocks as usize)
+            .max(1);
 
         let rpc = self.rpc.clone();
         let cache = self.cache.clone();

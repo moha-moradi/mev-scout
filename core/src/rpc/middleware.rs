@@ -1,5 +1,6 @@
 //! Rate-limiting and provider health tracking for the RPC layer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -60,6 +61,45 @@ impl RateLimiter {
     }
 }
 
+/// ETag cache for HTTP conditional requests.
+///
+/// Tracks ETag values per URL so subsequent requests can include
+/// `If-None-Match` headers. When a server responds with 304 Not Modified,
+/// the cached response can be reused without re-downloading.
+///
+/// Particularly useful for free RPC providers that support ETags, as it
+/// reduces bandwidth and can bypass some throttling mechanisms.
+#[derive(Debug, Clone, Default)]
+pub struct EtagStore {
+    inner: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
+}
+
+impl EtagStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get the stored ETag for a URL, if any.
+    pub async fn get_etag(&self, url: &str) -> Option<String> {
+        self.inner.read().await.get(url).cloned()
+    }
+
+    /// Store an ETag for a URL.
+    pub async fn set_etag(&self, url: &str, etag: String) {
+        self.inner.write().await.insert(url.to_string(), etag);
+    }
+
+    /// Number of tracked URLs.
+    pub async fn len(&self) -> usize {
+        self.inner.read().await.len()
+    }
+
+    /// Whether the store is empty.
+    pub async fn is_empty(&self) -> bool {
+        self.inner.read().await.is_empty()
+    }
+}
+
 /// Tracks health and rate-limiting state for a single RPC provider.
 #[derive(Debug, Clone)]
 pub struct ProviderState {
@@ -71,10 +111,11 @@ pub struct ProviderState {
     pub consecutive_failures: u64,
     pub latency_ms: f64,
     pub label: String,
+    pub url: String,
 }
 
 impl ProviderState {
-    pub fn new(provider: RootProvider, rps: Option<f64>, label: String) -> Self {
+    pub fn new(provider: RootProvider, rps: Option<f64>, label: String, url: String) -> Self {
         let rate_limiter = rps.map(|r| Arc::new(RateLimiter::new(r.max(0.1), r.max(0.1))));
         Self {
             provider,
@@ -85,6 +126,7 @@ impl ProviderState {
             consecutive_failures: 0,
             latency_ms: 0.0,
             label,
+            url,
         }
     }
 

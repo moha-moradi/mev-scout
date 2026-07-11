@@ -160,6 +160,7 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
         txs.push(TxData {
             hash: tx_hash,
             index: i as u64,
+            tx_type: 2,
             from: Address::ZERO,
             to: Some(Address::repeat_byte(0x42)),
             input: Bytes::new(),

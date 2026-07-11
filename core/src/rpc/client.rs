@@ -19,7 +19,7 @@ use rand::Rng;
 
 use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 
-use super::middleware::{ProviderState, RateLimiter};
+use super::middleware::{ProviderState, RateLimiter, EtagStore};
 
 /// Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 /// and health tracking.
@@ -32,6 +32,7 @@ pub struct RpcClient {
     providers: Arc<tokio::sync::Mutex<Vec<ProviderState>>>,
     chain_id: u64,
     current: Arc<AtomicUsize>,
+    etag_store: EtagStore,
 }
 
 impl RpcClient {
@@ -59,13 +60,14 @@ impl RpcClient {
                 let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
                 let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
                 let provider = RootProvider::new(rpc_client);
-                Ok(ProviderState::new(provider, None, format!("provider-{i}")))
+                Ok(ProviderState::new(provider, None, format!("provider-{i}"), url.to_string()))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(RpcClient {
             providers: Arc::new(tokio::sync::Mutex::new(providers)),
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
+            etag_store: EtagStore::new(),
         })
     }
 
@@ -85,19 +87,36 @@ impl RpcClient {
                 let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
                 let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
                 let provider = RootProvider::new(rpc_client);
-                Ok(ProviderState::new(provider, *rps, format!("provider-{i}")))
+                Ok(ProviderState::new(provider, *rps, format!("provider-{i}"), url.to_string()))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(RpcClient {
             providers: Arc::new(tokio::sync::Mutex::new(providers)),
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
+            etag_store: EtagStore::new(),
         })
     }
 
     /// Number of configured RPC providers.
     pub async fn providers_count(&self) -> usize {
         self.providers.lock().await.len()
+    }
+
+    /// Get the RPS limit for a specific provider. Returns the weight (RPS) if
+    /// the provider exists, or 1.0 as a fallback.
+    pub async fn get_provider_rps(&self, idx: usize) -> f64 {
+        self.providers
+            .lock()
+            .await
+            .get(idx)
+            .map(|p| p.weight)
+            .unwrap_or(1.0)
+    }
+
+    /// Get the ETag store for this client (for external use / logging).
+    pub fn etag_store(&self) -> &EtagStore {
+        &self.etag_store
     }
 
     /// Build a shared `reqwest::Client` with gzip compression enabled.
@@ -465,12 +484,23 @@ impl RpcClient {
     pub async fn get_pending_block(&self) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block: Block = self
             .retry_call(|provider| async move {
-                provider
-                    .get_block_by_number(BlockNumberOrTag::Pending)
-                    .full()
+                let raw: Value = provider
+                    .client()
+                    .request(
+                        "eth_getBlockByNumber",
+                        (BlockNumberOrTag::Pending, true),
+                    )
                     .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?
-                    .ok_or_else(|| anyhow::anyhow!("Pending block not available"))
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+                if raw.is_null() {
+                    anyhow::bail!("Pending block not available");
+                }
+
+                let mut raw = raw;
+                Self::clean_block_transactions(&mut raw);
+
+                serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
             })
             .await?;
 
@@ -619,13 +649,23 @@ impl RpcClient {
         }
         let mut raw = raw;
         Self::clean_block_transactions(&mut raw);
+        let block_json_size = raw.to_string().len();
         let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let mut receipts_raw: Value =
             receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
         Self::clean_receipts(&mut receipts_raw);
+        let receipts_json_size = receipts_raw.to_string().len();
         let receipts: Vec<TransactionReceipt> =
             serde_json::from_value(receipts_raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        tracing::debug!(
+            block = block_number,
+            block_bytes = block_json_size,
+            receipts_bytes = receipts_json_size,
+            total_bytes = block_json_size + receipts_json_size,
+            "batch_rpc response sizes (pre-gzip)"
+        );
 
         let txs: Vec<TxData> = block
             .transactions
@@ -879,6 +919,84 @@ impl RpcClient {
         })
         .await
     }
+
+    /// Make a raw HTTP JSON-RPC batch request with ETag support.
+    ///
+    /// Sends a JSON-RPC batch directly via reqwest (bypassing alloy) to get
+    /// access to HTTP response headers. If the server returns an ETag header,
+    /// it is stored for future conditional requests via `If-None-Match`.
+    ///
+    /// Returns `Ok(Some((block_json, receipts_json)))` on 200, or
+    /// `Ok(None)` on 304 Not Modified (caller should use cached data).
+    pub async fn raw_batch_rpc_with_etag(
+        &self,
+        provider_idx: usize,
+        block_number: u64,
+    ) -> anyhow::Result<Option<(Value, Value)>> {
+        let url = {
+            let provs = self.providers.lock().await;
+            provs.get(provider_idx)
+                .map(|p| p.url.clone())
+                .ok_or_else(|| anyhow::anyhow!("Provider {} not found", provider_idx))?
+        };
+
+        let batch_request = serde_json::json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "eth_getBlockByNumber",
+                "params": [format!("0x{:x}", block_number), true],
+                "id": 1
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "eth_getBlockReceipts",
+                "params": [format!("0x{:x}", block_number)],
+                "id": 2
+            }
+        ]);
+
+        let http_client = Self::build_http_client()?;
+        let mut req = http_client.post(&url)
+            .header("Content-Type", "application/json")
+            .body(batch_request.to_string());
+
+        if let Some(etag) = self.etag_store.get_etag(&url).await {
+            req = req.header("If-None-Match", etag);
+        }
+
+        let response = req.send().await
+            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?;
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            tracing::debug!(block = block_number, provider = provider_idx, "ETag 304 Not Modified");
+            return Ok(None);
+        }
+
+        if let Some(etag) = response.headers().get("etag") {
+            if let Ok(etag_str) = etag.to_str() {
+                self.etag_store.set_etag(&url, etag_str.to_string()).await;
+            }
+        }
+
+        let body = response.text().await
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {e}"))?;
+
+        let batch_response: Vec<Value> = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("Failed to parse batch response: {e}"))?;
+
+        let block_json = batch_response.get(0)
+            .and_then(|r| r.get("result"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Missing block result in batch response"))?;
+
+        let receipts_json = batch_response.get(1)
+            .and_then(|r| r.get("result"))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Missing receipts result in batch response"))?;
+
+        Ok(Some((block_json, receipts_json)))
+    }
 }
 
 /// Extract the first 4 bytes of transaction calldata as a method selector.
@@ -897,6 +1015,7 @@ fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {
     TxData {
         hash: *tx.inner.hash(),
         index,
+        tx_type: tx.inner.tx_type() as u8,
         from: tx.inner.signer(),
         to: tx.inner.to(),
         input: tx.inner.input().clone(),

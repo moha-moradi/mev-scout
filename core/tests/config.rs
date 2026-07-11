@@ -96,6 +96,7 @@ fn test_cli_override_merging() {
         token_prices: None,
         capture_pending: None,
         cross_block_window: None,
+        block_concurrency: None,
         initial_balance: None,
         min_profit_threshold: None,
         poll_interval_ms: None,
