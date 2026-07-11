@@ -12,7 +12,7 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
-use alloy::rpc::client::{BatchRequest, Waiter};
+use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
 use serde_json::Value;
 use url::Url;
 use rand::Rng;
@@ -51,12 +51,14 @@ impl RpcClient {
         if urls.is_empty() {
             anyhow::bail!("At least one RPC URL is required");
         }
+        let http_client = Self::build_http_client()?;
         let providers: Vec<ProviderState> = urls
             .iter()
             .enumerate()
             .map(|(i, url)| {
                 let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
-                let provider = RootProvider::new_http(u);
+                let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
+                let provider = RootProvider::new(rpc_client);
                 Ok(ProviderState::new(provider, None, format!("provider-{i}")))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -75,12 +77,14 @@ impl RpcClient {
         if configs.is_empty() {
             anyhow::bail!("At least one RPC provider is required");
         }
+        let http_client = Self::build_http_client()?;
         let providers: Vec<ProviderState> = configs
             .iter()
             .enumerate()
             .map(|(i, (url, rps))| {
                 let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
-                let provider = RootProvider::new_http(u);
+                let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
+                let provider = RootProvider::new(rpc_client);
                 Ok(ProviderState::new(provider, *rps, format!("provider-{i}")))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -94,6 +98,14 @@ impl RpcClient {
     /// Number of configured RPC providers.
     pub async fn providers_count(&self) -> usize {
         self.providers.lock().await.len()
+    }
+
+    /// Build a shared `reqwest::Client` with gzip compression enabled.
+    fn build_http_client() -> anyhow::Result<reqwest::Client> {
+        reqwest::Client::builder()
+            .gzip(true)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {e}"))
     }
 
     /// Reset all providers to healthy state.

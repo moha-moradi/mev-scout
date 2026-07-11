@@ -8,10 +8,10 @@ rpc_urls = [
 ]
 
 # Per-provider RPS limits (matches rpc_urls order)
-rpc_rps = [5.0, 5.0, 5.0]
+rpc_rps = [20.0, 20.0, 20.0]
 
 # Global default RPS (used when rpc_rps is not set for a provider)
-rps_limit = 15.0
+rps_limit = 60.0
 
 # Concurrent RPC workers
 rpc_workers = 5
