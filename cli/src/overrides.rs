@@ -15,6 +15,7 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
             o.rpc_workers = Some(args.chain_args.rpc_workers);
+            o.block_concurrency = args.block_concurrency;
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.flash_loan_provider = Some(args.flash_loan_provider.clone());
             o.strategies = Some(args.strategies.clone());
@@ -42,6 +43,7 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
             o.rpc_workers = Some(args.chain_args.rpc_workers);
+            o.block_concurrency = args.block_concurrency;
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.db_path = args.db_path.clone();
             o.parquet_dir = args.parquet_dir.clone();

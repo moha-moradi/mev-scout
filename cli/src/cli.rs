@@ -126,8 +126,8 @@ pub struct RunArgs {
     /// Concurrent blocks to fetch within a single contiguous range.
     /// Higher values pipeline RPC requests for better throughput.
     /// The RPS limiter still applies across all concurrent workers.
-    #[arg(long = "block-concurrency", default_value = "5", value_name = "N", help_heading = "Performance")]
-    pub block_concurrency: usize,
+    #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
+    pub block_concurrency: Option<usize>,
 
     /// Flash loan provider strategy: auto, balancer, aave, uniswap
     #[arg(long, default_value = "auto", value_name = "PROVIDER", help_heading = "Flash Loan")]
@@ -216,8 +216,8 @@ pub struct FetchArgs {
     /// Concurrent blocks to fetch within a single contiguous range.
     /// Higher values pipeline RPC requests for better throughput.
     /// The RPS limiter still applies across all concurrent workers.
-    #[arg(long = "block-concurrency", default_value = "5", value_name = "N", help_heading = "Performance")]
-    pub block_concurrency: usize,
+    #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
+    pub block_concurrency: Option<usize>,
 
     /// SQLite database path (defaults to config's db_path or ./cache)
     #[arg(long = "db-path", value_name = "PATH")]

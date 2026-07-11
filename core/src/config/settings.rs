@@ -93,6 +93,9 @@ pub struct Config {
     /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_workers: Option<usize>,
+    /// Block-level concurrency within each provider shard (default: 5 via CLI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_concurrency: Option<usize>,
     /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
     #[serde(default = "default_rps_limit")]
     pub rps_limit: f64,
@@ -228,6 +231,7 @@ impl Default for Config {
             gas_limits: std::collections::HashMap::new(),
             max_pairs_per_token: default_max_pairs_per_token(),
             rpc_workers: None,
+            block_concurrency: None,
             rps_limit: default_rps_limit(),
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
@@ -445,6 +449,7 @@ pub struct CliOverrides {
     pub rpc_urls: Option<Vec<String>>,
     pub rpc_rps: Option<Vec<f64>>,
     pub rpc_workers: Option<usize>,
+    pub block_concurrency: Option<usize>,
     pub rps_limit: Option<f64>,
     pub flash_loan_provider: Option<String>,
     pub strategies: Option<String>,
@@ -495,6 +500,7 @@ impl Config {
         merge_opt!(self, overrides, parquet_dir, into_option);
         merge_opt!(self, overrides, coingecko_api_key, into_option);
         merge_opt!(self, overrides, rpc_workers, copy_some);
+        merge_opt!(self, overrides, block_concurrency, copy_some);
         merge_opt!(self, overrides, rps_limit, copy);
         merge_opt!(self, overrides, price_oracle_mode);
         merge_opt!(self, overrides, token_prices, into_option);

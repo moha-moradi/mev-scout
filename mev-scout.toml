@@ -2,21 +2,24 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 
 chain = "polygon"
 # Working RPCs (verified 2026-07-11)
-# provider-0: GetBlock (OK), provider-2: publicnode (OK), provider-4: drpc (OK)
-# Removed: polygon-rpc.com (401), 1rpc.io (403), omniatech (429)
+# publicnode (1 RPS), drpc (1 RPS), nodies (1 RPS), quiknode (5 RPS)
+# Removed: polygon-rpc.com (401), 1rpc.io (403), omniatech (429), lava (no receipts),
+#          owlracle (401), zan (429), mev-x (truncated responses / missing field errors)
 rpc_urls = [
-  "https://shared.ap-southeast-1.getblock.io/80a93b3d0084480488c75ef568f2970c",
   "https://polygon-bor-rpc.publicnode.com",
   "https://polygon.drpc.org",
-  https://polygon-public.nodies.app
+  "https://polygon-public.nodies.app"
 ]
 
-# Per-provider RPS limits (matches rpc_urls order)
-rpc_rps = [20.0, 1.0, 1.0,1.0]
+# Per-provider RPS limits (matches rpc_urls order) - no actual rate limits found
+rpc_rps = [5.0, 5.0, 5.0]
 
 # Global default RPS (used when rpc_rps is not set for a provider)
 rps_limit = 15.0
 
 # Concurrent RPC workers
 rpc_workers = 5
+
+# Block-level concurrency within each provider shard
+block_concurrency = 25
 

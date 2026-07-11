@@ -240,10 +240,10 @@ impl RpcClient {
 
     /// Distribute a block range across providers by weight.
     ///
-    /// Returns `Vec<(usize, Vec<u64>)>` — (provider_index, block_numbers).
+    /// Returns `Vec<(usize, u64, u64)>` — (provider_index, range_start, range_end).
     /// Contiguous shards are allocated proportionally to each provider's weight (RPS).
-    pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<(usize, Vec<u64>)> {
-        let total_blocks = (end - start + 1) as f64;
+    pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<(usize, u64, u64)> {
+        let total_blocks = (end - start + 1) as usize;
         let provs = self.providers.lock().await;
         let alive: Vec<(usize, f64)> = provs
             .iter()
@@ -253,26 +253,20 @@ impl RpcClient {
             .collect();
 
         if alive.len() <= 1 {
-            let blocks: Vec<u64> = (start..=end).collect();
-            return vec![(alive.first().map(|(i, _)| *i).unwrap_or(0), blocks)];
+            return vec![(alive.first().map(|(i, _)| *i).unwrap_or(0), start, end)];
         }
 
-        let total_weight: f64 = alive.iter().map(|(_, w)| w).sum();
-        let mut shards: Vec<(usize, Vec<u64>)> = Vec::new();
-        let mut current_start = start;
+        let n = alive.len();
+        let base = total_blocks / n;
+        let extra = total_blocks % n;
 
-        for (idx, (provider_idx, weight)) in alive.iter().enumerate() {
-            let is_last = idx == alive.len() - 1;
-            let shard_size = if is_last {
-                (end as f64) - current_start as f64 + 1.0
-            } else {
-                (total_blocks * weight / total_weight).ceil()
-            } as u64;
-
-            let shard_end = (current_start + shard_size - 1).min(end);
-            let blocks: Vec<u64> = (current_start..=shard_end).collect();
-            shards.push((*provider_idx, blocks));
-            current_start = shard_end + 1;
+        let mut shards = Vec::new();
+        let mut pos = start;
+        for (i, &(provider_idx, _)) in alive.iter().enumerate() {
+            let shard_size = if i < extra { base + 1 } else { base };
+            let shard_end = (pos + shard_size as u64 - 1).min(end);
+            shards.push((provider_idx, pos, shard_end));
+            pos = shard_end + 1;
         }
 
         shards
@@ -522,62 +516,127 @@ impl RpcClient {
         block_number: u64,
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         self.retry_call(|provider| async move {
-            let mut batch = BatchRequest::new(provider.client());
-
-            let block_waiter: Waiter<Value> = batch
-                .add_call(
-                    "eth_getBlockByNumber",
-                    &(BlockNumberOrTag::Number(block_number), true),
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let receipts_waiter: Waiter<Value> = batch
-                .add_call(
-                    "eth_getBlockReceipts",
-                    &(alloy::eips::BlockId::number(block_number),),
-                )
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            batch.send().await.map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
-            if raw.is_null() {
-                anyhow::bail!("Block {} not found", block_number);
-            }
-            let mut raw = raw;
-            Self::clean_block_transactions(&mut raw);
-            let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let mut receipts_raw: Value =
-                receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
-            Self::clean_receipts(&mut receipts_raw);
-            let receipts: Vec<TransactionReceipt> =
-                serde_json::from_value(receipts_raw).map_err(|e| anyhow::anyhow!("{}", e))?;
-
-            let txs: Vec<TxData> = block
-                .transactions
-                .as_transactions()
-                .map(|txs| {
-                    txs.iter()
-                        .enumerate()
-                        .map(|(i, tx)| alloy_tx_to_tx_data(tx, i as u64))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            let block_data = BlockData {
-                number: block.header.number,
-                hash: block.header.hash,
-                timestamp: block.header.timestamp,
-                base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
-                gas_limit: block.header.gas_limit,
-                gas_used: block.header.gas_used,
-                coinbase: block.header.beneficiary,
-            };
-
-            Ok((block_data, txs, receipts.iter().map(alloy_receipt_to_receipt_data).collect()))
+            Self::batch_rpc_call(provider, block_number).await
         })
         .await
+    }
+
+    /// Fetch block + receipts in a single JSON-RPC batch request, pinned to a specific provider.
+    ///
+    /// Same as `get_block_and_receipts_batch` but calls a specific provider directly,
+    /// bypassing weighted random selection. Falls back to `retry_call` on failure.
+    pub async fn get_block_and_receipts_batch_for(
+        &self,
+        provider_idx: usize,
+        block_number: u64,
+    ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
+        // Try pinned provider first
+        let prov_state = {
+            let provs = self.providers.lock().await;
+            provs.get(provider_idx).cloned()
+        };
+
+        let provider = match prov_state {
+            Some(p) if p.is_available() => p,
+            _ => {
+                // Pinned provider unavailable — fall back to retry_call
+                return self.get_block_and_receipts_batch(block_number).await;
+            }
+        };
+
+        provider.acquire_permit().await;
+
+        let t0 = Instant::now();
+        let result = Self::batch_rpc_call(provider.provider.clone(), block_number).await;
+        let latency = t0.elapsed();
+
+        match result {
+            Ok(val) => {
+                let mut provs = self.providers.lock().await;
+                if let Some(p) = provs.get_mut(provider_idx) {
+                    p.record_success(latency);
+                }
+                Ok(val)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Pinned provider-{} failed for block {} (failures={}, cooldown={:?}): {e:#}",
+                    provider_idx,
+                    block_number,
+                    provider.consecutive_failures,
+                    provider.cooldown_until,
+                );
+                {
+                    let mut provs = self.providers.lock().await;
+                    if let Some(p) = provs.get_mut(provider_idx) {
+                        p.record_failure();
+                    }
+                }
+                // Fallback: try all providers via retry_call
+                self.get_block_and_receipts_batch(block_number).await
+            }
+        }
+    }
+
+    /// Core batch RPC logic shared by pinned and unpinned paths.
+    async fn batch_rpc_call(
+        provider: RootProvider,
+        block_number: u64,
+    ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
+        let mut batch = BatchRequest::new(provider.client());
+
+        let block_waiter: Waiter<Value> = batch
+            .add_call(
+                "eth_getBlockByNumber",
+                &(BlockNumberOrTag::Number(block_number), true),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let receipts_waiter: Waiter<Value> = batch
+            .add_call(
+                "eth_getBlockReceipts",
+                &(alloy::eips::BlockId::number(block_number),),
+            )
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        batch.send().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        if raw.is_null() {
+            anyhow::bail!("Block {} not found", block_number);
+        }
+        let mut raw = raw;
+        Self::clean_block_transactions(&mut raw);
+        let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let mut receipts_raw: Value =
+            receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        Self::clean_receipts(&mut receipts_raw);
+        let receipts: Vec<TransactionReceipt> =
+            serde_json::from_value(receipts_raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let txs: Vec<TxData> = block
+            .transactions
+            .as_transactions()
+            .map(|txs| {
+                txs.iter()
+                    .enumerate()
+                    .map(|(i, tx)| alloy_tx_to_tx_data(tx, i as u64))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let block_data = BlockData {
+            number: block.header.number,
+            hash: block.header.hash,
+            timestamp: block.header.timestamp,
+            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
+            gas_limit: block.header.gas_limit,
+            gas_used: block.header.gas_used,
+            coinbase: block.header.beneficiary,
+        };
+
+        Ok((block_data, txs, receipts.iter().map(alloy_receipt_to_receipt_data).collect()))
     }
 
     /// Fetch account proof via `eth_getProof`.
