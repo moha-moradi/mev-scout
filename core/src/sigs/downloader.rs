@@ -96,33 +96,33 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         ("09218e2b", "getPair(address,address)"),
 
         // ── Uniswap V3 Pool ───────────────────────────────────────────────
-        ("128acb08", "swap(address,bool,int256,uint256,uint256,address,bytes)"),
-        ("3ccfd60b", "mint(address,address,int24,int24,uint128,bytes)"),
+        ("128acb08", "swap(address,bool,int256,uint160,bytes)"),
+        ("aafe29c0", "mint(address,address,int24,int24,uint128,bytes)"),
         ("0dfe1681", "token0()"),
         ("d21220a7", "token1()"),
         ("ddca3f43", "fee()"),
         ("3850c7bd", "slot0()"),
-        ("883bdbfd", "observations(uint256)"),
+        ("252c09d7", "observations(uint256)"),
         ("4f76a8fa", "tickSpacing()"),
-        ("a34123a7", "mint(address,address,int24,int24,uint128,bytes)"),
-        ("514ea4bf", "liquidity()"),
-        ("81794f1b", "tickBitmap(int16)"),
-        ("9ad05bc6", "tickSpacingToMaxLiquidityPerTick(int24)"),
-        ("d5764e8e", "increaseObservationCardinalityNext(uint16)"),
-        ("e67446fd", "snapshotCumulativesInside(int24,int24)"),
-        ("f3058399", "positions(bytes32)"),
-        ("99c6b2f4", "maxLiquidityPerTick()"),
-        ("240bc6ad", "burn(int24,int24,uint128)"),
-        ("7c1fe0c6", "collect(address,int24,int24,uint128,uint128)"),
+        ("1a686502", "liquidity()"),
+        ("a34123a7", "burn(int24,int24,uint128)"),
+        ("4f1eb3d8", "collect(address,int24,int24,uint128,uint128)"),
+        ("514ea4bf", "positions(bytes32)"),
+        ("f30dba93", "ticks(int24)"),
+        ("5339c296", "tickBitmap(int16)"),
+        ("82c66f87", "tickSpacingToMaxLiquidityPerTick(int24)"),
+        ("32148f67", "increaseObservationCardinalityNext(uint16)"),
+        ("a38807f2", "snapshotCumulativesInside(int24,int24)"),
+        ("70cf754a", "maxLiquidityPerTick()"),
 
         // ── Uniswap V3 Factory ────────────────────────────────────────────
-        ("1698ee82", "createPool(address,address,uint24)"),
-        ("22e024cf", "enableFeeAmount(uint24,int24)"),
-        ("13e75725", "setOwner(address)"),
-        ("1e8c5b89", "owner()"),
+        ("a1671295", "createPool(address,address,uint24)"),
+        ("8a7c195f", "enableFeeAmount(uint24,int24)"),
+        ("13af4035", "setOwner(address)"),
+        ("8da5cb5b", "owner()"),
         ("2e8ce9bc", "feeAmountTickSpacing(uint24)"),
         ("30b46e1c", "parameters()"),
-        ("96afc450", "getPool(address,address,uint24)"),
+        ("1698ee82", "getPool(address,address,uint24)"),
 
         // ── Uniswap Universal Router / Permit2 ────────────────────────────
         ("3593564c", "execute(bytes,bytes[],uint256)"),
@@ -190,36 +190,34 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         ("3964a0f0", "setSignatureValidatorApproval(address,bool)"),
 
         // ── Balancer V2 Vault ─────────────────────────────────────────────
-        ("52bbbe29", "swap(tuple,address,bytes)"),
-        ("7b3c1ef2", "batchSwap(tuple,address[],address,bytes)"),
-        ("c4b5e15f", "flashLoan(address,address[],uint256[],uint256[],address,bytes,uint16)"),
+        ("d78578d7", "swap((bytes32,address,address,uint256,bytes,bool),address[],uint256,uint256)"),
+        ("0909b184", "batchSwap((int256[],address[],address[],bytes,uint256)[],address[],address,bytes)"),
+        ("5c38449e", "flashLoan(address,address[],uint256[],bytes)"),
+        ("b36d5e8b", "flashLoanSimple(address,address,uint256,bytes)"),
         ("b95cac28", "joinPool(bytes32,address,address,(address[],uint256[],bytes,bool))"),
         ("8bdb3913", "exitPool(bytes32,address,address,(address[],uint256[],bytes,bool))"),
-        ("dc2f022b", "managePoolBalance(tuple[])"),
-        ("bf39c4a7", "getPoolTokens(bytes32)"),
-        ("9b3b5f8f", "swap(uint16,address,uint256,uint256,address,bytes)"),
-        ("15c0fb60", "getPool(bytes32)"),
-        ("f84e2cdf", "getPoolId(address)"),
-        ("66c0bd24", "getActionId(bytes4)"),
-        ("c072ceac", "getAuthorizer()"),
-        ("e33ee663", "getDomainSeparator()"),
-        ("2fda3b12", "getNextNonce(address)"),
-        ("43f68f68", "setRelayApproval(address,address,bool)"),
-        ("5a6bee7b", "setPaused(bool)"),
-        ("0263bb64", "setAuthorizer(address)"),
+        ("b87383a5", "managePoolBalance((int256[],address[],uint256)[])"),
+        ("f94d4668", "getPoolTokens(bytes32)"),
+        ("f6c00927", "getPool(bytes32)"),
+        ("d2946c2b", "getProtocolFeesCollector()"),
+        ("ed24911d", "getDomainSeparator()"),
+        ("90193b7c", "getNextNonce(address)"),
+        ("16c38b3c", "setPaused(bool)"),
+        ("058a628f", "setAuthorizer(address)"),
         ("b01a1c14", "changeFlashLoanFeePercentage(uint256)"),
         ("0b6a1f88", "collectProtocolFees()"),
         ("9a28ea83", "recoveryModeExitPool(bytes32,address,address,uint256[],uint256)"),
         ("b7b3a7cf", "registerPool(uint256)"),
 
         // ── Balancer V2 Pool ──────────────────────────────────────────────
-        ("1a148570", "getSwapFeePercentage()"),
-        ("f8b49a79", "getProtocolFeesCollector()"),
-        ("b7b3a7cf", "registerPool(uint256)"),
-        ("6b35adf1", "getBalances()"),
-        ("598b4ba6", "getLastInvariant()"),
-        ("39b70e4a", "getGradualWeightUpdateParams()"),
-        ("3c975d51", "inRecoveryMode()"),
+        ("55c67628", "getSwapFeePercentage()"),
+        ("f89f27ed", "getNormalizedWeights()"),
+        ("6daccffa", "getAmplificationParameter()"),
+        ("1dd746ea", "getScalingFactors()"),
+        ("00113e08", "getBalances()"),
+        ("9b02cdde", "getLastInvariant()"),
+        ("7beed220", "getGradualWeightUpdateParams()"),
+        ("b35056b8", "inRecoveryMode()"),
 
         // ── Curve Pool ────────────────────────────────────────────────────
         ("a6417ed6", "add_liquidity(uint256[2],uint256)"),
@@ -368,18 +366,16 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         ("0d8e6e2c", "totalAssets()"),
 
         // ── Curve pool state (used by factory.rs) ──────────────────────────
-        ("497b6678", "balances(int128)"),
         ("065a80d8", "balances(int128)"),
-        ("c6611f94", "coins(int128)"),
-        ("196cac5f", "coins(uint256)"),
         ("23746eb8", "coins(int128)"),
-        ("0f0b7c7e", "A()"),
+        ("c6610657", "coins(uint256)"),
         ("f446c1d0", "A()"),
-        ("4d30a47f", "get_A()"),
-        ("671d4723", "gamma()"),
-        ("5e0d7a5a", "price_scale()"),
-        ("aa1e2984", "price_oracle(uint256)"),
-        ("9cec6eae", "base_pool()"),
+        ("e91df8b3", "get_A()"),
+        ("b1373929", "gamma()"),
+        ("b9e8c9fd", "price_scale()"),
+        ("68727653", "price_oracle(uint256)"),
+        ("5d6362bb", "base_pool()"),
+        ("ddca3f43", "fee()"),
 
         // ── Uniswap V3 Router (used by mempool detector) ───────────────────
         ("c04b8d59", "exactInput((bytes,address,uint256,uint256,uint256))"),
@@ -392,8 +388,8 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         ("d0c93a7c", "tickSpacing()"),
 
         // ── DODO pool selectors (used by discovery.rs) ─────────────────────
-        ("e1503108", "_BASE_TOKEN_()"),
-        ("0fd8bafe", "_QUOTE_TOKEN_()"),
+        ("4a248d2a", "_BASE_TOKEN_()"),
+        ("d4b97046", "_QUOTE_TOKEN_()"),
 
         // ── PancakeSwap / fork tickSpacing variants (used by discovery.rs) ─
         ("37cfdaca", "tickSpacing()"),
@@ -474,6 +470,21 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         ("8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0", "OwnershipTransferred(address,address)"),
         ("62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258", "Paused(address)"),
         ("5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa", "Unpaused(address)"),
+
+        // DEX-specific swap events (missing from original fallback)
+        ("2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b", "Swap(bytes32,address,address,uint256,uint256)"),
+        ("c2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f", "DODOSwap(address,address,uint256,uint256,address,address)"),
+        ("4be05c8d54f5e056ab2cfa033e9f582057001268c3e28561bb999d35d2c8f2c8", "Swapped(address,address,address,uint256,uint256,bytes)"),
+
+        // Curve V2 events (missing from original fallback)
+        ("95d7b7eb49650fc975a7948ff147be2a3b8e3210fbacbba6ff2a7bcbebd2986e", "TokenExchange(address,int128,uint256,int128,uint256,uint256)"),
+        ("e3607c2ce07864d07fe66ae81737853c59f6961b40c954197162bd764ffb9e77", "TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)"),
+
+        // DEX pool discovery events (missing from original fallback)
+        ("0a37da2b1868bfc70f4dc3988da03432d740f6ffbdc860da6941898a959a7df2", "PairCreated(address,address,bool,address)"),
+        ("30fcf386678f0a00ca73486610fda45a0bd09cb9ede7e2e5078f4c842f21b1da", "PairCreated(address,address,address,uint256,bool)"),
+        ("3c13bc30b8e878c53fd2a36b679409c073afd75950be43d8858768e956fbc20e", "PoolRegistered(bytes32,address,uint8)"),
+        ("0c98febfffcec480c66a977e13f14bafdb5199ea9603591a0715b0cabe0c3ae2", "PoolAdded(address,uint256)"),
     ];
 
     let mut m_stmt = conn.prepare("INSERT OR IGNORE INTO methods (selector, signature) VALUES (?1, ?2)")?;

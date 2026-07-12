@@ -15,11 +15,9 @@ use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionR
 use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
 use serde_json::Value;
 use url::Url;
-use rand::Rng;
-
 use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 
-use super::middleware::{ProviderState, RateLimiter, EtagStore};
+use super::middleware::{ProviderState, RateLimiter};
 
 /// Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 /// and health tracking.
@@ -32,7 +30,6 @@ pub struct RpcClient {
     providers: Arc<tokio::sync::Mutex<Vec<ProviderState>>>,
     chain_id: u64,
     current: Arc<AtomicUsize>,
-    etag_store: EtagStore,
 }
 
 impl RpcClient {
@@ -46,8 +43,7 @@ impl RpcClient {
     /// Create a new RPC client from one or more URLs.
     ///
     /// Each URL gets its own `ProviderState` with no rate limiter (use
-    /// `with_provider_rps` to set per-provider limits, or `with_rate_limit`
-    /// for a shared single limiter on the first provider).
+    /// `with_provider_rps` to set per-provider limits).
     pub fn from_urls(urls: &[&str], chain_id: u64) -> anyhow::Result<Self> {
         if urls.is_empty() {
             anyhow::bail!("At least one RPC URL is required");
@@ -67,57 +63,10 @@ impl RpcClient {
             providers: Arc::new(tokio::sync::Mutex::new(providers)),
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
-            etag_store: EtagStore::new(),
         })
     }
 
-    /// Create a client from provider config tuples (URL, optional RPS).
-    pub fn from_provider_configs(
-        configs: &[(String, Option<f64>)],
-        chain_id: u64,
-    ) -> anyhow::Result<Self> {
-        if configs.is_empty() {
-            anyhow::bail!("At least one RPC provider is required");
-        }
-        let http_client = Self::build_http_client()?;
-        let providers: Vec<ProviderState> = configs
-            .iter()
-            .enumerate()
-            .map(|(i, (url, rps))| {
-                let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
-                let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
-                let provider = RootProvider::new(rpc_client);
-                Ok(ProviderState::new(provider, *rps, format!("provider-{i}"), url.to_string()))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        Ok(RpcClient {
-            providers: Arc::new(tokio::sync::Mutex::new(providers)),
-            chain_id,
-            current: Arc::new(AtomicUsize::new(0)),
-            etag_store: EtagStore::new(),
-        })
-    }
 
-    /// Number of configured RPC providers.
-    pub async fn providers_count(&self) -> usize {
-        self.providers.lock().await.len()
-    }
-
-    /// Get the RPS limit for a specific provider. Returns the weight (RPS) if
-    /// the provider exists, or 1.0 as a fallback.
-    pub async fn get_provider_rps(&self, idx: usize) -> f64 {
-        self.providers
-            .lock()
-            .await
-            .get(idx)
-            .map(|p| p.weight)
-            .unwrap_or(1.0)
-    }
-
-    /// Get the ETag store for this client (for external use / logging).
-    pub fn etag_store(&self) -> &EtagStore {
-        &self.etag_store
-    }
 
     /// Build a shared `reqwest::Client` with gzip compression enabled.
     fn build_http_client() -> anyhow::Result<reqwest::Client> {
@@ -143,16 +92,18 @@ impl RpcClient {
         self.chain_id
     }
 
-    /// Enable a shared token-bucket rate limiter for the first provider only.
-    /// This is backward-compat for single-provider usage. For multi-provider,
-    /// use `from_provider_configs` with per-provider RPS.
-    pub async fn with_rate_limit(self, requests_per_second: f64) -> Self {
-        let rps = requests_per_second.max(1.0);
-        let rl = Arc::new(RateLimiter::new(rps, rps));
-        if let Some(first) = self.providers.lock().await.first_mut() {
-            first.rate_limiter = Some(rl);
-        }
-        self
+    /// Return a summary string of all providers and their status.
+    pub async fn provider_summary(&self) -> String {
+        let provs = self.providers.lock().await;
+        let entries: Vec<String> = provs
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let status = if p.is_available() { "ok" } else { "dead" };
+                format!("p{}[{}] {:.0}rps {}", i, p.label, p.weight, status)
+            })
+            .collect();
+        format!("{} providers: {}", provs.len(), entries.join("  "))
     }
 
     /// Set per-provider RPS limits. Index i maps to provider i.
@@ -168,38 +119,27 @@ impl RpcClient {
         }
     }
 
-    /// Pick a provider by weighted random selection from available providers.
-    async fn pick_provider(&self) -> Option<(usize, ProviderState)> {
+    /// Get available providers sorted by effective weight descending (fastest + highest RPS first).
+    async fn sorted_available(&self) -> Vec<(usize, ProviderState)> {
         let provs = self.providers.lock().await;
-        let available: Vec<(usize, &ProviderState)> = provs
+        let mut available: Vec<(usize, ProviderState)> = provs
             .iter()
             .enumerate()
             .filter(|(_, p)| p.is_available())
+            .map(|(i, p)| (i, ProviderState::clone(p)))
             .collect();
 
-        if available.is_empty() {
-            return None;
-        }
+        available.sort_by(|a, b| {
+            b.1.effective_weight()
+                .partial_cmp(&a.1.effective_weight())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        let total_weight: f64 = available.iter().map(|(_, p)| p.weight).sum();
-        if total_weight <= 0.0 {
-            return available.first().map(|(i, p)| (*i, ProviderState::clone(p)));
-        }
-
-        let mut rng = rand::rng();
-        let mut pick = rng.random::<f64>() * total_weight;
-        for (i, p) in &available {
-            pick -= p.weight;
-            if pick <= 0.0 {
-                return Some((*i, ProviderState::clone(p)));
-            }
-        }
-
-        available.last().map(|(i, p)| (*i, ProviderState::clone(p)))
+        available
     }
 
-    /// Execute an RPC call with per-provider rate limiting, weighted selection,
-    /// and health tracking with exponential-backoff cooldown.
+    /// Execute an RPC call with per-provider rate limiting, priority selection
+    /// (fastest + highest RPS first), and health tracking with exponential-backoff cooldown.
     ///
     /// Returns the first success or the last error if all providers fail.
     async fn retry_call<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
@@ -207,60 +147,58 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
-        let provs_len = self.providers.lock().await.len();
 
-        for offset in 0..provs_len {
-            // Weighted random pick — fall back to round-robin if no weighted pick
-            let maybe_pick = if offset == 0 {
-                self.pick_provider().await
-            } else {
-                None
-            };
+        // Try all available providers sorted by effective_weight descending.
+        // On failure, re-lock to get fresh health state before trying next.
+        let mut sorted = self.sorted_available().await;
+        let mut tried = std::collections::HashSet::new();
 
-            let (idx, provider) = if let Some(pick) = maybe_pick {
-                pick
-            } else {
-                let idx = (start + offset) % provs_len;
-                let prov_state = {
-                    let provs = self.providers.lock().await;
-                    provs.get(idx).cloned()
-                };
-                match prov_state {
-                    Some(p) if p.is_available() => (idx, p),
-                    _ => continue,
+        loop {
+            let mut found_next = false;
+            for (idx, provider) in &sorted {
+                if tried.contains(idx) {
+                    continue;
                 }
-            };
+                tried.insert(*idx);
+                found_next = true;
 
-            // Acquire per-provider rate limiter token
-            provider.acquire_permit().await;
+                // Acquire per-provider rate limiter token
+                provider.acquire_permit().await;
 
-            let t0 = Instant::now();
-            match f(provider.provider).await {
-                Ok(val) => {
-                    let latency = t0.elapsed();
-                    let mut provs = self.providers.lock().await;
-                    if let Some(p) = provs.get_mut(idx) {
-                        p.record_success(latency);
+                let t0 = Instant::now();
+                match f(provider.provider.clone()).await {
+                    Ok(val) => {
+                        let latency = t0.elapsed();
+                        let mut provs = self.providers.lock().await;
+                        if let Some(p) = provs.get_mut(*idx) {
+                            p.record_success(latency);
+                        }
+                        self.current.store(*idx, Ordering::Relaxed);
+                        return Ok(val);
                     }
-                    self.current.store(idx, Ordering::Relaxed);
-                    return Ok(val);
-                }
-                Err(e) => {
-                    let mut provs = self.providers.lock().await;
-                    if let Some(p) = provs.get_mut(idx) {
-                        p.record_failure();
-                        tracing::warn!(
-                            "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
-                            p.label,
-                            p.consecutive_failures,
-                            p.cooldown_until,
-                        );
+                    Err(e) => {
+                        let mut provs = self.providers.lock().await;
+                        if let Some(p) = provs.get_mut(*idx) {
+                            p.record_failure();
+                            tracing::warn!(
+                                "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
+                                p.label,
+                                p.consecutive_failures,
+                                p.cooldown_until,
+                            );
+                        }
+                        last_err = Some(e);
                     }
-                    last_err = Some(e);
                 }
             }
+
+            if !found_next {
+                break;
+            }
+
+            // Re-lock to pick up any providers that recovered during the attempts
+            sorted = self.sorted_available().await;
         }
 
         match last_err {
@@ -269,35 +207,44 @@ impl RpcClient {
         }
     }
 
-    /// Distribute a block range across providers by weight.
+    /// Distribute a block range across providers by effective weight.
     ///
     /// Returns `Vec<(usize, u64, u64)>` — (provider_index, range_start, range_end).
-    /// Contiguous shards are allocated proportionally to each provider's weight (RPS).
+    /// Each provider receives blocks proportional to its effective weight
+    /// (RPS adjusted by observed latency via `effective_weight()`).
     pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<(usize, u64, u64)> {
-        let total_blocks = (end - start + 1) as usize;
+        let total_blocks = end - start + 1;
         let provs = self.providers.lock().await;
         let alive: Vec<(usize, f64)> = provs
             .iter()
             .enumerate()
             .filter(|(_, p)| p.is_available())
-            .map(|(i, p)| (i, p.weight.max(0.1)))
+            .map(|(i, p)| (i, p.effective_weight()))
             .collect();
 
-        if alive.len() <= 1 {
-            return vec![(alive.first().map(|(i, _)| *i).unwrap_or(0), start, end)];
+        if alive.is_empty() {
+            return vec![];
         }
 
-        let n = alive.len();
-        let base = total_blocks / n;
-        let extra = total_blocks % n;
+        if alive.len() == 1 {
+            return vec![(alive[0].0, start, end)];
+        }
+
+        let total_weight: f64 = alive.iter().map(|(_, w)| w).sum();
 
         let mut shards = Vec::new();
-        let mut pos = start;
-        for (i, &(provider_idx, _)) in alive.iter().enumerate() {
-            let shard_size = if i < extra { base + 1 } else { base };
-            let shard_end = (pos + shard_size as u64 - 1).min(end);
-            shards.push((provider_idx, pos, shard_end));
-            pos = shard_end + 1;
+        let mut assigned = 0u64;
+        for (idx, (provider_idx, weight)) in alive.iter().enumerate() {
+            let share = if idx == alive.len() - 1 {
+                total_blocks.saturating_sub(assigned)
+            } else {
+                let raw = (total_blocks as f64 * weight / total_weight) as u64;
+                raw.max(1).min(total_blocks.saturating_sub(assigned))
+            };
+            let shard_start = start + assigned;
+            let shard_end = shard_start + share - 1;
+            shards.push((*provider_idx, shard_start, shard_end));
+            assigned += share;
         }
 
         shards
@@ -305,17 +252,18 @@ impl RpcClient {
 
     /// Validate all providers in parallel — chain ID, block number, and archive support.
     pub async fn validate_all(&self, expected_chain_id: u64) -> anyhow::Result<Vec<anyhow::Result<()>>> {
-        let provs = self.providers.lock().await;
+        let mut provs = self.providers.lock().await;
         let mut results = Vec::new();
 
-        for (i, state) in provs.iter().enumerate() {
+        for (i, state) in provs.iter_mut().enumerate() {
             let provider = state.provider.clone();
             let label = state.label.clone();
             let result = Self::check_single_provider(&provider, &label, expected_chain_id).await;
-            results.push(result);
-            if let Some(Err(ref e)) = results.last() {
+            if let Err(ref e) = result {
                 tracing::warn!("Provider {i} ({label}) failed validation: {e}");
+                state.mark_dead();
             }
+            results.push(result);
         }
 
         Ok(results)
@@ -807,24 +755,6 @@ impl RpcClient {
         }
     }
 
-    /// Estimate gas for a transaction.
-    /// Returns gas units required.
-    pub async fn estimate_gas(&self, to: Address, data: Bytes) -> anyhow::Result<u64> {
-        self.retry_call(|provider| {
-            let data = data.clone();
-            async move {
-                let request = TransactionRequest::default()
-                    .with_to(to)
-                    .with_input(data);
-                provider
-                    .estimate_gas(request)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-        })
-        .await
-    }
-
     /// Get the chain ID from the RPC endpoint.
     /// This calls `eth_chainId` directly rather than using the cached `self.chain_id`.
     pub async fn get_chain_id(&self) -> anyhow::Result<u64> {
@@ -920,83 +850,6 @@ impl RpcClient {
         .await
     }
 
-    /// Make a raw HTTP JSON-RPC batch request with ETag support.
-    ///
-    /// Sends a JSON-RPC batch directly via reqwest (bypassing alloy) to get
-    /// access to HTTP response headers. If the server returns an ETag header,
-    /// it is stored for future conditional requests via `If-None-Match`.
-    ///
-    /// Returns `Ok(Some((block_json, receipts_json)))` on 200, or
-    /// `Ok(None)` on 304 Not Modified (caller should use cached data).
-    pub async fn raw_batch_rpc_with_etag(
-        &self,
-        provider_idx: usize,
-        block_number: u64,
-    ) -> anyhow::Result<Option<(Value, Value)>> {
-        let url = {
-            let provs = self.providers.lock().await;
-            provs.get(provider_idx)
-                .map(|p| p.url.clone())
-                .ok_or_else(|| anyhow::anyhow!("Provider {} not found", provider_idx))?
-        };
-
-        let batch_request = serde_json::json!([
-            {
-                "jsonrpc": "2.0",
-                "method": "eth_getBlockByNumber",
-                "params": [format!("0x{:x}", block_number), true],
-                "id": 1
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "eth_getBlockReceipts",
-                "params": [format!("0x{:x}", block_number)],
-                "id": 2
-            }
-        ]);
-
-        let http_client = Self::build_http_client()?;
-        let mut req = http_client.post(&url)
-            .header("Content-Type", "application/json")
-            .body(batch_request.to_string());
-
-        if let Some(etag) = self.etag_store.get_etag(&url).await {
-            req = req.header("If-None-Match", etag);
-        }
-
-        let response = req.send().await
-            .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?;
-
-        let status = response.status();
-        if status == reqwest::StatusCode::NOT_MODIFIED {
-            tracing::debug!(block = block_number, provider = provider_idx, "ETag 304 Not Modified");
-            return Ok(None);
-        }
-
-        if let Some(etag) = response.headers().get("etag") {
-            if let Ok(etag_str) = etag.to_str() {
-                self.etag_store.set_etag(&url, etag_str.to_string()).await;
-            }
-        }
-
-        let body = response.text().await
-            .map_err(|e| anyhow::anyhow!("Failed to read response body: {e}"))?;
-
-        let batch_response: Vec<Value> = serde_json::from_str(&body)
-            .map_err(|e| anyhow::anyhow!("Failed to parse batch response: {e}"))?;
-
-        let block_json = batch_response.get(0)
-            .and_then(|r| r.get("result"))
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Missing block result in batch response"))?;
-
-        let receipts_json = batch_response.get(1)
-            .and_then(|r| r.get("result"))
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Missing receipts result in batch response"))?;
-
-        Ok(Some((block_json, receipts_json)))
-    }
 }
 
 /// Extract the first 4 bytes of transaction calldata as a method selector.

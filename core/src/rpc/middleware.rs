@@ -153,10 +153,29 @@ impl ProviderState {
         self.cooldown_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
     }
 
+    /// Mark provider as completely dead. Used when validation fails (e.g. wrong
+    /// chain ID, unreachable endpoint). The provider is excluded from distribution
+    /// until a successful RPC call resets it via `record_success()`.
+    pub fn mark_dead(&mut self) {
+        self.is_alive = false;
+        self.record_failure();
+    }
+
     /// Acquire a rate-limiter token if configured.
     pub async fn acquire_permit(&self) {
         if let Some(rl) = &self.rate_limiter {
             rl.acquire().await;
         }
+    }
+
+    /// Compute effective weight combining configured RPS with observed latency.
+    ///
+    /// Faster providers (lower latency) naturally receive more blocks.
+    /// Falls back to raw `weight` when no latency data is available yet.
+    pub fn effective_weight(&self) -> f64 {
+        if self.latency_ms <= 0.0 {
+            return self.weight.max(0.1);
+        }
+        (self.weight / self.latency_ms.sqrt()).max(0.1)
     }
 }

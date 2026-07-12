@@ -23,6 +23,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_id).await?;
+    tracing::info!("{}", rpc.provider_summary().await);
 
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
 
@@ -98,7 +99,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
             .progress_chars("=> "),
     );
 
-    let tick = || pb.tick();
+    let tick = || pb.inc(1);
     let summary = fetcher.fetch_range(&resolved, Some(&tick)).await?;
     pb.finish_and_clear();
 
@@ -108,6 +109,15 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     println!("  Fetched:      {}", summary.fetched);
     println!("  Cached:       {}", summary.cached);
     println!("  Elapsed:      {:.2}s", summary.elapsed_secs);
+    if summary.phase_db_ms > 0.0 {
+        println!("  Phase timing: DB lookup {:.1}ms | distribute {:.1}ms | fetch {:.1}ms | integrity {:.1}ms | flush {:.1}ms",
+            summary.phase_db_ms,
+            summary.phase_distribute_ms,
+            summary.elapsed_secs * 1000.0 - summary.phase_db_ms - summary.phase_distribute_ms - summary.phase_integrity_ms - summary.phase_flush_ms,
+            summary.phase_integrity_ms,
+            summary.phase_flush_ms,
+        );
+    }
 
     if !summary.missing_after_fetch.is_empty() {
         println!(

@@ -93,7 +93,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
             .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
             .progress_chars("=> "),
     );
-    let tick = || pb.tick();
+    let tick = || pb.inc(1);
 
     let fetch_summary = if !pool_addresses.is_empty() {
         fetcher.fetch_relevant(&resolved, &pool_addresses, Some(&tick)).await?
