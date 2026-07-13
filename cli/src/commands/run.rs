@@ -80,11 +80,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     }
 
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
-    if let Some(workers) = config.rpc_workers {
-        fetcher = fetcher.with_parallelism(workers);
-    }
-    fetcher = fetcher.with_batch_rpc(!args.no_batch_rpc);
-    let bc = config.block_concurrency.unwrap_or(5);
+    fetcher = fetcher.with_parallelism(provider_configs.len());
+    fetcher = fetcher.with_batch_rpc(args.batch_rpc);
+    let bc = config.block_concurrency.unwrap_or(100);
     fetcher = fetcher.with_block_concurrency(bc);
 
     let pb = ProgressBar::new(resolved.block_count);
@@ -124,9 +122,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     let mut pool_manager = PoolManager::new();
     pool_manager.set_max_pairs_per_token(config.max_pairs_per_token);
-    if let Some(workers) = config.rpc_workers {
-        pool_manager.set_concurrency_limit(workers as u32);
-    }
+    pool_manager.set_concurrency_limit(provider_configs.len() as u32);
     if let Some(vault_str) = &validation_result.chain_config.balancer_vault {
         if let Ok(vault_addr) = vault_str.parse::<Address>() {
             pool_manager = pool_manager.with_balancer_vault(vault_addr);

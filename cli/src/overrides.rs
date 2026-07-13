@@ -14,7 +14,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.block_concurrency = args.block_concurrency;
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.flash_loan_provider = Some(args.flash_loan_provider.clone());
@@ -42,7 +41,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.block_concurrency = args.block_concurrency;
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.db_path = args.db_path.clone();
@@ -54,7 +52,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.db_path = args.db_path.clone();
             o.parquet_dir = args.parquet_dir.clone();
@@ -71,7 +68,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.db_path = args.db_path.clone();
         }
@@ -80,7 +76,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.strategies = Some(args.strategies.clone());
             o.gas_model = Some(args.gas_model.clone());
@@ -101,7 +96,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.rpc_url = args.chain_args.rpc_url.clone();
             o.rpc_urls = args.chain_args.rpc_urls.clone();
             o.rpc_rps = args.chain_args.rpc_rps.clone();
-            o.rpc_workers = Some(args.chain_args.rpc_workers);
             o.rps_limit = Some(args.chain_args.rps_limit);
             o.from_block = Some(args.from_block);
             o.to_block = Some(args.to_block);

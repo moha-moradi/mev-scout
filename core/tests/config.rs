@@ -82,7 +82,6 @@ fn test_cli_override_merging() {
         rpc_url: None,
         rpc_urls: None,
         rpc_rps: None,
-        rpc_workers: None,
         rps_limit: None,
         flash_loan_provider: None,
         gas_limit: None,

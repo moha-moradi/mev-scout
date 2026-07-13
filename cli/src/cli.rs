@@ -94,13 +94,9 @@ pub struct ChainArgs {
     #[arg(short = 'r', long = "rpc", value_name = "URL")]
     pub rpc_url: Option<String>,
 
-    /// Number of concurrent RPC workers (default: 1).
-    /// Keep low (1-3) for public RPCs. Increase (10-20) for private RPCs.
-    #[arg(long = "rpc-workers", default_value = "1", value_name = "N")]
-    pub rpc_workers: usize,
-
-    /// RPC requests per second rate limit (default: 1). 0 = unlimited.
-    #[arg(long = "rps-limit", default_value = "1.0", value_name = "RPS")]
+    /// RPC requests per second rate limit (default: 0 = unlimited).
+    /// 0 disables client-side rate limiting; servers enforce their own limits.
+    #[arg(long = "rps-limit", default_value = "0.0", value_name = "RPS")]
     pub rps_limit: f64,
 
     /// Additional RPC URLs for multi-provider load distribution (comma-separated).
@@ -123,9 +119,8 @@ pub struct RunArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Concurrent blocks to fetch within a single contiguous range.
+    /// Concurrent blocks to fetch within a single contiguous range (default: 100).
     /// Higher values pipeline RPC requests for better throughput.
-    /// The RPS limiter still applies across all concurrent workers.
     #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
     pub block_concurrency: Option<usize>,
 
@@ -161,9 +156,10 @@ pub struct RunArgs {
     #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
     pub db_path: Option<String>,
 
-    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
-    #[arg(long = "no-batch-rpc", help_heading = "RPC")]
-    pub no_batch_rpc: bool,
+    /// Enable JSON-RPC batching (send block+receipts in one HTTP POST).
+    /// Disabled by default — separate parallel requests often achieve better throughput.
+    #[arg(long = "batch-rpc", help_heading = "RPC")]
+    pub batch_rpc: bool,
 
     /// Parquet directory (optional, unset = no Parquet output)
     #[arg(long = "parquet-dir", value_name = "PATH", help_heading = "Output")]
@@ -213,9 +209,8 @@ pub struct FetchArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Concurrent blocks to fetch within a single contiguous range.
+    /// Concurrent blocks to fetch within a single contiguous range (default: 100).
     /// Higher values pipeline RPC requests for better throughput.
-    /// The RPS limiter still applies across all concurrent workers.
     #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
     pub block_concurrency: Option<usize>,
 
@@ -223,9 +218,10 @@ pub struct FetchArgs {
     #[arg(long = "db-path", value_name = "PATH")]
     pub db_path: Option<String>,
 
-    /// Disable JSON-RPC batching (fetch block+receipts in separate calls instead of one)
-    #[arg(long = "no-batch-rpc")]
-    pub no_batch_rpc: bool,
+    /// Enable JSON-RPC batching (send block+receipts in one HTTP POST).
+    /// Disabled by default — separate parallel requests often achieve better throughput.
+    #[arg(long = "batch-rpc")]
+    pub batch_rpc: bool,
 
     /// Skip 4-byte signature resolution (much faster, no 4byte.directory API calls)
     #[arg(long = "no-sig-resolve")]
