@@ -335,6 +335,51 @@ impl Config {
         }
     }
 
+    /// Auto-calculate optimal `block_concurrency` from provider RPS limits.
+    ///
+    /// When `block_concurrency` is explicitly set in config/CLI, that value is used.
+    /// Otherwise, calculates from the minimum per-provider RPS:
+    ///   `min(min_rps × 2, MAX_PER_SHARD).max(MIN_PER_SHARD)`
+    ///
+    /// The ×2 factor keeps the fetch pipeline full (tasks queue on the rate limiter
+    /// while waiting for their turn, so concurrency must exceed RPS to avoid idle slots).
+    /// The cap prevents overwhelming free/public RPC providers with too many
+    /// simultaneous connections.
+    ///
+    /// Defaults to 10 when no RPS limits are configured (safe for public RPCs).
+    pub fn effective_block_concurrency(
+        &self,
+        provider_configs: &[(String, Option<f64>)],
+    ) -> usize {
+        if let Some(bc) = self.block_concurrency {
+            tracing::info!("block_concurrency: using explicit value {bc}");
+            return bc;
+        }
+
+        const MIN_PER_SHARD: usize = 5;
+        const MAX_PER_SHARD: usize = 15;
+        const DEFAULT_BC: usize = 10;
+
+        let min_rps = provider_configs
+            .iter()
+            .filter_map(|(_, r)| *r)
+            .filter(|r| *r > 0.0)
+            .fold(f64::INFINITY, f64::min);
+
+        let bc = if min_rps.is_finite() && min_rps > 0.0 {
+            let raw = (min_rps * 2.0).ceil() as usize;
+            raw.clamp(MIN_PER_SHARD, MAX_PER_SHARD)
+        } else {
+            DEFAULT_BC
+        };
+
+        tracing::info!(
+            "block_concurrency: auto-calculated {bc} (min_rps={min_rps:.1}, providers={})",
+            provider_configs.len(),
+        );
+        bc
+    }
+
     /// Return only the user-specified RPC URLs (no public fallbacks), for backward compat.
     /// Errors if no user URL is provided.
     pub fn user_rpc_urls(&self) -> error::Result<Vec<String>> {

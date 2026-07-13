@@ -71,7 +71,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     let mut fetcher = Fetcher::new(rpc, cache);
     fetcher = fetcher.with_parallelism(provider_configs.len());
     fetcher = fetcher.with_batch_rpc(args.batch_rpc);
-    let bc = config.block_concurrency.unwrap_or(20);
+    let bc = config.effective_block_concurrency(&provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
     if !args.no_sig_resolve {
         match mev_scout_core::sigs::ensure_signature_db(None).await {

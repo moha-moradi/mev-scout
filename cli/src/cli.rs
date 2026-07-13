@@ -119,8 +119,8 @@ pub struct RunArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Concurrent blocks to fetch within a single contiguous range (default: 100).
-    /// Higher values pipeline RPC requests for better throughput.
+    /// Concurrent blocks per provider shard. Auto-calculated from per-provider RPS
+    /// when not set (recommended: omit for optimal defaults).
     #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
     pub block_concurrency: Option<usize>,
 
@@ -209,8 +209,8 @@ pub struct FetchArgs {
     #[command(flatten)]
     pub chain_args: ChainArgs,
 
-    /// Concurrent blocks to fetch within a single contiguous range (default: 100).
-    /// Higher values pipeline RPC requests for better throughput.
+    /// Concurrent blocks per provider shard. Auto-calculated from per-provider RPS
+    /// when not set (recommended: omit for optimal defaults).
     #[arg(long = "block-concurrency", value_name = "N", help_heading = "Performance")]
     pub block_concurrency: Option<usize>,
 

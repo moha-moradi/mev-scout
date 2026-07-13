@@ -16,6 +16,3 @@ rpc_rps = [10, 10, 10, 10, 10]
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 0.0
 
-# Block-level concurrency within each provider shard
-block_concurrency = 20
-
