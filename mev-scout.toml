@@ -9,12 +9,13 @@ rpc_urls = [
   "https://tenderly.rpc.polygon.community",
 ]
 
-# Per-provider RPS limits (matches rpc_urls order). 0 = unlimited (server enforces its own limits).
-rpc_rps = [0, 0, 0, 0, 0]
+# Per-provider RPS limits (matches rpc_urls order). Also used as weight for block distribution.
+# Conservative limits to avoid server-side 429s on free public endpoints.
+rpc_rps = [10, 10, 10, 10, 10]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 0.0
 
 # Block-level concurrency within each provider shard
-block_concurrency = 100
+block_concurrency = 20
 

@@ -564,8 +564,7 @@ impl RpcClient {
                         p.record_failure();
                     }
                 }
-                // Fallback: try all providers via retry_call
-                self.get_block_and_receipts_batch(block_number).await
+                Err(e)
             }
         }
     }

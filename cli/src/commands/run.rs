@@ -82,7 +82,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
     fetcher = fetcher.with_parallelism(provider_configs.len());
     fetcher = fetcher.with_batch_rpc(args.batch_rpc);
-    let bc = config.block_concurrency.unwrap_or(100);
+    let bc = config.block_concurrency.unwrap_or(20);
     fetcher = fetcher.with_block_concurrency(bc);
 
     let pb = ProgressBar::new(resolved.block_count);

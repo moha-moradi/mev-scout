@@ -336,7 +336,9 @@ impl Fetcher {
                         }
                         completed += 1;
                     }
-                    Some(Err(e)) => return Err(e),
+                    Some(Err(e)) => {
+                        tracing::warn!("Block fetch failed (will retry as gap): {e:#}");
+                    }
                     None => break,
                 }
             }
@@ -350,7 +352,9 @@ impl Fetcher {
                     }
                     completed += 1;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tracing::warn!("Block fetch failed (will retry as gap): {e:#}");
+                }
             }
         }
 
@@ -406,49 +410,6 @@ impl Fetcher {
         Ok(fetched)
     }
 
-    async fn fetch_one_block(
-        &self,
-        block_num: u64,
-        timing: Arc<Mutex<FetchTiming>>,
-    ) -> anyhow::Result<bool> {
-        let t0 = Instant::now();
-        let cached = self.cache.has_block(block_num)?;
-        let t_has_block = t0.elapsed().as_secs_f64() * 1000.0;
-        if cached {
-            return Ok(false);
-        }
-
-        let t1 = Instant::now();
-        let (block, txs, receipts) = if self.batch_rpc {
-            self.rpc.get_block_and_receipts_batch(block_num).await?
-        } else {
-            let (block_res, receipts_res) = tokio::join!(
-                self.rpc.get_block(block_num),
-                self.rpc.get_receipts(block_num),
-            );
-            let (block, txs) = block_res?;
-            (block, txs, receipts_res?)
-        };
-        let t_rpc = t1.elapsed().as_secs_f64() * 1000.0;
-
-        let t2 = Instant::now();
-        write_block_data(
-            &self.sig_resolver,
-            &self.cache,
-            &self.write_buf,
-            block_num,
-            block,
-            txs,
-            receipts,
-        )?;
-        let t_write = t2.elapsed().as_secs_f64() * 1000.0;
-
-        let total = t0.elapsed().as_secs_f64() * 1000.0;
-        if let Ok(mut t) = timing.lock() {
-            t.record(t_has_block, t_rpc, t_write, total);
-        }
-        Ok(true)
-    }
 
     pub async fn fetch_relevant<F: Fn() + Sync>(
         &self,
@@ -542,19 +503,80 @@ impl Fetcher {
     }
 
     pub async fn auto_refetch_gaps(&self, gaps: &[u64]) -> anyhow::Result<u64> {
-        let mut refetched = 0u64;
-        let timing = self.timing.clone();
-        for &block_num in gaps {
-            match self.fetch_one_block(block_num, timing.clone()).await {
-                Ok(true) => refetched += 1,
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!("Failed to refetch block {}: {}", block_num, e);
-                }
-            }
+        if gaps.is_empty() {
+            return Ok(0);
         }
+
+        let timing = self.timing.clone();
+        let gap_concurrency = self.parallelism.max(1);
+        let sem = Arc::new(Semaphore::new(gap_concurrency));
+        let refetched = Arc::new(tokio::sync::Mutex::new(0u64));
+        let gap_count = gaps.len();
+
+        tracing::info!(
+            "Auto-refetching {} gaps with concurrency {}",
+            gap_count,
+            gap_concurrency,
+        );
+
+        let handles: Vec<_> = gaps
+            .iter()
+            .map(|&block_num| {
+                let sem = sem.clone();
+                let refetched = refetched.clone();
+                let timing = timing.clone();
+                let rpc = self.rpc.clone();
+                let cache = self.cache.clone();
+                let write_buf = self.write_buf.clone();
+                let batch_rpc = self.batch_rpc;
+                let sig_resolver = self.sig_resolver.clone();
+
+                async move {
+                    let _permit = sem.acquire().await.unwrap();
+
+                    let t0 = Instant::now();
+                    let result = if batch_rpc {
+                        rpc.get_block_and_receipts_batch(block_num).await
+                    } else {
+                        let (block_res, receipts_res) = tokio::join!(
+                            rpc.get_block(block_num),
+                            rpc.get_receipts(block_num),
+                        );
+                        match (block_res, receipts_res) {
+                            (Ok((b, t)), Ok(r)) => Ok((b, t, r)),
+                            (Err(e), _) | (_, Err(e)) => Err(e),
+                        }
+                    };
+                    let t_rpc = t0.elapsed().as_secs_f64() * 1000.0;
+
+                    match result {
+                        Ok((block, txs, receipts)) => {
+                            let t2 = Instant::now();
+                            write_block_data(&sig_resolver, &cache, &write_buf, block_num, block, txs, receipts)?;
+                            let t_write = t2.elapsed().as_secs_f64() * 1000.0;
+                            let total = t0.elapsed().as_secs_f64() * 1000.0;
+                            if let Ok(mut tm) = timing.lock() {
+                                tm.record(0.0, t_rpc, t_write, total);
+                            }
+                            *refetched.lock().await += 1;
+                            Ok::<_, anyhow::Error>(())
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to refetch block {}: {e:#}", block_num);
+                            Ok(())
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        try_join_all(handles).await?;
+        self.flush_write_buf()?;
         self.cache.flush()?;
-        Ok(refetched)
+
+        let count = *refetched.lock().await;
+        tracing::info!("Auto-refetch complete: {}/{} blocks recovered", count, gap_count);
+        Ok(count)
     }
 }
 
