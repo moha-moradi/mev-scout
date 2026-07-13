@@ -4,7 +4,7 @@ use std::sync::{Mutex, RwLock};
 
 use alloy::primitives::B256;
 
-const CACHE_CAPACITY: usize = 10_000;
+const CACHE_CAPACITY: usize = 100_000;
 
 /// Resolves 4-byte function selectors and 32-byte event topic hashes to
 /// human-readable signatures using a pre-built local SQLite database only.
@@ -70,10 +70,9 @@ impl SignatureResolver {
 
         {
             let mut cache = self.method_cache.write().unwrap();
-            if cache.len() >= CACHE_CAPACITY {
-                cache.clear();
+            if cache.len() < CACHE_CAPACITY {
+                cache.insert(*selector, result.clone());
             }
-            cache.insert(*selector, result.clone());
         }
 
         Ok(result)
@@ -100,10 +99,9 @@ impl SignatureResolver {
 
         {
             let mut cache = self.event_cache.write().unwrap();
-            if cache.len() >= CACHE_CAPACITY {
-                cache.clear();
+            if cache.len() < CACHE_CAPACITY {
+                cache.insert(*topic, result.clone());
             }
-            cache.insert(*topic, result.clone());
         }
 
         Ok(result)

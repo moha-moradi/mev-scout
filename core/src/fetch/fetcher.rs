@@ -256,7 +256,7 @@ impl Fetcher {
             }
             std::mem::take(&mut *buf)
         };
-        self.cache.put_block_data_batch(&batch, None, None)
+        flush_batch(&self.cache, &batch, &self.sig_resolver)
     }
 
     /// Fetch a contiguous range of blocks, optionally pinned to a specific provider.
@@ -567,28 +567,35 @@ fn write_block_data(
     txs: Vec<TxData>,
     receipts: Vec<ReceiptData>,
 ) -> anyhow::Result<()> {
-    if let Some(ref resolver) = sig_resolver {
-        let resolver: &SignatureResolver = resolver.as_ref();
-        let tx_sigs = resolve_tx_sigs(&txs, resolver);
-        let event_sigs = resolve_event_sigs(&receipts, resolver);
-        cache.put_block_data(
-            block_num,
-            &block,
-            &txs,
-            &receipts,
-            Some(&tx_sigs),
-            Some(&event_sigs),
-        )?;
-    } else {
-        let mut buf = write_buf.lock().expect("write_buf mutex poisoned");
-        buf.push((block_num, block, txs, receipts));
-        if buf.len() >= 10 {
-            let batch = std::mem::take(&mut *buf);
-            drop(buf);
-            cache.put_block_data_batch(&batch, None, None)?;
-        }
+    let mut buf = write_buf.lock().expect("write_buf mutex poisoned");
+    buf.push((block_num, block, txs, receipts));
+    if buf.len() >= 10 {
+        let batch = std::mem::take(&mut *buf);
+        drop(buf);
+        flush_batch(cache, &batch, sig_resolver)?;
     }
     Ok(())
+}
+
+fn flush_batch(
+    cache: &SqliteStore,
+    batch: &[(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)],
+    sig_resolver: &Option<Arc<SignatureResolver>>,
+) -> anyhow::Result<()> {
+    if let Some(ref resolver) = sig_resolver {
+        let resolver: &SignatureResolver = resolver.as_ref();
+        let tx_sigs_batch: Vec<_> = batch
+            .iter()
+            .map(|(_, _, txs, _)| resolve_tx_sigs(txs, resolver))
+            .collect();
+        let event_sigs_batch: Vec<_> = batch
+            .iter()
+            .map(|(_, _, _, receipts)| resolve_event_sigs(receipts, resolver))
+            .collect();
+        cache.put_block_data_batch(batch, Some(&tx_sigs_batch), Some(&event_sigs_batch))
+    } else {
+        cache.put_block_data_batch(batch, None, None)
+    }
 }
 
 fn resolve_tx_sigs(txs: &[TxData], resolver: &SignatureResolver) -> Vec<TxSigEntry> {

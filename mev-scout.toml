@@ -2,14 +2,15 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 
 chain = "polygon"
 rpc_urls = [
-  "https://polygon-bor-rpc.publicnode.com",
   "https://polygon-public.nodies.app",
+  "https://polygon-bor-rpc.publicnode.com",
   "https://polygon.drpc.org",
-  "https://shared.ap-southeast-1.getblock.io/ac064dad442e40ceb3ac122654aa5495",
+  "https://polygon.publicnode.com",
+  "https://tenderly.rpc.polygon.community",
 ]
 
 # Per-provider RPS limits (matches rpc_urls order). 0 = unlimited (server enforces its own limits).
-rpc_rps = [0, 0, 0, 0]
+rpc_rps = [0, 0, 0, 0, 0]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 0.0

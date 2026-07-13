@@ -68,10 +68,12 @@ impl RpcClient {
 
 
 
-    /// Build a shared `reqwest::Client` with gzip compression enabled.
+    /// Build a shared `reqwest::Client` with gzip compression, TCP nodelay, and a request timeout.
     fn build_http_client() -> anyhow::Result<reqwest::Client> {
         reqwest::Client::builder()
             .gzip(true)
+            .tcp_nodelay(true)
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {e}"))
     }
