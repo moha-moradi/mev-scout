@@ -102,6 +102,9 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         creation_block: 0,
         pool_id: None,
         factory: None,
+        is_stable: None,
+        is_fot: None,
+        is_rebase: None,
     }
 }
 
@@ -132,6 +135,9 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             creation_block: 0,
             pool_id: None,
             factory: None,
+            is_stable: None,
+            is_fot: None,
+            is_rebase: None,
         },
         reserve0: r0,
         reserve1: r1,

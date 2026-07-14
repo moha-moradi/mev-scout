@@ -381,6 +381,11 @@ pub struct DiscoverArgs {
     /// Only effective when --source is "dune" or "all".
     #[arg(long, default_value = "0", value_name = "N")]
     pub min_pools: usize,
+
+    /// Solidly-style pool fee in basis points (default: 30).
+    /// Overrides v2_fee_override for Solidly/Velodrome/Aerodrome pools.
+    #[arg(long = "solidly-fee-bps", value_name = "BPS")]
+    pub solidly_fee_bps: Option<u32>,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -652,11 +652,31 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
             pool_manager.add_pool(PoolState::Clipper(info));
         }
         crate::pool::dex_type::DexType::Solidly | crate::pool::dex_type::DexType::Camelot => {
-            pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
-                info,
-                reserve0: 0,
-                reserve1: 0,
-            }));
+            if info.is_stable == Some(true) {
+                // Solidly/Camelot stable pools use StableSwap invariant (A=200 for Solidly)
+                let a_coeff = if info.dex_type == crate::pool::dex_type::DexType::Solidly { 200 } else { 100 };
+                pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
+                    info: info.clone(),
+                    balances: vec![0, 0],
+                    token_index: {
+                        let mut m = std::collections::HashMap::new();
+                        m.insert(info.token0, 0);
+                        m.insert(info.token1, 1);
+                        m
+                    },
+                    a_coeff,
+                    pool_variant: crate::pool::state::CurvePoolVariant::Plain,
+                    gamma: None,
+                    price_scale: vec![],
+                    base_pool: None,
+                }));
+            } else {
+                pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+                    info,
+                    reserve0: 0,
+                    reserve1: 0,
+                }));
+            }
         }
     }
 }

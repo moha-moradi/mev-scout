@@ -123,6 +123,10 @@ impl PoolManager {
                         None,
                         true,
                     ),
+                    Some(PoolState::Curve(s)) if s.info.dex_type == DexType::Solidly || s.info.dex_type == DexType::Camelot => {
+                        // Solidly/Camelot stable pools stored as CurvePoolState — fetch V2 reserves
+                        (*addr, s.info.dex_type, None, 0, s.info.factory, true)
+                    }
                     Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true),
                     Some(PoolState::Balancer(_)) => (*addr, DexType::Balancer, None, 0, None, true),
                     Some(PoolState::Dodo(_)) => (*addr, DexType::Dodo, None, 0, None, false),
@@ -157,6 +161,15 @@ impl PoolManager {
                     if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(&addr) {
                         state.reserve0 = r0;
                         state.reserve1 = r1;
+                    }
+                    // Solidly/Camelot stable pools stored as CurvePoolState
+                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
+                        if state.info.dex_type == DexType::Solidly || state.info.dex_type == DexType::Camelot {
+                            if state.balances.len() >= 2 {
+                                state.balances[0] = r0;
+                                state.balances[1] = r1;
+                            }
+                        }
                     }
                 }
                 Some(PoolInitResult::V3State(sqrt, tick, liq, initialized_ticks)) => {
@@ -820,6 +833,28 @@ impl PoolManager {
                 }))
             }
             PoolState::Curve(curve) => {
+                // Solidly/Camelot stable pools stored as CurvePoolState use V2 reserves
+                if curve.info.dex_type == DexType::Solidly || curve.info.dex_type == DexType::Camelot {
+                    let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block, curve.info.factory).await?;
+                    let mut info = curve.info.clone();
+                    let mut balances = curve.balances.clone();
+                    if balances.len() >= 2 {
+                        balances[0] = r0;
+                        balances[1] = r1;
+                    } else {
+                        balances = vec![r0, r1];
+                    }
+                    return Some(PoolState::Curve(CurvePoolState {
+                        info,
+                        balances,
+                        token_index: curve.token_index.clone(),
+                        a_coeff: curve.a_coeff,
+                        pool_variant: curve.pool_variant,
+                        gamma: curve.gamma,
+                        price_scale: curve.price_scale.clone(),
+                        base_pool: curve.base_pool,
+                    }));
+                }
                 let result = Self::fetch_curve_state(rpc, *addr, block).await?;
                 match result {
                     PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool) => {

@@ -1,7 +1,47 @@
 use std::collections::HashMap;
-use alloy::primitives::{Address, U256};
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use alloy::primitives::{address, Address, U256};
 use serde::{Deserialize, Serialize};
 use crate::pool::dex_type::DexType;
+
+/// Known fee-on-transfer (FoT) tokens — mainnet addresses.
+/// These tokens deduct a fee on every transfer, causing reserve divergences in V2 pools.
+static FOT_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
+    let mut s = HashSet::new();
+    // USDT (Ethereum) — fee on transfer for non-exchange addresses
+    s.insert(address!("dac17f958d2ee523a2206206994597c13d831ec7"));
+    // SafeMoon
+    s.insert(address!("80860b64f856deade4d8f1e0103500207c12ff0f"));
+    // PAXG (Pax Gold)
+    s.insert(address!("45804880de22913dafe09f4980848ecece09f8fc"));
+    s
+});
+
+/// Known rebase tokens — mainnet addresses.
+/// These tokens periodically adjust balances (rebasing), so balanceOf > reserve.
+static REBASE_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
+    let mut s = HashSet::new();
+    // AMPL (Ampleforth)
+    s.insert(address!("d46ba6d942050d489dbd938a2c909a5d5039a161"));
+    // stETH (Lido)
+    s.insert(address!("ae7ab96520de3a18e5e111b5eaab095312d7fe84"));
+    // reth (Rocket Pool)
+    s.insert(address!("ae78736cd615f374d3085123a210448e74fc6393"));
+    // cbETH (Coinbase)
+    s.insert(address!("be9895146f7af43049ca1c1ae358b0541ea49704"));
+    s
+});
+
+/// Returns true if the given token is a known fee-on-transfer token.
+pub fn is_fee_on_transfer_token(token: &Address) -> bool {
+    FOT_TOKENS.contains(token)
+}
+
+/// Returns true if the given token is a known rebase token.
+pub fn is_rebase_token(token: &Address) -> bool {
+    REBASE_TOKENS.contains(token)
+}
 
 /// Static pool information loaded from the discovery cache (on-chain or Dune).
 ///
@@ -26,6 +66,15 @@ pub struct PoolInfo {
     /// Factory address that created this pool (L6: fork-aware V2 storage slots).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factory: Option<Address>,
+    /// Whether the pool is a stable-swap pool (Solidly/Camelot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_stable: Option<bool>,
+    /// Whether either token in the pool is a fee-on-transfer token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_fot: Option<bool>,
+    /// Whether either token in the pool is a rebase token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_rebase: Option<bool>,
 }
 
 impl Default for PoolInfo {
@@ -41,6 +90,9 @@ impl Default for PoolInfo {
             creation_block: 0,
             pool_id: None,
             factory: None,
+            is_stable: None,
+            is_fot: None,
+            is_rebase: None,
         }
     }
 }

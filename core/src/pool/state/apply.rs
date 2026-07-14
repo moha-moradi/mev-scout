@@ -24,6 +24,13 @@ impl PoolManager {
             state.reserve0 = state.reserve0.wrapping_add(amount0_in).wrapping_sub(amount0_out);
             state.reserve1 = state.reserve1.wrapping_add(amount1_in).wrapping_sub(amount1_out);
         }
+        // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events
+        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
+            if state.balances.len() >= 2 {
+                state.balances[0] = state.balances[0].wrapping_add(amount0_in).wrapping_sub(amount0_out);
+                state.balances[1] = state.balances[1].wrapping_add(amount1_in).wrapping_sub(amount1_out);
+            }
+        }
     }
 
     /// Update a V2 pool's reserves from a Sync event (authoritative override).
@@ -31,6 +38,13 @@ impl PoolManager {
         if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(address) {
             state.reserve0 = reserve0;
             state.reserve1 = reserve1;
+        }
+        // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events
+        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
+            if state.balances.len() >= 2 {
+                state.balances[0] = reserve0;
+                state.balances[1] = reserve1;
+            }
         }
     }
 

@@ -58,6 +58,9 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         creation_block: 0,
         pool_id: None,
         factory: None,
+        is_stable: None,
+        is_fot: None,
+        is_rebase: None,
     }
 }
 

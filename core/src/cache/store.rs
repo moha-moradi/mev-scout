@@ -113,6 +113,14 @@ impl SqliteStore {
             conn.execute_batch("ALTER TABLE transactions ADD COLUMN tx_type INTEGER NOT NULL DEFAULT 0")?;
         }
 
+        // Migration: add is_stable column to pool_info if missing (Solidly/Camelot stable pools)
+        let has_is_stable: bool = conn
+            .prepare("SELECT is_stable FROM pool_info LIMIT 0")
+            .is_ok();
+        if !has_is_stable {
+            conn.execute_batch("ALTER TABLE pool_info ADD COLUMN is_stable INTEGER")?;
+        }
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS receipts (
                 tx_hash    BLOB PRIMARY KEY,
@@ -155,7 +163,8 @@ impl SqliteStore {
                 tick_spacing INTEGER,
                 creation_block INTEGER NOT NULL,
                 pool_id    BLOB,
-                factory    BLOB
+                factory    BLOB,
+                is_stable  INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS pool_states (
@@ -932,9 +941,10 @@ impl SqliteStore {
         let conn = self.conn();
         let pool_id_blob = pool.pool_id.map(|id| id.to_vec());
         let factory_blob = pool.factory.map(|f| f.to_vec());
+        let is_stable_int: Option<i64> = pool.is_stable.map(|b| b as i64);
         conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
                 Self::addr_to_blob(&pool.address),
                 Self::addr_to_blob(&pool.token0),
@@ -945,6 +955,7 @@ impl SqliteStore {
                 pool.creation_block as i64,
                 pool_id_blob,
                 factory_blob,
+                is_stable_int,
             ],
         )?;
         Ok(())
@@ -953,7 +964,7 @@ impl SqliteStore {
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable
              FROM pool_info WHERE address = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![Self::addr_to_blob(address)])?;
@@ -969,10 +980,17 @@ impl SqliteStore {
                     .and_then(|v| v.and_then(|bytes| {
                         if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
                     }));
+                let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
+                let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
+                let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
+                let is_fot = Some(mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token0)
+                    || mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token1));
+                let is_rebase = Some(mev_scout_core::pool::state::pool_types::is_rebase_token(&token0)
+                    || mev_scout_core::pool::state::pool_types::is_rebase_token(&token1));
                 Ok(Some(PoolInfo {
                     address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
-                    token0: Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?),
-                    token1: Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?),
+                    token0,
+                    token1,
                     fee: row.get::<_, i64>(3)? as u32,
                     name: None,
                     dex_type: dex_type_from_i64(row.get::<_, i64>(4)?)?,
@@ -980,6 +998,9 @@ impl SqliteStore {
                     creation_block: row.get::<_, i64>(6)? as u64,
                     pool_id,
                     factory,
+                    is_stable,
+                    is_fot,
+                    is_rebase,
                 }))
             }
             None => Ok(None),
@@ -989,7 +1010,7 @@ impl SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
@@ -1004,10 +1025,17 @@ impl SqliteStore {
                 .and_then(|v| v.and_then(|bytes| {
                     if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
                 }));
+            let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
+            let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
+            let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
+            let is_fot = Some(mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token0)
+                || mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token1));
+            let is_rebase = Some(mev_scout_core::pool::state::pool_types::is_rebase_token(&token0)
+                || mev_scout_core::pool::state::pool_types::is_rebase_token(&token1));
             pools.push(PoolInfo {
                 address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
-                token0: Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?),
-                token1: Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?),
+                token0,
+                token1,
                 fee: row.get::<_, i64>(3)? as u32,
                 name: None,
                 dex_type: dex_type_from_i64(row.get::<_, i64>(4)?)?,
@@ -1015,6 +1043,9 @@ impl SqliteStore {
                 creation_block: row.get::<_, i64>(6)? as u64,
                 pool_id,
                 factory: factory_addr,
+                is_stable,
+                is_fot,
+                is_rebase,
             });
         }
         Ok(pools)

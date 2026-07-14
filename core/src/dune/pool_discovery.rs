@@ -99,6 +99,7 @@ pub async fn discover_v2_pools_from_dune(
                 creation_block,
                 pool_id: None,
                 factory: None,
+                is_stable: None,
             });
         }
     }
@@ -152,6 +153,7 @@ pub async fn discover_v3_pools_from_dune(
                 creation_block,
                 pool_id: None,
                 factory: None,
+                is_stable: None,
             });
         }
     }
@@ -239,6 +241,7 @@ pub async fn discover_active_pools_from_dune(
             creation_block,
             pool_id: None,
             factory: None,
+            is_stable: None,
         });
     }
 

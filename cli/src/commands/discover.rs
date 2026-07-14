@@ -182,6 +182,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         curve_registry: registry,
         solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
         camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+        solidly_fee_bps: args.solidly_fee_bps,
         rpc_concurrency: args.rpc_concurrency,
     };
 

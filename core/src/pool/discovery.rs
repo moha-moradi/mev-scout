@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::SqliteStore;
 use crate::pool::dex_type::DexType;
 use crate::pool::state::PoolInfo;
+use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
 use crate::rpc::RpcClient;
 use crate::pipeline::topics;
 
@@ -48,6 +49,12 @@ pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,address,uint256,bool)")
 });
 
+/// Selector for Balancer V2 Vault.getPool(address) → (bytes32 poolId, address[] tokens)
+static BALANCER_GET_POOL_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getPool(address)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 // Curve exchange_underlying emits separate event variants
 pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
@@ -72,10 +79,15 @@ pub struct DiscoveredPool {
     /// Factory address that created this pool (L6: fork-aware V2 storage slots).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factory: Option<Address>,
+    /// Whether the pool is a stable-swap pool (Solidly/Camelot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_stable: Option<bool>,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
     fn from(d: DiscoveredPool) -> Self {
+        let is_fot = Some(is_fee_on_transfer_token(&d.token0) || is_fee_on_transfer_token(&d.token1));
+        let is_rebase = Some(is_rebase_token(&d.token0) || is_rebase_token(&d.token1));
         PoolInfo {
             address: d.address,
             token0: d.token0,
@@ -87,6 +99,9 @@ impl From<DiscoveredPool> for PoolInfo {
             creation_block: d.creation_block,
             pool_id: d.pool_id,
             factory: d.factory,
+            is_stable: d.is_stable,
+            is_fot,
+            is_rebase,
         }
     }
 }
@@ -101,6 +116,8 @@ pub struct DiscoveryConfig<'a> {
     pub curve_registry: Option<Address>,
     pub solidly_factories: Option<&'a [Address]>,
     pub camelot_factories: Option<&'a [Address]>,
+    /// Solidly-style pool fee in basis points (default: 30).
+    pub solidly_fee_bps: Option<u32>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).
     pub rpc_concurrency: usize,
 }
@@ -397,6 +414,7 @@ pub async fn discover_pools(
                         address: addr, token0, token1,
                         fee, tick_spacing: None, dex_type: DexType::UniswapV2,
                         creation_block, pool_id: None, factory: Some(log.address()),
+                        is_stable: None,
                     }))
                 },
             ).await;
@@ -429,6 +447,7 @@ pub async fn discover_pools(
                         address: pool_addr, token0, token1,
                         fee, tick_spacing, dex_type: DexType::UniswapV3,
                         creation_block, pool_id: None, factory: Some(log.address()),
+                        is_stable: None,
                     }))
                 },
             ).await;
@@ -470,6 +489,7 @@ pub async fn discover_pools(
                             dex_type: DexType::Balancer,
                             creation_block, pool_id: Some(pool_id),
                             factory: Some(vault),
+                            is_stable: None,
                         });
                     }
                 }
@@ -509,6 +529,7 @@ pub async fn discover_pools(
                             fee: 0, tick_spacing: None,
                             dex_type: DexType::Curve,
                             creation_block, pool_id: None, factory: Some(registry),
+                            is_stable: None,
                         });
                     }
                 }
@@ -522,7 +543,7 @@ pub async fn discover_pools(
 
         // ── Solidly factory creation scan ──
         if let Some(factories) = config.solidly_factories {
-            let fee = config.v2_fee_override.unwrap_or(30);
+            let fee = config.solidly_fee_bps.or(config.v2_fee_override).unwrap_or(30);
             scan_factory_creation_events(
                 rpc, factories, *SOLIDLY_PAIR_CREATED_TOPIC, current, batch_end,
                 &mut active_blocks, &mut factory_pools,
@@ -535,11 +556,14 @@ pub async fn discover_pools(
                     let pair_addr = Address::from_slice(&log_data.data[44..64]);
                     let token0 = Address::from_slice(&topics[1][12..]);
                     let token1 = Address::from_slice(&topics[2][12..]);
+                    // ABI-encoded: [bool is_stable (32 bytes)][address pair (32 bytes)]
+                    let is_stable = log_data.data[31] != 0;
                     let creation_block = log.block_number.unwrap_or(0);
                     Some((pair_addr, DiscoveredPool {
                         address: pair_addr, token0, token1,
                         fee, tick_spacing: None, dex_type: DexType::Solidly,
                         creation_block, pool_id: None, factory: Some(log.address()),
+                        is_stable: Some(is_stable),
                     }))
                 },
             ).await;
@@ -559,11 +583,16 @@ pub async fn discover_pools(
                     let pair_addr = Address::from_slice(&log_data.data[12..32]);
                     let token0 = Address::from_slice(&topics[1][12..]);
                     let token1 = Address::from_slice(&topics[2][12..]);
+                    // ABI-encoded: [address pair][uint256 fee][bool stable]
+                    let fee = alloy::primitives::U256::from_be_slice(&log_data.data[32..64])
+                        .to::<u64>() as u32;
+                    let is_stable = log_data.data[95] != 0;
                     let creation_block = log.block_number.unwrap_or(0);
                     Some((pair_addr, DiscoveredPool {
                         address: pair_addr, token0, token1,
-                        fee: 0, tick_spacing: None, dex_type: DexType::Camelot,
+                        fee, tick_spacing: None, dex_type: DexType::Camelot,
                         creation_block, pool_id: None, factory: Some(log.address()),
+                        is_stable: Some(is_stable),
                     }))
                 },
             ).await;
@@ -589,6 +618,63 @@ pub async fn discover_pools(
         factory_pools.len(),
         active_blocks.len(),
     );
+
+    // ── Phase 1.5: Resolve Balancer pool_id for event-discovered pools ──
+    // Balancer pools found via Swap events may have pool_id: None if the event
+    // topics were truncated. Call Vault.getPool(address) to resolve missing pool_ids.
+    if let Some(vault) = config.balancer_vault {
+        let balancer_to_resolve: Vec<Address> = pool_hits.iter()
+            .filter(|(_, (dt, pid, _, _))| *dt == DexType::Balancer && pid.is_none())
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        if !balancer_to_resolve.is_empty() {
+            tracing::info!(
+                "Resolving pool_id for {} Balancer pools discovered via events...",
+                balancer_to_resolve.len()
+            );
+            use futures::stream::{self, StreamExt};
+            let ref_block = to_block;
+            let resolve_tasks: Vec<_> = balancer_to_resolve.into_iter().map(|addr| {
+                let rpc = rpc.clone();
+                let vault = vault;
+                async move {
+                    let mut calldata = Vec::with_capacity(36);
+                    calldata.extend_from_slice(&BALANCER_GET_POOL_SELECTOR);
+                    let mut arg = [0u8; 32];
+                    arg[12..32].copy_from_slice(addr.as_slice());
+                    calldata.extend_from_slice(&arg);
+                    match rpc.call(vault, Bytes::from(calldata), ref_block).await {
+                        Ok(result) if result.0.len() >= 32 => {
+                            let mut pool_id = [0u8; 32];
+                            pool_id.copy_from_slice(&result.0[..32]);
+                            Some((addr, pool_id))
+                        }
+                        _ => None,
+                    }
+                }
+            }).collect();
+
+            let resolved: Vec<_> = stream::iter(resolve_tasks)
+                .buffer_unordered(config.rpc_concurrency)
+                .collect()
+                .await;
+
+            let mut resolved_count = 0u32;
+            for (addr, pool_id) in resolved.into_iter().flatten() {
+                if let Some(entry) = pool_hits.get_mut(&addr) {
+                    entry.1 = Some(pool_id);
+                    resolved_count += 1;
+                }
+                if let Some(fp) = factory_pools.get_mut(&addr) {
+                    fp.pool_id = Some(pool_id);
+                }
+            }
+            if resolved_count > 0 {
+                tracing::info!("Resolved pool_id for {} Balancer pools", resolved_count);
+            }
+        }
+    }
 
     // ── Phase 2: Fetch pool metadata for DEX-discovered pools ──
     let token0_selector = Bytes::from_static(&[0x0d, 0xfe, 0x16, 0x81]);
@@ -755,6 +841,7 @@ pub async fn discover_pools(
             creation_block,
             pool_id,
             factory: None,
+            is_stable: None,
         });
     }
 
