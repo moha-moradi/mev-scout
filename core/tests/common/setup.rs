@@ -46,6 +46,7 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             amplification: None,
             bpt_index: None,
             scaling_factors: vec![],
+            rate_providers: vec![],
         }),
         DexType::Dodo => PoolState::UniswapV2(UniswapV2PoolState {
             info,
@@ -105,6 +106,7 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         is_stable: None,
         is_fot: None,
         is_rebase: None,
+        underlying_tokens: None,
     }
 }
 
@@ -138,6 +140,7 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             is_stable: None,
             is_fot: None,
             is_rebase: None,
+            underlying_tokens: None,
         },
         reserve0: r0,
         reserve1: r1,

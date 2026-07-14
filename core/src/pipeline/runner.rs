@@ -642,6 +642,7 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                     amplification: None,
                     scaling_factors: vec![],
                     bpt_index: None,
+                    rate_providers: vec![],
                 },
             ));
         }

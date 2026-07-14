@@ -102,6 +102,7 @@ impl From<DiscoveredPool> for PoolInfo {
             is_stable: d.is_stable,
             is_fot,
             is_rebase,
+            underlying_tokens: None,
         }
     }
 }

@@ -61,6 +61,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         is_stable: None,
         is_fot: None,
         is_rebase: None,
+        underlying_tokens: None,
     }
 }
 

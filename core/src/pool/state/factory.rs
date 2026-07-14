@@ -13,8 +13,8 @@ use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, Un
 pub enum PoolInitResult {
     V2Reserves(u128, u128),
     V3State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
-    /// (tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index)
-    BalancerState(Vec<Address>, Vec<u128>, Vec<u128>, u32, BalancerPoolVariant, Option<u128>, Vec<u128>, Option<usize>),
+    /// (tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers)
+    BalancerState(Vec<Address>, Vec<u128>, Vec<u128>, u32, BalancerPoolVariant, Option<u128>, Vec<u128>, Option<usize>, Vec<Option<Address>>),
     /// (tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool)
     CurveState(Vec<Address>, Vec<u128>, u128, u32, CurvePoolVariant, Option<u128>, Vec<u128>, Option<Address>),
 }
@@ -188,7 +188,7 @@ impl PoolManager {
                         }
                     }
                 }
-                Some(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index)) => {
+                Some(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers)) => {
                     if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&addr) {
                         state.balances = balances;
                         state.weights = weights;
@@ -197,10 +197,12 @@ impl PoolManager {
                         state.amplification = amplification;
                         state.scaling_factors = scaling_factors;
                         state.bpt_index = bpt_index;
+                        state.rate_providers = rate_providers;
                         if tokens.len() >= 2 {
                             state.info.token0 = tokens[0];
                             state.info.token1 = tokens[1];
                         }
+                        state.info.underlying_tokens = Some(tokens.clone());
                         state.token_index.clear();
                         for (i, token) in tokens.iter().enumerate() {
                             state.token_index.insert(*token, i);
@@ -221,6 +223,7 @@ impl PoolManager {
                         state.gamma = gamma;
                         state.price_scale = price_scale;
                         state.base_pool = base_pool;
+                        state.info.underlying_tokens = Some(tokens.clone());
                         state.token_index.clear();
                         for (i, token) in tokens.iter().enumerate() {
                             state.token_index.insert(*token, i);
@@ -793,7 +796,7 @@ impl PoolManager {
             }
         };
 
-        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index))
+        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, vec![]))
     }
 
     /// Re-fetch a pool's on-chain state at a given block number (M3 fact-check support).
@@ -863,8 +866,9 @@ impl PoolManager {
                             .enumerate()
                             .map(|(i, t)| (*t, i))
                             .collect();
-                        let mut info = curve.info.clone();
+                    let mut info = curve.info.clone();
                         info.fee = fee_bps;
+                        info.underlying_tokens = Some(tokens);
                         Some(PoolState::Curve(CurvePoolState {
                             info,
                             balances,
@@ -884,7 +888,7 @@ impl PoolManager {
                 let pool_id = bal.pool_id?;
                 let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block).await.ok()?;
                 match result {
-                    PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index) => {
+                    PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers) => {
                         let token_index: HashMap<Address, usize> = tokens
                             .iter()
                             .enumerate()
@@ -892,6 +896,7 @@ impl PoolManager {
                             .collect();
                         let mut info = bal.info.clone();
                         info.fee = fee_bps;
+                        info.underlying_tokens = Some(tokens);
                         Some(PoolState::Balancer(BalancerPoolState {
                             info,
                             balances,
@@ -902,6 +907,7 @@ impl PoolManager {
                             amplification,
                             scaling_factors,
                             bpt_index,
+                            rate_providers,
                         }))
                     }
                     _ => None,

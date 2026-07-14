@@ -75,6 +75,10 @@ pub struct PoolInfo {
     /// Whether either token in the pool is a rebase token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_rebase: Option<bool>,
+    /// Full token list for multi-token pools (Curve 3+, Balancer 2-8, Pendle).
+    /// `token0`/`token1` remain as primary pair for display; this provides the full set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying_tokens: Option<Vec<Address>>,
 }
 
 impl Default for PoolInfo {
@@ -93,6 +97,7 @@ impl Default for PoolInfo {
             is_stable: None,
             is_fot: None,
             is_rebase: None,
+            underlying_tokens: None,
         }
     }
 }
@@ -210,6 +215,9 @@ pub struct BalancerPoolState {
     pub scaling_factors: Vec<u128>,
     /// Index of the pool's own BPT token in the token list (None for non-composable).
     pub bpt_index: Option<usize>,
+    /// Rate provider addresses for each token (same order as balances).
+    /// Used by strategy 7.7 (Balancer rate provider staleness).
+    pub rate_providers: Vec<Option<Address>>,
 }
 
 /// Runtime state for any tracked pool.

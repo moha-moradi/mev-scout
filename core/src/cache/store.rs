@@ -983,10 +983,10 @@ impl SqliteStore {
                 let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
                 let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
                 let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
-                let is_fot = Some(mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token0)
-                    || mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token1));
-                let is_rebase = Some(mev_scout_core::pool::state::pool_types::is_rebase_token(&token0)
-                    || mev_scout_core::pool::state::pool_types::is_rebase_token(&token1));
+                let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
+                    || crate::pool::state::pool_types::is_fee_on_transfer_token(&token1));
+                let is_rebase = Some(crate::pool::state::pool_types::is_rebase_token(&token0)
+                    || crate::pool::state::pool_types::is_rebase_token(&token1));
                 Ok(Some(PoolInfo {
                     address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
                     token0,
@@ -1001,6 +1001,7 @@ impl SqliteStore {
                     is_stable,
                     is_fot,
                     is_rebase,
+                    underlying_tokens: None,
                 }))
             }
             None => Ok(None),
@@ -1028,10 +1029,10 @@ impl SqliteStore {
             let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
             let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
             let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
-            let is_fot = Some(mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token0)
-                || mev_scout_core::pool::state::pool_types::is_fee_on_transfer_token(&token1));
-            let is_rebase = Some(mev_scout_core::pool::state::pool_types::is_rebase_token(&token0)
-                || mev_scout_core::pool::state::pool_types::is_rebase_token(&token1));
+            let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
+                || crate::pool::state::pool_types::is_fee_on_transfer_token(&token1));
+            let is_rebase = Some(crate::pool::state::pool_types::is_rebase_token(&token0)
+                || crate::pool::state::pool_types::is_rebase_token(&token1));
             pools.push(PoolInfo {
                 address: Self::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
                 token0,
@@ -1046,6 +1047,7 @@ impl SqliteStore {
                 is_stable,
                 is_fot,
                 is_rebase,
+                underlying_tokens: None,
             });
         }
         Ok(pools)
