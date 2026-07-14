@@ -50,7 +50,10 @@ pub fn dune_chain_label(chain: &str) -> String {
 pub fn tick_spacing_from_fee(fee: u32) -> i32 {
     match fee {
         100 => 10,
+        200 => 4,
+        400 => 4,
         500 => 10,
+        2500 => 50,
         3000 => 60,
         10000 => 200,
         _ => 60,
@@ -210,6 +213,13 @@ pub async fn discover_active_pools_from_dune(
             (DexType::Dodo, 0)
         } else if project.contains("clipper") {
             (DexType::Clipper, 0)
+        } else if project.contains("solidly") || project.contains("velodrome")
+            || project.contains("aerodrome") || project.contains("equalizer")
+            || project.contains("thena") || project.contains(" Ramses")
+        {
+            (DexType::Solidly, 30)
+        } else if project.contains("camelot") {
+            (DexType::Camelot, 0)
         } else {
             (DexType::UniswapV2, DuneClient::col_as_u64(row, "fee").unwrap_or(30) as u32)
         };

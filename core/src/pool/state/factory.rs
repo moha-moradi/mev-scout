@@ -296,6 +296,10 @@ impl PoolManager {
                 Self::fetch_curve_state(rpc, pool, block).await
             }
             DexType::Dodo | DexType::Clipper => None,
+            DexType::Solidly | DexType::Camelot => {
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
+                Some(PoolInitResult::V2Reserves(r0, r1))
+            }
         }
     }
 

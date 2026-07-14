@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use alloy::primitives::Address;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::DiscoverArgs;
 use mev_scout_core::cache::SqliteStore;
@@ -64,21 +65,36 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
     };
 
-    println!();
-    println!("  Pool Discovery");
-    println!("  Chain:       {}", chain_name);
-    println!("  Block range: {}–{}", from, to);
-    let sources: Vec<&str> = {
-        let mut v = Vec::new();
-        if use_dune { v.push("Dune Analytics"); }
-        if use_onchain { v.push("on-chain events"); }
-        v
-    };
-    println!("  Sources:     {}", sources.join(" + "));
-    println!();
+    if !args.json {
+        println!();
+        println!("  Pool Discovery");
+        println!("  Chain:       {}", chain_name);
+        println!("  Block range: {}–{}", from, to);
+        let sources: Vec<&str> = {
+            let mut v = Vec::new();
+            if use_dune { v.push("Dune Analytics"); }
+            if use_onchain { v.push("on-chain events"); }
+            v
+        };
+        println!("  Sources:     {}", sources.join(" + "));
+        println!();
+    }
+
+    let total_blocks = to - from + 1;
+    let pb = ProgressBar::new(total_blocks);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("  [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
+            .progress_chars("=> "),
+    );
+    let tick = || pb.inc(1);
 
     let mut all_pools: Vec<DiscoveredPool> = Vec::new();
     let mut all_active_blocks = HashSet::new();
+
+    // Open cache once and reuse
+    let cache_path = config.effective_db_path(&chain_name);
+    let cache = SqliteStore::open(&cache_path, chain_id)?;
 
     // ── Factory address resolution (used by both on-chain scan and enrichment) ──
     let batch_size = args.batch_size;
@@ -113,19 +129,16 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         chain_name.default_camelot_factories().iter().filter_map(|s| s.parse().ok()).collect()
     };
 
-    if !v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
-        || !solidly_factories.is_empty() || !camelot_factories.is_empty()
+    if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
+        || !solidly_factories.is_empty() || !camelot_factories.is_empty())
     {
         tracing::info!("Factories: {} V2, {} V3, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
             v2_factories.len(), v3_factories.len(), solidly_factories.len(), camelot_factories.len(),
             vault.is_some(), registry.is_some());
     }
 
-    // ── Phase 1: On-chain event scan discovery (runs first so factory,
-    //    pool_id, tick_spacing metadata from events takes priority) ──
+    // ── Phase 1: On-chain event scan discovery ──
     if use_onchain {
-        let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
-
         match mev_scout_core::pool::discovery::discover_and_cache(
             &rpc, &cache, from, to, batch_size, v2_fee, vault,
             if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
@@ -133,6 +146,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             None, registry,
             if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
             if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+            Some(&tick),
         ).await {
             Ok((pools, active_blocks)) => {
                 tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
@@ -142,22 +156,24 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
         }
     }
+    pb.finish_and_clear();
 
-    // ── Phase 1.5: (removed) Factory metadata enrichment via RPC is impractical
-    // on drpc's free tier (10K block range limit per getLogs; scanning 90M blocks
-    // would require 54K+ requests; creation events for discovered pools are typically
-    // years old and outside the discovery range). Defaults (V2 slot 6, V3 tick_spacing 60)
-    // handle most cases. Balancer pool_id remains unavailable for Dune-discovered pools. 
-
-    // ── Phase 2: Dune Analytics discovery (gap-fill for pools missed on-chain) ──
+    // ── Phase 2: Dune Analytics discovery ──
     if use_dune {
         let api_key = config.dune_api_key.as_ref().expect("dune_api_key checked above");
         let dune = DuneClient::new(api_key.clone());
         tracing::info!("Starting Dune pool discovery for {}", chain_name);
 
-        let fee = chain_config.uniswap_v2_default_fee.unwrap_or(30);
+        let dune_pb = ProgressBar::new_spinner();
+        dune_pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("  {spinner:.cyan} Dune: {msg}")?
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        dune_pb.set_message("querying V2 pools...");
+        let dune_fee = chain_config.uniswap_v2_default_fee.unwrap_or(30);
         match mev_scout_core::dune::pool_discovery::discover_v2_pools_from_dune(
-            &dune, &chain_name.to_string(), from, to, fee,
+            &dune, &chain_name.to_string(), from, to, dune_fee,
         ).await {
             Ok(pools) => {
                 tracing::info!("Dune V2: found {} pools", pools.len());
@@ -165,6 +181,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             }
             Err(e) => eprintln!("  Warning: Dune V2 discovery failed: {e:#}"),
         }
+
+        dune_pb.set_message("querying V3 pools...");
+        dune_pb.tick();
         match mev_scout_core::dune::pool_discovery::discover_v3_pools_from_dune(
             &dune, &chain_name.to_string(), from, to,
         ).await {
@@ -174,6 +193,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             }
             Err(e) => eprintln!("  Warning: Dune V3 discovery failed: {e:#}"),
         }
+
+        dune_pb.set_message("querying active pools...");
+        dune_pb.tick();
         match mev_scout_core::dune::pool_discovery::discover_active_pools_from_dune(
             &dune, &chain_name.to_string(), from, to,
         ).await {
@@ -183,6 +205,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             }
             Err(e) => eprintln!("  Warning: Dune active pool discovery failed: {e:#}"),
         }
+        dune_pb.finish_and_clear();
     }
 
     // ── Phase 3: Dedup by address (on-chain pools take priority) ──
@@ -195,51 +218,50 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     // ── Phase 4: Display & cache ──
-    if source == "dune" {
-        println!("  Dune Only — pool metadata may be partial (token0, token1 only).");
-        println!("  Use --source all or --source onchain for full metadata.");
-        println!();
-    }
-
-    for p in &pools {
-        match p.dex_type {
-            DexType::UniswapV2 => {
-                println!("  V2  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-            }
-            DexType::UniswapV3 => {
-                println!("  V3  {}  token0={}  token1={}  fee={}  tickSpacing={}",
-                    p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
-            }
-            DexType::Balancer => {
-                println!("  Balancer  {}", p.address);
-            }
-            DexType::Curve => {
-                println!("  Curve  {}", p.address);
-            }
-            DexType::Dodo => {
-                println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-            }
-            DexType::Clipper => {
-                println!("  Clipper  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-            }
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&pools)?);
+    } else {
+        if source == "dune" {
+            println!("  Dune Only — pool metadata may be partial (token0, token1 only).");
+            println!("  Use --source all or --source onchain for full metadata.");
+            println!();
         }
-    }
-    println!();
-    println!("  Found {} pool(s) in {} active blocks", pools.len(), all_active_blocks.len());
 
-    let cache_path = config.effective_db_path(&chain_name);
-    if let Ok(cache) = SqliteStore::open(&cache_path, chain_id) {
-        let mut saved = 0usize;
         for p in &pools {
-            let info: mev_scout_core::pool::state::PoolInfo = p.clone().into();
-            if cache.put_discovered_pool(&info).is_ok() {
-                saved += 1;
+            match p.dex_type {
+                DexType::UniswapV2 => {
+                    println!("  V2  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
+                DexType::UniswapV3 => {
+                    println!("  V3  {}  token0={}  token1={}  fee={}  tickSpacing={}",
+                        p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
+                }
+                DexType::Solidly => {
+                    println!("  Solidly  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
+                DexType::Camelot => {
+                    println!("  Camelot  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
+                DexType::Balancer => {
+                    println!("  Balancer  {}", p.address);
+                }
+                DexType::Curve => {
+                    println!("  Curve  {}", p.address);
+                }
+                DexType::Dodo => {
+                    println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
+                DexType::Clipper => {
+                    println!("  Clipper  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
             }
         }
-        if saved > 0 {
-            println!("  Saved {saved} pool(s) to cache: {cache_path}");
-        }
+        println!();
+        println!("  Found {} pool(s) in {} active blocks", pools.len(), all_active_blocks.len());
     }
+
+    // Cache is already populated by discover_and_cache and Dune discovery above.
+    // No need to save again.
 
     Ok(())
 }

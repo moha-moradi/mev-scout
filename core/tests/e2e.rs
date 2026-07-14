@@ -8,7 +8,7 @@ use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::types::MevOpportunity;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pool::dex_type::DexType;
-use mev_scout_core::pool::discovery::discover_pools;
+use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState,
     UniswapV3PoolState,
@@ -105,6 +105,13 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             scaling_factors: vec![],
             bpt_index: None,
         }),
+        DexType::Solidly | DexType::Camelot | DexType::Dodo | DexType::Clipper => {
+            PoolState::UniswapV2(UniswapV2PoolState {
+                info,
+                reserve0: 0,
+                reserve1: 0,
+            })
+        }
     }
 }
 
@@ -246,9 +253,19 @@ async fn test_e2e_pool_discovery() {
     let end = tip;
     let v2_factories = vec![quick_v2_factory()];
     eprintln!("  Discovering pools on QuickSwap factory [{start}..{end}]");
+    let disc_config = DiscoveryConfig {
+        batch_size: 2000,
+        v2_fee_override: None,
+        balancer_vault: None,
+        v2_factories: Some(&v2_factories),
+        v3_factories: None,
+        curve_registry: None,
+        solidly_factories: None,
+        camelot_factories: None,
+    };
     let (pools, _active) = match discover_pools(
-        &rpc, start, end, 2000, None, None,
-        Some(&v2_factories), None, None, None, None, None,
+        &rpc, start, end, &disc_config,
+        None,
     ).await {
         Ok((p, a)) => (p, a),
         Err(e) => {

@@ -651,5 +651,12 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
         crate::pool::dex_type::DexType::Clipper => {
             pool_manager.add_pool(PoolState::Clipper(info));
         }
+        crate::pool::dex_type::DexType::Solidly | crate::pool::dex_type::DexType::Camelot => {
+            pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+                info,
+                reserve0: 0,
+                reserve1: 0,
+            }));
+        }
     }
 }

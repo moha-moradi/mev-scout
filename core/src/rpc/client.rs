@@ -108,6 +108,12 @@ impl RpcClient {
         format!("{} providers: {}", provs.len(), entries.join("  "))
     }
 
+    /// Returns true if at least one provider is available (not in cooldown, not dead).
+    pub async fn has_healthy_providers(&self) -> bool {
+        let provs = self.providers.lock().await;
+        provs.iter().any(|p| p.is_available())
+    }
+
     /// Set per-provider RPS limits. Index i maps to provider i.
     pub async fn with_provider_rps(&self, rps_list: &[f64]) {
         let mut provs = self.providers.lock().await;

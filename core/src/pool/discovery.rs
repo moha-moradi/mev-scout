@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use alloy::primitives::{keccak256, Address, B256, Bytes};
 use alloy::rpc::types::Filter;
@@ -90,6 +91,147 @@ impl From<DiscoveredPool> for PoolInfo {
     }
 }
 
+/// Configuration for pool discovery parameters.
+pub struct DiscoveryConfig<'a> {
+    pub batch_size: u64,
+    pub v2_fee_override: Option<u32>,
+    pub balancer_vault: Option<Address>,
+    pub v2_factories: Option<&'a [Address]>,
+    pub v3_factories: Option<&'a [Address]>,
+    pub curve_registry: Option<Address>,
+    pub solidly_factories: Option<&'a [Address]>,
+    pub camelot_factories: Option<&'a [Address]>,
+}
+
+// ── Helper: retry wrapper for eth_getLogs ──
+
+const MAX_RETRIES: u32 = 3;
+const BASE_DELAY_MS: u64 = 1_000;
+
+async fn get_logs_with_retry(
+    rpc: &RpcClient,
+    filter: &Filter,
+    batch_start: u64,
+    batch_end: u64,
+) -> anyhow::Result<Vec<alloy::rpc::types::Log>> {
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match rpc.get_logs(filter).await {
+            Ok(logs) => return Ok(logs),
+            Err(e) => {
+                if attempt < MAX_RETRIES - 1 {
+                    let delay = BASE_DELAY_MS * 2u64.pow(attempt);
+                    tracing::warn!(
+                        "get_logs failed for {batch_start}..{batch_end} (attempt {}/{}): {:#}. \
+                         Retrying in {}ms...",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+// ── Helper: classify a DEX event log ──
+
+/// Returns `(dex_type, pool_id, tokens)` for a recognized DEX event log.
+fn classify_dex_event(
+    log: &alloy::rpc::types::Log,
+) -> Option<(DexType, Option<[u8; 32]>, Option<(Address, Address)>)> {
+    let topic0 = log.topics()[0];
+    if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
+        return Some((DexType::UniswapV2, None, None));
+    }
+    if topic0 == *topics::DODO_SWAP {
+        return Some((DexType::Dodo, None, None));
+    }
+    if topic0 == *topics::CLIPPER_SWAPPED {
+        let topics = log.topics();
+        let tokens = if topics.len() >= 4 {
+            let token_in = Address::from_slice(&topics[3][12..]);
+            let token_out = if log.data().data.len() >= 32 {
+                Address::from_slice(&log.data().data[12..32])
+            } else {
+                Address::ZERO
+            };
+            Some((token_in, token_out))
+        } else {
+            None
+        };
+        return Some((DexType::Clipper, None, tokens));
+    }
+    if topic0 == topics::V3_SWAP
+        || topic0 == *topics::V3_MINT
+        || topic0 == topics::V3_BURN
+    {
+        return Some((DexType::UniswapV3, None, None));
+    }
+    if topic0 == *topics::CURVE_TOKEN_EXCHANGE
+        || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
+        || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
+        || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING
+    {
+        return Some((DexType::Curve, None, None));
+    }
+    if topic0 == *topics::BALANCER_SWAP {
+        let topics = log.topics();
+        if topics.len() >= 4 {
+            let mut pool_id = [0u8; 32];
+            pool_id.copy_from_slice(topics[1].as_slice());
+            let token_in = Address::from_slice(&topics[2][12..]);
+            let token_out = Address::from_slice(&topics[3][12..]);
+            return Some((DexType::Balancer, Some(pool_id), Some((token_in, token_out))));
+        }
+        return Some((DexType::Balancer, None, None));
+    }
+    None
+}
+
+// ── Helper: scan factory creation events ──
+
+async fn scan_factory_creation_events(
+    rpc: &RpcClient,
+    factories: &[Address],
+    topic: B256,
+    from_block: u64,
+    to_block: u64,
+    active_blocks: &mut HashSet<u64>,
+    factory_pools: &mut HashMap<Address, DiscoveredPool>,
+    decode_fn: impl Fn(&alloy::rpc::types::Log) -> Option<(Address, DiscoveredPool)>,
+) {
+    if factories.is_empty() {
+        return;
+    }
+    let filter = Filter::new()
+        .address(factories.to_vec())
+        .event_signature(topic)
+        .from_block(from_block)
+        .to_block(to_block);
+    match get_logs_with_retry(rpc, &filter, from_block, to_block).await {
+        Ok(logs) => {
+            for log in &logs {
+                if let Some(bn) = log.block_number {
+                    active_blocks.insert(bn);
+                }
+                if let Some((addr, pool)) = decode_fn(log) {
+                    factory_pools.entry(addr).or_insert(pool);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Factory scan failed for {from_block}..{to_block} (topic {topic}): {e:#}"
+            );
+        }
+    }
+}
+
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).
 ///
@@ -120,27 +262,30 @@ pub async fn discover_pools(
     rpc: &RpcClient,
     from_block: u64,
     to_block: u64,
-    batch_size: u64,
-    v2_fee_override: Option<u32>,
-    balancer_vault: Option<Address>,
-    v2_factories: Option<&[Address]>,
-    v3_factories: Option<&[Address]>,
-    _v2_factory_fees: Option<&[Option<u32>]>,
-    curve_registry: Option<Address>,
-    solidly_factories: Option<&[Address]>,
-    camelot_factories: Option<&[Address]>,
+    config: &DiscoveryConfig<'_>,
+    on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let mut active_blocks = HashSet::new();
     // Pools discovered via DEX activity events (may need metadata fetch)
+    // Value: (dex_type, pool_id, tokens, first_seen_block)
     let mut pool_hits: HashMap<
         Address,
-        (DexType, Option<[u8; 32]>, Option<(Address, Address)>),
+        (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64),
     > = HashMap::new();
     // Pools with full metadata from factory creation events (skip RPC fetch)
     let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();
 
-    // ── Phase 1: Scan events (both DEX activity and factory creation) ──
-    let dex_topics = vec![
+    // Pre-build DEX activity topic lists
+    let fast_topics: Vec<B256> = vec![
+        topics::V2_SWAP,
+        topics::V2_SYNC,
+        topics::V3_SWAP,
+        *topics::V3_MINT,
+        topics::V3_BURN,
+        *topics::DODO_SWAP,
+        *topics::CLIPPER_SWAPPED,
+    ];
+    let all_dex_topics: Vec<B256> = vec![
         topics::V2_SWAP,
         topics::V2_SYNC,
         topics::V3_SWAP,
@@ -157,20 +302,19 @@ pub async fn discover_pools(
 
     let mut current = from_block;
     while current <= to_block {
-        let batch_end = (current + batch_size - 1).min(to_block);
+        let batch_end = (current + config.batch_size - 1).min(to_block);
 
-        // ── DEX activity scan ──
-        let fast_topics: Vec<B256> = vec![
-            topics::V2_SWAP,
-            topics::V2_SYNC,
-            topics::V3_SWAP,
-            *topics::V3_MINT,
-            topics::V3_BURN,
-            *topics::DODO_SWAP,
-            *topics::CLIPPER_SWAPPED,
-        ];
+        // ── Provider health check (wait if all providers in cooldown) ──
+        if !rpc.has_healthy_providers().await {
+            tracing::warn!(
+                "All RPC providers in cooldown before batch {current}..{batch_end}, waiting 5s..."
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+
+        // ── DEX activity scan (fast path: skip Curve/Balancer topics) ──
         let fast_filter = Filter::new()
-            .event_signature(fast_topics)
+            .event_signature(fast_topics.clone())
             .from_block(current)
             .to_block(batch_end);
 
@@ -181,32 +325,14 @@ pub async fn discover_pools(
                         active_blocks.insert(bn);
                     }
                     let addr = log.address();
-                    let topic0 = log.topics()[0];
-                    let dex_type = if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
-                        DexType::UniswapV2
-                    } else if topic0 == *topics::DODO_SWAP {
-                        DexType::Dodo
-                    } else if topic0 == *topics::CLIPPER_SWAPPED {
-                        // Extract inAsset from topic3 for Clipper pool metadata
-                        let topics = log.topics();
-                        let tokens = if topics.len() >= 4 {
-                            let token_in = Address::from_slice(&topics[3][12..]);
-                            // outAsset is first 32 bytes of data (non-indexed)
-                            let token_out = if log.data().data.len() >= 32 {
-                                Address::from_slice(&log.data().data[12..32])
-                            } else {
-                                Address::ZERO
-                            };
-                            Some((token_in, token_out))
-                        } else {
-                            None
-                        };
-                        pool_hits.entry(addr).or_insert((DexType::Clipper, None, tokens));
-                        continue;
-                    } else {
-                        DexType::UniswapV3
-                    };
-                    pool_hits.entry(addr).or_insert((dex_type, None, None));
+                    if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
+                        let block_num = log.block_number.unwrap_or(0);
+                        let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
+                        // Track earliest block for creation_block
+                        if block_num > 0 && block_num < entry.3 {
+                            entry.3 = block_num;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -215,7 +341,7 @@ pub async fn discover_pools(
                      Trying full topic set."
                 );
                 let full_filter = Filter::new()
-                    .event_signature(dex_topics.clone())
+                    .event_signature(all_dex_topics.clone())
                     .from_block(current)
                     .to_block(batch_end);
                 match rpc.get_logs(&full_filter).await {
@@ -225,49 +351,12 @@ pub async fn discover_pools(
                                 active_blocks.insert(bn);
                             }
                             let addr = log.address();
-                            let topic0 = log.topics()[0];
-                            if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
-                                pool_hits.entry(addr).or_insert((DexType::UniswapV2, None, None));
-                            } else if topic0 == topics::V3_SWAP
-                                || topic0 == *topics::V3_MINT
-                                || topic0 == topics::V3_BURN
-                            {
-                                pool_hits.entry(addr).or_insert((DexType::UniswapV3, None, None));
-                            } else if topic0 == *topics::CURVE_TOKEN_EXCHANGE
-                                || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
-                                || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
-                                || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING
-                            {
-                                pool_hits.entry(addr).or_insert((DexType::Curve, None, None));
-                            } else if topic0 == *topics::BALANCER_SWAP {
-                                let topics = log.topics();
-                                if topics.len() >= 4 {
-                                    let mut pool_id = [0u8; 32];
-                                    pool_id.copy_from_slice(topics[1].as_slice());
-                                    let token_in = Address::from_slice(&topics[2][12..]);
-                                    let token_out = Address::from_slice(&topics[3][12..]);
-                                    pool_hits.entry(addr).or_insert((
-                                        DexType::Balancer,
-                                        Some(pool_id),
-                                        Some((token_in, token_out)),
-                                    ));
+                            if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
+                                let block_num = log.block_number.unwrap_or(0);
+                                let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
+                                if block_num > 0 && block_num < entry.3 {
+                                    entry.3 = block_num;
                                 }
-                            } else if topic0 == *topics::DODO_SWAP {
-                                pool_hits.entry(addr).or_insert((DexType::Dodo, None, None));
-                            } else if topic0 == *topics::CLIPPER_SWAPPED {
-                                let topics = log.topics();
-                                let tokens = if topics.len() >= 4 {
-                                    let token_in = Address::from_slice(&topics[3][12..]);
-                                    let token_out = if log.data().data.len() >= 32 {
-                                        Address::from_slice(&log.data().data[12..32])
-                                    } else {
-                                        Address::ZERO
-                                    };
-                                    Some((token_in, token_out))
-                                } else {
-                                    None
-                                };
-                                pool_hits.entry(addr).or_insert((DexType::Clipper, None, tokens));
                             }
                         }
                     }
@@ -282,257 +371,199 @@ pub async fn discover_pools(
         }
 
         // ── V2 factory creation scan (PairCreated) ──
-        if let Some(factories) = v2_factories {
-            if !factories.is_empty() {
-                let v2_filter = Filter::new()
-                    .address(factories.to_vec())
-                    .event_signature(*V2_PAIR_CREATED_TOPIC)
-                    .from_block(current)
-                    .to_block(batch_end);
-                if let Ok(logs) = rpc.get_logs(&v2_filter).await {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let log_data = log.data();
-                        let topics = log.topics();
-                        if log_data.data.len() < 64 || topics.len() < 3 {
-                            continue;
-                        }
-                        let addr = Address::from_slice(&log_data.data[12..32]);
-                        if factory_pools.contains_key(&addr) {
-                            continue;
-                        }
-                        let token0 = Address::from_slice(&topics[1][12..]);
-                        let token1 = Address::from_slice(&topics[2][12..]);
-                        let creation_block = log.block_number.unwrap_or(to_block);
-                        factory_pools.insert(addr, DiscoveredPool {
-                            address: addr,
-                            token0,
-                            token1,
-                            fee: v2_fee_override.unwrap_or(30),
-                            tick_spacing: None,
-                            dex_type: DexType::UniswapV2,
-                            creation_block,
-                            pool_id: None,
-                            factory: Some(log.address()),
-                        });
+        if let Some(factories) = config.v2_factories {
+            let fee = config.v2_fee_override.unwrap_or(30);
+            scan_factory_creation_events(
+                rpc, factories, *V2_PAIR_CREATED_TOPIC, current, batch_end,
+                &mut active_blocks, &mut factory_pools,
+                |log| {
+                    let log_data = log.data();
+                    let topics = log.topics();
+                    if log_data.data.len() < 64 || topics.len() < 3 {
+                        return None;
                     }
-                }
-            }
+                    let addr = Address::from_slice(&log_data.data[12..32]);
+                    let token0 = Address::from_slice(&topics[1][12..]);
+                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let creation_block = log.block_number.unwrap_or(0);
+                    Some((addr, DiscoveredPool {
+                        address: addr, token0, token1,
+                        fee, tick_spacing: None, dex_type: DexType::UniswapV2,
+                        creation_block, pool_id: None, factory: Some(log.address()),
+                    }))
+                },
+            ).await;
         }
 
         // ── V3 factory creation scan (PoolCreated) ──
-        if let Some(factories) = v3_factories {
-            if !factories.is_empty() {
-                let v3_filter = Filter::new()
-                    .address(factories.to_vec())
-                    .event_signature(*V3_POOL_CREATED_TOPIC)
-                    .from_block(current)
-                    .to_block(batch_end);
-                if let Ok(logs) = rpc.get_logs(&v3_filter).await {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let log_data = log.data();
-                        let topics = log.topics();
-                        if log_data.data.len() < 64 || topics.len() < 4 {
-                            continue;
-                        }
-                        let pool_addr = Address::from_slice(&log_data.data[44..64]);
-                        if factory_pools.contains_key(&pool_addr) {
-                            continue;
-                        }
-                        let token0 = Address::from_slice(&topics[1][12..]);
-                        let token1 = Address::from_slice(&topics[2][12..]);
-                        let fee = u32::from_be_bytes([
-                            topics[3][28], topics[3][29], topics[3][30], topics[3][31],
-                        ]);
-                        let tick_spacing = {
-                            let mut ts_bytes = [0u8; 4];
-                            ts_bytes.copy_from_slice(&log_data.data[28..32]);
-                            Some(i32::from_be_bytes(ts_bytes))
-                        };
-                        let creation_block = log.block_number.unwrap_or(to_block);
-                        factory_pools.insert(pool_addr, DiscoveredPool {
-                            address: pool_addr,
-                            token0,
-                            token1,
-                            fee,
-                            tick_spacing,
-                            dex_type: DexType::UniswapV3,
-                            creation_block,
-                            pool_id: None,
-                            factory: Some(log.address()),
-                        });
+        if let Some(factories) = config.v3_factories {
+            scan_factory_creation_events(
+                rpc, factories, *V3_POOL_CREATED_TOPIC, current, batch_end,
+                &mut active_blocks, &mut factory_pools,
+                |log| {
+                    let log_data = log.data();
+                    let topics = log.topics();
+                    if log_data.data.len() < 64 || topics.len() < 4 {
+                        return None;
                     }
-                }
-            }
+                    let pool_addr = Address::from_slice(&log_data.data[44..64]);
+                    let token0 = Address::from_slice(&topics[1][12..]);
+                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let fee = u32::from_be_bytes([
+                        topics[3][28], topics[3][29], topics[3][30], topics[3][31],
+                    ]);
+                    let tick_spacing = {
+                        let mut ts_bytes = [0u8; 4];
+                        ts_bytes.copy_from_slice(&log_data.data[28..32]);
+                        Some(i32::from_be_bytes(ts_bytes))
+                    };
+                    let creation_block = log.block_number.unwrap_or(0);
+                    Some((pool_addr, DiscoveredPool {
+                        address: pool_addr, token0, token1,
+                        fee, tick_spacing, dex_type: DexType::UniswapV3,
+                        creation_block, pool_id: None, factory: Some(log.address()),
+                    }))
+                },
+            ).await;
         }
 
         // ── Balancer vault scan (PoolRegistered) ──
-        if let Some(vault) = balancer_vault {
-            let bal_filter = Filter::new()
+        if let Some(vault) = config.balancer_vault {
+            let filter = Filter::new()
                 .address(vault)
                 .event_signature(*BALANCER_POOL_REGISTERED_TOPIC)
                 .from_block(current)
                 .to_block(batch_end);
-            if let Ok(logs) = rpc.get_logs(&bal_filter).await {
-                for log in &logs {
-                    if let Some(bn) = log.block_number {
-                        active_blocks.insert(bn);
+            match get_logs_with_retry(rpc, &filter, current, batch_end).await {
+                Ok(logs) => {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let topics = log.topics();
+                        if topics.len() < 4 {
+                            continue;
+                        }
+                        let pool_type = topics[3][31];
+                        // Weighted (0), Weighted2Tokens (1), ComposableStable (3) are valid.
+                        if pool_type == 2 || pool_type > 3 {
+                            continue;
+                        }
+                        let mut pool_id = [0u8; 32];
+                        pool_id.copy_from_slice(topics[1].as_slice());
+                        let pool_addr = Address::from_slice(&topics[2][12..32]);
+                        let creation_block = log.block_number.unwrap_or(0);
+                        pool_hits.entry(pool_addr).or_insert((
+                            DexType::Balancer, Some(pool_id), None, creation_block,
+                        ));
+                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
+                            address: pool_addr,
+                            token0: Address::ZERO, token1: Address::ZERO,
+                            fee: 0, tick_spacing: None,
+                            dex_type: DexType::Balancer,
+                            creation_block, pool_id: Some(pool_id),
+                            factory: Some(vault),
+                        });
                     }
-                    let topics = log.topics();
-                    if topics.len() < 4 {
-                        continue;
-                    }
-                    let pool_type = topics[3][31];
-                    if pool_type > 1 {
-                        continue;
-                    }
-                    let mut pool_id = [0u8; 32];
-                    pool_id.copy_from_slice(topics[1].as_slice());
-                    let pool_addr = Address::from_slice(&topics[2][12..32]);
-                    let creation_block = log.block_number.unwrap_or(to_block);
-                    // Add to pool_hits (needs RPC for tokens/fee)
-                    pool_hits.entry(pool_addr).or_insert((
-                        DexType::Balancer,
-                        Some(pool_id),
-                        None,
-                    ));
-                    // Also add to factory_pools with partial metadata
-                    factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
-                        address: pool_addr,
-                        token0: Address::ZERO,
-                        token1: Address::ZERO,
-                        fee: 0,
-                        tick_spacing: None,
-                        dex_type: DexType::Balancer,
-                        creation_block,
-                        pool_id: Some(pool_id),
-                        factory: Some(vault),
-                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Balancer vault scan failed for {current}..{batch_end}: {e:#}"
+                    );
                 }
             }
         }
 
         // ── Curve registry scan (PoolAdded) ──
-        if let Some(registry) = curve_registry {
-            let curve_filter = Filter::new()
+        if let Some(registry) = config.curve_registry {
+            let filter = Filter::new()
                 .address(registry)
                 .event_signature(*CURVE_POOL_ADDED_TOPIC)
                 .from_block(current)
                 .to_block(batch_end);
-            if let Ok(logs) = rpc.get_logs(&curve_filter).await {
-                for log in &logs {
-                    if let Some(bn) = log.block_number {
-                        active_blocks.insert(bn);
+            match get_logs_with_retry(rpc, &filter, current, batch_end).await {
+                Ok(logs) => {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let topics = log.topics();
+                        if topics.len() < 2 {
+                            continue;
+                        }
+                        let pool_addr = Address::from_slice(&topics[1][12..32]);
+                        let creation_block = log.block_number.unwrap_or(0);
+                        pool_hits.entry(pool_addr).or_insert((
+                            DexType::Curve, None, None, creation_block,
+                        ));
+                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
+                            address: pool_addr,
+                            token0: Address::ZERO, token1: Address::ZERO,
+                            fee: 0, tick_spacing: None,
+                            dex_type: DexType::Curve,
+                            creation_block, pool_id: None, factory: Some(registry),
+                        });
                     }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Curve registry scan failed for {current}..{batch_end}: {e:#}"
+                    );
+                }
+            }
+        }
+
+        // ── Solidly factory creation scan ──
+        if let Some(factories) = config.solidly_factories {
+            let fee = config.v2_fee_override.unwrap_or(30);
+            scan_factory_creation_events(
+                rpc, factories, *SOLIDLY_PAIR_CREATED_TOPIC, current, batch_end,
+                &mut active_blocks, &mut factory_pools,
+                |log| {
+                    let log_data = log.data();
                     let topics = log.topics();
-                    if topics.len() < 2 {
-                        continue;
+                    if log_data.data.len() < 64 || topics.len() < 3 {
+                        return None;
                     }
-                    let pool_addr = Address::from_slice(&topics[1][12..32]);
-                    let creation_block = log.block_number.unwrap_or(to_block);
-                    // Add to pool_hits (needs RPC for tokens)
-                    pool_hits.entry(pool_addr).or_insert((DexType::Curve, None, None));
-                    // Also add to factory_pools with partial metadata
-                    factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
-                        address: pool_addr,
-                        token0: Address::ZERO,
-                        token1: Address::ZERO,
-                        fee: 0,
-                        tick_spacing: None,
-                        dex_type: DexType::Curve,
-                        creation_block,
-                        pool_id: None,
-                        factory: Some(registry),
-                    });
-                }
-            }
+                    let pair_addr = Address::from_slice(&log_data.data[44..64]);
+                    let token0 = Address::from_slice(&topics[1][12..]);
+                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let creation_block = log.block_number.unwrap_or(0);
+                    Some((pair_addr, DiscoveredPool {
+                        address: pair_addr, token0, token1,
+                        fee, tick_spacing: None, dex_type: DexType::Solidly,
+                        creation_block, pool_id: None, factory: Some(log.address()),
+                    }))
+                },
+            ).await;
         }
 
-        // ── Solidly-style factory creation scan (PairCreated with bool stable) ──
-        if let Some(factories) = solidly_factories {
-            if !factories.is_empty() {
-                let filter = Filter::new()
-                    .address(factories.to_vec())
-                    .event_signature(*SOLIDLY_PAIR_CREATED_TOPIC)
-                    .from_block(current)
-                    .to_block(batch_end);
-                if let Ok(logs) = rpc.get_logs(&filter).await {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let log_data = log.data();
-                        let topics = log.topics();
-                        if log_data.data.len() < 64 || topics.len() < 3 {
-                            continue;
-                        }
-                        let pair_addr = Address::from_slice(&log_data.data[44..64]);
-                        if factory_pools.contains_key(&pair_addr) {
-                            continue;
-                        }
-                        let token0 = Address::from_slice(&topics[1][12..]);
-                        let token1 = Address::from_slice(&topics[2][12..]);
-                        let creation_block = log.block_number.unwrap_or(to_block);
-                        factory_pools.insert(pair_addr, DiscoveredPool {
-                            address: pair_addr,
-                            token0,
-                            token1,
-                            fee: v2_fee_override.unwrap_or(30),
-                            tick_spacing: None,
-                            dex_type: DexType::UniswapV2,
-                            creation_block,
-                            pool_id: None,
-                            factory: Some(log.address()),
-                        });
+        // ── Camelot factory creation scan ──
+        if let Some(factories) = config.camelot_factories {
+            scan_factory_creation_events(
+                rpc, factories, *CAMELOT_PAIR_CREATED_TOPIC, current, batch_end,
+                &mut active_blocks, &mut factory_pools,
+                |log| {
+                    let log_data = log.data();
+                    let topics = log.topics();
+                    if log_data.data.len() < 96 || topics.len() < 3 {
+                        return None;
                     }
-                }
-            }
+                    let pair_addr = Address::from_slice(&log_data.data[12..32]);
+                    let token0 = Address::from_slice(&topics[1][12..]);
+                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let creation_block = log.block_number.unwrap_or(0);
+                    Some((pair_addr, DiscoveredPool {
+                        address: pair_addr, token0, token1,
+                        fee: 0, tick_spacing: None, dex_type: DexType::Camelot,
+                        creation_block, pool_id: None, factory: Some(log.address()),
+                    }))
+                },
+            ).await;
         }
 
-        // ── Camelot factory creation scan (PairCreated with address,uint256,bool) ──
-        if let Some(factories) = camelot_factories {
-            if !factories.is_empty() {
-                let filter = Filter::new()
-                    .address(factories.to_vec())
-                    .event_signature(*CAMELOT_PAIR_CREATED_TOPIC)
-                    .from_block(current)
-                    .to_block(batch_end);
-                if let Ok(logs) = rpc.get_logs(&filter).await {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let log_data = log.data();
-                        let topics = log.topics();
-                        if log_data.data.len() < 96 || topics.len() < 3 {
-                            continue;
-                        }
-                        let pair_addr = Address::from_slice(&log_data.data[12..32]);
-                        if factory_pools.contains_key(&pair_addr) {
-                            continue;
-                        }
-                        let token0 = Address::from_slice(&topics[1][12..]);
-                        let token1 = Address::from_slice(&topics[2][12..]);
-                        let creation_block = log.block_number.unwrap_or(to_block);
-                        factory_pools.insert(pair_addr, DiscoveredPool {
-                            address: pair_addr,
-                            token0,
-                            token1,
-                            fee: v2_fee_override.unwrap_or(30),
-                            tick_spacing: None,
-                            dex_type: DexType::UniswapV2,
-                            creation_block,
-                            pool_id: None,
-                            factory: Some(log.address()),
-                        });
-                    }
-                }
-            }
+        if let Some(ref f) = on_batch {
+            f();
         }
 
         if batch_end == to_block {
@@ -560,13 +591,17 @@ pub async fn discover_pools(
 
     let ref_block = to_block;
 
-    type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>)> + Send>>;
+    type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>, u64)> + Send>>;
 
-    let mut discovered_pools = Vec::new();
     let mut fetch_tasks: Vec<FetchTask> = Vec::new();
 
-    for (addr, (dex_type, _balancer_pool_id, balancer_tokens)) in pool_hits.iter() {
-        // Skip V2/V3 pools already fully resolved via factory events
+    // Collect pool_hits data to avoid borrowing pool_hits across async boundaries
+    let pool_hits_vec: Vec<_> = pool_hits.iter().map(|(addr, (dt, pid, tokens, fsb))| {
+        (*addr, *dt, *pid, *tokens, *fsb)
+    }).collect();
+
+    for (addr, dex_type, _balancer_pool_id, balancer_tokens, first_seen_block) in &pool_hits_vec {
+        // Skip pools already fully resolved via factory events
         if let Some(fp) = factory_pools.get(addr) {
             match fp.dex_type {
                 DexType::UniswapV2 | DexType::UniswapV3 => continue,
@@ -574,17 +609,19 @@ pub async fn discover_pools(
             }
         }
         match dex_type {
-            DexType::UniswapV2 => {
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
                 let rpc = rpc.clone();
                 let addr = *addr;
                 let sel0 = token0_selector.clone();
                 let sel1 = token1_selector.clone();
+                let fsb = *first_seen_block;
+                let dex_type = *dex_type;
                 fetch_tasks.push(Box::pin(async move {
                     let token0 = rpc.call(addr, sel0, ref_block).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
                     let token1 = rpc.call(addr, sel1, ref_block).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    (addr, DexType::UniswapV2, token0, token1, None, None)
+                    (addr, dex_type, token0, token1, None, None, fsb)
                 }));
             }
             DexType::UniswapV3 => {
@@ -594,6 +631,7 @@ pub async fn discover_pools(
                 let sel1 = token1_selector.clone();
                 let sel_fee = fee_selector.clone();
                 let sel_ts = tick_spacing_selector.clone();
+                let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
                     let (token0, token1, fee, tick_spacing) = futures::future::join4(
                         async {
@@ -619,67 +657,89 @@ pub async fn discover_pools(
                                 }))
                         },
                     ).await;
-                    (addr, DexType::UniswapV3, token0, token1, fee, tick_spacing)
+                    (addr, DexType::UniswapV3, token0, token1, fee, tick_spacing, fsb)
                 }));
             }
             DexType::Curve | DexType::Balancer => {
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
                 let addr = *addr;
                 let dt = *dex_type;
+                let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
-                    (addr, dt, Some(t0), Some(t1), None, None)
+                    (addr, dt, Some(t0), Some(t1), None, None, fsb)
                 }));
             }
             DexType::Dodo => {
                 let rpc = rpc.clone();
                 let addr = *addr;
-                // DODO pools use _BASE_TOKEN_() and _QUOTE_TOKEN_() instead of standard token0()/token1()
                 let sel_base = Bytes::from_static(&[0xe1, 0x50, 0x31, 0x08]); // _BASE_TOKEN_()
                 let sel_quote = Bytes::from_static(&[0x0f, 0xd8, 0xba, 0xfe]); // _QUOTE_TOKEN_()
+                let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
                     let token0 = rpc.call(addr, sel_base, ref_block).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
                     let token1 = rpc.call(addr, sel_quote, ref_block).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    (addr, DexType::Dodo, token0, token1, None, None)
+                    (addr, DexType::Dodo, token0, token1, None, None, fsb)
                 }));
             }
             DexType::Clipper => {
-                // Clipper is a single multi-asset pool; extract tokens from event if available
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
                 let addr = *addr;
                 let dt = *dex_type;
+                let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
-                    (addr, dt, Some(t0), Some(t1), None, None)
+                    (addr, dt, Some(t0), Some(t1), None, None, fsb)
                 }));
             }
         }
     }
 
-    use futures::future::join_all;
-    let results = join_all(fetch_tasks).await;
+    // Bounded concurrency: limit parallel RPC calls to avoid overwhelming public RPCs
+    let rpc_concurrency = std::env::var("MEV_SCOUT_RPC_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+
+    use futures::stream::{self, StreamExt};
+    let results: Vec<_> = stream::iter(fetch_tasks)
+        .buffer_unordered(rpc_concurrency)
+        .collect()
+        .await;
 
     // ── Phase 3: Build output ──
+    // Use a HashSet for O(1) dedup instead of O(n²) linear scan
+    let mut resolved_addrs: HashSet<Address> = HashSet::new();
+    let mut discovered_pools = Vec::new();
+
     // First, add all factory-discovered pools (they have creation_block, factory, etc.)
     for (_, dp) in factory_pools.drain() {
+        resolved_addrs.insert(dp.address);
         discovered_pools.push(dp);
     }
 
     // Then, add metadata-fetched pools not already resolved
-    for (addr, dex_type, token0_opt, token1_opt, fee_opt, tick_spacing) in results {
-        if discovered_pools.iter().any(|p| p.address == addr) {
+    for (addr, dex_type, token0_opt, token1_opt, fee_opt, tick_spacing, first_seen_block) in results {
+        if !resolved_addrs.insert(addr) {
             continue;
         }
         let token0 = token0_opt.unwrap_or(Address::ZERO);
         let token1 = token1_opt.unwrap_or(Address::ZERO);
         let fee = match dex_type {
-            DexType::UniswapV2 => v2_fee_override.unwrap_or(30),
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
+                config.v2_fee_override.unwrap_or(match dex_type {
+                    DexType::Solidly => 30,
+                    DexType::Camelot => 0,
+                    _ => 30,
+                })
+            }
             DexType::UniswapV3 => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
             DexType::Dodo => fee_opt.unwrap_or(0),
             DexType::Clipper => fee_opt.unwrap_or(0),
         };
-        let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _)| *pid);
+        let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _, _)| *pid);
+        let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
 
         discovered_pools.push(DiscoveredPool {
             address: addr,
@@ -688,7 +748,7 @@ pub async fn discover_pools(
             fee,
             tick_spacing: tick_spacing.map(|ts| ts as i32),
             dex_type,
-            creation_block: 0,
+            creation_block,
             pool_id,
             factory: None,
         });
@@ -718,20 +778,20 @@ pub async fn discover_and_cache(
     curve_registry: Option<Address>,
     solidly_factories: Option<&[Address]>,
     camelot_factories: Option<&[Address]>,
+    on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let (pools, active_blocks) = discover_pools(
-        rpc,
-        from_block,
-        to_block,
+    let disc_config = DiscoveryConfig {
         batch_size,
         v2_fee_override,
         balancer_vault,
         v2_factories,
         v3_factories,
-        _v2_factory_fees,
         curve_registry,
         solidly_factories,
         camelot_factories,
+    };
+    let (pools, active_blocks) = discover_pools(
+        rpc, from_block, to_block, &disc_config, on_batch,
     )
     .await?;
 
@@ -772,6 +832,7 @@ pub async fn discover_pools_with_sources(
     curve_registry: Option<Address>,
     solidly_factories: Option<&[Address]>,
     camelot_factories: Option<&[Address]>,
+    on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let use_dune = config.dune_primary_pool_discovery && config.dune_api_key.is_some();
     let chain_str = chain_name.to_string();
@@ -832,6 +893,7 @@ pub async fn discover_pools_with_sources(
         rpc, cache, from_block, to_block, batch_size,
         v2_fee_override, balancer_vault, v2_factories, v3_factories,
         v2_factory_fees, curve_registry, solidly_factories, camelot_factories,
+        on_batch,
     ).await?;
 
     // Merge: on-chain pools take priority (richer metadata), but keep all
@@ -849,4 +911,3 @@ pub async fn discover_pools_with_sources(
 
     Ok((all_pools, active_blocks))
 }
-

@@ -1118,6 +1118,8 @@ fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::pool::dex_type::DexType> {
         3 => Ok(crate::pool::dex_type::DexType::Balancer),
         4 => Ok(crate::pool::dex_type::DexType::Dodo),
         5 => Ok(crate::pool::dex_type::DexType::Clipper),
+        6 => Ok(crate::pool::dex_type::DexType::Solidly),
+        7 => Ok(crate::pool::dex_type::DexType::Camelot),
         n => anyhow::bail!("invalid dex_type discriminant: {}", n),
     }
 }

@@ -357,6 +357,10 @@ pub struct DiscoverArgs {
     /// Requires configured dune_api_key and query IDs in config for "dune" or "all" sources.
     #[arg(long, default_value = "onchain", value_name = "SOURCE")]
     pub source: String,
+
+    /// Output discovered pools as JSON instead of human-readable tables
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug, Clone)]
