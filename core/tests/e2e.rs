@@ -262,6 +262,7 @@ async fn test_e2e_pool_discovery() {
         curve_registry: None,
         solidly_factories: None,
         camelot_factories: None,
+        rpc_concurrency: 64,
     };
     let (pools, _active) = match discover_pools(
         &rpc, start, end, &disc_config,

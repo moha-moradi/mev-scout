@@ -101,6 +101,8 @@ pub struct DiscoveryConfig<'a> {
     pub curve_registry: Option<Address>,
     pub solidly_factories: Option<&'a [Address]>,
     pub camelot_factories: Option<&'a [Address]>,
+    /// Max concurrent RPC calls for metadata fetch (default: 64).
+    pub rpc_concurrency: usize,
 }
 
 // ── Helper: retry wrapper for eth_getLogs ──
@@ -152,6 +154,10 @@ fn classify_dex_event(
         return Some((DexType::Dodo, None, None));
     }
     if topic0 == *topics::CLIPPER_SWAPPED {
+        // NOTE: Clipper pools are multi-asset (up to 8 tokens). The tokens
+        // extracted here are the swapped pair (tokenIn/tokenOut from the event),
+        // not the full pool token set. Token0/token1 in DiscoveredPool represent
+        // the most recently swapped pair only.
         let topics = log.topics();
         let tokens = if topics.len() >= 4 {
             let token_in = Address::from_slice(&topics[3][12..]);
@@ -318,7 +324,8 @@ pub async fn discover_pools(
             .from_block(current)
             .to_block(batch_end);
 
-        match rpc.get_logs(&fast_filter).await {
+        let fast_result = get_logs_with_retry(rpc, &fast_filter, current, batch_end).await;
+        match fast_result {
             Ok(logs) => {
                 for log in &logs {
                     if let Some(bn) = log.block_number {
@@ -344,7 +351,7 @@ pub async fn discover_pools(
                     .event_signature(all_dex_topics.clone())
                     .from_block(current)
                     .to_block(batch_end);
-                match rpc.get_logs(&full_filter).await {
+                match get_logs_with_retry(rpc, &full_filter, current, batch_end).await {
                     Ok(logs) => {
                         for log in &logs {
                             if let Some(bn) = log.block_number {
@@ -696,10 +703,7 @@ pub async fn discover_pools(
     }
 
     // Bounded concurrency: limit parallel RPC calls to avoid overwhelming public RPCs
-    let rpc_concurrency = std::env::var("MEV_SCOUT_RPC_CONCURRENCY")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(64);
+    let rpc_concurrency = config.rpc_concurrency;
 
     use futures::stream::{self, StreamExt};
     let results: Vec<_> = stream::iter(fetch_tasks)
@@ -769,29 +773,11 @@ pub async fn discover_and_cache(
     cache: &SqliteStore,
     from_block: u64,
     to_block: u64,
-    batch_size: u64,
-    v2_fee_override: Option<u32>,
-    balancer_vault: Option<Address>,
-    v2_factories: Option<&[Address]>,
-    v3_factories: Option<&[Address]>,
-    _v2_factory_fees: Option<&[Option<u32>]>,
-    curve_registry: Option<Address>,
-    solidly_factories: Option<&[Address]>,
-    camelot_factories: Option<&[Address]>,
+    config: &DiscoveryConfig<'_>,
     on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let disc_config = DiscoveryConfig {
-        batch_size,
-        v2_fee_override,
-        balancer_vault,
-        v2_factories,
-        v3_factories,
-        curve_registry,
-        solidly_factories,
-        camelot_factories,
-    };
     let (pools, active_blocks) = discover_pools(
-        rpc, from_block, to_block, &disc_config, on_batch,
+        rpc, from_block, to_block, config, on_batch,
     )
     .await?;
 
@@ -823,15 +809,7 @@ pub async fn discover_pools_with_sources(
     chain_name: crate::types::ChainName,
     from_block: u64,
     to_block: u64,
-    batch_size: u64,
-    v2_fee_override: Option<u32>,
-    balancer_vault: Option<Address>,
-    v2_factories: Option<&[Address]>,
-    v3_factories: Option<&[Address]>,
-    v2_factory_fees: Option<&[Option<u32>]>,
-    curve_registry: Option<Address>,
-    solidly_factories: Option<&[Address]>,
-    camelot_factories: Option<&[Address]>,
+    disc_config: &DiscoveryConfig<'_>,
     on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let use_dune = config.dune_primary_pool_discovery && config.dune_api_key.is_some();
@@ -843,7 +821,7 @@ pub async fn discover_pools_with_sources(
         let api_key = config.dune_api_key.as_ref().expect("checked above");
         let dune = crate::dune::DuneClient::new(api_key.clone());
 
-        let fee = v2_fee_override.unwrap_or(30);
+        let fee = disc_config.v2_fee_override.unwrap_or(30);
         match crate::dune::pool_discovery::discover_v2_pools_from_dune(
             &dune, &chain_str, from_block, to_block, fee,
         ).await {
@@ -890,9 +868,7 @@ pub async fn discover_pools_with_sources(
 
     // Always run on-chain discovery to catch pools Dune may have missed
     let (onchain_pools, active_blocks) = discover_and_cache(
-        rpc, cache, from_block, to_block, batch_size,
-        v2_fee_override, balancer_vault, v2_factories, v3_factories,
-        v2_factory_fees, curve_registry, solidly_factories, camelot_factories,
+        rpc, cache, from_block, to_block, disc_config,
         on_batch,
     ).await?;
 
@@ -910,4 +886,107 @@ pub async fn discover_pools_with_sources(
     );
 
     Ok((all_pools, active_blocks))
+}
+
+/// Post-discovery health check: queries on-chain state for V2/Solidly/Camelot
+/// pools (getReserves) and V3 pools (liquidity) to filter out drained or paused
+/// pools. Only pools with non-zero reserves/liquidity are kept.
+///
+/// Returns the filtered list and a count of removed pools.
+pub async fn health_check_pools(
+    rpc: &RpcClient,
+    pools: Vec<DiscoveredPool>,
+    rpc_concurrency: usize,
+) -> (Vec<DiscoveredPool>, usize) {
+    use futures::stream::{self, StreamExt};
+
+    // Build health check tasks: (index, to_address, calldata)
+    let mut tasks: Vec<(usize, Address, Bytes)> = Vec::new();
+    for (i, pool) in pools.iter().enumerate() {
+        match pool.dex_type {
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
+                // getReserves() selector: 0x0902f1ac
+                tasks.push((i, pool.address, Bytes::from_static(&[0x09, 0x02, 0xf1, 0xac])));
+            }
+            DexType::UniswapV3 => {
+                // slot0() selector: 0x0c4c660e (check sqrtPriceX96 != 0)
+                tasks.push((i, pool.address, Bytes::from_static(&[0x0c, 0x4c, 0x66, 0x0e])));
+            }
+            _ => {
+                // Curve, Balancer, Dodo, Clipper: no simple health check
+            }
+        }
+    }
+
+    if tasks.is_empty() {
+        return (pools, 0);
+    }
+
+    tracing::info!("Health checking {} pools (concurrency={})...", tasks.len(), rpc_concurrency);
+
+    // Get latest block for the call
+    let block = match rpc.get_block_number().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("Health check: failed to get block number: {e:#}. Skipping health check.");
+            return (pools, 0);
+        }
+    };
+
+    // Pre-extract dex types so closures don't need to borrow `pools`
+    let dex_types: Vec<DexType> = pools.iter().map(|p| p.dex_type).collect();
+
+    // Run health checks with bounded concurrency
+    let check_results: Vec<(usize, bool)> = stream::iter(tasks)
+        .map(|(idx, to, data)| {
+            let rpc = rpc.clone();
+            let is_v3 = dex_types[idx] == DexType::UniswapV3;
+            async move {
+                let valid = match rpc.call(to, data, block).await {
+                    Ok(bytes) => {
+                        if is_v3 {
+                            // slot0: sqrtPriceX96 is first 32 bytes — non-zero means active
+                            bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
+                        } else {
+                            // getReserves: r0(32) + r1(32) + blockTimestamp(32)
+                            bytes.len() >= 64
+                                && (!bytes.iter().take(32).all(|b| *b == 0)
+                                    || !bytes[32..64].iter().all(|b| *b == 0))
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Health check failed for {}: {:#}", to, e);
+                        false
+                    }
+                };
+                (idx, valid)
+            }
+        })
+        .buffer_unordered(rpc_concurrency)
+        .collect()
+        .await;
+
+    // Collect valid pools
+    let mut valid_set: HashSet<usize> = HashSet::new();
+    for (idx, valid) in check_results {
+        if valid {
+            valid_set.insert(idx);
+        }
+    }
+
+    let original_count = pools.len();
+    let filtered: Vec<DiscoveredPool> = pools
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| valid_set.contains(i))
+        .map(|(_, p)| p)
+        .collect();
+    let removed = original_count - filtered.len();
+    if removed > 0 {
+        tracing::info!("Health check: removed {} drained/paused pools ({} remaining)", removed, filtered.len());
+    } else {
+        tracing::info!("Health check: all {} pools healthy", filtered.len());
+    }
+
+    (filtered, removed)
 }

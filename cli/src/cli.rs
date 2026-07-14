@@ -345,8 +345,8 @@ pub struct DiscoverArgs {
     #[command(flatten)]
     pub block_range: BlockRangeArgs,
 
-    /// Batch size for each getLogs request
-    #[arg(long, default_value = "10", value_name = "NUMBER")]
+    /// Batch size for each getLogs request (recommended: 2000 for public RPCs)
+    #[arg(long, default_value = "2000", value_name = "NUMBER")]
     pub batch_size: u64,
 
     /// SQLite database path (overrides config's default: ./cache/{chain}-mev-scout.sqlite)
@@ -361,6 +361,26 @@ pub struct DiscoverArgs {
     /// Output discovered pools as JSON instead of human-readable tables
     #[arg(long)]
     pub json: bool,
+
+    /// Max concurrent RPC calls during pool metadata fetch (default: 64).
+    /// Lower values are safer for public/free-tier RPCs.
+    #[arg(long = "rpc-concurrency", default_value = "64", value_name = "NUMBER")]
+    pub rpc_concurrency: usize,
+
+    /// Resume from the latest cached block instead of the full range.
+    /// Queries the cache for the highest creation_block and scans from there.
+    #[arg(long)]
+    pub incremental: bool,
+
+    /// Run a post-discovery health check that queries on-chain state to filter
+    /// out drained (zero-reserve) pools. Enabled by default.
+    #[arg(long, default_value = "true", value_name = "BOOL")]
+    pub health_check: bool,
+
+    /// Minimum pool count from Dune before skipping on-chain scan (default: 0 = disabled).
+    /// Only effective when --source is "dune" or "all".
+    #[arg(long, default_value = "0", value_name = "N")]
+    pub min_pools: usize,
 }
 
 #[derive(Args, Debug, Clone)]

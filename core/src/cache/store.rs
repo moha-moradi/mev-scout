@@ -1020,6 +1020,32 @@ impl SqliteStore {
         Ok(pools)
     }
 
+    /// Returns the maximum `creation_block` across all cached discovered pools,
+    /// or `None` if no pools are cached. Used by `--incremental` mode.
+    pub fn max_creation_block(&self) -> anyhow::Result<Option<u64>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT MAX(creation_block) FROM pool_info",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => {
+                let val: Option<i64> = row.get(0)?;
+                Ok(val.map(|v| v as u64))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Returns the number of cached discovered pools for the given chain.
+    pub fn count_discovered_pools(&self) -> anyhow::Result<usize> {
+        let conn = self.conn();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pool_info", [], |row| row.get(0),
+        )?;
+        Ok(count as usize)
+    }
+
     pub fn put_discovery_cursor(&self, factory: &Address, block: u64) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(

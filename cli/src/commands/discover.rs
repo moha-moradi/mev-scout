@@ -8,7 +8,7 @@ use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
-use mev_scout_core::pool::discovery::DiscoveredPool;
+use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::RpcClient;
@@ -21,6 +21,12 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let source = args.source.to_lowercase();
     let use_onchain = source == "onchain" || source == "all";
     let use_dune = (source == "dune" || source == "all") && config.dune_api_key.is_some();
+
+    if args.batch_size > 5000 {
+        eprintln!("  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
+                   Free-tier endpoints (drpc, Ankr, CloudFlare) typically cap eth_getLogs at 5K–10K blocks. \
+                   Consider using --batch-size 2000 for best results.", args.batch_size);
+    }
 
     let provider_configs = config.effective_provider_configs(chain_name)?;
     validation::validate_rpc_urls(
@@ -65,6 +71,42 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
     };
 
+    // ── Open cache once and reuse ──
+    let cache_path = config.effective_db_path(&chain_name);
+    let cache = SqliteStore::open(&cache_path, chain_id)?;
+
+    // ── Phase 5.1: Incremental mode — override from_block from cache ──
+    let (from, to) = if args.incremental {
+        match cache.max_creation_block() {
+            Ok(Some(max_block)) if max_block > 0 => {
+                let new_from = max_block + 1;
+                if new_from > to {
+                    if !args.json {
+                        println!("  Incremental mode: cache is up-to-date (max block {}). No scan needed.", max_block);
+                    }
+                    return Ok(());
+                }
+                if !args.json {
+                    println!("  Incremental mode: scanning from block {} (cache max: {})", new_from, max_block);
+                }
+                tracing::info!("Incremental scan: cache max_block={}, scanning {} → {}", max_block, new_from, to);
+                (new_from, to)
+            }
+            Ok(_) => {
+                if !args.json {
+                    println!("  Incremental mode: no cached pools found, running full scan.");
+                }
+                (from, to)
+            }
+            Err(e) => {
+                tracing::warn!("Incremental mode: failed to query cache: {e:#}. Running full scan.");
+                (from, to)
+            }
+        }
+    } else {
+        (from, to)
+    };
+
     if !args.json {
         println!();
         println!("  Pool Discovery");
@@ -92,13 +134,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let mut all_pools: Vec<DiscoveredPool> = Vec::new();
     let mut all_active_blocks = HashSet::new();
 
-    // Open cache once and reuse
-    let cache_path = config.effective_db_path(&chain_name);
-    let cache = SqliteStore::open(&cache_path, chain_id)?;
-
-    // ── Factory address resolution (used by both on-chain scan and enrichment) ──
-    let batch_size = args.batch_size;
-    let v2_fee = chain_config.uniswap_v2_default_fee;
+    // ── Factory address resolution ──
     let vault = chain_config
         .balancer_vault
         .as_ref()
@@ -137,28 +173,19 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             vault.is_some(), registry.is_some());
     }
 
-    // ── Phase 1: On-chain event scan discovery ──
-    if use_onchain {
-        match mev_scout_core::pool::discovery::discover_and_cache(
-            &rpc, &cache, from, to, batch_size, v2_fee, vault,
-            if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
-            if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
-            None, registry,
-            if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
-            if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
-            Some(&tick),
-        ).await {
-            Ok((pools, active_blocks)) => {
-                tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
-                all_pools.extend(pools);
-                all_active_blocks.extend(active_blocks);
-            }
-            Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
-        }
-    }
-    pb.finish_and_clear();
+    let disc_config = DiscoveryConfig {
+        batch_size: args.batch_size,
+        v2_fee_override: chain_config.uniswap_v2_default_fee,
+        balancer_vault: vault,
+        v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
+        v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
+        curve_registry: registry,
+        solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
+        camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+        rpc_concurrency: args.rpc_concurrency,
+    };
 
-    // ── Phase 2: Dune Analytics discovery ──
+    // ── Phase 2: Dune Analytics discovery (runs first to support --min-pools) ──
     if use_dune {
         let api_key = config.dune_api_key.as_ref().expect("dune_api_key checked above");
         let dune = DuneClient::new(api_key.clone());
@@ -206,7 +233,45 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             Err(e) => eprintln!("  Warning: Dune active pool discovery failed: {e:#}"),
         }
         dune_pb.finish_and_clear();
+
+        // ── Phase 5.3: --min-pools early exit ──
+        if args.min_pools > 0 && all_pools.len() >= args.min_pools {
+            if !args.json {
+                println!("  Skipping on-chain scan: {} Dune pools >= --min-pools threshold ({})",
+                    all_pools.len(), args.min_pools);
+            }
+            tracing::info!("Skipping on-chain scan: {} Dune pools >= --min-pools {}", all_pools.len(), args.min_pools);
+        } else {
+            // ── Phase 1: On-chain event scan discovery ──
+            if use_onchain {
+                match mev_scout_core::pool::discovery::discover_and_cache(
+                    &rpc, &cache, from, to, &disc_config, Some(&tick),
+                ).await {
+                    Ok((pools, active_blocks)) => {
+                        tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
+                        all_pools.extend(pools);
+                        all_active_blocks.extend(active_blocks);
+                    }
+                    Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
+                }
+            }
+        }
+    } else {
+        // ── Phase 1: On-chain event scan discovery (no Dune) ──
+        if use_onchain {
+            match mev_scout_core::pool::discovery::discover_and_cache(
+                &rpc, &cache, from, to, &disc_config, Some(&tick),
+            ).await {
+                Ok((pools, active_blocks)) => {
+                    tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
+                    all_pools.extend(pools);
+                    all_active_blocks.extend(active_blocks);
+                }
+                Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
+            }
+        }
     }
+    pb.finish_and_clear();
 
     // ── Phase 3: Dedup by address (on-chain pools take priority) ──
     let mut seen = HashSet::new();
@@ -214,6 +279,18 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     for p in all_pools {
         if seen.insert(p.address) {
             pools.push(p);
+        }
+    }
+
+    // ── Phase 5.2: Pool health check ──
+    if args.health_check && !pools.is_empty() {
+        let before = pools.len();
+        let (checked, removed) = mev_scout_core::pool::discovery::health_check_pools(
+            &rpc, pools, args.rpc_concurrency,
+        ).await;
+        pools = checked;
+        if removed > 0 && !args.json {
+            println!("  Health check: removed {} drained/paused pools ({} remaining)", removed, before - removed);
         }
     }
 
@@ -259,9 +336,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         println!();
         println!("  Found {} pool(s) in {} active blocks", pools.len(), all_active_blocks.len());
     }
-
-    // Cache is already populated by discover_and_cache and Dune discovery above.
-    // No need to save again.
 
     Ok(())
 }
