@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use alloy::primitives::{keccak256, Address, B256, Bytes};
+use alloy::primitives::{keccak256, Address, B256, Bytes, U256};
 use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +115,10 @@ pub struct DiscoveredPool {
     /// Pendle Finance market maturity timestamp (unix seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maturity_timestamp: Option<u64>,
+    /// Full token list for multi-token pools (Curve 3+, Balancer 2-8).
+    /// Populated during discovery for Curve/Balancer pools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underlying_tokens: Option<Vec<Address>>,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
@@ -135,7 +139,7 @@ impl From<DiscoveredPool> for PoolInfo {
             is_stable: d.is_stable,
             is_fot,
             is_rebase,
-            underlying_tokens: None,
+            underlying_tokens: d.underlying_tokens,
             balancer_pool_type: d.balancer_pool_type,
             hook_address: d.hook_address,
             bin_step: d.bin_step,
@@ -461,6 +465,7 @@ pub async fn discover_pools(
                         is_stable: None, balancer_pool_type: None, hook_address: None,
                         bin_step: None,
                         maturity_timestamp: None,
+                        underlying_tokens: None,
                     }))
                 },
             ).await;
@@ -496,6 +501,7 @@ pub async fn discover_pools(
                         is_stable: None, balancer_pool_type: None, hook_address: None,
                         bin_step: None,
                         maturity_timestamp: None,
+                        underlying_tokens: None,
                     }))
                 },
             ).await;
@@ -542,6 +548,7 @@ pub async fn discover_pools(
                             hook_address: None,
                             bin_step: None,
                             maturity_timestamp: None,
+                            underlying_tokens: None,
                         });
                     }
                 }
@@ -584,6 +591,7 @@ pub async fn discover_pools(
                             is_stable: None, balancer_pool_type: None, hook_address: None,
                             bin_step: None,
                             maturity_timestamp: None,
+                            underlying_tokens: None,
                         });
                     }
                 }
@@ -621,6 +629,7 @@ pub async fn discover_pools(
                         hook_address: None,
                         bin_step: None,
                         maturity_timestamp: None,
+                        underlying_tokens: None,
                     }))
                 },
             ).await;
@@ -653,6 +662,7 @@ pub async fn discover_pools(
                         hook_address: None,
                         bin_step: None,
                         maturity_timestamp: None,
+                        underlying_tokens: None,
                     }))
                 },
             ).await;
@@ -697,6 +707,7 @@ pub async fn discover_pools(
                             is_stable: None, balancer_pool_type: None,
                             hook_address: None, bin_step: None,
                             maturity_timestamp: None,
+                            underlying_tokens: None,
                         });
                     }
                 }
@@ -744,6 +755,7 @@ pub async fn discover_pools(
                             is_stable: None, balancer_pool_type: None,
                             hook_address: None, bin_step: None,
                             maturity_timestamp: Some(expiry),
+                            underlying_tokens: None,
                         });
                     }
                 }
@@ -811,6 +823,7 @@ pub async fn discover_pools(
                             hook_address,
                             bin_step: None,
                             maturity_timestamp: None,
+                            underlying_tokens: None,
                         });
                     }
                 }
@@ -872,7 +885,23 @@ pub async fn discover_pools(
                         Ok(result) if result.0.len() >= 32 => {
                             let mut pool_id = [0u8; 32];
                             pool_id.copy_from_slice(&result.0[..32]);
-                            Some((addr, pool_id))
+                            // getPool returns (bytes32 poolId, address[] tokens)
+                            // Decode the dynamic array: offset at 32..64, length at offset, then addresses
+                            let tokens = if result.0.len() >= 64 {
+                                let offset = U256::from_be_slice(&result.0[32..64]).to::<usize>();
+                                if result.0.len() >= offset + 32 {
+                                    let len = U256::from_be_slice(&result.0[offset..offset+32]).to::<usize>();
+                                    let mut tokens = Vec::with_capacity(len);
+                                    for i in 0..len {
+                                        let pos = offset + 32 + i * 32;
+                                        if pos + 32 <= result.0.len() {
+                                            tokens.push(Address::from_slice(&result.0[pos+12..pos+32]));
+                                        }
+                                    }
+                                    if tokens.is_empty() { None } else { Some(tokens) }
+                                } else { None }
+                            } else { None };
+                            Some((addr, pool_id, tokens))
                         }
                         _ => None,
                     }
@@ -885,17 +914,77 @@ pub async fn discover_pools(
                 .await;
 
             let mut resolved_count = 0u32;
-            for (addr, pool_id) in resolved.into_iter().flatten() {
+            for (addr, pool_id, tokens) in resolved.into_iter().flatten() {
                 if let Some(entry) = pool_hits.get_mut(&addr) {
                     entry.1 = Some(pool_id);
                     resolved_count += 1;
                 }
                 if let Some(fp) = factory_pools.get_mut(&addr) {
                     fp.pool_id = Some(pool_id);
+                    if tokens.is_some() {
+                        fp.underlying_tokens = tokens;
+                    }
                 }
             }
             if resolved_count > 0 {
                 tracing::info!("Resolved pool_id for {} Balancer pools", resolved_count);
+            }
+        }
+    }
+
+    // ── Phase 1.6: Resolve Curve underlying tokens ──
+    // For Curve pools discovered via registry, fetch the full token list via coins(i).
+    {
+        let curve_pools: Vec<Address> = factory_pools.iter()
+            .filter(|(_, fp)| fp.dex_type == DexType::Curve && fp.underlying_tokens.is_none())
+            .map(|(addr, _)| *addr)
+            .collect();
+
+        if !curve_pools.is_empty() {
+            tracing::info!(
+                "Resolving underlying tokens for {} Curve pools...",
+                curve_pools.len()
+            );
+            use futures::stream::{self, StreamExt};
+            static CURVE_COINS_SELECTOR_DYN: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
+            let ref_block = to_block;
+            let resolve_tasks: Vec<_> = curve_pools.into_iter().map(|addr| {
+                let rpc = rpc.clone();
+                async move {
+                    let mut tokens = Vec::new();
+                    for i in 0u8..8u8 {
+                        let mut calldata = Vec::with_capacity(36);
+                        calldata.extend_from_slice(&CURVE_COINS_SELECTOR_DYN);
+                        let mut arg = [0u8; 32];
+                        arg[31] = i;
+                        calldata.extend_from_slice(&arg);
+                        match rpc.call(addr, Bytes::from(calldata), ref_block).await {
+                            Ok(result) if result.0.len() >= 32 => {
+                                let token = Address::from_slice(&result.0[12..32]);
+                                if token.is_zero() { break; }
+                                tokens.push(token);
+                            }
+                            _ => break,
+                        }
+                    }
+                    if tokens.is_empty() { None } else { Some((addr, tokens)) }
+                }
+            }).collect();
+
+            let resolved: Vec<_> = stream::iter(resolve_tasks)
+                .buffer_unordered(config.rpc_concurrency)
+                .collect()
+                .await;
+
+            let mut resolved_count = 0u32;
+            for (addr, tokens) in resolved.into_iter().flatten() {
+                if let Some(fp) = factory_pools.get_mut(&addr) {
+                    fp.underlying_tokens = Some(tokens);
+                    resolved_count += 1;
+                }
+            }
+            if resolved_count > 0 {
+                tracing::info!("Resolved underlying tokens for {} Curve pools", resolved_count);
             }
         }
     }
@@ -1116,6 +1205,7 @@ pub async fn discover_pools(
         };
         let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _, _)| *pid);
         let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
+        let underlying_tokens = factory_pools.get(&addr).and_then(|fp| fp.underlying_tokens.clone());
 
         discovered_pools.push(DiscoveredPool {
             address: addr,
@@ -1132,6 +1222,7 @@ pub async fn discover_pools(
             hook_address: None,
             bin_step: None,
             maturity_timestamp: None,
+            underlying_tokens,
         });
     }
 

@@ -48,18 +48,30 @@ pub fn save_results_json(
 
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {
     pm.get(addr)
-        .map(|ps| match ps {
-            PoolState::UniswapV2(s) => &s.info,
-            PoolState::UniswapV3(s) => &s.info,
-            PoolState::UniswapV4(s) => &s.info,
-            PoolState::Curve(s) => &s.info,
-            PoolState::Balancer(s) => &s.info,
-            PoolState::Dodo(s) => s,
-            PoolState::Clipper(s) => s,
-            PoolState::TraderJoeLB(s) => &s.info,
-            PoolState::Pendle(s) => &s.info,
+        .map(|ps| {
+            let info = match ps {
+                PoolState::UniswapV2(s) => Some(&s.info),
+                PoolState::UniswapV3(s) => Some(&s.info),
+                PoolState::UniswapV4(s) => Some(&s.info),
+                PoolState::Curve(s) => Some(&s.info),
+                PoolState::Balancer(s) => Some(&s.info),
+                PoolState::TraderJoeLB(s) => Some(&s.info),
+                PoolState::Pendle(s) => Some(&s.info),
+                PoolState::Dodo(_) | PoolState::Clipper(_) => None,
+            };
+            if let Some(info) = info {
+                if let Some(ref tokens) = info.underlying_tokens {
+                    if tokens.len() > 2 {
+                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                        return format!("{} ({})", info.address, syms.join("/"));
+                    }
+                }
+                if let Some(ref name) = info.name {
+                    return name.clone();
+                }
+            }
+            format!("{}", addr)
         })
-        .and_then(|info| info.name.clone())
         .unwrap_or_else(|| format!("{}", addr))
 }
 

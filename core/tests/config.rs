@@ -134,6 +134,7 @@ fn test_discover_v3_pipeline() {
         hook_address: None,
         bin_step: None,
         maturity_timestamp: None,
+        underlying_tokens: None,
     };
 
     let info: PoolInfo = dp.into();

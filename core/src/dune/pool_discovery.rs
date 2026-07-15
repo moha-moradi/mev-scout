@@ -104,6 +104,7 @@ pub async fn discover_v2_pools_from_dune(
                 hook_address: None,
                 bin_step: None,
                 maturity_timestamp: None,
+                underlying_tokens: None,
             });
         }
     }
@@ -162,6 +163,7 @@ pub async fn discover_v3_pools_from_dune(
                 hook_address: None,
                 bin_step: None,
                 maturity_timestamp: None,
+                underlying_tokens: None,
             });
         }
     }
@@ -254,6 +256,7 @@ pub async fn discover_active_pools_from_dune(
             hook_address: None,
             bin_step: None,
             maturity_timestamp: None,
+            underlying_tokens: None,
         });
     }
 

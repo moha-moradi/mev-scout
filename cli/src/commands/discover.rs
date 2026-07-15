@@ -333,10 +333,20 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                     println!("  Camelot  {}  token0={}  token1={}", p.address, p.token0, p.token1);
                 }
                 DexType::Balancer => {
-                    println!("  Balancer  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                    if let Some(ref tokens) = p.underlying_tokens {
+                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                        println!("  Balancer  {}  tokens=[{}]", p.address, syms.join(", "));
+                    } else {
+                        println!("  Balancer  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                    }
                 }
                 DexType::Curve => {
-                    println!("  Curve  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                    if let Some(ref tokens) = p.underlying_tokens {
+                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                        println!("  Curve  {}  tokens=[{}]", p.address, syms.join(", "));
+                    } else {
+                        println!("  Curve  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                    }
                 }
                 DexType::Dodo => {
                     println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
