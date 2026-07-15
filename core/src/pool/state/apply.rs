@@ -48,7 +48,7 @@ impl PoolManager {
         }
     }
 
-    /// Update a V3 pool's state from a Swap event.
+    /// Update a V3/V4 pool's state from a Swap event.
     pub fn apply_v3_swap(
         &mut self,
         address: &Address,
@@ -58,14 +58,37 @@ impl PoolManager {
         amount0: i128,
         amount1: i128,
     ) {
+        // V3 pools
         if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
             state.sqrt_price_x96 = sqrt_price_x96;
             state.tick = tick;
             state.liquidity = liquidity;
 
-            // Update fee growth global based on swap amounts.
-            // The negative amount is the input (trader sends to pool).
-            // Fee = input * fee_tier / 1_000_000, added to feeGrowthGlobal.
+            let fee_tier = state.info.fee as u128;
+            if amount0 < 0 {
+                let input = amount0.unsigned_abs();
+                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                if fee > 0 && liquidity > 0 {
+                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                    state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
+                }
+            }
+            if amount1 < 0 {
+                let input = amount1.unsigned_abs();
+                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                if fee > 0 && liquidity > 0 {
+                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                    state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
+                }
+            }
+            return;
+        }
+        // V4 pools emit the same Swap event signature as V3
+        if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(address) {
+            state.sqrt_price_x96 = sqrt_price_x96;
+            state.tick = tick;
+            state.liquidity = liquidity;
+
             let fee_tier = state.info.fee as u128;
             if amount0 < 0 {
                 let input = amount0.unsigned_abs();
@@ -147,6 +170,16 @@ impl PoolManager {
             // Balancer Swap
             if topic0 == *decoders::BALANCER_SWAP_TOPIC {
                 self.process_balancer_swap_log(log);
+                continue;
+            }
+            // Trader Joe LB Swap
+            if topic0 == *decoders::LB_SWAP_TOPIC {
+                self.process_lb_swap_log(log);
+                continue;
+            }
+            // Pendle Market Swap
+            if topic0 == *decoders::PENDLE_SWAP_TOPIC {
+                self.process_pendle_swap_log(log);
                 continue;
             }
         }
@@ -243,6 +276,80 @@ impl PoolManager {
                     }
                 }
             }
+        }
+    }
+
+    /// Update a Trader Joe LB pool's state from a Swap event.
+    pub fn apply_lb_swap(
+        &mut self,
+        address: &Address,
+        token_in: Address,
+        _token_out: Address,
+        amount_in: u128,
+        amount_out: u128,
+    ) {
+        if let Some(PoolState::TraderJoeLB(state)) = self.pools.get_mut(address) {
+            if token_in == state.info.token0 {
+                // Swapping token0 (X) for token1 (Y): X increases, Y decreases
+                state.reserve_x = state.reserve_x.saturating_add(amount_in);
+                state.reserve_y = state.reserve_y.saturating_sub(amount_out);
+            } else if token_in == state.info.token1 {
+                // Swapping token1 (Y) for token0 (X): Y increases, X decreases
+                state.reserve_y = state.reserve_y.saturating_add(amount_in);
+                state.reserve_x = state.reserve_x.saturating_sub(amount_out);
+            }
+        }
+    }
+
+    /// Update a Pendle AMM pool's state from a Swap event.
+    pub fn apply_pendle_swap(
+        &mut self,
+        address: &Address,
+        is_net_pt_out: bool,
+        amount_in: u128,
+        amount_out: u128,
+    ) {
+        if let Some(PoolState::Pendle(state)) = self.pools.get_mut(address) {
+            if is_net_pt_out {
+                // User receives PT: SY goes in, PT comes out
+                // total_sy += amount_in, total_pt -= amount_out
+                state.total_sy = state.total_sy.saturating_add(amount_in);
+                state.total_pt = state.total_pt.saturating_sub(amount_out);
+            } else {
+                // User receives SY: PT goes in, SY comes out
+                // total_pt += amount_in, total_sy -= amount_out
+                state.total_pt = state.total_pt.saturating_add(amount_in);
+                state.total_sy = state.total_sy.saturating_sub(amount_out);
+            }
+        }
+    }
+
+    fn process_lb_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_lb_swap(log) {
+            self.apply_lb_swap(
+                &log.address,
+                decoded.token_in,
+                decoded.token_out,
+                decoded.amount_in,
+                decoded.amount_out,
+            );
+        }
+    }
+
+    fn process_pendle_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_pendle_swap(log) {
+            self.apply_pendle_swap(
+                &log.address,
+                decoded.is_net_pt_out,
+                decoded.amount_in,
+                decoded.amount_out,
+            );
         }
     }
 }

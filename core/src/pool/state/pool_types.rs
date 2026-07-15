@@ -43,6 +43,78 @@ pub fn is_rebase_token(token: &Address) -> bool {
     REBASE_TOKENS.contains(token)
 }
 
+/// Flags describing a Uniswap V4 hook contract's capabilities.
+///
+/// Hook capabilities are encoded in the last 3 bytes of the hook address:
+/// - Bit 0 (byte 2, bit 7): beforeInitialize / afterInitialize
+/// - Bit 1 (byte 2, bit 6): beforeSwap / afterSwap
+/// - Bit 2 (byte 2, bit 5): beforeAddLiquidity / afterAddLiquidity
+/// - Bit 3 (byte 2, bit 4): beforeRemoveLiquidity / afterRemoveLiquidity
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct V4HookFlags {
+    pub before_initialize: bool,
+    pub after_initialize: bool,
+    pub before_swap: bool,
+    pub after_swap: bool,
+    pub before_add_liquidity: bool,
+    pub after_add_liquidity: bool,
+    pub before_remove_liquidity: bool,
+    pub after_remove_liquidity: bool,
+}
+
+impl V4HookFlags {
+    /// Classify a V4 hook address into capability flags.
+    ///
+    /// The hook address encodes its callbacks in the last 3 bytes.
+    /// Byte 2 encodes before/after hooks, byte 1 encodes lock/dynamic fee flags.
+    pub fn classify(hook_address: &Address) -> Self {
+        let bytes = hook_address.as_slice();
+        // The hook address is 20 bytes; the capability bits are in bytes 0 and 1
+        // of the 3-byte hook suffix (bytes 17, 18, 19 of the 20-byte address).
+        // However, the convention in Uniswap V4 is:
+        // - The pool key's hook address has its last 2 bytes encode the flags.
+        //
+        // Based on Uniswap V4 spec (hooks.sol):
+        // position 19 (last byte):  bits [7..4] = before flags, [3..0] = unused
+        // position 18 (2nd to last): bits [7..4] = after flags, [3..0] = unused
+        //
+        // Simplified: the 2 least significant bytes of the address encode:
+        //   byte 18: bit 7 = afterSwapEnabled, bit 6 = afterAddLiq, ...
+        //   byte 19: bit 7 = beforeSwapEnabled, bit 6 = beforeAddLiq, ...
+        //
+        // For MEV detection, the key flags are:
+        // - afterSwap: the hook modifies state/amounts AFTER the swap (may change output)
+        // - beforeSwap: the hook modifies state/amounts BEFORE the swap
+        // - beforeAddLiquidity/afterAddLiquidity: may affect pool depth
+        let b18 = bytes[18];
+        let b19 = bytes[19];
+
+        V4HookFlags {
+            before_initialize: b19 & 0x80 != 0,
+            after_initialize: b18 & 0x80 != 0,
+            before_swap: b19 & 0x40 != 0,
+            after_swap: b18 & 0x40 != 0,
+            before_add_liquidity: b19 & 0x20 != 0,
+            after_add_liquidity: b18 & 0x20 != 0,
+            before_remove_liquidity: b19 & 0x10 != 0,
+            after_remove_liquidity: b18 & 0x10 != 0,
+        }
+    }
+
+    /// Returns true if this hook has any swap-modifying capability.
+    /// MEV strategies should be cautious with these hooks as they may
+    /// alter swap outcomes.
+    pub fn modifies_swap(&self) -> bool {
+        self.before_swap || self.after_swap
+    }
+
+    /// Returns true if this hook modifies liquidity operations.
+    pub fn modifies_liquidity(&self) -> bool {
+        self.before_add_liquidity || self.after_add_liquidity
+            || self.before_remove_liquidity || self.after_remove_liquidity
+    }
+}
+
 /// Static pool information loaded from the discovery cache (on-chain or Dune).
 ///
 /// `PoolInfo` is deserialized from the discovery cache (SQLite) after
@@ -251,6 +323,10 @@ impl TraderJoeLBPoolState {
 #[derive(Debug, Clone)]
 pub struct PendlePoolState {
     pub info: PoolInfo,
+    /// Address of the PT (Principal Token) for this market.
+    pub pt_address: Address,
+    /// Address of the SY (Standardized Yield) token for this market.
+    pub sy_address: Address,
     /// Total PT tokens in the AMM reserve.
     pub total_pt: u128,
     /// Total SY tokens in the AMM reserve.
@@ -261,6 +337,8 @@ impl PendlePoolState {
     pub fn new(info: PoolInfo) -> Self {
         PendlePoolState {
             info,
+            pt_address: Address::ZERO,
+            sy_address: Address::ZERO,
             total_pt: 0,
             total_sy: 0,
         }

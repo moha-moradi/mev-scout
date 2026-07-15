@@ -1,6 +1,8 @@
 pub mod balancer;
 pub mod core;
 pub mod curve;
+pub mod lb;
+pub mod pendle;
 pub mod stable_swap;
 pub mod v3;
 pub use balancer::*;

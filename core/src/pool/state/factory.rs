@@ -329,23 +329,30 @@ impl PoolManager {
                         }
                     }
                 }
-                Some(PoolInitResult::PendleState(total_pt, total_sy, _sy_address)) => {
+                Some(PoolInitResult::PendleState(total_pt, total_sy, sy_addr)) => {
                     if let Some(PoolState::Pendle(state)) = self.pools.get_mut(&addr) {
                         state.total_pt = total_pt;
                         state.total_sy = total_sy;
+                        // token0 is the PT address from discovery
+                        state.pt_address = state.info.token0;
                         // Resolve SY token if token1 is still ZERO
                         if state.info.token1.is_zero() && !state.info.token0.is_zero() {
                             let mut sy_calldata = Vec::with_capacity(4);
                             sy_calldata.extend_from_slice(&PENDLE_SY_SELECTOR);
                             if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), block_num).await {
                                 if result.len() >= 32 {
-                                    let sy_addr = Address::from_slice(&result[12..32]);
-                                    if !sy_addr.is_zero() {
-                                        state.info.token1 = sy_addr;
-                                        self.token_index.entry(sy_addr).or_default().push(addr);
+                                    let resolved_sy = Address::from_slice(&result[12..32]);
+                                    if !resolved_sy.is_zero() {
+                                        state.info.token1 = resolved_sy;
+                                        state.sy_address = resolved_sy;
+                                        self.token_index.entry(resolved_sy).or_default().push(addr);
                                     }
                                 }
                             }
+                        } else if !sy_addr.is_zero() {
+                            state.sy_address = sy_addr;
+                        } else {
+                            state.sy_address = state.info.token1;
                         }
                         if total_pt > 0 || total_sy > 0 {
                             tracing::debug!("Pendle pool {} initialized: pt={}, sy={}", addr, total_pt, total_sy);
@@ -1109,6 +1116,8 @@ impl PoolManager {
                     PoolInitResult::PendleState(total_pt, total_sy, _) => {
                         Some(PoolState::Pendle(PendlePoolState {
                             info: pendle.info.clone(),
+                            pt_address: pendle.pt_address,
+                            sy_address: pendle.sy_address,
                             total_pt,
                             total_sy,
                         }))

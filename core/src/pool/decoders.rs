@@ -24,6 +24,14 @@ pub static CURVE_V2_TOKEN_EXCHANGE_TOPIC: std::sync::LazyLock<B256> =
 pub static BALANCER_SWAP_TOPIC: std::sync::LazyLock<B256> =
     std::sync::LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
 
+/// Trader Joe V2 LB: Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed tokenIn, address indexed tokenOut)
+pub static LB_SWAP_TOPIC: std::sync::LazyLock<B256> =
+    std::sync::LazyLock::new(|| keccak256("Swap(address,uint256,uint256,address,address)"));
+
+/// Pendle Market: Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)
+pub static PENDLE_SWAP_TOPIC: std::sync::LazyLock<B256> =
+    std::sync::LazyLock::new(|| keccak256("Swap(address,bool,uint256,uint256,address)"));
+
 /// Result of decoding a V3 Swap event.
 #[derive(Debug, Clone)]
 pub struct V3SwapDecoded {
@@ -207,6 +215,79 @@ pub fn decode_balancer_swap(log: &ExecutedLog) -> Option<BalancerSwapDecoded> {
         pool_id,
         token_in,
         token_out,
+        amount_in,
+        amount_out,
+    })
+}
+
+/// Result of decoding a Trader Joe LB Swap event.
+#[derive(Debug, Clone)]
+pub struct LBSwapDecoded {
+    /// Amount of tokenX entering the pool
+    pub amount_in: u128,
+    /// Amount of tokenY leaving the pool (or vice versa)
+    pub amount_out: u128,
+    /// Token going into the pool
+    pub token_in: Address,
+    /// Token coming out of the pool
+    pub token_out: Address,
+}
+
+/// Attempt to decode a Trader Joe LB Swap event from an executed log.
+///
+/// Event: `Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed tokenIn, address indexed tokenOut)`
+/// Topics: [sig, sender, tokenIn, tokenOut]
+/// Data: [amountIn (32 bytes), amountOut (32 bytes)]
+pub fn decode_lb_swap(log: &ExecutedLog) -> Option<LBSwapDecoded> {
+    if log.topics.is_empty() || log.topics[0] != *LB_SWAP_TOPIC {
+        return None;
+    }
+    if log.topics.len() < 4 || log.data.len() < 64 {
+        return None;
+    }
+    let token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
+    let token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
+    let amount_in = u128_from_be_bytes(&log.data[..32]);
+    let amount_out = u128_from_be_bytes(&log.data[32..64]);
+
+    Some(LBSwapDecoded {
+        amount_in,
+        amount_out,
+        token_in,
+        token_out,
+    })
+}
+
+/// Result of decoding a Pendle Market Swap event.
+#[derive(Debug, Clone)]
+pub struct PendleSwapDecoded {
+    /// Whether the swap results in net PT outflow from the AMM
+    pub is_net_pt_out: bool,
+    /// Amount of token going into the AMM
+    pub amount_in: u128,
+    /// Amount of token coming out of the AMM
+    pub amount_out: u128,
+}
+
+/// Attempt to decode a Pendle Market Swap event from an executed log.
+///
+/// Event: `Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)`
+/// Topics: [sig, caller, receiver]
+/// Data: [isNetPtOut padded to 32 bytes, amountIn (32 bytes), amountOut (32 bytes)]
+pub fn decode_pendle_swap(log: &ExecutedLog) -> Option<PendleSwapDecoded> {
+    if log.topics.is_empty() || log.topics[0] != *PENDLE_SWAP_TOPIC {
+        return None;
+    }
+    if log.topics.len() < 3 || log.data.len() < 96 {
+        return None;
+    }
+    // isNetPtOut is ABI-encoded bool in first 32 bytes (rightmost byte = value)
+    let is_net_pt_out = log.data[31] != 0;
+    let amount_in = u128_from_be_bytes(&log.data[32..64]);
+    let amount_out = u128_from_be_bytes(&log.data[64..96]);
+
+    Some(PendleSwapDecoded {
+        is_net_pt_out,
         amount_in,
         amount_out,
     })

@@ -6,6 +6,8 @@ use crate::pool::state::{PoolState, UniswapV3PoolState};
 use super::v3::quote_v3_exact_in;
 use super::curve;
 use super::balancer;
+use super::lb;
+use super::pendle;
 
 /// Unified single-pool quoting dispatch.
 ///
@@ -67,18 +69,18 @@ pub fn quote_exact_in(
             } else {
                 return None;
             };
-            Some(constant_product_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee)?)
+            lb::lb_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee)
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => None,
         PoolState::Pendle(p) => {
-            let (reserve_in, reserve_out) = if p.info.token0 == token_in {
+            let (total_in, total_out) = if p.info.token0 == token_in {
                 (p.total_pt, p.total_sy)
             } else if p.info.token1 == token_in {
                 (p.total_sy, p.total_pt)
             } else {
                 return None;
             };
-            Some(constant_product_output_amount(amount_in, reserve_in, reserve_out, 0)?)
+            pendle::pendle_output_amount(amount_in, total_in, total_out)
         }
     }
 }
