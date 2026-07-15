@@ -180,8 +180,10 @@ impl PoolManager {
                 v2.reserve0.min(v2.reserve1)
             }
             Some(PoolState::UniswapV3(v3)) => v3.liquidity,
+            Some(PoolState::UniswapV4(v4)) => v4.liquidity,
             Some(PoolState::Curve(c)) => c.balances.iter().sum(),
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
+            Some(PoolState::TraderJoeLB(lb)) => lb.reserve_x.min(lb.reserve_y),
             Some(PoolState::Dodo(_)) | Some(PoolState::Clipper(_)) => 0,
             None => 0,
         }
@@ -231,8 +233,10 @@ impl PoolManager {
         self.pools.values().filter(|p| match p {
             PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
             PoolState::UniswapV3(s) => s.liquidity > 0,
+            PoolState::UniswapV4(s) => s.liquidity > 0,
             PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
             PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
+            PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
             PoolState::Dodo(_) | PoolState::Clipper(_) => false,
         })
         .count()
@@ -386,6 +390,28 @@ impl PoolManager {
                     // Higher TVL means more reliable price
                     (tvl, tvl.saturating_mul(price))
                 }
+                PoolState::UniswapV4(v4) => {
+                    if v4.liquidity == 0 { continue; }
+                    let tvl = v4.liquidity;
+                    let price = if v4.info.token0 == native {
+                        let sqrt = v4.sqrt_price_x96;
+                        if sqrt.is_zero() { continue; }
+                        let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
+                        let p = p_u256.to::<u128>();
+                        if p == 0 { continue; }
+                        p
+                    } else {
+                        let sqrt = v4.sqrt_price_x96;
+                        if sqrt.is_zero() { continue; }
+                        let one: U256 = U256::from(1u128) << 192;
+                        let inv: U256 = one / sqrt;
+                        let p_u256: U256 = inv.saturating_mul(inv) >> 192;
+                        let p = p_u256.to::<u128>();
+                        if p == 0 { continue; }
+                        p
+                    };
+                    (tvl, tvl.saturating_mul(price))
+                }
                 PoolState::Curve(curve) => {
                     let idx_native = curve.token_index.get(&native)?;
                     let idx_stable = curve.token_index.get(&stable)?;
@@ -399,6 +425,13 @@ impl PoolManager {
                     let bal_native = bal.balances.get(*idx_native)?;
                     let bal_stable = bal.balances.get(*idx_stable)?;
                     (*bal_native, *bal_stable)
+                }
+                PoolState::TraderJoeLB(lb) => {
+                    if lb.info.token0 == native {
+                        (lb.reserve_x, lb.reserve_y)
+                    } else {
+                        (lb.reserve_y, lb.reserve_x)
+                    }
                 }
                 PoolState::Dodo(_) | PoolState::Clipper(_) => continue,
             };

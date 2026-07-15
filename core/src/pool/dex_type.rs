@@ -1,5 +1,5 @@
-//! DEX type enum (UniswapV2, UniswapV3, Solidly, Camelot, Curve, Balancer,
-//! Dodo, Clipper) and associated metadata.
+//! DEX type enum (UniswapV2, UniswapV3, UniswapV4, Solidly, Camelot, Curve, Balancer,
+//! Dodo, Clipper, TraderJoeLB, Pendle) and associated metadata.
 
 use serde::{Deserialize, Serialize};
 
@@ -23,11 +23,17 @@ pub enum DexType {
     Solidly = 6,
     #[serde(rename = "camelot")]
     Camelot = 7,
+    #[serde(rename = "uniswap_v4")]
+    UniswapV4 = 8,
+    #[serde(rename = "trader_joe_lb")]
+    TraderJoeLB = 9,
+    #[serde(rename = "pendle")]
+    Pendle = 10,
 }
 
 impl DexType {
     pub fn is_concentrated_liquidity(self) -> bool {
-        matches!(self, DexType::UniswapV3)
+        matches!(self, DexType::UniswapV3 | DexType::UniswapV4)
     }
 
     pub fn label(self) -> &'static str {
@@ -40,6 +46,9 @@ impl DexType {
             DexType::Balancer => "Balancer",
             DexType::Dodo => "Dodo",
             DexType::Clipper => "Clipper",
+            DexType::UniswapV4 => "UniswapV4",
+            DexType::TraderJoeLB => "TraderJoeLB",
+            DexType::Pendle => "Pendle",
         }
     }
 }

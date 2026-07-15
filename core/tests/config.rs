@@ -129,6 +129,10 @@ fn test_discover_v3_pipeline() {
         creation_block: 42,
         pool_id: None,
         factory: Some(address!("cafe0000000000000000000000000000000000aa")),
+        is_stable: None,
+        balancer_pool_type: None,
+        hook_address: None,
+        bin_step: None,
     };
 
     let info: PoolInfo = dp.into();

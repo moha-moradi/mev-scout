@@ -228,6 +228,12 @@ impl SqliteStore {
         )?;
         // L6: migration -- add factory column to pool_info if missing (backward compat)
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN factory BLOB;");
+        // Phase 10: propagate full token list for Curve/Balancer
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN underlying_tokens TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN balancer_pool_type INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN hook_address BLOB;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN bin_step INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN maturity_timestamp INTEGER;");
         // Phase 3: add signature columns to transactions (idempotent)
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_hash BLOB;");
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_name TEXT;");
@@ -942,9 +948,17 @@ impl SqliteStore {
         let pool_id_blob = pool.pool_id.map(|id| id.to_vec());
         let factory_blob = pool.factory.map(|f| f.to_vec());
         let is_stable_int: Option<i64> = pool.is_stable.map(|b| b as i64);
+        let underlying_json: Option<String> = pool.underlying_tokens.as_ref().map(|tokens| {
+            let hexes: Vec<String> = tokens.iter().map(|a| format!("{a}")).collect();
+            serde_json::to_string(&hexes).unwrap_or_default()
+        });
+        let balancer_type_int: Option<i64> = pool.balancer_pool_type.map(|v| v as i64);
+        let hook_blob = pool.hook_address.map(|f| f.to_vec());
+        let bin_step_int: Option<i64> = pool.bin_step.map(|v| v as i64);
+        let maturity_ts_int: Option<i64> = pool.maturity_timestamp.map(|v| v as i64);
         conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             rusqlite::params![
                 Self::addr_to_blob(&pool.address),
                 Self::addr_to_blob(&pool.token0),
@@ -956,6 +970,11 @@ impl SqliteStore {
                 pool_id_blob,
                 factory_blob,
                 is_stable_int,
+                underlying_json,
+                balancer_type_int,
+                hook_blob,
+                bin_step_int,
+                maturity_ts_int,
             ],
         )?;
         Ok(())
@@ -964,7 +983,7 @@ impl SqliteStore {
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp
              FROM pool_info WHERE address = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![Self::addr_to_blob(address)])?;
@@ -981,6 +1000,26 @@ impl SqliteStore {
                         if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
                     }));
                 let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
+                let underlying_tokens: Option<Vec<Address>> = row.get::<_, Option<String>>(10).ok()
+                    .flatten()
+                    .and_then(|json_str| {
+                        let hexes: Vec<String> = serde_json::from_str(&json_str).ok()?;
+                        let addrs: Vec<Address> = hexes.iter()
+                            .filter_map(|h| h.strip_prefix("0x")
+                                .or(Some(h.as_str())))
+                            .filter_map(|h| hex::decode(h).ok())
+                            .filter(|b| b.len() == 20)
+                            .map(|b| Address::from_slice(&b))
+                            .collect();
+                        if addrs.is_empty() { None } else { Some(addrs) }
+                    });
+                let balancer_pool_type = row.get::<_, Option<i64>>(11).ok().flatten().map(|v| v as u8);
+                let hook_address = row.get::<_, Option<Vec<u8>>>(12).ok()
+                    .and_then(|v| v.and_then(|bytes| {
+                        if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
+                    }));
+                let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
+                let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
                 let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
                 let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
                 let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -1001,7 +1040,10 @@ impl SqliteStore {
                     is_stable,
                     is_fot,
                     is_rebase,
-                    underlying_tokens: None,
+                    underlying_tokens,
+                    balancer_pool_type,
+                    hook_address,
+                    bin_step,
                 }))
             }
             None => Ok(None),
@@ -1011,7 +1053,7 @@ impl SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
@@ -1027,6 +1069,24 @@ impl SqliteStore {
                     if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
                 }));
             let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
+            let underlying_tokens: Option<Vec<Address>> = row.get::<_, Option<String>>(10).ok()
+                .flatten()
+                .and_then(|json_str| {
+                    let hexes: Vec<String> = serde_json::from_str(&json_str).ok()?;
+                    let addrs: Vec<Address> = hexes.iter()
+                        .filter_map(|h| h.strip_prefix("0x").or(Some(h.as_str())))
+                        .filter_map(|h| hex::decode(h).ok())
+                        .filter(|b| b.len() == 20)
+                        .map(|b| Address::from_slice(&b))
+                        .collect();
+                    if addrs.is_empty() { None } else { Some(addrs) }
+                });
+            let balancer_pool_type = row.get::<_, Option<i64>>(11).ok().flatten().map(|v| v as u8);
+            let hook_address = row.get::<_, Option<Vec<u8>>>(12).ok()
+                .and_then(|v| v.and_then(|bytes| {
+                    if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
+                }));
+            let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
             let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
             let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
             let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -1047,7 +1107,10 @@ impl SqliteStore {
                 is_stable,
                 is_fot,
                 is_rebase,
-                underlying_tokens: None,
+                underlying_tokens,
+                balancer_pool_type,
+                hook_address,
+                bin_step,
             });
         }
         Ok(pools)

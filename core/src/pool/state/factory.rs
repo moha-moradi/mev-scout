@@ -9,14 +9,20 @@ use tokio::sync::Semaphore;
 use crate::pool::dex_type::DexType;
 use crate::rpc::RpcClient;
 use crate::pool::state::manager::PoolManager;
-use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant};
+use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
 pub enum PoolInitResult {
     V2Reserves(u128, u128),
     V3State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
+    /// V4 uses same state structure as V3
+    V4State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
     /// (tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers)
     BalancerState(Vec<Address>, Vec<u128>, Vec<u128>, u32, BalancerPoolVariant, Option<u128>, Vec<u128>, Option<usize>, Vec<Option<Address>>),
     /// (tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool)
     CurveState(Vec<Address>, Vec<u128>, u128, u32, CurvePoolVariant, Option<u128>, Vec<u128>, Option<Address>),
+    /// (active_id, bin_step, reserve_x, reserve_y)
+    LBState(u32, u32, u128, u128),
+    /// (total_pt, total_sy, sy_address)
+    PendleState(u128, u128, Address),
 }
 
 /// getReserves() selector
@@ -87,6 +93,12 @@ static GET_SCALING_FACTORS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
+/// getRateProvider(uint256) selector for Balancer pool rate providers
+static GET_RATE_PROVIDER_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getRateProvider(uint256)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 /// tickBitmap(int16) selector for Uniswap V3 tick bitmap queries
 static V3_TICK_BITMAP_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"tickBitmap(int16)");
@@ -99,6 +111,36 @@ static V3_TICKS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
+/// getActiveId() selector for Trader Joe LB pools
+static LB_GET_ACTIVE_ID_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getActiveId()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// getBin(uint256) selector for Trader Joe LB pools
+static LB_GET_BIN_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getBin(uint256)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// getBinStep() selector for Trader Joe LB pools
+static LB_GET_BIN_STEP_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getBinStep()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// readState(address) selector for Pendle Finance markets
+static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"readState(address)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// SY() selector for Pendle PT tokens
+static PENDLE_SY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"SY()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 impl PoolManager {
     pub async fn init_from_rpc(&mut self, rpc: &RpcClient, block_num: u64) {
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();
@@ -108,12 +150,12 @@ impl PoolManager {
 
         // Snapshot pool metadata before spawning tasks
         let vault = self.balancer_vault;
-        let pool_meta: Vec<(Address, DexType, Option<[u8; 32]>, i32, Option<Address>, bool)> =
+        let pool_meta: Vec<(Address, DexType, Option<[u8; 32]>, i32, Option<Address>, bool, Option<u8>)> =
             pool_addrs
                 .iter()
                 .map(|addr| match self.pools.get(addr) {
                     Some(PoolState::UniswapV2(s)) => {
-                        (*addr, DexType::UniswapV2, None, 0, s.info.factory, true)
+                        (*addr, DexType::UniswapV2, None, 0, s.info.factory, true, None)
                     }
                     Some(PoolState::UniswapV3(state)) => (
                         *addr,
@@ -122,23 +164,34 @@ impl PoolManager {
                         state.info.tick_spacing.unwrap_or(60) as i32,
                         None,
                         true,
+                        None,
+                    ),
+                    Some(PoolState::UniswapV4(state)) => (
+                        *addr,
+                        DexType::UniswapV4,
+                        None,
+                        state.info.tick_spacing.unwrap_or(60) as i32,
+                        None,
+                        true,
+                        None,
                     ),
                     Some(PoolState::Curve(s)) if s.info.dex_type == DexType::Solidly || s.info.dex_type == DexType::Camelot => {
-                        // Solidly/Camelot stable pools stored as CurvePoolState — fetch V2 reserves
-                        (*addr, s.info.dex_type, None, 0, s.info.factory, true)
+                        (*addr, s.info.dex_type, None, 0, s.info.factory, true, None)
                     }
-                    Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true),
-                    Some(PoolState::Balancer(_)) => (*addr, DexType::Balancer, None, 0, None, true),
-                    Some(PoolState::Dodo(_)) => (*addr, DexType::Dodo, None, 0, None, false),
-                    Some(PoolState::Clipper(_)) => (*addr, DexType::Clipper, None, 0, None, false),
-                    None => (*addr, DexType::UniswapV2, None, 0, None, false),
+                    Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true, None),
+                    Some(PoolState::Balancer(b)) => (*addr, DexType::Balancer, None, 0, None, true, b.info.balancer_pool_type),
+                    Some(PoolState::Dodo(_)) => (*addr, DexType::Dodo, None, 0, None, false, None),
+                    Some(PoolState::Clipper(_)) => (*addr, DexType::Clipper, None, 0, None, false, None),
+                    Some(PoolState::TraderJoeLB(s)) => (*addr, DexType::TraderJoeLB, None, 0i32, s.info.factory, true, None),
+                    Some(PoolState::Pendle(s)) => (*addr, DexType::Pendle, None, 0i32, s.info.factory, true, None),
+                    None => (*addr, DexType::UniswapV2, None, 0, None, false, None),
                 })
                 .collect();
 
         let tasks: Vec<_> = pool_meta
             .iter()
-            .filter(|(_, _, _, _, _, needs_init)| *needs_init)
-            .map(|(addr, dt, pool_id, tick_spacing, factory, _)| {
+            .filter(|(_, _, _, _, _, needs_init, _)| *needs_init)
+            .map(|(addr, dt, pool_id, tick_spacing, factory, _, balancer_pool_type)| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
                 let addr = *addr;
@@ -146,9 +199,10 @@ impl PoolManager {
                 let pool_id = *pool_id;
                 let tick_spacing = *tick_spacing;
                 let factory = *factory;
+                let balancer_pool_type = *balancer_pool_type;
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num).await)
+                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num, balancer_pool_type).await)
                 }
             })
             .collect();
@@ -185,6 +239,22 @@ impl PoolManager {
                         }
                         if sqrt.is_zero() {
                             tracing::warn!("V3 pool {} initialized with zero sqrt price", addr);
+                        }
+                    }
+                }
+                Some(PoolInitResult::V4State(sqrt, tick, liq, initialized_ticks)) => {
+                    if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(&addr) {
+                        state.sqrt_price_x96 = sqrt;
+                        state.tick = tick;
+                        state.liquidity = liq;
+                        state.ticks = initialized_ticks;
+                        if state.ticks.is_empty() {
+                            tracing::warn!("V4 pool {} initialized with empty tick map", addr);
+                        } else {
+                            tracing::debug!("V4 pool {} initialized with {} ticks", addr, state.ticks.len());
+                        }
+                        if sqrt.is_zero() {
+                            tracing::warn!("V4 pool {} initialized with zero sqrt price", addr);
                         }
                     }
                 }
@@ -237,6 +307,55 @@ impl PoolManager {
                             if !token.is_zero() {
                                 self.token_index.entry(*token).or_default().push(addr);
                             }
+                        }
+                    }
+                }
+                Some(PoolInitResult::LBState(active_id, bin_step, reserve_x, reserve_y)) => {
+                    if let Some(PoolState::TraderJoeLB(state)) = self.pools.get_mut(&addr) {
+                        state.active_id = active_id;
+                        state.bin_step = bin_step;
+                        state.reserve_x = reserve_x;
+                        state.reserve_y = reserve_y;
+                        state.info.bin_step = Some(bin_step);
+                        if reserve_x > 0 || reserve_y > 0 {
+                            tracing::debug!("LB pool {} initialized: active_id={}, reserves=({},{})", addr, active_id, reserve_x, reserve_y);
+                        }
+                        // Index both tokens
+                        if !state.info.token0.is_zero() {
+                            self.token_index.entry(state.info.token0).or_default().push(addr);
+                        }
+                        if !state.info.token1.is_zero() {
+                            self.token_index.entry(state.info.token1).or_default().push(addr);
+                        }
+                    }
+                }
+                Some(PoolInitResult::PendleState(total_pt, total_sy, _sy_address)) => {
+                    if let Some(PoolState::Pendle(state)) = self.pools.get_mut(&addr) {
+                        state.total_pt = total_pt;
+                        state.total_sy = total_sy;
+                        // Resolve SY token if token1 is still ZERO
+                        if state.info.token1.is_zero() && !state.info.token0.is_zero() {
+                            let mut sy_calldata = Vec::with_capacity(4);
+                            sy_calldata.extend_from_slice(&PENDLE_SY_SELECTOR);
+                            if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), block).await {
+                                if result.len() >= 32 {
+                                    let sy_addr = Address::from_slice(&result[12..32]);
+                                    if !sy_addr.is_zero() {
+                                        state.info.token1 = sy_addr;
+                                        self.token_index.entry(sy_addr).or_default().push(addr);
+                                    }
+                                }
+                            }
+                        }
+                        if total_pt > 0 || total_sy > 0 {
+                            tracing::debug!("Pendle pool {} initialized: pt={}, sy={}", addr, total_pt, total_sy);
+                        }
+                        // Index both tokens
+                        if !state.info.token0.is_zero() {
+                            self.token_index.entry(state.info.token0).or_default().push(addr);
+                        }
+                        if !state.info.token1.is_zero() {
+                            self.token_index.entry(state.info.token1).or_default().push(addr);
                         }
                     }
                 }
@@ -293,6 +412,7 @@ impl PoolManager {
         vault: Option<Address>,
         factory: Option<Address>,
         block: u64,
+        balancer_pool_type: Option<u8>,
     ) -> Option<PoolInitResult> {
         match dt {
             DexType::UniswapV2 => {
@@ -303,10 +423,14 @@ impl PoolManager {
                 let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
                 Some(PoolInitResult::V3State(sqrt, tick, liq, ticks))
             }
+            DexType::UniswapV4 => {
+                let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+                Some(PoolInitResult::V4State(sqrt, tick, liq, ticks))
+            }
             DexType::Balancer => {
                 let vault = vault?;
                 let pool_id = pool_id?;
-                Self::fetch_balancer_state(rpc, vault, pool, &pool_id, block).await.ok()
+                Self::fetch_balancer_state(rpc, vault, pool, &pool_id, block, balancer_pool_type).await.ok()
             }
             DexType::Curve => {
                 Self::fetch_curve_state(rpc, pool, block).await
@@ -315,6 +439,12 @@ impl PoolManager {
             DexType::Solidly | DexType::Camelot => {
                 let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
                 Some(PoolInitResult::V2Reserves(r0, r1))
+            }
+            DexType::TraderJoeLB => {
+                Self::fetch_lb_state(rpc, pool, block).await
+            }
+            DexType::Pendle => {
+                Self::fetch_pendle_state(rpc, pool, block).await
             }
         }
     }
@@ -657,6 +787,7 @@ impl PoolManager {
         pool: Address,
         pool_id: &[u8; 32],
         block: u64,
+        pool_type_hint: Option<u8>,
     ) -> anyhow::Result<PoolInitResult> {
         // --- Step 1: getPoolTokens from vault ---
         let data = {
@@ -763,8 +894,36 @@ impl PoolManager {
             }
         };
 
+        // --- Step 4.5: Fetch rate providers from pool contract ---
+        let rate_providers = {
+            let mut rp = Vec::with_capacity(token_count);
+            for i in 0..token_count {
+                let mut calldata = Vec::with_capacity(36);
+                calldata.extend_from_slice(&GET_RATE_PROVIDER_SELECTOR);
+                calldata.extend_from_slice(&U256::from(i).to_be_bytes::<32>());
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        let addr = Address::from_slice(&result.0[12..32]);
+                        rp.push(if addr.is_zero() { None } else { Some(addr) });
+                    }
+                    _ => rp.push(None),
+                }
+            }
+            rp
+        };
+
         // --- Step 5: Determine pool variant, amplification, and BPT index ---
-        let (variant, amplification, bpt_index) = if !weights.is_empty() {
+        let (variant, amplification, bpt_index) = if let Some(pt) = pool_type_hint {
+            // Use event-level hint to avoid redundant RPC calls
+            match pt {
+                0 | 1 => (BalancerPoolVariant::Weighted, None, None),
+                3 => {
+                    let bpt_idx = tokens.iter().position(|t| *t == pool);
+                    (BalancerPoolVariant::ComposableStable, None, bpt_idx)
+                }
+                _ => (BalancerPoolVariant::Other, None, None),
+            }
+        } else if !weights.is_empty() {
             // Has normalized weights �?� Weighted pool
             (BalancerPoolVariant::Weighted, None, None)
         } else {
@@ -796,7 +955,7 @@ impl PoolManager {
             }
         };
 
-        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, vec![]))
+        Ok(PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers))
     }
 
     /// Re-fetch a pool's on-chain state at a given block number (M3 fact-check support).
@@ -827,6 +986,20 @@ impl PoolManager {
                     Self::fetch_v3_state(rpc, *addr, block, spacing).await?;
                 Some(PoolState::UniswapV3(UniswapV3PoolState {
                     info: v3.info.clone(),
+                    sqrt_price_x96: sqrt,
+                    tick,
+                    liquidity: liq,
+                    ticks,
+                    fee_growth_global_0_x128: U256::ZERO,
+                    fee_growth_global_1_x128: U256::ZERO,
+                }))
+            }
+            PoolState::UniswapV4(v4) => {
+                let spacing = v4.info.tick_spacing.unwrap_or(60) as i32;
+                let (sqrt, tick, liq, ticks) =
+                    Self::fetch_v3_state(rpc, *addr, block, spacing).await?;
+                Some(PoolState::UniswapV4(crate::pool::state::pool_types::UniswapV4PoolState {
+                    info: v4.info.clone(),
                     sqrt_price_x96: sqrt,
                     tick,
                     liquidity: liq,
@@ -886,7 +1059,7 @@ impl PoolManager {
             PoolState::Balancer(bal) => {
                 let vault = self.balancer_vault?;
                 let pool_id = bal.pool_id?;
-                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block).await.ok()?;
+                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block, bal.info.balancer_pool_type).await.ok()?;
                 match result {
                     PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers) => {
                         let token_index: HashMap<Address, usize> = tokens
@@ -915,7 +1088,116 @@ impl PoolManager {
             }
             PoolState::Dodo(info) => Some(PoolState::Dodo(info.clone())),
             PoolState::Clipper(info) => Some(PoolState::Clipper(info.clone())),
+            PoolState::TraderJoeLB(lb) => {
+                let result = Self::fetch_lb_state(rpc, *addr, block).await?;
+                match result {
+                    PoolInitResult::LBState(active_id, bin_step, reserve_x, reserve_y) => {
+                        Some(PoolState::TraderJoeLB(TraderJoeLBPoolState {
+                            info: lb.info.clone(),
+                            active_id,
+                            bin_step,
+                            reserve_x,
+                            reserve_y,
+                        }))
+                    }
+                    _ => None,
+                }
+            }
+            PoolState::Pendle(pendle) => {
+                let result = Self::fetch_pendle_state(rpc, *addr, block).await?;
+                match result {
+                    PoolInitResult::PendleState(total_pt, total_sy, _) => {
+                        Some(PoolState::Pendle(PendlePoolState {
+                            info: pendle.info.clone(),
+                            total_pt,
+                            total_sy,
+                        }))
+                    }
+                    _ => None,
+                }
+            }
         }
+    }
+
+    /// Fetch Trader Joe LB pool state via `getActiveId()`, `getBinStep()`, and `getBin(activeId)`.
+    async fn fetch_lb_state(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<PoolInitResult> {
+        // Step 1: getActiveId()
+        let active_id = {
+            let result = Self::call_once(rpc, pool, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52]), block).await.ok()?;
+            if result.len() < 32 { return None; }
+            U256::from_be_slice(&result[..32]).to::<u64>() as u32
+        };
+
+        // Step 2: getBinStep()
+        let bin_step = {
+            let result = Self::call_once(rpc, pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR), block).await.ok().unwrap_or_default();
+            if result.len() >= 32 {
+                U256::from_be_slice(&result[..32]).to::<u64>() as u32
+            } else {
+                0
+            }
+        };
+
+        // Step 3: getBin(activeId)
+        let (reserve_x, reserve_y) = {
+            let mut calldata = Vec::with_capacity(36);
+            calldata.extend_from_slice(&LB_GET_BIN_SELECTOR);
+            let mut arg = [0u8; 32];
+            let id_bytes = (active_id as u64).to_be_bytes();
+            arg[24..32].copy_from_slice(&id_bytes);
+            calldata.extend_from_slice(&arg);
+            match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
+                Ok(result) if result.len() >= 64 => {
+                    let rx = U256::from_be_slice(&result[..32]).as_limbs()[0] as u128;
+                    let ry = U256::from_be_slice(&result[32..64]).as_limbs()[0] as u128;
+                    (rx, ry)
+                }
+                _ => (0u128, 0u128),
+            }
+        };
+
+        Some(PoolInitResult::LBState(active_id, bin_step, reserve_x, reserve_y))
+    }
+
+    /// Fetch Pendle Finance market state via `readState(address(0))` and PT.SY().
+    /// readState returns: totalPt, totalSy, totalLp, reserve, effectiveFeeRate.
+    async fn fetch_pendle_state(
+        rpc: &RpcClient,
+        pool: Address,
+        block: u64,
+    ) -> Option<PoolInitResult> {
+        // Step 1: Get SY address from PT.SY() — PT address is stored as token0
+        // We need to know which token is PT; from discovery, token0 = PT.
+        // However, at this point we don't have the PT address in the function params.
+        // The PT is the token0 of the pool (the market). We'll resolve SY later via
+        // readState only. For now just call readState to get totalPt/totalSy.
+
+        // readState(address(0))
+        let mut calldata = Vec::with_capacity(36);
+        calldata.extend_from_slice(&PENDLE_READ_STATE_SELECTOR);
+        calldata.extend_from_slice(&[0u8; 32]); // address(0) as router
+        let (total_pt, total_sy) = match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
+            Ok(result) if result.len() >= 64 => {
+                let pt = U256::from_be_slice(&result[..32]).as_limbs()[0] as u128;
+                let sy = U256::from_be_slice(&result[32..64]).as_limbs()[0] as u128;
+                (pt, sy)
+            }
+            _ => (0u128, 0u128),
+        };
+
+        if total_pt == 0 && total_sy == 0 {
+            tracing::warn!("Pendle pool {} readState returned zero reserves", pool);
+        }
+
+        // SY address is unknown from readState; we resolve it via PT.SY()
+        // PT address is token0 of the market (set during discovery)
+        // Note: we can't access the pool state here, so we return zero address for sy_address
+        // The init_from_rpc handler will try to resolve it separately.
+        Some(PoolInitResult::PendleState(total_pt, total_sy, Address::ZERO))
     }
 
     /// Fetch Curve pool state by calling `coins(int128)` and `balances(int128)` for each token index.

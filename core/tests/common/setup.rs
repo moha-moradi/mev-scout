@@ -26,6 +26,7 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve1: 0,
         }),
         DexType::UniswapV3 => PoolState::UniswapV3(UniswapV3PoolState::new(info)),
+        DexType::UniswapV4 => PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info)),
         DexType::Curve => PoolState::Curve(mev_scout_core::pool::state::CurvePoolState {
             info,
             balances: vec![],
@@ -68,6 +69,9 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve0: 0,
             reserve1: 0,
         }),
+        DexType::TraderJoeLB => {
+            PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
+        }
     }
 }
 
@@ -107,6 +111,9 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         is_fot: None,
         is_rebase: None,
         underlying_tokens: None,
+        balancer_pool_type: None,
+        hook_address: None,
+        bin_step: None,
     }
 }
 
@@ -141,6 +148,9 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             is_fot: None,
             is_rebase: None,
             underlying_tokens: None,
+            balancer_pool_type: None,
+            hook_address: None,
+            bin_step: None,
         },
         reserve0: r0,
         reserve1: r1,

@@ -5,7 +5,7 @@ use std::cmp;
 
 use crate::types::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, quote_exact_in, TwoHopArbResult};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState};
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::pool::math::curve as curve_math;
 use crate::pool::math::balancer as balancer_math;
@@ -325,11 +325,26 @@ fn two_hop_profit_at(
             let zero_a = shared_token == a.info.token1;
             quote_v3_exact_in(a, input_amount, zero_a)?
         }
+        PoolState::UniswapV4(a) => {
+            let v3: UniswapV3PoolState = a.clone().into();
+            let zero_a = shared_token == a.info.token1;
+            quote_v3_exact_in(&v3, input_amount, zero_a)?
+        }
         PoolState::Curve(a) => {
             curve_output_amount(input_amount, a, token_in, shared_token)?
         }
         PoolState::Balancer(a) => {
             balancer_quote_exact_in(input_amount, a, token_in, shared_token)?
+        }
+        PoolState::TraderJoeLB(a) => {
+            let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
+                (a.reserve_y, a.reserve_x)
+            } else if a.info.token1 == shared_token {
+                (a.reserve_x, a.reserve_y)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(input_amount, r_a_other, r_a_shared, a.info.fee)?
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
@@ -343,11 +358,26 @@ fn two_hop_profit_at(
             let zero_b = shared_token == b.info.token0;
             quote_v3_exact_in(b, intermediate, zero_b)?
         }
+        PoolState::UniswapV4(b) => {
+            let v3: UniswapV3PoolState = b.clone().into();
+            let zero_b = shared_token == b.info.token0;
+            quote_v3_exact_in(&v3, intermediate, zero_b)?
+        }
         PoolState::Curve(b) => {
             curve_output_amount(intermediate, b, shared_token, token_out)?
         }
         PoolState::Balancer(b) => {
             balancer_quote_exact_in(intermediate, b, shared_token, token_out)?
+        }
+        PoolState::TraderJoeLB(b) => {
+            let (r_b_in, r_b_out) = if b.info.token0 == shared_token {
+                (b.reserve_x, b.reserve_y)
+            } else if b.info.token1 == shared_token {
+                (b.reserve_y, b.reserve_x)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(intermediate, r_b_in, r_b_out, b.info.fee)?
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
@@ -460,6 +490,13 @@ fn estimate_arb_pair_profit(
             if v2.info.token0 == token_in { v2.reserve0 } else { v2.reserve1 }
         }
         PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
+        PoolState::UniswapV4(v4) => {
+            let v3: UniswapV3PoolState = v4.clone().into();
+            max_v3_tradeable_amount(&v3, v3.info.token0 == token_in)
+        }
+        PoolState::TraderJoeLB(lb) => {
+            if lb.info.token0 == token_in { lb.reserve_x } else { lb.reserve_y }
+        }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
     let test_input = (max_input / 1000).max(1);

@@ -79,6 +79,18 @@ pub struct PoolInfo {
     /// `token0`/`token1` remain as primary pair for display; this provides the full set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underlying_tokens: Option<Vec<Address>>,
+    /// Balancer pool type from PoolRegistered event (0=Weighted, 1=Weighted2Tokens, 3=ComposableStable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balancer_pool_type: Option<u8>,
+    /// Uniswap V4 hook contract address (derived from pool key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_address: Option<Address>,
+    /// Trader Joe LB bin step in basis points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin_step: Option<u32>,
+    /// Pendle Finance market maturity timestamp (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maturity_timestamp: Option<u64>,
 }
 
 impl Default for PoolInfo {
@@ -98,6 +110,10 @@ impl Default for PoolInfo {
             is_fot: None,
             is_rebase: None,
             underlying_tokens: None,
+            balancer_pool_type: None,
+            hook_address: None,
+            bin_step: None,
+            maturity_timestamp: None,
         }
     }
 }
@@ -149,6 +165,104 @@ impl UniswapV3PoolState {
             ticks: std::collections::BTreeMap::new(),
             fee_growth_global_0_x128: U256::ZERO,
             fee_growth_global_1_x128: U256::ZERO,
+        }
+    }
+}
+
+/// Runtime state for a Uniswap V4 concentrated-liquidity pool.
+///
+/// Same fields as V3; V4 pools are identified by a `bytes32 poolKey` and
+/// may have an associated hook contract.  The quoting logic is identical
+/// to V3 (sqrt-price + ticks + liquidity).
+#[derive(Debug, Clone)]
+pub struct UniswapV4PoolState {
+    pub info: PoolInfo,
+    pub sqrt_price_x96: U256,
+    pub tick: i32,
+    pub liquidity: u128,
+    pub ticks: std::collections::BTreeMap<i32, i128>,
+    pub fee_growth_global_0_x128: U256,
+    pub fee_growth_global_1_x128: U256,
+}
+
+impl UniswapV4PoolState {
+    pub fn new(info: PoolInfo) -> Self {
+        UniswapV4PoolState {
+            info,
+            sqrt_price_x96: U256::ZERO,
+            tick: 0,
+            liquidity: 0,
+            ticks: std::collections::BTreeMap::new(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
+        }
+    }
+}
+
+impl From<UniswapV4PoolState> for UniswapV3PoolState {
+    fn from(v4: UniswapV4PoolState) -> Self {
+        UniswapV3PoolState {
+            info: v4.info,
+            sqrt_price_x96: v4.sqrt_price_x96,
+            tick: v4.tick,
+            liquidity: v4.liquidity,
+            ticks: v4.ticks,
+            fee_growth_global_0_x128: v4.fee_growth_global_0_x128,
+            fee_growth_global_1_x128: v4.fee_growth_global_1_x128,
+        }
+    }
+}
+
+/// Runtime state for a Trader Joe V2 LB (Liquidity Book) pool.
+///
+/// LB pools use discrete bins with a configurable bin step.
+/// Each bin holds a single asset (tokenX or tokenY), and the active bin
+/// holds both. State is initialized via `getActiveId()` and `getBin(activeId)`.
+#[derive(Debug, Clone)]
+pub struct TraderJoeLBPoolState {
+    pub info: PoolInfo,
+    /// Current active bin ID.
+    pub active_id: u32,
+    /// Bin step in basis points.
+    pub bin_step: u32,
+    /// Reserve of tokenX in the active bin.
+    pub reserve_x: u128,
+    /// Reserve of tokenY in the active bin.
+    pub reserve_y: u128,
+}
+
+impl TraderJoeLBPoolState {
+    pub fn new(info: PoolInfo, active_id: u32, bin_step: u32) -> Self {
+        TraderJoeLBPoolState {
+            info,
+            active_id,
+            bin_step,
+            reserve_x: 0,
+            reserve_y: 0,
+        }
+    }
+}
+
+/// Runtime state for a Pendle Finance AMM market.
+///
+/// Pendle uses a modified logistic UAMM for PT/SY yield trading.
+/// State is initialized via `readState(address)` on the market contract,
+/// which returns totalPt, totalSy, totalLp, reserve, effectiveFeeRate.
+#[derive(Debug, Clone)]
+pub struct PendlePoolState {
+    pub info: PoolInfo,
+    /// Total PT tokens in the AMM reserve.
+    pub total_pt: u128,
+    /// Total SY tokens in the AMM reserve.
+    pub total_sy: u128,
+}
+
+impl PendlePoolState {
+    pub fn new(info: PoolInfo) -> Self {
+        PendlePoolState {
+            info,
+            total_pt: 0,
+            total_sy: 0,
         }
     }
 }
@@ -228,12 +342,17 @@ pub struct BalancerPoolState {
 pub enum PoolState {
     UniswapV2(UniswapV2PoolState),
     UniswapV3(UniswapV3PoolState),
+    UniswapV4(UniswapV4PoolState),
     Curve(CurvePoolState),
     Balancer(BalancerPoolState),
     /// DODO pools (no MEV detection support — passive discovery only)
     Dodo(PoolInfo),
     /// Clipper pools (no MEV detection support — passive discovery only)
     Clipper(PoolInfo),
+    /// Trader Joe V2 LB (Liquidity Book) pools
+    TraderJoeLB(TraderJoeLBPoolState),
+    /// Pendle Finance AMM markets (PT/SY yield trading)
+    Pendle(PendlePoolState),
 }
 
 impl PoolState {
@@ -241,10 +360,13 @@ impl PoolState {
         match self {
             PoolState::UniswapV2(s) => s.info.address,
             PoolState::UniswapV3(s) => s.info.address,
+            PoolState::UniswapV4(s) => s.info.address,
             PoolState::Curve(s) => s.info.address,
             PoolState::Balancer(s) => s.info.address,
             PoolState::Dodo(s) => s.address,
             PoolState::Clipper(s) => s.address,
+            PoolState::TraderJoeLB(s) => s.info.address,
+            PoolState::Pendle(s) => s.info.address,
         }
     }
 
@@ -252,10 +374,13 @@ impl PoolState {
         match self {
             PoolState::UniswapV2(s) => &s.info,
             PoolState::UniswapV3(s) => &s.info,
+            PoolState::UniswapV4(s) => &s.info,
             PoolState::Curve(s) => &s.info,
             PoolState::Balancer(s) => &s.info,
             PoolState::Dodo(s) => s,
             PoolState::Clipper(s) => s,
+            PoolState::TraderJoeLB(s) => &s.info,
+            PoolState::Pendle(s) => &s.info,
         }
     }
 
@@ -263,10 +388,13 @@ impl PoolState {
         match self {
             PoolState::UniswapV2(s) => &mut s.info,
             PoolState::UniswapV3(s) => &mut s.info,
+            PoolState::UniswapV4(s) => &mut s.info,
             PoolState::Curve(s) => &mut s.info,
             PoolState::Balancer(s) => &mut s.info,
             PoolState::Dodo(s) => s,
             PoolState::Clipper(s) => s,
+            PoolState::TraderJoeLB(s) => &mut s.info,
+            PoolState::Pendle(s) => &mut s.info,
         }
     }
 
@@ -284,10 +412,13 @@ impl PoolState {
         match self {
             PoolState::UniswapV2(_) => 80_000,
             PoolState::UniswapV3(_) => 120_000,
+            PoolState::UniswapV4(_) => 120_000,
             PoolState::Curve(_) => 100_000,
             PoolState::Balancer(_) => 100_000,
             PoolState::Dodo(_) => 0,
             PoolState::Clipper(_) => 0,
+            PoolState::TraderJoeLB(_) => 100_000,
+            PoolState::Pendle(_) => 100_000,
         }
     }
 }

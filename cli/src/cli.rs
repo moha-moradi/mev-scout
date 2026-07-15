@@ -386,6 +386,14 @@ pub struct DiscoverArgs {
     /// Overrides v2_fee_override for Solidly/Velodrome/Aerodrome pools.
     #[arg(long = "solidly-fee-bps", value_name = "BPS")]
     pub solidly_fee_bps: Option<u32>,
+
+    /// Uniswap V4 singleton PoolManager contract address (overrides config).
+    #[arg(long = "v4-pool-manager", value_name = "ADDRESS")]
+    pub v4_pool_manager: Option<String>,
+
+    /// Trader Joe V2 LB factory contract address (overrides config).
+    #[arg(long = "trader-joe-factory", value_name = "ADDRESS")]
+    pub trader_joe_factory: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

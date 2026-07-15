@@ -618,6 +618,11 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 crate::pool::state::UniswapV3PoolState::new(info),
             ));
         }
+        crate::pool::dex_type::DexType::UniswapV4 => {
+            pool_manager.add_pool(PoolState::UniswapV4(
+                crate::pool::state::UniswapV4PoolState::new(info),
+            ));
+        }
         crate::pool::dex_type::DexType::Curve => {
             pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
                 info,
@@ -651,6 +656,17 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
         }
         crate::pool::dex_type::DexType::Clipper => {
             pool_manager.add_pool(PoolState::Clipper(info));
+        }
+        crate::pool::dex_type::DexType::TraderJoeLB => {
+            let bin_step = info.bin_step.unwrap_or(0);
+            pool_manager.add_pool(PoolState::TraderJoeLB(
+                crate::pool::state::pool_types::TraderJoeLBPoolState::new(info, 0, bin_step),
+            ));
+        }
+        crate::pool::dex_type::DexType::Pendle => {
+            pool_manager.add_pool(PoolState::Pendle(
+                crate::pool::state::pool_types::PendlePoolState::new(info),
+            ));
         }
         crate::pool::dex_type::DexType::Solidly | crate::pool::dex_type::DexType::Camelot => {
             if info.is_stable == Some(true) {

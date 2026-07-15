@@ -31,6 +31,12 @@ pub struct ChainConfig {
     pub uniswap_v2_default_fee: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve_registry: Option<String>,
+    /// Uniswap V4 singleton PoolManager contract address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v4_pool_manager: Option<String>,
+    /// Trader Joe V2 LB factory contract address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trader_joe_factory: Option<String>,
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
@@ -60,6 +66,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     let avalanche_factories = vec![
@@ -83,6 +91,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     let bsc_factories = vec![
@@ -106,6 +116,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     m.insert(
@@ -127,6 +139,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
                 "0x6EcCab422D763aC031210895C81787E87B43A652".to_string(),
             ]),
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     m.insert(
@@ -148,6 +162,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             camelot_factories: None,
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     let ethereum_factories = vec![
@@ -172,6 +188,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     m.insert(
@@ -195,6 +213,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             camelot_factories: None,
             curve_registry: None,
+            v4_pool_manager: None,
+            trader_joe_factory: None,
         },
     );
     m

@@ -51,10 +51,12 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
         .map(|ps| match ps {
             PoolState::UniswapV2(s) => &s.info,
             PoolState::UniswapV3(s) => &s.info,
+            PoolState::UniswapV4(s) => &s.info,
             PoolState::Curve(s) => &s.info,
             PoolState::Balancer(s) => &s.info,
             PoolState::Dodo(s) => s,
             PoolState::Clipper(s) => s,
+            PoolState::TraderJoeLB(s) => &s.info,
         })
         .and_then(|info| info.name.clone())
         .unwrap_or_else(|| format!("{}", addr))

@@ -165,6 +165,14 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         chain_name.default_camelot_factories().iter().filter_map(|s| s.parse().ok()).collect()
     };
 
+    let v4_pool_manager: Option<Address> = args.v4_pool_manager.as_ref()
+        .and_then(|s| s.parse::<Address>().ok())
+        .or_else(|| chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok()));
+
+    let trader_joe_factory: Option<Address> = args.trader_joe_factory.as_ref()
+        .and_then(|s| s.parse::<Address>().ok())
+        .or_else(|| chain_config.trader_joe_factory.as_ref().and_then(|s| s.parse().ok()));
+
     if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
         || !solidly_factories.is_empty() || !camelot_factories.is_empty())
     {
@@ -183,6 +191,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
         camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
         solidly_fee_bps: args.solidly_fee_bps,
+        v4_pool_manager,
+        trader_joe_factory,
         rpc_concurrency: args.rpc_concurrency,
     };
 
@@ -321,16 +331,24 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                     println!("  Camelot  {}  token0={}  token1={}", p.address, p.token0, p.token1);
                 }
                 DexType::Balancer => {
-                    println!("  Balancer  {}", p.address);
+                    println!("  Balancer  {}  token0={}  token1={}", p.address, p.token0, p.token1);
                 }
                 DexType::Curve => {
-                    println!("  Curve  {}", p.address);
+                    println!("  Curve  {}  token0={}  token1={}", p.address, p.token0, p.token1);
                 }
                 DexType::Dodo => {
                     println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
                 }
                 DexType::Clipper => {
                     println!("  Clipper  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                }
+                DexType::UniswapV4 => {
+                    println!("  V4  {}  token0={}  token1={}  fee={}  tickSpacing={}",
+                        p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
+                }
+                DexType::TraderJoeLB => {
+                    println!("  TraderJoeLB  {}  token0={}  token1={}  binStep={}",
+                        p.address, p.token0, p.token1, p.bin_step.unwrap_or(0));
                 }
             }
         }

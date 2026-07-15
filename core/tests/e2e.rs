@@ -62,6 +62,9 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         is_fot: None,
         is_rebase: None,
         underlying_tokens: None,
+        balancer_pool_type: None,
+        hook_address: None,
+        bin_step: None,
     }
 }
 
@@ -77,6 +80,13 @@ fn pool_info_v3(addr: Address, token0: Address, token1: Address, fee: u32, name:
         creation_block: 0,
         pool_id: None,
         factory: None,
+        is_stable: None,
+        is_fot: None,
+        is_rebase: None,
+        underlying_tokens: None,
+        balancer_pool_type: None,
+        hook_address: None,
+        bin_step: None,
     }
 }
 
@@ -88,6 +98,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve1: 0,
         }),
         DexType::UniswapV3 => PoolState::UniswapV3(UniswapV3PoolState::new(info)),
+        DexType::UniswapV4 => PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info)),
         DexType::Curve => PoolState::Curve(mev_scout_core::pool::state::CurvePoolState {
             info,
             balances: vec![],
@@ -108,6 +119,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             amplification: None,
             scaling_factors: vec![],
             bpt_index: None,
+            rate_providers: vec![],
         }),
         DexType::Solidly | DexType::Camelot | DexType::Dodo | DexType::Clipper => {
             PoolState::UniswapV2(UniswapV2PoolState {
@@ -115,6 +127,9 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
                 reserve0: 0,
                 reserve1: 0,
             })
+        }
+        DexType::TraderJoeLB => {
+            PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
         }
     }
 }
@@ -266,7 +281,10 @@ async fn test_e2e_pool_discovery() {
         curve_registry: None,
         solidly_factories: None,
         camelot_factories: None,
+        solidly_fee_bps: None,
         rpc_concurrency: 64,
+        v4_pool_manager: None,
+        trader_joe_factory: None,
     };
     let (pools, _active) = match discover_pools(
         &rpc, start, end, &disc_config,
@@ -488,6 +506,13 @@ fn test_e2e_cache_isolation() {
         creation_block: 0,
         pool_id: None,
         factory: None,
+        is_stable: None,
+        is_fot: None,
+        is_rebase: None,
+        underlying_tokens: None,
+        balancer_pool_type: None,
+        hook_address: None,
+        bin_step: None,
     };
 
     poly.put_discovered_pool(&pool).unwrap();

@@ -100,6 +100,10 @@ pub async fn discover_v2_pools_from_dune(
                 pool_id: None,
                 factory: None,
                 is_stable: None,
+                balancer_pool_type: None,
+                hook_address: None,
+                bin_step: None,
+                maturity_timestamp: None,
             });
         }
     }
@@ -154,6 +158,10 @@ pub async fn discover_v3_pools_from_dune(
                 pool_id: None,
                 factory: None,
                 is_stable: None,
+                balancer_pool_type: None,
+                hook_address: None,
+                bin_step: None,
+                maturity_timestamp: None,
             });
         }
     }
@@ -242,6 +250,10 @@ pub async fn discover_active_pools_from_dune(
             pool_id: None,
             factory: None,
             is_stable: None,
+            balancer_pool_type: None,
+            hook_address: None,
+            bin_step: None,
+            maturity_timestamp: None,
         });
     }
 

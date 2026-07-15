@@ -49,6 +49,27 @@ pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,address,uint256,bool)")
 });
 
+// Uniswap V4 Initialize event from singleton PoolManager
+pub static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"Initialize(bytes32 indexed id,Address indexed currency0,Address indexed currency1,uint24 fee,int24 tickSpacing,Address hooks)")
+});
+
+// Trader Joe V2 LB PairCreated event
+pub static LB_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"LBPairCreated(address,address,address,uint256,address[])")
+});
+
+// Pendle Finance NewMarket event
+pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"NewMarket(address,address,uint256)")
+});
+
+/// readState(address) selector for Pendle Finance markets
+static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"readState(address)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 /// Selector for Balancer V2 Vault.getPool(address) → (bytes32 poolId, address[] tokens)
 static BALANCER_GET_POOL_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"getPool(address)");
@@ -82,6 +103,18 @@ pub struct DiscoveredPool {
     /// Whether the pool is a stable-swap pool (Solidly/Camelot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_stable: Option<bool>,
+    /// Balancer pool type from PoolRegistered event (0=Weighted, 1=Weighted2Tokens, 3=ComposableStable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balancer_pool_type: Option<u8>,
+    /// Uniswap V4 hook contract address (derived from pool key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_address: Option<Address>,
+    /// Trader Joe LB bin step in basis points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bin_step: Option<u32>,
+    /// Pendle Finance market maturity timestamp (unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maturity_timestamp: Option<u64>,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
@@ -103,6 +136,10 @@ impl From<DiscoveredPool> for PoolInfo {
             is_fot,
             is_rebase,
             underlying_tokens: None,
+            balancer_pool_type: d.balancer_pool_type,
+            hook_address: d.hook_address,
+            bin_step: d.bin_step,
+            maturity_timestamp: d.maturity_timestamp,
         }
     }
 }
@@ -117,8 +154,14 @@ pub struct DiscoveryConfig<'a> {
     pub curve_registry: Option<Address>,
     pub solidly_factories: Option<&'a [Address]>,
     pub camelot_factories: Option<&'a [Address]>,
+    /// Uniswap V4 singleton PoolManager contract address.
+    pub v4_pool_manager: Option<Address>,
     /// Solidly-style pool fee in basis points (default: 30).
     pub solidly_fee_bps: Option<u32>,
+    /// Trader Joe V2 LB factory contract address.
+    pub trader_joe_factory: Option<Address>,
+    /// Pendle Finance factory contract address.
+    pub pendle_factory: Option<Address>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).
     pub rpc_concurrency: usize,
 }
@@ -415,7 +458,9 @@ pub async fn discover_pools(
                         address: addr, token0, token1,
                         fee, tick_spacing: None, dex_type: DexType::UniswapV2,
                         creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: None,
+                        is_stable: None, balancer_pool_type: None, hook_address: None,
+                        bin_step: None,
+                        maturity_timestamp: None,
                     }))
                 },
             ).await;
@@ -448,7 +493,9 @@ pub async fn discover_pools(
                         address: pool_addr, token0, token1,
                         fee, tick_spacing, dex_type: DexType::UniswapV3,
                         creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: None,
+                        is_stable: None, balancer_pool_type: None, hook_address: None,
+                        bin_step: None,
+                        maturity_timestamp: None,
                     }))
                 },
             ).await;
@@ -491,6 +538,10 @@ pub async fn discover_pools(
                             creation_block, pool_id: Some(pool_id),
                             factory: Some(vault),
                             is_stable: None,
+                            balancer_pool_type: Some(pool_type),
+                            hook_address: None,
+                            bin_step: None,
+                            maturity_timestamp: None,
                         });
                     }
                 }
@@ -530,7 +581,9 @@ pub async fn discover_pools(
                             fee: 0, tick_spacing: None,
                             dex_type: DexType::Curve,
                             creation_block, pool_id: None, factory: Some(registry),
-                            is_stable: None,
+                            is_stable: None, balancer_pool_type: None, hook_address: None,
+                            bin_step: None,
+                            maturity_timestamp: None,
                         });
                     }
                 }
@@ -564,7 +617,10 @@ pub async fn discover_pools(
                         address: pair_addr, token0, token1,
                         fee, tick_spacing: None, dex_type: DexType::Solidly,
                         creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: Some(is_stable),
+                        is_stable: Some(is_stable), balancer_pool_type: None,
+                        hook_address: None,
+                        bin_step: None,
+                        maturity_timestamp: None,
                     }))
                 },
             ).await;
@@ -593,10 +649,177 @@ pub async fn discover_pools(
                         address: pair_addr, token0, token1,
                         fee, tick_spacing: None, dex_type: DexType::Camelot,
                         creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: Some(is_stable),
+                        is_stable: Some(is_stable), balancer_pool_type: None,
+                        hook_address: None,
+                        bin_step: None,
+                        maturity_timestamp: None,
                     }))
                 },
             ).await;
+        }
+
+        // ── Trader Joe V2 LB factory scan (LBPairCreated) ──
+        if let Some(factory) = config.trader_joe_factory {
+            let filter = Filter::new()
+                .address(factory)
+                .event_signature(*LB_PAIR_CREATED_TOPIC)
+                .from_block(current)
+                .to_block(batch_end);
+            match get_logs_with_retry(rpc, &filter, current, batch_end).await {
+                Ok(logs) => {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let topics = log.topics();
+                        let log_data = log.data();
+                        // LBPairCreated(address lbPair, address tokenX, address tokenY, uint256 activeId, address[] bins)
+                        // topics[1] = lbPair (indexed), topics[2] = tokenX (indexed), topics[3] = tokenY (indexed)
+                        if topics.len() < 4 || log_data.data.len() < 64 {
+                            continue;
+                        }
+                        let lb_pair = Address::from_slice(&topics[1][12..32]);
+                        let token0 = Address::from_slice(&topics[2][12..32]);
+                        let token1 = Address::from_slice(&topics[3][12..32]);
+                        let active_id = alloy::primitives::U256::from_be_slice(&log_data.data[..32])
+                            .to::<u64>() as u32;
+                        let creation_block = log.block_number.unwrap_or(0);
+                        // binStep is stored in the LBPair contract, not in the event
+                        // We'll use a placeholder; actual bin_step fetched during init
+                        pool_hits.entry(lb_pair).or_insert((
+                            DexType::TraderJoeLB, None, None, creation_block,
+                        ));
+                        factory_pools.entry(lb_pair).or_insert(DiscoveredPool {
+                            address: lb_pair, token0, token1,
+                            fee: 0, tick_spacing: None,
+                            dex_type: DexType::TraderJoeLB,
+                            creation_block, pool_id: None, factory: Some(factory),
+                            is_stable: None, balancer_pool_type: None,
+                            hook_address: None, bin_step: None,
+                            maturity_timestamp: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Trader Joe LB factory scan failed for {current}..{batch_end}: {e:#}"
+                    );
+                }
+            }
+        }
+
+        // ── Pendle Finance factory scan (NewMarket) ──
+        if let Some(factory) = config.pendle_factory {
+            let filter = Filter::new()
+                .address(factory)
+                .event_signature(*PENDLE_NEW_MARKET_TOPIC)
+                .from_block(current)
+                .to_block(batch_end);
+            match get_logs_with_retry(rpc, &filter, current, batch_end).await {
+                Ok(logs) => {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let topics = log.topics();
+                        let log_data = log.data();
+                        // NewMarket(address indexed market, address indexed PT, uint256 expiry)
+                        // topics[1] = market (indexed), topics[2] = PT (indexed)
+                        // data[0..32] = expiry (uint256)
+                        if topics.len() < 3 || log_data.data.len() < 32 {
+                            continue;
+                        }
+                        let market_addr = Address::from_slice(&topics[1][12..32]);
+                        let pt_addr = Address::from_slice(&topics[2][12..32]);
+                        let expiry = alloy::primitives::U256::from_be_slice(&log_data.data[..32])
+                            .to::<u64>();
+                        let creation_block = log.block_number.unwrap_or(0);
+                        // token0 = PT, token1 = ZERO (resolved during init via PT.SY())
+                        factory_pools.entry(market_addr).or_insert(DiscoveredPool {
+                            address: market_addr,
+                            token0: pt_addr, token1: Address::ZERO,
+                            fee: 0, tick_spacing: None,
+                            dex_type: DexType::Pendle,
+                            creation_block, pool_id: None, factory: Some(factory),
+                            is_stable: None, balancer_pool_type: None,
+                            hook_address: None, bin_step: None,
+                            maturity_timestamp: Some(expiry),
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Pendle factory scan failed for {current}..{batch_end}: {e:#}"
+                    );
+                }
+            }
+        }
+
+        // ── V4 singleton PoolManager Initialize scan ──
+        if let Some(pool_manager) = config.v4_pool_manager {
+            let filter = Filter::new()
+                .address(pool_manager)
+                .event_signature(*V4_INITIALIZE_TOPIC)
+                .from_block(current)
+                .to_block(batch_end);
+            match get_logs_with_retry(rpc, &filter, current, batch_end).await {
+                Ok(logs) => {
+                    for log in &logs {
+                        if let Some(bn) = log.block_number {
+                            active_blocks.insert(bn);
+                        }
+                        let topics = log.topics();
+                        let log_data = log.data();
+                        if topics.len() < 4 || log_data.data.len() < 160 {
+                            continue;
+                        }
+                        // topics[1] = id (bytes32 poolKey hash)
+                        // topics[2] = currency0, topics[3] = currency1
+                        // data[0..32]   = fee (uint24 padded to uint256)
+                        // data[32..64]  = tickSpacing (int24 padded to int256)
+                        // data[64..96]  = hooks (address padded to uint256)
+                        let token0 = Address::from_slice(&topics[2][12..32]);
+                        let token1 = Address::from_slice(&topics[3][12..32]);
+                        let fee = u32::from_be_bytes([
+                            log_data.data[29], log_data.data[30], log_data.data[31], 0,
+                        ]);
+                        // fee is uint24 — bytes [29..32] contain the 3-byte value
+                        let fee = {
+                            let mut fb = [0u8; 4];
+                            fb[1] = log_data.data[29];
+                            fb[2] = log_data.data[30];
+                            fb[3] = log_data.data[31];
+                            u32::from_be_bytes(fb)
+                        };
+                        let tick_spacing = {
+                            let mut ts = [0u8; 4];
+                            ts.copy_from_slice(&log_data.data[60..64]);
+                            i32::from_be_bytes(ts)
+                        };
+                        let hook_address = Address::from_slice(&log_data.data[84..104]);
+                        let hook_address = if hook_address.is_zero() { None } else { Some(hook_address) };
+                        let creation_block = log.block_number.unwrap_or(0);
+                        // Derive a pseudo-address from the poolKey hash for the pool address.
+                        // In V4, the actual pool is inside the singleton; we use the hash as an identifier.
+                        let pool_addr = Address::from_slice(&topics[1][12..32]);
+                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
+                            address: pool_addr,
+                            token0, token1,
+                            fee, tick_spacing: Some(tick_spacing), dex_type: DexType::UniswapV4,
+                            creation_block, pool_id: None, factory: Some(pool_manager),
+                            is_stable: None, balancer_pool_type: None,
+                            hook_address,
+                            bin_step: None,
+                            maturity_timestamp: None,
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "V4 PoolManager scan failed for {current}..{batch_end}: {e:#}"
+                    );
+                }
+            }
         }
 
         if let Some(ref f) = on_batch {
@@ -698,12 +921,12 @@ pub async fn discover_pools(
         // Skip pools already fully resolved via factory events
         if let Some(fp) = factory_pools.get(addr) {
             match fp.dex_type {
-                DexType::UniswapV2 | DexType::UniswapV3 => continue,
+                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::TraderJoeLB | DexType::Pendle => continue,
                 _ => {}
             }
         }
         match dex_type {
-            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot | DexType::TraderJoeLB => {
                 let rpc = rpc.clone();
                 let addr = *addr;
                 let sel0 = token0_selector.clone();
@@ -754,6 +977,43 @@ pub async fn discover_pools(
                     (addr, DexType::UniswapV3, token0, token1, fee, tick_spacing, fsb)
                 }));
             }
+            DexType::UniswapV4 => {
+                // V4 pools from activity events: use slot0() + liquidity() like V3
+                let rpc = rpc.clone();
+                let addr = *addr;
+                let sel0 = token0_selector.clone();
+                let sel1 = token1_selector.clone();
+                let sel_fee = fee_selector.clone();
+                let sel_ts = tick_spacing_selector.clone();
+                let fsb = *first_seen_block;
+                fetch_tasks.push(Box::pin(async move {
+                    let (token0, token1, fee, tick_spacing) = futures::future::join4(
+                        async {
+                            rpc.call(addr, sel0, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call(addr, sel1, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call(addr, sel_fee, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| {
+                                    u32::from_be_bytes([b[28], b[29], b[30], b[31]])
+                                }))
+                        },
+                        async {
+                            rpc.call(addr, sel_ts, ref_block).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| {
+                                    let mut ts = [0u8; 4];
+                                    ts.copy_from_slice(&b[28..32]);
+                                    i32::from_be_bytes(ts) as u32
+                                }))
+                        },
+                    ).await;
+                    (addr, DexType::UniswapV4, token0, token1, fee, tick_spacing, fsb)
+                }));
+            }
             DexType::Curve | DexType::Balancer => {
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
                 let addr = *addr;
@@ -784,6 +1044,28 @@ pub async fn discover_pools(
                 let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
                     (addr, dt, Some(t0), Some(t1), None, None, fsb)
+                }));
+            }
+            DexType::Pendle => {
+                // Pendle markets from activity events: token0 is PT (known), token1 = SY (call PT.SY())
+                let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                let addr = *addr;
+                let dt = *dex_type;
+                let rpc = rpc.clone();
+                let fsb = *first_seen_block;
+                // If token0 is non-zero, try to get SY from PT.SY()
+                fetch_tasks.push(Box::pin(async move {
+                    let token1 = if !t0.is_zero() {
+                        // SY() selector: keccak256("SY()")[..4]
+                        let sel_sy = Bytes::from_static(&[0x8d, 0xb3, 0x9e, 0x41]);
+                        match rpc.call(t0, sel_sy, ref_block).await {
+                            Ok(b) if b.len() >= 32 => Some(Address::from_slice(&b[12..32])),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    (addr, dt, Some(t0), token1, None, None, fsb)
                 }));
             }
         }
@@ -825,9 +1107,12 @@ pub async fn discover_pools(
                 })
             }
             DexType::UniswapV3 => fee_opt.unwrap_or(3000),
+            DexType::UniswapV4 => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
             DexType::Dodo => fee_opt.unwrap_or(0),
             DexType::Clipper => fee_opt.unwrap_or(0),
+            DexType::TraderJoeLB => fee_opt.unwrap_or(0),
+            DexType::Pendle => fee_opt.unwrap_or(0),
         };
         let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _, _)| *pid);
         let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
@@ -843,6 +1128,10 @@ pub async fn discover_pools(
             pool_id,
             factory: None,
             is_stable: None,
+            balancer_pool_type: None,
+            hook_address: None,
+            bin_step: None,
+            maturity_timestamp: None,
         });
     }
 
@@ -996,9 +1285,22 @@ pub async fn health_check_pools(
                 // getReserves() selector: 0x0902f1ac
                 tasks.push((i, pool.address, Bytes::from_static(&[0x09, 0x02, 0xf1, 0xac])));
             }
-            DexType::UniswapV3 => {
+            DexType::UniswapV3 | DexType::UniswapV4 => {
                 // slot0() selector: 0x0c4c660e (check sqrtPriceX96 != 0)
                 tasks.push((i, pool.address, Bytes::from_static(&[0x0c, 0x4c, 0x66, 0x0e])));
+            }
+            DexType::TraderJoeLB => {
+                // getActiveId() selector: keccak256("getActiveId()")[..4]
+                // 0x4fc08452
+                tasks.push((i, pool.address, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52])));
+            }
+            DexType::Pendle => {
+                // readState(address) selector: keccak256("readState(address)")[..4]
+                // Check if totalPt > 0 (non-zero reserves = active market)
+                let mut calldata = Vec::with_capacity(36);
+                calldata.extend_from_slice(&PENDLE_READ_STATE_SELECTOR);
+                calldata.extend_from_slice(&[0u8; 32]); // address(0) as router param
+                tasks.push((i, pool.address, Bytes::from(calldata)));
             }
             _ => {
                 // Curve, Balancer, Dodo, Clipper: no simple health check
@@ -1028,12 +1330,20 @@ pub async fn health_check_pools(
     let check_results: Vec<(usize, bool)> = stream::iter(tasks)
         .map(|(idx, to, data)| {
             let rpc = rpc.clone();
-            let is_v3 = dex_types[idx] == DexType::UniswapV3;
+            let is_v3 = dex_types[idx] == DexType::UniswapV3 || dex_types[idx] == DexType::UniswapV4;
+            let is_lb = dex_types[idx] == DexType::TraderJoeLB;
+            let is_pendle = dex_types[idx] == DexType::Pendle;
             async move {
                 let valid = match rpc.call(to, data, block).await {
                     Ok(bytes) => {
                         if is_v3 {
                             // slot0: sqrtPriceX96 is first 32 bytes — non-zero means active
+                            bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
+                        } else if is_lb {
+                            // getActiveId: uint256 — non-zero means active
+                            bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
+                        } else if is_pendle {
+                            // readState: totalPt is first 32 bytes — non-zero means active
                             bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
                         } else {
                             // getReserves: r0(32) + r1(32) + blockTimestamp(32)
