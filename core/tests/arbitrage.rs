@@ -187,6 +187,7 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             balancer_pool_type: None,
             hook_address: None,
             bin_step: None,
+            maturity_timestamp: None,
         },
         sqrt_price_x96: U256::from(79228162514264337593543950336u128), // price = 1.0
         tick: 0,
@@ -569,6 +570,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     };
 
     let mut pm = PoolManager::new();

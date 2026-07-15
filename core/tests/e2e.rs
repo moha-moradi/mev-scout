@@ -65,6 +65,7 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     }
 }
 
@@ -87,6 +88,7 @@ fn pool_info_v3(addr: Address, token0: Address, token1: Address, fee: u32, name:
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     }
 }
 
@@ -131,6 +133,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
         DexType::TraderJoeLB => {
             PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
         }
+        DexType::Pendle => PoolState::Pendle(mev_scout_core::pool::state::PendlePoolState::new(info)),
     }
 }
 
@@ -285,6 +288,7 @@ async fn test_e2e_pool_discovery() {
         rpc_concurrency: 64,
         v4_pool_manager: None,
         trader_joe_factory: None,
+        pendle_factory: None,
     };
     let (pools, _active) = match discover_pools(
         &rpc, start, end, &disc_config,
@@ -513,6 +517,7 @@ fn test_e2e_cache_isolation() {
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     };
 
     poly.put_discovered_pool(&pool).unwrap();

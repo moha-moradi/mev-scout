@@ -133,6 +133,7 @@ fn test_discover_v3_pipeline() {
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     };
 
     let info: PoolInfo = dp.into();

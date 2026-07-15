@@ -57,6 +57,7 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
             PoolState::Dodo(s) => s,
             PoolState::Clipper(s) => s,
             PoolState::TraderJoeLB(s) => &s.info,
+            PoolState::Pendle(s) => &s.info,
         })
         .and_then(|info| info.name.clone())
         .unwrap_or_else(|| format!("{}", addr))

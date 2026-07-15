@@ -1044,6 +1044,7 @@ impl SqliteStore {
                     balancer_pool_type,
                     hook_address,
                     bin_step,
+                    maturity_timestamp,
                 }))
             }
             None => Ok(None),
@@ -1053,7 +1054,7 @@ impl SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
@@ -1087,6 +1088,7 @@ impl SqliteStore {
                     if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
                 }));
             let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
+            let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
             let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
             let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
             let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -1111,6 +1113,7 @@ impl SqliteStore {
                 balancer_pool_type,
                 hook_address,
                 bin_step,
+                maturity_timestamp,
             });
         }
         Ok(pools)
@@ -1242,6 +1245,9 @@ fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::pool::dex_type::DexType> {
         5 => Ok(crate::pool::dex_type::DexType::Clipper),
         6 => Ok(crate::pool::dex_type::DexType::Solidly),
         7 => Ok(crate::pool::dex_type::DexType::Camelot),
+        8 => Ok(crate::pool::dex_type::DexType::UniswapV4),
+        9 => Ok(crate::pool::dex_type::DexType::TraderJoeLB),
+        10 => Ok(crate::pool::dex_type::DexType::Pendle),
         n => anyhow::bail!("invalid dex_type discriminant: {}", n),
     }
 }

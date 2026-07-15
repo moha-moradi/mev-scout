@@ -337,7 +337,7 @@ impl PoolManager {
                         if state.info.token1.is_zero() && !state.info.token0.is_zero() {
                             let mut sy_calldata = Vec::with_capacity(4);
                             sy_calldata.extend_from_slice(&PENDLE_SY_SELECTOR);
-                            if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), block).await {
+                            if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), block_num).await {
                                 if result.len() >= 32 {
                                     let sy_addr = Address::from_slice(&result[12..32]);
                                     if !sy_addr.is_zero() {

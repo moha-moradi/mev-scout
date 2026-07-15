@@ -8,7 +8,7 @@ use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::pool::state::{
-    BalancerPoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+    BalancerPoolVariant, PendlePoolState, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
 };
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::rpc::RpcClient;
@@ -72,6 +72,7 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
         DexType::TraderJoeLB => {
             PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
         }
+        DexType::Pendle => PoolState::Pendle(PendlePoolState::new(info)),
     }
 }
 
@@ -114,6 +115,7 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     }
 }
 
@@ -151,6 +153,7 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             balancer_pool_type: None,
             hook_address: None,
             bin_step: None,
+            maturity_timestamp: None,
         },
         reserve0: r0,
         reserve1: r1,

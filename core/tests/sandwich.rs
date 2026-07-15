@@ -65,6 +65,7 @@ fn test_sandwich_detection_synthetic() {
             balancer_pool_type: None,
             hook_address: None,
             bin_step: None,
+            maturity_timestamp: None,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,
@@ -120,6 +121,7 @@ fn test_jit_detection_synthetic() {
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     })));
     let gas_cfg = default_gas_config();
     let mut detector = JitDetector::new(42);
@@ -237,6 +239,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
         balancer_pool_type: None,
         hook_address: None,
         bin_step: None,
+        maturity_timestamp: None,
     };
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info.clone()));
@@ -326,6 +329,7 @@ fn test_jit_arb_detection_synthetic() {
             balancer_pool_type: None,
             hook_address: None,
             bin_step: None,
+            maturity_timestamp: None,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,
@@ -349,6 +353,7 @@ fn test_jit_arb_detection_synthetic() {
             balancer_pool_type: None,
             hook_address: None,
             bin_step: None,
+            maturity_timestamp: None,
         },
         reserve0: 1_000_000,
         reserve1: 1_000_000,

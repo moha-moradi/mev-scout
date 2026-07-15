@@ -173,6 +173,10 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         .and_then(|s| s.parse::<Address>().ok())
         .or_else(|| chain_config.trader_joe_factory.as_ref().and_then(|s| s.parse().ok()));
 
+    let pendle_factory: Option<Address> = args.pendle_factory.as_ref()
+        .and_then(|s| s.parse::<Address>().ok())
+        .or_else(|| chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()));
+
     if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
         || !solidly_factories.is_empty() || !camelot_factories.is_empty())
     {
@@ -193,6 +197,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         solidly_fee_bps: args.solidly_fee_bps,
         v4_pool_manager,
         trader_joe_factory,
+        pendle_factory,
         rpc_concurrency: args.rpc_concurrency,
     };
 
@@ -349,6 +354,10 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 DexType::TraderJoeLB => {
                     println!("  TraderJoeLB  {}  token0={}  token1={}  binStep={}",
                         p.address, p.token0, p.token1, p.bin_step.unwrap_or(0));
+                }
+                DexType::Pendle => {
+                    println!("  Pendle  {}  token0={}  token1={}  maturity={}",
+                        p.address, p.token0, p.token1, p.maturity_timestamp.unwrap_or(0));
                 }
             }
         }

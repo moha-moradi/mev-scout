@@ -70,6 +70,16 @@ pub fn quote_exact_in(
             Some(constant_product_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee)?)
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => None,
+        PoolState::Pendle(p) => {
+            let (reserve_in, reserve_out) = if p.info.token0 == token_in {
+                (p.total_pt, p.total_sy)
+            } else if p.info.token1 == token_in {
+                (p.total_sy, p.total_pt)
+            } else {
+                return None;
+            };
+            Some(constant_product_output_amount(amount_in, reserve_in, reserve_out, 0)?)
+        }
     }
 }
 

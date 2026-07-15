@@ -346,6 +346,16 @@ fn two_hop_profit_at(
             };
             constant_product_output_amount(input_amount, r_a_other, r_a_shared, a.info.fee)?
         }
+        PoolState::Pendle(a) => {
+            let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
+                (a.total_sy, a.total_pt)
+            } else if a.info.token1 == shared_token {
+                (a.total_pt, a.total_sy)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(input_amount, r_a_other, r_a_shared, 0)?
+        }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
 
@@ -378,6 +388,16 @@ fn two_hop_profit_at(
                 return None;
             };
             constant_product_output_amount(intermediate, r_b_in, r_b_out, b.info.fee)?
+        }
+        PoolState::Pendle(b) => {
+            let (r_b_in, r_b_out) = if b.info.token0 == shared_token {
+                (b.total_pt, b.total_sy)
+            } else if b.info.token1 == shared_token {
+                (b.total_sy, b.total_pt)
+            } else {
+                return None;
+            };
+            constant_product_output_amount(intermediate, r_b_in, r_b_out, 0)?
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };
@@ -496,6 +516,9 @@ fn estimate_arb_pair_profit(
         }
         PoolState::TraderJoeLB(lb) => {
             if lb.info.token0 == token_in { lb.reserve_x } else { lb.reserve_y }
+        }
+        PoolState::Pendle(p) => {
+            if p.info.token0 == token_in { p.total_pt } else { p.total_sy }
         }
         PoolState::Dodo(_) | PoolState::Clipper(_) => return None,
     };

@@ -184,6 +184,7 @@ impl PoolManager {
             Some(PoolState::Curve(c)) => c.balances.iter().sum(),
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
             Some(PoolState::TraderJoeLB(lb)) => lb.reserve_x.min(lb.reserve_y),
+            Some(PoolState::Pendle(p)) => p.total_pt.min(p.total_sy),
             Some(PoolState::Dodo(_)) | Some(PoolState::Clipper(_)) => 0,
             None => 0,
         }
@@ -237,6 +238,7 @@ impl PoolManager {
             PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
             PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
             PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
+            PoolState::Pendle(s) => s.total_pt > 0 && s.total_sy > 0,
             PoolState::Dodo(_) | PoolState::Clipper(_) => false,
         })
         .count()
@@ -431,6 +433,13 @@ impl PoolManager {
                         (lb.reserve_x, lb.reserve_y)
                     } else {
                         (lb.reserve_y, lb.reserve_x)
+                    }
+                }
+                PoolState::Pendle(p) => {
+                    if p.info.token0 == native {
+                        (p.total_pt, p.total_sy)
+                    } else {
+                        (p.total_sy, p.total_pt)
                     }
                 }
                 PoolState::Dodo(_) | PoolState::Clipper(_) => continue,

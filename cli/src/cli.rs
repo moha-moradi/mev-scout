@@ -394,6 +394,10 @@ pub struct DiscoverArgs {
     /// Trader Joe V2 LB factory contract address (overrides config).
     #[arg(long = "trader-joe-factory", value_name = "ADDRESS")]
     pub trader_joe_factory: Option<String>,
+
+    /// Pendle Finance factory contract address (overrides config).
+    #[arg(long = "pendle-factory", value_name = "ADDRESS")]
+    pub pendle_factory: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
