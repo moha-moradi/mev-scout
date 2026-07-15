@@ -165,17 +165,14 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         chain_name.default_camelot_factories().iter().filter_map(|s| s.parse().ok()).collect()
     };
 
-    let v4_pool_manager: Option<Address> = args.v4_pool_manager.as_ref()
-        .and_then(|s| s.parse::<Address>().ok())
-        .or_else(|| chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok()));
+    let v4_pool_manager: Option<Address> = chain_config.v4_pool_manager.as_ref()
+        .and_then(|s| s.parse::<Address>().ok());
 
-    let trader_joe_factory: Option<Address> = args.trader_joe_factory.as_ref()
-        .and_then(|s| s.parse::<Address>().ok())
-        .or_else(|| chain_config.trader_joe_factory.as_ref().and_then(|s| s.parse().ok()));
+    let trader_joe_factory: Option<Address> = chain_config.trader_joe_factory.as_ref()
+        .and_then(|s| s.parse::<Address>().ok());
 
-    let pendle_factory: Option<Address> = args.pendle_factory.as_ref()
-        .and_then(|s| s.parse::<Address>().ok())
-        .or_else(|| chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()));
+    let pendle_factory: Option<Address> = chain_config.pendle_factory.as_ref()
+        .and_then(|s| s.parse::<Address>().ok());
 
     if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
         || !solidly_factories.is_empty() || !camelot_factories.is_empty())

@@ -345,8 +345,8 @@ pub struct DiscoverArgs {
     #[command(flatten)]
     pub block_range: BlockRangeArgs,
 
-    /// Batch size for each getLogs request (recommended: 2000 for public RPCs)
-    #[arg(long, default_value = "2000", value_name = "NUMBER")]
+    /// Batch size for each getLogs request (default: 500, safe for public RPCs)
+    #[arg(long, default_value = "500", value_name = "NUMBER")]
     pub batch_size: u64,
 
     /// SQLite database path (overrides config's default: ./cache/{chain}-mev-scout.sqlite)
@@ -362,9 +362,8 @@ pub struct DiscoverArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Max concurrent RPC calls during pool metadata fetch (default: 64).
-    /// Lower values are safer for public/free-tier RPCs.
-    #[arg(long = "rpc-concurrency", default_value = "64", value_name = "NUMBER")]
+    /// Max concurrent RPC calls during pool metadata fetch (default: 16, safe for public RPCs)
+    #[arg(long = "rpc-concurrency", default_value = "16", value_name = "NUMBER")]
     pub rpc_concurrency: usize,
 
     /// Resume from the latest cached block instead of the full range.
@@ -386,18 +385,6 @@ pub struct DiscoverArgs {
     /// Overrides v2_fee_override for Solidly/Velodrome/Aerodrome pools.
     #[arg(long = "solidly-fee-bps", value_name = "BPS")]
     pub solidly_fee_bps: Option<u32>,
-
-    /// Uniswap V4 singleton PoolManager contract address (overrides config).
-    #[arg(long = "v4-pool-manager", value_name = "ADDRESS")]
-    pub v4_pool_manager: Option<String>,
-
-    /// Trader Joe V2 LB factory contract address (overrides config).
-    #[arg(long = "trader-joe-factory", value_name = "ADDRESS")]
-    pub trader_joe_factory: Option<String>,
-
-    /// Pendle Finance factory contract address (overrides config).
-    #[arg(long = "pendle-factory", value_name = "ADDRESS")]
-    pub pendle_factory: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -69,7 +69,7 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
-            v4_pool_manager: None,
+            v4_pool_manager: Some("0x67366782805870060151383f4bbff9dab53e5cd6".to_string()),
             trader_joe_factory: None,
             pendle_factory: None,
         },
@@ -95,8 +95,8 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
-            v4_pool_manager: None,
-            trader_joe_factory: None,
+            v4_pool_manager: Some("0x06380c0e0912312b5150364b9dc4542ba0dbbc85".to_string()),
+            trader_joe_factory: Some("0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c".to_string()),
             pendle_factory: None,
         },
     );
@@ -121,9 +121,9 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: None,
-            v4_pool_manager: None,
-            trader_joe_factory: None,
-            pendle_factory: None,
+            v4_pool_manager: Some("0x28e2ea090877bf75740558f6bfb36a5ffee9e9df".to_string()),
+            trader_joe_factory: Some("0x8e42f2F4101563bF679975178e880FD87d3eFd4e".to_string()),
+            pendle_factory: Some("0x80cE46449DF1c977f6ba60495125ce282F83DdFB".to_string()),
         },
     );
     m.insert(
@@ -145,9 +145,9 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
                 "0x6EcCab422D763aC031210895C81787E87B43A652".to_string(),
             ]),
             curve_registry: None,
-            v4_pool_manager: None,
-            trader_joe_factory: None,
-            pendle_factory: None,
+            v4_pool_manager: Some("0x360e68faccca8ca495c1b759fd9eee466db9fb32".to_string()),
+            trader_joe_factory: Some("0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c".to_string()),
+            pendle_factory: Some("0x49F2f7002669E0e4425Fa0203975625Ab4af3143".to_string()),
         },
     );
     m.insert(
@@ -169,9 +169,9 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             camelot_factories: None,
             curve_registry: None,
-            v4_pool_manager: None,
+            v4_pool_manager: Some("0x498581ff718922c3f8e6a244956af099b2652b2b".to_string()),
             trader_joe_factory: None,
-            pendle_factory: None,
+            pendle_factory: Some("0x81E80A50E56d10C501fF17B5Fe2F662bd9EA4590".to_string()),
         },
     );
     let ethereum_factories = vec![
@@ -196,9 +196,9 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             solidly_factories: None,
             camelot_factories: None,
             curve_registry: Some("0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5".to_string()),
-            v4_pool_manager: None,
-            trader_joe_factory: None,
-            pendle_factory: None,
+            v4_pool_manager: Some("0x000000000004444c5dc75cB358380D2e3dE08A90".to_string()),
+            trader_joe_factory: Some("0xDC8d77b69155c7E68A95a4fb0f06a71FF90B943a".to_string()),
+            pendle_factory: Some("0x6fcf753f2C67b83f7B09746Bbc4FA0047b35D050".to_string()),
         },
     );
     m.insert(
@@ -222,9 +222,9 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
             ]),
             camelot_factories: None,
             curve_registry: None,
-            v4_pool_manager: None,
+            v4_pool_manager: Some("0x9a13f98cb987694c9f086b1f5eb990eea8264ec3".to_string()),
             trader_joe_factory: None,
-            pendle_factory: None,
+            pendle_factory: Some("0x95a937f7064C75C6Bc257160088C0a9D58cca333".to_string()),
         },
     );
     m
