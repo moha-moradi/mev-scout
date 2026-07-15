@@ -105,6 +105,9 @@ pub async fn discover_v2_pools_from_dune(
                 bin_step: None,
                 maturity_timestamp: None,
                 underlying_tokens: None,
+                dex_name: None,
+                token0_symbol: None,
+                token1_symbol: None,
             });
         }
     }
@@ -164,6 +167,9 @@ pub async fn discover_v3_pools_from_dune(
                 bin_step: None,
                 maturity_timestamp: None,
                 underlying_tokens: None,
+                dex_name: None,
+                token0_symbol: None,
+                token1_symbol: None,
             });
         }
     }
@@ -257,6 +263,9 @@ pub async fn discover_active_pools_from_dune(
             bin_step: None,
             maturity_timestamp: None,
             underlying_tokens: None,
+            dex_name: None,
+            token0_symbol: None,
+            token1_symbol: None,
         });
     }
 

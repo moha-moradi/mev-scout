@@ -119,6 +119,16 @@ pub struct DiscoveredPool {
     /// Populated during discovery for Curve/Balancer pools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underlying_tokens: Option<Vec<Address>>,
+    /// Human-readable DEX protocol name (e.g. "QuickSwap", "SushiSwap", "Velodrome").
+    /// Populated from factory address lookup or falls back to DexType label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dex_name: Option<String>,
+    /// Token0 symbol (e.g. "WETH", "USDC").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token0_symbol: Option<String>,
+    /// Token1 symbol (e.g. "WETH", "USDC").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token1_symbol: Option<String>,
 }
 
 impl From<DiscoveredPool> for PoolInfo {
@@ -144,6 +154,9 @@ impl From<DiscoveredPool> for PoolInfo {
             hook_address: d.hook_address,
             bin_step: d.bin_step,
             maturity_timestamp: d.maturity_timestamp,
+            dex_name: d.dex_name,
+            token0_symbol: d.token0_symbol,
+            token1_symbol: d.token1_symbol,
         }
     }
 }
@@ -168,6 +181,29 @@ pub struct DiscoveryConfig<'a> {
     pub pendle_factory: Option<Address>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).
     pub rpc_concurrency: usize,
+}
+
+// ── Helper: decode ABI-encoded string from eth_call response ──
+fn decode_abi_string(data: &[u8]) -> Option<String> {
+    if data.len() < 32 {
+        return None;
+    }
+    // ABI-encoded string: first 32 bytes = offset (typically 0x20)
+    let offset = U256::from_be_slice(&data[..32]).to::<usize>();
+    if offset + 32 > data.len() {
+        return None;
+    }
+    // At offset: length of the string
+    let len = U256::from_be_slice(&data[offset..offset + 32]).to::<usize>();
+    let start = offset + 32;
+    let end = start + len;
+    if end > data.len() {
+        return None;
+    }
+    let bytes = &data[start..end];
+    // Trim trailing null padding and non-printable chars
+    let trimmed = bytes.iter().rposition(|&b| b != 0).map(|i| &bytes[..=i]).unwrap_or(bytes);
+    String::from_utf8(trimmed.to_vec()).ok()
 }
 
 // ── Helper: retry wrapper for eth_getLogs ──
@@ -466,6 +502,9 @@ pub async fn discover_pools(
                         bin_step: None,
                         maturity_timestamp: None,
                         underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                     }))
                 },
             ).await;
@@ -502,6 +541,9 @@ pub async fn discover_pools(
                         bin_step: None,
                         maturity_timestamp: None,
                         underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                     }))
                 },
             ).await;
@@ -549,6 +591,9 @@ pub async fn discover_pools(
                             bin_step: None,
                             maturity_timestamp: None,
                             underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                         });
                     }
                 }
@@ -592,6 +637,9 @@ pub async fn discover_pools(
                             bin_step: None,
                             maturity_timestamp: None,
                             underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                         });
                     }
                 }
@@ -630,6 +678,9 @@ pub async fn discover_pools(
                         bin_step: None,
                         maturity_timestamp: None,
                         underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                     }))
                 },
             ).await;
@@ -663,6 +714,9 @@ pub async fn discover_pools(
                         bin_step: None,
                         maturity_timestamp: None,
                         underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                     }))
                 },
             ).await;
@@ -708,6 +762,9 @@ pub async fn discover_pools(
                             hook_address: None, bin_step: None,
                             maturity_timestamp: None,
                             underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                         });
                     }
                 }
@@ -756,6 +813,9 @@ pub async fn discover_pools(
                             hook_address: None, bin_step: None,
                             maturity_timestamp: Some(expiry),
                             underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                         });
                     }
                 }
@@ -824,6 +884,9 @@ pub async fn discover_pools(
                             bin_step: None,
                             maturity_timestamp: None,
                             underlying_tokens: None,
+                        dex_name: None,
+                        token0_symbol: None,
+                        token1_symbol: None,
                         });
                     }
                 }
@@ -1169,13 +1232,58 @@ pub async fn discover_pools(
         .collect()
         .await;
 
+    // ── Phase 2.5: Resolve token symbols via ERC-20 symbol() ──
+    // Collect all unique token addresses from factory_pools and results
+    let symbol_selector = Bytes::from_static(&[0x95, 0xd8, 0x9b, 0x41]); // symbol()
+    let mut token_addrs: HashSet<Address> = HashSet::new();
+    for fp in factory_pools.values() {
+        token_addrs.insert(fp.token0);
+        token_addrs.insert(fp.token1);
+    }
+    for (_, _, t0_opt, t1_opt, _, _, _) in &results {
+        if let Some(t) = t0_opt { token_addrs.insert(*t); }
+        if let Some(t) = t1_opt { token_addrs.insert(*t); }
+    }
+    token_addrs.remove(&Address::ZERO);
+
+    let token_vec: Vec<Address> = token_addrs.into_iter().collect();
+    let symbol_tasks: Vec<_> = token_vec.iter().map(|addr| {
+        let rpc = rpc.clone();
+        let addr = *addr;
+        let sel = symbol_selector.clone();
+        async move {
+            let sym = rpc.call(addr, sel, ref_block).await.ok()
+                .and_then(|b| decode_abi_string(&b));
+            (addr, sym)
+        }
+    }).collect();
+
+    let symbol_results: HashMap<Address, String> = stream::iter(symbol_tasks)
+        .buffer_unordered(rpc_concurrency)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .filter_map(|(addr, sym)| sym.map(|s| (addr, s)))
+        .collect();
+
+    tracing::info!(
+        "Resolved symbols for {}/{} tokens",
+        symbol_results.len(),
+        token_vec.len(),
+    );
+
     // ── Phase 3: Build output ──
     // Use a HashSet for O(1) dedup instead of O(n²) linear scan
     let mut resolved_addrs: HashSet<Address> = HashSet::new();
     let mut discovered_pools = Vec::new();
 
     // First, add all factory-discovered pools (they have creation_block, factory, etc.)
-    for (_, dp) in factory_pools.drain() {
+    for (_, mut dp) in factory_pools.drain() {
+        if dp.dex_name.is_none() {
+            dp.dex_name = Some(dp.dex_type.label().to_string());
+        }
+        dp.token0_symbol = symbol_results.get(&dp.token0).cloned();
+        dp.token1_symbol = symbol_results.get(&dp.token1).cloned();
         resolved_addrs.insert(dp.address);
         discovered_pools.push(dp);
     }
@@ -1223,6 +1331,9 @@ pub async fn discover_pools(
             bin_step: None,
             maturity_timestamp: None,
             underlying_tokens,
+            dex_name: Some(dex_type.label().to_string()),
+            token0_symbol: symbol_results.get(&token0).cloned(),
+            token1_symbol: symbol_results.get(&token1).cloned(),
         });
     }
 

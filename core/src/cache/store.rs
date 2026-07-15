@@ -234,6 +234,10 @@ impl SqliteStore {
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN hook_address BLOB;");
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN bin_step INTEGER;");
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN maturity_timestamp INTEGER;");
+        // Phase 10.2: human-readable dex name and token symbols
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN dex_name TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN token0_symbol TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN token1_symbol TEXT;");
         // Phase 3: add signature columns to transactions (idempotent)
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_hash BLOB;");
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_name TEXT;");
@@ -956,9 +960,12 @@ impl SqliteStore {
         let hook_blob = pool.hook_address.map(|f| f.to_vec());
         let bin_step_int: Option<i64> = pool.bin_step.map(|v| v as i64);
         let maturity_ts_int: Option<i64> = pool.maturity_timestamp.map(|v| v as i64);
+        let dex_name = pool.dex_name.as_deref();
+        let token0_symbol = pool.token0_symbol.as_deref();
+        let token1_symbol = pool.token1_symbol.as_deref();
         conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 Self::addr_to_blob(&pool.address),
                 Self::addr_to_blob(&pool.token0),
@@ -975,6 +982,9 @@ impl SqliteStore {
                 hook_blob,
                 bin_step_int,
                 maturity_ts_int,
+                dex_name,
+                token0_symbol,
+                token1_symbol,
             ],
         )?;
         Ok(())
@@ -983,7 +993,7 @@ impl SqliteStore {
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol
              FROM pool_info WHERE address = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![Self::addr_to_blob(address)])?;
@@ -1020,6 +1030,9 @@ impl SqliteStore {
                     }));
                 let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
                 let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
+                let dex_name = row.get::<_, Option<String>>(15).ok().flatten();
+                let token0_symbol = row.get::<_, Option<String>>(16).ok().flatten();
+                let token1_symbol = row.get::<_, Option<String>>(17).ok().flatten();
                 let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
                 let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
                 let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -1045,6 +1058,9 @@ impl SqliteStore {
                     hook_address,
                     bin_step,
                     maturity_timestamp,
+                    dex_name,
+                    token0_symbol,
+                    token1_symbol,
                 }))
             }
             None => Ok(None),
@@ -1054,7 +1070,7 @@ impl SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
@@ -1089,6 +1105,9 @@ impl SqliteStore {
                 }));
             let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
             let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
+            let dex_name = row.get::<_, Option<String>>(15).ok().flatten();
+            let token0_symbol = row.get::<_, Option<String>>(16).ok().flatten();
+            let token1_symbol = row.get::<_, Option<String>>(17).ok().flatten();
             let token0 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
             let token1 = Self::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
             let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -1114,6 +1133,9 @@ impl SqliteStore {
                 hook_address,
                 bin_step,
                 maturity_timestamp,
+                dex_name,
+                token0_symbol,
+                token1_symbol,
             });
         }
         Ok(pools)

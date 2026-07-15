@@ -116,6 +116,9 @@ pub fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) ->
         hook_address: None,
         bin_step: None,
         maturity_timestamp: None,
+        dex_name: None,
+        token0_symbol: None,
+        token1_symbol: None,
     }
 }
 
@@ -154,6 +157,9 @@ pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: 
             hook_address: None,
             bin_step: None,
             maturity_timestamp: None,
+            dex_name: None,
+            token0_symbol: None,
+            token1_symbol: None,
         },
         reserve0: r0,
         reserve1: r1,

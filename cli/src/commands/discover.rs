@@ -318,53 +318,44 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
 
         for p in &pools {
+            let dex = p.dex_name.as_deref().unwrap_or(match p.dex_type {
+                DexType::UniswapV2 => "V2",
+                DexType::UniswapV3 => "V3",
+                DexType::UniswapV4 => "V4",
+                _ => "Pool",
+            });
+            let t0 = p.token0_symbol.as_deref().unwrap_or("???");
+            let t1 = p.token1_symbol.as_deref().unwrap_or("???");
             match p.dex_type {
                 DexType::UniswapV2 => {
-                    println!("  V2  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                    println!("  {dex}  {}  {}/{}", p.address, t0, t1);
                 }
-                DexType::UniswapV3 => {
-                    println!("  V3  {}  token0={}  token1={}  fee={}  tickSpacing={}",
-                        p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
+                DexType::UniswapV3 | DexType::UniswapV4 => {
+                    println!("  {dex}  {}  {}/{}  fee={}  tickSpacing={}",
+                        p.address, t0, t1, p.fee, p.tick_spacing.unwrap_or(0));
                 }
-                DexType::Solidly => {
-                    println!("  Solidly  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                DexType::Solidly | DexType::Camelot => {
+                    let stable = p.is_stable.map(|s| if s { " stable" } else { "" }).unwrap_or("");
+                    println!("  {dex}{stable}  {}  {}/{}", p.address, t0, t1);
                 }
-                DexType::Camelot => {
-                    println!("  Camelot  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-                }
-                DexType::Balancer => {
+                DexType::Balancer | DexType::Curve => {
                     if let Some(ref tokens) = p.underlying_tokens {
                         let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
-                        println!("  Balancer  {}  tokens=[{}]", p.address, syms.join(", "));
+                        println!("  {dex}  {}  [{}]", p.address, syms.join(", "));
                     } else {
-                        println!("  Balancer  {}  token0={}  token1={}", p.address, p.token0, p.token1);
+                        println!("  {dex}  {}  {}/{}", p.address, t0, t1);
                     }
-                }
-                DexType::Curve => {
-                    if let Some(ref tokens) = p.underlying_tokens {
-                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
-                        println!("  Curve  {}  tokens=[{}]", p.address, syms.join(", "));
-                    } else {
-                        println!("  Curve  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-                    }
-                }
-                DexType::Dodo => {
-                    println!("  Dodo  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-                }
-                DexType::Clipper => {
-                    println!("  Clipper  {}  token0={}  token1={}", p.address, p.token0, p.token1);
-                }
-                DexType::UniswapV4 => {
-                    println!("  V4  {}  token0={}  token1={}  fee={}  tickSpacing={}",
-                        p.address, p.token0, p.token1, p.fee, p.tick_spacing.unwrap_or(0));
                 }
                 DexType::TraderJoeLB => {
-                    println!("  TraderJoeLB  {}  token0={}  token1={}  binStep={}",
-                        p.address, p.token0, p.token1, p.bin_step.unwrap_or(0));
+                    println!("  {dex}  {}  {}/{}  binStep={}",
+                        p.address, t0, t1, p.bin_step.unwrap_or(0));
                 }
                 DexType::Pendle => {
-                    println!("  Pendle  {}  token0={}  token1={}  maturity={}",
-                        p.address, p.token0, p.token1, p.maturity_timestamp.unwrap_or(0));
+                    println!("  {dex}  {}  {}/{}  maturity={}",
+                        p.address, t0, t1, p.maturity_timestamp.unwrap_or(0));
+                }
+                _ => {
+                    println!("  {dex}  {}  {}/{}", p.address, t0, t1);
                 }
             }
         }

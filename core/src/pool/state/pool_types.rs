@@ -163,6 +163,15 @@ pub struct PoolInfo {
     /// Pendle Finance market maturity timestamp (unix seconds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maturity_timestamp: Option<u64>,
+    /// Human-readable DEX protocol name (e.g. "QuickSwap", "SushiSwap", "Velodrome").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dex_name: Option<String>,
+    /// Token0 symbol (e.g. "WETH", "USDC").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token0_symbol: Option<String>,
+    /// Token1 symbol (e.g. "WETH", "USDC").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token1_symbol: Option<String>,
 }
 
 impl Default for PoolInfo {
@@ -186,6 +195,9 @@ impl Default for PoolInfo {
             hook_address: None,
             bin_step: None,
             maturity_timestamp: None,
+            dex_name: None,
+            token0_symbol: None,
+            token1_symbol: None,
         }
     }
 }

@@ -69,6 +69,10 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
                 if let Some(ref name) = info.name {
                     return name.clone();
                 }
+                if let (Some(t0), Some(t1)) = (&info.token0_symbol, &info.token1_symbol) {
+                    let dex = info.dex_name.as_deref().unwrap_or(info.dex_type.label());
+                    return format!("{dex} {}/{}", t0, t1);
+                }
             }
             format!("{}", addr)
         })

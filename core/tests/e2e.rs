@@ -66,6 +66,9 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         hook_address: None,
         bin_step: None,
         maturity_timestamp: None,
+        dex_name: None,
+        token0_symbol: None,
+        token1_symbol: None,
     }
 }
 
@@ -89,6 +92,9 @@ fn pool_info_v3(addr: Address, token0: Address, token1: Address, fee: u32, name:
         hook_address: None,
         bin_step: None,
         maturity_timestamp: None,
+        dex_name: None,
+        token0_symbol: None,
+        token1_symbol: None,
     }
 }
 
@@ -518,6 +524,9 @@ fn test_e2e_cache_isolation() {
         hook_address: None,
         bin_step: None,
         maturity_timestamp: None,
+        dex_name: None,
+        token0_symbol: None,
+        token1_symbol: None,
     };
 
     poly.put_discovered_pool(&pool).unwrap();

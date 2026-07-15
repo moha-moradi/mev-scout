@@ -135,6 +135,9 @@ fn test_discover_v3_pipeline() {
         bin_step: None,
         maturity_timestamp: None,
         underlying_tokens: None,
+        dex_name: None,
+        token0_symbol: None,
+        token1_symbol: None,
     };
 
     let info: PoolInfo = dp.into();
