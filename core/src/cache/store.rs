@@ -113,14 +113,6 @@ impl SqliteStore {
             conn.execute_batch("ALTER TABLE transactions ADD COLUMN tx_type INTEGER NOT NULL DEFAULT 0")?;
         }
 
-        // Migration: add is_stable column to pool_info if missing (Solidly/Camelot stable pools)
-        let has_is_stable: bool = conn
-            .prepare("SELECT is_stable FROM pool_info LIMIT 0")
-            .is_ok();
-        if !has_is_stable {
-            conn.execute_batch("ALTER TABLE pool_info ADD COLUMN is_stable INTEGER")?;
-        }
-
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS receipts (
                 tx_hash    BLOB PRIMARY KEY,
@@ -226,6 +218,15 @@ impl SqliteStore {
             );
             ",
         )?;
+
+        // Migration: add is_stable column to pool_info if missing (Solidly/Camelot stable pools)
+        let has_is_stable: bool = conn
+            .prepare("SELECT is_stable FROM pool_info LIMIT 0")
+            .is_ok();
+        if !has_is_stable {
+            conn.execute_batch("ALTER TABLE pool_info ADD COLUMN is_stable INTEGER")?;
+        }
+
         // L6: migration -- add factory column to pool_info if missing (backward compat)
         let _ = conn.execute_batch("ALTER TABLE pool_info ADD COLUMN factory BLOB;");
         // Phase 10: propagate full token list for Curve/Balancer

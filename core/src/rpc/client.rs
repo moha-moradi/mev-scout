@@ -353,6 +353,64 @@ impl RpcClient {
         .await
     }
 
+    /// Fetch logs pinned to a specific provider index, bypassing weighted random selection.
+    ///
+    /// Falls back to `get_logs()` on provider failure. Used by discovery to distribute
+    /// `getLogs` batches across providers (like `distribute_blocks` for fetch).
+    pub async fn get_logs_for(
+        &self,
+        provider_idx: usize,
+        filter: &Filter,
+    ) -> anyhow::Result<Vec<Log>> {
+        let prov_state = {
+            let provs = self.providers.lock().await;
+            provs.get(provider_idx).cloned()
+        };
+
+        let provider = match prov_state {
+            Some(p) if p.is_available() => p,
+            _ => {
+                return self.get_logs(filter).await;
+            }
+        };
+
+        provider.acquire_permit().await;
+
+        let t0 = Instant::now();
+        let filter_clone = filter.clone();
+        let result = provider
+            .provider
+            .get_logs(&filter_clone)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        let latency = t0.elapsed();
+
+        match result {
+            Ok(logs) => {
+                let mut provs = self.providers.lock().await;
+                if let Some(p) = provs.get_mut(provider_idx) {
+                    p.record_success(latency);
+                }
+                Ok(logs)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Pinned provider-{} getLogs failed (failures={}, cooldown={:?}): {e:#}",
+                    provider_idx,
+                    provider.consecutive_failures,
+                    provider.cooldown_until,
+                );
+                {
+                    let mut provs = self.providers.lock().await;
+                    if let Some(p) = provs.get_mut(provider_idx) {
+                        p.record_failure();
+                    }
+                }
+                self.get_logs(filter).await
+            }
+        }
+    }
+
     /// Some chains (e.g. Polygon) include non-standard transaction types (e.g. `"0x7f"`)
     /// that alloy's `TxEnvelope` cannot deserialize. This helper removes them from the raw JSON.
     fn clean_block_transactions(raw: &mut Value) {
