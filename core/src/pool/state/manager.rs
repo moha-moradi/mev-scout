@@ -185,7 +185,7 @@ impl PoolManager {
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
             Some(PoolState::TraderJoeLB(lb)) => lb.reserve_x.min(lb.reserve_y),
             Some(PoolState::Pendle(p)) => p.total_pt.min(p.total_sy),
-            Some(PoolState::Dodo(_)) | Some(PoolState::Clipper(_)) => 0,
+            Some(PoolState::Dodo(_)) => 0,
             None => 0,
         }
     }
@@ -239,7 +239,7 @@ impl PoolManager {
             PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
             PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
             PoolState::Pendle(s) => s.total_pt > 0 && s.total_sy > 0,
-            PoolState::Dodo(_) | PoolState::Clipper(_) => false,
+            PoolState::Dodo(_) => false,
         })
         .count()
     }
@@ -442,7 +442,7 @@ impl PoolManager {
                         (p.total_sy, p.total_pt)
                     }
                 }
-                PoolState::Dodo(_) | PoolState::Clipper(_) => continue,
+                PoolState::Dodo(_) => continue,
             };
             let tvl = reserve_native.saturating_mul(reserve_stable).max(1);
             if tvl > best_tvl {

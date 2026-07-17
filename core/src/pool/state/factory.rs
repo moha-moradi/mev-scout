@@ -181,7 +181,6 @@ impl PoolManager {
                     Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true, None),
                     Some(PoolState::Balancer(b)) => (*addr, DexType::Balancer, None, 0, None, true, b.info.balancer_pool_type),
                     Some(PoolState::Dodo(_)) => (*addr, DexType::Dodo, None, 0, None, false, None),
-                    Some(PoolState::Clipper(_)) => (*addr, DexType::Clipper, None, 0, None, false, None),
                     Some(PoolState::TraderJoeLB(s)) => (*addr, DexType::TraderJoeLB, None, 0i32, s.info.factory, true, None),
                     Some(PoolState::Pendle(s)) => (*addr, DexType::Pendle, None, 0i32, s.info.factory, true, None),
                     None => (*addr, DexType::UniswapV2, None, 0, None, false, None),
@@ -442,7 +441,7 @@ impl PoolManager {
             DexType::Curve => {
                 Self::fetch_curve_state(rpc, pool, block).await
             }
-            DexType::Dodo | DexType::Clipper => None,
+            DexType::Dodo => None,
             DexType::Solidly | DexType::Camelot => {
                 let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
                 Some(PoolInitResult::V2Reserves(r0, r1))
@@ -1094,7 +1093,6 @@ impl PoolManager {
                 }
             }
             PoolState::Dodo(info) => Some(PoolState::Dodo(info.clone())),
-            PoolState::Clipper(info) => Some(PoolState::Clipper(info.clone())),
             PoolState::TraderJoeLB(lb) => {
                 let result = Self::fetch_lb_state(rpc, *addr, block).await?;
                 match result {

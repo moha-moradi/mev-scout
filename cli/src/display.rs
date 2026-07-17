@@ -57,7 +57,7 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
                 PoolState::Balancer(s) => Some(&s.info),
                 PoolState::TraderJoeLB(s) => Some(&s.info),
                 PoolState::Pendle(s) => Some(&s.info),
-                PoolState::Dodo(_) | PoolState::Clipper(_) => None,
+                PoolState::Dodo(_) => None,
             };
             if let Some(info) = info {
                 if let Some(ref tokens) = info.underlying_tokens {

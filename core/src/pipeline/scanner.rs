@@ -39,8 +39,6 @@ pub mod topics {
 
     pub static DODO_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("DODOSwap(address,address,uint256,uint256,address,address)"));
-    pub static CLIPPER_SWAPPED: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swapped(address,address,address,uint256,uint256,bytes)"));
 
     /// Uniswap V4 Swap event (same structure as V3: sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick)
     pub static V4_SWAP: LazyLock<B256> =
@@ -70,7 +68,6 @@ pub mod topics {
             *CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
             *BALANCER_SWAP,
             *DODO_SWAP,
-            *CLIPPER_SWAPPED,
             *V4_SWAP,
             *TRADER_JOE_LB_SWAP,
         ]

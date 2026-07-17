@@ -88,6 +88,12 @@ static BALANCER_GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
+/// _target_() selector for DODO pools — check if pool has target liquidity
+static DODO_TARGET_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"_target_()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 // Curve exchange_underlying emits separate event variants
 pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
@@ -419,28 +425,6 @@ fn classify_dex_event(
     if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
         return Some((DexType::UniswapV2, None, None));
     }
-    if topic0 == *topics::DODO_SWAP {
-        return Some((DexType::Dodo, None, None));
-    }
-    if topic0 == *topics::CLIPPER_SWAPPED {
-        // NOTE: Clipper pools are multi-asset (up to 8 tokens). The tokens
-        // extracted here are the swapped pair (tokenIn/tokenOut from the event),
-        // not the full pool token set. Token0/token1 in DiscoveredPool represent
-        // the most recently swapped pair only.
-        let topics = log.topics();
-        let tokens = if topics.len() >= 4 {
-            let token_in = Address::from_slice(&topics[3][12..]);
-            let token_out = if log.data().data.len() >= 32 {
-                Address::from_slice(&log.data().data[12..32])
-            } else {
-                Address::ZERO
-            };
-            Some((token_in, token_out))
-        } else {
-            None
-        };
-        return Some((DexType::Clipper, None, tokens));
-    }
     if topic0 == topics::V3_SWAP
         || topic0 == *topics::V3_MINT
         || topic0 == topics::V3_BURN
@@ -673,7 +657,6 @@ async fn discover_pools_shard(
         *topics::V3_MINT,
         topics::V3_BURN,
         *topics::DODO_SWAP,
-        *topics::CLIPPER_SWAPPED,
     ];
     let all_dex_topics: Vec<B256> = vec![
         topics::V2_SWAP,
@@ -687,7 +670,6 @@ async fn discover_pools_shard(
         *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
         *topics::BALANCER_SWAP,
         *topics::DODO_SWAP,
-        *topics::CLIPPER_SWAPPED,
     ];
 
     // Helper: fetch logs with optional provider pinning
@@ -1458,15 +1440,6 @@ async fn discover_pools_shard(
                     (addr, DexType::Dodo, token0, token1, None, None, fsb)
                 }));
             }
-            DexType::Clipper => {
-                let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
-                let addr = *addr;
-                let dt = *dex_type;
-                let fsb = *first_seen_block;
-                fetch_tasks.push(Box::pin(async move {
-                    (addr, dt, Some(t0), Some(t1), None, None, fsb)
-                }));
-            }
             DexType::Pendle => {
                 // Pendle markets from activity events: token0 is PT (known), token1 = SY (call PT.SY())
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
@@ -1576,7 +1549,6 @@ async fn discover_pools_shard(
             DexType::UniswapV4 => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
             DexType::Dodo => fee_opt.unwrap_or(0),
-            DexType::Clipper => fee_opt.unwrap_or(0),
             DexType::TraderJoeLB => fee_opt.unwrap_or(0),
             DexType::Pendle => fee_opt.unwrap_or(0),
         };
@@ -1790,8 +1762,9 @@ pub async fn health_check_pools(
                     tasks.push((i, vault, Bytes::from(calldata)));
                 }
             }
-            _ => {
-                // Dodo, Clipper: no simple health check
+            DexType::Dodo => {
+                // _target_(): uint256 — non-zero means pool has target liquidity
+                tasks.push((i, pool.address, Bytes::from(DODO_TARGET_SELECTOR.as_ref())));
             }
         }
     }
@@ -1823,6 +1796,7 @@ pub async fn health_check_pools(
             let is_pendle = dex_types[idx] == DexType::Pendle;
             let is_curve = dex_types[idx] == DexType::Curve;
             let is_balancer = dex_types[idx] == DexType::Balancer;
+            let is_dodo = dex_types[idx] == DexType::Dodo;
             async move {
                 let valid = match rpc.call(to, data, block).await {
                     Ok(bytes) => {
@@ -1859,7 +1833,10 @@ pub async fn health_check_pools(
                                         }
                                     }
                                     has_balance
-                                } else {
+                        } else if is_dodo {
+                            // _target_(): uint256 — non-zero means pool has target liquidity
+                            bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
+                        } else {
                                     false
                                 }
                             } else {
@@ -1884,9 +1861,12 @@ pub async fn health_check_pools(
         .collect()
         .await;
 
-    // Collect valid pools
+    // Collect valid pools — only filter pools that were actually checked.
+    // Pools not in the tasks list (Balancer w/o pool_id) are kept.
+    let mut checked_set: HashSet<usize> = HashSet::new();
     let mut valid_set: HashSet<usize> = HashSet::new();
     for (idx, valid) in check_results {
+        checked_set.insert(idx);
         if valid {
             valid_set.insert(idx);
         }
@@ -1896,7 +1876,7 @@ pub async fn health_check_pools(
     let filtered: Vec<DiscoveredPool> = pools
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| valid_set.contains(i))
+        .filter(|(i, _)| !checked_set.contains(i) || valid_set.contains(i))
         .map(|(_, p)| p)
         .collect();
     let removed = original_count - filtered.len();

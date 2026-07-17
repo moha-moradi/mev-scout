@@ -129,7 +129,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             bpt_index: None,
             rate_providers: vec![],
         }),
-        DexType::Solidly | DexType::Camelot | DexType::Dodo | DexType::Clipper => {
+        DexType::Solidly | DexType::Camelot | DexType::Dodo => {
             PoolState::UniswapV2(UniswapV2PoolState {
                 info,
                 reserve0: 0,

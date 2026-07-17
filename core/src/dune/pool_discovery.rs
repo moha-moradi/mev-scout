@@ -235,8 +235,6 @@ pub async fn discover_active_pools_from_dune(
             (DexType::Balancer, 0)
         } else if project.contains("dodo") {
             (DexType::Dodo, 0)
-        } else if project.contains("clipper") {
-            (DexType::Clipper, 0)
         } else if project.contains("solidly") || project.contains("velodrome")
             || project.contains("aerodrome") || project.contains("equalizer")
             || project.contains("thena") || project.contains(" Ramses")

@@ -474,7 +474,6 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
         // DEX-specific swap events (missing from original fallback)
         ("2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b", "Swap(bytes32,address,address,uint256,uint256)"),
         ("c2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f", "DODOSwap(address,address,uint256,uint256,address,address)"),
-        ("4be05c8d54f5e056ab2cfa033e9f582057001268c3e28561bb999d35d2c8f2c8", "Swapped(address,address,address,uint256,uint256,bytes)"),
 
         // Curve V2 events (missing from original fallback)
         ("95d7b7eb49650fc975a7948ff147be2a3b8e3210fbacbba6ff2a7bcbebd2986e", "TokenExchange(address,int128,uint256,int128,uint256,uint256)"),

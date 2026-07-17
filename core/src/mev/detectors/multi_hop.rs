@@ -287,7 +287,7 @@ impl MultiHopArbDetector {
             }
             PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
             PoolState::Pendle(p) => std::cmp::min(p.total_pt, p.total_sy),
-            PoolState::Dodo(_) | PoolState::Clipper(_) => 0,
+            PoolState::Dodo(_) => 0,
         }
     }
 
