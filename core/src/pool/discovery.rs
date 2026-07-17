@@ -1185,7 +1185,6 @@ async fn discover_pools_shard(
                 balancer_to_resolve.len()
             );
             use futures::stream::{self, StreamExt};
-            let ref_block = to_block;
             let resolve_tasks: Vec<_> = balancer_to_resolve.into_iter().map(|addr| {
                 let rpc = rpc.clone();
                 let vault = vault;
@@ -1195,7 +1194,7 @@ async fn discover_pools_shard(
                     let mut arg = [0u8; 32];
                     arg[12..32].copy_from_slice(addr.as_slice());
                     calldata.extend_from_slice(&arg);
-                    match rpc.call(vault, Bytes::from(calldata), ref_block).await {
+                    match rpc.call_latest(vault, Bytes::from(calldata)).await {
                         Ok(result) if result.0.len() >= 32 => {
                             let mut pool_id = [0u8; 32];
                             pool_id.copy_from_slice(&result.0[..32]);
@@ -1261,7 +1260,6 @@ async fn discover_pools_shard(
             );
             use futures::stream::{self, StreamExt};
             static CURVE_COINS_SELECTOR_DYN: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
-            let ref_block = to_block;
             let resolve_tasks: Vec<_> = curve_pools.into_iter().map(|addr| {
                 let rpc = rpc.clone();
                 async move {
@@ -1272,7 +1270,7 @@ async fn discover_pools_shard(
                         let mut arg = [0u8; 32];
                         arg[31] = i;
                         calldata.extend_from_slice(&arg);
-                        match rpc.call(addr, Bytes::from(calldata), ref_block).await {
+                        match rpc.call_latest(addr, Bytes::from(calldata)).await {
                             Ok(result) if result.0.len() >= 32 => {
                                 let token = Address::from_slice(&result.0[12..32]);
                                 if token.is_zero() { break; }
@@ -1304,12 +1302,13 @@ async fn discover_pools_shard(
     }
 
     // ── Phase 2: Fetch pool metadata for DEX-discovered pools ──
+    // All metadata (token0, token1, fee, tickSpacing) is immutable, so we use
+    // call_latest() to avoid "historical state not available" errors from
+    // providers without full archive support.
     let token0_selector = Bytes::from_static(&[0x0d, 0xfe, 0x16, 0x81]);
     let token1_selector = Bytes::from_static(&[0xd2, 0x12, 0x20, 0xa7]);
     let fee_selector = Bytes::from_static(&[0xdd, 0xca, 0x3f, 0x43]);
     let tick_spacing_selector = Bytes::from_static(&[0x37, 0xcf, 0xda, 0xca]);
-
-    let ref_block = to_block;
 
     type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>, u64)> + Send>>;
 
@@ -1337,9 +1336,9 @@ async fn discover_pools_shard(
                 let fsb = *first_seen_block;
                 let dex_type = *dex_type;
                 fetch_tasks.push(Box::pin(async move {
-                    let token0 = rpc.call(addr, sel0, ref_block).await.ok()
+                    let token0 = rpc.call_latest(addr, sel0).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    let token1 = rpc.call(addr, sel1, ref_block).await.ok()
+                    let token1 = rpc.call_latest(addr, sel1).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
                     (addr, dex_type, token0, token1, None, None, fsb)
                 }));
@@ -1355,21 +1354,21 @@ async fn discover_pools_shard(
                 fetch_tasks.push(Box::pin(async move {
                     let (token0, token1, fee, tick_spacing) = futures::future::join4(
                         async {
-                            rpc.call(addr, sel0, ref_block).await.ok()
+                            rpc.call_latest(addr, sel0).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
                         },
                         async {
-                            rpc.call(addr, sel1, ref_block).await.ok()
+                            rpc.call_latest(addr, sel1).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
                         },
                         async {
-                            rpc.call(addr, sel_fee, ref_block).await.ok()
+                            rpc.call_latest(addr, sel_fee).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| {
                                     u32::from_be_bytes([b[28], b[29], b[30], b[31]])
                                 }))
                         },
                         async {
-                            rpc.call(addr, sel_ts, ref_block).await.ok()
+                            rpc.call_latest(addr, sel_ts).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| {
                                     let mut ts = [0u8; 4];
                                     ts.copy_from_slice(&b[28..32]);
@@ -1392,21 +1391,21 @@ async fn discover_pools_shard(
                 fetch_tasks.push(Box::pin(async move {
                     let (token0, token1, fee, tick_spacing) = futures::future::join4(
                         async {
-                            rpc.call(addr, sel0, ref_block).await.ok()
+                            rpc.call_latest(addr, sel0).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
                         },
                         async {
-                            rpc.call(addr, sel1, ref_block).await.ok()
+                            rpc.call_latest(addr, sel1).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
                         },
                         async {
-                            rpc.call(addr, sel_fee, ref_block).await.ok()
+                            rpc.call_latest(addr, sel_fee).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| {
                                     u32::from_be_bytes([b[28], b[29], b[30], b[31]])
                                 }))
                         },
                         async {
-                            rpc.call(addr, sel_ts, ref_block).await.ok()
+                            rpc.call_latest(addr, sel_ts).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| {
                                     let mut ts = [0u8; 4];
                                     ts.copy_from_slice(&b[28..32]);
@@ -1433,9 +1432,9 @@ async fn discover_pools_shard(
                 let sel_quote = Bytes::from_static(&[0x0f, 0xd8, 0xba, 0xfe]); // _QUOTE_TOKEN_()
                 let fsb = *first_seen_block;
                 fetch_tasks.push(Box::pin(async move {
-                    let token0 = rpc.call(addr, sel_base, ref_block).await.ok()
+                    let token0 = rpc.call_latest(addr, sel_base).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    let token1 = rpc.call(addr, sel_quote, ref_block).await.ok()
+                    let token1 = rpc.call_latest(addr, sel_quote).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
                     (addr, DexType::Dodo, token0, token1, None, None, fsb)
                 }));
@@ -1452,7 +1451,7 @@ async fn discover_pools_shard(
                     let token1 = if !t0.is_zero() {
                         // SY() selector: keccak256("SY()")[..4]
                         let sel_sy = Bytes::from_static(&[0x8d, 0xb3, 0x9e, 0x41]);
-                        match rpc.call(t0, sel_sy, ref_block).await {
+                        match rpc.call_latest(t0, sel_sy).await {
                             Ok(b) if b.len() >= 32 => Some(Address::from_slice(&b[12..32])),
                             _ => None,
                         }
@@ -1494,7 +1493,7 @@ async fn discover_pools_shard(
         let addr = *addr;
         let sel = symbol_selector.clone();
         async move {
-            let sym = rpc.call(addr, sel, ref_block).await.ok()
+            let sym = rpc.call_latest(addr, sel).await.ok()
                 .and_then(|b| decode_abi_string(&b));
             (addr, sym)
         }

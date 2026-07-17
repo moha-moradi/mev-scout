@@ -186,15 +186,25 @@ impl RpcClient {
                         return Ok(val);
                     }
                     Err(e) => {
+                        let err_msg = format!("{e:#}");
+                        let is_evm_revert = err_msg.contains("execution reverted");
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
-                            p.record_failure();
-                            tracing::warn!(
-                                "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
-                                p.label,
-                                p.consecutive_failures,
-                                p.cooldown_until,
-                            );
+                            if is_evm_revert {
+                                tracing::debug!(
+                                    "EVM revert on {} (expected for non-standard tokens): {}",
+                                    p.label,
+                                    err_msg,
+                                );
+                            } else {
+                                p.record_failure();
+                                tracing::warn!(
+                                    "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
+                                    p.label,
+                                    p.consecutive_failures,
+                                    p.cooldown_until,
+                                );
+                            }
                         }
                         last_err = Some(e);
                     }
@@ -878,6 +888,29 @@ impl RpcClient {
                 provider
                     .call(request)
                     .block(block.into())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            }
+        })
+        .await
+    }
+
+    /// Execute an `eth_call` at the latest block.
+    ///
+    /// Used for immutable metadata queries (`symbol()`, `token0()`, `token1()`,
+    /// `fee()`, `tickSpacing()`) where the result never changes and archive
+    /// state is not needed. Avoids `historical state not available` errors
+    /// from providers without full archive support.
+    pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {
+        self.retry_call(|provider| {
+            let data = data.clone();
+            async move {
+                let request = TransactionRequest::default()
+                    .with_to(to)
+                    .with_input(data);
+                provider
+                    .call(request)
+                    .block(BlockNumberOrTag::Latest.into())
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
