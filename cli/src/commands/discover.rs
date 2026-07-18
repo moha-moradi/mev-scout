@@ -30,12 +30,15 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
     let provider_configs = config.effective_provider_configs(chain_name)?;
     validation::validate_rpc_urls(
-        &provider_configs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>(),
+        &provider_configs.iter().map(|(u, _, _)| u.clone()).collect::<Vec<_>>(),
     ).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
     rpc.with_provider_rps(
-        &provider_configs.iter().map(|(_, r)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>(),
+        &provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>(),
+    ).await;
+    rpc.with_provider_archive(
+        &provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>(),
     ).await;
     if use_onchain {
         rpc.check_connection(chain_id).await?;

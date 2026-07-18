@@ -299,28 +299,35 @@ impl Config {
 
     /// Build full provider configs by merging user-supplied URLs with public fallbacks.
     ///
-    /// Returns `Vec<(String, Option<f64>)>` — URL and optional per-provider RPS limit.
-    /// When `rpc_rps` has matching entries, those are used; otherwise defaults from
-    /// `ChainName::public_rpc_endpoints()` are used for public endpoints.
-    /// Falls back to public endpoints for known chains if no user RPC is provided.
-    pub fn effective_provider_configs(&self, chain_name: crate::types::ChainName) -> error::Result<Vec<(String, Option<f64>)>> {
+    /// Returns `Vec<(String, Option<f64>, bool)>` — URL, optional per-provider RPS limit, and
+    /// whether the endpoint is known to support archive queries. When `rpc_rps` has matching
+    /// entries, those are used; otherwise defaults from `ChainName::public_rpc_endpoints()` are
+    /// used for public endpoints. Falls back to public endpoints for known chains if no user RPC
+    /// is provided.
+    pub fn effective_provider_configs(&self, chain_name: crate::types::ChainName) -> error::Result<Vec<(String, Option<f64>, bool)>> {
         let urls = self.effective_rpc_urls().unwrap_or_default();
         if !urls.is_empty() {
             let public_endpoints = chain_name.public_rpc_endpoints();
-            let result: Vec<(String, Option<f64>)> = urls
+            let result: Vec<(String, Option<f64>, bool)> = urls
                 .into_iter()
                 .enumerate()
                 .map(|(i, url)| {
                     let rps = self.rpc_rps.get(i).copied();
-                    if rps.is_some() {
-                        return (url, rps);
+                    if let Some(r) = rps {
+                        // Check if any known public endpoint matches
+                        let archive = public_endpoints
+                            .iter()
+                            .find(|e| url.contains(e.url) || e.url.contains(&url))
+                            .map(|e| e.archive)
+                            .unwrap_or(true); // Unknown endpoints assumed archive until proven otherwise
+                        return (url, Some(r), archive);
                     }
-                    let default_rps = public_endpoints
+                    let (default_rps, archive) = public_endpoints
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
-                        .map(|e| e.default_rps)
-                        .unwrap_or(self.rps_limit);
-                    (url, Some(default_rps))
+                        .map(|e| (Some(e.default_rps), e.archive))
+                        .unwrap_or((Some(self.rps_limit), true));
+                    (url, default_rps, archive)
                 })
                 .collect();
             Ok(result)
@@ -331,7 +338,7 @@ impl Config {
                     "No RPC URL provided and no public endpoints available for this chain. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
                 ));
             }
-            Ok(public.into_iter().map(|e| (e.url.to_string(), Some(e.default_rps))).collect())
+            Ok(public.into_iter().map(|e| (e.url.to_string(), Some(e.default_rps), e.archive)).collect())
         }
     }
 
@@ -349,7 +356,7 @@ impl Config {
     /// Defaults to 10 when no RPS limits are configured (safe for public RPCs).
     pub fn effective_block_concurrency(
         &self,
-        provider_configs: &[(String, Option<f64>)],
+        provider_configs: &[(String, Option<f64>, bool)],
     ) -> usize {
         if let Some(bc) = self.block_concurrency {
             tracing::info!("block_concurrency: using explicit value {bc}");
@@ -362,7 +369,7 @@ impl Config {
 
         let min_rps = provider_configs
             .iter()
-            .filter_map(|(_, r)| *r)
+            .filter_map(|(_, r, _)| *r)
             .filter(|r| *r > 0.0)
             .fold(f64::INFINITY, f64::min);
 

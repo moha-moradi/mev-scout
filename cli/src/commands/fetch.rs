@@ -19,9 +19,10 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
 
     let provider_configs = config.effective_provider_configs(chain_name)?;
     let chain_id = chain_name.chain_id();
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _)| u.as_str()).collect();
+    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
+    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
+    rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_id).await?;
     tracing::info!("{}", rpc.provider_summary().await);
 

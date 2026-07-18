@@ -2,7 +2,25 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 
 chain = "polygon"
 rpc_urls = [
+  "https://polygon.gateway.tenderly.co/58axogDawo53qDU0C5bLWo",
+
   "https://shared.ap-southeast-1.getblock.io/0f8be36949d749a59ee2f8d263ec8600",
+  "https://shared.ap-southeast-1.getblock.io/ac064dad442e40ceb3ac122654aa5495",
+  "https://shared.ap-southeast-1.getblock.io/80a93b3d0084480488c75ef568f2970c",
+ 
+
+  "https://rpc.ankr.com/polygon/3b15083a831e18dc4fa8b867dd6a37f1206be7b5b18d438aa5bc8cb3696d5855",
+  "https://rpc.ankr.com/polygon/1f24e5f2e13020f57454d36e0cdedb705a138d84331cd3e632a75876a33724ac",
+  "https://rpc.ankr.com/polygon/3695659a781264a76faf0427d938a4aebd69bf7e3340f50f74488561b2e984fe",
+
+  "https://polygon-mainnet.g.alchemy.com/v2/D3LDRulgIGHpGTT2u5zQE",
+  "https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs",
+  "https://polygon-mainnet.g.alchemy.com/v2/booRpg6FM7gc9g8GC0SdN",
+
+  "https://lb.drpc.live/polygon/AolDryJPNULVk2IKbKzdz_PXsub6gmIR8afhwosiOHdW",
+  "https://lb.drpc.live/polygon/AlEVHe8j40WBrjJdhDUkokDnXjIgaJkR8ZpCVjewFaCJ",
+  "https://lb.drpc.live/polygon/Atek2uI_sEPeiLPQHycqLfsE5emegmUR8afiwosiOHdW,
+
   "https://polygon-public.nodies.app",
   "https://polygon-bor-rpc.publicnode.com",
   "https://polygon.drpc.org",
@@ -12,7 +30,7 @@ rpc_urls = [
 
 # Per-provider RPS limits (matches rpc_urls order). Also used as weight for block distribution.
 # GetBlock shared: up to 20 RPS. Public endpoints: conservative 10 RPS to avoid 429s.
-rpc_rps = [20, 10, 10, 10, 10, 10]
+rpc_rps = [20, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 0.0

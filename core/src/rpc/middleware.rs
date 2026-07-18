@@ -112,6 +112,10 @@ pub struct ProviderState {
     pub latency_ms: f64,
     pub label: String,
     pub url: String,
+    /// Whether this provider supports archive queries (`eth_getProof`, historical `eth_call`, etc.).
+    /// Set during `validate_all`: `true` if the `eth_getProof` probe succeeds, `false` otherwise.
+    /// Non-archive providers are still alive for block/log/fetch workloads.
+    pub archive: bool,
 }
 
 impl ProviderState {
@@ -127,6 +131,7 @@ impl ProviderState {
             latency_ms: 0.0,
             label,
             url,
+            archive: true,
         }
     }
 

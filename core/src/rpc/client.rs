@@ -102,7 +102,8 @@ impl RpcClient {
             .enumerate()
             .map(|(i, p)| {
                 let status = if p.is_available() { "ok" } else { "dead" };
-                format!("p{}[{}] {:.0}rps {}", i, p.label, p.weight, status)
+                let arch = if p.archive { "archive" } else { "full" };
+                format!("p{}[{}] {:.0}rps {} {}", i, p.label, p.weight, status, arch)
             })
             .collect();
         format!("{} providers: {}", provs.len(), entries.join("  "))
@@ -127,6 +128,22 @@ impl RpcClient {
         }
     }
 
+    /// Pre-seed archive capability from known endpoint metadata.
+    ///
+    /// For endpoints where the `archive` flag is already known (e.g. from
+    /// `ProviderEndpoint.archive` in the chain catalog), this sets the flag
+    /// upfront so the `validate_all()` archive probe can skip the `eth_getProof`
+    /// check if it confirms the flag. Unknown endpoints default to `true` and
+    /// are verified during `validate_all()`.
+    pub async fn with_provider_archive(&self, archive_list: &[bool]) {
+        let mut provs = self.providers.lock().await;
+        for (i, &archive) in archive_list.iter().enumerate() {
+            if let Some(p) = provs.get_mut(i) {
+                p.archive = archive;
+            }
+        }
+    }
+
     /// Get available providers sorted by effective weight descending (fastest + highest RPS first).
     async fn sorted_available(&self) -> Vec<(usize, ProviderState)> {
         let provs = self.providers.lock().await;
@@ -134,6 +151,30 @@ impl RpcClient {
             .iter()
             .enumerate()
             .filter(|(_, p)| p.is_available())
+            .map(|(i, p)| (i, ProviderState::clone(p)))
+            .collect();
+
+        available.sort_by(|a, b| {
+            b.1.effective_weight()
+                .partial_cmp(&a.1.effective_weight())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        available
+    }
+
+    /// Get available **archive-capable** providers sorted by effective weight descending.
+    ///
+    /// Used by `retry_call_archive()` to route archive-dependent RPC calls
+    /// (`eth_getProof`, historical `eth_call`, `eth_getCode`, `eth_getStorageAt`,
+    /// `eth_getBalance`, `eth_getTransactionCount`) to providers that support them.
+    /// Non-archive providers are excluded — they are still alive for block/log workloads.
+    async fn sorted_available_archive(&self) -> Vec<(usize, ProviderState)> {
+        let provs = self.providers.lock().await;
+        let mut available: Vec<(usize, ProviderState)> = provs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_available() && p.archive)
             .map(|(i, p)| (i, ProviderState::clone(p)))
             .collect();
 
@@ -225,6 +266,83 @@ impl RpcClient {
         }
     }
 
+    /// Execute an RPC call restricted to **archive-capable** providers.
+    ///
+    /// Identical to `retry_call` but uses `sorted_available_archive()` so that
+    /// archive-dependent methods (`eth_getProof`, historical `eth_call`,
+    /// `eth_getCode`, `eth_getStorageAt`, etc.) never hit full-node providers
+    /// that would return `historical state not available` errors.
+    async fn retry_call_archive<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
+    where
+        F: Fn(RootProvider) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        let mut last_err = None;
+
+        let mut sorted = self.sorted_available_archive().await;
+        let mut tried = std::collections::HashSet::new();
+
+        loop {
+            let mut found_next = false;
+            for (idx, provider) in &sorted {
+                if tried.contains(idx) {
+                    continue;
+                }
+                tried.insert(*idx);
+                found_next = true;
+
+                provider.acquire_permit().await;
+
+                let t0 = Instant::now();
+                match f(provider.provider.clone()).await {
+                    Ok(val) => {
+                        let latency = t0.elapsed();
+                        let mut provs = self.providers.lock().await;
+                        if let Some(p) = provs.get_mut(*idx) {
+                            p.record_success(latency);
+                        }
+                        self.current.store(*idx, Ordering::Relaxed);
+                        return Ok(val);
+                    }
+                    Err(e) => {
+                        let err_msg = format!("{e:#}");
+                        let is_evm_revert = err_msg.contains("execution reverted");
+                        let mut provs = self.providers.lock().await;
+                        if let Some(p) = provs.get_mut(*idx) {
+                            if is_evm_revert {
+                                tracing::debug!(
+                                    "EVM revert on {} (expected for non-standard tokens): {}",
+                                    p.label,
+                                    err_msg,
+                                );
+                            } else {
+                                p.record_failure();
+                                tracing::warn!(
+                                    "Archive RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
+                                    p.label,
+                                    p.consecutive_failures,
+                                    p.cooldown_until,
+                                );
+                            }
+                        }
+                        last_err = Some(e);
+                    }
+                }
+            }
+
+            if !found_next {
+                break;
+            }
+
+            sorted = self.sorted_available_archive().await;
+        }
+
+        match last_err {
+            Some(e) => anyhow::bail!("All archive RPC providers failed: {e:#}"),
+            None => anyhow::bail!("All archive RPC providers exhausted or in cooldown"),
+        }
+    }
+
     /// Distribute a block range across providers by effective weight.
     ///
     /// Returns `Vec<(usize, u64, u64)>` — (provider_index, range_start, range_end).
@@ -269,6 +387,10 @@ impl RpcClient {
     }
 
     /// Validate all providers in parallel — chain ID, block number, and archive support.
+    ///
+    /// Phase 1 (fatal): chain ID + block number — marks provider dead on failure.
+    /// Phase 2 (informational): `eth_getProof` probe — sets `archive = false` on failure
+    /// but keeps the provider alive for full-node workloads (block/log/fetch).
     pub async fn validate_all(&self, expected_chain_id: u64) -> anyhow::Result<Vec<anyhow::Result<()>>> {
         let mut provs = self.providers.lock().await;
         let mut results = Vec::new();
@@ -276,18 +398,38 @@ impl RpcClient {
         for (i, state) in provs.iter_mut().enumerate() {
             let provider = state.provider.clone();
             let label = state.label.clone();
-            let result = Self::check_single_provider(&provider, &label, expected_chain_id).await;
-            if let Err(ref e) = result {
-                tracing::warn!("Provider {i} ({label}) failed validation: {e}");
+
+            // Phase 1: chain ID + block number (fatal — marks dead on failure)
+            let phase1 = Self::check_provider_chain(&provider, &label, expected_chain_id).await;
+            if let Err(ref e) = phase1 {
+                tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
                 state.mark_dead();
+                results.push(phase1);
+                continue;
             }
-            results.push(result);
+
+            // Phase 2: archive probe (non-fatal — just sets archive flag)
+            let phase2 = Self::check_provider_archive(&provider, &label, expected_chain_id).await;
+            match &phase2 {
+                Ok(_) => {
+                    state.archive = true;
+                    tracing::info!("{label}: OK archive=supported");
+                }
+                Err(e) => {
+                    state.archive = false;
+                    tracing::info!("{label}: OK archive=NOT supported ({e}) — available for full-node workloads");
+                }
+            }
+            // Provider stays alive regardless of archive status
+            results.push(Ok(()));
         }
 
         Ok(results)
     }
 
-    async fn check_single_provider(
+    /// Phase 1: validate chain ID and block number access.
+    /// Returns `Err` if the provider is unreachable or on the wrong chain.
+    async fn check_provider_chain(
         provider: &RootProvider,
         label: &str,
         expected_chain_id: u64,
@@ -303,19 +445,33 @@ impl RpcClient {
             );
         }
 
+        let _tip = provider
+            .get_block_number()
+            .await
+            .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}"))?;
+
+        Ok(())
+    }
+
+    /// Phase 2: probe archive support via `eth_getProof`.
+    /// Returns `Ok(())` if archive is supported, `Err` otherwise.
+    /// The provider stays alive either way — archive is just metadata.
+    async fn check_provider_archive(
+        provider: &RootProvider,
+        label: &str,
+        _expected_chain_id: u64,
+    ) -> anyhow::Result<()> {
         let tip = provider
             .get_block_number()
             .await
             .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}"))?;
 
-        // eth_getProof probe — needed by CachedRpcDb
         provider
             .get_proof(Address::ZERO, vec![])
             .number(tip)
             .await
-            .map_err(|e| anyhow::anyhow!("{label}: eth_getProof failed (archive required): {e}"))?;
+            .map_err(|e| anyhow::anyhow!("eth_getProof failed: {e}"))?;
 
-        tracing::info!("{label}: OK chain_id={actual_chain_id} tip={tip} archive=supported");
         Ok(())
     }
 
@@ -730,7 +886,7 @@ impl RpcClient {
         let keys: Vec<B256> = slots.iter().map(|s| {
             B256::from(s.to_be_bytes::<32>())
         }).collect();
-        self.retry_call(|provider| {
+        self.retry_call_archive(|provider| {
             let keys = keys.clone();
             async move {
                 let proof = provider
@@ -759,7 +915,7 @@ impl RpcClient {
         slot: U256,
         block: u64,
     ) -> anyhow::Result<U256> {
-        self.retry_call(|provider| async move {
+        self.retry_call_archive(|provider| async move {
             provider
                 .get_storage_at(address, slot)
                 .number(block)
@@ -779,14 +935,14 @@ impl RpcClient {
         block: u64,
     ) -> anyhow::Result<(u64, U256, Bytes)> {
         let (nonce, balance, code) = futures::try_join!(
-            self.retry_call(|provider| async move {
+            self.retry_call_archive(|provider| async move {
                 provider
                     .get_transaction_count(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }),
-            self.retry_call(|provider| async move {
+            self.retry_call_archive(|provider| async move {
                 provider
                     .get_balance(address)
                     .number(block)
@@ -800,7 +956,7 @@ impl RpcClient {
 
     /// Fetch contract bytecode at a historical block via `eth_getCode`.
     pub async fn get_code(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call(|provider| async move {
+        self.retry_call_archive(|provider| async move {
             provider
                 .get_code_at(address)
                 .number(block)
@@ -811,11 +967,15 @@ impl RpcClient {
     }
 
     /// Fetch code at a historical block with no retry.
-    /// Uses the first available provider. Still respects per-provider rate limiters.
+    /// Uses the first available archive provider. Still respects per-provider rate limiters.
     pub async fn get_code_no_retry(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
         let first = {
             let provs = self.providers.lock().await;
-            provs.first().cloned()
+            // Prefer an archive provider; fall back to any alive provider if none available
+            provs.iter()
+                .find(|p| p.is_available() && p.archive)
+                .or_else(|| provs.iter().find(|p| p.is_available()))
+                .cloned()
         };
         match first {
             Some(p) => {
@@ -844,8 +1004,10 @@ impl RpcClient {
 
     /// Pre-flight connection check — validates at least one provider is reachable.
     ///
-    /// Checks each provider's chain ID, block number access, and archive support.
-    /// Returns success if at least one provider passes all checks.
+    /// Checks each provider's chain ID and block number access.
+    /// Archive support is probed but not required — providers without archive
+    /// are still used for full-node workloads (block/log/fetch).
+    /// Returns success if at least one provider passes basic connectivity.
     pub async fn check_connection(&self, expected_chain_id: u64) -> anyhow::Result<()> {
         let results = self.validate_all(expected_chain_id).await?;
         let failures: Vec<String> = results
@@ -863,12 +1025,26 @@ impl RpcClient {
         let success_count = results.len() - failures.len();
         if !failures.is_empty() {
             tracing::warn!(
-                "{}/{} providers passed, {} failed:\n{}",
+                "{}/{} providers passed basic validation, {} failed:\n{}",
                 success_count,
                 results.len(),
                 failures.len(),
                 failures.join("\n"),
             );
+        }
+
+        // Report archive capability count
+        let provs = self.providers.lock().await;
+        let archive_count = provs.iter().filter(|p| p.is_available() && p.archive).count();
+        let alive_count = provs.iter().filter(|p| p.is_available()).count();
+        if archive_count < alive_count {
+            tracing::info!(
+                "Archive support: {archive_count}/{} alive providers support eth_getProof. \
+                 Non-archive providers will handle block/log/fetch workloads.",
+                alive_count,
+            );
+        } else if archive_count > 0 {
+            tracing::info!("Archive support: all {archive_count} alive providers support eth_getProof");
         }
 
         Ok(())
@@ -877,9 +1053,9 @@ impl RpcClient {
     /// Execute an `eth_call` at a historical block.
     ///
     /// Used for pool state queries (`getReserves()`, `slot0()`, `liquidity()`)
-    /// without modifying chain state.
+    /// without modifying chain state. Requires archive-capable providers.
     pub async fn call(&self, to: Address, data: Bytes, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call(|provider| {
+        self.retry_call_archive(|provider| {
             let data = data.clone();
             async move {
                 let request = TransactionRequest::default()
