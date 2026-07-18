@@ -286,20 +286,26 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
     pb.finish_and_clear();
 
-    // ── Phase 3: Dedup by address (on-chain pools take priority) ──
-    let mut seen = HashSet::new();
+    // ── Phase 3: Dedup by address with field-level merge ──
+    // Dune provides fast bulk discovery; on-chain provides full factory-event
+    // metadata (is_stable, hook_address, custom fee, etc.). Merge both so
+    // the final pool has the best available data from each source.
     let mut pools: Vec<DiscoveredPool> = Vec::with_capacity(all_pools.len());
     for p in all_pools {
-        if seen.insert(p.address) {
-            pools.push(p);
+        match pools.iter_mut().find(|e| e.address == p.address) {
+            Some(existing) => existing.merge_from(&p),
+            None => pools.push(p),
         }
     }
 
     // ── Phase 5.2: Pool health check ──
     if args.health_check && !pools.is_empty() {
         let before = pools.len();
+        let balancer_vault = chain_config.balancer_vault.as_ref()
+            .and_then(|s| s.parse::<Address>().ok());
         let (checked, removed) = mev_scout_core::pool::discovery::health_check_pools(
             &rpc, pools, args.rpc_concurrency,
+            balancer_vault,
         ).await;
         pools = checked;
         if removed > 0 && !args.json {

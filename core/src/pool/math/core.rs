@@ -71,7 +71,7 @@ pub fn quote_exact_in(
             };
             lb::lb_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee)
         }
-        PoolState::Dodo(_) | PoolState::Clipper(_) => None,
+        PoolState::Dodo(_) => None,
         PoolState::Pendle(p) => {
             let (total_in, total_out) = if p.info.token0 == token_in {
                 (p.total_pt, p.total_sy)

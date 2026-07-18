@@ -54,11 +54,6 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve0: 0,
             reserve1: 0,
         }),
-        DexType::Clipper => PoolState::UniswapV2(UniswapV2PoolState {
-            info,
-            reserve0: 0,
-            reserve1: 0,
-        }),
         DexType::Solidly => PoolState::UniswapV2(UniswapV2PoolState {
             info,
             reserve0: 0,

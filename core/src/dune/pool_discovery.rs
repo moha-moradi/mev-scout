@@ -221,16 +221,20 @@ pub async fn discover_active_pools_from_dune(
         }
         seen.insert(addr);
 
-        let (dex_type, fee) = if version.contains("v3") || version == "3" {
+        let (dex_type, fee) = if version.contains("v4") || version == "4" {
+            (DexType::UniswapV4, DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32)
+        } else if version.contains("v3") || version == "3" {
             (DexType::UniswapV3, DuneClient::col_as_u64(row, "fee").unwrap_or(3000) as u32)
+        } else if project.contains("trader joe") || project.contains("traderjoe") {
+            (DexType::TraderJoeLB, 0)
+        } else if project.contains("pendle") {
+            (DexType::Pendle, 0)
         } else if project.contains("curve") {
             (DexType::Curve, 0)
         } else if project.contains("balancer") {
             (DexType::Balancer, 0)
         } else if project.contains("dodo") {
             (DexType::Dodo, 0)
-        } else if project.contains("clipper") {
-            (DexType::Clipper, 0)
         } else if project.contains("solidly") || project.contains("velodrome")
             || project.contains("aerodrome") || project.contains("equalizer")
             || project.contains("thena") || project.contains(" Ramses")
@@ -243,7 +247,7 @@ pub async fn discover_active_pools_from_dune(
         };
 
         let ts = match dex_type {
-            DexType::UniswapV3 => Some(tick_spacing_from_fee(fee)),
+            DexType::UniswapV3 | DexType::UniswapV4 => Some(tick_spacing_from_fee(fee)),
             _ => None,
         };
 
