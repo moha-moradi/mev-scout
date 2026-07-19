@@ -159,7 +159,7 @@ impl Fetcher {
         let shards = self.rpc.distribute_blocks(range.start_block, range.end_block).await;
         let phase_distribute_ms = t_distribute.elapsed().as_secs_f64() * 1000.0;
 
-        let cap = self.parallelism.min(50).max(1);
+        let cap = self.parallelism.min(30).max(1);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {
@@ -457,7 +457,7 @@ impl Fetcher {
         sorted.sort_unstable();
         let ranges = crate::cache::SqliteStore::contiguous_ranges(&sorted);
 
-        let cap = self.parallelism.min(50).max(1);
+        let cap = self.parallelism.min(30).max(1);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {

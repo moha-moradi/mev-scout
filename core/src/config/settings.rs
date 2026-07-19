@@ -353,7 +353,7 @@ impl Config {
     /// The cap prevents overwhelming free/public RPC providers with too many
     /// simultaneous connections.
     ///
-    /// Defaults to 10 when no RPS limits are configured (safe for public RPCs).
+    /// Defaults to 20 when no RPS limits are configured (safe for public RPCs).
     pub fn effective_block_concurrency(
         &self,
         provider_configs: &[(String, Option<f64>, bool)],

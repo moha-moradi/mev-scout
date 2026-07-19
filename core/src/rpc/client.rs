@@ -13,6 +13,7 @@ use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
 use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
+use futures;
 use serde_json::Value;
 use url::Url;
 use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
@@ -123,6 +124,7 @@ impl RpcClient {
                 if rps > 0.0 {
                     p.rate_limiter = Some(Arc::new(RateLimiter::new(rps, rps)));
                     p.weight = rps;
+                    p.original_weight = rps;
                 }
             }
         }
@@ -222,6 +224,7 @@ impl RpcClient {
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             p.record_success(latency);
+                            p.sync_rate_limiter().await;
                         }
                         self.current.store(*idx, Ordering::Relaxed);
                         return Ok(val);
@@ -239,6 +242,7 @@ impl RpcClient {
                                 );
                             } else {
                                 p.record_failure();
+                                p.sync_rate_limiter().await;
                                 tracing::warn!(
                                     "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
                                     p.label,
@@ -300,6 +304,7 @@ impl RpcClient {
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             p.record_success(latency);
+                            p.sync_rate_limiter().await;
                         }
                         self.current.store(*idx, Ordering::Relaxed);
                         return Ok(val);
@@ -317,6 +322,7 @@ impl RpcClient {
                                 );
                             } else {
                                 p.record_failure();
+                                p.sync_rate_limiter().await;
                                 tracing::warn!(
                                     "Archive RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
                                     p.label,
@@ -392,36 +398,54 @@ impl RpcClient {
     /// Phase 2 (informational): `eth_getProof` probe — sets `archive = false` on failure
     /// but keeps the provider alive for full-node workloads (block/log/fetch).
     pub async fn validate_all(&self, expected_chain_id: u64) -> anyhow::Result<Vec<anyhow::Result<()>>> {
+        // Snapshot provider labels+providers without holding the lock during validation.
+        let snapshots: Vec<(usize, RootProvider, String)> = {
+            let provs = self.providers.lock().await;
+            provs.iter().enumerate().map(|(i, s)| (i, s.provider.clone(), s.label.clone())).collect()
+        };
+
+        // Validate all providers concurrently (Phase 1 + Phase 2).
+        let validations: Vec<_> = snapshots
+            .iter()
+            .map(|(i, provider, label)| {
+                let provider = provider.clone();
+                let label = label.clone();
+                let i = *i;
+                async move {
+                    let phase1 = Self::check_provider_chain(&provider, &label, expected_chain_id).await;
+                    let phase2 = Self::check_provider_archive(&provider, &label, expected_chain_id).await;
+                    (i, label, phase1, phase2)
+                }
+            })
+            .collect();
+
+        let outcomes = futures::future::join_all(validations).await;
+
+        // Apply results back under the lock.
         let mut provs = self.providers.lock().await;
-        let mut results = Vec::new();
+        let mut results: Vec<anyhow::Result<()>> = Vec::with_capacity(provs.len());
+        results.resize_with(provs.len(), || Ok(()));
 
-        for (i, state) in provs.iter_mut().enumerate() {
-            let provider = state.provider.clone();
-            let label = state.label.clone();
-
-            // Phase 1: chain ID + block number (fatal — marks dead on failure)
-            let phase1 = Self::check_provider_chain(&provider, &label, expected_chain_id).await;
-            if let Err(ref e) = phase1 {
-                tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
-                state.mark_dead();
-                results.push(phase1);
-                continue;
-            }
-
-            // Phase 2: archive probe (non-fatal — just sets archive flag)
-            let phase2 = Self::check_provider_archive(&provider, &label, expected_chain_id).await;
-            match &phase2 {
-                Ok(_) => {
-                    state.archive = true;
-                    tracing::info!("{label}: OK archive=supported");
+        for (i, label, phase1, phase2) in outcomes {
+            if let Some(state) = provs.get_mut(i) {
+                if let Err(ref e) = phase1 {
+                    tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
+                    state.mark_dead();
+                    results[i] = phase1;
+                    continue;
                 }
-                Err(e) => {
-                    state.archive = false;
-                    tracing::info!("{label}: OK archive=NOT supported ({e}) — available for full-node workloads");
+
+                match &phase2 {
+                    Ok(_) => {
+                        state.archive = true;
+                        tracing::info!("{label}: OK archive=supported");
+                    }
+                    Err(e) => {
+                        state.archive = false;
+                        tracing::info!("{label}: OK archive=NOT supported ({e}) — available for full-node workloads");
+                    }
                 }
             }
-            // Provider stays alive regardless of archive status
-            results.push(Ok(()));
         }
 
         Ok(results)
@@ -556,6 +580,7 @@ impl RpcClient {
                 let mut provs = self.providers.lock().await;
                 if let Some(p) = provs.get_mut(provider_idx) {
                     p.record_success(latency);
+                    p.sync_rate_limiter().await;
                 }
                 Ok(logs)
             }
@@ -570,6 +595,7 @@ impl RpcClient {
                     let mut provs = self.providers.lock().await;
                     if let Some(p) = provs.get_mut(provider_idx) {
                         p.record_failure();
+                        p.sync_rate_limiter().await;
                     }
                 }
                 self.get_logs(filter).await
@@ -777,6 +803,7 @@ impl RpcClient {
                 let mut provs = self.providers.lock().await;
                 if let Some(p) = provs.get_mut(provider_idx) {
                     p.record_success(latency);
+                    p.sync_rate_limiter().await;
                 }
                 Ok(val)
             }
@@ -792,6 +819,7 @@ impl RpcClient {
                     let mut provs = self.providers.lock().await;
                     if let Some(p) = provs.get_mut(provider_idx) {
                         p.record_failure();
+                        p.sync_rate_limiter().await;
                     }
                 }
                 Err(e)

@@ -16,14 +16,14 @@ use alloy::providers::RootProvider;
 #[derive(Debug)]
 pub struct RateLimiter {
     state: tokio::sync::Mutex<RateLimiterState>,
-    rate: f64,
-    burst: f64,
 }
 
 #[derive(Debug)]
 struct RateLimiterState {
     tokens: f64,
     last_refill: tokio::time::Instant,
+    rate: f64,
+    burst: f64,
 }
 
 impl RateLimiter {
@@ -32,9 +32,9 @@ impl RateLimiter {
             state: tokio::sync::Mutex::new(RateLimiterState {
                 tokens: burst,
                 last_refill: tokio::time::Instant::now(),
+                rate,
+                burst,
             }),
-            rate,
-            burst,
         }
     }
 
@@ -45,7 +45,7 @@ impl RateLimiter {
                 let mut state = self.state.lock().await;
                 let now = tokio::time::Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-                state.tokens = (state.tokens + elapsed * self.rate).min(self.burst);
+                state.tokens = (state.tokens + elapsed * state.rate).min(state.burst);
                 state.last_refill = now;
 
                 if state.tokens >= 1.0 {
@@ -54,10 +54,20 @@ impl RateLimiter {
                 }
 
                 let deficit = 1.0 - state.tokens;
-                tokio::time::Duration::from_secs_f64(deficit / self.rate)
+                tokio::time::Duration::from_secs_f64(deficit / state.rate)
             };
             tokio::time::sleep(sleep_dur).await;
         }
+    }
+
+    /// Adjust the token-refill rate and burst capacity at runtime.
+    ///
+    /// Used by adaptive backoff: when a provider hits errors, its RPS is
+    /// reduced; when it recovers, the rate is gradually restored.
+    pub async fn set_rate(&self, new_rate: f64) {
+        let mut state = self.state.lock().await;
+        state.rate = new_rate.max(0.1);
+        state.burst = new_rate.max(0.1);
     }
 }
 
@@ -106,6 +116,7 @@ pub struct ProviderState {
     pub provider: RootProvider,
     pub rate_limiter: Option<Arc<RateLimiter>>,
     pub weight: f64,
+    pub original_weight: f64,
     pub is_alive: bool,
     pub cooldown_until: Option<Instant>,
     pub consecutive_failures: u64,
@@ -120,11 +131,13 @@ pub struct ProviderState {
 
 impl ProviderState {
     pub fn new(provider: RootProvider, rps: Option<f64>, label: String, url: String) -> Self {
-        let rate_limiter = rps.map(|r| Arc::new(RateLimiter::new(r.max(0.1), r.max(0.1))));
+        let r = rps.unwrap_or(1.0).max(0.1);
+        let rate_limiter = rps.map(|_| Arc::new(RateLimiter::new(r, r)));
         Self {
             provider,
             rate_limiter,
-            weight: rps.unwrap_or(1.0),
+            weight: r,
+            original_weight: r,
             is_alive: true,
             cooldown_until: None,
             consecutive_failures: 0,
@@ -150,12 +163,26 @@ impl ProviderState {
         self.is_alive = true;
         self.cooldown_until = None;
         self.latency_ms = self.latency_ms * 0.8 + latency.as_secs_f64() * 1000.0 * 0.2;
+        // Adaptive: gradually restore weight toward original after recovery.
+        self.weight = (self.weight * 1.5).min(self.original_weight);
     }
 
     pub fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(300);
         self.cooldown_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
+        // Adaptive: halve the effective weight on each failure, floor at 10% of original.
+        self.weight = (self.weight * 0.5).max(self.original_weight * 0.1);
+    }
+
+    /// Sync the rate limiter's token-bucket rate to match the current adaptive weight.
+    ///
+    /// Must be called after `record_failure()` or `record_success()` to propagate
+    /// weight changes to the actual token-bucket throughput.
+    pub async fn sync_rate_limiter(&self) {
+        if let Some(rl) = &self.rate_limiter {
+            rl.set_rate(self.weight).await;
+        }
     }
 
     /// Mark provider as completely dead. Used when validation fails (e.g. wrong
