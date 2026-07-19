@@ -11,11 +11,13 @@ rpc_urls = [
   "https://polygon.api.onfinality.io/public",
   "https://polygon-rpc.com",
   "https://polygon-bor-rpc.publicnode.com",
-  "
+  "https://rpc.ankr.com/polygon",
+  "https://1rpc.io/matic",
+  "https://polygon.meowrpc.com",
 ]
 
 # Per-provider RPS limits (matches rpc_urls order)
-rpc_rps = [15, 15, 15, 1, 1, 1,]
+rpc_rps = [20, 20, 20, 1, 1, 1, 1, 1, 1]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2
