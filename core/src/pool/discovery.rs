@@ -1468,9 +1468,10 @@ async fn discover_pools_shard(
     let rpc_concurrency = config.rpc_concurrency;
 
     use futures::stream::{self, StreamExt};
+
     let results: Vec<_> = stream::iter(fetch_tasks)
         .buffer_unordered(rpc_concurrency)
-        .collect()
+        .collect::<Vec<_>>()
         .await;
 
     // ── Phase 2.5: Resolve token symbols via ERC-20 symbol() ──

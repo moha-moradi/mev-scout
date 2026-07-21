@@ -28,12 +28,13 @@ struct RateLimiterState {
 
 impl RateLimiter {
     pub fn new(rate: f64, burst: f64) -> Self {
+        let effective_burst = burst.max(1.0);
         Self {
             state: tokio::sync::Mutex::new(RateLimiterState {
-                tokens: burst,
+                tokens: effective_burst,
                 last_refill: tokio::time::Instant::now(),
                 rate,
-                burst,
+                burst: effective_burst,
             }),
         }
     }
@@ -66,8 +67,9 @@ impl RateLimiter {
     /// reduced; when it recovers, the rate is gradually restored.
     pub async fn set_rate(&self, new_rate: f64) {
         let mut state = self.state.lock().await;
-        state.rate = new_rate.max(0.1);
-        state.burst = new_rate.max(0.1);
+        let clamped = new_rate.max(0.1);
+        state.rate = clamped;
+        state.burst = clamped.max(1.0);
     }
 }
 

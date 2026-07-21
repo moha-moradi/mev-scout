@@ -57,6 +57,11 @@ pub enum Command {
     /// Executes raw SQL against Dune's dex.trades dataset and prints
     /// per-project transaction and swap counts for the given block.
     DuneCheck(DuneCheckArgs),
+
+    /// Find blocks with known MEV opportunities via Dune Analytics.
+    /// Queries Dune for blocks containing arbitrages, sandwiches, or both
+    /// in a recent block range, then prints candidate block numbers.
+    DuneFindBlocks(DuneFindBlocksArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -419,6 +424,33 @@ pub struct DuneCheckArgs {
     /// Chain name (default: polygon)
     #[arg(short = 'n', long = "chain", default_value = "polygon", value_name = "NAME")]
     pub chain: String,
+
+    /// Dune API key (overrides config file)
+    #[arg(long = "dune-api-key", value_name = "KEY")]
+    pub dune_api_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DuneFindBlocksArgs {
+    /// Chain name (default: polygon)
+    #[arg(short = 'n', long = "chain", default_value = "polygon", value_name = "NAME")]
+    pub chain: String,
+
+    /// Look back N days for candidate blocks (default: 7)
+    #[arg(long, default_value = "7", value_name = "N")]
+    pub days: u64,
+
+    /// MEV type to search for: arbitrage, sandwich, or both (default: both)
+    #[arg(long, default_value = "both", value_name = "TYPE")]
+    pub mev_type: String,
+
+    /// Maximum block number to search up to (default: latest)
+    #[arg(long = "to-block", value_name = "NUMBER")]
+    pub to_block: Option<u64>,
+
+    /// Number of candidate blocks to return (default: 5)
+    #[arg(short = 't', long = "top", default_value = "5", value_name = "N")]
+    pub top: usize,
 
     /// Dune API key (overrides config file)
     #[arg(long = "dune-api-key", value_name = "KEY")]

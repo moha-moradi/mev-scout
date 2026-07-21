@@ -87,5 +87,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Live(args) => commands::cmd_live(&config, args).await,
         Command::Audit(args) => commands::cmd_audit(&config, args).await,
         Command::DuneCheck(args) => commands::cmd_dune_check(&config, args).await,
+        Command::DuneFindBlocks(args) => commands::cmd_dune_find_blocks(&config, args).await,
     }
 }

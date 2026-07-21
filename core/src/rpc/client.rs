@@ -98,15 +98,15 @@ impl RpcClient {
     /// Return a summary string of all providers and their status.
     pub async fn provider_summary(&self) -> String {
         let provs = self.providers.lock().await;
-        let entries: Vec<String> = provs
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let status = if p.is_available() { "ok" } else { "dead" };
-                let arch = if p.archive { "archive" } else { "full" };
-                format!("p{}[{}] {:.0}rps {} {}", i, p.label, p.weight, status, arch)
-            })
-            .collect();
+        let mut entries = Vec::new();
+        for (i, p) in provs.iter().enumerate() {
+            let status = if p.is_available() { "ok" } else { "dead" };
+            let arch = if p.archive { "archive" } else { "full" };
+            entries.push(format!(
+                "p{}[{}] {:.0}w {:.0}orig {:.1}ms {} {}",
+                i, p.label, p.weight, p.original_weight, p.latency_ms, status, arch,
+            ));
+        }
         format!("{} providers: {}", provs.len(), entries.join("  "))
     }
 
@@ -198,10 +198,9 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
+        const MAX_PROVIDERS: usize = 3;
         let mut last_err = None;
 
-        // Try all available providers sorted by effective_weight descending.
-        // On failure, re-lock to get fresh health state before trying next.
         let mut sorted = self.sorted_available().await;
         let mut tried = std::collections::HashSet::new();
 
@@ -211,10 +210,12 @@ impl RpcClient {
                 if tried.contains(idx) {
                     continue;
                 }
+                if tried.len() >= MAX_PROVIDERS {
+                    break;
+                }
                 tried.insert(*idx);
                 found_next = true;
 
-                // Acquire per-provider rate limiter token
                 provider.acquire_permit().await;
 
                 let t0 = Instant::now();
@@ -281,6 +282,7 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
+        const MAX_PROVIDERS: usize = 3;
         let mut last_err = None;
 
         let mut sorted = self.sorted_available_archive().await;
@@ -291,6 +293,9 @@ impl RpcClient {
             for (idx, provider) in &sorted {
                 if tried.contains(idx) {
                     continue;
+                }
+                if tried.len() >= MAX_PROVIDERS {
+                    break;
                 }
                 tried.insert(*idx);
                 found_next = true;
