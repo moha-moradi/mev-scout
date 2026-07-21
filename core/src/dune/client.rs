@@ -96,7 +96,6 @@ impl DuneClient {
 
         let body = serde_json::json!({
             "sql": sql,
-            "performance": "medium",
         });
 
         let response = self

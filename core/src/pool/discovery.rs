@@ -1338,11 +1338,17 @@ async fn discover_pools_shard(
                 let fsb = *first_seen_block;
                 let dex_type = *dex_type;
                 fetch_tasks.push(Box::pin(async move {
-                    let token0 = rpc.call_latest(addr, sel0).await.ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    let token1 = rpc.call_latest(addr, sel1).await.ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    (addr, dex_type, token0, token1, None, None, fsb)
+                    let (r0, r1) = futures::future::join(
+                        async {
+                            rpc.call_latest(addr, sel0).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call_latest(addr, sel1).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                    ).await;
+                    (addr, dex_type, r0, r1, None, None, fsb)
                 }));
             }
             DexType::UniswapV3 => {
@@ -1443,7 +1449,7 @@ async fn discover_pools_shard(
             }
             DexType::Pendle => {
                 // Pendle markets from activity events: token0 is PT (known), token1 = SY (call PT.SY())
-                let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
+                let (t0, _t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
                 let addr = *addr;
                 let dt = *dex_type;
                 let rpc = rpc.clone();

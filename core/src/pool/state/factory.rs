@@ -3,13 +3,13 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 
 use alloy::primitives::{keccak256, Address, Bytes, U256};
-use futures::future::join_all;
+use futures::future::{join3, join_all};
 use tokio::sync::Semaphore;
 
 use crate::pool::dex_type::DexType;
 use crate::rpc::RpcClient;
 use crate::pool::state::manager::PoolManager;
-use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
+use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
 pub enum PoolInitResult {
     V2Reserves(u128, u128),
     V3State(U256, i32, u128, std::collections::BTreeMap<i32, i128>),
@@ -199,9 +199,14 @@ impl PoolManager {
                 let tick_spacing = *tick_spacing;
                 let factory = *factory;
                 let balancer_pool_type = *balancer_pool_type;
+                let pre_fetched = self.pools.get(&addr).and_then(|ps| match ps {
+                    PoolState::Curve(s) => s.info.underlying_tokens.clone(),
+                    PoolState::Balancer(s) => s.info.underlying_tokens.clone(),
+                    _ => None,
+                });
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num, balancer_pool_type).await)
+                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num, balancer_pool_type, pre_fetched).await)
                 }
             })
             .collect();
@@ -370,6 +375,52 @@ impl PoolManager {
                 }
             }
         }
+
+        // Phase 2.7: Remove unhealthy pools (zero reserves / zero sqrtPrice / empty ticks).
+        // This replaces the separate `health_check_pools` call for pools already in state,
+        // avoiding duplicate RPC calls at different blocks.
+        let unhealthy: Vec<Address> = self.pools.iter().filter_map(|(addr, ps)| {
+            let is_unhealthy = match ps {
+                PoolState::UniswapV2(s) => s.reserve0 == 0 && s.reserve1 == 0,
+                PoolState::UniswapV3(s) => s.sqrt_price_x96.is_zero(),
+                PoolState::UniswapV4(s) => s.sqrt_price_x96.is_zero(),
+                PoolState::Balancer(s) => s.balances.iter().all(|&b| b == 0),
+                PoolState::Curve(s) => s.balances.iter().all(|&b| b == 0),
+                PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
+                PoolState::Pendle(s) => s.total_pt == 0 && s.total_sy == 0,
+                PoolState::Dodo(_) => false,
+            };
+            if is_unhealthy { Some(*addr) } else { None }
+        }).collect();
+
+        let removed_count = unhealthy.len();
+        for addr in &unhealthy {
+            self.pools.remove(addr);
+        }
+
+        // Rebuild token_index from remaining pools
+        self.token_index.clear();
+        for (addr, ps) in &self.pools {
+            let tokens: Vec<Address> = match ps {
+                PoolState::UniswapV2(s) => vec![s.info.token0, s.info.token1],
+                PoolState::UniswapV3(s) => vec![s.info.token0, s.info.token1],
+                PoolState::UniswapV4(s) => vec![s.info.token0, s.info.token1],
+                PoolState::Balancer(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
+                PoolState::Curve(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
+                PoolState::TraderJoeLB(s) => vec![s.info.token0, s.info.token1],
+                PoolState::Pendle(s) => vec![s.info.token0, s.info.token1],
+                PoolState::Dodo(s) => vec![s.token0, s.token1],
+            };
+            for token in &tokens {
+                if !token.is_zero() {
+                    self.token_index.entry(*token).or_default().push(*addr);
+                }
+            }
+        }
+
+        if removed_count > 0 {
+            tracing::info!("Removed {} unhealthy pools during init ({} remaining)", removed_count, self.pools.len());
+        }
     }
 
     /// Filter pools to only those that have non-empty bytecode at the target block.
@@ -409,6 +460,8 @@ impl PoolManager {
     }
 
     /// Fetch the appropriate on-chain state for a pool based on its type.
+    /// If `pre_fetched_tokens` is provided (from discovery cache), redundant
+    /// RPC calls like Curve `coins()` or Balancer `getPoolTokens()` are skipped.
     async fn fetch_pool_state(
         rpc: &RpcClient,
         pool: Address,
@@ -419,6 +472,7 @@ impl PoolManager {
         factory: Option<Address>,
         block: u64,
         balancer_pool_type: Option<u8>,
+        pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
         match dt {
             DexType::UniswapV2 => {
@@ -436,10 +490,10 @@ impl PoolManager {
             DexType::Balancer => {
                 let vault = vault?;
                 let pool_id = pool_id?;
-                Self::fetch_balancer_state(rpc, vault, pool, &pool_id, block, balancer_pool_type).await.ok()
+                Self::fetch_balancer_state(rpc, vault, pool, &pool_id, block, balancer_pool_type, pre_fetched_tokens).await.ok()
             }
             DexType::Curve => {
-                Self::fetch_curve_state(rpc, pool, block).await
+                Self::fetch_curve_state(rpc, pool, block, pre_fetched_tokens).await
             }
             DexType::Dodo => None,
             DexType::Solidly | DexType::Camelot => {
@@ -794,8 +848,11 @@ impl PoolManager {
         pool_id: &[u8; 32],
         block: u64,
         pool_type_hint: Option<u8>,
+        _pre_fetched_tokens: Option<Vec<Address>>,
     ) -> anyhow::Result<PoolInitResult> {
         // --- Step 1: getPoolTokens from vault ---
+        // Note: we still call vault even with pre_fetched_tokens because
+        // getPoolTokens returns both tokens AND balances in one RPC call.
         let data = {
             let mut calldata = Vec::with_capacity(36);
             calldata.extend_from_slice(&GET_POOL_TOKENS_SELECTOR);
@@ -836,69 +893,65 @@ impl PoolManager {
             anyhow::bail!("Balancer pool has fewer than 2 tokens");
         }
 
-        // --- Step 2: Fetch normalized weights from pool ---
-        let weights = {
-            let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&GET_NORMALIZED_WEIGHTS_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
-                Ok(result) if result.0.len() >= 32 => {
-                    let w_off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
-                    let w_count = if w_off + 32 <= result.0.len() {
-                        U256::from_be_slice(&result.0[w_off..w_off + 32]).as_limbs()[0] as usize
-                    } else {
-                        0
-                    };
-                    let w_start = w_off + 32;
-                    let mut w = Vec::with_capacity(w_count);
-                    for j in 0..w_count {
-                        let off = w_start + j * 32;
-                        if off + 32 <= result.0.len() {
-                            w.push(U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as u128);
+        // --- Steps 2-4: Fetch weights, fee, scaling factors in parallel ---
+        let (weights, fee_bps, scaling_factors) = join3(
+            async {
+                let mut calldata = Vec::with_capacity(4);
+                calldata.extend_from_slice(&GET_NORMALIZED_WEIGHTS_SELECTOR);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        let w_off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
+                        let w_count = if w_off + 32 <= result.0.len() {
+                            U256::from_be_slice(&result.0[w_off..w_off + 32]).as_limbs()[0] as usize
+                        } else { 0 };
+                        let w_start = w_off + 32;
+                        let mut w = Vec::with_capacity(w_count);
+                        for j in 0..w_count {
+                            let off = w_start + j * 32;
+                            if off + 32 <= result.0.len() {
+                                w.push(U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as u128);
+                            }
                         }
+                        w
                     }
-                    w
+                    _ => vec![],
                 }
-                _ => vec![],
-            }
-        };
-
-        // --- Step 3: Fetch swap fee percentage from pool ---
-        let fee_bps = {
-            let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&GET_SWAP_FEE_PERCENTAGE_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
-                Ok(result) if result.0.len() >= 32 => {
-                    let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
-                    // Balancer returns fee in 1e18 scale; convert to PoolInfo bps (1e6 = 100%)
-                    (chain_fee / 1_000_000_000_000) as u32
+            },
+            async {
+                let mut calldata = Vec::with_capacity(4);
+                calldata.extend_from_slice(&GET_SWAP_FEE_PERCENTAGE_SELECTOR);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 32 => {
+                        let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
+                        // Balancer returns fee in 1e18 scale; convert to PoolInfo bps (1e6 = 100%)
+                        (chain_fee / 1_000_000_000_000) as u32
+                    }
+                    _ => 0,
                 }
-                _ => 0,
-            }
-        };
-
-        // --- Step 4: Fetch scaling factors from pool ---
-        let scaling_factors = {
-            let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&GET_SCALING_FACTORS_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
-                Ok(result) if result.0.len() >= 64 => {
-                    let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
-                    let count = if off + 32 <= result.0.len() {
-                        U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as usize
-                    } else { 0 };
-                    let start = off + 32;
-                    let mut sf = Vec::with_capacity(count);
-                    for j in 0..count {
-                        let pos = start + j * 32;
-                        if pos + 32 <= result.0.len() {
-                            sf.push(U256::from_be_slice(&result.0[pos..pos + 32]).as_limbs()[0] as u128);
+            },
+            async {
+                let mut calldata = Vec::with_capacity(4);
+                calldata.extend_from_slice(&GET_SCALING_FACTORS_SELECTOR);
+                match rpc.call(pool, Bytes::from(calldata), block).await {
+                    Ok(result) if result.0.len() >= 64 => {
+                        let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
+                        let count = if off + 32 <= result.0.len() {
+                            U256::from_be_slice(&result.0[off..off + 32]).as_limbs()[0] as usize
+                        } else { 0 };
+                        let start = off + 32;
+                        let mut sf = Vec::with_capacity(count);
+                        for j in 0..count {
+                            let pos = start + j * 32;
+                            if pos + 32 <= result.0.len() {
+                                sf.push(U256::from_be_slice(&result.0[pos..pos + 32]).as_limbs()[0] as u128);
+                            }
                         }
+                        sf
                     }
-                    sf
+                    _ => vec![],
                 }
-                _ => vec![],
-            }
-        };
+            },
+        ).await;
 
         // --- Step 4.5: Fetch rate providers from pool contract ---
         let rate_providers = {
@@ -1018,7 +1071,6 @@ impl PoolManager {
                 // Solidly/Camelot stable pools stored as CurvePoolState use V2 reserves
                 if curve.info.dex_type == DexType::Solidly || curve.info.dex_type == DexType::Camelot {
                     let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block, curve.info.factory).await?;
-                    let mut info = curve.info.clone();
                     let mut balances = curve.balances.clone();
                     if balances.len() >= 2 {
                         balances[0] = r0;
@@ -1027,7 +1079,7 @@ impl PoolManager {
                         balances = vec![r0, r1];
                     }
                     return Some(PoolState::Curve(CurvePoolState {
-                        info,
+                        info: curve.info.clone(),
                         balances,
                         token_index: curve.token_index.clone(),
                         a_coeff: curve.a_coeff,
@@ -1037,7 +1089,7 @@ impl PoolManager {
                         base_pool: curve.base_pool,
                     }));
                 }
-                let result = Self::fetch_curve_state(rpc, *addr, block).await?;
+                let result = Self::fetch_curve_state(rpc, *addr, block, None).await?;
                 match result {
                     PoolInitResult::CurveState(tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool) => {
                         let token_index: HashMap<Address, usize> = tokens
@@ -1065,7 +1117,7 @@ impl PoolManager {
             PoolState::Balancer(bal) => {
                 let vault = self.balancer_vault?;
                 let pool_id = bal.pool_id?;
-                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block, bal.info.balancer_pool_type).await.ok()?;
+                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block, bal.info.balancer_pool_type, None).await.ok()?;
                 match result {
                     PoolInitResult::BalancerState(tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers) => {
                         let token_index: HashMap<Address, usize> = tokens
@@ -1214,60 +1266,83 @@ impl PoolManager {
         rpc: &RpcClient,
         pool: Address,
         block: u64,
+        pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
         static CURVE_COINS_SELECTOR: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
-        static CURVE_COINS_U256_SELECTOR: [u8; 4] = [0x19, 0x6c, 0xac, 0x5f]; // coins(uint256) �?� used by some forks
+        static CURVE_COINS_U256_SELECTOR: [u8; 4] = [0x19, 0x6c, 0xac, 0x5f]; // coins(uint256) — used by some forks
         let mut tokens = Vec::new();
         let mut balances = Vec::new();
         let max_tokens = 16u8;
 
-        for i in 0u8..max_tokens {
-            let token = {
-                let mut calldata = Vec::with_capacity(36);
-                calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
-                let mut arg = [0u8; 32];
-                arg[31] = i;
-                calldata.extend_from_slice(&arg);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
-                    Ok(result) if result.0.len() >= 32 => {
-                        let addr = Address::from_slice(&result.0[12..32]);
-                        if addr.is_zero() { break; }
-                        addr
+        if let Some(ref cached_tokens) = pre_fetched_tokens {
+            // Skip coins() RPC calls — use token list from discovery cache
+            for (i, &token_addr) in cached_tokens.iter().enumerate() {
+                if token_addr.is_zero() || i >= max_tokens as usize { break; }
+                let balance = {
+                    let mut calldata = Vec::with_capacity(36);
+                    calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                    let mut arg = [0u8; 32];
+                    arg[31] = i as u8;
+                    calldata.extend_from_slice(&arg);
+                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                        Ok(result) if result.0.len() >= 32 => {
+                            U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                        }
+                        _ => break,
                     }
-                    _ => {
-                        let mut calldata2 = Vec::with_capacity(36);
-                        calldata2.extend_from_slice(&CURVE_COINS_U256_SELECTOR);
-                        let mut arg2 = [0u8; 32];
-                        arg2[31] = i;
-                        calldata2.extend_from_slice(&arg2);
-                        match rpc.call(pool, Bytes::from(calldata2), block).await {
-                            Ok(result) if result.0.len() >= 32 => {
-                                let addr = Address::from_slice(&result.0[12..32]);
-                                if addr.is_zero() { break; }
-                                addr
+                };
+                tokens.push(token_addr);
+                balances.push(balance);
+            }
+        } else {
+            for i in 0u8..max_tokens {
+                let token = {
+                    let mut calldata = Vec::with_capacity(36);
+                    calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
+                    let mut arg = [0u8; 32];
+                    arg[31] = i;
+                    calldata.extend_from_slice(&arg);
+                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                        Ok(result) if result.0.len() >= 32 => {
+                            let addr = Address::from_slice(&result.0[12..32]);
+                            if addr.is_zero() { break; }
+                            addr
+                        }
+                        _ => {
+                            let mut calldata2 = Vec::with_capacity(36);
+                            calldata2.extend_from_slice(&CURVE_COINS_U256_SELECTOR);
+                            let mut arg2 = [0u8; 32];
+                            arg2[31] = i;
+                            calldata2.extend_from_slice(&arg2);
+                            match rpc.call(pool, Bytes::from(calldata2), block).await {
+                                Ok(result) if result.0.len() >= 32 => {
+                                    let addr = Address::from_slice(&result.0[12..32]);
+                                    if addr.is_zero() { break; }
+                                    addr
+                                }
+                                _ => break,
                             }
-                            _ => break,
                         }
                     }
-                }
-            };
+                };
 
-            let balance = {
-                let mut calldata = Vec::with_capacity(36);
-                calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
-                let mut arg = [0u8; 32];
-                arg[31] = i;
-                calldata.extend_from_slice(&arg);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
-                    Ok(result) if result.0.len() >= 32 => {
-                        U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                let balance = {
+                    let mut calldata = Vec::with_capacity(36);
+                    calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                    let mut arg = [0u8; 32];
+                    arg[31] = i;
+                    calldata.extend_from_slice(&arg);
+                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                        Ok(result) if result.0.len() >= 32 => {
+                            U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                        }
+                        _ => break,
                     }
-                    _ => break,
-                }
-            };
+                };
 
-            tokens.push(token);
-            balances.push(balance);
+                tokens.push(token);
+                balances.push(balance);
+            }
         }
 
         if tokens.len() < 2 {
@@ -1310,15 +1385,20 @@ impl PoolManager {
             }
         };
 
-        // --- Variant detection ---
-        // Try gamma() �?� only CryptoSwap V2 pools have this
-        let is_crypto = {
+        // --- Variant detection: single gamma() call serves both detection and value ---
+        let gamma_result = {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
-            matches!(rpc.call(pool, Bytes::from(calldata), block).await, Ok(r) if r.0.len() >= 32 && !r.0[..32].iter().all(|&b| b == 0))
+            match rpc.call(pool, Bytes::from(calldata), block).await {
+                Ok(r) if r.0.len() >= 32 && !r.0[..32].iter().all(|&b| b == 0) => {
+                    Some(U256::from_be_slice(&r.0[..32]).as_limbs()[0] as u128)
+                }
+                _ => None,
+            }
         };
+        let is_crypto = gamma_result.is_some();
 
-        // Try base_pool() �?� only Metapools have this
+        // Try base_pool() — only Metapools have this
         let base_pool = if !is_crypto {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_BASE_POOL_SELECTOR);
@@ -1335,19 +1415,7 @@ impl PoolManager {
 
         // Fetch variant-specific fields
         let (variant, gamma, price_scale) = if is_crypto {
-            // Gamma
-            let gamma_val = {
-                let mut calldata = Vec::with_capacity(4);
-                calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
-                    Ok(result) if result.0.len() >= 32 => {
-                        Some(U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128)
-                    }
-                    _ => None,
-                }
-            };
-
-            // Price scale �?� returns a dynamic array of N-1 values
+            // Price scale — returns a dynamic array of N-1 values
             let price_scales = {
                 let mut calldata = Vec::with_capacity(4);
                 calldata.extend_from_slice(&CURVE_PRICE_SCALE_SELECTOR);
@@ -1371,7 +1439,7 @@ impl PoolManager {
                 }
             };
 
-            (CurvePoolVariant::Crypto, gamma_val, price_scales)
+            (CurvePoolVariant::Crypto, gamma_result, price_scales)
         } else if base_pool.is_some() {
             (CurvePoolVariant::Meta, None, vec![])
         } else {

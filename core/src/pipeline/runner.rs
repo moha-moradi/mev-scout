@@ -203,14 +203,9 @@ impl BacktestRunner {
             }
         }
 
-        // Layer 2: verify remaining pools exist at target block via eth_getCode
+        // Layer 2: add pools to manager (init_from_rpc will handle non-existent contracts)
         if !loaded_pools.is_empty() {
-            let existing = PoolManager::filter_existing_pools(rpc, &loaded_pools, block_num, 20).await;
-            let removed = loaded_pools.len() - existing.len();
-            if removed > 0 {
-                tracing::info!("Removed {} pools that don't exist at block {}", removed, block_num);
-            }
-            for info in &existing {
+            for info in &loaded_pools {
                 // Dedup: skip if already added from registry
                 if pool_manager.get(&info.address).is_some() {
                     tracing::debug!("Skipping duplicate pool {} (already loaded)", info.address);
