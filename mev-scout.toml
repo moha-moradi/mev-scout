@@ -4,20 +4,18 @@ chain = "polygon"
 rpc_urls = [
   
 
-  # GetBlock (moha.moradi68)
-
   "https://lb.drpc.live/polygon/AolDryJPNULVk2IKbKzdz_PXsub6gmIR8afhwosiOHdW",
   "https://lb.drpc.live/polygon/Atek2uI_sEPeiLPQHycqLfsE5emegmUR8afiwosiOHdW",
   "https://shared.ap-southeast-1.getblock.io/ac064dad442e40ceb3ac122654aa5495",
   "https://shared.ap-southeast-1.getblock.io/80a93b3d0084480488c75ef568f2970c",
-  "https://shared.ap-southeast-1.getblock.io/8e43573318f54d18bcd55338743fb73a",
+  # "https://shared.ap-southeast-1.getblock.io/8e43573318f54d18bcd55338743fb73a",  # provider-4: archive RPC health check failures
   "https://shared.ap-southeast-1.getblock.io/66f5566ac71f4be287490abe7d5772be"
 
 ]
 
 # Per-provider RPS limits (matches rpc_urls order).
 # GetBlock: 20 RPS (known cap); others: 3 RPS (test for 429s on free/public).
-rpc_rps = [20,20,15,15,15,15]
+rpc_rps = [20,20,15,15,15]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2

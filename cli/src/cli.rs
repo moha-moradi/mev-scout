@@ -367,8 +367,8 @@ pub struct DiscoverArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Max concurrent RPC calls during pool metadata fetch (default: 16, safe for public RPCs)
-    #[arg(long = "rpc-concurrency", default_value = "16", value_name = "NUMBER")]
+    /// Max concurrent RPC calls during pool metadata fetch (default: 8, safe for public RPCs)
+    #[arg(long = "rpc-concurrency", default_value = "8", value_name = "NUMBER")]
     pub rpc_concurrency: usize,
 
     /// Resume from the latest cached block instead of the full range.

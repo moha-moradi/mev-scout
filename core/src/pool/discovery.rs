@@ -252,6 +252,8 @@ pub struct DiscoveryConfig<'a> {
     pub pendle_factory: Option<Address>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).
     pub rpc_concurrency: usize,
+    /// Token symbol cache — avoids redundant `symbol()` eth_call RPC calls.
+    pub token_cache: Option<&'a crate::cache::TokenCache>,
 }
 
 // ── Helper: decode ABI-encoded string from eth_call response ──
@@ -1489,7 +1491,29 @@ async fn discover_pools_shard(
     token_addrs.remove(&Address::ZERO);
 
     let token_vec: Vec<Address> = token_addrs.into_iter().collect();
-    let symbol_tasks: Vec<_> = token_vec.iter().map(|addr| {
+
+    // Split into cached vs uncached tokens
+    let (cached_symbols, uncached_tokens) = if let Some(cache) = config.token_cache {
+        let mut cached = HashMap::new();
+        let mut uncached = Vec::new();
+        for &addr in &token_vec {
+            if let Some(sym) = cache.get(&addr) {
+                cached.insert(addr, sym.to_string());
+            } else {
+                uncached.push(addr);
+            }
+        }
+        tracing::info!(
+            "Token cache: {}/{} tokens cached, {} need RPC resolution",
+            cached.len(), token_vec.len(), uncached.len()
+        );
+        (cached, uncached)
+    } else {
+        (HashMap::new(), token_vec.clone())
+    };
+
+    // Only call symbol() for uncached tokens
+    let symbol_tasks: Vec<_> = uncached_tokens.iter().map(|addr| {
         let rpc = rpc.clone();
         let addr = *addr;
         let sel = symbol_selector.clone();
@@ -1500,18 +1524,29 @@ async fn discover_pools_shard(
         }
     }).collect();
 
-    let symbol_results: HashMap<Address, String> = stream::iter(symbol_tasks)
-        .buffer_unordered(rpc_concurrency)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .filter_map(|(addr, sym)| sym.map(|s| (addr, s)))
-        .collect();
+    let rpc_resolved: HashMap<Address, String> = if symbol_tasks.is_empty() {
+        HashMap::new()
+    } else {
+        stream::iter(symbol_tasks)
+            .buffer_unordered(rpc_concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|(addr, sym)| sym.map(|s| (addr, s)))
+            .collect()
+    };
 
+    // Merge cached + RPC-resolved into final symbol_results
+    let mut symbol_results: HashMap<Address, String> = cached_symbols;
+    let rpc_resolved_count = rpc_resolved.len();
+    for (addr, sym) in rpc_resolved {
+        symbol_results.insert(addr, sym);
+    }
+
+    let cached_count = symbol_results.len() - rpc_resolved_count;
     tracing::info!(
-        "Resolved symbols for {}/{} tokens",
-        symbol_results.len(),
-        token_vec.len(),
+        "Resolved symbols for {}/{} tokens ({} cached, {} from RPC)",
+        symbol_results.len(), token_vec.len(), cached_count, rpc_resolved_count
     );
 
     // ── Phase 3: Build output ──
@@ -1600,6 +1635,28 @@ pub async fn discover_and_cache(
         rpc, from_block, to_block, config, on_batch,
     )
     .await?;
+
+    // Save newly discovered pool symbols to the token cache
+    if let Some(token_cache) = config.token_cache {
+        let mut new_tokens: Vec<(Address, String, Option<i32>)> = Vec::new();
+        for pool in &pools {
+            if let Some(ref sym) = pool.token0_symbol {
+                if !token_cache.contains(&pool.token0) {
+                    new_tokens.push((pool.token0, sym.clone(), None));
+                }
+            }
+            if let Some(ref sym) = pool.token1_symbol {
+                if !token_cache.contains(&pool.token1) {
+                    new_tokens.push((pool.token1, sym.clone(), None));
+                }
+            }
+        }
+        if !new_tokens.is_empty() {
+            if let Err(e) = token_cache.save_batch(cache, &new_tokens) {
+                tracing::warn!("Token cache: failed to save new symbols: {e:#}");
+            }
+        }
+    }
 
     let pool_count = pools.len();
     for pool in &pools {

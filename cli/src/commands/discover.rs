@@ -4,7 +4,7 @@ use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::DiscoverArgs;
-use mev_scout_core::cache::SqliteStore;
+use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
@@ -77,6 +77,29 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     // ── Open cache once and reuse ──
     let cache_path = config.effective_db_path(&chain_name);
     let cache = SqliteStore::open(&cache_path, chain_id)?;
+
+    // ── Load token symbol cache (SQLite + pre-populated known tokens) ──
+    let mut token_cache = TokenCache::warm(chain_id);
+    match TokenCache::load(&cache) {
+        Ok(persisted) => token_cache.merge(persisted),
+        Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
+    }
+
+    // ── Bulk-populate token cache from Dune on cold start ──
+    if config.dune_api_key.is_some() && token_cache.len() < 50 {
+        let api_key = config.dune_api_key.as_ref().expect("checked above");
+        let dune = DuneClient::new(api_key.clone());
+        match token_cache.fetch_from_dune(&dune, &chain_name.to_string()).await {
+            Ok(new_count) if new_count > 0 => {
+                if let Err(e) = token_cache.save_all_to_sqlite(&cache) {
+                    tracing::warn!("Failed to persist Dune tokens to SQLite: {e:#}");
+                }
+                tracing::info!("Token cache: populated {} tokens from Dune", new_count);
+            }
+            Ok(_) => tracing::info!("Token cache: Dune returned no new tokens"),
+            Err(e) => tracing::warn!("Token cache: Dune fetch failed (non-fatal): {e:#}"),
+        }
+    }
 
     // ── Phase 5.1: Incremental mode — override from_block from cache ──
     let (from, to) = if args.incremental {
@@ -199,6 +222,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         trader_joe_factory,
         pendle_factory,
         rpc_concurrency: args.rpc_concurrency,
+        token_cache: Some(&token_cache),
     };
 
     // ── Phase 2: Dune Analytics discovery (runs first to support --min-pools) ──

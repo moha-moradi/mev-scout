@@ -295,6 +295,7 @@ async fn test_e2e_pool_discovery() {
         v4_pool_manager: None,
         trader_joe_factory: None,
         pendle_factory: None,
+        token_cache: None,
     };
     let (pools, _active) = match discover_pools(
         &rpc, start, end, &disc_config,

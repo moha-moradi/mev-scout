@@ -47,7 +47,7 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Acquire the SQLite connection mutex guard.
     /// Panics with a clear message if the mutex is poisoned (process state corrupted).
-    fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    pub fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
         self.conn.lock().expect("SQLite connection mutex poisoned")
     }
 }
@@ -242,6 +242,15 @@ impl SqliteStore {
         // Phase 3: add signature columns to transactions (idempotent)
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_hash BLOB;");
         let _ = conn.execute_batch("ALTER TABLE transactions ADD COLUMN sig_name TEXT;");
+        // Token symbol cache table (Phase: symbol cache optimization)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS token_symbols (
+                address    BLOB PRIMARY KEY,
+                symbol     TEXT NOT NULL,
+                decimals   INTEGER
+            );"
+        )?;
+
         // Phase 3/competition: competitor profiles and extraction tables (removed)
         Ok(())
     }
