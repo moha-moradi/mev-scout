@@ -62,6 +62,10 @@ pub enum Command {
     /// Queries Dune for blocks containing arbitrages, sandwiches, or both
     /// in a recent block range, then prints candidate block numbers.
     DuneFindBlocks(DuneFindBlocksArgs),
+
+    /// Execute any Dune query template from queries.rs via the Dune API.
+    /// Use --list to see available queries, --query NAME to run one, or --all for all.
+    DuneQuery(DuneQueryArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -451,6 +455,73 @@ pub struct DuneFindBlocksArgs {
     /// Number of candidate blocks to return (default: 5)
     #[arg(short = 't', long = "top", default_value = "5", value_name = "N")]
     pub top: usize,
+
+    /// Dune API key (overrides config file)
+    #[arg(long = "dune-api-key", value_name = "KEY")]
+    pub dune_api_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DuneQueryArgs {
+    /// List all available query names and exit
+    #[arg(long)]
+    pub list: bool,
+
+    /// Run a specific query by name (e.g. "QUERY_TRADES_IN_BLOCK")
+    #[arg(short = 'q', long = "query", value_name = "NAME")]
+    pub query: Option<String>,
+
+    /// Run all queries (requires --from-block and --to-block)
+    #[arg(long)]
+    pub all: bool,
+
+    /// Chain name (default: polygon)
+    #[arg(short = 'n', long, default_value = "polygon", value_name = "NAME")]
+    pub chain: String,
+
+    /// Start block number (required for most queries)
+    #[arg(long, value_name = "NUMBER")]
+    pub from_block: Option<u64>,
+
+    /// End block number (required for most queries)
+    #[arg(long, value_name = "NUMBER")]
+    pub to_block: Option<u64>,
+
+    /// Pool address (for pool-specific queries)
+    #[arg(long, value_name = "ADDRESS")]
+    pub pool_address: Option<String>,
+
+    /// Token address (for token-specific queries)
+    #[arg(long, value_name = "ADDRESS")]
+    pub token_address: Option<String>,
+
+    /// Transaction hash (for tx-specific queries)
+    #[arg(long, value_name = "HASH")]
+    pub tx_hash: Option<String>,
+
+    /// Minimum USD threshold (for whale/large swap queries)
+    #[arg(long, value_name = "USD")]
+    pub min_usd: Option<f64>,
+
+    /// Factory address (for factory-specific queries)
+    #[arg(long, value_name = "ADDRESS")]
+    pub factory_address: Option<String>,
+
+    /// Block number (for single-block queries)
+    #[arg(long, value_name = "NUMBER")]
+    pub block: Option<u64>,
+
+    /// From time in ISO-8601 format (for time-range queries)
+    #[arg(long, value_name = "TIMESTAMP")]
+    pub from_time: Option<String>,
+
+    /// To time in ISO-8601 format (for time-range queries)
+    #[arg(long, value_name = "TIMESTAMP")]
+    pub to_time: Option<String>,
+
+    /// Output format: table, json, csv
+    #[arg(long, default_value = "table", value_name = "FORMAT")]
+    pub output: String,
 
     /// Dune API key (overrides config file)
     #[arg(long = "dune-api-key", value_name = "KEY")]

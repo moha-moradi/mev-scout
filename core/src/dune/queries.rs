@@ -239,15 +239,14 @@ ORDER BY p.evt_block_number ASC
 
 /// All DEX trades in a specific block (full detail).
 ///
-/// Columns: `block_number`(0), `tx_hash`(1), `tx_index`(2),
-///          `token_bought_address`(3), `token_sold_address`(4),
-///          `token_bought_amount`(5), `token_sold_amount`(6),
-///          `amount_usd`(7), `taker`(8), `pool_address`(9), `project`(10), `block_time`(11)
+/// Columns: `block_number`(0), `tx_hash`(1),
+///          `token_bought_address`(2), `token_sold_address`(3),
+///          `token_bought_amount`(4), `token_sold_amount`(5),
+///          `amount_usd`(6), `taker`(7), `pool_address`(8), `project`(9), `block_time`(10)
 pub const QUERY_TRADES_IN_BLOCK: &str = r#"
 SELECT
   t.block_number,
   t.tx_hash,
-  t.tx_index,
   t.token_bought_address,
   t.token_sold_address,
   t.token_bought_amount,
@@ -260,7 +259,7 @@ SELECT
 FROM dex.trades t
 WHERE t.blockchain = '{chain}'
   AND t.block_number = {block_number}
-ORDER BY t.tx_index ASC
+ORDER BY t.tx_hash
 "#;
 
 /// All DEX trades in a block range (for batch analysis).
@@ -270,7 +269,6 @@ pub const QUERY_TRADES_IN_RANGE: &str = r#"
 SELECT
   t.block_number,
   t.tx_hash,
-  t.tx_index,
   t.token_bought_address,
   t.token_sold_address,
   t.token_bought_amount,
@@ -285,7 +283,7 @@ WHERE t.blockchain = '{chain}'
   AND t.block_month >= DATE '{block_month_min}'
   AND t.block_number >= {from_block}
   AND t.block_number <= {to_block}
-ORDER BY t.block_number, t.tx_index
+ORDER BY t.block_number, t.tx_hash
 "#;
 
 /// All trades involving a specific pool (useful for analyzing a single pool).
@@ -307,7 +305,7 @@ WHERE t.blockchain = '{chain}'
   AND t.pool_address = '{pool_address}'::bytea
   AND t.block_number >= {from_block}
   AND t.block_number <= {to_block}
-ORDER BY t.block_number, t.tx_index
+ORDER BY t.block_number, t.tx_hash
 "#;
 
 /// All trades involving a specific token pair (token_in → token_out swaps).
@@ -486,10 +484,9 @@ WITH tx_pools AS (
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
-    t.tx_index,
     COUNT(*) OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash) AS pool_count,
-    ROW_NUMBER() OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash ORDER BY t.tx_index) AS rn_asc,
-    ROW_NUMBER() OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash ORDER BY t.tx_index DESC) AS rn_desc
+    ROW_NUMBER() OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash ORDER BY t.amount_usd DESC) AS rn_asc,
+    ROW_NUMBER() OVER (PARTITION BY t.blockchain, t.block_number, t.tx_hash ORDER BY t.amount_usd ASC) AS rn_desc
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
@@ -518,10 +515,9 @@ WITH tx_pools AS (
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
-    t.tx_index,
     COUNT(*) OVER (PARTITION BY t.tx_hash) AS pool_count,
-    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.tx_index) AS rn_asc,
-    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.tx_index DESC) AS rn_desc
+    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.amount_usd DESC) AS rn_asc,
+    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.amount_usd ASC) AS rn_desc
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_number = {block_number}
@@ -549,10 +545,9 @@ WITH tx_pools AS (
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
-    t.tx_index,
     COUNT(*) OVER (PARTITION BY t.tx_hash) AS pool_count,
-    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.tx_index) AS rn_asc,
-    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.tx_index DESC) AS rn_desc
+    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.amount_usd DESC) AS rn_asc,
+    ROW_NUMBER() OVER (PARTITION BY t.tx_hash ORDER BY t.amount_usd ASC) AS rn_desc
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_time >= TIMESTAMP '{from_time}'
@@ -954,14 +949,13 @@ WITH block_trades AS (
   SELECT
     t.block_number,
     t.tx_hash,
-    t.tx_index,
     t.pool_address,
     t.tx_from,
     t.amount_usd,
-    LAG(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.tx_index) AS prev_tx_from,
-    LEAD(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.tx_index) AS next_tx_from,
-    LAG(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.tx_index) AS prev_tx_hash,
-    LEAD(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.tx_index) AS next_tx_hash
+    LAG(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_from,
+    LEAD(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS next_tx_from,
+    LAG(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_hash,
+    LEAD(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS next_tx_hash
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_number = {block_number}
@@ -978,7 +972,7 @@ WHERE bt.prev_tx_from IS NOT NULL
   AND bt.next_tx_from IS NOT NULL
   AND bt.prev_tx_from = bt.next_tx_from
   AND bt.prev_tx_from != bt.tx_from
-ORDER BY bt.tx_index
+ORDER BY bt.tx_hash
 "#;
 
 /// Detect potential JIT (Just-In-Time) liquidity: a tx that adds liquidity
@@ -991,7 +985,6 @@ WITH block_events AS (
   SELECT
     evt_block_number AS block_number,
     evt_tx_hash AS tx_hash,
-    evt_index,
     contract_address AS pool_address,
     'mint' AS event_type,
     NULL AS amount_usd
@@ -1001,7 +994,6 @@ WITH block_events AS (
   SELECT
     evt_block_number,
     evt_tx_hash,
-    evt_index,
     contract_address,
     'burn',
     NULL
@@ -1011,7 +1003,6 @@ WITH block_events AS (
   SELECT
     t.block_number,
     t.tx_hash,
-    t.tx_index,
     t.pool_address,
     'swap',
     t.amount_usd
@@ -1019,7 +1010,7 @@ WITH block_events AS (
   WHERE t.blockchain = '{chain}'
     AND t.block_number = {block_number}
 )
-SELECT * FROM block_events ORDER BY pool_address, evt_index
+SELECT * FROM block_events ORDER BY pool_address, tx_hash
 "#;
 
 /// Detect time-bandit reorg opportunities: blocks where the profit
@@ -1080,7 +1071,7 @@ WITH ranked_trades AS (
     t.block_number,
     ROW_NUMBER() OVER (
       PARTITION BY t.pool_address
-      ORDER BY t.block_number DESC, t.tx_index DESC
+      ORDER BY t.block_number DESC
     ) AS rn
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
