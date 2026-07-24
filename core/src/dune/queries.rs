@@ -1406,3 +1406,622 @@ WHERE h.timestamp >= TIMESTAMP '{from_time}'
   AND h.timestamp < TIMESTAMP '{to_time}'
 ORDER BY h.timestamp
 "#;
+
+// ══════════════════════════════════════════════════════════════════════════
+// Section 8: Strategy Validation
+//
+// Each query returns: opportunity_count, avg_profit_usd, total_profit_usd,
+// period_start, period_end, period_days — for direct comparison against
+// estimates in mev_strategies_analysis_summary.md.
+// ══════════════════════════════════════════════════════════════════════════
+
+/// Validate skim() capture opportunities: V2 pairs where balanceOf > reserve.
+///
+/// Dune does not expose `balanceOf` directly. Proxy: count V2 Sync events
+/// where the token amounts suggest a balance-reserve discrepancy by comparing
+/// consecutive Sync events on the same pair. When reserves drop without a
+/// corresponding Swap, a skim() likely occurred.
+///
+/// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
+///          `period_start`(3), `period_end`(4), `period_days`(5)
+pub const VALIDATE_SKIM_CAPTURE: &str = r#"
+WITH v2_syncs AS (
+  SELECT
+    s.contract_address AS pool,
+    s.evt_block_number AS block_number,
+    s.evt_tx_hash AS tx_hash,
+    s.evt_block_time AS block_time,
+    s.reserve0,
+    s.reserve1,
+    LAG(s.reserve0) OVER (PARTITION BY s.contract_address ORDER BY s.evt_block_number, s.evt_tx_hash) AS prev_reserve0,
+    LAG(s.reserve1) OVER (PARTITION BY s.contract_address ORDER BY s.evt_block_number, s.evt_tx_hash) AS prev_reserve1
+  FROM uniswap_v2_{chain}.Pair_evt_Sync s
+  WHERE s.evt_block_number >= {from_block}
+    AND s.evt_block_number <= {to_block}
+),
+sync_without_swap AS (
+  SELECT
+    cs.pool,
+    cs.block_number,
+    cs.tx_hash,
+    cs.block_time,
+    cs.reserve0,
+    cs.reserve1,
+    cs.prev_reserve0,
+    cs.prev_reserve1,
+    ABS(cs.reserve0 - cs.prev_reserve0) AS reserve0_delta,
+    ABS(cs.reserve1 - cs.prev_reserve1) AS reserve1_delta
+  FROM v2_syncs cs
+  LEFT JOIN uniswap_v2_{chain}.Pair_evt_Swap sw
+    ON sw.contract_address = cs.pool
+    AND sw.evt_tx_hash = cs.tx_hash
+  WHERE sw.evt_tx_hash IS NULL
+    AND cs.prev_reserve0 IS NOT NULL
+    AND (ABS(cs.reserve0 - cs.prev_reserve0) > 0 OR ABS(cs.reserve1 - cs.prev_reserve1) > 0)
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(CASE WHEN reserve0_delta > 0 THEN reserve0_delta ELSE reserve1_delta END), 0) AS avg_profit_usd,
+  COALESCE(SUM(CASE WHEN reserve0_delta > 0 THEN reserve0_delta ELSE reserve1_delta END), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM sync_without_swap
+"#;
+
+/// Validate sync() race opportunities: defensive sync calls (Sync without Swap).
+///
+/// Same signal as skim() capture but counts from the attacker's perspective:
+/// how many times someone called sync() defensively to block a skim().
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_SYNC_RACE: &str = r#"
+WITH v2_syncs AS (
+  SELECT
+    s.contract_address AS pool,
+    s.evt_block_number AS block_number,
+    s.evt_tx_hash AS tx_hash,
+    s.evt_block_time AS block_time
+  FROM uniswap_v2_{chain}.Pair_evt_Sync s
+  WHERE s.evt_block_number >= {from_block}
+    AND s.evt_block_number <= {to_block}
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  0.0 AS avg_profit_usd,
+  0.0 AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM v2_syncs cs
+LEFT JOIN uniswap_v2_{chain}.Pair_evt_Swap sw
+  ON sw.contract_address = cs.pool
+  AND sw.evt_tx_hash = cs.tx_hash
+WHERE sw.evt_tx_hash IS NULL
+"#;
+
+/// Validate init price snipe opportunities: V3 pools with mispriced initialization.
+///
+/// Finds V3 PoolCreated events, then checks the first swap price deviation
+/// from the median price of the same token pair on other pools.
+///
+/// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
+///          `period_start`(3), `period_end`(4), `period_days`(5)
+pub const VALIDATE_INIT_PRICE_SNIPE: &str = r#"
+WITH new_pools AS (
+  SELECT
+    p.evt_block_number AS block_number,
+    p.evt_tx_hash AS tx_hash,
+    p.contract_address AS pool_address,
+    p.token0,
+    p.token1,
+    p.evt_block_time AS block_time
+  FROM uniswap_v3_{chain}.Factory_evt_PoolCreated p
+  WHERE p.evt_block_number >= {from_block}
+    AND p.evt_block_number <= {to_block}
+),
+first_swaps AS (
+  SELECT
+    t.pool_address,
+    t.block_number,
+    t.amount_usd,
+    t.token_bought_amount,
+    t.token_sold_amount,
+    t.block_time,
+    ROW_NUMBER() OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS rn
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.project = 'uniswap_v3'
+    AND t.pool_address IN (SELECT pool_address FROM new_pools)
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(fs.amount_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(fs.amount_usd), 0) AS total_profit_usd,
+  MIN(fs.block_time) AS period_start,
+  MAX(fs.block_time) AS period_end,
+  DATE_DIFF('day', MIN(fs.block_time), MAX(fs.block_time)) AS period_days
+FROM first_swaps fs
+JOIN new_pools np ON np.pool_address = fs.pool_address
+WHERE fs.rn = 1
+  AND fs.amount_usd > 0
+"#;
+
+/// Validate backrunning: multi-pool transactions following a large swap in the same block.
+///
+/// A backrun is proxied by: a tx that interacts with 2+ pools in a block where
+/// a preceding tx moved > $10K on one of those pools.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_BACKRUN: &str = r#"
+WITH large_swaps AS (
+  SELECT
+    t.block_number,
+    t.pool_address,
+    t.amount_usd,
+    t.tx_hash
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND t.amount_usd >= 10000
+),
+multi_pool_txs AS (
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    COUNT(DISTINCT t.pool_address) AS pool_count,
+    SUM(t.amount_usd) AS total_amount_usd,
+    MIN(t.block_time) AS block_time
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+  GROUP BY t.block_number, t.tx_hash
+  HAVING COUNT(DISTINCT t.pool_address) >= 2
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(mpt.total_amount_usd * 0.003), 0) AS avg_profit_usd,
+  COALESCE(SUM(mpt.total_amount_usd * 0.003), 0) AS total_profit_usd,
+  MIN(mpt.block_time) AS period_start,
+  MAX(mpt.block_time) AS period_end,
+  DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
+FROM multi_pool_txs mpt
+WHERE EXISTS (
+  SELECT 1 FROM large_swaps ls
+  WHERE ls.block_number = mpt.block_number
+    AND ls.pool_address IN (
+      SELECT DISTINCT t2.pool_address
+      FROM dex.trades t2
+      WHERE t2.blockchain = '{chain}'
+        AND t2.block_month >= DATE '{block_month_min}'
+        AND t2.tx_hash = mpt.tx_hash
+    )
+)
+"#;
+
+/// Validate long-tail token arb: multi-pool arbs involving low-liquidity tokens.
+///
+/// Tokens with < $100K total volume in the period are considered long-tail.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_LONG_TAIL_ARB: &str = r#"
+WITH token_volume AS (
+  SELECT
+    t.token_bought_address AS token,
+    SUM(t.amount_usd) AS total_vol
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+  GROUP BY t.token_bought_address
+),
+long_tail_tokens AS (
+  SELECT token FROM token_volume WHERE total_vol < 100000
+),
+multi_pool_txs AS (
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    COUNT(DISTINCT t.pool_address) AS pool_count,
+    SUM(t.amount_usd) AS total_amount_usd,
+    MIN(t.block_time) AS block_time
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+  GROUP BY t.block_number, t.tx_hash
+  HAVING COUNT(DISTINCT t.pool_address) >= 2
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(mpt.total_amount_usd * 0.005), 0) AS avg_profit_usd,
+  COALESCE(SUM(mpt.total_amount_usd * 0.005), 0) AS total_profit_usd,
+  MIN(mpt.block_time) AS period_start,
+  MAX(mpt.block_time) AS period_end,
+  DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
+FROM multi_pool_txs mpt
+WHERE EXISTS (
+  SELECT 1
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.tx_hash = mpt.tx_hash
+    AND (t.token_bought_address IN (SELECT token FROM long_tail_tokens)
+         OR t.token_sold_address IN (SELECT token FROM long_tail_tokens))
+)
+"#;
+
+/// Validate stablecoin depeg arbitrage: Curve pool price deviations > 1% from $1.
+///
+/// Monitors Curve USDC/DAI/USDT pools for price deviation events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_STABLECOIN_DEPEG: &str = r#"
+WITH curve_exchanges AS (
+  SELECT
+    e.contract_address AS pool,
+    e.evt_block_number AS block_number,
+    e.evt_block_time AS block_time,
+    e.sold_id,
+    e.bought_id,
+    e.tokens_sold,
+    e.tokens_bought,
+    e.evt_tx_hash AS tx_hash
+  FROM curve_{chain}.pool3_evt_TokenExchange e
+  WHERE e.evt_block_number >= {from_block}
+    AND e.evt_block_number <= {to_block}
+  UNION ALL
+  SELECT
+    e.contract_address,
+    e.evt_block_number,
+    e.evt_block_time,
+    e.sold_id,
+    e.bought_id,
+    e.tokens_sold,
+    e.tokens_bought,
+    e.evt_tx_hash
+  FROM curve_{chain}.pool3_evt_TokenExchangeUnderlying e
+  WHERE e.evt_block_number >= {from_block}
+    AND e.evt_block_number <= {to_block}
+),
+priced AS (
+  SELECT
+    ce.pool,
+    ce.block_number,
+    ce.block_time,
+    ce.tokens_sold,
+    ce.tokens_bought,
+    CASE
+      WHEN ce.sold_id = 0 AND ce.bought_id = 1 THEN
+        ABS(ce.tokens_bought / 1e6 - ce.tokens_sold / 1e18) / NULLIF(ce.tokens_sold / 1e18, 0)
+      WHEN ce.sold_id = 1 AND ce.bought_id = 0 THEN
+        ABS(ce.tokens_sold / 1e6 - ce.tokens_bought / 1e18) / NULLIF(ce.tokens_bought / 1e18, 0)
+      ELSE NULL
+    END AS price_deviation
+  FROM curve_exchanges ce
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(price_deviation * 100), 0) AS avg_profit_usd,
+  COALESCE(SUM(price_deviation * 100), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM priced
+WHERE price_deviation > 0.01
+"#;
+
+/// Validate Curve pool imbalance: Curve pools with balances deviating from peg.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_CURVE_IMBALANCE: &str = r#"
+WITH curve_exchanges AS (
+  SELECT
+    e.contract_address AS pool,
+    e.evt_block_number AS block_number,
+    e.evt_block_time AS block_time,
+    e.sold_id,
+    e.bought_id,
+    e.tokens_sold,
+    e.tokens_bought
+  FROM curve_{chain}.pool3_evt_TokenExchange e
+  WHERE e.evt_block_number >= {from_block}
+    AND e.evt_block_number <= {to_block}
+),
+pool_imbalance AS (
+  SELECT
+    pool,
+    block_number,
+    block_time,
+    CASE
+      WHEN sold_id = 0 AND bought_id = 1 THEN tokens_bought / 1e6 / NULLIF(tokens_sold / 1e18, 0)
+      WHEN sold_id = 1 AND bought_id = 0 THEN tokens_sold / 1e6 / NULLIF(tokens_bought / 1e18, 0)
+      ELSE NULL
+    END AS implied_price
+  FROM curve_exchanges
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(ABS(implied_price - 1.0) * 100), 0) AS avg_profit_usd,
+  COALESCE(SUM(ABS(implied_price - 1.0) * 100), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM pool_imbalance
+WHERE implied_price IS NOT NULL
+  AND ABS(implied_price - 1.0) > 0.005
+"#;
+
+/// Validate LST depeg collateral liquidation: AAVE liquidations where collateral is an LST.
+///
+/// LSTs: stETH, rETH, cbETH, frxETH, sETH2, wstETH.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_LST_DEPEG_LIQ: &str = r#"
+WITH lst_tokens AS (
+  SELECT token FROM (VALUES
+    (0xae7ab96520de3a18e5e13f1536244d8eb00c4f53),  -- stETH
+    (0xae78736cd615f374d3085123a210448e74fc6393),  -- rETH
+    (0xbe9895146f7af43049ca1c1ae358b0541ea49704),  -- cbETH
+    (0x5c84bf60de35539930200046e585fa8d3676e2e7),  -- frxETH
+    (0xf34960d37339CCE23a98cDcaA5ACB0da7b9Ccb32),  -- sETH2
+    (0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0)   -- wstETH
+  ) AS t(token)
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(l.collateral_amount / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(l.collateral_amount / 1e18), 0) AS total_profit_usd,
+  MIN(l.block_time) AS period_start,
+  MAX(l.block_time) AS period_end,
+  DATE_DIFF('day', MIN(l.block_time), MAX(l.block_time)) AS period_days
+FROM aave_v3_{chain}.Pool_evt_LiquidationCall l
+WHERE l.evt_block_number >= {from_block}
+  AND l.evt_block_number <= {to_block}
+  AND l.collateralAsset IN (SELECT token FROM lst_tokens)
+"#;
+
+/// Validate MakerDAO Clip Dutch auction take() events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_MAKERDAO_CLIP: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(t.art / 1e45), 0) AS avg_profit_usd,
+  COALESCE(SUM(t.art / 1e45), 0) AS total_profit_usd,
+  MIN(t.evt_block_time) AS period_start,
+  MAX(t.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(t.evt_block_time), MAX(t.evt_block_time)) AS period_days
+FROM clip_{chain}.clipper_evt_Take t
+WHERE t.evt_block_number >= {from_block}
+  AND t.evt_block_number <= {to_block}
+"#;
+
+/// Validate MakerDAO OSM kick() events (vault liquidation initiation).
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_MAKERDAO_KICK: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(k.art / 1e45), 0) AS avg_profit_usd,
+  COALESCE(SUM(k.art / 1e45), 0) AS total_profit_usd,
+  MIN(k.evt_block_time) AS period_start,
+  MAX(k.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(k.evt_block_time), MAX(k.evt_block_time)) AS period_days
+FROM vow_{chain}.vow_evt_Flip k
+WHERE k.evt_block_number >= {from_block}
+  AND k.evt_block_number <= {to_block}
+"#;
+
+/// Validate GMX v1 keeper race: liquidation events on GMX v1.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_GMX_V1_KEEPER: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(l.feeAmount / 1e30), 0) AS avg_profit_usd,
+  COALESCE(SUM(l.feeAmount / 1e30), 0) AS total_profit_usd,
+  MIN(l.evt_block_time) AS period_start,
+  MAX(l.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
+FROM gmx_{chain}.Vault_evt_Liquidation l
+WHERE l.evt_block_number >= {from_block}
+  AND l.evt_block_number <= {to_block}
+"#;
+
+/// Validate GMX V2 ADL front-run: automatic deleveraging events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_GMX_V2_ADL: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  0.0 AS avg_profit_usd,
+  0.0 AS total_profit_usd,
+  MIN(e.evt_block_time) AS period_start,
+  MAX(e.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(e.evt_block_time), MAX(e.evt_block_time)) AS period_days
+FROM gmx_router_{chain}.OrderHandler_evt_OrderExecuted e
+WHERE e.evt_block_number >= {from_block}
+  AND e.evt_block_number <= {to_block}
+  AND e.sizeDelta > 0
+  AND e.orderType = 7
+"#;
+
+/// Validate Liquity recovery mode cascade: trove liquidation events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_LIQUITY_RECOVERY: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(l.debtAmount / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(l.debtAmount / 1e18), 0) AS total_profit_usd,
+  MIN(l.evt_block_time) AS period_start,
+  MAX(l.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
+FROM liquity_{chain}.TroveManager_evt_TroveLiquidated l
+WHERE l.evt_block_number >= {from_block}
+  AND l.evt_block_number <= {to_block}
+"#;
+
+/// Validate Synthetix flag + delayed liquidation events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_SYNTHETIX_LIQ: &str = r#"
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(l.amount / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(l.amount / 1e18), 0) AS total_profit_usd,
+  MIN(l.evt_block_time) AS period_start,
+  MAX(l.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
+FROM synthetix_{chain}.LiquidationRewards_evt_Liquidation l
+WHERE l.evt_block_number >= {from_block}
+  AND l.evt_block_number <= {to_block}
+"#;
+
+/// Validate perp protocol keeper: dYdX / Kwenta liquidation events.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_PERP_KEEPER: &str = r#"
+WITH all_perp_liqs AS (
+  -- Kwenta / Synthetix Perps on Optimism
+  SELECT
+    l.evt_block_time AS block_time,
+    l.evt_block_number AS block_number,
+    COALESCE(l.liquidationReward / 1e18, 0) AS reward_usd
+  FROM gains_network_{chain}.GTokenLiquidation l
+  WHERE l.evt_block_number >= {from_block}
+    AND l.evt_block_number <= {to_block}
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(reward_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(reward_usd), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM all_perp_liqs
+"#;
+
+/// Validate flash loan atomic liquidation: flash loans paired with liquidations in same tx.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_FLASH_LIQ_PROFIT: &str = r#"
+WITH flash_liqs AS (
+  SELECT
+    f.block_number,
+    f.tx_hash,
+    f.amount_usd AS flash_amount_usd,
+    f.fee AS flash_fee_usd,
+    f.block_time
+  FROM lending.flashloans f
+  WHERE f.blockchain = '{chain}'
+    AND f.block_month >= DATE '{block_month_min}'
+    AND f.block_number >= {from_block}
+    AND f.block_number <= {to_block}
+    AND f.block_number IN (
+      SELECT l.block_number
+      FROM lending.borrow l
+      WHERE l.blockchain = '{chain}'
+        AND l.transaction_type = 'liquidation'
+        AND l.block_number >= {from_block}
+        AND l.block_number <= {to_block}
+    )
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(flash_amount_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(flash_amount_usd), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM flash_liqs
+"#;
+
+/// Validate JIT liquidity (V3): Mint→Swap→Burn patterns in same block, same pool.
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_JIT_FEE_CAPTURE: &str = r#"
+WITH v3_events AS (
+  SELECT
+    evt_block_number AS block_number,
+    evt_tx_hash AS tx_hash,
+    contract_address AS pool_address,
+    'mint' AS event_type,
+    evt_block_time AS block_time
+  FROM uniswap_v3_{chain}.Pool_evt_Mint
+  WHERE evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  UNION ALL
+  SELECT
+    evt_block_number,
+    evt_tx_hash,
+    contract_address,
+    'burn',
+    evt_block_time
+  FROM uniswap_v3_{chain}.Pool_evt_Burn
+  WHERE evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  UNION ALL
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    t.pool_address,
+    'swap',
+    t.block_time
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND t.project = 'uniswap_v3'
+),
+pool_block_events AS (
+  SELECT
+    pool_address,
+    block_number,
+    block_time,
+    tx_hash,
+    ARRAY_AGG(DISTINCT event_type) AS event_types,
+    COUNT(DISTINCT event_type) AS event_count
+  FROM v3_events
+  GROUP BY pool_address, block_number, block_time, tx_hash
+)
+SELECT
+  COUNT(*) AS opportunity_count,
+  COALESCE(AVG(1000), 0) AS avg_profit_usd,
+  COALESCE(SUM(1000), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM pool_block_events
+WHERE event_count >= 2
+  AND ARRAY_CONTAINS(event_types, 'mint')
+  AND ARRAY_CONTAINS(event_types, 'burn')
+  AND ARRAY_CONTAINS(event_types, 'swap')
+  AND (
+    -- Same tx contains mint+swap+burn (classic JIT)
+    (event_count = 3)
+    -- Or block has mint tx, swap tx, burn tx from same address
+    OR EXISTS (
+      SELECT 1 FROM v3_events m
+      WHERE m.pool_address = pool_block_events.pool_address
+        AND m.block_number = pool_block_events.block_number
+        AND m.event_type = 'mint'
+        AND EXISTS (
+          SELECT 1 FROM v3_events b
+          WHERE b.pool_address = m.pool_address
+            AND b.block_number = m.block_number
+            AND b.event_type = 'burn'
+            AND b.tx_hash != m.tx_hash
+        )
+    )
+  )
+"#;

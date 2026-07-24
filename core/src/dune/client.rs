@@ -92,10 +92,20 @@ impl DuneClient {
         &self,
         sql: &str,
     ) -> anyhow::Result<DuneExecutionResult> {
+        self.execute_raw_sql_with_performance(sql, "small").await
+    }
+
+    /// Execute raw SQL with explicit performance tier ("small", "medium", "large").
+    pub async fn execute_raw_sql_with_performance(
+        &self,
+        sql: &str,
+        performance: &str,
+    ) -> anyhow::Result<DuneExecutionResult> {
         let url = format!("{}/sql/execute", self.base_url);
 
         let body = serde_json::json!({
             "sql": sql,
+            "performance": performance,
         });
 
         let response = self
@@ -107,12 +117,12 @@ impl DuneClient {
             .await
             .context("Failed to execute raw Dune SQL")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
+        let resp_status = response.status();
+        if !resp_status.is_success() {
             let body_text = response.text().await.unwrap_or_default();
             anyhow::bail!(
                 "Dune raw SQL execution rejected (HTTP {}): {}",
-                status,
+                resp_status,
                 body_text
             );
         }

@@ -15,20 +15,10 @@ fn approx_block_month_min(block_number: u64, chain: &str) -> String {
         _ => (1609459200, 12.0),
     };
     let elapsed = block_number as f64 * secs_per_block;
-    let approx_epoch = genesis_ts + elapsed as i64;
-
-    let days = approx_epoch / 86400;
-    let era = (days >= 0).then_some(days).unwrap_or(days - 146096) / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (mp * 153 + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!("{:04}-{:02}-{:02}", y, m, d)
+    let approx_ts = genesis_ts + elapsed as i64;
+    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
+        .unwrap_or_default();
+    naive.format("%Y-%m-%d").to_string()
 }
 
 /// Map chain name to Dune chain label.

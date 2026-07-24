@@ -356,6 +356,109 @@ fn all_queries() -> Vec<QueryInfo> {
             required: &["chain", "from_time", "to_time"],
             optional: &[],
         },
+        // Section 8: Strategy Validation
+        QueryInfo {
+            name: "VALIDATE_SKIM_CAPTURE",
+            description: "Validate skim() capture opportunities (V2 balance drift)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_SYNC_RACE",
+            description: "Validate sync() race opportunities (defensive sync calls)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_INIT_PRICE_SNIPE",
+            description: "Validate init price snipe opportunities (V3 mispriced pools)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_BACKRUN",
+            description: "Validate backrunning opportunities (multi-pool txs after large swaps)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_LONG_TAIL_ARB",
+            description: "Validate long-tail token arbitrage (low-liquidity multi-pool txs)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_STABLECOIN_DEPEG",
+            description: "Validate stablecoin depeg arbitrage (Curve price deviations)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_CURVE_IMBALANCE",
+            description: "Validate Curve pool imbalance opportunities",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_LST_DEPEG_LIQ",
+            description: "Validate LST depeg collateral liquidation (AAVE LST-collateral liqs)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_MAKERDAO_CLIP",
+            description: "Validate MakerDAO Clip Dutch auction take() events",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_MAKERDAO_KICK",
+            description: "Validate MakerDAO OSM kick() events",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_GMX_V1_KEEPER",
+            description: "Validate GMX v1 keeper race (liquidation events)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_GMX_V2_ADL",
+            description: "Validate GMX V2 ADL front-run events",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_LIQUITY_RECOVERY",
+            description: "Validate Liquity recovery mode cascade (trove liquidations)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_SYNTHETIX_LIQ",
+            description: "Validate Synthetix flag + delayed liquidation events",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_PERP_KEEPER",
+            description: "Validate perp protocol keeper (Gains Network liquidations)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &[],
+        },
+        QueryInfo {
+            name: "VALIDATE_FLASH_LIQ_PROFIT",
+            description: "Validate flash loan atomic liquidation (flash + liq in same tx)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
+        QueryInfo {
+            name: "VALIDATE_JIT_FEE_CAPTURE",
+            description: "Validate JIT liquidity fee capture (V3 Mint/Swap/Burn)",
+            required: &["chain", "from_block", "to_block"],
+            optional: &["block_month_min"],
+        },
     ]
 }
 
@@ -417,6 +520,24 @@ fn get_query_sql(name: &str) -> Option<&'static str> {
         "QUERY_DEX_FLASH_LOANS_BY_RANGE" => Some(queries::QUERY_DEX_FLASH_LOANS_BY_RANGE),
         "QUERY_UTILS_DAYS" => Some(queries::QUERY_UTILS_DAYS),
         "QUERY_UTILS_HOURS" => Some(queries::QUERY_UTILS_HOURS),
+        // Section 8: Strategy Validation
+        "VALIDATE_SKIM_CAPTURE" => Some(queries::VALIDATE_SKIM_CAPTURE),
+        "VALIDATE_SYNC_RACE" => Some(queries::VALIDATE_SYNC_RACE),
+        "VALIDATE_INIT_PRICE_SNIPE" => Some(queries::VALIDATE_INIT_PRICE_SNIPE),
+        "VALIDATE_BACKRUN" => Some(queries::VALIDATE_BACKRUN),
+        "VALIDATE_LONG_TAIL_ARB" => Some(queries::VALIDATE_LONG_TAIL_ARB),
+        "VALIDATE_STABLECOIN_DEPEG" => Some(queries::VALIDATE_STABLECOIN_DEPEG),
+        "VALIDATE_CURVE_IMBALANCE" => Some(queries::VALIDATE_CURVE_IMBALANCE),
+        "VALIDATE_LST_DEPEG_LIQ" => Some(queries::VALIDATE_LST_DEPEG_LIQ),
+        "VALIDATE_MAKERDAO_CLIP" => Some(queries::VALIDATE_MAKERDAO_CLIP),
+        "VALIDATE_MAKERDAO_KICK" => Some(queries::VALIDATE_MAKERDAO_KICK),
+        "VALIDATE_GMX_V1_KEEPER" => Some(queries::VALIDATE_GMX_V1_KEEPER),
+        "VALIDATE_GMX_V2_ADL" => Some(queries::VALIDATE_GMX_V2_ADL),
+        "VALIDATE_LIQUITY_RECOVERY" => Some(queries::VALIDATE_LIQUITY_RECOVERY),
+        "VALIDATE_SYNTHETIX_LIQ" => Some(queries::VALIDATE_SYNTHETIX_LIQ),
+        "VALIDATE_PERP_KEEPER" => Some(queries::VALIDATE_PERP_KEEPER),
+        "VALIDATE_FLASH_LIQ_PROFIT" => Some(queries::VALIDATE_FLASH_LIQ_PROFIT),
+        "VALIDATE_JIT_FEE_CAPTURE" => Some(queries::VALIDATE_JIT_FEE_CAPTURE),
         _ => None,
     }
 }
@@ -441,20 +562,9 @@ fn approx_block_month_min(block_number: u64, chain: &str) -> String {
     };
     let elapsed = block_number as f64 * secs_per_block;
     let approx_ts = genesis_ts + elapsed as i64;
-
-    // Convert epoch to YYYY-MM-DD without chrono
-    let days = approx_ts / 86400;
-    let era = (days >= 0).then_some(days).unwrap_or(days - 146096) / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (mp * 153 + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-
-    format!("{:04}-{:02}-{:02}", y, m, d)
+    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
+        .unwrap_or_default();
+    naive.format("%Y-%m-%d").to_string()
 }
 
 fn render_sql(
@@ -467,7 +577,7 @@ fn render_sql(
 
     if let Some(from) = args.from_block {
         let block_month_min = approx_block_month_min(from, &chain_label);
-        sql = sql.replace("{block_month_min}", &format!("'{}'", block_month_min));
+        sql = sql.replace("{block_month_min}", &block_month_min);
         sql = sql.replace("{from_block}", &from.to_string());
     }
     if let Some(to) = args.to_block {
