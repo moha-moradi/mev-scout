@@ -538,6 +538,8 @@ fn get_query_sql(name: &str) -> Option<&'static str> {
         "VALIDATE_PERP_KEEPER" => Some(queries::VALIDATE_PERP_KEEPER),
         "VALIDATE_FLASH_LIQ_PROFIT" => Some(queries::VALIDATE_FLASH_LIQ_PROFIT),
         "VALIDATE_JIT_FEE_CAPTURE" => Some(queries::VALIDATE_JIT_FEE_CAPTURE),
+        "DISCOVER_TABLES" => Some(queries::DISCOVER_TABLES),
+        "DISCOVER_MAKERDAO_COLUMNS" => Some(queries::DISCOVER_MAKERDAO_COLUMNS),
         _ => None,
     }
 }
@@ -788,36 +790,32 @@ pub async fn cmd_dune_query(config: &Config, args: &DuneQueryArgs) -> anyhow::Re
         )
     })?;
 
-    // Validate required params
+    // Validate required params (skip for discovery/ad-hoc queries not in the registry)
     let all = all_queries();
-    let info = all.iter().find(|q| q.name == query_name).unwrap();
-    let missing: Vec<&str> = info.required.iter().filter(|param| {
-        match **param {
-            "chain" => false,
-            "from_block" => args.from_block.is_none(),
-            "to_block" => args.to_block.is_none(),
-            "block" => args.block.is_none(),
-            "pool_address" => args.pool_address.is_none(),
-            "token_address" => args.token_address.is_none(),
-            "tx_hash" => args.tx_hash.is_none(),
-            "min_usd" => args.min_usd.is_none(),
-            "factory_address" => args.factory_address.is_none(),
-            "from_time" => args.from_time.is_none(),
-            "to_time" => args.to_time.is_none(),
-            "block_timestamp" => args.from_time.is_none() && args.block.is_none(),
-            "token_list" => true,
-            "address_list" => true,
-            "category" => true,
-            _ => true,
+    if let Some(info) = all.iter().find(|q| q.name == query_name) {
+        let missing: Vec<&str> = info.required.iter().filter(|param| {
+            match **param {
+                "chain" => false,
+                "from_block" => args.from_block.is_none(),
+                "to_block" => args.to_block.is_none(),
+                "block" => args.block.is_none(),
+                "pool_address" => args.pool_address.is_none(),
+                "token_address" => args.token_address.is_none(),
+                "tx_hash" => args.tx_hash.is_none(),
+                "min_usd" => args.min_usd.is_none(),
+                "factory_address" => args.factory_address.is_none(),
+                "from_time" => args.from_time.is_none(),
+                "to_time" => args.to_time.is_none(),
+                _ => false,
+            }
+        }).copied().collect::<Vec<_>>();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "Missing required params for {}: {}",
+                query_name,
+                missing.join(", ")
+            );
         }
-    }).copied().collect();
-
-    if !missing.is_empty() {
-        anyhow::bail!(
-            "Missing required parameters for {}: {}. Use --help to see available flags.",
-            query_name,
-            missing.join(", ")
-        );
     }
 
     let sql = render_sql(sql_template, &args.chain, args);

@@ -1463,15 +1463,20 @@ sync_without_swap AS (
     cs.reserve1,
     cs.prev_reserve0,
     cs.prev_reserve1,
-    ABS(cs.reserve0 - cs.prev_reserve0) AS reserve0_delta,
-    ABS(cs.reserve1 - cs.prev_reserve1) AS reserve1_delta
+    CASE WHEN cs.reserve0 >= cs.prev_reserve0 THEN cs.reserve0 - cs.prev_reserve0 ELSE cs.prev_reserve0 - cs.reserve0 END AS reserve0_delta,
+    CASE WHEN cs.reserve1 >= cs.prev_reserve1 THEN cs.reserve1 - cs.prev_reserve1 ELSE cs.prev_reserve1 - cs.reserve1 END AS reserve1_delta
   FROM v2_syncs cs
   LEFT JOIN uniswap_v2_{chain}.Pair_evt_Swap sw
     ON sw.contract_address = cs.pool
     AND sw.evt_tx_hash = cs.tx_hash
   WHERE sw.evt_tx_hash IS NULL
     AND cs.prev_reserve0 IS NOT NULL
-    AND (ABS(cs.reserve0 - cs.prev_reserve0) > 0 OR ABS(cs.reserve1 - cs.prev_reserve1) > 0)
+    AND (
+      (cs.reserve0 >= cs.prev_reserve0 AND cs.reserve0 - cs.prev_reserve0 > 0)
+      OR (cs.reserve0 < cs.prev_reserve0 AND cs.prev_reserve0 - cs.reserve0 > 0)
+      OR (cs.reserve1 >= cs.prev_reserve1 AND cs.reserve1 - cs.prev_reserve1 > 0)
+      OR (cs.reserve1 < cs.prev_reserve1 AND cs.prev_reserve1 - cs.reserve1 > 0)
+    )
 )
 SELECT
   COUNT(*) AS opportunity_count,
@@ -1685,7 +1690,7 @@ WITH curve_exchanges AS (
     e.tokens_sold,
     e.tokens_bought,
     e.evt_tx_hash AS tx_hash
-  FROM curve_{chain}.pool3_evt_TokenExchange e
+  FROM curve_{chain}.Pool_evt_TokenExchange e
   WHERE e.evt_block_number >= {from_block}
     AND e.evt_block_number <= {to_block}
   UNION ALL
@@ -1698,7 +1703,7 @@ WITH curve_exchanges AS (
     e.tokens_sold,
     e.tokens_bought,
     e.evt_tx_hash
-  FROM curve_{chain}.pool3_evt_TokenExchangeUnderlying e
+  FROM curve_{chain}.Pool_evt_TokenExchangeUnderlying e
   WHERE e.evt_block_number >= {from_block}
     AND e.evt_block_number <= {to_block}
 ),
@@ -1742,7 +1747,7 @@ WITH curve_exchanges AS (
     e.bought_id,
     e.tokens_sold,
     e.tokens_bought
-  FROM curve_{chain}.pool3_evt_TokenExchange e
+  FROM curve_{chain}.Pool_evt_TokenExchange e
   WHERE e.evt_block_number >= {from_block}
     AND e.evt_block_number <= {to_block}
 ),
@@ -1810,7 +1815,7 @@ SELECT
   MIN(t.evt_block_time) AS period_start,
   MAX(t.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(t.evt_block_time), MAX(t.evt_block_time)) AS period_days
-FROM clip_{chain}.clipper_evt_Take t
+FROM maker_{chain}.Clipper_evt_Take t
 WHERE t.evt_block_number >= {from_block}
   AND t.evt_block_number <= {to_block}
 "#;
@@ -1826,7 +1831,7 @@ SELECT
   MIN(k.evt_block_time) AS period_start,
   MAX(k.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(k.evt_block_time), MAX(k.evt_block_time)) AS period_days
-FROM vow_{chain}.vow_evt_Flip k
+FROM maker_{chain}.Vow_evt_Flip k
 WHERE k.evt_block_number >= {from_block}
   AND k.evt_block_number <= {to_block}
 "#;
@@ -1871,8 +1876,8 @@ WHERE e.evt_block_number >= {from_block}
 pub const VALIDATE_LIQUITY_RECOVERY: &str = r#"
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(l.debtAmount / 1e18), 0) AS avg_profit_usd,
-  COALESCE(SUM(l.debtAmount / 1e18), 0) AS total_profit_usd,
+  COALESCE(AVG(l._debt / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(l._debt / 1e18), 0) AS total_profit_usd,
   MIN(l.evt_block_time) AS period_start,
   MAX(l.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
@@ -2017,4 +2022,23 @@ WHERE event_count = 3
   AND contains(event_types, 'mint')
   AND contains(event_types, 'burn')
   AND contains(event_types, 'swap')
+"#;
+
+pub const DISCOVER_TABLES: &str = r#"
+SELECT table_name, table_schema
+FROM information_schema.tables
+WHERE table_schema IN ('curve_ethereum', 'maker_ethereum', 'curve', 'maker')
+  AND table_name LIKE '%TokenExchange%' OR table_name LIKE '%Clip%' OR table_name LIKE '%Take%'
+  OR table_name LIKE '%Flip%' OR table_name LIKE '%Vow%'
+ORDER BY table_schema, table_name
+LIMIT 100
+"#;
+
+pub const DISCOVER_MAKERDAO_COLUMNS: &str = r#"
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = 'maker_ethereum'
+  AND table_name = 'Clipper_evt_Take'
+ORDER BY ordinal_position
+LIMIT 50
 "#;
