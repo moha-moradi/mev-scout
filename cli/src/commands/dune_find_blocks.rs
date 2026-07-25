@@ -42,6 +42,49 @@ fn estimate_blocks_per_day(chain: &str) -> u64 {
     }
 }
 
+/// Estimate the latest block number from current time (reverse of approx_block_month_min).
+fn estimate_latest_block(chain: &str) -> u64 {
+    let (genesis_ts, secs_per_block) = match chain {
+        "ethereum" => (1438269988_i64, 12.0),
+        "polygon" => (1591031691, 2.1),
+        "bsc" => (1597734000, 3.0),
+        "avalanche_c" | "avalanche" => (1624402800, 2.0),
+        "arbitrum" => (1630812600, 0.26),
+        "base" => (1686787200, 2.0),
+        "optimism" => (1631808000, 2.0),
+        _ => (1609459200, 12.0),
+    };
+    let now = chrono::Utc::now().timestamp();
+    let elapsed_secs = now - genesis_ts;
+    (elapsed_secs as f64 / secs_per_block) as u64
+}
+
+/// Dune indexing lag in blocks (conservative estimate per chain).
+/// Dune data pipelines typically lag well behind chain head on free tier.
+fn dune_indexing_lag(chain: &str) -> u64 {
+    let lag_secs = match chain {
+        "ethereum" => 60 * 24 * 3600,     // ~60 days
+        "polygon" => 60 * 24 * 3600,
+        "bsc" => 60 * 24 * 3600,
+        "avalanche_c" | "avalanche" => 60 * 24 * 3600,
+        "arbitrum" => 60 * 24 * 3600,
+        "base" => 60 * 24 * 3600,
+        "optimism" => 60 * 24 * 3600,
+        _ => 60 * 24 * 3600,
+    };
+    let secs_per_block = match chain {
+        "ethereum" => 12.0,
+        "polygon" => 2.1,
+        "bsc" => 3.0,
+        "avalanche_c" | "avalanche" => 2.0,
+        "arbitrum" => 0.26,
+        "base" => 2.0,
+        "optimism" => 2.0,
+        _ => 12.0,
+    };
+    (lag_secs as f64 / secs_per_block) as u64
+}
+
 pub async fn cmd_dune_find_blocks(
     config: &Config,
     args: &DuneFindBlocksArgs,
@@ -63,12 +106,12 @@ pub async fn cmd_dune_find_blocks(
     let blocks_per_day = estimate_blocks_per_day(chain);
     let range_blocks = args.days * blocks_per_day;
 
-    let to_block = args.to_block.unwrap_or(0);
-    let (from_block, to_block) = if to_block > 0 {
-        (to_block.saturating_sub(range_blocks), to_block)
-    } else {
-        (0, 0)
-    };
+    let to_block = args.to_block.unwrap_or_else(|| {
+        let latest = estimate_latest_block(&chain_label);
+        let lag = dune_indexing_lag(&chain_label);
+        latest.saturating_sub(lag)
+    });
+    let from_block = to_block.saturating_sub(range_blocks);
 
     let block_month_min = if from_block > 0 {
         approx_block_month_min(from_block, &chain_label)
@@ -87,7 +130,7 @@ pub async fn cmd_dune_find_blocks(
   SELECT
     t.block_number,
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     COUNT(*) OVER (PARTITION BY t.block_number, t.tx_hash) AS pool_count
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
@@ -147,6 +190,9 @@ LIMIT {limit}"#,
             }
         }
     }
+
+    // Avoid rate limits on Dune free tier
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     if find_sandwiches {
         let sql = format!(

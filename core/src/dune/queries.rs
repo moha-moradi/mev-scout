@@ -253,7 +253,7 @@ SELECT
   t.token_sold_amount,
   t.amount_usd,
   t.taker,
-  t.pool_address,
+  t.project_contract_address,
   t.project,
   t.block_time
 FROM dex.trades t
@@ -275,7 +275,7 @@ SELECT
   t.token_sold_amount,
   t.amount_usd,
   t.taker,
-  t.pool_address,
+  t.project_contract_address,
   t.project,
   t.block_time
 FROM dex.trades t
@@ -302,7 +302,7 @@ SELECT
 FROM dex.trades t
 WHERE t.blockchain = '{chain}'
   AND t.block_month >= DATE '{block_month_min}'
-  AND t.pool_address = '{pool_address}'::bytea
+  AND t.project_contract_address = '{pool_address}'::bytea
   AND t.block_number >= {from_block}
   AND t.block_number <= {to_block}
 ORDER BY t.block_number, t.tx_hash
@@ -316,7 +316,7 @@ pub const QUERY_TRADES_BY_TOKEN_PAIR: &str = r#"
 SELECT
   t.block_number,
   t.tx_hash,
-  t.pool_address,
+  t.project_contract_address,
   t.amount_usd,
   t.token_bought_amount,
   t.token_sold_amount,
@@ -341,7 +341,7 @@ pub const QUERY_LARGE_SWAPS: &str = r#"
 SELECT
   t.block_number,
   t.tx_hash,
-  t.pool_address,
+  t.project_contract_address,
   t.token_bought_symbol AS token_out_symbol,
   t.token_sold_symbol AS token_in_symbol,
   t.amount_usd,
@@ -375,7 +375,7 @@ SELECT
   t.token_sold_amount,
   t.amount_usd,
   t.taker,
-  t.pool_address,
+  t.project_contract_address,
   t.project
 FROM dex.trades t
 WHERE t.blockchain = '{chain}'
@@ -391,41 +391,44 @@ LIMIT 1
 
 /// All known sandwich attacks in a block range from Dune's curated dataset.
 ///
-/// Columns: `block_number`(0), `victim_tx_hash`(1), `front_tx_hash`(2),
-///          `back_tx_hash`(3), `sandwich_type`(4), `pool_address`(5), `mev_profit_eth`(6)
+/// `dex.sandwiches` has the same schema as `dex.trades`. Each row is a trade
+/// that was part of a sandwich attack (front-run or back-run).
+///
+/// Columns: `block_number`(0), `tx_hash`(1), `sandwicher`(2),
+///          `pool`(3), `token_bought_symbol`(4), `token_sold_symbol`(5), `amount_usd`(6)
 pub const QUERY_SANDWICHES_BY_RANGE: &str = r#"
 SELECT
   s.block_number,
-  s.victim_tx_hash,
-  s.front_tx_hash,
-  s.back_tx_hash,
-  s.sandwich_type,
-  s.pool_address,
-  s.mev_profit_eth
+  s.tx_hash,
+  s.tx_from AS sandwicher,
+  s.project_contract_address AS pool,
+  s.token_bought_symbol,
+  s.token_sold_symbol,
+  s.amount_usd
 FROM dex.sandwiches s
 WHERE s.blockchain = '{chain}'
   AND s.block_month >= DATE '{block_month_min}'
   AND s.block_number >= {from_block}
   AND s.block_number <= {to_block}
-ORDER BY s.block_number, s.victim_tx_hash
+ORDER BY s.block_number, s.tx_hash
 "#;
 
 /// Sandwich attacks in a specific block.
 ///
-/// Columns: same as above.
+/// Columns: same as QUERY_SANDWICHES_BY_RANGE.
 pub const QUERY_SANDWICHES_BY_BLOCK: &str = r#"
 SELECT
   s.block_number,
-  s.victim_tx_hash,
-  s.front_tx_hash,
-  s.back_tx_hash,
-  s.sandwich_type,
-  s.pool_address,
-  s.mev_profit_eth
+  s.tx_hash,
+  s.tx_from AS sandwicher,
+  s.project_contract_address AS pool_address,
+  s.amount_usd,
+  s.token_bought_symbol,
+  s.token_sold_symbol
 FROM dex.sandwiches s
 WHERE s.blockchain = '{chain}'
   AND s.block_number = {block_number}
-ORDER BY s.victim_tx_hash
+ORDER BY s.tx_hash
 "#;
 
 /// Sandwich attacks in a time range.
@@ -434,12 +437,12 @@ ORDER BY s.victim_tx_hash
 pub const QUERY_SANDWICHES_BY_TIME: &str = r#"
 SELECT
   s.block_number,
-  s.victim_tx_hash,
-  s.front_tx_hash,
-  s.back_tx_hash,
-  s.sandwich_type,
-  s.pool_address,
-  s.mev_profit_eth
+  s.tx_hash,
+  s.tx_from AS sandwicher,
+  s.project_contract_address AS pool_address,
+  s.amount_usd,
+  s.token_bought_symbol,
+  s.token_sold_symbol
 FROM dex.sandwiches s
 WHERE s.blockchain = '{chain}'
   AND s.block_time >= TIMESTAMP '{from_time}'
@@ -480,7 +483,7 @@ WITH tx_pools AS (
     t.blockchain,
     t.block_number,
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address,
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
@@ -496,8 +499,8 @@ WITH tx_pools AS (
 SELECT DISTINCT
   tp.block_number,
   tp.tx_hash,
-  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
-  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
+  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
+  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
   MAX(CASE WHEN tp.rn_asc = 1 THEN tp.token_in END) OVER (PARTITION BY tp.tx_hash) AS token_in,
   MAX(CASE WHEN tp.rn_desc = 1 THEN tp.token_out END) OVER (PARTITION BY tp.tx_hash) AS token_out,
   MAX(tp.amount_usd) OVER (PARTITION BY tp.tx_hash) AS amount_usd
@@ -511,7 +514,7 @@ pub const QUERY_ARBITRAGES_BY_BLOCK: &str = r#"
 WITH tx_pools AS (
   SELECT
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address,
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
@@ -525,8 +528,8 @@ WITH tx_pools AS (
 SELECT DISTINCT
   {block_number} AS block_number,
   tp.tx_hash,
-  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
-  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
+  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
+  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
   MAX(CASE WHEN tp.rn_asc = 1 THEN tp.token_in END) OVER (PARTITION BY tp.tx_hash) AS token_in,
   MAX(CASE WHEN tp.rn_desc = 1 THEN tp.token_out END) OVER (PARTITION BY tp.tx_hash) AS token_out,
   MAX(tp.amount_usd) OVER (PARTITION BY tp.tx_hash) AS amount_usd
@@ -541,7 +544,7 @@ WITH tx_pools AS (
   SELECT
     t.tx_hash,
     t.block_number,
-    t.pool_address,
+    t.project_contract_address,
     t.token_bought_address AS token_out,
     t.token_sold_address AS token_in,
     t.amount_usd,
@@ -556,8 +559,8 @@ WITH tx_pools AS (
 SELECT DISTINCT
   tp.block_number,
   tp.tx_hash,
-  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
-  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.pool_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
+  MAX(CASE WHEN tp.rn_asc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_a,
+  MAX(CASE WHEN tp.rn_desc = 1 THEN tp.project_contract_address END) OVER (PARTITION BY tp.tx_hash) AS pool_b,
   MAX(CASE WHEN tp.rn_asc = 1 THEN tp.token_in END) OVER (PARTITION BY tp.tx_hash) AS token_in,
   MAX(CASE WHEN tp.rn_desc = 1 THEN tp.token_out END) OVER (PARTITION BY tp.tx_hash) AS token_out,
   MAX(tp.amount_usd) OVER (PARTITION BY tp.tx_hash) AS amount_usd
@@ -568,13 +571,13 @@ ORDER BY tp.block_number, tp.tx_hash
 
 /// All flash loan events from Dune's consolidated `lending.flashloans` dataset.
 ///
-/// Columns: `block_number`(0), `tx_hash`(1), `protocol`(2), `token_address`(3),
+/// Columns: `block_number`(0), `tx_hash`(1), `project`(2), `token_address`(3),
 ///          `amount_usd`(4), `amount`(5), `fee`(6)
 pub const QUERY_FLASH_LOANS_BY_RANGE: &str = r#"
 SELECT
   f.block_number,
   f.tx_hash,
-  f.protocol,
+  f.project,
   f.token_address,
   f.amount_usd,
   f.amount,
@@ -592,7 +595,7 @@ pub const QUERY_FLASH_LOANS_BY_BLOCK: &str = r#"
 SELECT
   f.block_number,
   f.tx_hash,
-  f.protocol,
+  f.project,
   f.token_address,
   f.amount_usd,
   f.amount,
@@ -667,26 +670,23 @@ ORDER BY a.evt_block_number, a.evt_tx_hash
 /// Combined liquidation events from the consolidated `lending.borrow` dataset.
 ///
 /// Dune does not have `lending.liquidations`; liquidations are recorded in
-/// `lending.borrow` with `transaction_type = 'liquidation'`.
+/// `lending.borrow` with `transaction_type = 'borrow_liquidation'`.
 /// Columns: `block_number`(0), `tx_hash`(1), `protocol`(2), `user`(3), `liquidator`(4),
-///          `collateral_token`(5), `debt_token`(6), `collateral_amount`(7),
-///          `debt_amount`(8), `amount_usd`(9), `block_time`(10)
+///          `token_address`(5), `amount`(6), `amount_usd`(7), `block_time`(8)
 pub const QUERY_LIQUIDATIONS_ALL: &str = r#"
 SELECT
   l.block_number,
   l.tx_hash,
   l.project AS protocol,
   l.borrower AS user,
-  l.tx_from AS liquidator,
-  l.token_address AS collateral_token,
-  l.token_address AS debt_token,
-  l.amount_raw AS collateral_amount,
-  l.amount_raw AS debt_amount,
+  l.liquidator,
+  l.token_address,
+  l.amount,
   l.amount_usd,
   l.block_time
 FROM lending.borrow l
 WHERE l.blockchain = '{chain}'
-  AND l.transaction_type = 'liquidation'
+  AND l.transaction_type = 'borrow_liquidation'
   AND l.block_month >= DATE '{block_month_min}'
   AND l.block_number >= {from_block}
   AND l.block_number <= {to_block}
@@ -700,39 +700,50 @@ SELECT
   l.tx_hash,
   l.project AS protocol,
   l.borrower AS user,
-  l.tx_from AS liquidator,
-  l.token_address AS collateral_token,
-  l.token_address AS debt_token,
-  l.amount_raw AS collateral_amount,
-  l.amount_raw AS debt_amount,
+  l.liquidator,
+  l.token_address,
+  l.amount,
   l.amount_usd,
   l.block_time
 FROM lending.borrow l
 WHERE l.blockchain = '{chain}'
-  AND l.transaction_type = 'liquidation'
+  AND l.transaction_type = 'borrow_liquidation'
   AND l.block_number = {block_number}
 ORDER BY l.tx_hash
 "#;
 
 /// Verify if a specific tx_hash is part of a sandwich attack.
 ///
-/// Columns: `block_number`(0), `victim_tx_hash`(1), `front_tx_hash`(2),
-///          `back_tx_hash`(3), `sandwich_type`(4), `pool_address`(5)
+/// Checks both `dex.sandwiches` (attacker trades) and `dex.sandwiched` (victim trades).
+///
+/// Columns: `block_number`(0), `tx_hash`(1), `sandwicher`(2),
+///          `pool_address`(3), `amount_usd`(4), `role`(5)
 pub const QUERY_VERIFY_SANDWICH: &str = r#"
 SELECT
   s.block_number,
-  s.victim_tx_hash,
-  s.front_tx_hash,
-  s.back_tx_hash,
-  s.sandwich_type,
-  s.pool_address
+  s.tx_hash,
+  s.tx_from AS sandwicher,
+  s.project_contract_address AS pool_address,
+  s.amount_usd,
+  'attacker' AS role
 FROM dex.sandwiches s
 WHERE s.blockchain = '{chain}'
   AND s.block_month >= DATE '{block_month_min}'
   AND s.block_number = {block_number}
-  AND (s.victim_tx_hash = '{tx_hash}'::bytea
-       OR s.front_tx_hash = '{tx_hash}'::bytea
-       OR s.back_tx_hash = '{tx_hash}'::bytea)
+  AND s.tx_hash = '{tx_hash}'::bytea
+UNION ALL
+SELECT
+  v.block_number,
+  v.tx_hash,
+  NULL AS sandwicher,
+  v.project_contract_address AS pool_address,
+  v.amount_usd,
+  'victim' AS role
+FROM dex.sandwiched v
+WHERE v.blockchain = '{chain}'
+  AND v.block_month >= DATE '{block_month_min}'
+  AND v.block_number = {block_number}
+  AND v.tx_hash = '{tx_hash}'::bytea
 LIMIT 10
 "#;
 
@@ -868,10 +879,10 @@ WHERE p.blockchain = '{chain}'
 // Section 5: Block & Gas Data
 // ══════════════════════════════════════════════════════════════════════════
 
-/// Block metadata: timestamp, gas used, base fee, tx count.
+/// Block metadata: timestamp, gas used, base fee.
 ///
 /// Columns: `block_number`(0), `block_time`(1), `timestamp_utc`(2),
-///          `gas_used`(3), `gas_limit`(4), `base_fee_per_gas`(5), `tx_count`(6)
+///          `gas_used`(3), `gas_limit`(4), `base_fee_per_gas`(5)
 pub const QUERY_BLOCK_METADATA: &str = r#"
 SELECT
   b.number AS block_number,
@@ -879,9 +890,8 @@ SELECT
   CAST(b.time AS VARCHAR) AS timestamp_utc,
   b.gas_used,
   b.gas_limit,
-  CAST(b.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_per_gas,
-  b.tx_count
-FROM ethereum.blocks b
+  CAST(b.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_per_gas
+FROM {chain}.blocks b
 WHERE b.number >= {from_block}
   AND b.number <= {to_block}
 ORDER BY b.number
@@ -895,9 +905,8 @@ SELECT
   CAST(b.time AS VARCHAR) AS timestamp_utc,
   b.gas_used,
   b.gas_limit,
-  CAST(b.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_per_gas,
-  b.tx_count
-FROM ethereum.blocks b
+  CAST(b.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_per_gas
+FROM {chain}.blocks b
 WHERE b.number = {block_number}
 "#;
 
@@ -929,7 +938,7 @@ SELECT
   APPROX_PERCENTILE(tg.gas_price_gwei, 0.95) AS p95_gwei,
   APPROX_PERCENTILE(tg.gas_price_gwei, 0.99) AS p99_gwei
 FROM tx_gas tg
-JOIN ethereum.blocks b ON b.number = tg.block_number
+JOIN {chain}.blocks b ON b.number = tg.block_number
 GROUP BY tg.block_number
 ORDER BY tg.block_number
 "#;
@@ -949,13 +958,13 @@ WITH block_trades AS (
   SELECT
     t.block_number,
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     t.tx_from,
     t.amount_usd,
-    LAG(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_from,
-    LEAD(t.tx_from) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS next_tx_from,
-    LAG(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_hash,
-    LEAD(t.tx_hash) OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS next_tx_hash
+    LAG(t.tx_from) OVER (PARTITION BY t.project_contract_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_from,
+    LEAD(t.tx_from) OVER (PARTITION BY t.project_contract_address ORDER BY t.block_number, t.tx_hash) AS next_tx_from,
+    LAG(t.tx_hash) OVER (PARTITION BY t.project_contract_address ORDER BY t.block_number, t.tx_hash) AS prev_tx_hash,
+    LEAD(t.tx_hash) OVER (PARTITION BY t.project_contract_address ORDER BY t.block_number, t.tx_hash) AS next_tx_hash
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_number = {block_number}
@@ -978,6 +987,11 @@ ORDER BY bt.tx_hash
 /// Detect potential JIT (Just-In-Time) liquidity: a tx that adds liquidity
 /// right before a large swap, then removes it right after.
 ///
+/// NOTE: Decoded event table names are chain-specific on Dune.
+/// On Polygon: `uniswap_v3_polygon.UniswapV3Pool_evt_Mint/Burn`
+/// On Ethereum: `uniswap_v3_ethereum.Pair_evt_Mint/Burn`
+/// These are hardcoded for Polygon; update for other chains.
+///
 /// Columns: `block_number`(0), `large_swap_tx`(1), `mint_tx`(2), `burn_tx`(3),
 ///          `pool_address`(4), `swap_amount_usd`(5), `profit_est_usd`(6)
 pub const QUERY_JIT_PATTERN: &str = r#"
@@ -988,7 +1002,7 @@ WITH block_events AS (
     contract_address AS pool_address,
     'mint' AS event_type,
     NULL AS amount_usd
-  FROM uniswap_v3_{chain}.Pool_evt_Mint
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
   WHERE evt_block_number = {block_number}
   UNION ALL
   SELECT
@@ -997,13 +1011,13 @@ WITH block_events AS (
     contract_address,
     'burn',
     NULL
-  FROM uniswap_v3_{chain}.Pool_evt_Burn
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
   WHERE evt_block_number = {block_number}
   UNION ALL
   SELECT
     t.block_number,
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address,
     'swap',
     t.amount_usd
   FROM dex.trades t
@@ -1041,7 +1055,7 @@ SELECT
   CAST(blk.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_gwei,
   blk.time AS timestamp
 FROM block_value bv
-JOIN ethereum.blocks blk ON blk.number = bv.block_number
+JOIN {chain}.blocks blk ON blk.number = bv.block_number
 LEFT JOIN prices.minute p
   ON p.blockchain = '{chain}'
   AND p.contract_address = 0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2
@@ -1059,7 +1073,7 @@ ORDER BY bv.total_mev_value_usd DESC
 pub const QUERY_POOL_LIQUIDITY: &str = r#"
 WITH ranked_trades AS (
   SELECT
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     t.project,
     t.token_bought_address AS token0_address,
     t.token_sold_address AS token1_address,
@@ -1070,7 +1084,7 @@ WITH ranked_trades AS (
     t.amount_usd AS tvl_usd,
     t.block_number,
     ROW_NUMBER() OVER (
-      PARTITION BY t.pool_address
+      PARTITION BY t.project_contract_address
       ORDER BY t.block_number DESC
     ) AS rn
   FROM dex.trades t
@@ -1237,7 +1251,7 @@ WITH near_swaps AS (
   SELECT
     t.block_number,
     t.amount_usd / NULLIF(ABS(t.token_bought_amount), 0) AS price_usd,
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     t.amount_usd,
     ABS(CAST(t.block_number AS BIGINT) - CAST({block_number} AS BIGINT)) AS block_dist
   FROM dex.trades t
@@ -1505,6 +1519,9 @@ WHERE sw.evt_tx_hash IS NULL
 /// Finds V3 PoolCreated events, then checks the first swap price deviation
 /// from the median price of the same token pair on other pools.
 ///
+/// NOTE: On Polygon, the factory event table is `factory_polygon_evt_PoolCreated`.
+/// On Ethereum, it's `Factory_evt_PoolCreated`. Hardcoded for Polygon.
+///
 /// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
 ///          `period_start`(3), `period_end`(4), `period_days`(5)
 pub const VALIDATE_INIT_PRICE_SNIPE: &str = r#"
@@ -1516,24 +1533,24 @@ WITH new_pools AS (
     p.token0,
     p.token1,
     p.evt_block_time AS block_time
-  FROM uniswap_v3_{chain}.Factory_evt_PoolCreated p
+  FROM uniswap_v3_{chain}.factory_polygon_evt_PoolCreated p
   WHERE p.evt_block_number >= {from_block}
     AND p.evt_block_number <= {to_block}
 ),
 first_swaps AS (
   SELECT
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     t.block_number,
     t.amount_usd,
     t.token_bought_amount,
     t.token_sold_amount,
     t.block_time,
-    ROW_NUMBER() OVER (PARTITION BY t.pool_address ORDER BY t.block_number, t.tx_hash) AS rn
+    ROW_NUMBER() OVER (PARTITION BY t.project_contract_address ORDER BY t.block_number, t.tx_hash) AS rn
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
     AND t.project = 'uniswap_v3'
-    AND t.pool_address IN (SELECT pool_address FROM new_pools)
+    AND t.project_contract_address IN (SELECT pool_address FROM new_pools)
 )
 SELECT
   COUNT(*) AS opportunity_count,
@@ -1558,7 +1575,7 @@ pub const VALIDATE_BACKRUN: &str = r#"
 WITH large_swaps AS (
   SELECT
     t.block_number,
-    t.pool_address,
+    t.project_contract_address AS pool_address,
     t.amount_usd,
     t.tx_hash
   FROM dex.trades t
@@ -1572,7 +1589,7 @@ multi_pool_txs AS (
   SELECT
     t.block_number,
     t.tx_hash,
-    COUNT(DISTINCT t.pool_address) AS pool_count,
+    COUNT(DISTINCT t.project_contract_address) AS pool_count,
     SUM(t.amount_usd) AS total_amount_usd,
     MIN(t.block_time) AS block_time
   FROM dex.trades t
@@ -1581,7 +1598,7 @@ multi_pool_txs AS (
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
   GROUP BY t.block_number, t.tx_hash
-  HAVING COUNT(DISTINCT t.pool_address) >= 2
+  HAVING COUNT(DISTINCT t.project_contract_address) >= 2
 )
 SELECT
   COUNT(*) AS opportunity_count,
@@ -1591,17 +1608,9 @@ SELECT
   MAX(mpt.block_time) AS period_end,
   DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
 FROM multi_pool_txs mpt
-WHERE EXISTS (
-  SELECT 1 FROM large_swaps ls
-  WHERE ls.block_number = mpt.block_number
-    AND ls.pool_address IN (
-      SELECT DISTINCT t2.pool_address
-      FROM dex.trades t2
-      WHERE t2.blockchain = '{chain}'
-        AND t2.block_month >= DATE '{block_month_min}'
-        AND t2.tx_hash = mpt.tx_hash
-    )
-)
+INNER JOIN large_swaps ls
+  ON ls.block_number = mpt.block_number
+  AND ls.tx_hash = mpt.tx_hash
 "#;
 
 /// Validate long-tail token arb: multi-pool arbs involving low-liquidity tokens.
@@ -1624,11 +1633,21 @@ WITH token_volume AS (
 long_tail_tokens AS (
   SELECT token FROM token_volume WHERE total_vol < 100000
 ),
+long_tail_txs AS (
+  SELECT DISTINCT t.tx_hash
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND (t.token_bought_address IN (SELECT token FROM long_tail_tokens)
+         OR t.token_sold_address IN (SELECT token FROM long_tail_tokens))
+),
 multi_pool_txs AS (
   SELECT
     t.block_number,
     t.tx_hash,
-    COUNT(DISTINCT t.pool_address) AS pool_count,
+    COUNT(DISTINCT t.project_contract_address) AS pool_count,
     SUM(t.amount_usd) AS total_amount_usd,
     MIN(t.block_time) AS block_time
   FROM dex.trades t
@@ -1637,7 +1656,7 @@ multi_pool_txs AS (
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
   GROUP BY t.block_number, t.tx_hash
-  HAVING COUNT(DISTINCT t.pool_address) >= 2
+  HAVING COUNT(DISTINCT t.project_contract_address) >= 2
 )
 SELECT
   COUNT(*) AS opportunity_count,
@@ -1647,15 +1666,7 @@ SELECT
   MAX(mpt.block_time) AS period_end,
   DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
 FROM multi_pool_txs mpt
-WHERE EXISTS (
-  SELECT 1
-  FROM dex.trades t
-  WHERE t.blockchain = '{chain}'
-    AND t.block_month >= DATE '{block_month_min}'
-    AND t.tx_hash = mpt.tx_hash
-    AND (t.token_bought_address IN (SELECT token FROM long_tail_tokens)
-         OR t.token_sold_address IN (SELECT token FROM long_tail_tokens))
-)
+INNER JOIN long_tail_txs ltt ON ltt.tx_hash = mpt.tx_hash
 "#;
 
 /// Validate stablecoin depeg arbitrage: Curve pool price deviations > 1% from $1.
@@ -1777,11 +1788,11 @@ WITH lst_tokens AS (
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(l.collateral_amount / 1e18), 0) AS avg_profit_usd,
-  COALESCE(SUM(l.collateral_amount / 1e18), 0) AS total_profit_usd,
-  MIN(l.block_time) AS period_start,
-  MAX(l.block_time) AS period_end,
-  DATE_DIFF('day', MIN(l.block_time), MAX(l.block_time)) AS period_days
+  COALESCE(AVG(l.liquidatedCollateralAmount / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(l.liquidatedCollateralAmount / 1e18), 0) AS total_profit_usd,
+  MIN(l.evt_block_time) AS period_start,
+  MAX(l.evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
 FROM aave_v3_{chain}.Pool_evt_LiquidationCall l
 WHERE l.evt_block_number >= {from_block}
   AND l.evt_block_number <= {to_block}
@@ -1930,7 +1941,7 @@ WITH flash_liqs AS (
       SELECT l.block_number
       FROM lending.borrow l
       WHERE l.blockchain = '{chain}'
-        AND l.transaction_type = 'liquidation'
+        AND l.transaction_type = 'borrow_liquidation'
         AND l.block_number >= {from_block}
         AND l.block_number <= {to_block}
     )
@@ -1956,7 +1967,7 @@ WITH v3_events AS (
     contract_address AS pool_address,
     'mint' AS event_type,
     evt_block_time AS block_time
-  FROM uniswap_v3_{chain}.Pool_evt_Mint
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -1966,14 +1977,14 @@ WITH v3_events AS (
     contract_address,
     'burn',
     evt_block_time
-  FROM uniswap_v3_{chain}.Pool_evt_Burn
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
   SELECT
     t.block_number,
     t.tx_hash,
-    t.pool_address,
+    t.project_contract_address,
     'swap',
     t.block_time
   FROM dex.trades t
@@ -2002,26 +2013,8 @@ SELECT
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
 FROM pool_block_events
-WHERE event_count >= 2
-  AND ARRAY_CONTAINS(event_types, 'mint')
-  AND ARRAY_CONTAINS(event_types, 'burn')
-  AND ARRAY_CONTAINS(event_types, 'swap')
-  AND (
-    -- Same tx contains mint+swap+burn (classic JIT)
-    (event_count = 3)
-    -- Or block has mint tx, swap tx, burn tx from same address
-    OR EXISTS (
-      SELECT 1 FROM v3_events m
-      WHERE m.pool_address = pool_block_events.pool_address
-        AND m.block_number = pool_block_events.block_number
-        AND m.event_type = 'mint'
-        AND EXISTS (
-          SELECT 1 FROM v3_events b
-          WHERE b.pool_address = m.pool_address
-            AND b.block_number = m.block_number
-            AND b.event_type = 'burn'
-            AND b.tx_hash != m.tx_hash
-        )
-    )
-  )
+WHERE event_count = 3
+  AND contains(event_types, 'mint')
+  AND contains(event_types, 'burn')
+  AND contains(event_types, 'swap')
 "#;

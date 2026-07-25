@@ -108,28 +108,44 @@ impl DuneClient {
             "performance": performance,
         });
 
-        let response = self
-            .http
-            .post(&url)
-            .header("x-dune-api-key", &self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("Failed to execute raw Dune SQL")?;
+        let max_retries = 3;
+        for attempt in 0..max_retries {
+            let response = self
+                .http
+                .post(&url)
+                .header("x-dune-api-key", &self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .context("Failed to execute raw Dune SQL")?;
 
-        let resp_status = response.status();
-        if !resp_status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Dune raw SQL execution rejected (HTTP {}): {}",
-                resp_status,
-                body_text
-            );
+            if response.status().as_u16() == 429 {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5 * (attempt as u64 + 1));
+                eprintln!("  Rate limited on SQL execute, waiting {}s...", retry_after);
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            let resp_status = response.status();
+            if !resp_status.is_success() {
+                let body_text = response.text().await.unwrap_or_default();
+                anyhow::bail!(
+                    "Dune raw SQL execution rejected (HTTP {}): {}",
+                    resp_status,
+                    body_text
+                );
+            }
+
+            let resp: DuneExecutionResponse = response.json().await?;
+            return self.poll_execution(&resp.execution_id).await;
         }
 
-        let resp: DuneExecutionResponse = response.json().await?;
-
-        self.poll_execution(&resp.execution_id).await
+        anyhow::bail!("Dune SQL execution failed after {} retries (rate limited)", max_retries)
     }
 
     /// Poll execution status until completed or failed.
@@ -148,13 +164,27 @@ impl DuneClient {
 
         let max_polls = 120; // 120 seconds max
         for _ in 0..max_polls {
-            let status: DuneExecutionStatus = self
+            let response = self
                 .http
                 .get(&status_url)
                 .header("x-dune-api-key", &self.api_key)
                 .send()
                 .await
-                .context("Failed to poll Dune execution status")?
+                .context("Failed to poll Dune execution status")?;
+
+            if response.status().as_u16() == 429 {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5);
+                eprintln!("  Rate limited, waiting {}s...", retry_after);
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            let status: DuneExecutionStatus = response
                 .error_for_status()?
                 .json()
                 .await?;

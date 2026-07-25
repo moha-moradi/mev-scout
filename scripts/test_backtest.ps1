@@ -72,8 +72,12 @@ function Invoke-Scout {
         $configArgs = @("-f", $Config)
     }
     $allArgs = $Arguments + $configArgs
-    & cargo run --release -- $allArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $ErrorActionPreference = "Continue"
+    $output = & cargo run --release -- $allArgs 2>&1
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    $output
+    if ($exitCode -ne 0) {
         throw "mev-scout command failed: $($allArgs -join ' ')"
     }
 }
@@ -123,12 +127,12 @@ if (-not $SkipDiscover) {
 
 # ── Step 3-4: For each candidate block ──
 $stepNum = 3
-$results = @()
+$results = [System.Collections.Generic.List[psobject]]::new()
 
 foreach ($block in $blocks) {
     Write-Host ""
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkCyan
-    Write-Step "Step $stepNum: Testing block $block"
+    Write-Step "Step ${stepNum}: Testing block $block"
 
     # Fetch block data
     Write-Host "  Fetching block $block..." -ForegroundColor Gray
@@ -142,8 +146,14 @@ foreach ($block in $blocks) {
 
     # Run backtest
     Write-Host "  Running backtest with --fact-check..." -ForegroundColor Gray
-    $runOutput = Invoke-Scout -Arguments @("run", "--block", $block, "--chain", $Chain, "--fact-check")
-    $runOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+    try {
+        $runOutput = Invoke-Scout -Arguments @("run", "--block", $block, "--chain", $Chain, "--fact-check")
+        $runOutput | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+    } catch {
+        Write-Fail "Run failed for block $block`: $_"
+        $stepNum++
+        continue
+    }
 
     # Parse opportunities from run output
     $oppLine = $runOutput | Where-Object { $_ -match 'Detected (\d+) MEV opportunity' }
@@ -153,6 +163,15 @@ foreach ($block in $blocks) {
     } else {
         Write-Host "  Block $block`: No opportunities detected" -ForegroundColor Yellow
         $oppCount = 0
+    }
+
+    # Parse MEV types from run output
+    $types = @()
+    $typeLines = $runOutput | Where-Object { $_ -match '(?:opportunity|detected|found).*\b(arbitrage|sandwich|liquidation|backrun)\b' }
+    foreach ($line in $typeLines) {
+        if ($line -match '\b(arbitrage|sandwich|liquidation|backrun)\b') {
+            $types += $Matches[1].ToLower()
+        }
     }
 
     # Audit against Dune
@@ -167,10 +186,11 @@ foreach ($block in $blocks) {
         }
     }
 
-    $results += [PSCustomObject]@{
+    $results.Add([PSCustomObject]@{
         Block       = $block
         Opportunities = $oppCount
-    }
+        Types       = ($types | Select-Object -Unique) -join ', '
+    })
 
     $stepNum++
 }
@@ -181,7 +201,8 @@ Write-Host "`nTest Summary:" -ForegroundColor Yellow
 $results | ForEach-Object {
     $status = if ($_.Opportunities -gt 0) { "+" } else { "-" }
     $color = if ($_.Opportunities -gt 0) { "Green" } else { "Yellow" }
-    Write-Host "  [$status] Block $($_.Block): $($_.Opportunities) opportunities" -ForegroundColor $color
+    $typeInfo = if ($_.Types) { " ($($_.Types))" } else { "" }
+    Write-Host "  [$status] Block $($_.Block): $($_.Opportunities) opportunities$typeInfo" -ForegroundColor $color
 }
 
 $totalOpps = ($results | Measure-Object -Property Opportunities -Sum).Sum

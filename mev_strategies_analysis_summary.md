@@ -262,7 +262,9 @@ Status of each strategy in the MEV Scout codebase:
 - Strategies: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb
 - Result: 0 opportunities detected (range may not have had live opportunities)
 
-### 7.2 Planned — Phase 0 (Next to Build)
+### 7.2 Planned — Phase 0 (Quick Wins)
+
+Capital-free, trivial builds that validate the pipeline.
 
 | # | Strategy | File (planned) | ~Lines | Capital | Est. Build Time |
 |---|----------|----------------|:---:|---------|:---:|
@@ -271,67 +273,82 @@ Status of each strategy in the MEV Scout codebase:
 
 ### 7.3 Planned — Phase 1 (Capital-Free Production)
 
+Capital-free strategies with capital-efficiency score > 10 or high frequency. Leverages existing `liquidation.rs` and `mempool.rs`.
+
+| # | Strategy | File (planned) | ~Lines | Capital | Score |
+|---|----------|----------------|:---:|---------|:---:|
+| 10 | **Flash loan liq** (extend existing) | `core/src/mev/detectors/liquidation.rs` | +200 | None | 7.0 |
+| 11 | **Backrunning** | `core/src/mev/detectors/backrun.rs` | ~300 | Low | — |
+| 12 | **MakerDAO OSM preview** | `core/src/mev/detectors/makerdao_osm.rs` | ~250 | None | **27.0** |
+| 13 | **GMX V2 ADL front-run** | `core/src/mev/detectors/gmx_adl.rs` | ~200 | None | **24.5** |
+| 14 | **sync() race** | `core/src/mev/detectors/sync_race.rs` | ~80 | None | — |
+
+### 7.4 Planned — Phase 2 (Low Capital + Chain-Specific)
+
+Low-capital strategies, capital-efficiency score > 9, or chain-specific extensions. V4 hooks moved here from Phase 4 (capital-free, score=24.5).
+
+| # | Strategy | File (planned) | ~Lines | Capital | Score |
+|---|----------|----------------|:---:|---------|:---:|
+| 15 | **Uniswap V4 hook MEV** | `core/src/mev/detectors/v4_hook_mev.rs` | ~300 | Low | **24.5** |
+| 16 | **Oracle-latency liq** | `core/src/mev/detectors/oracle_latency_liq.rs` | ~200 | Low | 11.25 |
+| 17 | **Trader Joe V2 LB** | `core/src/mev/detectors/joe_v2_lb.rs` | ~300 | Low | 12.25 |
+| 18 | **Long-tail SPFA arb** | `core/src/mev/detectors/long_tail.rs` | ~400 | Low | 12.0 |
+| 19 | **Init price snipe** | `core/src/mev/detectors/init_price.rs` | ~150 | Low | — |
+| 20 | **FoT token arb** | `core/src/mev/detectors/fot_arb.rs` | ~150 | Low | — |
+| 21 | **Rebase token arb** | `core/src/mev/detectors/rebase_arb.rs` | ~150 | Low | — |
+
+### 7.5 Planned — Phase 3 (Medium Capital)
+
+Medium-capital strategies with capital-efficiency score > 6. Liquity recovery moved here (low capital actually, score=21.3). Bad debt prevention added (extends `liquidation.rs`).
+
+| # | Strategy | File (planned) | ~Lines | Capital | Score |
+|---|----------|----------------|:---:|---------|:---:|
+| 22 | **Pendle PT/YT yield spread** | `core/src/mev/detectors/pendle_pt_yt.rs` | ~250 | Medium | 18.0 |
+| 23 | **Liquity recovery mode** | `core/src/mev/detectors/liquity_recovery.rs` | ~250 | Low | 21.3 |
+| 24 | **Lido oracle front-run** | `core/src/mev/detectors/lido_oracle.rs` | ~200 | Medium | 16.3 |
+| 25 | **Curve pool imbalance** | `core/src/mev/detectors/curve_imbalance.rs` | ~200 | Medium | 9.8 |
+| 26 | **AAVE partial liq opt** | `core/src/mev/detectors/aave_partial_liq.rs` | ~250 | Medium | 6.9 |
+| 27 | **Statistical arb/pairs** | `core/src/mev/detectors/stat_arb.rs` | ~300 | Medium | 9.0 |
+| 28 | **Balancer rate provider** | `core/src/mev/detectors/balancer_rate.rs` | ~200 | Medium | 12.0 |
+| 29 | **Velodrome/Aerodrome epoch** | `core/src/mev/detectors/velodrome_epoch.rs` | ~200 | Medium | 9.0 |
+| 30 | **Bad debt prevention** | `core/src/mev/detectors/bad_debt_prevent.rs` | ~200 | Medium | — |
+
+### 7.6 Planned — Phase 4 (High Capital + Infrastructure)
+
+High-capital or infrastructure-moat strategies. Ordered by capital-efficiency score within phase.
+
+| # | Strategy | File (planned) | ~Lines | Capital | Score |
+|---|----------|----------------|:---:|---------|:---:|
+| 31 | **MakerDAO Clip auction** | `core/src/mev/detectors/makerdao_clip.rs` | ~300 | None | 8.17 |
+| 32 | **JIT + arb combo** (extend) | `core/src/mev/detectors/jit_arb.rs` | +200 | High | 27.0 |
+| 33 | **Cascading liq engineering** | `core/src/mev/detectors/cascading_liq.rs` | ~500 | High (flash OK) | 50.0 |
+| 34 | **Multi-block MEV** | `core/src/mev/detectors/multi_block.rs` | ~300 | None | **81.0** |
+| 35 | **CEX–DEX arb** | `core/src/mev/detectors/cex_dex.rs` | ~400 | High | 4.5 |
+| 36 | **PBS/MEV-Boost** | `core/src/mev/detectors/pbs_mev_boost.rs` | ~500 | High | — |
+
+### 7.7 Planned — Phase 5 (Long-Tail + Emerging)
+
+Remaining strategies: chain-specific extensions, high-competition, niche protocol, or low-priority. Build as market opportunities arise.
+
 | # | Strategy | File (planned) | ~Lines | Capital |
 |---|----------|----------------|:---:|---------|
-| 10 | **Flash loan liq** (extend existing) | `core/src/mev/detectors/liquidation.rs` | +200 | None |
-| 11 | **Backrunning** | `core/src/mev/detectors/backrun.rs` | ~300 | Low |
-| 12 | **MakerDAO OSM preview** | `core/src/mev/detectors/makerdao_osm.rs` | ~250 | None |
-| 13 | **Synthetix flag+delayed** | `core/src/mev/detectors/synthetix_flag.rs` | ~200 | Medium |
-| 14 | **GMX v1/v2 keeper** | `core/src/mev/detectors/gmx_keeper.rs` | ~250 | None |
-
-### 7.4 Planned — Phase 2 (Chain-Specific)
-
-| # | Strategy | File (planned) | ~Lines | Chain |
-|---|----------|----------------|:---:|-------|
-| 15 | **Joe V2 LB arbitrage** | `core/src/mev/detectors/joe_v2_lb.rs` | ~300 | Avalanche |
-| 16 | **GMX v2 keeper** (extend) | `core/src/mev/detectors/gmx_keeper.rs` | +100 | Avalanche |
-| 17 | **Pharaoh epoch** | `core/src/mev/detectors/pharaoh_epoch.rs` | ~200 | Avalanche |
-| 18 | **Long-tail SPFA arb** | `core/src/mev/detectors/long_tail.rs` | ~400 | All |
-| 19 | **PancakeSwap token snipe** | `core/src/mev/detectors/token_launch.rs` | ~250 | BSC |
-| 20 | **Venus flash loan liq** | `core/src/mev/detectors/liquidation.rs` | +150 | BSC |
-| 21 | **Sandwich via 48Club** | `core/src/mev/detectors/sandwich.rs` | +100 | BSC |
-| 22 | **Oracle-latency liq** | `core/src/mev/detectors/oracle_latency_liq.rs` | ~200 | Polygon |
-| 23 | sync() race | `core/src/mev/detectors/sync_race.rs` | ~80 | All |
-| 24 | Init price snipe | `core/src/mev/detectors/init_price.rs` | ~150 | All |
-| 25 | FoT token arb | `core/src/mev/detectors/fot_arb.rs` | ~150 | All |
-| 26 | Rebase token arb | `core/src/mev/detectors/rebase_arb.rs` | ~150 | All |
-
-### 7.5 Planned — Phase 3 (Capital-Intensive)
-
-| # | Strategy | File (planned) | Capital |
-|---|----------|----------------|---------|
-| 27 | Stablecoin depeg arb | `stablecoin_depeg.rs` | High |
-| 28 | Curve pool imbalance | `curve_imbalance.rs` | Medium |
-| 29 | AAVE partial liq opt | `aave_partial_liq.rs` | Medium |
-| 30 | Lido oracle front-run | `lido_oracle.rs` | Medium |
-| 31 | GMX V2 ADL front-run | `gmx_adl.rs` | Low |
-| 32 | Pendle PT/YT | `pendle_pt_yt.rs` | Medium |
-| 33 | Velodrome/Aerodrome epoch | `velodrome_epoch.rs` | Medium |
-| 34 | Balancer rate provider | `balancer_rate.rs` | Medium |
-| 35 | V2+V3 JIT liquidity (extend) | `jit.rs` | High |
-| 36 | Statistical arb/pairs | `stat_arb.rs` | Medium |
-| 37 | CEX-DEX arb | `cex_dex.rs` | High |
-| 38 | MakerDAO Clip auction | `makerdao_clip.rs` | None |
-| 39 | Liquity recovery mode | `liquity_recovery.rs` | Low |
-| 40 | Liquity stability pool | `liquity_stability.rs` | Medium |
-
-### 7.6 Planned — Phase 4 (Full-Spectrum)
-
-| # | Strategy | File (planned) | Capital |
-|---|----------|----------------|---------|
-| 41 | Cascading liq engineering | `cascading_liq.rs` | High (flash OK) |
-| 42 | JIT + arb combo (extend) | `jit_arb.rs` | High |
-| 43 | Multi-block MEV | `multi_block.rs` | None |
-| 44 | PBS/MEV-Boost | `pbs_mev_boost.rs` | High |
-| 45 | ERC-4337 bundler MEV | `erc4337_bundler.rs` | Low |
-| 46 | Batch auction/CoW | `batch_auction.rs` | Medium |
-| 47 | Solver/intent MEV | `solver_intent.rs` | Medium |
-| 48 | Bridge MEV | `bridge_mev.rs` | High |
-| 49 | L2 sequencer MEV | `l2_sequencer.rs` | Low |
-| 50 | Cross-chain arb | `cross_chain.rs` | High |
-| 51 | Morpho Blue market state | `morpho_blue.rs` | Medium |
-| 52 | V4 hook MEV | `v4_hook_mev.rs` | Low |
-| 53 | Convex gauge vote epoch | `convex_gauge.rs` | High |
+| 37 | **Liquity stability pool** | `core/src/mev/detectors/liquity_stability.rs` | ~200 | Medium |
+| 38 | **Stablecoin depeg arb** | `core/src/mev/detectors/stablecoin_depeg.rs` | ~250 | High |
+| 39 | **Synthetix flag+delayed** | `core/src/mev/detectors/synthetix_flag.rs` | ~200 | Medium |
+| 40 | **GMX v1 keeper** | `core/src/mev/detectors/gmx_keeper.rs` | ~250 | None |
+| 41 | **GMX v2 keeper** (extend) | `core/src/mev/detectors/gmx_keeper.rs` | +100 | None |
+| 42 | **PancakeSwap token snipe** | `core/src/mev/detectors/token_launch.rs` | ~250 | Low |
+| 43 | **Venus flash loan liq** | `core/src/mev/detectors/liquidation.rs` | +150 | None |
+| 44 | **Sandwich via 48Club** | `core/src/mev/detectors/sandwich.rs` | +100 | Medium |
+| 45 | **Pharaoh epoch** | `core/src/mev/detectors/pharaoh_epoch.rs` | ~200 | Medium |
+| 46 | **ERC-4337 bundler MEV** | `core/src/mev/detectors/erc4337_bundler.rs` | ~300 | Low |
+| 47 | **L2 sequencer MEV** | `core/src/mev/detectors/l2_sequencer.rs` | ~300 | Low |
+| 48 | **Solver/intent MEV** | `core/src/mev/detectors/solver_intent.rs` | ~350 | Medium |
+| 49 | **Batch auction/CoW** | `core/src/mev/detectors/batch_auction.rs` | ~300 | Medium |
+| 50 | **Bridge MEV** | `core/src/mev/detectors/bridge_mev.rs` | ~300 | High |
+| 51 | **Cross-chain arb** | `core/src/mev/detectors/cross_chain.rs` | ~400 | High |
+| 52 | **Morpho Blue market state** | `core/src/mev/detectors/morpho_blue.rs` | ~200 | Medium |
+| 53 | **Convex gauge vote epoch** | `core/src/mev/detectors/convex_gauge.rs` | ~250 | High |
 
 ### 7.7 Detection & Simulation Status Summary
 
@@ -345,9 +362,70 @@ Status of each strategy in the MEV Scout codebase:
 | **Mempool detection** | Active | Calldata parsing for V2/V3 swaps, eth_call validation |
 | **Pool discovery** | Active | Dune + on-chain discovery for V2, V3, Curve, Balancer, Trader Joe, Pendle |
 | **Test coverage** | 4 test files | `arbitrage.rs` (610 lines), `sandwich.rs` (398 lines), `liquidation.rs` (empty), `e2e.rs` (539 lines) |
-| **46 strategies** | Planned (Phases 0–4) | All mapped to specific files in `plans/implementation_plan.md` (~8K–10K Rust planned) |
+| **46 strategies** | Planned (Phases 0–5) | All mapped to specific files in `plans/implementation_plan.md` (~8K–10K Rust planned) |
 | **3 strategies** | Excluded permanently | TWAP manipulation, NFT floor arb, governance MEV |
 
 ---
 
 *Analysis generated from `mev_strategies_complete_v2.md` (53 strategies, 8 categories, 2,716 lines) cross-referenced with MEV Scout codebase status at `core/src/` (7 detectors coded, 46 planned).*
+
+---
+
+## 8. Dune On-Chain Validation Report
+
+> **Methodology**: Corrected Dune SQL queries executed via `mev-scout dune-query` against Polygon mainnet (blocks 89,616,951–90,851,237, ~21 days, July 4–July 25, 2026).
+> All frequency/income claims in this document were compared against real on-chain data.
+
+### 8.1 Validation Results
+
+| # | Strategy | Query | Result (21 days) | Projected /mo | Claim in Analysis | Verdict |
+|---|----------|-------|:-----------------:|:-------------:|-------------------|---------|
+| 11 | **Sandwich attack** | `QUERY_SANDWICHES_BY_RANGE` | **34 txs** | ~49 | 500–5K/mo, $1K–$10K | **10–100x inflated** |
+| 4 | **Backrunning** | `VALIDATE_BACKRUN` | **9,488 opps, $5.0M est** | ~13.5K, $7.1M | 1K–5K/mo, $500–$5K | **2–10x higher than claimed** |
+| 10 | **Long-tail token arb** | `VALIDATE_LONG_TAIL_ARB` | **140,603 opps, $50.6K est** | ~200K, $72K | 1K–10K/mo, $300–$2K | **14x+ inflated** |
+| 28 | **JIT liquidity (V3)** | `VALIDATE_JIT_FEE_CAPTURE` | **280 txs, $280K est** | ~400, $400K | 200–1K/mo, $2K–$10K | **Within range** (freq accurate, income likely optimistic) |
+| 3 | **Init price snipe** | `VALIDATE_INIT_PRICE_SNIPE` | **0** | 0 | 30–200/mo, $100–$2K | **Zero on Polygon** — no V3 PoolCreated events in range |
+| 31 | **LST depeg collateral liq** | `VALIDATE_LST_DEPEG_LIQ` | **0** | 0 | 5–30/mo, $2K–$20K | **Zero on Polygon** — LSTs are Ethereum-native |
+| 18 | **Flash loan atomic liq** | `VALIDATE_FLASH_LIQ_PROFIT` | **136 txs, $5.2K vol** | ~194 | 100–500/mo, $500–$3K | **Frequency accurate**, volume data partial |
+| All | **Liquidations (AAVE V3)** | `QUERY_LIQUIDATIONS_ALL` | **519 txs** | ~741 | Various | Active but modest |
+| — | **Flash loans** | `QUERY_FLASH_LOANS_BY_RANGE` | **30,884 rows** | ~44K | — | Active flash loan market confirmed |
+
+### 8.2 Not Validated on Polygon (Protocol Not Deployed / No Decoded Tables)
+
+| # | Strategy | Reason | Chain to Validate |
+|---|----------|--------|-------------------|
+| 1 | sync() race | `uniswap_v2_polygon` decoded tables don't exist on Dune | Ethereum, or find QuickSwap table name |
+| 2 | skim() capture | Same as above | Ethereum, or find QuickSwap table name |
+| 17 | Stablecoin depeg arb | `curve_polygon` schema doesn't exist on Dune | Ethereum (`curve_ethereum`) |
+| 22 | Curve pool imbalance | Same as above | Ethereum |
+| 19 | MakerDAO Clip auction | MakerDAO not deployed on Polygon | Ethereum |
+| 45 | MakerDAO OSM preview + kick | Same as above | Ethereum |
+| 8 | GMX v1 keeper | GMX not deployed on Polygon | Arbitrum |
+| 36 | GMX V2 ADL front-run | Same as above | Arbitrum |
+| 39 | Liquity recovery mode | Liquity not deployed on Polygon | Ethereum |
+| 14 | Synthetix flag + delayed liq | Synthetix not on Polygon | Optimism, Ethereum |
+| 13 | Perp protocol keeper | Gains Network on Polygon but table name wrong | Arbitrum (dYdX), Optimism (Kwenta) |
+
+### 8.3 Key Corrections to Analysis
+
+**Sandwich income (Strategy #11)**: The analysis claims 500–5K opportunities/month generating $1K–$10K on Polygon. Dune data shows **34 sandwich events in 21 days** (~49/month). This is **10–100x lower** than claimed. The sandwich market on Polygon is far more competitive and lower-value than estimated.
+
+**Backrunning (Strategy #4)**: The analysis claims 1K–5K opportunities/month. Dune data shows **9,488 backrunning-proxied transactions in 21 days** (~13.5K/month). This is **2–10x higher** than claimed. The $5.0M estimated profit (at 0.3% fee rate) suggests this is a significant market.
+
+**Long-tail token arb (Strategy #10)**: The analysis claims 1K–10K opportunities/month. Dune shows **140,603 multi-pool transactions involving low-volume tokens in 21 days** (~200K/month). This is **14x higher** than the upper bound claimed. However, not all multi-pool txs are arbitrage — many are normal trading activity. The 0.5% fee estimate ($50.6K total) is a proxy, not confirmed profit.
+
+**JIT liquidity (Strategy #28)**: The analysis claims 200–1K opportunities/month. Dune shows **280 V3 Mint+Swap+Burn transactions in 21 days** (~400/month). This is **within the claimed range**. The $1K per-event estimate is likely optimistic for Polygon.
+
+### 8.4 Recommendations
+
+1. **Sandwich**: Deprioritize on Polygon — market is too small
+2. **Backrunning**: Higher opportunity than claimed — validate with mempool data for real-time profitability
+3. **Long-tail arb**: Volume is high but profit per opportunity is very low ($0.36 avg) — needs high-frequency execution
+4. **JIT liquidity**: On track — proceed with implementation as planned
+5. **Init price snipe**: Not applicable on Polygon — validate on Ethereum
+6. **LST depeg liq**: Not applicable on Polygon — validate on Ethereum
+7. **Skim/sync**: Find correct QuickSwap decoded table name on Dune, or validate on Ethereum
+
+---
+
+*Validation report generated July 25, 2026 via `mev-scout dune-query` against Dune Analytics API.*
