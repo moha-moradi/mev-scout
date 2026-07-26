@@ -4,8 +4,9 @@
 
 .DESCRIPTION
     Uses Dune Analytics to find blocks with known MEV opportunities (arbitrages,
-    sandwiches), then runs the full MEV Scout pipeline (discover, fetch, run, audit)
-    against those blocks to verify detection accuracy.
+    sandwiches, JIT liquidity, liquidations, flash loans), then runs the full MEV
+    Scout pipeline (discover, fetch, run, audit) against those blocks to verify
+    detection accuracy.
 
 .PARAMETER Chain
     Chain name (default: polygon).
@@ -14,7 +15,7 @@
     Look back N days for candidate blocks (default: 7).
 
 .PARAMETER MevType
-    MEV type to search for: arbitrage, sandwich, or both (default: both).
+    MEV type to search for: arbitrage, sandwich, jit, liquidation, flash_loan, or all (default: all).
 
 .PARAMETER Top
     Number of candidate blocks to test (default: 3).
@@ -32,15 +33,18 @@
     Dune API key override (overrides config file).
 
 .EXAMPLE
-    .\scripts\test_backtest.ps1 -Chain polygon -Days 7 -MevType arbitrage -Top 3
+    .\scripts\test_backtest.ps1 -Chain polygon -Days 7 -MevType all -Top 3
 
 .EXAMPLE
     .\scripts\test_backtest.ps1 -Chain polygon -Days 3 -MevType sandwich -Top 1 -SkipAudit
+
+.EXAMPLE
+    .\scripts\test_backtest.ps1 -Chain polygon -Days 7 -MevType jit -Top 5
 #>
 param(
     [string]$Chain = "polygon",
     [int]$Days = 7,
-    [string]$MevType = "both",
+    [string]$MevType = "all",
     [int]$Top = 3,
     [string]$Config = "mev-scout.toml",
     [switch]$SkipDiscover,
@@ -167,9 +171,9 @@ foreach ($block in $blocks) {
 
     # Parse MEV types from run output
     $types = @()
-    $typeLines = $runOutput | Where-Object { $_ -match '(?:opportunity|detected|found).*\b(arbitrage|sandwich|liquidation|backrun)\b' }
+    $typeLines = $runOutput | Where-Object { $_ -match '(?:opportunity|detected|found).*\b(arbitrage|sandwich|liquidation|backrun|jit|flash.?loan)\b' }
     foreach ($line in $typeLines) {
-        if ($line -match '\b(arbitrage|sandwich|liquidation|backrun)\b') {
+        if ($line -match '\b(arbitrage|sandwich|liquidation|backrun|jit|flash.?loan)\b') {
             $types += $Matches[1].ToLower()
         }
     }

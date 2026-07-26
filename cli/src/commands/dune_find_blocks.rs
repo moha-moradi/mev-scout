@@ -119,10 +119,36 @@ pub async fn cmd_dune_find_blocks(
         "2024-01-01".to_string()
     };
 
-    let find_arbs = args.mev_type == "both" || args.mev_type == "arbitrage";
-    let find_sandwiches = args.mev_type == "both" || args.mev_type == "sandwich";
+    let mev_type = args.mev_type.to_lowercase();
+    let find_arbs = mev_type == "all" || mev_type == "arbitrage" || mev_type == "both";
+    let find_sandwiches = mev_type == "all" || mev_type == "sandwich" || mev_type == "both";
+    let find_jit = mev_type == "all" || mev_type == "jit";
+    let find_liquidations = mev_type == "all" || mev_type == "liquidation";
+    let find_flash_loans = mev_type == "all" || mev_type == "flash_loan";
+
+    eprintln!(
+        "Searching for '{}' MEV blocks on {} (blocks {}–{})...",
+        args.mev_type, chain, from_block, to_block
+    );
 
     let mut block_scores: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+
+    /// Helper: extract (block_number, count) from a Dune result row.
+    fn parse_block_count(
+        row: &serde_json::Map<String, serde_json::Value>,
+        block_key: &str,
+        count_key: &str,
+    ) -> Option<(u64, u64)> {
+        let block = row.get(block_key).and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })?;
+        let count = row.get(count_key).and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })?;
+        Some((block, count))
+    }
 
     if find_arbs {
         let sql = format!(
@@ -160,26 +186,10 @@ LIMIT {limit}"#,
             Ok(result) => {
                 if let Some(ref r) = result.result {
                     for row in &r.rows {
-                        let block = row
-                            .get("block_number")
-                            .and_then(|v| {
-                                if let Some(n) = v.as_u64() {
-                                    return Some(n);
-                                }
-                                v.as_str().and_then(|s| s.parse::<u64>().ok())
-                            })
-                            .unwrap_or(0);
-                        let count = row
-                            .get("arb_count")
-                            .and_then(|v| {
-                                if let Some(n) = v.as_u64() {
-                                    return Some(n);
-                                }
-                                v.as_str().and_then(|s| s.parse::<u64>().ok())
-                            })
-                            .unwrap_or(0);
-                        if block > 0 {
-                            *block_scores.entry(block).or_insert(0) += count;
+                        if let Some((block, count)) = parse_block_count(row, "block_number", "arb_count") {
+                            if block > 0 {
+                                *block_scores.entry(block).or_insert(0) += count;
+                            }
                         }
                     }
                     eprintln!("  Found {} blocks with arbitrages", r.rows.len());
@@ -221,26 +231,10 @@ LIMIT {limit}"#,
             Ok(result) => {
                 if let Some(ref r) = result.result {
                     for row in &r.rows {
-                        let block = row
-                            .get("block_number")
-                            .and_then(|v| {
-                                if let Some(n) = v.as_u64() {
-                                    return Some(n);
-                                }
-                                v.as_str().and_then(|s| s.parse::<u64>().ok())
-                            })
-                            .unwrap_or(0);
-                        let count = row
-                            .get("sandwich_count")
-                            .and_then(|v| {
-                                if let Some(n) = v.as_u64() {
-                                    return Some(n);
-                                }
-                                v.as_str().and_then(|s| s.parse::<u64>().ok())
-                            })
-                            .unwrap_or(0);
-                        if block > 0 {
-                            *block_scores.entry(block).or_insert(0) += count;
+                        if let Some((block, count)) = parse_block_count(row, "block_number", "sandwich_count") {
+                            if block > 0 {
+                                *block_scores.entry(block).or_insert(0) += count;
+                            }
                         }
                     }
                     eprintln!("  Found {} blocks with sandwiches", r.rows.len());
@@ -248,6 +242,178 @@ LIMIT {limit}"#,
             }
             Err(e) => {
                 eprintln!("  Sandwich query failed: {}", e);
+            }
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    if find_jit {
+        let sql = format!(
+            r#"WITH v3_events AS (
+  SELECT
+    evt_block_number AS block_number,
+    evt_tx_hash AS tx_hash,
+    contract_address AS pool_address,
+    'mint' AS event_type
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
+  WHERE evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  UNION ALL
+  SELECT
+    evt_block_number,
+    evt_tx_hash,
+    contract_address,
+    'burn'
+  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
+  WHERE evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  UNION ALL
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    t.project_contract_address,
+    'swap'
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+    AND t.project = 'uniswap_v3'
+),
+pool_tx_events AS (
+  SELECT
+    pool_address,
+    block_number,
+    tx_hash,
+    ARRAY_AGG(DISTINCT event_type) AS event_types,
+    COUNT(DISTINCT event_type) AS event_count
+  FROM v3_events
+  GROUP BY pool_address, block_number, tx_hash
+)
+SELECT block_number, COUNT(*) AS jit_count
+FROM pool_tx_events
+WHERE event_count >= 2
+  AND contains(event_types, 'mint')
+GROUP BY block_number
+ORDER BY jit_count DESC
+LIMIT {limit}"#,
+            chain = chain_label,
+            block_month_min = block_month_min,
+            from_block = from_block,
+            to_block = to_block,
+            limit = args.top * 3,
+        );
+
+        eprintln!(
+            "Querying Dune for JIT liquidity blocks on {} (blocks {}–{})...",
+            chain, from_block, to_block
+        );
+
+        match client.execute_raw_sql(&sql).await {
+            Ok(result) => {
+                if let Some(ref r) = result.result {
+                    for row in &r.rows {
+                        if let Some((block, count)) = parse_block_count(row, "block_number", "jit_count") {
+                            if block > 0 {
+                                *block_scores.entry(block).or_insert(0) += count;
+                            }
+                        }
+                    }
+                    eprintln!("  Found {} blocks with JIT liquidity", r.rows.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("  JIT query failed (decoded V3 event tables may not exist for this chain): {}", e);
+            }
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    if find_liquidations {
+        let sql = format!(
+            r#"SELECT block_number, COUNT(*) AS liq_count
+FROM lending.borrow
+WHERE blockchain = '{chain}'
+  AND transaction_type = 'borrow_liquidation'
+  AND block_month >= DATE '{block_month_min}'
+  AND block_number >= {from_block}
+  AND block_number <= {to_block}
+GROUP BY block_number
+ORDER BY liq_count DESC
+LIMIT {limit}"#,
+            chain = chain_label,
+            block_month_min = block_month_min,
+            from_block = from_block,
+            to_block = to_block,
+            limit = args.top * 3,
+        );
+
+        eprintln!(
+            "Querying Dune for liquidation blocks on {} (blocks {}–{})...",
+            chain, from_block, to_block
+        );
+
+        match client.execute_raw_sql(&sql).await {
+            Ok(result) => {
+                if let Some(ref r) = result.result {
+                    for row in &r.rows {
+                        if let Some((block, count)) = parse_block_count(row, "block_number", "liq_count") {
+                            if block > 0 {
+                                *block_scores.entry(block).or_insert(0) += count;
+                            }
+                        }
+                    }
+                    eprintln!("  Found {} blocks with liquidations", r.rows.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("  Liquidation query failed: {}", e);
+            }
+        }
+    }
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    if find_flash_loans {
+        let sql = format!(
+            r#"SELECT block_number, COUNT(*) AS flash_count
+FROM lending.flashloans
+WHERE blockchain = '{chain}'
+  AND block_month >= DATE '{block_month_min}'
+  AND block_number >= {from_block}
+  AND block_number <= {to_block}
+GROUP BY block_number
+ORDER BY flash_count DESC
+LIMIT {limit}"#,
+            chain = chain_label,
+            block_month_min = block_month_min,
+            from_block = from_block,
+            to_block = to_block,
+            limit = args.top * 3,
+        );
+
+        eprintln!(
+            "Querying Dune for flash loan blocks on {} (blocks {}–{})...",
+            chain, from_block, to_block
+        );
+
+        match client.execute_raw_sql(&sql).await {
+            Ok(result) => {
+                if let Some(ref r) = result.result {
+                    for row in &r.rows {
+                        if let Some((block, count)) = parse_block_count(row, "block_number", "flash_count") {
+                            if block > 0 {
+                                *block_scores.entry(block).or_insert(0) += count;
+                            }
+                        }
+                    }
+                    eprintln!("  Found {} blocks with flash loans", r.rows.len());
+                }
+            }
+            Err(e) => {
+                eprintln!("  Flash loan query failed: {}", e);
             }
         }
     }

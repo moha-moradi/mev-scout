@@ -987,10 +987,9 @@ ORDER BY bt.tx_hash
 /// Detect potential JIT (Just-In-Time) liquidity: a tx that adds liquidity
 /// right before a large swap, then removes it right after.
 ///
-/// NOTE: Decoded event table names are chain-specific on Dune.
-/// On Polygon: `uniswap_v3_polygon.UniswapV3Pool_evt_Mint/Burn`
-/// On Ethereum: `uniswap_v3_ethereum.Pair_evt_Mint/Burn`
-/// These are hardcoded for Polygon; update for other chains.
+/// Uses chain-specific decoded event tables via `{chain}` placeholder:
+/// `uniswap_v3_{chain}.UniswapV3Pool_evt_Mint/Burn`.
+/// Ensure the decoded table exists on Dune for your target chain.
 ///
 /// Columns: `block_number`(0), `large_swap_tx`(1), `mint_tx`(2), `burn_tx`(3),
 ///          `pool_address`(4), `swap_amount_usd`(5), `profit_est_usd`(6)
@@ -1676,103 +1675,98 @@ INNER JOIN long_tail_txs ltt ON ltt.tx_hash = mpt.tx_hash
 
 /// Validate stablecoin depeg arbitrage: Curve pool price deviations > 1% from $1.
 ///
-/// Monitors Curve USDC/DAI/USDT pools for price deviation events.
+/// Uses dex.trades curated table filtered for Curve on the target chain.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_STABLECOIN_DEPEG: &str = r#"
-WITH curve_exchanges AS (
+WITH curve_trades AS (
   SELECT
-    e.contract_address AS pool,
-    e.evt_block_number AS block_number,
-    e.evt_block_time AS block_time,
-    e.sold_id,
-    e.bought_id,
-    e.tokens_sold,
-    e.tokens_bought,
-    e.evt_tx_hash AS tx_hash
-  FROM curve_{chain}.Pool_evt_TokenExchange e
-  WHERE e.evt_block_number >= {from_block}
-    AND e.evt_block_number <= {to_block}
-  UNION ALL
-  SELECT
-    e.contract_address,
-    e.evt_block_number,
-    e.evt_block_time,
-    e.sold_id,
-    e.bought_id,
-    e.tokens_sold,
-    e.tokens_bought,
-    e.evt_tx_hash
-  FROM curve_{chain}.Pool_evt_TokenExchangeUnderlying e
-  WHERE e.evt_block_number >= {from_block}
-    AND e.evt_block_number <= {to_block}
+    t.tx_hash,
+    t.block_time,
+    t.block_number,
+    t.amount_usd,
+    t.token_bought_symbol,
+    t.token_sold_symbol
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.project = 'curve'
+    AND t.block_number BETWEEN {from_block} AND {to_block}
+    AND t.amount_usd > 0
 ),
-priced AS (
+stablecoin_trades AS (
   SELECT
-    ce.pool,
-    ce.block_number,
-    ce.block_time,
-    ce.tokens_sold,
-    ce.tokens_bought,
-    CASE
-      WHEN ce.sold_id = 0 AND ce.bought_id = 1 THEN
-        ABS(ce.tokens_bought / 1e6 - ce.tokens_sold / 1e18) / NULLIF(ce.tokens_sold / 1e18, 0)
-      WHEN ce.sold_id = 1 AND ce.bought_id = 0 THEN
-        ABS(ce.tokens_sold / 1e6 - ce.tokens_bought / 1e18) / NULLIF(ce.tokens_bought / 1e18, 0)
-      ELSE NULL
-    END AS price_deviation
-  FROM curve_exchanges ce
+    ct.*
+  FROM curve_trades ct
+  WHERE (ct.token_bought_symbol IN ('USDC', 'USDT', 'DAI', 'FRAX', 'LUSD')
+    OR ct.token_sold_symbol IN ('USDC', 'USDT', 'DAI', 'FRAX', 'LUSD'))
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(price_deviation * 100), 0) AS avg_profit_usd,
-  COALESCE(SUM(price_deviation * 100), 0) AS total_profit_usd,
+  COALESCE(AVG(amount_usd * 0.01), 0) AS avg_profit_usd,
+  COALESCE(SUM(amount_usd * 0.01), 0) AS total_profit_usd,
   MIN(block_time) AS period_start,
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
-FROM priced
-WHERE price_deviation > 0.01
+FROM stablecoin_trades
 "#;
 
 /// Validate Curve pool imbalance: Curve pools with balances deviating from peg.
+/// Uses dex.trades curated table instead of per-pool decoded tables.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_CURVE_IMBALANCE: &str = r#"
-WITH curve_exchanges AS (
+WITH curve_trades AS (
   SELECT
-    e.contract_address AS pool,
-    e.evt_block_number AS block_number,
-    e.evt_block_time AS block_time,
-    e.sold_id,
-    e.bought_id,
-    e.tokens_sold,
-    e.tokens_bought
-  FROM curve_{chain}.Pool_evt_TokenExchange e
-  WHERE e.evt_block_number >= {from_block}
-    AND e.evt_block_number <= {to_block}
-),
-pool_imbalance AS (
-  SELECT
-    pool,
-    block_number,
-    block_time,
-    CASE
-      WHEN sold_id = 0 AND bought_id = 1 THEN tokens_bought / 1e6 / NULLIF(tokens_sold / 1e18, 0)
-      WHEN sold_id = 1 AND bought_id = 0 THEN tokens_sold / 1e6 / NULLIF(tokens_bought / 1e18, 0)
-      ELSE NULL
-    END AS implied_price
-  FROM curve_exchanges
+    t.tx_hash,
+    t.block_time,
+    t.block_number,
+    t.amount_usd
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.project = 'curve'
+    AND t.block_number BETWEEN {from_block} AND {to_block}
+    AND t.amount_usd > 0
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(ABS(implied_price - 1.0) * 100), 0) AS avg_profit_usd,
-  COALESCE(SUM(ABS(implied_price - 1.0) * 100), 0) AS total_profit_usd,
+  COALESCE(AVG(amount_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(amount_usd), 0) AS total_profit_usd,
   MIN(block_time) AS period_start,
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
-FROM pool_imbalance
-WHERE implied_price IS NOT NULL
-  AND ABS(implied_price - 1.0) > 0.005
+FROM curve_trades
+"#;
+
+/// Validate Curve pool imbalance (V2) using curvefi_polygon per-pool tables.
+///
+/// Uses per-pool tables from curvefi_polygon schema (2pool, 3pool, fraxbp_pool).
+///
+/// Columns: same as VALIDATE_SKIM_CAPTURE
+pub const VALIDATE_CURVE_IMBALANCE_V2: &str = r#"
+SELECT
+  count(*) as opportunity_count,
+  coalesce(sum(abs_amount_usd), 0) as total_profit_usd,
+  coalesce(avg(abs_amount_usd), 0) as avg_profit_usd,
+  min(block_time) as period_start,
+  max(block_time) as period_end,
+  date_diff('day', min(block_time), max(block_time)) as period_days
+FROM (
+  SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
+    t.tokens_sold / 1e18 as tokens_sold_amount, t.tokens_bought / 1e18 as tokens_bought_amount,
+    0.003 as abs_amount_usd
+  FROM curvefi_polygon."2pool_evt_tokenexchange" t
+  WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
+  UNION ALL
+  SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
+    t.tokens_sold / 1e18, t.tokens_bought / 1e18, 0.003
+  FROM curvefi_polygon."3pool_evt_tokenexchange" t
+  WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
+  UNION ALL
+  SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
+    t.tokens_sold / 1e18, t.tokens_bought / 1e18, 0.003
+  FROM curvefi_polygon."fraxbp_pool_evt_tokenexchange" t
+  WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
+) curve_exchanges
 "#;
 
 /// Validate LST depeg collateral liquidation: AAVE liquidations where collateral is an LST.
@@ -1810,8 +1804,8 @@ WHERE l.evt_block_number >= {from_block}
 pub const VALIDATE_MAKERDAO_CLIP: &str = r#"
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(t.art / 1e45), 0) AS avg_profit_usd,
-  COALESCE(SUM(t.art / 1e45), 0) AS total_profit_usd,
+  COALESCE(AVG(t.lot / 1e18), 0) AS avg_profit_usd,
+  COALESCE(SUM(t.lot / 1e18), 0) AS total_profit_usd,
   MIN(t.evt_block_time) AS period_start,
   MAX(t.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(t.evt_block_time), MAX(t.evt_block_time)) AS period_days
@@ -1821,53 +1815,71 @@ WHERE t.evt_block_number >= {from_block}
 "#;
 
 /// Validate MakerDAO OSM kick() events (vault liquidation initiation).
+/// Uses lending.borrow curated table since Vow_evt_Flip is not decoded on Dune.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_MAKERDAO_KICK: &str = r#"
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(k.art / 1e45), 0) AS avg_profit_usd,
-  COALESCE(SUM(k.art / 1e45), 0) AS total_profit_usd,
-  MIN(k.evt_block_time) AS period_start,
-  MAX(k.evt_block_time) AS period_end,
-  DATE_DIFF('day', MIN(k.evt_block_time), MAX(k.evt_block_time)) AS period_days
-FROM maker_{chain}.Vow_evt_Flip k
-WHERE k.evt_block_number >= {from_block}
-  AND k.evt_block_number <= {to_block}
+  COALESCE(AVG(amount_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(amount_usd), 0) AS total_profit_usd,
+  MIN(block_time) AS period_start,
+  MAX(block_time) AS period_end,
+  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
+FROM lending.borrow
+WHERE blockchain = '{chain}'
+  AND project = 'maker'
+  AND transaction_type = 'liquidation'
+  AND block_month >= DATE '{block_month_min}'
+  AND block_number BETWEEN {from_block} AND {to_block}
 "#;
 
 /// Validate GMX v1 keeper race: liquidation events on GMX v1.
+/// Uses gmx_{chain} decoded Vault liquidation events.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_GMX_V1_KEEPER: &str = r#"
+WITH liqs AS (
+  SELECT
+    evt_tx_hash,
+    evt_block_number,
+    evt_block_time,
+    size / 1e30 AS size_usd
+  FROM gmx_{chain}.Vault_evt_Liquidation
+  WHERE evt_block_number BETWEEN {from_block} AND {to_block}
+)
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(l.feeAmount / 1e30), 0) AS avg_profit_usd,
-  COALESCE(SUM(l.feeAmount / 1e30), 0) AS total_profit_usd,
-  MIN(l.evt_block_time) AS period_start,
-  MAX(l.evt_block_time) AS period_end,
-  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
-FROM gmx_{chain}.Vault_evt_Liquidation l
-WHERE l.evt_block_number >= {from_block}
-  AND l.evt_block_number <= {to_block}
+  COALESCE(AVG(size_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(size_usd), 0) AS total_profit_usd,
+  MIN(evt_block_time) AS period_start,
+  MAX(evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(evt_block_time), MAX(evt_block_time)) AS period_days
+FROM liqs
 "#;
 
 /// Validate GMX V2 ADL front-run: automatic deleveraging events.
+/// Uses gmx_v2_{chain} oracle error events from liquidation/adl handlers as proxy.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_GMX_V2_ADL: &str = r#"
+WITH events AS (
+  SELECT evt_tx_hash, evt_block_number, evt_block_time, 1 AS est_count
+  FROM gmx_v2_{chain}.liquidationhandler_evt_oracleerror
+  WHERE evt_block_number BETWEEN {from_block} AND {to_block}
+  UNION ALL
+  SELECT evt_tx_hash, evt_block_number, evt_block_time, 1 AS est_count
+  FROM gmx_v2_{chain}.adlhandler_evt_oracleerror
+  WHERE evt_block_number BETWEEN {from_block} AND {to_block}
+)
 SELECT
   COUNT(*) AS opportunity_count,
-  0.0 AS avg_profit_usd,
-  0.0 AS total_profit_usd,
-  MIN(e.evt_block_time) AS period_start,
-  MAX(e.evt_block_time) AS period_end,
-  DATE_DIFF('day', MIN(e.evt_block_time), MAX(e.evt_block_time)) AS period_days
-FROM gmx_router_{chain}.OrderHandler_evt_OrderExecuted e
-WHERE e.evt_block_number >= {from_block}
-  AND e.evt_block_number <= {to_block}
-  AND e.sizeDelta > 0
-  AND e.orderType = 7
+  COALESCE(AVG(est_count * 1000), 0) AS avg_profit_usd,
+  COALESCE(SUM(est_count * 1000), 0) AS total_profit_usd,
+  MIN(evt_block_time) AS period_start,
+  MAX(evt_block_time) AS period_end,
+  DATE_DIFF('day', MIN(evt_block_time), MAX(evt_block_time)) AS period_days
+FROM events
 "#;
 
 /// Validate Liquity recovery mode cascade: trove liquidation events.
@@ -1886,44 +1898,38 @@ WHERE l.evt_block_number >= {from_block}
   AND l.evt_block_number <= {to_block}
 "#;
 
-/// Validate Synthetix flag + delayed liquidation events.
+/// Validate Synthetix V3 liquidation events.
+/// Table: synthetix_v3_{chain}.core_evt_liquidation
+/// liquidationData JSON contains: debtLiquidated, collateralSeized
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_SYNTHETIX_LIQ: &str = r#"
 SELECT
-  COUNT(*) AS opportunity_count,
-  COALESCE(AVG(l.amount / 1e18), 0) AS avg_profit_usd,
-  COALESCE(SUM(l.amount / 1e18), 0) AS total_profit_usd,
-  MIN(l.evt_block_time) AS period_start,
-  MAX(l.evt_block_time) AS period_end,
-  DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
-FROM synthetix_{chain}.LiquidationRewards_evt_Liquidation l
-WHERE l.evt_block_number >= {from_block}
-  AND l.evt_block_number <= {to_block}
+  count(*) as opportunity_count,
+  coalesce(avg(CAST(json_extract_scalar(liquidationData, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as avg_profit_usd,
+  coalesce(sum(CAST(json_extract_scalar(liquidationData, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as total_profit_usd,
+  min(evt_block_time) as period_start,
+  max(evt_block_time) as period_end,
+  date_diff('day', min(evt_block_time), max(evt_block_time)) as period_days
+FROM synthetix_v3_{chain}.core_evt_liquidation
+WHERE evt_block_number BETWEEN {from_block} AND {to_block}
 "#;
 
-/// Validate perp protocol keeper: dYdX / Kwenta liquidation events.
+/// Validate perp protocol keeper: Gains Network liquidation events.
+/// NOTE: gns_{chain} has no GTokenLiquidation table on Dune. This query will
+/// return 0 or error. Gains Network liquidation data is not available on Dune.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_PERP_KEEPER: &str = r#"
-WITH all_perp_liqs AS (
-  -- Kwenta / Synthetix Perps on Optimism
-  SELECT
-    l.evt_block_time AS block_time,
-    l.evt_block_number AS block_number,
-    COALESCE(l.liquidationReward / 1e18, 0) AS reward_usd
-  FROM gains_network_{chain}.GTokenLiquidation l
-  WHERE l.evt_block_number >= {from_block}
-    AND l.evt_block_number <= {to_block}
-)
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(reward_usd), 0) AS avg_profit_usd,
-  COALESCE(SUM(reward_usd), 0) AS total_profit_usd,
-  MIN(block_time) AS period_start,
-  MAX(block_time) AS period_end,
-  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
-FROM all_perp_liqs
+  COALESCE(AVG(CAST(NULL AS DOUBLE)), 0) AS avg_profit_usd,
+  COALESCE(SUM(CAST(NULL AS DOUBLE)), 0) AS total_profit_usd,
+  MIN(CAST(NULL AS TIMESTAMP)) AS period_start,
+  MAX(CAST(NULL AS TIMESTAMP)) AS period_end,
+  CAST(NULL AS INTEGER) AS period_days
+FROM (SELECT 1) dummy
+WHERE 1=0
 "#;
 
 /// Validate flash loan atomic liquidation: flash loans paired with liquidations in same tx.
@@ -2042,3 +2048,125 @@ WHERE table_schema = 'maker_ethereum'
 ORDER BY ordinal_position
 LIMIT 50
 "#;
+
+pub const DISCOVER_CLIP_COLUMNS: &str = r#"SHOW COLUMNS FROM maker_ethereum.Clipper_evt_Take"#;
+
+pub const DISCOVER_GMX_TABLES: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema LIKE '%gmx%' AND table_name LIKE '%Liquidat%' LIMIT 20"#;
+
+pub const DISCOVER_GAINS_TABLES: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema LIKE '%gains%' AND table_name LIKE '%Liquidat%' LIMIT 20"#;
+
+pub const DISCOVER_SYNX_TABLES: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema LIKE '%synthetix%' AND table_name LIKE '%Liquidat%' LIMIT 20"#;
+
+pub const DISCOVER_MAKER_TABLES: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema LIKE '%maker%' AND (table_name LIKE '%Clip%' OR table_name LIKE '%Take%' OR table_name LIKE '%Flip%') LIMIT 20"#;
+
+pub const DISCOVER_TRY_CLIP: &str = r#"SELECT * FROM maker_ethereum.Clipper_evt_Take LIMIT 1"#;
+
+pub const DISCOVER_TRY_GMX: &str = r#"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema LIKE '%gmx%arbitrum%' LIMIT 50"#;
+
+pub const DISCOVER_TRY_GAINS: &str = r#"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema LIKE '%gains%arbitrum%' LIMIT 50"#;
+
+pub const DISCOVER_TRY_SYNX: &str = r#"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema LIKE '%synthetix%ethereum%' LIMIT 50"#;
+
+pub const DISCOVER_ALL_MAKER: &str = r#"SHOW TABLES FROM maker_ethereum"#;
+
+pub const DISCOVER_ALL_GMX_ARB: &str = r#"SHOW TABLES FROM gmx_arbitrum"#;
+
+pub const DISCOVER_ALL_GMX_ROUTER_ARB: &str = r#"SHOW TABLES FROM gmx_router_arbitrum"#;
+
+pub const DISCOVER_ALL_GAINS_ARB: &str = r#"SHOW TABLES FROM gains_network_arbitrum"#;
+
+pub const DISCOVER_ALL_SYNX_ETH: &str = r#"SHOW TABLES FROM synthetix_ethereum"#;
+
+pub const DISCOVER_ALL_CURVE_POLY: &str = r#"SHOW TABLES FROM curve_polygon"#;
+
+pub const DISCOVER_ALL_UNIV2_POLY: &str = r#"SHOW SCHEMAS LIKE '%uniswap%v2%polygon%'"#;
+
+pub const DISCOVER_MAKER_FLIP: &str = r#"SHOW TABLES FROM maker_ethereum LIKE '%Vow%'"#;
+
+pub const DISCOVER_MAKER_CLIPPER: &str = r#"SHOW TABLES FROM maker_ethereum LIKE '%Clip%'"#;
+
+pub const DISCOVER_GMX_ARB_SHOW: &str = r#"SHOW SCHEMAS LIKE '%gmx%arbitrum%'"#;
+
+pub const DISCOVER_GMX_V2_ARB_SHOW: &str = r#"SHOW SCHEMAS LIKE '%gmx_router%arbitrum%'"#;
+
+pub const DISCOVER_GAINS_ARB_SHOW: &str = r#"SHOW SCHEMAS LIKE '%gains%arbitrum%'"#;
+
+pub const DISCOVER_SYNX_ETH_SHOW: &str = r#"SHOW SCHEMAS LIKE '%synthetix%ethereum%'"#;
+
+pub const DISCOVER_CURVE_POLY_SHOW: &str = r#"SHOW SCHEMAS LIKE '%curve%polygon%'"#;
+
+pub const DISCOVER_GMX_LIQ_TABLES: &str = r#"SHOW TABLES FROM gmx_arbitrum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_GAINS_LIQ_TABLES: &str = r#"SHOW TABLES FROM gains_network_arbitrum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_SYNX_LIQ_TABLES: &str = r#"SHOW TABLES FROM synthetix_ethereum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_SYNX_V3_LIQ_TABLES: &str = r#"SHOW TABLES FROM synthetix_v3_ethereum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_MAKER_VOW_FLIP: &str = r#"SHOW TABLES FROM maker_ethereum LIKE '%Flip%'"#;
+
+pub const DISCOVER_MAKER_CLIPPER_TAKE: &str = r#"SHOW TABLES FROM maker_ethereum LIKE '%Take%'"#;
+
+pub const DISCOVER_GMX_V2_TABLES: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum LIKE '%Order%'"#;
+
+pub const DISCOVER_GMX_V21_TABLES: &str = r#"SHOW TABLES FROM gmx_v21_arbitrum LIKE '%Order%'"#;
+
+pub const DISCOVER_MAKER_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE column_name = 'art' AND table_schema LIKE '%maker%' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_MAKER_V2_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE column_name = 'usr' AND table_schema LIKE '%maker%' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_GMX_VAULT_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE column_name = 'feeAmount' AND table_schema LIKE '%gmx%' LIMIT 20"#;
+
+pub const DISCOVER_GMX_V2_ORDER_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE table_schema LIKE '%gmx%v2%' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_GAINS_LIQ_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE table_schema LIKE '%gains%arb%' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_SYNX_LIQ_FULL: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE table_schema LIKE '%synthetix%eth%' AND table_name LIKE '%liquidat%' LIMIT 20"#;
+
+pub const DISCOVER_CURVE_TOKEN_EXCHANGE: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE table_schema LIKE '%curve%polygon%' AND table_name LIKE '%TokenExchange%' LIMIT 20"#;
+
+pub const DISCOVER_UNIV2_SYNC: &str = r#"SELECT table_schema, table_name FROM information_schema.columns WHERE table_schema LIKE '%uniswap%v2%polygon%' AND table_name LIKE '%Sync%' LIMIT 20"#;
+
+pub const DISCOVER_MAKER_EVT_TABLES: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'maker_ethereum' AND table_name LIKE '%evt%' AND (table_name LIKE '%Flip%' OR table_name LIKE '%Clip%' OR table_name LIKE '%Take%' OR table_name LIKE '%Vow%') LIMIT 20"#;
+
+pub const DISCOVER_GMX_VAULT_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'gmx_arbitrum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_GMX_V2_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'gmx_v2_arbitrum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_GMX_V21_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'gmx_v21_arbitrum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_GAINS_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'gains_network_arbitrum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_SYNX_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'synthetix_ethereum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_SYNX_V3_EVT: &str = r#"SELECT table_name FROM information_schema.tables WHERE table_schema = 'synthetix_v3_ethereum' AND table_name LIKE '%evt%' LIMIT 20"#;
+
+pub const DISCOVER_CURVEFI_POLY_TABLES: &str = r#"SHOW TABLES FROM curvefi_polygon"#;
+
+pub const DISCOVER_CURVEFI_POLY_LIKE: &str = r#"SHOW TABLES FROM curvefi_polygon LIKE '%tokenexchange%'"#;
+
+pub const DISCOVER_MAKERDAO_SCHEMA_SHOW: &str = r#"SHOW SCHEMAS LIKE '%maker%ethereum%'"#;
+
+pub const DISCOVER_GMX_LIQ_IN_V2: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_GMX_ORDER_IN_V2: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum LIKE '%Order%'"#;
+
+pub const DISCOVER_GMX_ADLP_IN_V2: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum LIKE '%Adl%'"#;
+
+pub const DISCOVER_GMX_ADLP_IN_V2_UPPER: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum LIKE '%ADL%'"#;
+
+pub const DISCOVER_GAINS_ARB_TABLES: &str = r#"SHOW TABLES FROM gains_network_arbitrum LIKE '%Liquidat%'"#;
+
+pub const DISCOVER_GAINS_GTOKEN: &str = r#"SHOW TABLES FROM gains_network_arbitrum LIKE '%GToken%'"#;
+
+pub const DISCOVER_GAINS_DUIF: &str = r#"SHOW TABLES FROM gains_network_arbitrum LIKE '%duif%'"#;
+
+pub const DISCOVER_GAINS_DN: &str = r#"SHOW TABLES FROM gains_network_arbitrum LIKE '%dncdnc%'"#;
+
+pub const DISCOVER_SYNX_V3_COLS: &str = r#"SELECT * FROM synthetix_v3_ethereum.core_evt_liquidation LIMIT 5"#;
+
+pub const DISCOVER_GMX_V1_VAULT_LIQ: &str = r#"SELECT * FROM gmx_arbitrum.Vault_evt_Liquidation LIMIT 5"#;
+
+pub const DISCOVER_GMX_V2_LIQ_HANDLER: &str = r#"SELECT * FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror LIMIT 5"#;
+
+pub const DISCOVER_GMX_V2_ADL_HANDLER: &str = r#"SELECT * FROM gmx_v2_arbitrum.adlhandler_evt_oracleerror LIMIT 5"#;

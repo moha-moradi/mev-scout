@@ -444,8 +444,8 @@ pub struct DuneFindBlocksArgs {
     #[arg(long, default_value = "7", value_name = "N")]
     pub days: u64,
 
-    /// MEV type to search for: arbitrage, sandwich, or both (default: both)
-    #[arg(long, default_value = "both", value_name = "TYPE")]
+    /// MEV type to search for: arbitrage, sandwich, jit, liquidation, flash_loan, or all (default: all)
+    #[arg(long, default_value = "all", value_name = "TYPE")]
     pub mev_type: String,
 
     /// Maximum block number to search up to (default: latest)
