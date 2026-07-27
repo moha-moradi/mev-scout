@@ -112,6 +112,14 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.chain = Some(args.chain.clone());
             o.dune_api_key = args.dune_api_key.clone();
         }
+        Command::Tokens(args) => {
+            o.chain = Some(args.chain_args.chain.clone());
+            o.rpc_url = args.chain_args.rpc_url.clone();
+            o.rpc_urls = args.chain_args.rpc_urls.clone();
+            o.rpc_rps = args.chain_args.rpc_rps.clone();
+            o.rps_limit = Some(args.chain_args.rps_limit);
+            o.dune_api_key = args.dune_api_key.clone();
+        }
     }
     o
 }

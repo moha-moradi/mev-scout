@@ -9,6 +9,7 @@ mod live;
 mod replay;
 mod report;
 mod run;
+mod tokens;
 
 pub use audit::cmd_audit;
 pub use config::cmd_config;
@@ -21,3 +22,4 @@ pub use live::cmd_live;
 pub use replay::cmd_replay;
 pub use report::cmd_report;
 pub use run::cmd_run;
+pub use tokens::cmd_tokens;

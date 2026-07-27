@@ -363,6 +363,18 @@ pub struct DuneDexFlashLoan {
     pub fee: Option<String>,
 }
 
+/// Token metadata from Dune's `tokens.erc20` dataset with optional trading stats.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneTokenWithStats {
+    pub contract_address: Address,
+    pub symbol: String,
+    pub decimals: u8,
+    pub name: Option<String>,
+    pub trade_count: Option<u64>,
+    pub volume_usd: Option<f64>,
+    pub tvl_usd: Option<f64>,
+}
+
 /// Utility day from `utils.days`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuneUtilsDay {

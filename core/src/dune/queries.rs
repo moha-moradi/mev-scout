@@ -2170,3 +2170,156 @@ pub const DISCOVER_GMX_V1_VAULT_LIQ: &str = r#"SELECT * FROM gmx_arbitrum.Vault_
 pub const DISCOVER_GMX_V2_LIQ_HANDLER: &str = r#"SELECT * FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror LIMIT 5"#;
 
 pub const DISCOVER_GMX_V2_ADL_HANDLER: &str = r#"SELECT * FROM gmx_v2_arbitrum.adlhandler_evt_oracleerror LIMIT 5"#;
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// Section 5: Token Discovery & Filtering
+// ══════════════════════════════════════════════════════════════════════════
+
+/// All known ERC-20 tokens on a chain.
+///
+/// Fast query (~2s on Dune). No JOINs.
+/// Columns: `contract_address`(0), `symbol`(1), `decimals`(2), `name`(3)
+pub const QUERY_TOKENS_ALL: &str = r#"
+SELECT
+  t.contract_address,
+  t.symbol,
+  t.decimals,
+  t.name
+FROM tokens.erc20 t
+WHERE t.blockchain = '{chain}'
+ORDER BY t.symbol
+LIMIT {limit}
+"#;
+
+/// Tokens with at least one DEX trade in the last N days.
+///
+/// Uses a pre-aggregated CTE to avoid full dex.trades scan.
+/// Columns: `contract_address`(0), `symbol`(1), `decimals`(2), `name`(3),
+///          `trade_count`(4), `volume_usd`(5)
+pub const QUERY_TOKENS_ACTIVE: &str = r#"
+WITH recent_trades AS (
+  SELECT
+    token_bought_address AS token,
+    amount_usd
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_bought_address IS NOT NULL
+  UNION ALL
+  SELECT
+    token_sold_address AS token,
+    amount_usd
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_sold_address IS NOT NULL
+)
+SELECT
+  t.contract_address,
+  t.symbol,
+  t.decimals,
+  t.name,
+  COUNT(*) as trade_count,
+  SUM(COALESCE(r.amount_usd, 0)) as volume_usd
+FROM tokens.erc20 t
+INNER JOIN recent_trades r ON r.token = t.contract_address
+WHERE t.blockchain = '{chain}'
+GROUP BY 1, 2, 3, 4
+HAVING COUNT(*) >= 1
+ORDER BY trade_count DESC
+LIMIT {limit}
+"#;
+
+/// Tokens first traded in the last N days (newly launched).
+///
+/// Uses a pre-aggregated CTE to avoid full dex.trades scan.
+/// Columns: `contract_address`(0), `symbol`(1), `decimals`(2), `name`(3),
+///          `trade_count`(4), `first_seen`(5)
+pub const QUERY_TOKENS_NEW: &str = r#"
+WITH recent_trades AS (
+  SELECT
+    token_bought_address AS token,
+    block_time
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_bought_address IS NOT NULL
+  UNION ALL
+  SELECT
+    token_sold_address AS token,
+    block_time
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_sold_address IS NOT NULL
+)
+SELECT
+  t.contract_address,
+  t.symbol,
+  t.decimals,
+  t.name,
+  COUNT(*) as trade_count,
+  MIN(r.block_time) as first_seen
+FROM tokens.erc20 t
+INNER JOIN recent_trades r ON r.token = t.contract_address
+WHERE t.blockchain = '{chain}'
+GROUP BY 1, 2, 3, 4
+HAVING MIN(r.block_time) >= NOW() - INTERVAL '{days}' DAY
+ORDER BY first_seen DESC
+LIMIT {limit}
+"#;
+
+/// Tokens ranked by estimated TVL (USD value locked in pool reserves).
+///
+/// Approximates TVL by summing dollar value of token reserves in active pools.
+/// Columns: `contract_address`(0), `symbol`(1), `decimals`(2), `name`(3),
+///          `trade_count`(4), `tvl_usd`(5), `volume_usd`(6)
+pub const QUERY_TOKENS_TVL: &str = r#"
+WITH active_pools AS (
+  SELECT DISTINCT
+    token_bought_address AS token,
+    project_contract_address AS pool
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_bought_address IS NOT NULL
+  UNION
+  SELECT DISTINCT
+    token_sold_address AS token,
+    project_contract_address AS pool
+  FROM dex.trades
+  WHERE blockchain = '{chain}'
+    AND block_time >= NOW() - INTERVAL '{days}' DAY
+    AND token_sold_address IS NOT NULL
+),
+pool_trades AS (
+  SELECT
+    ap.token,
+    ap.pool,
+    COUNT(*) as trade_count,
+    SUM(COALESCE(d.amount_usd, 0)) as volume_usd
+  FROM active_pools ap
+  INNER JOIN dex.trades d
+    ON d.project_contract_address = ap.pool
+    AND (d.token_bought_address = ap.token OR d.token_sold_address = ap.token)
+    AND d.blockchain = '{chain}'
+    AND d.block_time >= NOW() - INTERVAL '{days}' DAY
+  GROUP BY 1, 2
+)
+SELECT
+  t.contract_address,
+  t.symbol,
+  t.decimals,
+  t.name,
+  SUM(pt.trade_count) as trade_count,
+  SUM(pt.volume_usd) as tvl_usd,
+  SUM(pt.volume_usd) as volume_usd
+FROM tokens.erc20 t
+INNER JOIN pool_trades pt ON pt.token = t.contract_address
+WHERE t.blockchain = '{chain}'
+GROUP BY 1, 2, 3, 4
+HAVING SUM(pt.volume_usd) > 0
+ORDER BY tvl_usd DESC
+LIMIT {limit}
+"#;

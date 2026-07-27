@@ -66,6 +66,11 @@ pub enum Command {
     /// Execute any Dune query template from queries.rs via the Dune API.
     /// Use --list to see available queries, --query NAME to run one, or --all for all.
     DuneQuery(DuneQueryArgs),
+
+    /// Discover and cache token metadata from Dune Analytics.
+    /// Supports filters: all, active, blue-chip, new, long-tail.
+    /// Populates the token cache used by pool discovery to avoid RPC symbol() calls.
+    Tokens(TokensArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -522,6 +527,64 @@ pub struct DuneQueryArgs {
     /// Output format: table, json, csv
     #[arg(long, default_value = "table", value_name = "FORMAT")]
     pub output: String,
+
+    /// Dune API key (overrides config file)
+    #[arg(long = "dune-api-key", value_name = "KEY")]
+    pub dune_api_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct TokensArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Token filter: all (fast), active, new, tvl
+    #[arg(long, default_value = "all", value_name = "FILTER")]
+    pub filter: String,
+
+    /// Look-back period in days (for active/new/tvl filters)
+    #[arg(long, default_value = "7", value_name = "N")]
+    pub days: u64,
+
+    /// Top N tokens (tvl filter only)
+    #[arg(long, default_value = "50", value_name = "N")]
+    pub top: usize,
+
+    /// Minimum USD trade volume threshold (filters out low-volume tokens)
+    #[arg(long, value_name = "USD")]
+    pub min_volume: Option<f64>,
+
+    /// Minimum USD TVL threshold (tvl filter only)
+    #[arg(long, default_value = "1000", value_name = "USD")]
+    pub min_tvl: f64,
+
+    /// Sort results by: trades (default), volume, tvl, symbol, name
+    #[arg(long, default_value = "trades", value_name = "FIELD")]
+    pub sort: String,
+
+    /// Filter by symbol pattern (case-insensitive substring match)
+    #[arg(long, value_name = "PATTERN")]
+    pub symbol: Option<String>,
+
+    /// Filter by exact decimals value
+    #[arg(long, value_name = "N")]
+    pub decimals: Option<u8>,
+
+    /// Maximum tokens to display (default: 100)
+    #[arg(long, default_value = "100", value_name = "N")]
+    pub limit: usize,
+
+    /// Output format: table, json, csv
+    #[arg(long, default_value = "table", value_name = "FORMAT")]
+    pub output: String,
+
+    /// Only populate SQLite cache, don't display results
+    #[arg(long)]
+    pub cache_only: bool,
+
+    /// Skip cache persistence (display only)
+    #[arg(long)]
+    pub no_cache: bool,
 
     /// Dune API key (overrides config file)
     #[arg(long = "dune-api-key", value_name = "KEY")]

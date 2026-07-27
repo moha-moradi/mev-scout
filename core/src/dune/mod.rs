@@ -3,6 +3,7 @@ pub mod client;
 pub mod cross_validate;
 pub mod pool_discovery;
 pub mod queries;
+pub mod token_discovery;
 pub mod types;
 
 pub use client::DuneClient;
