@@ -15,8 +15,6 @@ pub enum DexType {
     Curve = 2,
     #[serde(rename = "balancer")]
     Balancer = 3,
-    #[serde(rename = "dodo")]
-    Dodo = 4,
     #[serde(rename = "solidly")]
     Solidly = 5,
     #[serde(rename = "camelot")]
@@ -43,7 +41,6 @@ impl DexType {
             DexType::Curve => "Curve",
             DexType::Balancer => "Balancer",
             DexType::UniswapV4 => "UniswapV4",
-            DexType::Dodo => "Dodo",
             DexType::TraderJoeLB => "TraderJoeLB",
             DexType::Pendle => "Pendle",
         }

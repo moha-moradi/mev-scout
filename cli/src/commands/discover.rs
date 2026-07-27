@@ -223,6 +223,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         pendle_factory,
         rpc_concurrency: args.rpc_concurrency,
         token_cache: Some(&token_cache),
+        pool_cache: Some(&cache),
     };
 
     // ── Phase 2: Dune Analytics discovery (runs first to support --min-pools) ──
@@ -386,9 +387,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 DexType::Pendle => {
                     println!("  {dex}  {}  {}/{}  maturity={}",
                         p.address, t0, t1, p.maturity_timestamp.unwrap_or(0));
-                }
-                _ => {
-                    println!("  {dex}  {}  {}/{}", p.address, t0, t1);
                 }
             }
         }

@@ -88,12 +88,6 @@ static BALANCER_GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
-/// _target_() selector for DODO pools — check if pool has target liquidity
-static DODO_TARGET_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"_target_()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
 // Curve exchange_underlying emits separate event variants
 pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
@@ -254,6 +248,8 @@ pub struct DiscoveryConfig<'a> {
     pub rpc_concurrency: usize,
     /// Token symbol cache — avoids redundant `symbol()` eth_call RPC calls.
     pub token_cache: Option<&'a crate::cache::TokenCache>,
+    /// Pool metadata cache — skips token0/token1/fee eth_call for already-known pools.
+    pub pool_cache: Option<&'a crate::cache::SqliteStore>,
 }
 
 // ── Helper: decode ABI-encoded string from eth_call response ──
@@ -658,7 +654,6 @@ async fn discover_pools_shard(
         topics::V3_SWAP,
         *topics::V3_MINT,
         topics::V3_BURN,
-        *topics::DODO_SWAP,
     ];
     let all_dex_topics: Vec<B256> = vec![
         topics::V2_SWAP,
@@ -671,7 +666,6 @@ async fn discover_pools_shard(
         *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
         *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
         *topics::BALANCER_SWAP,
-        *topics::DODO_SWAP,
     ];
 
     // Helper: fetch logs with optional provider pinning
@@ -1315,6 +1309,7 @@ async fn discover_pools_shard(
     type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>, u64)> + Send>>;
 
     let mut fetch_tasks: Vec<FetchTask> = Vec::new();
+    let mut cache_hits: usize = 0;
 
     // Collect pool_hits data to avoid borrowing pool_hits across async boundaries
     let pool_hits_vec: Vec<_> = pool_hits.iter().map(|(addr, (dt, pid, tokens, fsb))| {
@@ -1327,6 +1322,34 @@ async fn discover_pools_shard(
             match fp.dex_type {
                 DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::TraderJoeLB | DexType::Pendle => continue,
                 _ => {}
+            }
+        }
+        // Skip pools already known from a previous discovery run (SQLite cache)
+        if let Some(cached) = config.pool_cache.and_then(|c| c.get_discovered_pool(addr).ok().flatten()) {
+            if cached.token0 != Address::ZERO && cached.token1 != Address::ZERO {
+                let dp = DiscoveredPool {
+                    address: cached.address,
+                    token0: cached.token0,
+                    token1: cached.token1,
+                    fee: cached.fee,
+                    tick_spacing: cached.tick_spacing.map(|ts| ts as i32),
+                    dex_type: cached.dex_type,
+                    creation_block: cached.creation_block,
+                    pool_id: cached.pool_id,
+                    factory: cached.factory,
+                    is_stable: cached.is_stable,
+                    balancer_pool_type: cached.balancer_pool_type,
+                    hook_address: cached.hook_address,
+                    bin_step: cached.bin_step,
+                    maturity_timestamp: cached.maturity_timestamp,
+                    underlying_tokens: cached.underlying_tokens,
+                    dex_name: cached.dex_name,
+                    token0_symbol: cached.token0_symbol,
+                    token1_symbol: cached.token1_symbol,
+                };
+                factory_pools.entry(*addr).or_insert(dp);
+                cache_hits += 1;
+                continue;
             }
         }
         match dex_type {
@@ -1433,20 +1456,6 @@ async fn discover_pools_shard(
                     (addr, dt, Some(t0), Some(t1), None, None, fsb)
                 }));
             }
-            DexType::Dodo => {
-                let rpc = rpc.clone();
-                let addr = *addr;
-                let sel_base = Bytes::from_static(&[0xe1, 0x50, 0x31, 0x08]); // _BASE_TOKEN_()
-                let sel_quote = Bytes::from_static(&[0x0f, 0xd8, 0xba, 0xfe]); // _QUOTE_TOKEN_()
-                let fsb = *first_seen_block;
-                fetch_tasks.push(Box::pin(async move {
-                    let token0 = rpc.call_latest(addr, sel_base).await.ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    let token1 = rpc.call_latest(addr, sel_quote).await.ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    (addr, DexType::Dodo, token0, token1, None, None, fsb)
-                }));
-            }
             DexType::Pendle => {
                 // Pendle markets from activity events: token0 is PT (known), token1 = SY (call PT.SY())
                 let (t0, _t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
@@ -1470,6 +1479,14 @@ async fn discover_pools_shard(
                 }));
             }
         }
+    }
+
+    let rpc_tasks = fetch_tasks.len();
+    if cache_hits > 0 {
+        tracing::info!(
+            "Pool cache: {} of {} pools served from cache ({} RPC tasks remaining)",
+            cache_hits, pool_hits_vec.len(), rpc_tasks,
+        );
     }
 
     // Bounded concurrency: limit parallel RPC calls to avoid overwhelming public RPCs
@@ -1589,7 +1606,6 @@ async fn discover_pools_shard(
             DexType::UniswapV3 => fee_opt.unwrap_or(3000),
             DexType::UniswapV4 => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
-            DexType::Dodo => fee_opt.unwrap_or(0),
             DexType::TraderJoeLB => fee_opt.unwrap_or(0),
             DexType::Pendle => fee_opt.unwrap_or(0),
         };
@@ -1825,10 +1841,6 @@ pub async fn health_check_pools(
                     tasks.push((i, vault, Bytes::from(calldata)));
                 }
             }
-            DexType::Dodo => {
-                // _target_(): uint256 — non-zero means pool has target liquidity
-                tasks.push((i, pool.address, Bytes::from(DODO_TARGET_SELECTOR.as_ref())));
-            }
         }
     }
 
@@ -1859,7 +1871,6 @@ pub async fn health_check_pools(
             let is_pendle = dex_types[idx] == DexType::Pendle;
             let is_curve = dex_types[idx] == DexType::Curve;
             let is_balancer = dex_types[idx] == DexType::Balancer;
-            let is_dodo = dex_types[idx] == DexType::Dodo;
             async move {
                 let valid = match rpc.call(to, data, block).await {
                     Ok(bytes) => {
@@ -1896,9 +1907,6 @@ pub async fn health_check_pools(
                                         }
                                     }
                                     has_balance
-                        } else if is_dodo {
-                            // _target_(): uint256 — non-zero means pool has target liquidity
-                            bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
                         } else {
                                     false
                                 }

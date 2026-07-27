@@ -244,6 +244,7 @@ async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Addr
         trader_joe_factory: None,
         pendle_factory: None,
         token_cache: None,
+        pool_cache: None,
     };
 
     match discover_pools(rpc, from, to, &disc_config, None).await {

@@ -356,7 +356,6 @@ fn two_hop_profit_at(
             };
             constant_product_output_amount(input_amount, r_a_other, r_a_shared, 0)?
         }
-        PoolState::Dodo(_) => return None,
     };
 
     let output = match pool_b {
@@ -399,7 +398,6 @@ fn two_hop_profit_at(
             };
             constant_product_output_amount(intermediate, r_b_in, r_b_out, 0)?
         }
-        PoolState::Dodo(_) => return None,
     };
 
     if output > input_amount { Some(output - input_amount) } else { None }
@@ -520,7 +518,6 @@ fn estimate_arb_pair_profit(
         PoolState::Pendle(p) => {
             if p.info.token0 == token_in { p.total_pt } else { p.total_sy }
         }
-        PoolState::Dodo(_) => return None,
     };
     let test_input = (max_input / 1000).max(1);
 

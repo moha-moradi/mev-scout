@@ -129,7 +129,7 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             bpt_index: None,
             rate_providers: vec![],
         }),
-        DexType::Solidly | DexType::Camelot | DexType::Dodo => {
+        DexType::Solidly | DexType::Camelot => {
             PoolState::UniswapV2(UniswapV2PoolState {
                 info,
                 reserve0: 0,
@@ -296,6 +296,7 @@ async fn test_e2e_pool_discovery() {
         trader_joe_factory: None,
         pendle_factory: None,
         token_cache: None,
+        pool_cache: None,
     };
     let (pools, _active) = match discover_pools(
         &rpc, start, end, &disc_config,

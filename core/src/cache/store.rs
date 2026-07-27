@@ -1273,7 +1273,6 @@ fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::pool::dex_type::DexType> {
         1 => Ok(crate::pool::dex_type::DexType::UniswapV3),
         2 => Ok(crate::pool::dex_type::DexType::Curve),
         3 => Ok(crate::pool::dex_type::DexType::Balancer),
-        4 => Ok(crate::pool::dex_type::DexType::Dodo),
         5 => Ok(crate::pool::dex_type::DexType::Solidly),
         6 => Ok(crate::pool::dex_type::DexType::Camelot),
         7 => Ok(crate::pool::dex_type::DexType::UniswapV4),

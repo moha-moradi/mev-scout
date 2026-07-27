@@ -436,7 +436,6 @@ pub enum PoolState {
     Curve(CurvePoolState),
     Balancer(BalancerPoolState),
     /// DODO pools (passive discovery only — no MEV detection support)
-    Dodo(PoolInfo),
     TraderJoeLB(TraderJoeLBPoolState),
     /// Pendle Finance AMM markets (PT/SY yield trading)
     Pendle(PendlePoolState),
@@ -450,7 +449,6 @@ impl PoolState {
             PoolState::UniswapV4(s) => s.info.address,
             PoolState::Curve(s) => s.info.address,
             PoolState::Balancer(s) => s.info.address,
-            PoolState::Dodo(s) => s.address,
             PoolState::TraderJoeLB(s) => s.info.address,
             PoolState::Pendle(s) => s.info.address,
         }
@@ -463,7 +461,6 @@ impl PoolState {
             PoolState::UniswapV4(s) => &s.info,
             PoolState::Curve(s) => &s.info,
             PoolState::Balancer(s) => &s.info,
-            PoolState::Dodo(s) => s,
             PoolState::TraderJoeLB(s) => &s.info,
             PoolState::Pendle(s) => &s.info,
         }
@@ -476,7 +473,6 @@ impl PoolState {
             PoolState::UniswapV4(s) => &mut s.info,
             PoolState::Curve(s) => &mut s.info,
             PoolState::Balancer(s) => &mut s.info,
-            PoolState::Dodo(s) => s,
             PoolState::TraderJoeLB(s) => &mut s.info,
             PoolState::Pendle(s) => &mut s.info,
         }
@@ -499,7 +495,6 @@ impl PoolState {
             PoolState::UniswapV4(_) => 120_000,
             PoolState::Curve(_) => 100_000,
             PoolState::Balancer(_) => 100_000,
-            PoolState::Dodo(_) => 0,
             PoolState::TraderJoeLB(_) => 100_000,
             PoolState::Pendle(_) => 100_000,
         }
