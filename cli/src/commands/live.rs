@@ -1,11 +1,11 @@
 use crate::cli::LiveArgs;
+use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::Config;
 use mev_scout_core::mev::execution::{LiveConfig, LiveRunner};
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
-use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::{ChainName, GasConfig, GasModel, PriceOracleMode, Strategy};
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
@@ -13,14 +13,10 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         Ok(c) => c,
         Err(e) => anyhow::bail!("{e}"),
     };
-
-    let provider_configs = config.effective_provider_configs(chain_name)?;
     let chain_id = chain_name.chain_id();
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
-    let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
-    rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
-    rpc.check_connection(chain_id).await?;
+
+    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let rpc = setup.rpc;
 
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 

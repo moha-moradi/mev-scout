@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod display;
 mod overrides;
+mod rpc_setup;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

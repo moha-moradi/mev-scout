@@ -4,6 +4,7 @@ use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::DiscoverArgs;
+use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
@@ -11,7 +12,6 @@ use mev_scout_core::dune::DuneClient;
 use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::pool::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
-use mev_scout_core::rpc::RpcClient;
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
     let (chain_name, chain_config) = validation::resolve_chain(config)
@@ -28,21 +28,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                    Consider using --batch-size 2000 for best results.", args.batch_size);
     }
 
-    let provider_configs = config.effective_provider_configs(chain_name)?;
-    validation::validate_rpc_urls(
-        &provider_configs.iter().map(|(u, _, _)| u.clone()).collect::<Vec<_>>(),
-    ).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
-    let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-    rpc.with_provider_rps(
-        &provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>(),
-    ).await;
-    rpc.with_provider_archive(
-        &provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>(),
-    ).await;
-    if use_onchain {
-        rpc.check_connection(chain_id).await?;
-    }
+    let setup = init_rpc(config, chain_name.clone(), use_onchain).await?;
+    let rpc = setup.rpc;
 
     // Determine block range: CLI flags override pool_discovery_start_block
     let (from, to) = match validation::resolve_block_range(

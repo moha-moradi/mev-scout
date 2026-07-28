@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use alloy::primitives::{keccak256, Address};
 
 use crate::cli::ReplayArgs;
+use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::replay::BlockReplayer;
-use mev_scout_core::rpc::RpcClient;
 
 pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()> {
     let (chain_name, chain_config) = match validation::validate_replay(config) {
@@ -16,12 +16,8 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
         Err(e) => anyhow::bail!("{}", e),
     };
 
-    let provider_configs = config.effective_provider_configs(chain_name)?;
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
-    let rpc = RpcClient::from_urls(&rpc_refs, chain_config.chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
-    rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
-    rpc.check_connection(chain_config.chain_id).await?;
+    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let rpc = setup.rpc;
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 
     let block_num = args.block;

@@ -336,7 +336,7 @@ async fn test_dune_guided_backtest() {
             block_count: 1,
             mode: RangeMode::Single(block),
         };
-        match fetcher.fetch_range(&resolved_fetch, None).await {
+        match fetcher.fetch_range(&resolved_fetch, None::<&fn()>).await {
             Ok(summary) => eprintln!("  Fetched block {block}: {} txs (elapsed {:.2}s)",
                 summary.total_blocks, summary.elapsed_secs),
             Err(e) => {
@@ -492,7 +492,7 @@ async fn test_synthetic_backtest_on_real_block() {
         block_count: 1,
         mode: RangeMode::Single(block),
     };
-    match fetcher.fetch_range(&resolved, None).await {
+    match fetcher.fetch_range(&resolved, None::<&fn()>).await {
         Ok(s) => eprintln!("Fetched block {block}: {} blocks", s.total_blocks),
         Err(e) => {
             eprintln!("SKIP: fetch failed: {e}");
@@ -566,7 +566,7 @@ async fn test_synthetic_backtest_on_real_block() {
 
     let handle = tokio::runtime::Handle::current();
     let replayer = BlockReplayer::new(handle, cache, rpc, CHAIN_ID);
-    let runner = BacktestRunner::new(replayer, pm, GasConfig::default());
+    let mut runner = BacktestRunner::new(replayer, pm, GasConfig::default());
 
     let result = runner.run_block(block);
     assert!(result.is_ok(), "run_block should succeed: {:?}", result.err());

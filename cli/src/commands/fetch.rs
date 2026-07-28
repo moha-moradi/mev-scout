@@ -3,12 +3,12 @@ use mev_scout_core::utils::epoch_secs;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::FetchArgs;
+use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::resolver::RangeResolver;
-use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::ChainName;
 
 pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> {
@@ -17,13 +17,9 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
         Err(e) => anyhow::bail!("{e}"),
     };
 
-    let provider_configs = config.effective_provider_configs(chain_name)?;
-    let chain_id = chain_name.chain_id();
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
-    let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
-    rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
-    rpc.check_connection(chain_id).await?;
+    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let provider_configs = setup.provider_configs;
+    let rpc = setup.rpc;
     tracing::info!("{}", rpc.provider_summary().await);
 
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;

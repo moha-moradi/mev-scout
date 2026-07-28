@@ -49,8 +49,6 @@
         "@plannotator/opencode",
         "opencode-pty",
         "@opencode/websearch-cited",
-        "oh-my-opencode",
-        "opencode-zellij-namer",
         "opencode-supermemory",
         "@openspoon/subtask2"
     ]

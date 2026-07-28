@@ -166,7 +166,7 @@ impl RpcClient {
 
     /// Get available **archive-capable** providers sorted by effective weight descending.
     ///
-    /// Used by `retry_call_archive()` to route archive-dependent RPC calls
+    /// Used by `retry_call(..., true)` to route archive-dependent RPC calls
     /// (`eth_getProof`, historical `eth_call`, `eth_getCode`, `eth_getStorageAt`,
     /// `eth_getBalance`, `eth_getTransactionCount`) to providers that support them.
     /// Non-archive providers are excluded — they are still alive for block/log workloads.
@@ -191,8 +191,9 @@ impl RpcClient {
     /// Execute an RPC call with per-provider rate limiting, priority selection
     /// (fastest + highest RPS first), and health tracking with exponential-backoff cooldown.
     ///
+    /// When `archive_only` is true, only archive-capable providers are tried.
     /// Returns the first success or the last error if all providers fail.
-    async fn retry_call<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
+    async fn retry_call<F, Fut, T>(&self, f: F, archive_only: bool) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
@@ -200,7 +201,11 @@ impl RpcClient {
         const MAX_PROVIDERS: usize = 3;
         let mut last_err = None;
 
-        let mut sorted = self.sorted_available().await;
+        let mut sorted = if archive_only {
+            self.sorted_available_archive().await
+        } else {
+            self.sorted_available().await
+        };
         let mut tried = std::collections::HashSet::new();
 
         loop {
@@ -243,8 +248,10 @@ impl RpcClient {
                             } else {
                                 p.record_failure();
                                 p.sync_rate_limiter().await;
+                                let which = if archive_only { "Archive RPC" } else { "RPC" };
                                 tracing::warn!(
-                                    "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
+                                    "{} call failed on {} (failures={}, cooldown={:?}): {e:#}",
+                                    which,
                                     p.label(),
                                     p.consecutive_failures(),
                                     p.cooldown_until(),
@@ -260,96 +267,22 @@ impl RpcClient {
                 break;
             }
 
-            // Re-lock to pick up any providers that recovered during the attempts
-            sorted = self.sorted_available().await;
+            sorted = if archive_only {
+                self.sorted_available_archive().await
+            } else {
+                self.sorted_available().await
+            };
         }
 
         match last_err {
-            Some(e) => anyhow::bail!("All RPC providers failed: {e:#}"),
-            None => anyhow::bail!("All RPC providers exhausted or in cooldown"),
-        }
-    }
-
-    /// Execute an RPC call restricted to **archive-capable** providers.
-    ///
-    /// Identical to `retry_call` but uses `sorted_available_archive()` so that
-    /// archive-dependent methods (`eth_getProof`, historical `eth_call`,
-    /// `eth_getCode`, `eth_getStorageAt`, etc.) never hit full-node providers
-    /// that would return `historical state not available` errors.
-    async fn retry_call_archive<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
-    where
-        F: Fn(RootProvider) -> Fut,
-        Fut: std::future::Future<Output = anyhow::Result<T>>,
-    {
-        const MAX_PROVIDERS: usize = 3;
-        let mut last_err = None;
-
-        let mut sorted = self.sorted_available_archive().await;
-        let mut tried = std::collections::HashSet::new();
-
-        loop {
-            let mut found_next = false;
-            for (idx, provider) in &sorted {
-                if tried.contains(idx) {
-                    continue;
-                }
-                if tried.len() >= MAX_PROVIDERS {
-                    break;
-                }
-                tried.insert(*idx);
-                found_next = true;
-
-                provider.acquire_permit().await;
-
-                let t0 = Instant::now();
-                match f(provider.provider().clone()).await {
-                    Ok(val) => {
-                        let latency = t0.elapsed();
-                        let mut provs = self.providers.lock().await;
-                        if let Some(p) = provs.get_mut(*idx) {
-                            p.record_success(latency);
-                            p.sync_rate_limiter().await;
-                        }
-                        self.current.store(*idx, Ordering::Relaxed);
-                        return Ok(val);
-                    }
-                    Err(e) => {
-                        let err_msg = format!("{e:#}");
-                        let is_evm_revert = err_msg.contains("execution reverted");
-                        let mut provs = self.providers.lock().await;
-                        if let Some(p) = provs.get_mut(*idx) {
-                            if is_evm_revert {
-                                tracing::debug!(
-                                    "EVM revert on {} (expected for non-standard tokens): {}",
-                                    p.label(),
-                                    err_msg,
-                                );
-                            } else {
-                                p.record_failure();
-                                p.sync_rate_limiter().await;
-                                tracing::warn!(
-                                    "Archive RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
-                                    p.label(),
-                                    p.consecutive_failures(),
-                                    p.cooldown_until(),
-                                );
-                            }
-                        }
-                        last_err = Some(e);
-                    }
-                }
+            Some(e) => {
+                let which = if archive_only { "archive RPC" } else { "RPC" };
+                anyhow::bail!("All {which} providers failed: {e:#}")
             }
-
-            if !found_next {
-                break;
+            None => {
+                let which = if archive_only { "archive RPC" } else { "RPC" };
+                anyhow::bail!("All {which} providers exhausted or in cooldown")
             }
-
-            sorted = self.sorted_available_archive().await;
-        }
-
-        match last_err {
-            Some(e) => anyhow::bail!("All archive RPC providers failed: {e:#}"),
-            None => anyhow::bail!("All archive RPC providers exhausted or in cooldown"),
         }
     }
 
@@ -510,7 +443,7 @@ impl RpcClient {
                 .get_block_number()
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        }, false)
         .await
     }
 
@@ -527,7 +460,7 @@ impl RpcClient {
                 .map_err(|e| anyhow::anyhow!("{}", e))?
                 .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))?;
             Ok(block.header.timestamp)
-        })
+        }, false)
         .await
     }
 
@@ -543,7 +476,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-        })
+        }, false)
         .await
     }
 
@@ -657,7 +590,7 @@ impl RpcClient {
                 Self::clean_block_transactions(&mut raw);
 
                 serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
-            })
+            }, false)
             .await?;
 
         let txs: Vec<TxData> = block
@@ -671,15 +604,7 @@ impl RpcClient {
             })
             .unwrap_or_default();
 
-        let block_data = BlockData {
-            number: block.header.number,
-            hash: block.header.hash,
-            timestamp: block.header.timestamp,
-            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
-            gas_limit: block.header.gas_limit,
-            gas_used: block.header.gas_used,
-            coinbase: block.header.beneficiary,
-        };
+        let block_data = Self::block_to_data(&block);
 
         Ok((block_data, txs))
     }
@@ -711,7 +636,7 @@ impl RpcClient {
                 Self::clean_block_transactions(&mut raw);
 
                 serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
-            })
+            }, false)
             .await?;
 
         let txs: Vec<TxData> = block
@@ -725,15 +650,7 @@ impl RpcClient {
             })
             .unwrap_or_default();
 
-        let block_data = BlockData {
-            number: block.header.number,
-            hash: block.header.hash,
-            timestamp: block.header.timestamp,
-            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
-            gas_limit: block.header.gas_limit,
-            gas_used: block.header.gas_used,
-            coinbase: block.header.beneficiary,
-        };
+        let block_data = Self::block_to_data(&block);
 
         Ok((block_data, txs))
     }
@@ -750,7 +667,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))?
                     .ok_or_else(|| anyhow::anyhow!("Receipts not found for block {}", block_number))
-            })
+            }, false)
             .await?;
 
         Ok(receipts
@@ -769,7 +686,7 @@ impl RpcClient {
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         self.retry_call(|provider| async move {
             Self::batch_rpc_call(provider, block_number).await
-        })
+        }, false)
         .await
     }
 
@@ -889,15 +806,7 @@ impl RpcClient {
             })
             .unwrap_or_default();
 
-        let block_data = BlockData {
-            number: block.header.number,
-            hash: block.header.hash,
-            timestamp: block.header.timestamp,
-            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
-            gas_limit: block.header.gas_limit,
-            gas_used: block.header.gas_used,
-            coinbase: block.header.beneficiary,
-        };
+        let block_data = Self::block_to_data(&block);
 
         Ok((block_data, txs, receipts.iter().map(alloy_receipt_to_receipt_data).collect()))
     }
@@ -918,7 +827,7 @@ impl RpcClient {
         let keys: Vec<B256> = slots.iter().map(|s| {
             B256::from(s.to_be_bytes::<32>())
         }).collect();
-        self.retry_call_archive(|provider| {
+        self.retry_call(|provider| {
             let keys = keys.clone();
             async move {
                 let proof = provider
@@ -936,7 +845,7 @@ impl RpcClient {
                     .collect();
                 Ok((proof.nonce, proof.balance, proof.code_hash, storage))
             }
-        })
+        }, true)
         .await
     }
 
@@ -947,40 +856,40 @@ impl RpcClient {
         slot: U256,
         block: u64,
     ) -> anyhow::Result<U256> {
-        self.retry_call_archive(|provider| async move {
+        self.retry_call(|provider| async move {
             provider
                 .get_storage_at(address, slot)
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        }, true)
         .await
     }
 
     /// Fetch account state (nonce, balance, bytecode) at a historical block.
     ///
     /// Fires three parallel RPC calls: `eth_getTransactionCount`, `eth_getBalance`,
-    /// `eth_getCode`. Returns `(nonce, balance, bytecode)`.
+
     pub async fn get_account(
         &self,
         address: Address,
         block: u64,
     ) -> anyhow::Result<(u64, U256, Bytes)> {
         let (nonce, balance, code) = futures::try_join!(
-            self.retry_call_archive(|provider| async move {
+            self.retry_call(|provider| async move {
                 provider
                     .get_transaction_count(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }),
-            self.retry_call_archive(|provider| async move {
+            }, true),
+            self.retry_call(|provider| async move {
                 provider
                     .get_balance(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }),
+            }, true),
             self.get_code(address, block),
         )?;
         Ok((nonce, balance, code))
@@ -988,13 +897,13 @@ impl RpcClient {
 
     /// Fetch contract bytecode at a historical block via `eth_getCode`.
     pub async fn get_code(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call_archive(|provider| async move {
+        self.retry_call(|provider| async move {
             provider
                 .get_code_at(address)
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        }, true)
         .await
     }
 
@@ -1030,7 +939,7 @@ impl RpcClient {
                 .get_chain_id()
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        })
+        }, false)
         .await
     }
 
@@ -1084,7 +993,7 @@ impl RpcClient {
 
     /// Execute an `eth_call` at a specific block.
     async fn call_at(&self, to: Address, data: Bytes, block: BlockId) -> anyhow::Result<Bytes> {
-        self.retry_call_archive(|provider| {
+        self.retry_call(|provider| {
             let data = data.clone();
             async move {
                 let request = TransactionRequest::default()
@@ -1096,7 +1005,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-        })
+        }, true)
         .await
     }
 
@@ -1127,7 +1036,7 @@ impl RpcClient {
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             Ok(raw.to::<u128>())
-        })
+        }, false)
         .await
     }
 
@@ -1143,6 +1052,18 @@ impl RpcClient {
     /// Returns the priority fee in wei.
     pub async fn get_max_priority_fee(&self) -> anyhow::Result<u128> {
         self.fetch_u128_metric("eth_maxPriorityFeePerGas").await
+    }
+
+    fn block_to_data(block: &Block) -> BlockData {
+        BlockData {
+            number: block.header.number,
+            hash: block.header.hash,
+            timestamp: block.header.timestamp,
+            base_fee_per_gas: block.header.base_fee_per_gas.map(|v| v as u128),
+            gas_limit: block.header.gas_limit,
+            gas_used: block.header.gas_used,
+            coinbase: block.header.beneficiary,
+        }
     }
 
 }

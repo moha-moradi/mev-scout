@@ -136,7 +136,7 @@ pub async fn simulate_pending_tx_pool_impact(
     match tx.to {
         Some(to) => {
             match rpc.call(to, tx.input.clone(), sim_block).await {
-                Ok(ref result) if !result.is_empty() || true => {
+                Ok(_) => {
                     // Tx succeeded — return estimated pool effects
                     effects
                 }

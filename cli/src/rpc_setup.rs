@@ -19,7 +19,7 @@ pub async fn init_rpc(
     rpc.with_provider_rps(
         &provider_configs
             .iter()
-            .map(|(_, r, _)| r.unwrap_or(config.rpc.rps_limit))
+            .map(|(_, r, _)| r.unwrap_or(config.rps_limit))
             .collect::<Vec<_>>(),
     )
     .await;
