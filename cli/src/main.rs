@@ -5,6 +5,7 @@ mod display;
 mod overrides;
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use clap::Parser;
 use mev_scout_core::utils::epoch_secs;
@@ -14,7 +15,7 @@ use crate::cli::{Cli, Command};
 use mev_scout_core::config::Config;
 
 /// Guard that keeps the non-blocking file writer alive for the process lifetime.
-static mut _LOG_GUARD: Option<tracing_appender::non_blocking::WorkerGuard> = None;
+static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
 
 fn setup_logging(verbose: bool, quiet: bool, log_file: Option<PathBuf>) {
     let filter = if quiet {
@@ -38,7 +39,7 @@ fn setup_logging(verbose: bool, quiet: bool, log_file: Option<PathBuf>) {
         let file = std::fs::File::create(&path).expect("Failed to create log file");
         let (non_blocking, guard) = tracing_appender::non_blocking(file);
         // Store guard in a static to keep it alive
-        unsafe { _LOG_GUARD = Some(guard); }
+        let _ = LOG_GUARD.set(guard);
         subscriber.with_writer(non_blocking).init();
     } else {
         subscriber.init();

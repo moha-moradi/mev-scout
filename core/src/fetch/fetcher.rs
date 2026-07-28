@@ -170,7 +170,7 @@ impl Fetcher {
         }));
 
         let timing = self.timing.clone();
-        let fetch = self as *const Self;
+        let fetch = self.clone();
 
         let mut range_handles = Vec::new();
 
@@ -193,9 +193,10 @@ impl Fetcher {
                 let s = summary.clone();
                 let t = timing.clone();
                 let run_len = run_end - run_start + 1;
+                let fetch = fetch.clone();
                 range_handles.push(async move {
                     let _permit = sem.acquire_owned().await?;
-                    let n = unsafe { &*fetch }
+                    let n = fetch
                         .fetch_contiguous_range(run_start, run_end, t, progress, Some(provider_idx))
                         .await?;
                     let mut sum = s.lock().await;
@@ -470,15 +471,16 @@ impl Fetcher {
         }));
 
         let timing = self.timing.clone();
-        let fetch = self as *const Self;
+        let fetch = self.clone();
         let mut range_handles = Vec::new();
         for &(run_start, run_end) in &ranges {
             let sem = semaphore.clone();
             let s = summary.clone();
             let t = timing.clone();
+            let fetch = fetch.clone();
             range_handles.push(async move {
                 let _permit = sem.acquire_owned().await?;
-                let n = unsafe { &*fetch }
+                let n = fetch
                     .fetch_contiguous_range(run_start, run_end, t, progress, None)
                     .await?;
                 let mut sum = s.lock().await;

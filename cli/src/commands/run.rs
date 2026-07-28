@@ -5,6 +5,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::RunArgs;
 use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json};
+use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
@@ -13,7 +14,6 @@ use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::RangeResolver;
-use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::{GasConfig, ResultsFile};
 
 pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
@@ -23,12 +23,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     };
     print_startup_plan(&validation_result, config);
 
-    let provider_configs = config.effective_provider_configs(validation_result.chain_name)?;
-    let rpc_refs: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
-    let rpc = RpcClient::from_urls(&rpc_refs, validation_result.chain_config.chain_id)?;
-    rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
-    rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
-    rpc.check_connection(validation_result.chain_config.chain_id).await?;
+    let setup = init_rpc(config, validation_result.chain_name, true).await?;
+    let provider_configs = setup.provider_configs;
+    let rpc = setup.rpc;
     let cache = SqliteStore::open(&config.effective_db_path(&validation_result.chain_name))?;
 
     let resolver = RangeResolver::new(rpc.clone());

@@ -1,16 +1,78 @@
 {
     "$schema": "https://opencode.ai/config.json",
+    "provider": {
+        "opencode": {
+            "models": {
+                "big-pickle": {
+                    "options": {
+                        "reasoningEffort": "high"
+                    }
+                },
+                "deepseek-v4-flash": {
+                    "variants": {
+                        "max": {
+                            "reasoningEffort": "max"
+                        }
+                    }
+                }
+            }
+        },
+        "openrouter": {
+            "models": {
+                "google/gemma-4-31b-it:free": {
+                    "name": "Gemma 4 31B (Free)"
+                }
+            }
+        }
+    },
     "plugin": [
+        [
+            "@skwid138/opencode-council",
+            {
+                "council": {
+                    "models": [
+                        {
+                            "providerID": "opencode",
+                            "modelID": "big-pickle"
+                        },
+                        {
+                            "providerID": "opencode",
+                            "modelID": "deepseek-v4-flash-free"
+                        },
+                        {
+                            "providerID": "opencode",
+                            "modelID": "mimo-v2.5-free"
+                        },
+                        {
+                            "providerID": "opencode",
+                            "modelID": "ling-3.0-flash-free"
+                        },
+                        {
+                            "providerID": "opencode",
+                            "modelID": "nemotron-3-ultra-free"
+                        },
+                        {
+                            "providerID": "opencode",
+                            "modelID": "north-mini-code-free"
+                        },
+                        {
+                            "providerID": "openrouter",
+                            "modelID": "google/gemma-4-31b-it:free"
+                        }
+                    ],
+                    "quorum": 3,
+                    "debug": false,
+                    "reviewer_temperature": 0.3
+                }
+            }
+        ],
         "envsitter-guard",
         "opencode-worktree",
-        "opencode-skills",
+        "opencode-skillful",
         "@plannotator/opencode",
-        "@tarquinen/opencode-dcp@latest",
-        "@opencode/pty-server",
         "opencode-pty",
         "@opencode/websearch-cited",
         "oh-my-opencode",
-        "opencode-skillful",
         "opencode-zellij-namer",
         "opencode-supermemory",
         "@openspoon/subtask2"

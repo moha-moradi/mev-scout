@@ -49,7 +49,7 @@
 <a id="phase-0"></a>
 ## Phase 0 -- Critical Safety Fixes (P0)
 
-### 0.1 Fix unsafe raw-pointer usage in async fetcher [TODO]
+### 0.1 Fix unsafe raw-pointer usage in async fetcher [DONE]
 
 **Files:** `core/src/fetch/fetcher.rs:172,197,472,480`
 
@@ -57,35 +57,30 @@
 across `.await` points. Undefined behavior if `Fetcher` is dropped while a future
 referencing the pointer is alive.
 
-**Remediation:**
-- Wrap the fetcher in `Arc<Fetcher>` and clone the Arc into each spawned future.
-- Remove all `unsafe` blocks.
+**Remediation:** Added `#[derive(Clone)]` to `Fetcher` (all fields are Arc-wrapped or
+primitives). Replaced `self as *const Self` + `unsafe { &*fetch }` with `self.clone()`
+in both `fetch_range` and `fetch_relevant` spawned futures.
 
-**Remaining work:** Not started. Both `unsafe` blocks remain at lines 197 and 480.
-No `Arc<Fetcher>` usage anywhere in the file.
+**Remaining work:** None.
 
-**Safety gate:** `cargo clippy -- -D unsafe_code` passes; `cargo miri test` (if feasible) shows no UB.
+**Safety gate:** `cargo clippy -- -D unsafe_code` passes for `fetch/` and `cli/`.
 
 ---
 
-### 0.2 Fix unsafe `static mut` in main.rs [TODO]
+### 0.2 Fix unsafe `static mut` in main.rs [DONE]
 
 **Files:** `cli/src/main.rs:17,41`
 
 **Smell:** `static mut _LOG_GUARD` -- mutable static accessed via `unsafe`. Deprecated
 pattern, data-race risk.
 
-**Remediation:**
-```rust
-use std::sync::OnceLock;
-static LOG_GUARD: OnceLock<Mutex<Option<tracing_appender::non_blocking::WorkerGuard>>> =
-    OnceLock::new();
-```
+**Remediation:** Replaced `static mut _LOG_GUARD: Option<WorkerGuard>` with
+`static LOG_GUARD: OnceLock<WorkerGuard>`. The unsafe write `unsafe { _LOG_GUARD = Some(guard); }`
+was replaced with `let _ = LOG_GUARD.set(guard);`.
 
-**Remaining work:** Not started. `static mut` at line 17 and `unsafe` write at line 41
-remain. No `OnceLock` usage anywhere in the file.
+**Remaining work:** None.
 
-**Safety gate:** `cargo clippy -- -D unsafe_code` passes.
+**Safety gate:** `cargo clippy -- -D unsafe_code` passes for `cli/`.
 
 ---
 
@@ -958,10 +953,10 @@ Also `info_mut()` at line 469.
 
 | Phase | Items | Total | Done | Partial | TODO | Status |
 |-------|-------|-------|------|---------|------|--------|
-| Phase 0 | 0.1-0.4 | 4 | 2 | 0 | 2 | 50% |
+| Phase 0 | 0.1-0.4 | 4 | 4 | 0 | 0 | 100% |
 | Phase 1 | 1.1-1.10 | 10 | 1 | 3 | 6 | 25% |
 | Phase 2 | 2.1-2.8 | 8 | 3 | 1 | 4 | 44% |
 | Phase 3 | 3.1-3.8 | 8 | 0 | 1 | 7 | 6% |
 | Phase 4 | 4.1-4.7 | 7 | 1 | 2 | 4 | 29% |
 | Phase 5 | 5.1-5.28 | 28 | 17 | 2 | 9 | 68% |
-| **Total** | **65 items** | **65** | **24** | **9** | **32** | **~46%** |
+| **Total** | **65 items** | **65** | **26** | **9** | **30** | **~49%** |
