@@ -74,6 +74,7 @@ pub struct FetchSummary {
     pub phase_flush_ms: f64,
 }
 
+#[derive(Clone)]
 pub struct Fetcher {
     rpc: RpcClient,
     cache: SqliteStore,

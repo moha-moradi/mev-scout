@@ -7,6 +7,12 @@
         "@plannotator/opencode",
         "@tarquinen/opencode-dcp@latest",
         "@opencode/pty-server",
-        "@opencode/websearch-cited"
+        "opencode-pty",
+        "@opencode/websearch-cited",
+        "oh-my-opencode",
+        "opencode-skillful",
+        "opencode-zellij-namer",
+        "opencode-supermemory",
+        "@openspoon/subtask2"
     ]
 }
