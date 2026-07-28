@@ -127,11 +127,8 @@ static PENDLE_SY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
-/// Trait for updating V3/V4 concentrated liquidity pool state fields.
 trait ConcentratedPoolState {
     fn set_concentrated_state(&mut self, sqrt: U256, tick: i32, liq: u128, ticks: std::collections::BTreeMap<i32, i128>);
-    fn ticks_len(&self) -> usize;
-    fn sqrt_price(&self) -> U256;
 }
 
 impl ConcentratedPoolState for UniswapV3PoolState {
@@ -141,8 +138,6 @@ impl ConcentratedPoolState for UniswapV3PoolState {
         self.liquidity = liq;
         self.ticks = ticks;
     }
-    fn ticks_len(&self) -> usize { self.ticks.len() }
-    fn sqrt_price(&self) -> U256 { self.sqrt_price_x96 }
 }
 
 impl ConcentratedPoolState for UniswapV4PoolState {
@@ -152,8 +147,6 @@ impl ConcentratedPoolState for UniswapV4PoolState {
         self.liquidity = liq;
         self.ticks = ticks;
     }
-    fn ticks_len(&self) -> usize { self.ticks.len() }
-    fn sqrt_price(&self) -> U256 { self.sqrt_price_x96 }
 }
 
 impl PoolManager {

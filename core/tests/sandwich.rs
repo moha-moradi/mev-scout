@@ -146,7 +146,7 @@ fn test_jit_detection_synthetic() {
         data.extend_from_slice(&padded);
         ExecutedLog {
             address: pool,
-            topics: vec![*V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
             data: data.into(),
         }
     }
@@ -305,7 +305,7 @@ fn test_jit_arb_detection_synthetic() {
         data.extend_from_slice(&padded);
         ExecutedLog {
             address: pool,
-            topics: vec![*V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
             data: data.into(),
         }
     }

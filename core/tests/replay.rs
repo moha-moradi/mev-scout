@@ -280,7 +280,7 @@ fn test_runner_proximity_window() {
         data.extend_from_slice(&padded);
         ExecutedLog {
             address: pool,
-            topics: vec![*V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
             data: data.into(),
         }
     }

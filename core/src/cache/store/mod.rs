@@ -223,17 +223,13 @@ impl SqliteStore {
             ",
         )?;
 
-        // Ensure schema_version has a row
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_version (version) VALUES (0)",
-            [],
-        )?;
-
-        let current_version: u64 = conn.query_row(
-            "SELECT version FROM schema_version",
-            [],
-            |row| row.get::<_, i64>(0).map(|v| v as u64),
-        )?;
+        let current_version: u64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |row| row.get::<_, i64>(0).map(|v| v as u64),
+            )
+            .unwrap_or(0);
 
         if current_version < Self::SCHEMA_VERSION {
             self.run_migrations(&conn, current_version)?;
