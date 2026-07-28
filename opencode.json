@@ -16,13 +16,6 @@
                     }
                 }
             }
-        },
-        "openrouter": {
-            "models": {
-                "google/gemma-4-31b-it:free": {
-                    "name": "Gemma 4 31B (Free)"
-                }
-            }
         }
     },
     "plugin": [
@@ -41,23 +34,7 @@
                         },
                         {
                             "providerID": "opencode",
-                            "modelID": "mimo-v2.5-free"
-                        },
-                        {
-                            "providerID": "opencode",
-                            "modelID": "ling-3.0-flash-free"
-                        },
-                        {
-                            "providerID": "opencode",
                             "modelID": "nemotron-3-ultra-free"
-                        },
-                        {
-                            "providerID": "opencode",
-                            "modelID": "north-mini-code-free"
-                        },
-                        {
-                            "providerID": "openrouter",
-                            "modelID": "google/gemma-4-31b-it:free"
                         }
                     ],
                     "quorum": 3,
