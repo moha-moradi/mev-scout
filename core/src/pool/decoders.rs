@@ -1,6 +1,6 @@
 //! Event log decoders for Uniswap V2/V3, Curve, and Balancer pool interactions.
 
-use alloy::primitives::{b256, keccak256, Address, B256, U256};
+use alloy::primitives::{b256, Address, B256, U256};
 
 use crate::data::ExecutedLog;
 use crate::utils::u128_from_be_bytes;
@@ -9,28 +9,28 @@ use crate::utils::u128_from_be_bytes;
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
 /// Uniswap V3: Mint(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
-pub static V3_MINT_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)"));
+pub const V3_MINT_TOPIC: B256 =
+    b256!("c323fff568ad2fe0209b149704f229671b4eba951aeed98be07a6e1a07c34dd7");
 /// Uniswap V3: Burn(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
 pub const V3_BURN_TOPIC: B256 =
     b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
 /// Curve: TokenExchange(address buyer, int128 coin_sold, uint256 amount_sold, int128 coin_bought, uint256 amount_bought)
-pub static CURVE_TOKEN_EXCHANGE_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256)"));
+pub const CURVE_TOKEN_EXCHANGE_TOPIC: B256 =
+    b256!("c55585ff3bfce0c9464a33a97ee0b031ca9555e103e1684770dca3311d769fe9");
 /// Curve v2: TokenExchange(address buyer, int128 sold_id, uint256 tokens_sold, int128 bought_id, uint256 tokens_bought)
-pub static CURVE_V2_TOKEN_EXCHANGE_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
+pub const CURVE_V2_TOKEN_EXCHANGE_TOPIC: B256 =
+    b256!("9f586ef8f430130fa2ce9c4aeb45fa4c37f2d0e79abe7f4f039ad7fceaaea7c4");
 /// Balancer V2: Swap(bytes32 indexed poolId, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut)
-pub static BALANCER_SWAP_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
+pub const BALANCER_SWAP_TOPIC: B256 =
+    b256!("fb412c811a17d1a8ad0ecab229fb91d821f5bbe210a5a6feae3dc626faf608d1");
 
 /// Trader Joe V2 LB: Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed tokenIn, address indexed tokenOut)
-pub static LB_SWAP_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("Swap(address,uint256,uint256,address,address)"));
+pub const LB_SWAP_TOPIC: B256 =
+    b256!("471ecc56e700fb8a2507cd80eddcee4766779c9c463acc6e95754876cad5a351");
 
 /// Pendle Market: Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)
-pub static PENDLE_SWAP_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("Swap(address,bool,uint256,uint256,address)"));
+pub const PENDLE_SWAP_TOPIC: B256 =
+    b256!("a98cde8f489864e7d7a5c03592c98faaf8e6761ef998532b4be69213f5f41047");
 
 /// Result of decoding a V3 Swap event.
 #[derive(Debug, Clone)]

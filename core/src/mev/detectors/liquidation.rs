@@ -29,8 +29,7 @@ static REPAY_TOPIC: std::sync::LazyLock<B256> =
 /// Default fallback constants when on-chain reserve data is unavailable.
 const FALLBACK_LIQUIDATION_THRESHOLD_BPS: u16 = 8000; // 80.00%
 const FALLBACK_LIQUIDATION_BONUS_BPS: u16 = 500; // 5.00%
-#[allow(dead_code)]
-const FALLBACK_LTV_BPS: u16 = 7500; // 75.00%
+
 const MAX_CLOSE_FACTOR_NUM: u128 = 50; // 50%
 const MAX_CLOSE_FACTOR_DEN: u128 = 100;
 const LIQUIDATION_GAS_LIMIT: u64 = 180_000;
@@ -145,8 +144,6 @@ struct LiquidationEvent {
     tx_index: usize,
     collateral_asset: Address,
     debt_asset: Address,
-    #[allow(dead_code)]
-    user: Address,
     debt_to_cover: u128,
     liquidated_collateral_amount: u128,
 }
@@ -256,7 +253,6 @@ impl LiquidationDetector {
                 tx_index,
                 collateral_asset,
                 debt_asset,
-                user,
                 debt_to_cover,
                 liquidated_collateral_amount: liquidated_collateral,
             });

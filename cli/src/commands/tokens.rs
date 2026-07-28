@@ -16,7 +16,7 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
     let api_key = args.dune_api_key.as_deref()
         .or(config.dune_api_key.as_deref())
         .ok_or_else(|| anyhow::anyhow!(
-            "Dune API key required. Set --dune-api-key or configure dune_api_key in mev-scout.toml"
+            "dune API key required (set --dune-api-key or configure dune_api_key in config)"
         ))?;
 
     let dune = DuneClient::new(api_key);
@@ -28,8 +28,7 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
         "new" | "newly-launched" | "newlylaunched" => TokenFilter::NewlyLaunched { days: args.days },
         "tvl" => TokenFilter::Tvl { days: args.days, top: args.top },
         other => anyhow::bail!(
-            "Unknown filter '{}'. Use: all, active, new, tvl",
-            other
+            "unknown filter '{other}' (use: all, active, new, tvl)"
         ),
     };
 
@@ -63,7 +62,7 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
     // Persist to SQLite cache (unless --no-cache)
     if !args.no_cache {
         let cache_path = config.effective_db_path(&chain_name);
-        let cache = SqliteStore::open(&cache_path, chain_id)?;
+        let cache = SqliteStore::open(&cache_path)?;
         let mut token_cache = TokenCache::warm(chain_id);
         match TokenCache::load(&cache) {
             Ok(persisted) => token_cache.merge(persisted),

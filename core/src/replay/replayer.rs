@@ -439,19 +439,7 @@ impl BlockReplayer {
             end
         );
 
-        let state_block = block_num.saturating_sub(1);
-        let inner_db = CachedRpcDb::new(
-            self.handle.clone(),
-            self.cache.clone(),
-            self.rpc.clone(),
-            self.chain_id,
-            state_block,
-        );
-        let mut cache_db = CacheDB::new(inner_db);
-
-        if self.chain_id == 137 {
-            register_polygon_precompiles(&mut cache_db, block_num)?;
-        }
+        let cache_db = self.create_db_for_block(block_num)?;
 
         let cfg_env = self.build_cfg_env(block_num);
         let block_env = self.build_block_env(&_block);
@@ -536,19 +524,7 @@ impl BlockReplayer {
         let (block, txs) = self.load_block_data(block_num)?;
         let receipts = self.load_receipts(block_num)?;
 
-        let state_block = block_num.saturating_sub(1);
-        let inner_db = CachedRpcDb::new(
-            self.handle.clone(),
-            self.cache.clone(),
-            self.rpc.clone(),
-            self.chain_id,
-            state_block,
-        );
-        let mut cache_db = CacheDB::new(inner_db);
-
-        if self.chain_id == 137 {
-            register_polygon_precompiles(&mut cache_db, block_num)?;
-        }
+        let cache_db = self.create_db_for_block(block_num)?;
 
         let cfg_env = self.build_cfg_env(block_num);
         let block_env = self.build_block_env(&block);
@@ -613,19 +589,7 @@ impl BlockReplayer {
         let (block, txs) = self.load_block_data(block_num)?;
         let receipts = self.load_receipts(block_num)?;
 
-        let state_block = block_num.saturating_sub(1);
-        let inner_db = CachedRpcDb::new(
-            self.handle.clone(),
-            self.cache.clone(),
-            self.rpc.clone(),
-            self.chain_id,
-            state_block,
-        );
-        let mut cache_db = CacheDB::new(inner_db);
-
-        if self.chain_id == 137 {
-            register_polygon_precompiles(&mut cache_db, block_num)?;
-        }
+        let cache_db = self.create_db_for_block(block_num)?;
 
         let cfg_env = self.build_cfg_env(block_num);
         let block_env = self.build_block_env(&block);
@@ -672,6 +636,24 @@ impl BlockReplayer {
         }
 
         Ok(())
+    }
+
+    /// Create a fresh `CacheDB<CachedRpcDb>` for replaying `block_num`.
+    /// Registers Polygon precompiles when chain_id == 137.
+    fn create_db_for_block(&self, block_num: u64) -> anyhow::Result<CacheDB<CachedRpcDb>> {
+        let state_block = block_num.saturating_sub(1);
+        let inner_db = CachedRpcDb::new(
+            self.handle.clone(),
+            self.cache.clone(),
+            self.rpc.clone(),
+            self.chain_id,
+            state_block,
+        );
+        let mut cache_db = CacheDB::new(inner_db);
+        if self.chain_id == 137 {
+            register_polygon_precompiles(&mut cache_db, block_num)?;
+        }
+        Ok(cache_db)
     }
 
     /// Build an `ExecutedTx` from cached receipt data without EVM execution.

@@ -25,7 +25,7 @@ pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainCo
     let chain_name: ChainName = config
         .chain
         .parse()
-        .map_err(|e: String| ConfigError::Validation(format!("Error: {e}")))?;
+        .map_err(|e| ConfigError::Validation(format!("Error: {e}")))?;
 
     let chain_config = config
         .chains
@@ -62,23 +62,6 @@ pub fn validate_rpc_urls(urls: &[String]) -> std::result::Result<(), ConfigError
         validate_rpc_url(url)?;
     }
     Ok(())
-}
-
-fn count_set_flags(cfg: &Config) -> Vec<&'static str> {
-    let mut flags = Vec::new();
-    if cfg.days.is_some() {
-        flags.push("--days");
-    }
-    if cfg.blocks.is_some() {
-        flags.push("--blocks");
-    }
-    if cfg.block.is_some() {
-        flags.push("--block");
-    }
-    if cfg.from_block.is_some() || cfg.to_block.is_some() {
-        flags.push("--from-block/--to-block");
-    }
-    flags
 }
 
 /// Resolve a `RangeMode` from individual block range CLI arguments.
@@ -162,42 +145,36 @@ fn check_range_conflicts(cfg: &Config) -> std::result::Result<RangeMode, ConfigE
 pub fn validate_replay(config: &Config) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let active = count_set_flags(config);
-    if active.len() > 1 {
-        return Err(ConfigError::Validation(format!(
-            "Error: {} cannot be used together.\n\
-             Use exactly one of: --days, --blocks, --block, or --from-block/--to-block.",
-            active.join(" and ")
-        )));
-    }
-
-    let from = config.from_block;
-    let to = config.to_block;
-    if (from.is_some() && to.is_none()) || (from.is_none() && to.is_some()) {
-        return Err(ConfigError::Validation(
-            "Error: --from-block and --to-block must be used together.".to_string(),
-        ));
-    }
-
-    if config.days.is_some() {
-        return Err(ConfigError::Validation(
-            "Error: --days is not supported by the replay subcommand. Use --block instead.".to_string(),
-        ));
-    }
-    if config.blocks.is_some() {
-        return Err(ConfigError::Validation(
-            "Error: --blocks is not supported by the replay subcommand. Use --block instead.".to_string(),
-        ));
-    }
-    if config.from_block.is_some() || config.to_block.is_some() {
-        return Err(ConfigError::Validation(
-            "Error: --from-block/--to-block is not supported by the replay subcommand. Use --block instead.".to_string(),
-        ));
-    }
-    if config.block.is_none() || config.block == Some(0) {
-        return Err(ConfigError::Validation(
-            "Error: --block is required for the replay subcommand and must be > 0.".to_string(),
-        ));
+    match resolve_block_range(config.days, config.blocks, config.block, config.from_block, config.to_block) {
+        Ok(RangeMode::Single(b)) if b > 0 => {},
+        Ok(RangeMode::Single(_)) => {
+            return Err(ConfigError::Validation(
+                "Error: --block must be > 0.".to_string(),
+            ));
+        }
+        Ok(RangeMode::Days(_)) => {
+            return Err(ConfigError::Validation(
+                "Error: --days is not supported by the replay subcommand. Use --block instead.".to_string(),
+            ));
+        }
+        Ok(RangeMode::Blocks(_)) => {
+            return Err(ConfigError::Validation(
+                "Error: --blocks is not supported by the replay subcommand. Use --block instead.".to_string(),
+            ));
+        }
+        Ok(RangeMode::Range(_, _)) => {
+            return Err(ConfigError::Validation(
+                "Error: --from-block/--to-block is not supported by the replay subcommand. Use --block instead.".to_string(),
+            ));
+        }
+        Err(e) => {
+            // If resolve_block_range returned an error (e.g. no flags set), map it to the
+            // replay-specific missing --block error.
+            let _ = e;
+            return Err(ConfigError::Validation(
+                "Error: --block is required for the replay subcommand and must be > 0.".to_string(),
+            ));
+        }
     }
 
     if let Some(url) = &config.rpc_url {
@@ -214,7 +191,7 @@ pub fn validate_and_resolve(config: &Config) -> std::result::Result<ValidationRe
 pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config.flash_loan_provider.parse().map_err(|e: String| {
+    let provider: FlashLoanProvider = config.flash_loan_provider.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 
@@ -258,11 +235,11 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
         validate_rpc_urls(&config.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config.gas_model.parse().map_err(|e: String| {
+    let gas_model: GasModel = config.gas_model.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 
-    let _output: OutputFormat = config.output.parse().map_err(|e: String| {
+    let _output: OutputFormat = config.output.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 

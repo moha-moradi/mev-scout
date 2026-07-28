@@ -11,11 +11,11 @@ pub async fn cmd_report(_config: &Config, args: &ReportArgs) -> anyhow::Result<(
         Some(id) => id.clone(),
         None => {
             if !dir.exists() {
-                anyhow::bail!("Error: export directory '{}' does not exist.", export_path);
+                anyhow::bail!("export directory '{export_path}' does not exist");
             }
             let entries = match std::fs::read_dir(dir) {
                 Ok(entries) => entries,
-                Err(e) => anyhow::bail!("Error reading export directory: {}", e),
+                Err(e) => anyhow::bail!("error reading export directory ({e})"),
             };
             let mut entries: Vec<_> = entries
                 .filter_map(|e| e.ok())
@@ -29,14 +29,14 @@ pub async fn cmd_report(_config: &Config, args: &ReportArgs) -> anyhow::Result<(
                     let stem = entry.path().file_stem().expect("File path has no stem").to_string_lossy().to_string();
                     stem
                 }
-                None => anyhow::bail!("No results files found in '{}'", export_path),
+                None => anyhow::bail!("no results files found in '{export_path}'"),
             }
         }
     };
 
     let path = dir.join(format!("{}.json", run_id));
     if !path.exists() {
-        anyhow::bail!("Error: results file not found: {}", path.display());
+        anyhow::bail!("results file not found ({})", path.display());
     }
 
     let json_str = std::fs::read_to_string(&path)

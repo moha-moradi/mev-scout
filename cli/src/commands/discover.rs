@@ -58,9 +58,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             if err_msg.contains("no block range specified") {
                 let from = chain_config.pool_discovery_start_block
                     .ok_or_else(|| anyhow::anyhow!(
-                        "No block range specified and no pool_discovery_start_block configured for chain '{}'. \
-                         Use --days, --blocks, --block, or --from-block/--to-block.",
-                        chain_name
+                        "no block range specified and no pool_discovery_start_block configured for chain '{chain_name}' \
+                         (use --days, --blocks, --block, or --from-block/--to-block)"
                     ))?;
                 let to = rpc.get_block_number().await?;
                 tracing::info!(
@@ -76,7 +75,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
     // ── Open cache once and reuse ──
     let cache_path = config.effective_db_path(&chain_name);
-    let cache = SqliteStore::open(&cache_path, chain_id)?;
+    let cache = SqliteStore::open(&cache_path)?;
 
     // ── Load token symbol cache (SQLite + pre-populated known tokens) ──
     let mut token_cache = TokenCache::warm(chain_id);

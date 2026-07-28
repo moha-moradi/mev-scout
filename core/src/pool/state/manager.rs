@@ -341,6 +341,38 @@ impl PoolManager {
         }
     }
 
+    /// Given V3/V4 sqrt price, liquidity, and token ordering, compute
+    /// (tvl, tvl * price) as a TVL proxy for on-chain price oracle weighting.
+    fn sqrt_price_reserves(
+        token0: &Address,
+        native: &Address,
+        sqrt_price_x96: U256,
+        liquidity: u128,
+    ) -> Option<(u128, u128)> {
+        if liquidity == 0 { return None; }
+        let tvl = liquidity;
+        // Use sqrt price for direction: if native is token0,
+        // price = (sqrtPriceX96 / 2^96)^2 token1 per token0
+        let price = if *token0 == *native {
+            let sqrt = sqrt_price_x96;
+            if sqrt.is_zero() { return None; }
+            let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
+            let p = p_u256.to::<u128>();
+            if p == 0 { return None; }
+            p
+        } else {
+            let sqrt = sqrt_price_x96;
+            if sqrt.is_zero() { return None; }
+            let one: U256 = U256::from(1u128) << 192;
+            let inv: U256 = one / sqrt;
+            let p_u256: U256 = inv.saturating_mul(inv) >> 192;
+            let p = p_u256.to::<u128>();
+            if p == 0 { return None; }
+            p
+        };
+        Some((tvl, tvl.saturating_mul(price)))
+    }
+
     /// Derive native token USD price from the highest-TVL pool that pairs
     /// wrapped native with a stablecoin (USDC, USDT, DAI).
     /// Returns `None` if no suitable pool is found.
@@ -363,54 +395,26 @@ impl PoolManager {
                     }
                 }
                 PoolState::UniswapV3(v3) => {
-                    // V3 native/stable pools aren't typically used for price
-                    // estimation; skip V3 and prefer V2/Curve/Balancer
-                    if v3.liquidity == 0 { continue; }
-                    let tvl = v3.liquidity;
-                    // Use sqrt price for direction: if native is token0,
-                    // price = (sqrtPriceX96 / 2^96)^2 token1 per token0
-                    let price = if v3.info.token0 == native {
-                        let sqrt = v3.sqrt_price_x96;
-                        if sqrt.is_zero() { continue; }
-                        let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
-                        let p = p_u256.to::<u128>();
-                        if p == 0 { continue; }
-                        p
-                    } else {
-                        let sqrt = v3.sqrt_price_x96;
-                        if sqrt.is_zero() { continue; }
-                        let one: U256 = U256::from(1u128) << 192;
-                        let inv: U256 = one / sqrt;
-                        let p_u256: U256 = inv.saturating_mul(inv) >> 192;
-                        let p = p_u256.to::<u128>();
-                        if p == 0 { continue; }
-                        p
-                    };
-                    // Use (reserve_native, reserve_stable * price) as TVL proxy
-                    // Higher TVL means more reliable price
-                    (tvl, tvl.saturating_mul(price))
+                    match Self::sqrt_price_reserves(
+                        &v3.info.token0,
+                        &native,
+                        v3.sqrt_price_x96,
+                        v3.liquidity,
+                    ) {
+                        Some(r) => r,
+                        None => continue,
+                    }
                 }
                 PoolState::UniswapV4(v4) => {
-                    if v4.liquidity == 0 { continue; }
-                    let tvl = v4.liquidity;
-                    let price = if v4.info.token0 == native {
-                        let sqrt = v4.sqrt_price_x96;
-                        if sqrt.is_zero() { continue; }
-                        let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
-                        let p = p_u256.to::<u128>();
-                        if p == 0 { continue; }
-                        p
-                    } else {
-                        let sqrt = v4.sqrt_price_x96;
-                        if sqrt.is_zero() { continue; }
-                        let one: U256 = U256::from(1u128) << 192;
-                        let inv: U256 = one / sqrt;
-                        let p_u256: U256 = inv.saturating_mul(inv) >> 192;
-                        let p = p_u256.to::<u128>();
-                        if p == 0 { continue; }
-                        p
-                    };
-                    (tvl, tvl.saturating_mul(price))
+                    match Self::sqrt_price_reserves(
+                        &v4.info.token0,
+                        &native,
+                        v4.sqrt_price_x96,
+                        v4.liquidity,
+                    ) {
+                        Some(r) => r,
+                        None => continue,
+                    }
                 }
                 PoolState::Curve(curve) => {
                     let idx_native = curve.token_index.get(&native)?;

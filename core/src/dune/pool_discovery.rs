@@ -89,26 +89,7 @@ pub async fn discover_v2_pools_from_dune(
             if t0 == Address::ZERO || t1 == Address::ZERO || t0 == t1 {
                 continue;
             }
-            pools.push(DiscoveredPool {
-                address: addr,
-                token0: t0,
-                token1: t1,
-                fee: fee_override,
-                tick_spacing: None,
-                dex_type: DexType::UniswapV2,
-                creation_block,
-                pool_id: None,
-                factory: None,
-                is_stable: None,
-                balancer_pool_type: None,
-                hook_address: None,
-                bin_step: None,
-                maturity_timestamp: None,
-                underlying_tokens: None,
-                dex_name: None,
-                token0_symbol: None,
-                token1_symbol: None,
-            });
+            pools.push(DiscoveredPool::new(addr, t0, t1, fee_override, DexType::UniswapV2, creation_block));
         }
     }
 
@@ -151,26 +132,8 @@ pub async fn discover_v3_pools_from_dune(
             if t0 == Address::ZERO || t1 == Address::ZERO || t0 == t1 {
                 continue;
             }
-            pools.push(DiscoveredPool {
-                address: addr,
-                token0: t0,
-                token1: t1,
-                fee,
-                tick_spacing,
-                dex_type: DexType::UniswapV3,
-                creation_block,
-                pool_id: None,
-                factory: None,
-                is_stable: None,
-                balancer_pool_type: None,
-                hook_address: None,
-                bin_step: None,
-                maturity_timestamp: None,
-                underlying_tokens: None,
-                dex_name: None,
-                token0_symbol: None,
-                token1_symbol: None,
-            });
+            pools.push(DiscoveredPool::new(addr, t0, t1, fee, DexType::UniswapV3, creation_block)
+                .with_tick_spacing(tick_spacing));
         }
     }
 
@@ -235,7 +198,7 @@ pub async fn discover_active_pools_from_dune(
             (DexType::Balancer, 0)
         } else if project.contains("solidly") || project.contains("velodrome")
             || project.contains("aerodrome") || project.contains("equalizer")
-            || project.contains("thena") || project.contains(" Ramses")
+            || project.contains("thena") || project.contains("ramses")
         {
             (DexType::Solidly, 30)
         } else if project.contains("camelot") {
@@ -249,26 +212,8 @@ pub async fn discover_active_pools_from_dune(
             _ => None,
         };
 
-        pools.push(DiscoveredPool {
-            address: addr,
-            token0: t0,
-            token1: t1,
-            fee,
-            tick_spacing: ts,
-            dex_type,
-            creation_block,
-            pool_id: None,
-            factory: None,
-            is_stable: None,
-            balancer_pool_type: None,
-            hook_address: None,
-            bin_step: None,
-            maturity_timestamp: None,
-            underlying_tokens: None,
-            dex_name: None,
-            token0_symbol: None,
-            token1_symbol: None,
-        });
+        pools.push(DiscoveredPool::new(addr, t0, t1, fee, dex_type, creation_block)
+            .with_tick_spacing(ts));
     }
 
     tracing::info!(

@@ -25,12 +25,10 @@ impl PoolManager {
             state.reserve1 = state.reserve1.wrapping_add(amount1_in).wrapping_sub(amount1_out);
         }
         // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events
-        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
-            if state.balances.len() >= 2 {
-                state.balances[0] = state.balances[0].wrapping_add(amount0_in).wrapping_sub(amount0_out);
-                state.balances[1] = state.balances[1].wrapping_add(amount1_in).wrapping_sub(amount1_out);
-            }
-        }
+        self.try_apply_v2_to_curve(address, |b| {
+            b[0] = b[0].wrapping_add(amount0_in).wrapping_sub(amount0_out);
+            b[1] = b[1].wrapping_add(amount1_in).wrapping_sub(amount1_out);
+        });
     }
 
     /// Update a V2 pool's reserves from a Sync event (authoritative override).
@@ -40,12 +38,10 @@ impl PoolManager {
             state.reserve1 = reserve1;
         }
         // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events
-        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
-            if state.balances.len() >= 2 {
-                state.balances[0] = reserve0;
-                state.balances[1] = reserve1;
-            }
-        }
+        self.try_apply_v2_to_curve(address, |b| {
+            b[0] = reserve0;
+            b[1] = reserve1;
+        });
     }
 
     /// Update a V3/V4 pool's state from a Swap event.
@@ -109,7 +105,7 @@ impl PoolManager {
         }
     }
 
-    /// Update a V3 pool's tick liquidity from a Mint or Burn event.
+    /// Update a V3/V4 pool's tick liquidity from a Mint or Burn event.
     pub fn apply_v3_mint_burn(
         &mut self,
         address: &Address,
@@ -124,6 +120,29 @@ impl PoolManager {
                 state.liquidity = state.liquidity.saturating_add(amount as u128);
             } else {
                 state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
+            }
+        }
+        if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(address) {
+            *state.ticks.entry(tick_lower).or_insert(0) += amount;
+            *state.ticks.entry(tick_upper).or_insert(0) -= amount;
+            if amount > 0 {
+                state.liquidity = state.liquidity.saturating_add(amount as u128);
+            } else {
+                state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
+            }
+        }
+    }
+
+    // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events.
+    // Duplicated match arms are consolidated into this shared helper.
+    fn try_apply_v2_to_curve(
+        &mut self,
+        address: &Address,
+        update: impl FnOnce(&mut [u128]),
+    ) {
+        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
+            if state.balances.len() >= 2 {
+                update(&mut state.balances);
             }
         }
     }

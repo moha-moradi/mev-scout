@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use mev_scout_core::utils::epoch_secs;
 
 use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -29,20 +29,17 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
     rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
     rpc.check_connection(validation_result.chain_config.chain_id).await?;
-    let cache = SqliteStore::open(&config.effective_db_path(&validation_result.chain_name), validation_result.chain_config.chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&validation_result.chain_name))?;
 
     let resolver = RangeResolver::new(rpc.clone());
     let resolved = match resolver.resolve(&validation_result.range_mode).await {
         Ok(r) => r,
-        Err(e) => anyhow::bail!("Error: failed to resolve block range: {}", e),
+        Err(e) => anyhow::bail!("{e}"),
     };
 
     let run_id = format!(
         "run_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System clock went backwards")
-            .as_secs()
+        epoch_secs()
     );
 
     let manifest = RunManifest {
@@ -50,10 +47,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         chain: validation_result.chain_name.to_string(),
         start_block: resolved.start_block,
         end_block: resolved.end_block,
-        resolved_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System clock went backwards")
-            .as_secs(),
+        resolved_at: epoch_secs(),
         range_mode: resolved.mode_string(),
         strategies: validation_result.strategies.iter().map(|s| s.to_string()).collect(),
         flash_loan_provider: validation_result.flash_loan_provider.to_string(),
@@ -188,10 +182,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         strategies: manifest.strategies.clone(),
         flash_loan_provider: manifest.flash_loan_provider.clone(),
         resolved_at: manifest.resolved_at,
-        created_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System clock went backwards")
-            .as_secs(),
+        created_at: epoch_secs(),
         opportunities: all_opportunities.clone(),
     };
     if let Err(e) = save_results_json(&config.export_path, &run_id, &results_file) {

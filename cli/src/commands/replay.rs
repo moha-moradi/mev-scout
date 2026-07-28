@@ -22,14 +22,14 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     rpc.with_provider_rps(&provider_configs.iter().map(|(_, r, _)| r.unwrap_or(config.rps_limit)).collect::<Vec<_>>()).await;
     rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_config.chain_id).await?;
-    let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_config.chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 
     let block_num = args.block;
     let tx_index = args.tx_index.unwrap_or(usize::MAX);
 
     if !cache.has_block(block_num)? {
         anyhow::bail!(
-            "Error: Block {} is not cached. Run `mev-scout fetch --block {}` first.",
+            "block {} is not cached (run `mev-scout fetch --block {}` first)",
             block_num, block_num
         );
     }

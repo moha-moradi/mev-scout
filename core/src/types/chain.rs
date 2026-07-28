@@ -1,7 +1,5 @@
 //! Core type definitions: chain names, strategies, gas config, output formats, and flash loan providers.
 
-use std::fmt;
-use std::str::FromStr;
 use alloy::primitives::Address;
 
 /// A known public RPC endpoint with metadata for rate-limit-aware load distribution.
@@ -22,14 +20,22 @@ impl ProviderEndpoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum ChainName {
+    #[strum(serialize = "polygon")]
     Polygon,
+    #[strum(serialize = "avalanche")]
     Avalanche,
+    #[strum(serialize = "bsc")]
     Bsc,
+    #[strum(serialize = "arbitrum")]
     Arbitrum,
+    #[strum(serialize = "base")]
     Base,
+    #[strum(serialize = "ethereum")]
     Ethereum,
+    #[strum(serialize = "optimism")]
     Optimism,
 }
 
@@ -232,41 +238,5 @@ pub fn v2_router_for_factory(factory: Address) -> Option<Address> {
     None
 }
 
-impl fmt::Display for ChainName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ChainName::Polygon => write!(f, "polygon"),
-            ChainName::Avalanche => write!(f, "avalanche"),
-            ChainName::Bsc => write!(f, "bsc"),
-            ChainName::Arbitrum => write!(f, "arbitrum"),
-            ChainName::Base => write!(f, "base"),
-            ChainName::Ethereum => write!(f, "ethereum"),
-            ChainName::Optimism => write!(f, "optimism"),
-        }
-    }
-}
 
-impl FromStr for ChainName {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "polygon" => Ok(ChainName::Polygon),
-            "avalanche" => Ok(ChainName::Avalanche),
-            "bsc" => Ok(ChainName::Bsc),
-            "arbitrum" => Ok(ChainName::Arbitrum),
-            "base" => Ok(ChainName::Base),
-            "ethereum" => Ok(ChainName::Ethereum),
-            "optimism" => Ok(ChainName::Optimism),
-            _ => Err(format!(
-                "unknown chain '{s}'. Supported: {}",
-                ChainName::all()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-        }
-    }
-}
 

@@ -2,6 +2,7 @@ use alloy::primitives::Address;
 use anyhow::Context;
 use serde_json::Value;
 use std::time::Duration;
+use tracing;
 
 use super::types::*;
 
@@ -126,7 +127,7 @@ impl DuneClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(5 * (attempt as u64 + 1));
-                eprintln!("  Rate limited on SQL execute, waiting {}s...", retry_after);
+                tracing::warn!("  Rate limited on SQL execute, waiting {}s...", retry_after);
                 tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 continue;
             }
@@ -179,7 +180,7 @@ impl DuneClient {
                     .and_then(|v| v.to_str().ok())
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(5);
-                eprintln!("  Rate limited, waiting {}s...", retry_after);
+                tracing::warn!("  Rate limited, waiting {}s...", retry_after);
                 tokio::time::sleep(Duration::from_secs(retry_after)).await;
                 continue;
             }

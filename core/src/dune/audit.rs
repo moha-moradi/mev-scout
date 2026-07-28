@@ -9,6 +9,7 @@ use super::queries;
 use crate::dune::pool_discovery::dune_chain_label;
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
+use super::types::DuneRow;
 
 fn render_query(template: &str, chain: &str, from_block: u64, to_block: u64) -> String {
     let chain_label = dune_chain_label(chain);
@@ -116,6 +117,20 @@ pub struct DuneUnmatchedEvent {
     pub pool_address: Option<Address>,
 }
 
+/// Execute a SQL query and map each result row through `mapper`.
+async fn fetch_events<T>(
+    client: &DuneClient,
+    sql: &str,
+    mapper: impl Fn(&DuneRow) -> T,
+) -> anyhow::Result<Vec<T>> {
+    let result = client.execute_raw_sql(sql).await?;
+    let rows = match result.result {
+        Some(ref r) => &r.rows,
+        None => return Ok(Vec::new()),
+    };
+    Ok(rows.iter().map(mapper).collect())
+}
+
 /// Fetch all sandwich events from Dune for a block range.
 /// Uses the built-in `QUERY_SANDWICHES_BY_RANGE` query.
 pub async fn fetch_sandwiches_from_dune(
@@ -125,25 +140,15 @@ pub async fn fetch_sandwiches_from_dune(
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneSandwichEvent>> {
     let sql = render_query(queries::QUERY_SANDWICHES_BY_RANGE, chain, from_block, to_block);
-    let result = client.execute_raw_sql(&sql).await?;
-    let rows = match result.result {
-        Some(ref r) => &r.rows,
-        None => return Ok(Vec::new()),
-    };
-
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        events.push(DuneSandwichEvent {
-            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
-            victim_tx_hash: DuneClient::col_as_string(row, "victim_tx_hash").unwrap_or_default(),
-            front_tx_hash: DuneClient::col_as_string(row, "front_tx_hash").unwrap_or_default(),
-            back_tx_hash: DuneClient::col_as_string(row, "back_tx_hash").unwrap_or_default(),
-            sandwich_type: DuneClient::col_as_string(row, "sandwich_type"),
-            pool_address: DuneClient::col_as_address(row, "pool_address"),
-            mev_profit_eth: DuneClient::col_as_f64(row, "mev_profit_eth"),
-        });
-    }
-    Ok(events)
+    fetch_events(client, &sql, |row| DuneSandwichEvent {
+        block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+        victim_tx_hash: DuneClient::col_as_string(row, "victim_tx_hash").unwrap_or_default(),
+        front_tx_hash: DuneClient::col_as_string(row, "front_tx_hash").unwrap_or_default(),
+        back_tx_hash: DuneClient::col_as_string(row, "back_tx_hash").unwrap_or_default(),
+        sandwich_type: DuneClient::col_as_string(row, "sandwich_type"),
+        pool_address: DuneClient::col_as_address(row, "pool_address"),
+        mev_profit_eth: DuneClient::col_as_f64(row, "mev_profit_eth"),
+    }).await
 }
 
 /// Fetch arbitrage events from Dune for a block range.
@@ -155,25 +160,15 @@ pub async fn fetch_arbitrages_from_dune(
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneArbitrageEvent>> {
     let sql = render_query(queries::QUERY_ARBITRAGES_BY_RANGE, chain, from_block, to_block);
-    let result = client.execute_raw_sql(&sql).await?;
-    let rows = match result.result {
-        Some(ref r) => &r.rows,
-        None => return Ok(Vec::new()),
-    };
-
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        events.push(DuneArbitrageEvent {
-            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
-            tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
-            pool_a: DuneClient::col_as_address(row, "pool_a"),
-            pool_b: DuneClient::col_as_address(row, "pool_b"),
-            token_in: DuneClient::col_as_address(row, "token_in"),
-            token_out: DuneClient::col_as_address(row, "token_out"),
-            amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
-        });
-    }
-    Ok(events)
+    fetch_events(client, &sql, |row| DuneArbitrageEvent {
+        block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+        tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
+        pool_a: DuneClient::col_as_address(row, "pool_a"),
+        pool_b: DuneClient::col_as_address(row, "pool_b"),
+        token_in: DuneClient::col_as_address(row, "token_in"),
+        token_out: DuneClient::col_as_address(row, "token_out"),
+        amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
+    }).await
 }
 
 /// Fetch flash loan events from Dune for a block range.
@@ -185,25 +180,15 @@ pub async fn fetch_flash_loans_from_dune(
     to_block: u64,
 ) -> anyhow::Result<Vec<DuneFlashLoanEvent>> {
     let sql = render_query(queries::QUERY_FLASH_LOANS_BY_RANGE, chain, from_block, to_block);
-    let result = client.execute_raw_sql(&sql).await?;
-    let rows = match result.result {
-        Some(ref r) => &r.rows,
-        None => return Ok(Vec::new()),
-    };
-
-    let mut events = Vec::with_capacity(rows.len());
-    for row in rows {
-        events.push(DuneFlashLoanEvent {
-            block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
-            tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
-            protocol: DuneClient::col_as_string(row, "protocol"),
-            token_address: DuneClient::col_as_address(row, "token_address"),
-            amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
-            amount: DuneClient::col_as_string(row, "amount"),
-            fee: DuneClient::col_as_string(row, "fee"),
-        });
-    }
-    Ok(events)
+    fetch_events(client, &sql, |row| DuneFlashLoanEvent {
+        block_number: DuneClient::col_as_u64(row, "block_number").unwrap_or(0),
+        tx_hash: DuneClient::col_as_string(row, "tx_hash").unwrap_or_default(),
+        protocol: DuneClient::col_as_string(row, "protocol"),
+        token_address: DuneClient::col_as_address(row, "token_address"),
+        amount_usd: DuneClient::col_as_f64(row, "amount_usd"),
+        amount: DuneClient::col_as_string(row, "amount"),
+        fee: DuneClient::col_as_string(row, "fee"),
+    }).await
 }
 
 /// Run a complete Dune audit comparing MEV Scout opportunities against Dune data.

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use alloy::primitives::{Address, U256};
 
@@ -8,8 +8,8 @@ use crate::mev::detectors::mempool;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use crate::types::MevOpportunity;
+use crate::utils::epoch_secs;
 use crate::pool::{PoolManager, PoolState};
-use crate::replay::BlockReplayer;
 use crate::rpc::RpcClient;
 use crate::pipeline::BacktestRunner;
 use crate::types::{GasConfig, GasModel, PriceOracleMode, Strategy};
@@ -99,7 +99,6 @@ pub struct LiveRunner {
     cache: SqliteStore,
     pool_manager: PoolManager,
     backtest_runner: BacktestRunner,
-    block_replayer: BlockReplayer,
     wallet: LiveRunnerState,
     last_processed_block: u64,
     last_resync_block: u64,
@@ -120,7 +119,6 @@ impl LiveRunner {
         cache: SqliteStore,
         pool_manager: PoolManager,
         backtest_runner: BacktestRunner,
-        block_replayer: BlockReplayer,
         chain_id: u64,
     ) -> Self {
         // Determine starting block from the latest finalized block
@@ -134,7 +132,6 @@ impl LiveRunner {
             cache,
             pool_manager,
             backtest_runner,
-            block_replayer,
             wallet: LiveRunnerState::new(initial_balance),
             last_processed_block: latest_block,
             last_resync_block: latest_block,
@@ -171,10 +168,7 @@ impl LiveRunner {
             mempool_scans = 1;
             let gas_config = self.config.gas_config;
             let block_number = self.last_processed_block;
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let timestamp = epoch_secs();
 
             // Clone pool manager for speculative state
             let mut speculative_state = self.pool_manager.clone();
@@ -495,31 +489,6 @@ impl LiveRunner {
         }
     }
 
-    /// Helper: transfer native balance to wrapped-native token balance.
-    fn wrap_native(&mut self, amount: U256) {
-        let actual = amount.min(self.wallet.native_balance_wei);
-        if actual == U256::ZERO { return; }
-        self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_sub(actual);
-        let wrapped = self.pool_manager.wrapped_native();
-        if let Some(wn) = wrapped {
-            let balance = self.wallet.token_balances.entry(wn).or_insert(U256::ZERO);
-            *balance = balance.saturating_add(actual);
-        }
-    }
-
-    /// Helper: transfer wrapped-native token balance back to native balance.
-    fn unwrap_native(&mut self, amount: U256) {
-        let wrapped = self.pool_manager.wrapped_native();
-        if let Some(wn) = wrapped {
-            let current = self.wallet.token_balances.get(&wn).copied().unwrap_or(U256::ZERO);
-            let actual = amount.min(current);
-            if actual == U256::ZERO { return; }
-            let balance = self.wallet.token_balances.entry(wn).or_insert(U256::ZERO);
-            *balance = balance.saturating_sub(actual);
-            self.wallet.native_balance_wei = self.wallet.native_balance_wei.saturating_add(actual);
-        }
-    }
-
     /// Execute a virtual trade using wallet state (simulation only, no on-chain tx).
     async fn execute_virtual_trade(&mut self, opp: MevOpportunity) {
         let profit = opp.expected_profit;
@@ -730,10 +699,7 @@ impl LiveRunner {
         }
         let run_id = format!(
             "live_{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("System clock went backwards")
-                .as_secs()
+            epoch_secs()
         );
         let dir = std::path::Path::new(&self.config.export_path);
         std::fs::create_dir_all(dir)?;

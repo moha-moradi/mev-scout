@@ -4,7 +4,7 @@ use alloy::primitives::Address;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::pipeline::BlockReplayStats;
-use mev_scout_core::pool::state::{PoolManager, PoolState};
+use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::types::ResultsFile;
 
 pub fn print_startup_plan(result: &validation::ValidationResult, config: &Config) {
@@ -49,15 +49,7 @@ pub fn save_results_json(
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {
     pm.get(addr)
         .map(|ps| {
-            let info = match ps {
-                PoolState::UniswapV2(s) => Some(&s.info),
-                PoolState::UniswapV3(s) => Some(&s.info),
-                PoolState::UniswapV4(s) => Some(&s.info),
-                PoolState::Curve(s) => Some(&s.info),
-                PoolState::Balancer(s) => Some(&s.info),
-                PoolState::TraderJoeLB(s) => Some(&s.info),
-                PoolState::Pendle(s) => Some(&s.info),
-            };
+            let info = Some(ps.info());
             if let Some(info) = info {
                 if let Some(ref tokens) = info.underlying_tokens {
                     if tokens.len() > 2 {

@@ -326,7 +326,6 @@ async fn test_dune_guided_backtest() {
         let block_dir = format!("{dir}/block_{block}");
         let cache = SqliteStore::open(
             std::path::Path::new(&block_dir).join("cache.db"),
-            CHAIN_ID,
         )
         .unwrap_or_else(|e| panic!("Failed to open cache for block {block}: {e}"));
 
@@ -484,7 +483,6 @@ async fn test_synthetic_backtest_on_real_block() {
     // Fetch one block
     let cache = SqliteStore::open(
         std::path::Path::new(&dir).join("cache.db"),
-        CHAIN_ID,
     )
     .unwrap();
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());

@@ -93,15 +93,6 @@ pub struct DuneDiscoveredPool {
     pub factory: Option<Address>,
 }
 
-/// Token metadata from Dune's `tokens.erc20` dataset.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DuneTokenInfo {
-    pub contract_address: Address,
-    pub symbol: String,
-    pub decimals: u8,
-    pub name: Option<String>,
-}
-
 /// Pool metadata with token symbols/decimals for display/reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DunePoolWithMetadata {
@@ -175,18 +166,6 @@ pub struct DuneLiquidation {
     pub debt_amount: String,
     pub amount_usd: Option<f64>,
     pub block_time: Option<String>,
-}
-
-/// Cross-validation result for a single MEV opportunity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DuneCrossValidation {
-    pub block_number: u64,
-    pub tx_index: usize,
-    pub strategy: String,
-    pub trade_confirmed: Option<bool>,
-    pub sandwich_confirmed: Option<bool>,
-    pub dune_profit_usd: Option<f64>,
-    pub message: Option<String>,
 }
 
 /// Hourly gas price stats for gas optimization (Cheapest periods).

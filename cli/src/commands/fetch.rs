@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use mev_scout_core::utils::epoch_secs;
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -14,7 +14,7 @@ use mev_scout_core::types::ChainName;
 pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> {
     let chain_name: ChainName = match args.chain_args.chain.parse() {
         Ok(c) => c,
-        Err(e) => anyhow::bail!("Error: {e}"),
+        Err(e) => anyhow::bail!("{e}"),
     };
 
     let provider_configs = config.effective_provider_configs(chain_name)?;
@@ -26,7 +26,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     rpc.check_connection(chain_id).await?;
     tracing::info!("{}", rpc.provider_summary().await);
 
-    let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 
     let range_mode = match validation::resolve_block_range(
         args.block_range.days,
@@ -44,10 +44,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
 
     let run_id = format!(
         "run_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System clock went backwards")
-            .as_secs()
+        epoch_secs()
     );
 
     let manifest = RunManifest {
@@ -55,10 +52,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
         chain: chain_name.to_string(),
         start_block: resolved.start_block,
         end_block: resolved.end_block,
-        resolved_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("System clock went backwards")
-            .as_secs(),
+        resolved_at: epoch_secs(),
         range_mode: resolved.mode_string(),
         strategies: vec![],
         flash_loan_provider: String::new(),

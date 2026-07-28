@@ -164,7 +164,7 @@ pub fn temp_test_dir(name: &str) -> String {
 
 pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> SqliteStore {
     let db_path = Path::new(dir).join("cache.db");
-    let cache = SqliteStore::open(&db_path, 1).unwrap();
+    let cache = SqliteStore::open(&db_path).unwrap();
 
     let block = BlockData {
         number: block_num,

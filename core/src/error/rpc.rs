@@ -2,12 +2,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RpcError {
-    #[error("RPC call failed: {0}")]
+    #[error("rpc call failed ({0})")]
     CallFailed(String),
-    #[error("All providers failed")]
+    #[error("all providers failed")]
     AllProvidersFailed,
-    #[error("Rate limited")]
+    #[error("rate limited")]
     RateLimited,
-    #[error("Invalid response: {0}")]
+    #[error("invalid response ({0})")]
     InvalidResponse(String),
 }

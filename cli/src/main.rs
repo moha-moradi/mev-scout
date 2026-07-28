@@ -5,9 +5,9 @@ mod display;
 mod overrides;
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
+use mev_scout_core::utils::epoch_secs;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command};
@@ -51,10 +51,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Determine log file path for live mode + verbose
     let log_file = if cli.verbose && matches!(&cli.command, Command::Live(_)) {
-        let run_id = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let run_id = epoch_secs();
         Some(PathBuf::from(format!("live_{}.log", run_id)))
     } else {
         None

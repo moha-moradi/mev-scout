@@ -1,6 +1,16 @@
 //! Small utility functions shared across the crate.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use alloy::primitives::{Address, U256};
+
+/// Return the current Unix timestamp in whole seconds since the epoch.
+pub fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Decode a uint128 from the last 16 bytes of a byte slice.
 /// If the slice is shorter than 16 bytes, leading bytes are treated as zero.

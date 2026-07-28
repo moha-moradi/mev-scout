@@ -4,6 +4,8 @@
 //! of supported chains. Prices are fetched once and cached in-memory with a
 //! configurable TTL.
 
+use std::future::Future;
+
 use alloy::primitives::Address;
 use crate::pool::state::PoolManager;
 use crate::types::{ChainName, PriceOracleMode};
@@ -44,8 +46,7 @@ pub struct PriceEntry {
 /// In-memory price cache with TTL.
 #[derive(Debug)]
 pub struct PriceCache {
-    // Key = coingecko asset id or token address hex, value = price entry
-    entries: std::collections::HashMap<String, PriceEntry>,
+    entries: tokio::sync::Mutex<std::collections::HashMap<String, PriceEntry>>,
     ttl: std::time::Duration,
     api_key: Option<String>,
     client: reqwest::Client,
@@ -64,7 +65,7 @@ impl PriceCache {
     /// Free tier (no API key) works but has rate limits of 10-30 req/min.
     pub fn new(api_key: Option<String>) -> Self {
         Self {
-            entries: std::collections::HashMap::new(),
+            entries: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             ttl: std::time::Duration::from_secs(300),
             api_key,
             client: reqwest::Client::new(),
@@ -77,30 +78,33 @@ impl PriceCache {
         self
     }
 
-    /// Get USD price for a chain's native token.
-    /// Returns cached value if fresh, otherwise fetches from API.
-    pub async fn usd_price(&mut self, chain: ChainName) -> Option<f64> {
-        let asset_id = coingecko_asset_id(chain);
-
-        // Check cache
-        if let Some(entry) = self.entries.get(asset_id) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return Some(entry.usd);
+    /// Generic check-cache → fetch → store → fallback-to-stale helper.
+    async fn get_or_fetch<F, Fut>(&self, key: &str, fetch_fn: F) -> Option<f64>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = anyhow::Result<f64>>,
+    {
+        {
+            let entries = self.entries.lock().await;
+            if let Some(entry) = entries.get(key) {
+                if entry.fetched_at.elapsed() < self.ttl {
+                    return Some(entry.usd);
+                }
             }
         }
 
-        // Fetch from API
-        match self.fetch_native_price(asset_id).await {
+        match fetch_fn().await {
             Ok(usd) => {
-                self.entries.insert(asset_id.to_string(), PriceEntry {
+                let mut entries = self.entries.lock().await;
+                entries.insert(key.to_string(), PriceEntry {
                     usd,
                     fetched_at: std::time::Instant::now(),
                 });
                 Some(usd)
             }
             Err(e) => {
-                // Fall back to stale cache if available
-                if let Some(entry) = self.entries.get(asset_id) {
+                let entries = self.entries.lock().await;
+                if let Some(entry) = entries.get(key) {
                     tracing::warn!("CoinGecko fetch failed, using stale price: {e}");
                     return Some(entry.usd);
                 }
@@ -110,16 +114,39 @@ impl PriceCache {
         }
     }
 
+    /// Execute a CoinGecko HTTP GET, parse JSON, and extract the price for
+    /// the given lookup key.
+    async fn execute_price_request(&self, url: &str, lookup_key: &str) -> anyhow::Result<f64> {
+        let mut req = self.client.get(url);
+        if let Some(key) = &self.api_key {
+            req = req.header("x-cg-demo-api-key", key);
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            anyhow::bail!("CoinGecko returned HTTP {}", resp.status());
+        }
+        let map: std::collections::HashMap<String, CoinGeckoPriceResponse> = resp.json().await?;
+        match map.get(lookup_key) {
+            Some(entry) => Ok(entry.usd),
+            None => anyhow::bail!("'{lookup_key}' not found in CoinGecko response"),
+        }
+    }
+
+    /// Get USD price for a chain's native token.
+    pub async fn usd_price(&self, chain: ChainName) -> Option<f64> {
+        let asset_id = coingecko_asset_id(chain);
+        let url = format!(
+            "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
+            asset_id
+        );
+        self.get_or_fetch(asset_id, || async {
+            self.execute_price_request(&url, asset_id).await
+        }).await
+    }
+
     /// Get the native token USD price according to the configured oracle mode.
-    ///
-    /// - `CoinGeckoOnly`: fetches from CoinGecko API (default).
-    /// - `OnChain`: derives price from the highest-TVL token pair in the pool manager.
-    /// - `Hybrid`: fetches both CoinGecko and on-chain; logs a warning if they diverge >5%.
-    ///
-    /// Caches on-chain prices in-memory with a per-block invalidation scheme
-    /// (block number is used as part of the cache key).
     pub async fn resolve_native_price(
-        &mut self,
+        &self,
         mode: PriceOracleMode,
         chain: ChainName,
         pm: &PoolManager,
@@ -127,10 +154,10 @@ impl PriceCache {
     ) -> Option<f64> {
         match mode {
             PriceOracleMode::CoinGeckoOnly => self.usd_price(chain).await,
-            PriceOracleMode::OnChain => self.resolve_onchain_price(pm, block),
+            PriceOracleMode::OnChain => self.resolve_onchain_price(pm, block).await,
             PriceOracleMode::Hybrid => {
                 let cg_price = self.usd_price(chain).await;
-                let onchain_price = self.resolve_onchain_price(pm, block);
+                let onchain_price = self.resolve_onchain_price(pm, block).await;
                 match (cg_price, onchain_price) {
                     (Some(cg), Some(oc)) => {
                         let divergence = (cg - oc).abs() / cg;
@@ -140,7 +167,6 @@ impl PriceCache {
                                 divergence * 100.0
                             );
                         }
-                        // L5: Return midpoint of both sources instead of just CoinGecko
                         Some((cg + oc) / 2.0)
                     }
                     (Some(cg), None) => Some(cg),
@@ -152,23 +178,25 @@ impl PriceCache {
     }
 
     /// Derive native token price from the pool manager's on-chain state.
-    /// Caches the result keyed by block number so repeated calls for the same
-    /// block return the cached value without recomputation.
-    fn resolve_onchain_price(&mut self, pm: &PoolManager, block: u64) -> Option<f64> {
+    async fn resolve_onchain_price(&self, pm: &PoolManager, block: u64) -> Option<f64> {
         let cache_key = format!("onchain:{}", block);
-        if let Some(entry) = self.entries.get(&cache_key) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return Some(entry.usd);
+        {
+            let entries = self.entries.lock().await;
+            if let Some(entry) = entries.get(&cache_key) {
+                if entry.fetched_at.elapsed() < self.ttl {
+                    return Some(entry.usd);
+                }
             }
         }
         let stable_tokens = vec![
-            alloy::primitives::address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
-            alloy::primitives::address!("dAC17F958D2ee523a2206206994597C13D831ec7"), // USDT
-            alloy::primitives::address!("6B175474E89094C44Da98b954EedeAC495271d0F"), // DAI
+            alloy::primitives::address!("A0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+            alloy::primitives::address!("dAC17F958D2ee523a2206206994597C13D831ec7"),
+            alloy::primitives::address!("6B175474E89094C44Da98b954EedeAC495271d0F"),
         ];
         let price = pm.onchain_native_price(&stable_tokens);
         if let Some(p) = price {
-            self.entries.insert(cache_key, PriceEntry {
+            let mut entries = self.entries.lock().await;
+            entries.insert(cache_key, PriceEntry {
                 usd: p,
                 fetched_at: std::time::Instant::now(),
             });
@@ -177,90 +205,15 @@ impl PriceCache {
     }
 
     /// Get USD price for an arbitrary ERC20 token on the given chain.
-    /// Uses CoinGecko's `/simple/token_price/{platform}` endpoint with the
-    /// token's contract address.
-    ///
-    /// Returns cached value if fresh, otherwise fetches from API.
-    pub async fn token_usd(&mut self, chain: ChainName, token: Address) -> Option<f64> {
+    pub async fn token_usd(&self, chain: ChainName, token: Address) -> Option<f64> {
         let addr_hex = format!("{:#x}", token);
         let cache_key = format!("{}:{}", coingecko_platform(chain), addr_hex);
-
-        if let Some(entry) = self.entries.get(&cache_key) {
-            if entry.fetched_at.elapsed() < self.ttl {
-                return Some(entry.usd);
-            }
-        }
-
-        match self.fetch_token_price(chain, &addr_hex).await {
-            Ok(usd) => {
-                self.entries.insert(cache_key, PriceEntry {
-                    usd,
-                    fetched_at: std::time::Instant::now(),
-                });
-                Some(usd)
-            }
-            Err(e) => {
-                if let Some(entry) = self.entries.get(&cache_key) {
-                    tracing::warn!("CoinGecko token price fetch failed, using stale: {e}");
-                    return Some(entry.usd);
-                }
-                tracing::warn!("CoinGecko token price fetch failed: {e}");
-                None
-            }
-        }
-    }
-
-    /// Execute the HTTP request to CoinGecko for native token price.
-    async fn fetch_native_price(&self, asset_id: &str) -> anyhow::Result<f64> {
-        let url = format!(
-            "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
-            asset_id
-        );
-
-        let mut req = self.client.get(&url);
-
-        if let Some(key) = &self.api_key {
-            req = req.header("x-cg-demo-api-key", key);
-        }
-
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("CoinGecko returned HTTP {}", resp.status());
-        }
-
-        let map: std::collections::HashMap<String, CoinGeckoPriceResponse> = resp.json().await?;
-        match map.get(asset_id) {
-            Some(entry) => Ok(entry.usd),
-            None => anyhow::bail!("asset '{asset_id}' not found in CoinGecko response"),
-        }
-    }
-
-    /// Execute the HTTP request to CoinGecko for an ERC20 token price.
-    async fn fetch_token_price(&self, chain: ChainName, token_hex: &str) -> anyhow::Result<f64> {
-        let platform = coingecko_platform(chain);
         let url = format!(
             "https://api.coingecko.com/api/v3/simple/token_price/{}?contract_addresses={}&vs_currencies=usd",
-            platform, token_hex
+            coingecko_platform(chain), addr_hex
         );
-
-        let mut req = self.client.get(&url);
-
-        if let Some(key) = &self.api_key {
-            req = req.header("x-cg-demo-api-key", key);
-        }
-
-        let resp = req.send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("CoinGecko token price returned HTTP {}", resp.status());
-        }
-
-        // Response is like: {"0x...":{"usd":1.0}}
-        let map: std::collections::HashMap<String, CoinGeckoPriceResponse> = resp.json().await?;
-        match map.get(token_hex) {
-            Some(entry) => Ok(entry.usd),
-            None => anyhow::bail!("token {token_hex} not found on {platform}"),
-        }
+        self.get_or_fetch(&cache_key, || async {
+            self.execute_price_request(&url, &addr_hex).await
+        }).await
     }
 }
-
-

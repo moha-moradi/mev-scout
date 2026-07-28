@@ -140,7 +140,6 @@ pub fn curve_cryptoswap_output_amount(
     // For CryptoSwap V2, the dynamic fee = fee + (price_deviation * fee_gamma),
     // but for now we use the static fee() value as a conservative approximation.
     let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
-    let _x_in_new = balances[idx_in] + amount_in as f64 * fee_factor;
 
     // Phase 3: Solve for x_out' (Newton over y)
     // Price scale: adjust balances using price_scale before invariant computation.

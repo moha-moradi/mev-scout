@@ -1,39 +1,17 @@
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum FlashLoanProvider {
+    #[strum(serialize = "auto")]
     Auto,
+    #[strum(serialize = "balancer")]
     Balancer,
+    #[strum(serialize = "aave")]
     Aave,
+    #[strum(serialize = "uniswap")]
     Uniswap,
-}
-
-impl fmt::Display for FlashLoanProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FlashLoanProvider::Auto => write!(f, "auto"),
-            FlashLoanProvider::Balancer => write!(f, "balancer"),
-            FlashLoanProvider::Aave => write!(f, "aave"),
-            FlashLoanProvider::Uniswap => write!(f, "uniswap"),
-        }
-    }
-}
-
-impl FromStr for FlashLoanProvider {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "auto" => Ok(FlashLoanProvider::Auto),
-            "balancer" => Ok(FlashLoanProvider::Balancer),
-            "aave" => Ok(FlashLoanProvider::Aave),
-            "uniswap" => Ok(FlashLoanProvider::Uniswap),
-            _ => Err(format!(
-                "unknown flash loan provider '{s}'. Supported: auto, balancer, aave, uniswap"
-            )),
-        }
-    }
 }
 
 impl FlashLoanProvider {
@@ -66,48 +44,23 @@ impl FlashLoanProvider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum Strategy {
+    #[strum(serialize = "two_hop_arb")]
     TwoHopArb,
+    #[strum(serialize = "multi_hop_arb")]
     MultiHopArb,
+    #[strum(serialize = "jit")]
     Jit,
+    #[strum(serialize = "jit_arb")]
     JitArb,
+    #[strum(serialize = "sandwich")]
     Sandwich,
+    #[strum(serialize = "liquidation")]
     Liquidation,
+    #[strum(serialize = "cross_block_arb")]
     CrossBlockArb,
-}
-
-impl fmt::Display for Strategy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Strategy::TwoHopArb => write!(f, "two_hop_arb"),
-            Strategy::MultiHopArb => write!(f, "multi_hop_arb"),
-            Strategy::Jit => write!(f, "jit"),
-            Strategy::JitArb => write!(f, "jit_arb"),
-            Strategy::Sandwich => write!(f, "sandwich"),
-            Strategy::Liquidation => write!(f, "liquidation"),
-            Strategy::CrossBlockArb => write!(f, "cross_block_arb"),
-        }
-    }
-}
-
-impl FromStr for Strategy {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "two_hop_arb" => Ok(Strategy::TwoHopArb),
-            "multi_hop_arb" => Ok(Strategy::MultiHopArb),
-            "jit" => Ok(Strategy::Jit),
-            "jit_arb" => Ok(Strategy::JitArb),
-            "sandwich" => Ok(Strategy::Sandwich),
-            "liquidation" => Ok(Strategy::Liquidation),
-            "cross_block_arb" => Ok(Strategy::CrossBlockArb),
-            _ => Err(format!(
-                "unknown strategy '{s}'. Supported: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb, all"
-            )),
-        }
-    }
 }
 
 impl Strategy {
@@ -129,7 +82,7 @@ impl Strategy {
             return Ok(Strategy::all().to_vec());
         }
         s.split(',')
-            .map(|part| part.trim().parse::<Strategy>())
+            .map(|part| part.trim().parse::<Strategy>().map_err(|e| e.to_string()))
             .collect()
     }
 }
@@ -331,91 +284,45 @@ pub enum PriceSource {
 }
 
 /// Controls how native token USD price is sourced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum PriceOracleMode {
     /// Use CoinGecko API only (default, backward compat).
     #[default]
+    #[strum(serialize = "coingecko", serialize = "coingecko_only")]
     CoinGeckoOnly,
     /// Derive native token price from the highest-TVL on-chain pool.
+    #[strum(serialize = "onchain", serialize = "on_chain")]
     OnChain,
     /// Fetch both CoinGecko and on-chain; warn if divergence >5%.
+    #[strum(serialize = "hybrid")]
     Hybrid,
 }
 
-impl fmt::Display for PriceOracleMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PriceOracleMode::CoinGeckoOnly => write!(f, "coingecko"),
-            PriceOracleMode::OnChain => write!(f, "onchain"),
-            PriceOracleMode::Hybrid => write!(f, "hybrid"),
-        }
-    }
-}
-
-impl FromStr for PriceOracleMode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "coingecko" | "coingecko_only" => Ok(PriceOracleMode::CoinGeckoOnly),
-            "onchain" | "on_chain" => Ok(PriceOracleMode::OnChain),
-            "hybrid" => Ok(PriceOracleMode::Hybrid),
-            _ => Err(format!("unknown price oracle mode '{s}'. Supported: coingecko, onchain, hybrid")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum OutputFormat {
     #[serde(rename = "table")]
+    #[strum(serialize = "table")]
     Table,
     #[serde(rename = "csv")]
+    #[strum(serialize = "csv")]
     Csv,
     #[serde(rename = "json")]
+    #[strum(serialize = "json")]
     Json,
 }
 
-impl fmt::Display for OutputFormat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OutputFormat::Table => write!(f, "table"),
-            OutputFormat::Csv => write!(f, "csv"),
-            OutputFormat::Json => write!(f, "json"),
-        }
-    }
-}
-
-impl FromStr for OutputFormat {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "table" => Ok(OutputFormat::Table),
-            "csv" => Ok(OutputFormat::Csv),
-            "json" => Ok(OutputFormat::Json),
-            _ => Err(format!(
-                "unknown output format '{s}'. Supported: table, csv, json"
-            )),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display)]
 pub enum ExecutorType {
+    #[strum(serialize = "flash_loan_arbitrage")]
     FlashLoanArbitrage,
+    #[strum(serialize = "sandwich")]
     Sandwich,
+    #[strum(serialize = "liquidation")]
     Liquidation,
+    #[strum(serialize = "jit_liquidity")]
     JitLiquidity,
-}
-
-impl fmt::Display for ExecutorType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ExecutorType::FlashLoanArbitrage => write!(f, "flash_loan_arbitrage"),
-            ExecutorType::Sandwich => write!(f, "sandwich"),
-            ExecutorType::Liquidation => write!(f, "liquidation"),
-            ExecutorType::JitLiquidity => write!(f, "jit_liquidity"),
-        }
-    }
 }
 
 impl ExecutorType {

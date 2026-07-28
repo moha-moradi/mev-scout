@@ -9,7 +9,7 @@ use crate::cli::AuditArgs;
 pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> {
     let dune_api_key = match &config.dune_api_key {
         Some(k) => k,
-        None => anyhow::bail!("Dune API key not configured. Set dune_api_key in config."),
+        None => anyhow::bail!("dune API key not configured (set dune_api_key in config)"),
     };
 
     let client = DuneClient::new(dune_api_key.clone());
@@ -21,7 +21,7 @@ pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> 
     let scout_opportunities = if let Some(run_id) = &args.run_id {
         let path = std::path::Path::new(&config.export_path).join(format!("{run_id}.json"));
         if !path.exists() {
-            anyhow::bail!("Results file not found: {}", path.display());
+            anyhow::bail!("results file not found ({})", path.display());
         }
         let json_str = std::fs::read_to_string(&path)?;
         let results: ResultsFile = serde_json::from_str(&json_str)?;

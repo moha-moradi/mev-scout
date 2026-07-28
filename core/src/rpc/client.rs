@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use alloy::consensus::Transaction;
+use alloy::eips::BlockId;
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, Bytes, B256, U256};
@@ -83,9 +84,7 @@ impl RpcClient {
     pub async fn reset(&self) {
         let mut provs = self.providers.lock().await;
         for p in provs.iter_mut() {
-            p.is_alive = true;
-            p.cooldown_until = None;
-            p.consecutive_failures = 0;
+            p.reset();
         }
         self.current.store(0, Ordering::Relaxed);
     }
@@ -101,10 +100,10 @@ impl RpcClient {
         let mut entries = Vec::new();
         for (i, p) in provs.iter().enumerate() {
             let status = if p.is_available() { "ok" } else { "dead" };
-            let arch = if p.archive { "archive" } else { "full" };
+            let arch = if p.archive() { "archive" } else { "full" };
             entries.push(format!(
                 "p{}[{}] {:.0}w {:.0}orig {:.1}ms {} {}",
-                i, p.label, p.weight, p.original_weight, p.latency_ms, status, arch,
+                i, p.label(), p.weight(), p.original_weight(), p.latency_ms(), status, arch,
             ));
         }
         format!("{} providers: {}", provs.len(), entries.join("  "))
@@ -122,9 +121,9 @@ impl RpcClient {
         for (i, &rps) in rps_list.iter().enumerate() {
             if let Some(p) = provs.get_mut(i) {
                 if rps > 0.0 {
-                    p.rate_limiter = Some(Arc::new(RateLimiter::new(rps, rps)));
-                    p.weight = rps;
-                    p.original_weight = rps;
+                    p.set_rate_limiter(Some(Arc::new(RateLimiter::new(rps, rps))));
+                    p.set_weight(rps);
+                    p.set_original_weight(rps);
                 }
             }
         }
@@ -141,7 +140,7 @@ impl RpcClient {
         let mut provs = self.providers.lock().await;
         for (i, &archive) in archive_list.iter().enumerate() {
             if let Some(p) = provs.get_mut(i) {
-                p.archive = archive;
+                p.set_archive(archive);
             }
         }
     }
@@ -176,7 +175,7 @@ impl RpcClient {
         let mut available: Vec<(usize, ProviderState)> = provs
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.is_available() && p.archive)
+            .filter(|(_, p)| p.is_available() && p.archive())
             .map(|(i, p)| (i, ProviderState::clone(p)))
             .collect();
 
@@ -219,7 +218,7 @@ impl RpcClient {
                 provider.acquire_permit().await;
 
                 let t0 = Instant::now();
-                match f(provider.provider.clone()).await {
+                match f(provider.provider().clone()).await {
                     Ok(val) => {
                         let latency = t0.elapsed();
                         let mut provs = self.providers.lock().await;
@@ -238,7 +237,7 @@ impl RpcClient {
                             if is_evm_revert {
                                 tracing::debug!(
                                     "EVM revert on {} (expected for non-standard tokens): {}",
-                                    p.label,
+                                    p.label(),
                                     err_msg,
                                 );
                             } else {
@@ -246,9 +245,9 @@ impl RpcClient {
                                 p.sync_rate_limiter().await;
                                 tracing::warn!(
                                     "RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
-                                    p.label,
-                                    p.consecutive_failures,
-                                    p.cooldown_until,
+                                    p.label(),
+                                    p.consecutive_failures(),
+                                    p.cooldown_until(),
                                 );
                             }
                         }
@@ -303,7 +302,7 @@ impl RpcClient {
                 provider.acquire_permit().await;
 
                 let t0 = Instant::now();
-                match f(provider.provider.clone()).await {
+                match f(provider.provider().clone()).await {
                     Ok(val) => {
                         let latency = t0.elapsed();
                         let mut provs = self.providers.lock().await;
@@ -322,7 +321,7 @@ impl RpcClient {
                             if is_evm_revert {
                                 tracing::debug!(
                                     "EVM revert on {} (expected for non-standard tokens): {}",
-                                    p.label,
+                                    p.label(),
                                     err_msg,
                                 );
                             } else {
@@ -330,9 +329,9 @@ impl RpcClient {
                                 p.sync_rate_limiter().await;
                                 tracing::warn!(
                                     "Archive RPC call failed on {} (failures={}, cooldown={:?}): {e:#}",
-                                    p.label,
-                                    p.consecutive_failures,
-                                    p.cooldown_until,
+                                    p.label(),
+                                    p.consecutive_failures(),
+                                    p.cooldown_until(),
                                 );
                             }
                         }
@@ -406,7 +405,7 @@ impl RpcClient {
         // Snapshot provider labels+providers without holding the lock during validation.
         let snapshots: Vec<(usize, RootProvider, String)> = {
             let provs = self.providers.lock().await;
-            provs.iter().enumerate().map(|(i, s)| (i, s.provider.clone(), s.label.clone())).collect()
+            provs.iter().enumerate().map(|(i, s)| (i, s.provider().clone(), s.label().to_string())).collect()
         };
 
         // Validate all providers concurrently (Phase 1 + Phase 2).
@@ -435,18 +434,18 @@ impl RpcClient {
             if let Some(state) = provs.get_mut(i) {
                 if let Err(ref e) = phase1 {
                     tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
-                    state.mark_dead();
+                    state.mark_dead(tokio::time::Duration::from_secs(300));
                     results[i] = phase1;
                     continue;
                 }
 
                 match &phase2 {
                     Ok(_) => {
-                        state.archive = true;
+                        state.set_archive(true);
                         tracing::info!("{label}: OK archive=supported");
                     }
                     Err(e) => {
-                        state.archive = false;
+                        state.set_archive(false);
                         tracing::info!("{label}: OK archive=NOT supported ({e}) — available for full-node workloads");
                     }
                 }
@@ -574,7 +573,7 @@ impl RpcClient {
         let t0 = Instant::now();
         let filter_clone = filter.clone();
         let result = provider
-            .provider
+            .provider()
             .get_logs(&filter_clone)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e));
@@ -593,8 +592,8 @@ impl RpcClient {
                 tracing::warn!(
                     "Pinned provider-{} getLogs failed (failures={}, cooldown={:?}): {e:#}",
                     provider_idx,
-                    provider.consecutive_failures,
-                    provider.cooldown_until,
+                    provider.consecutive_failures(),
+                    provider.cooldown_until(),
                 );
                 {
                     let mut provs = self.providers.lock().await;
@@ -800,7 +799,7 @@ impl RpcClient {
         provider.acquire_permit().await;
 
         let t0 = Instant::now();
-        let result = Self::batch_rpc_call(provider.provider.clone(), block_number).await;
+        let result = Self::batch_rpc_call(provider.provider().clone(), block_number).await;
         let latency = t0.elapsed();
 
         match result {
@@ -817,8 +816,8 @@ impl RpcClient {
                     "Pinned provider-{} failed for block {} (failures={}, cooldown={:?}): {e:#}",
                     provider_idx,
                     block_number,
-                    provider.consecutive_failures,
-                    provider.cooldown_until,
+                    provider.consecutive_failures(),
+                    provider.cooldown_until(),
                 );
                 {
                     let mut provs = self.providers.lock().await;
@@ -1006,14 +1005,14 @@ impl RpcClient {
             let provs = self.providers.lock().await;
             // Prefer an archive provider; fall back to any alive provider if none available
             provs.iter()
-                .find(|p| p.is_available() && p.archive)
+                .find(|p| p.is_available() && p.archive())
                 .or_else(|| provs.iter().find(|p| p.is_available()))
                 .cloned()
         };
         match first {
             Some(p) => {
                 p.acquire_permit().await;
-                p.provider
+                p.provider()
                     .get_code_at(address)
                     .number(block)
                     .await
@@ -1068,7 +1067,7 @@ impl RpcClient {
 
         // Report archive capability count
         let provs = self.providers.lock().await;
-        let archive_count = provs.iter().filter(|p| p.is_available() && p.archive).count();
+        let archive_count = provs.iter().filter(|p| p.is_available() && p.archive()).count();
         let alive_count = provs.iter().filter(|p| p.is_available()).count();
         if archive_count < alive_count {
             tracing::info!(
@@ -1083,11 +1082,8 @@ impl RpcClient {
         Ok(())
     }
 
-    /// Execute an `eth_call` at a historical block.
-    ///
-    /// Used for pool state queries (`getReserves()`, `slot0()`, `liquidity()`)
-    /// without modifying chain state. Requires archive-capable providers.
-    pub async fn call(&self, to: Address, data: Bytes, block: u64) -> anyhow::Result<Bytes> {
+    /// Execute an `eth_call` at a specific block.
+    async fn call_at(&self, to: Address, data: Bytes, block: BlockId) -> anyhow::Result<Bytes> {
         self.retry_call_archive(|provider| {
             let data = data.clone();
             async move {
@@ -1096,12 +1092,20 @@ impl RpcClient {
                     .with_input(data);
                 provider
                     .call(request)
-                    .block(block.into())
+                    .block(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
         })
         .await
+    }
+
+    /// Execute an `eth_call` at a historical block.
+    ///
+    /// Used for pool state queries (`getReserves()`, `slot0()`, `liquidity()`)
+    /// without modifying chain state. Requires archive-capable providers.
+    pub async fn call(&self, to: Address, data: Bytes, block: u64) -> anyhow::Result<Bytes> {
+        self.call_at(to, data, BlockId::number(block)).await
     }
 
     /// Execute an `eth_call` at the latest block.
@@ -1111,18 +1115,18 @@ impl RpcClient {
     /// state is not needed. Avoids `historical state not available` errors
     /// from providers without full archive support.
     pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {
-        self.retry_call(|provider| {
-            let data = data.clone();
-            async move {
-                let request = TransactionRequest::default()
-                    .with_to(to)
-                    .with_input(data);
-                provider
-                    .call(request)
-                    .block(BlockNumberOrTag::Latest.into())
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
+        self.call_at(to, data, BlockNumberOrTag::Latest.into()).await
+    }
+
+    /// Fetch a u128 metric via a raw `U256` RPC method.
+    async fn fetch_u128_metric(&self, method: &'static str) -> anyhow::Result<u128> {
+        self.retry_call(|provider| async move {
+            let raw: U256 = provider
+                .client()
+                .request(method, ())
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            Ok(raw.to::<u128>())
         })
         .await
     }
@@ -1131,30 +1135,14 @@ impl RpcClient {
     ///
     /// Returns the current base fee per gas in wei.
     pub async fn get_gas_price(&self) -> anyhow::Result<u128> {
-        self.retry_call(|provider| async move {
-            let raw: U256 = provider
-                .client()
-                .request("eth_gasPrice", ())
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            Ok(raw.to::<u128>())
-        })
-        .await
+        self.fetch_u128_metric("eth_gasPrice").await
     }
 
     /// Fetch the current max priority fee per gas via `eth_maxPriorityFeePerGas`.
     ///
     /// Returns the priority fee in wei.
     pub async fn get_max_priority_fee(&self) -> anyhow::Result<u128> {
-        self.retry_call(|provider| async move {
-            let raw: U256 = provider
-                .client()
-                .request("eth_maxPriorityFeePerGas", ())
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            Ok(raw.to::<u128>())
-        })
-        .await
+        self.fetch_u128_metric("eth_maxPriorityFeePerGas").await
     }
 
 }

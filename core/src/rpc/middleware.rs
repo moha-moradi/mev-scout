@@ -1,8 +1,6 @@
 //! Rate-limiting and provider health tracking for the RPC layer.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use alloy::providers::RootProvider;
 
@@ -73,62 +71,23 @@ impl RateLimiter {
     }
 }
 
-/// ETag cache for HTTP conditional requests.
-///
-/// Tracks ETag values per URL so subsequent requests can include
-/// `If-None-Match` headers. When a server responds with 304 Not Modified,
-/// the cached response can be reused without re-downloading.
-///
-/// Particularly useful for free RPC providers that support ETags, as it
-/// reduces bandwidth and can bypass some throttling mechanisms.
-#[derive(Debug, Clone, Default)]
-pub struct EtagStore {
-    inner: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
-}
-
-impl EtagStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get the stored ETag for a URL, if any.
-    pub async fn get_etag(&self, url: &str) -> Option<String> {
-        self.inner.read().await.get(url).cloned()
-    }
-
-    /// Store an ETag for a URL.
-    pub async fn set_etag(&self, url: &str, etag: String) {
-        self.inner.write().await.insert(url.to_string(), etag);
-    }
-
-    /// Number of tracked URLs.
-    pub async fn len(&self) -> usize {
-        self.inner.read().await.len()
-    }
-
-    /// Whether the store is empty.
-    pub async fn is_empty(&self) -> bool {
-        self.inner.read().await.is_empty()
-    }
-}
-
 /// Tracks health and rate-limiting state for a single RPC provider.
 #[derive(Debug, Clone)]
 pub struct ProviderState {
-    pub provider: RootProvider,
-    pub rate_limiter: Option<Arc<RateLimiter>>,
-    pub weight: f64,
-    pub original_weight: f64,
-    pub is_alive: bool,
-    pub cooldown_until: Option<Instant>,
-    pub consecutive_failures: u64,
-    pub latency_ms: f64,
-    pub label: String,
-    pub url: String,
+    provider: RootProvider,
+    rate_limiter: Option<Arc<RateLimiter>>,
+    weight: f64,
+    original_weight: f64,
+    is_alive: bool,
+    cooldown_until: Option<tokio::time::Instant>,
+    consecutive_failures: u64,
+    latency_ms: f64,
+    label: String,
+    url: String,
     /// Whether this provider supports archive queries (`eth_getProof`, historical `eth_call`, etc.).
     /// Set during `validate_all`: `true` if the `eth_getProof` probe succeeds, `false` otherwise.
     /// Non-archive providers are still alive for block/log/fetch workloads.
-    pub archive: bool,
+    archive: bool,
 }
 
 impl ProviderState {
@@ -150,12 +109,104 @@ impl ProviderState {
         }
     }
 
+    // ── Accessors ──────────────────────────────────────────────────────
+
+    pub fn provider(&self) -> &RootProvider {
+        &self.provider
+    }
+
+    pub fn rate_limiter(&self) -> Option<&Arc<RateLimiter>> {
+        self.rate_limiter.as_ref()
+    }
+
+    pub fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    pub fn original_weight(&self) -> f64 {
+        self.original_weight
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.is_alive
+    }
+
+    pub fn cooldown_until(&self) -> Option<tokio::time::Instant> {
+        self.cooldown_until
+    }
+
+    pub fn consecutive_failures(&self) -> u64 {
+        self.consecutive_failures
+    }
+
+    pub fn latency_ms(&self) -> f64 {
+        self.latency_ms
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn archive(&self) -> bool {
+        self.archive
+    }
+
+    // ── Mutators ───────────────────────────────────────────────────────
+
+    pub fn set_archive(&mut self, archive: bool) {
+        self.archive = archive;
+    }
+
+    pub fn set_weight(&mut self, weight: f64) {
+        self.weight = weight;
+    }
+
+    pub fn set_original_weight(&mut self, weight: f64) {
+        self.original_weight = weight;
+    }
+
+    pub fn set_rate_limiter(&mut self, rl: Option<Arc<RateLimiter>>) {
+        self.rate_limiter = rl;
+    }
+
+    /// Mark provider as failed (not dead). Sets `is_alive = false` without
+    /// changing cooldown or weight. Use when a provider should be excluded
+    /// but without the exponential-backoff penalty of `record_failure`.
+    pub fn mark_failed(&mut self) {
+        self.is_alive = false;
+    }
+
+    /// Reset provider to a healthy state: alive, no cooldown, no failures.
+    /// Does not change weight, latency, or rate-limiter configuration.
+    pub fn reset(&mut self) {
+        self.is_alive = true;
+        self.cooldown_until = None;
+        self.consecutive_failures = 0;
+    }
+
+    /// Mark provider as completely dead with an explicit cooldown. Used when
+    /// validation fails (e.g. wrong chain ID, unreachable endpoint). The
+    /// provider is excluded from distribution until the cooldown expires
+    /// or a successful RPC call resets it via `record_success()`.
+    pub fn mark_dead(&mut self, cooldown: tokio::time::Duration) {
+        self.is_alive = false;
+        self.consecutive_failures += 1;
+        self.cooldown_until = Some(tokio::time::Instant::now() + cooldown);
+        self.weight = (self.weight * 0.5).max(self.original_weight * 0.1);
+    }
+
+    // ── Behaviour ──────────────────────────────────────────────────────
+
     pub fn is_available(&self) -> bool {
         if !self.is_alive {
             return false;
         }
         match self.cooldown_until {
-            Some(until) => Instant::now() >= until,
+            Some(until) => tokio::time::Instant::now() >= until,
             None => true,
         }
     }
@@ -165,15 +216,14 @@ impl ProviderState {
         self.is_alive = true;
         self.cooldown_until = None;
         self.latency_ms = self.latency_ms * 0.8 + latency.as_secs_f64() * 1000.0 * 0.2;
-        // Adaptive: gradually restore weight toward original after recovery.
         self.weight = (self.weight * 1.5).min(self.original_weight);
     }
 
     pub fn record_failure(&mut self) {
         self.consecutive_failures += 1;
         let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(300);
-        self.cooldown_until = Some(Instant::now() + std::time::Duration::from_secs(backoff_secs));
-        // Adaptive: halve the effective weight on each failure, floor at 10% of original.
+        self.cooldown_until =
+            Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(backoff_secs));
         self.weight = (self.weight * 0.5).max(self.original_weight * 0.1);
     }
 
@@ -185,14 +235,6 @@ impl ProviderState {
         if let Some(rl) = &self.rate_limiter {
             rl.set_rate(self.weight).await;
         }
-    }
-
-    /// Mark provider as completely dead. Used when validation fails (e.g. wrong
-    /// chain ID, unreachable endpoint). The provider is excluded from distribution
-    /// until a successful RPC call resets it via `record_success()`.
-    pub fn mark_dead(&mut self) {
-        self.is_alive = false;
-        self.record_failure();
     }
 
     /// Acquire a rate-limiter token if configured.

@@ -11,7 +11,7 @@ use mev_scout_core::types::{ChainName, GasConfig, GasModel, PriceOracleMode, Str
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let chain_name: ChainName = match args.chain_args.chain.parse() {
         Ok(c) => c,
-        Err(e) => anyhow::bail!("Error: {e}"),
+        Err(e) => anyhow::bail!("{e}"),
     };
 
     let provider_configs = config.effective_provider_configs(chain_name)?;
@@ -22,7 +22,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>()).await;
     rpc.check_connection(chain_id).await?;
 
-    let cache = SqliteStore::open(&config.effective_db_path(&chain_name), chain_id)?;
+    let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 
     let strategies = Strategy::from_comma_list(&args.strategies)
         .map_err(|e| anyhow::anyhow!("Error parsing strategies: {e}"))?;
@@ -112,20 +112,12 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         rpc_url: config.rpc_url.clone().unwrap_or_default(),
     };
 
-    let block_replayer = BlockReplayer::new(
-        tokio::runtime::Handle::current(),
-        cache.clone(),
-        rpc.clone(),
-        chain_id,
-    );
-
     let mut live_runner = LiveRunner::new(
         live_config,
         rpc,
         cache,
         pool_manager,
         runner,
-        block_replayer,
         chain_id,
     ).await;
 

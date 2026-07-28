@@ -42,6 +42,33 @@ impl DBErrorMarker for DbError {
     }
 }
 
+/// In-memory caches for a single block replay. Cleared on block transitions.
+#[derive(Clone)]
+struct CacheState {
+    accounts: HashMap<Address, AccountInfo>,
+    codes: HashMap<B256, Bytecode>,
+    storage: HashMap<(Address, U256), U256>,
+    code_hash_to_address: HashMap<B256, Address>,
+}
+
+impl CacheState {
+    fn new() -> Self {
+        CacheState {
+            accounts: HashMap::new(),
+            codes: HashMap::new(),
+            storage: HashMap::new(),
+            code_hash_to_address: HashMap::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.accounts.clear();
+        self.codes.clear();
+        self.storage.clear();
+        self.code_hash_to_address.clear();
+    }
+}
+
 /// Lazy-fetch database wrapping SQLite cache and RPC.
 ///
 /// Implements revm's `Database` trait, providing a three-tier lookup strategy:
@@ -62,10 +89,7 @@ pub struct CachedRpcDb {
     rpc: RpcClient,
     chain_id: u64,
     block_number: u64,
-    accounts: HashMap<Address, AccountInfo>,
-    codes: HashMap<B256, Bytecode>,
-    storage: HashMap<(Address, U256), U256>,
-    code_hash_to_address: HashMap<B256, Address>,
+    cache_state: CacheState,
 }
 
 impl Clone for CachedRpcDb {
@@ -76,10 +100,7 @@ impl Clone for CachedRpcDb {
             rpc: self.rpc.clone(),
             chain_id: self.chain_id,
             block_number: self.block_number,
-            accounts: self.accounts.clone(),
-            codes: self.codes.clone(),
-            storage: self.storage.clone(),
-            code_hash_to_address: self.code_hash_to_address.clone(),
+            cache_state: self.cache_state.clone(),
         }
     }
 }
@@ -98,10 +119,7 @@ impl CachedRpcDb {
             rpc,
             chain_id,
             block_number,
-            accounts: HashMap::new(),
-            codes: HashMap::new(),
-            storage: HashMap::new(),
-            code_hash_to_address: HashMap::new(),
+            cache_state: CacheState::new(),
         }
     }
 
@@ -111,11 +129,7 @@ impl CachedRpcDb {
 
     pub fn set_block_number(&mut self, n: u64) {
         self.block_number = n;
-        // Invalidate all in-memory caches — state is block-dependent.
-        self.accounts.clear();
-        self.codes.clear();
-        self.storage.clear();
-        self.code_hash_to_address.clear();
+        self.cache_state.clear();
     }
 
     pub fn rpc(&self) -> &RpcClient {
@@ -136,131 +150,89 @@ impl Database for CachedRpcDb {
     type Error = DbError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if let Some(info) = self.accounts.get(&address) {
+        if let Some(info) = self.cache_state.accounts.get(&address) {
             return Ok(Some(info.clone()));
         }
-        if let Some(acct) = self
-            .cache
-            .get_account(self.block_number, address)
-            .map_err(DbError)?
-        {
-            let mut info = AccountInfo {
-                nonce: acct.nonce,
-                balance: acct.balance,
-                code: None,
-                code_hash: acct.code_hash,
+        let result = DatabaseRef::basic_ref(self, address)?;
+
+        if let Some(ref info) = result {
+            if info.code_hash != KECCAK_EMPTY && info.code.is_none()
+                && !self.cache_state.codes.contains_key(&info.code_hash)
+            {
+                let code_bytes = {
+                    let from_cache = self
+                        .cache
+                        .get_code(address)
+                        .ok()
+                        .flatten()
+                        .filter(|bytes| keccak256(bytes) == info.code_hash);
+                    match from_cache {
+                        Some(bytes) => bytes,
+                        None => {
+                            let bytes = self
+                                .block_on_rpc(self.rpc.get_code(address, self.block_number))
+                                .map_err(DbError)?;
+                            self.cache.put_code(address, &bytes).map_err(DbError)?;
+                            bytes
+                        }
+                    }
+                };
+                self.cache_state
+                    .codes
+                    .insert(info.code_hash, Bytecode::new_raw(code_bytes));
+                self.cache_state
+                    .code_hash_to_address
+                    .insert(info.code_hash, address);
+            }
+
+            let code = info.code.clone().or_else(|| {
+                self.cache_state.codes.get(&info.code_hash).cloned()
+            });
+
+            let full_info = AccountInfo {
+                nonce: info.nonce,
+                balance: info.balance,
+                code,
+                code_hash: info.code_hash,
                 account_id: None,
             };
-            if acct.code_hash != KECCAK_EMPTY {
-                if let Some(code) = self.codes.get(&acct.code_hash) {
-                    info.code = Some(code.clone());
-                } else if let Ok(Some(code_bytes)) = self.cache.get_code(address) {
-                    let bytecode = Bytecode::new_raw(code_bytes);
-                    info.code = Some(bytecode.clone());
-                    self.codes.insert(acct.code_hash, bytecode);
-                    self.code_hash_to_address.insert(acct.code_hash, address);
-                }
-            }
-            self.accounts.insert(address, info.clone());
-            return Ok(Some(info));
-        }
-        let (nonce, balance, code_hash, _) = self
-            .block_on_rpc(self.rpc.get_proof(address, &[], self.block_number))
-            .map_err(DbError)?;
 
-        if code_hash != KECCAK_EMPTY && !self.codes.contains_key(&code_hash) {
-            let code_bytes = {
-                let from_cache = self
-                    .cache
-                    .get_code(address)
-                    .ok()
-                    .flatten()
-                    .filter(|bytes| keccak256(bytes) == code_hash);
-                match from_cache {
-                    Some(bytes) => bytes,
-                    None => {
-                        let bytes = self
-                            .block_on_rpc(self.rpc.get_code(address, self.block_number))
-                            .map_err(DbError)?;
-                        self.cache.put_code(address, &bytes).map_err(DbError)?;
-                        bytes
-                    }
-                }
-            };
-            self.codes
-                .insert(code_hash, Bytecode::new_raw(code_bytes));
-            self.code_hash_to_address.insert(code_hash, address);
-        }
+            self.cache
+                .put_account(
+                    self.block_number,
+                    address,
+                    &AccountData {
+                        nonce: info.nonce,
+                        balance: info.balance,
+                        code_hash: info.code_hash,
+                    },
+                )
+                .map_err(DbError)?;
 
-        let info = AccountInfo {
-            nonce,
-            balance,
-            code: self.codes.get(&code_hash).cloned(),
-            code_hash,
-            account_id: None,
-        };
-        self.cache
-            .put_account(
-                self.block_number,
-                address,
-                &AccountData {
-                    nonce,
-                    balance,
-                    code_hash,
-                },
-            )
-            .map_err(DbError)?;
-        self.accounts.insert(address, info.clone());
-        Ok(Some(info))
+            self.cache_state
+                .accounts
+                .insert(address, full_info.clone());
+            Ok(Some(full_info))
+        } else {
+            Ok(None)
+        }
     }
 
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        if code_hash == KECCAK_EMPTY {
-            return Ok(Bytecode::new());
-        }
-        if let Some(code) = self.codes.get(&code_hash) {
-            return Ok(code.clone());
-        }
-        // Try SQLite lookup via address mapping
-        if let Some(&addr) = self.code_hash_to_address.get(&code_hash) {
-            if let Ok(Some(code_bytes)) = self.cache.get_code(addr) {
-                let bytecode = Bytecode::new_raw(code_bytes);
-                self.codes.insert(code_hash, bytecode.clone());
-                return Ok(bytecode);
-            }
-        }
-        Err(DbError(anyhow::anyhow!(
-            "code_by_hash: unknown code hash {code_hash:?}"
-        )))
+        DatabaseRef::code_by_hash_ref(self, code_hash)
     }
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        if let Some(value) = self.storage.get(&(address, index)) {
+        if let Some(value) = self.cache_state.storage.get(&(address, index)) {
             return Ok(*value);
         }
-        if let Some(value) = self
-            .cache
-            .get_slot(self.block_number, address, index)
-            .map_err(DbError)?
-        {
-            self.storage.insert((address, index), value);
-            return Ok(value);
-        }
-        let value = self
-            .block_on_rpc(self.rpc.get_storage_at(address, index, self.block_number))
-            .map_err(DbError)?;
-        self.cache
-            .put_slot(self.block_number, address, index, value)
-            .map_err(DbError)?;
-        self.storage.insert((address, index), value);
+        let value = DatabaseRef::storage_ref(self, address, index)?;
+        self.cache_state.storage.insert((address, index), value);
         Ok(value)
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
-        match self.cache.get_block(number).map_err(DbError)? {
-            Some(block) => Ok(block.hash),
-            None => Ok(B256::ZERO),
-        }
+        DatabaseRef::block_hash_ref(self, number)
     }
 }
 
@@ -316,10 +288,10 @@ impl DatabaseRef for CachedRpcDb {
         if code_hash == KECCAK_EMPTY {
             return Ok(Bytecode::new());
         }
-        if let Some(code) = self.codes.get(&code_hash) {
+        if let Some(code) = self.cache_state.codes.get(&code_hash) {
             return Ok(code.clone());
         }
-        if let Some(&addr) = self.code_hash_to_address.get(&code_hash) {
+        if let Some(&addr) = self.cache_state.code_hash_to_address.get(&code_hash) {
             if let Ok(Some(code_bytes)) = self.cache.get_code(addr) {
                 return Ok(Bytecode::new_raw(code_bytes));
             }

@@ -156,7 +156,7 @@ fn temp_cache_dir(name: &str) -> String {
 fn temp_cache(name: &str) -> (SqliteStore, String) {
     let dir = temp_cache_dir(name);
     let db_path = Path::new(&dir).join("cache.db");
-    let store = SqliteStore::open(&db_path, POLYGON_CHAIN_ID).unwrap();
+    let store = SqliteStore::open(&db_path).unwrap();
     (store, dir)
 }
 
@@ -504,7 +504,7 @@ fn test_e2e_opportunity_persistence() {
 fn test_e2e_cache_isolation() {
     let (poly, _dp) = temp_cache("iso_poly");
     let _eth = SqliteStore::open(
-        Path::new(&temp_cache_dir("iso_eth")).join("cache.db"), 1,
+        Path::new(&temp_cache_dir("iso_eth")).join("cache.db"),
     ).unwrap();
 
     let pool = PoolInfo {

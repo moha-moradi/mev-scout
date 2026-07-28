@@ -143,7 +143,38 @@ pub struct DiscoveredPool {
     pub token1_symbol: Option<String>,
 }
 
+macro_rules! merge_option {
+    ($self:expr, $other:expr, $field:ident) => {
+        if $self.$field.is_none() {
+            $self.$field = $other.$field.clone();
+        }
+    };
+}
+
 impl DiscoveredPool {
+    pub fn new(address: Address, token0: Address, token1: Address, fee: u32, dex_type: DexType, creation_block: u64) -> Self {
+        Self {
+            address, token0, token1, fee, dex_type, creation_block,
+            tick_spacing: None, pool_id: None, factory: None, is_stable: None,
+            balancer_pool_type: None, hook_address: None, bin_step: None,
+            maturity_timestamp: None, underlying_tokens: None, dex_name: None,
+            token0_symbol: None, token1_symbol: None,
+        }
+    }
+
+    pub fn with_tick_spacing(mut self, v: Option<i32>) -> Self { self.tick_spacing = v; self }
+    pub fn with_pool_id(mut self, v: Option<[u8; 32]>) -> Self { self.pool_id = v; self }
+    pub fn with_factory(mut self, v: Option<Address>) -> Self { self.factory = v; self }
+    pub fn with_is_stable(mut self, v: Option<bool>) -> Self { self.is_stable = v; self }
+    pub fn with_balancer_pool_type(mut self, v: Option<u8>) -> Self { self.balancer_pool_type = v; self }
+    pub fn with_hook_address(mut self, v: Option<Address>) -> Self { self.hook_address = v; self }
+    pub fn with_bin_step(mut self, v: Option<u32>) -> Self { self.bin_step = v; self }
+    pub fn with_maturity_timestamp(mut self, v: Option<u64>) -> Self { self.maturity_timestamp = v; self }
+    pub fn with_underlying_tokens(mut self, v: Option<Vec<Address>>) -> Self { self.underlying_tokens = v; self }
+    pub fn with_dex_name(mut self, v: Option<String>) -> Self { self.dex_name = v; self }
+    pub fn with_token0_symbol(mut self, v: Option<String>) -> Self { self.token0_symbol = v; self }
+    pub fn with_token1_symbol(mut self, v: Option<String>) -> Self { self.token1_symbol = v; self }
+
     /// Merge metadata from `other` into `self`, filling only `None` fields.
     ///
     /// Used to combine Dune-discovered pools (fast bulk discovery, partial metadata)
@@ -154,45 +185,21 @@ impl DiscoveredPool {
         if self.fee == 0 && other.fee != 0 {
             self.fee = other.fee;
         }
-        if self.tick_spacing.is_none() {
-            self.tick_spacing = other.tick_spacing;
-        }
+        merge_option!(self, other, tick_spacing);
         if self.creation_block == 0 && other.creation_block != 0 {
             self.creation_block = other.creation_block;
         }
-        if self.pool_id.is_none() {
-            self.pool_id = other.pool_id;
-        }
-        if self.factory.is_none() {
-            self.factory = other.factory;
-        }
-        if self.is_stable.is_none() {
-            self.is_stable = other.is_stable;
-        }
-        if self.balancer_pool_type.is_none() {
-            self.balancer_pool_type = other.balancer_pool_type;
-        }
-        if self.hook_address.is_none() {
-            self.hook_address = other.hook_address;
-        }
-        if self.bin_step.is_none() {
-            self.bin_step = other.bin_step;
-        }
-        if self.maturity_timestamp.is_none() {
-            self.maturity_timestamp = other.maturity_timestamp;
-        }
-        if self.underlying_tokens.is_none() {
-            self.underlying_tokens = other.underlying_tokens.clone();
-        }
-        if self.dex_name.is_none() {
-            self.dex_name = other.dex_name.clone();
-        }
-        if self.token0_symbol.is_none() {
-            self.token0_symbol = other.token0_symbol.clone();
-        }
-        if self.token1_symbol.is_none() {
-            self.token1_symbol = other.token1_symbol.clone();
-        }
+        merge_option!(self, other, pool_id);
+        merge_option!(self, other, factory);
+        merge_option!(self, other, is_stable);
+        merge_option!(self, other, balancer_pool_type);
+        merge_option!(self, other, hook_address);
+        merge_option!(self, other, bin_step);
+        merge_option!(self, other, maturity_timestamp);
+        merge_option!(self, other, underlying_tokens);
+        merge_option!(self, other, dex_name);
+        merge_option!(self, other, token0_symbol);
+        merge_option!(self, other, token1_symbol);
     }
 }
 
@@ -222,6 +229,25 @@ impl From<DiscoveredPool> for PoolInfo {
             dex_name: d.dex_name,
             token0_symbol: d.token0_symbol,
             token1_symbol: d.token1_symbol,
+        }
+    }
+}
+
+/// Process a single DEX activity log, updating active_blocks and pool_hits.
+fn process_discovery_log(
+    log: &alloy::rpc::types::Log,
+    active_blocks: &mut HashSet<u64>,
+    pool_hits: &mut HashMap<Address, (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64)>,
+) {
+    if let Some(bn) = log.block_number {
+        active_blocks.insert(bn);
+    }
+    let addr = log.address();
+    if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
+        let block_num = log.block_number.unwrap_or(0);
+        let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
+        if block_num > 0 && block_num < entry.3 {
+            entry.3 = block_num;
         }
     }
 }
@@ -452,20 +478,7 @@ fn classify_dex_event(
 
 // ── Helper: scan factory creation events ──
 
-async fn scan_factory_creation_events(
-    rpc: &RpcClient,
-    factories: &[Address],
-    topic: B256,
-    from_block: u64,
-    to_block: u64,
-    active_blocks: &mut HashSet<u64>,
-    factory_pools: &mut HashMap<Address, DiscoveredPool>,
-    decode_fn: impl Fn(&alloy::rpc::types::Log) -> Option<(Address, DiscoveredPool)>,
-) {
-    scan_factory_creation_events_pinned(rpc, factories, topic, from_block, to_block, active_blocks, factory_pools, None, decode_fn).await;
-}
-
-/// Like `scan_factory_creation_events` but pins to a specific provider when `provider_idx` is `Some`.
+/// Pins to a specific provider when `provider_idx` is `Some`.
 async fn scan_factory_creation_events_pinned(
     rpc: &RpcClient,
     factories: &[Address],
@@ -701,17 +714,7 @@ async fn discover_pools_shard(
         match fast_result {
             Ok(logs) => {
                 for log in &logs {
-                    if let Some(bn) = log.block_number {
-                        active_blocks.insert(bn);
-                    }
-                    let addr = log.address();
-                    if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
-                        let block_num = log.block_number.unwrap_or(0);
-                        let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
-                        if block_num > 0 && block_num < entry.3 {
-                            entry.3 = block_num;
-                        }
-                    }
+                    process_discovery_log(log, &mut active_blocks, &mut pool_hits);
                 }
             }
             Err(e) => {
@@ -726,17 +729,7 @@ async fn discover_pools_shard(
                 match get_logs_pinned!(rpc, &full_filter) {
                     Ok(logs) => {
                         for log in &logs {
-                            if let Some(bn) = log.block_number {
-                                active_blocks.insert(bn);
-                            }
-                            let addr = log.address();
-                            if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
-                                let block_num = log.block_number.unwrap_or(0);
-                                let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
-                                if block_num > 0 && block_num < entry.3 {
-                                    entry.3 = block_num;
-                                }
-                            }
+                            process_discovery_log(log, &mut active_blocks, &mut pool_hits);
                         }
                     }
                     Err(e2) => {
@@ -765,18 +758,8 @@ async fn discover_pools_shard(
                     let token0 = Address::from_slice(&topics[1][12..]);
                     let token1 = Address::from_slice(&topics[2][12..]);
                     let creation_block = log.block_number.unwrap_or(0);
-                    Some((addr, DiscoveredPool {
-                        address: addr, token0, token1,
-                        fee, tick_spacing: None, dex_type: DexType::UniswapV2,
-                        creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: None, balancer_pool_type: None, hook_address: None,
-                        bin_step: None,
-                        maturity_timestamp: None,
-                        underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                    }))
+                    Some((addr, DiscoveredPool::new(addr, token0, token1, fee, DexType::UniswapV2, creation_block)
+                        .with_factory(Some(log.address()))))
                 },
             ).await;
         }
@@ -804,18 +787,9 @@ async fn discover_pools_shard(
                         Some(i32::from_be_bytes(ts_bytes))
                     };
                     let creation_block = log.block_number.unwrap_or(0);
-                    Some((pool_addr, DiscoveredPool {
-                        address: pool_addr, token0, token1,
-                        fee, tick_spacing, dex_type: DexType::UniswapV3,
-                        creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: None, balancer_pool_type: None, hook_address: None,
-                        bin_step: None,
-                        maturity_timestamp: None,
-                        underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                    }))
+                    Some((pool_addr, DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::UniswapV3, creation_block)
+                        .with_tick_spacing(tick_spacing)
+                        .with_factory(Some(log.address()))))
                 },
             ).await;
         }
@@ -848,23 +822,11 @@ async fn discover_pools_shard(
                         pool_hits.entry(pool_addr).or_insert((
                             DexType::Balancer, Some(pool_id), None, creation_block,
                         ));
-                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
-                            address: pool_addr,
-                            token0: Address::ZERO, token1: Address::ZERO,
-                            fee: 0, tick_spacing: None,
-                            dex_type: DexType::Balancer,
-                            creation_block, pool_id: Some(pool_id),
-                            factory: Some(vault),
-                            is_stable: None,
-                            balancer_pool_type: Some(pool_type),
-                            hook_address: None,
-                            bin_step: None,
-                            maturity_timestamp: None,
-                            underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                        });
+                        factory_pools.entry(pool_addr).or_insert(
+                            DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Balancer, creation_block)
+                                .with_pool_id(Some(pool_id))
+                                .with_factory(Some(vault))
+                                .with_balancer_pool_type(Some(pool_type)));
                     }
                 }
                 Err(e) => {
@@ -897,20 +859,9 @@ async fn discover_pools_shard(
                         pool_hits.entry(pool_addr).or_insert((
                             DexType::Curve, None, None, creation_block,
                         ));
-                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
-                            address: pool_addr,
-                            token0: Address::ZERO, token1: Address::ZERO,
-                            fee: 0, tick_spacing: None,
-                            dex_type: DexType::Curve,
-                            creation_block, pool_id: None, factory: Some(registry),
-                            is_stable: None, balancer_pool_type: None, hook_address: None,
-                            bin_step: None,
-                            maturity_timestamp: None,
-                            underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                        });
+                        factory_pools.entry(pool_addr).or_insert(
+                            DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Curve, creation_block)
+                                .with_factory(Some(registry)));
                     }
                 }
                 Err(e) => {
@@ -938,19 +889,9 @@ async fn discover_pools_shard(
                     let token1 = Address::from_slice(&topics[2][12..]);
                     let is_stable = log_data.data[31] != 0;
                     let creation_block = log.block_number.unwrap_or(0);
-                    Some((pair_addr, DiscoveredPool {
-                        address: pair_addr, token0, token1,
-                        fee, tick_spacing: None, dex_type: DexType::Solidly,
-                        creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: Some(is_stable), balancer_pool_type: None,
-                        hook_address: None,
-                        bin_step: None,
-                        maturity_timestamp: None,
-                        underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                    }))
+                    Some((pair_addr, DiscoveredPool::new(pair_addr, token0, token1, fee, DexType::Solidly, creation_block)
+                        .with_factory(Some(log.address()))
+                        .with_is_stable(Some(is_stable))))
                 },
             ).await;
         }
@@ -973,19 +914,9 @@ async fn discover_pools_shard(
                         .to::<u64>() as u32;
                     let is_stable = log_data.data[95] != 0;
                     let creation_block = log.block_number.unwrap_or(0);
-                    Some((pair_addr, DiscoveredPool {
-                        address: pair_addr, token0, token1,
-                        fee, tick_spacing: None, dex_type: DexType::Camelot,
-                        creation_block, pool_id: None, factory: Some(log.address()),
-                        is_stable: Some(is_stable), balancer_pool_type: None,
-                        hook_address: None,
-                        bin_step: None,
-                        maturity_timestamp: None,
-                        underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                    }))
+                    Some((pair_addr, DiscoveredPool::new(pair_addr, token0, token1, fee, DexType::Camelot, creation_block)
+                        .with_factory(Some(log.address()))
+                        .with_is_stable(Some(is_stable))))
                 },
             ).await;
         }
@@ -1015,19 +946,9 @@ async fn discover_pools_shard(
                         pool_hits.entry(lb_pair).or_insert((
                             DexType::TraderJoeLB, None, None, creation_block,
                         ));
-                        factory_pools.entry(lb_pair).or_insert(DiscoveredPool {
-                            address: lb_pair, token0, token1,
-                            fee: 0, tick_spacing: None,
-                            dex_type: DexType::TraderJoeLB,
-                            creation_block, pool_id: None, factory: Some(factory),
-                            is_stable: None, balancer_pool_type: None,
-                            hook_address: None, bin_step: None,
-                            maturity_timestamp: None,
-                            underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                        });
+                        factory_pools.entry(lb_pair).or_insert(
+                            DiscoveredPool::new(lb_pair, token0, token1, 0, DexType::TraderJoeLB, creation_block)
+                                .with_factory(Some(factory)));
                     }
                 }
                 Err(e) => {
@@ -1061,20 +982,10 @@ async fn discover_pools_shard(
                         let expiry = alloy::primitives::U256::from_be_slice(&log_data.data[..32])
                             .to::<u64>();
                         let creation_block = log.block_number.unwrap_or(0);
-                        factory_pools.entry(market_addr).or_insert(DiscoveredPool {
-                            address: market_addr,
-                            token0: pt_addr, token1: Address::ZERO,
-                            fee: 0, tick_spacing: None,
-                            dex_type: DexType::Pendle,
-                            creation_block, pool_id: None, factory: Some(factory),
-                            is_stable: None, balancer_pool_type: None,
-                            hook_address: None, bin_step: None,
-                            maturity_timestamp: Some(expiry),
-                            underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                        });
+                        factory_pools.entry(market_addr).or_insert(
+                            DiscoveredPool::new(market_addr, pt_addr, Address::ZERO, 0, DexType::Pendle, creation_block)
+                                .with_factory(Some(factory))
+                                .with_maturity_timestamp(Some(expiry)));
                     }
                 }
                 Err(e) => {
@@ -1121,20 +1032,11 @@ async fn discover_pools_shard(
                         let hook_address = if hook_address.is_zero() { None } else { Some(hook_address) };
                         let creation_block = log.block_number.unwrap_or(0);
                         let pool_addr = Address::from_slice(&topics[1][12..32]);
-                        factory_pools.entry(pool_addr).or_insert(DiscoveredPool {
-                            address: pool_addr,
-                            token0, token1,
-                            fee, tick_spacing: Some(tick_spacing), dex_type: DexType::UniswapV4,
-                            creation_block, pool_id: None, factory: Some(pool_manager),
-                            is_stable: None, balancer_pool_type: None,
-                            hook_address,
-                            bin_step: None,
-                            maturity_timestamp: None,
-                            underlying_tokens: None,
-                        dex_name: None,
-                        token0_symbol: None,
-                        token1_symbol: None,
-                        });
+                        factory_pools.entry(pool_addr).or_insert(
+                            DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::UniswapV4, creation_block)
+                                .with_tick_spacing(Some(tick_spacing))
+                                .with_factory(Some(pool_manager))
+                                .with_hook_address(hook_address));
                     }
                 }
                 Err(e) => {
@@ -1327,26 +1229,19 @@ async fn discover_pools_shard(
         // Skip pools already known from a previous discovery run (SQLite cache)
         if let Some(cached) = config.pool_cache.and_then(|c| c.get_discovered_pool(addr).ok().flatten()) {
             if cached.token0 != Address::ZERO && cached.token1 != Address::ZERO {
-                let dp = DiscoveredPool {
-                    address: cached.address,
-                    token0: cached.token0,
-                    token1: cached.token1,
-                    fee: cached.fee,
-                    tick_spacing: cached.tick_spacing.map(|ts| ts as i32),
-                    dex_type: cached.dex_type,
-                    creation_block: cached.creation_block,
-                    pool_id: cached.pool_id,
-                    factory: cached.factory,
-                    is_stable: cached.is_stable,
-                    balancer_pool_type: cached.balancer_pool_type,
-                    hook_address: cached.hook_address,
-                    bin_step: cached.bin_step,
-                    maturity_timestamp: cached.maturity_timestamp,
-                    underlying_tokens: cached.underlying_tokens,
-                    dex_name: cached.dex_name,
-                    token0_symbol: cached.token0_symbol,
-                    token1_symbol: cached.token1_symbol,
-                };
+                let dp = DiscoveredPool::new(cached.address, cached.token0, cached.token1, cached.fee, cached.dex_type, cached.creation_block)
+                    .with_tick_spacing(cached.tick_spacing.map(|ts| ts as i32))
+                    .with_pool_id(cached.pool_id)
+                    .with_factory(cached.factory)
+                    .with_is_stable(cached.is_stable)
+                    .with_balancer_pool_type(cached.balancer_pool_type)
+                    .with_hook_address(cached.hook_address)
+                    .with_bin_step(cached.bin_step)
+                    .with_maturity_timestamp(cached.maturity_timestamp)
+                    .with_underlying_tokens(cached.underlying_tokens)
+                    .with_dex_name(cached.dex_name)
+                    .with_token0_symbol(cached.token0_symbol)
+                    .with_token1_symbol(cached.token1_symbol);
                 factory_pools.entry(*addr).or_insert(dp);
                 cache_hits += 1;
                 continue;
@@ -1613,26 +1508,13 @@ async fn discover_pools_shard(
         let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
         let underlying_tokens = factory_pools.get(&addr).and_then(|fp| fp.underlying_tokens.clone());
 
-        discovered_pools.push(DiscoveredPool {
-            address: addr,
-            token0,
-            token1,
-            fee,
-            tick_spacing: tick_spacing.map(|ts| ts as i32),
-            dex_type,
-            creation_block,
-            pool_id,
-            factory: None,
-            is_stable: None,
-            balancer_pool_type: None,
-            hook_address: None,
-            bin_step: None,
-            maturity_timestamp: None,
-            underlying_tokens,
-            dex_name: Some(dex_type.label().to_string()),
-            token0_symbol: symbol_results.get(&token0).cloned(),
-            token1_symbol: symbol_results.get(&token1).cloned(),
-        });
+        discovered_pools.push(DiscoveredPool::new(addr, token0, token1, fee, dex_type, creation_block)
+            .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
+            .with_pool_id(pool_id)
+            .with_underlying_tokens(underlying_tokens)
+            .with_dex_name(Some(dex_type.label().to_string()))
+            .with_token0_symbol(symbol_results.get(&token0).cloned())
+            .with_token1_symbol(symbol_results.get(&token1).cloned()));
     }
 
     tracing::info!(

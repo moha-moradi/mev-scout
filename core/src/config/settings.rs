@@ -283,12 +283,7 @@ impl Config {
     /// Returns URLs from `rpc_urls` first, then `rpc_url` (legacy single), then public endpoints.
     /// Errors only if no RPC source is available (no user URL and unknown chain).
     pub fn effective_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let mut urls = self.rpc_urls.clone();
-        if let Some(single) = &self.rpc_url {
-            if !urls.iter().any(|u| u == single) {
-                urls.push(single.clone());
-            }
-        }
+        let urls = Self::merge_rpc_urls(&self.rpc_urls, &self.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
                 "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
@@ -390,18 +385,25 @@ impl Config {
     /// Return only the user-specified RPC URLs (no public fallbacks), for backward compat.
     /// Errors if no user URL is provided.
     pub fn user_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let mut urls = self.rpc_urls.clone();
-        if let Some(single) = &self.rpc_url {
-            if !urls.iter().any(|u| u == single) {
-                urls.push(single.clone());
-            }
-        }
+        let urls = Self::merge_rpc_urls(&self.rpc_urls, &self.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
                 "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
             ));
         }
         Ok(urls)
+    }
+
+    /// Merge `rpc_urls` (Vec) and `rpc_url` (legacy single) into a deduplicated list.
+    /// The legacy single URL is appended only if it is not already present in `rpc_urls`.
+    fn merge_rpc_urls(base: &[String], extra: &Option<String>) -> Vec<String> {
+        let mut urls = base.to_vec();
+        if let Some(single) = extra {
+            if !urls.iter().any(|u| u == single) {
+                urls.push(single.clone());
+            }
+        }
+        urls
     }
 
     pub fn to_toml_string(&self) -> error::Result<String> {
@@ -568,12 +570,13 @@ impl Config {
             let pair = pair.trim();
             if pair.is_empty() { continue; }
             if let Some((addr_str, price_str)) = pair.split_once('=') {
-                if let (Ok(addr), Ok(price)) = (
-                    addr_str.trim().parse::<alloy::primitives::Address>(),
-                    price_str.trim().parse::<f64>(),
-                ) {
-                    map.insert(addr, price);
+                match (addr_str.trim().parse::<alloy::primitives::Address>(), price_str.trim().parse::<f64>()) {
+                    (Ok(addr), Ok(price)) => { map.insert(addr, price); }
+                    (Ok(_), Err(_)) => tracing::warn!("unparseable token price '{}' in '{}'", price_str, pair),
+                    (Err(_), _) => tracing::warn!("unparseable token address '{}' in '{}'", addr_str, pair),
                 }
+            } else {
+                tracing::warn!("malformed token-price entry '{}' (expected address=price)", pair);
             }
         }
         map
