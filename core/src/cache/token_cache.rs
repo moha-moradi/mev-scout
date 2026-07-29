@@ -13,7 +13,7 @@ use alloy::primitives::Address;
 
 use super::store::SqliteStore;
 use crate::dune::client::DuneClient;
-use crate::dune::pool_discovery::dune_chain_label;
+use crate::dune::util::dune_chain_label;
 use crate::dune::queries::QUERY_ALL_TOKENS;
 
 /// In-memory token symbol cache backed by SQLite.

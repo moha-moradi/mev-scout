@@ -1,23 +1,5 @@
 {
     "$schema": "https://opencode.ai/config.json",
-    "provider": {
-        "opencode": {
-            "models": {
-                "big-pickle": {
-                    "options": {
-                        "reasoningEffort": "high"
-                    }
-                },
-                "deepseek-v4-flash": {
-                    "variants": {
-                        "max": {
-                            "reasoningEffort": "max"
-                        }
-                    }
-                }
-            }
-        }
-    },
     "plugin": [
         [
             "@skwid138/opencode-council",

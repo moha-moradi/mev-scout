@@ -140,15 +140,6 @@ impl ConcentratedPoolState for UniswapV3PoolState {
     }
 }
 
-impl ConcentratedPoolState for UniswapV4PoolState {
-    fn set_concentrated_state(&mut self, sqrt: U256, tick: i32, liq: u128, ticks: std::collections::BTreeMap<i32, i128>) {
-        self.sqrt_price_x96 = sqrt;
-        self.tick = tick;
-        self.liquidity = liq;
-        self.ticks = ticks;
-    }
-}
-
 impl PoolManager {
     pub async fn init_from_rpc(&mut self, rpc: &RpcClient, block_num: u64) {
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();

@@ -2,7 +2,7 @@
 //! and unified `quote_exact_in` dispatcher for all pool types.
 
 use alloy::primitives::Address;
-use crate::pool::state::{PoolState, UniswapV3PoolState};
+use crate::pool::state::PoolState;
 use super::v3::quote_v3_exact_in;
 use super::curve;
 use super::balancer;
@@ -42,12 +42,11 @@ pub fn quote_exact_in(
             quote_v3_exact_in(v3, amount_in, zero_for_one)
         }
         PoolState::UniswapV4(v4) => {
-            let v3: UniswapV3PoolState = v4.clone().into();
             let zero_for_one = v4.info.token0 == token_in;
             if !zero_for_one && v4.info.token1 != token_in {
                 return None;
             }
-            quote_v3_exact_in(&v3, amount_in, zero_for_one)
+            quote_v3_exact_in(v4, amount_in, zero_for_one)
         }
         PoolState::Curve(curve) => {
             if !curve.token_index.contains_key(&token_in) || !curve.token_index.contains_key(&token_out) {

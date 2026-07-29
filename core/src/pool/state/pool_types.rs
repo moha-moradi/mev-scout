@@ -253,49 +253,8 @@ impl UniswapV3PoolState {
     }
 }
 
-/// Runtime state for a Uniswap V4 concentrated-liquidity pool.
-///
-/// Same fields as V3; V4 pools are identified by a `bytes32 poolKey` and
-/// may have an associated hook contract.  The quoting logic is identical
-/// to V3 (sqrt-price + ticks + liquidity).
-#[derive(Debug, Clone)]
-pub struct UniswapV4PoolState {
-    pub info: PoolInfo,
-    pub sqrt_price_x96: U256,
-    pub tick: i32,
-    pub liquidity: u128,
-    pub ticks: std::collections::BTreeMap<i32, i128>,
-    pub fee_growth_global_0_x128: U256,
-    pub fee_growth_global_1_x128: U256,
-}
-
-impl UniswapV4PoolState {
-    pub fn new(info: PoolInfo) -> Self {
-        UniswapV4PoolState {
-            info,
-            sqrt_price_x96: U256::ZERO,
-            tick: 0,
-            liquidity: 0,
-            ticks: std::collections::BTreeMap::new(),
-            fee_growth_global_0_x128: U256::ZERO,
-            fee_growth_global_1_x128: U256::ZERO,
-        }
-    }
-}
-
-impl From<UniswapV4PoolState> for UniswapV3PoolState {
-    fn from(v4: UniswapV4PoolState) -> Self {
-        UniswapV3PoolState {
-            info: v4.info,
-            sqrt_price_x96: v4.sqrt_price_x96,
-            tick: v4.tick,
-            liquidity: v4.liquidity,
-            ticks: v4.ticks,
-            fee_growth_global_0_x128: v4.fee_growth_global_0_x128,
-            fee_growth_global_1_x128: v4.fee_growth_global_1_x128,
-        }
-    }
-}
+/// Uniswap V4 uses the same concentrated-liquidity state as V3.
+pub type UniswapV4PoolState = UniswapV3PoolState;
 
 /// Runtime state for a Trader Joe V2 LB (Liquidity Book) pool.
 ///

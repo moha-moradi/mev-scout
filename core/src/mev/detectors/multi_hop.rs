@@ -3,7 +3,7 @@
 use alloy::primitives::{Address, U256};
 use crate::types::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic, quote_exact_in};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, PoolManager, PoolState, UniswapV3PoolState};
+use crate::pool::state::{calldata_gas_estimate, check_dedup_key, PoolManager, PoolState};
 use crate::pool::math::v3::max_v3_tradeable_amount;
 use crate::types::{GasConfig, Strategy};
 
@@ -275,9 +275,8 @@ impl MultiHopArbDetector {
             PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, true)
                 .max(max_v3_tradeable_amount(v3, false)),
             PoolState::UniswapV4(v4) => {
-                let v3: UniswapV3PoolState = v4.clone().into();
-                max_v3_tradeable_amount(&v3, true)
-                    .max(max_v3_tradeable_amount(&v3, false))
+                max_v3_tradeable_amount(v4, true)
+                    .max(max_v3_tradeable_amount(v4, false))
             }
             PoolState::Curve(c) => {
                 c.balances.iter().fold(0u128, |a, &b| a.max(b))

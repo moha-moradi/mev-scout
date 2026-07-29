@@ -54,54 +54,32 @@ impl PoolManager {
         amount0: i128,
         amount1: i128,
     ) {
-        // V3 pools
-        if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
-            state.sqrt_price_x96 = sqrt_price_x96;
-            state.tick = tick;
-            state.liquidity = liquidity;
+        // V3 and V4 pools share the same swap logic
+        match self.pools.get_mut(address) {
+            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) => {
+                state.sqrt_price_x96 = sqrt_price_x96;
+                state.tick = tick;
+                state.liquidity = liquidity;
 
-            let fee_tier = state.info.fee as u128;
-            if amount0 < 0 {
-                let input = amount0.unsigned_abs();
-                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
-                if fee > 0 && liquidity > 0 {
-                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
-                    state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
+                let fee_tier = state.info.fee as u128;
+                if amount0 < 0 {
+                    let input = amount0.unsigned_abs();
+                    let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                    if fee > 0 && liquidity > 0 {
+                        let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                        state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
+                    }
+                }
+                if amount1 < 0 {
+                    let input = amount1.unsigned_abs();
+                    let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                    if fee > 0 && liquidity > 0 {
+                        let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                        state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
+                    }
                 }
             }
-            if amount1 < 0 {
-                let input = amount1.unsigned_abs();
-                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
-                if fee > 0 && liquidity > 0 {
-                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
-                    state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
-                }
-            }
-            return;
-        }
-        // V4 pools emit the same Swap event signature as V3
-        if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(address) {
-            state.sqrt_price_x96 = sqrt_price_x96;
-            state.tick = tick;
-            state.liquidity = liquidity;
-
-            let fee_tier = state.info.fee as u128;
-            if amount0 < 0 {
-                let input = amount0.unsigned_abs();
-                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
-                if fee > 0 && liquidity > 0 {
-                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
-                    state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
-                }
-            }
-            if amount1 < 0 {
-                let input = amount1.unsigned_abs();
-                let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
-                if fee > 0 && liquidity > 0 {
-                    let inc = (U256::from(fee) << 128) / U256::from(liquidity);
-                    state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
-                }
-            }
+            _ => {}
         }
     }
 
@@ -113,23 +91,17 @@ impl PoolManager {
         tick_upper: i32,
         amount: i128,
     ) {
-        if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(address) {
-            *state.ticks.entry(tick_lower).or_insert(0) += amount;
-            *state.ticks.entry(tick_upper).or_insert(0) -= amount;
-            if amount > 0 {
-                state.liquidity = state.liquidity.saturating_add(amount as u128);
-            } else {
-                state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
+        match self.pools.get_mut(address) {
+            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) => {
+                *state.ticks.entry(tick_lower).or_insert(0) += amount;
+                *state.ticks.entry(tick_upper).or_insert(0) -= amount;
+                if amount > 0 {
+                    state.liquidity = state.liquidity.saturating_add(amount as u128);
+                } else {
+                    state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
+                }
             }
-        }
-        if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(address) {
-            *state.ticks.entry(tick_lower).or_insert(0) += amount;
-            *state.ticks.entry(tick_upper).or_insert(0) -= amount;
-            if amount > 0 {
-                state.liquidity = state.liquidity.saturating_add(amount as u128);
-            } else {
-                state.liquidity = state.liquidity.saturating_sub((-amount) as u128);
-            }
+            _ => {}
         }
     }
 

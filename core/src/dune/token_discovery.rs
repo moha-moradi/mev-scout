@@ -2,7 +2,7 @@ use alloy::primitives::Address;
 use tracing;
 
 use super::client::DuneClient;
-use super::pool_discovery::dune_chain_label;
+use super::util::dune_chain_label;
 use super::queries;
 use super::types::DuneTokenWithStats;
 

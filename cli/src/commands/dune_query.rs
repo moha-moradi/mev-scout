@@ -2,622 +2,173 @@ use crate::cli::DuneQueryArgs;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::client::DuneClient;
 use mev_scout_core::dune::queries;
+use mev_scout_core::dune::util::{approx_block_month_min, dune_chain_label};
 
-/// Query metadata: name, description, required params, optional params.
+/// Query metadata and SQL template.
 struct QueryInfo {
     name: &'static str,
     description: &'static str,
     required: &'static [&'static str],
+    sql: &'static str,
 }
 
 fn all_queries() -> Vec<QueryInfo> {
-    vec![
-        // Section 1: Pool Discovery
-        QueryInfo {
-            name: "QUERY_V2_POOLS_BY_FACTORY",
-            description: "V2-style pools via dex.trades",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_V3_POOLS_BY_FACTORY",
-            description: "V3 pools via dex.trades",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_CURVE_POOLS",
-            description: "Curve pools via PoolAdded events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_BALANCER_POOLS",
-            description: "Balancer V2 pools via PoolRegistered event",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_ALL_ACTIVE_POOLS",
-            description: "All active DEX pools from dex.trades",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_POOLS_WITH_METADATA",
-            description: "Pools with token symbols and decimals",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_POOLS_BY_FACTORY_ADDRESS",
-            description: "Pools by specific factory address",
-            required: &["chain", "from_block", "to_block", "factory_address"],
-        },
-        // Section 2: Trade & Swap Analysis
-        QueryInfo {
-            name: "QUERY_TRADES_IN_BLOCK",
-            description: "All DEX trades in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_TRADES_IN_RANGE",
-            description: "All DEX trades in a block range",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_TRADES_BY_POOL",
-            description: "Trades involving a specific pool",
-            required: &["chain", "from_block", "to_block", "pool_address"],
-        },
-        QueryInfo {
-            name: "QUERY_TRADES_BY_TOKEN_PAIR",
-            description: "Trades for a specific token pair",
-            required: &["chain", "from_block", "to_block", "token_in", "token_out"],
-        },
-        QueryInfo {
-            name: "QUERY_LARGE_SWAPS",
-            description: "Large swaps (whale detection)",
-            required: &["chain", "from_block", "to_block", "min_usd"],
-        },
-        QueryInfo {
-            name: "QUERY_VERIFY_TRADE_BY_TX",
-            description: "Verify a specific trade by tx_hash",
-            required: &["chain", "block", "tx_hash"],
-        },
-        // Section 3: MEV Detection
-        QueryInfo {
-            name: "QUERY_SANDWICHES_BY_RANGE",
-            description: "Sandwich attacks in a block range",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_SANDWICHES_BY_BLOCK",
-            description: "Sandwich attacks in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_SANDWICHES_BY_TIME",
-            description: "Sandwich attacks in a time range",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_SANDWICHED_VICTIMS_BY_RANGE",
-            description: "Victim trades that were sandwiched",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_ARBITRAGES_BY_RANGE",
-            description: "Arbitrage transactions in a block range",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_ARBITRAGES_BY_BLOCK",
-            description: "Arbitrage transactions in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_ARBITRAGES_BY_TIME",
-            description: "Arbitrage transactions in a time range",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_FLASH_LOANS_BY_RANGE",
-            description: "Flash loan events in a block range",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_FLASH_LOANS_BY_BLOCK",
-            description: "Flash loans in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_AAVE_V3_LIQUIDATIONS",
-            description: "Aave V3 liquidation events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_AAVE_V3_LIQUIDATIONS_BY_BLOCK",
-            description: "Aave V3 liquidations in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_COMPOUND_V3_LIQUIDATIONS",
-            description: "Compound V3 liquidation events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_LIQUIDATIONS_ALL",
-            description: "Combined liquidation events (all protocols)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_LIQUIDATIONS_BY_BLOCK",
-            description: "Combined liquidations in a specific block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_VERIFY_SANDWICH",
-            description: "Verify if a tx is part of a sandwich",
-            required: &["chain", "block", "tx_hash"],
-        },
-        QueryInfo {
-            name: "QUERY_FAILED_TXS",
-            description: "Failed (reverted) transactions",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_FAILED_TXS_BY_BLOCK",
-            description: "Failed transactions in a specific block",
-            required: &["chain", "block"],
-        },
-        // Section 4: Token & Price Data
-        QueryInfo {
-            name: "QUERY_TOKEN_METADATA",
-            description: "ERC20 token metadata",
-            required: &["chain", "token_list"],
-        },
-        QueryInfo {
-            name: "QUERY_ALL_TOKENS",
-            description: "All known tokens on a chain",
-            required: &["chain"],
-        },
-        QueryInfo {
-            name: "QUERY_TOKEN_PRICE_AT_BLOCK",
-            description: "Historical USD price at block time",
-            required: &["chain", "token_address", "block_timestamp"],
-        },
-        QueryInfo {
-            name: "QUERY_TOKEN_PRICE_HISTORY",
-            description: "Price history over a time window",
-            required: &["chain", "token_address", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_TOKEN_PRICE_LATEST",
-            description: "Latest USD price for a token",
-            required: &["chain", "token_address"],
-        },
-        // Section 5: Block & Gas Data
-        QueryInfo {
-            name: "QUERY_BLOCK_METADATA",
-            description: "Block metadata (timestamp, gas, tx count)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_SINGLE_BLOCK",
-            description: "Metadata for a single block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_GAS_PRICE_HISTORY",
-            description: "Gas price distribution stats per block",
-            required: &["chain", "from_block", "to_block"],
-        },
-        // Section 6: Pattern Analysis
-        QueryInfo {
-            name: "QUERY_SANDWICH_PATTERN",
-            description: "Detect sandwich pattern in a block",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_JIT_PATTERN",
-            description: "Detect JIT liquidity pattern",
-            required: &["chain", "block"],
-        },
-        QueryInfo {
-            name: "QUERY_HIGH_VALUE_BLOCKS",
-            description: "Blocks with high MEV value",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_POOL_LIQUIDITY",
-            description: "Pool liquidity snapshots",
-            required: &["chain", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_GAS_BY_HOUR",
-            description: "Hourly average gas price",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_WHALE_TRANSFERS",
-            description: "Large token transfers (whale detection)",
-            required: &["chain", "from_block", "to_block", "min_usd"],
-        },
-        QueryInfo {
-            name: "QUERY_WHALE_TRANSFERS_BY_BLOCK",
-            description: "Large transfers in a specific block",
-            required: &["chain", "block", "min_usd"],
-        },
-        // Section 7: Cross-Chain & Aggregation
-        QueryInfo {
-            name: "QUERY_BRIDGE_FLOWS",
-            description: "Cross-chain bridge transfer volumes",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_BRIDGE_FLOWS_NET",
-            description: "Cross-chain bridge net flows",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_TOKEN_PRICE_VIA_TRADES",
-            description: "Token price via nearby trades",
-            required: &["chain", "token_address", "block_number", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_AGGREGATOR_TRADES_IN_RANGE",
-            description: "Aggregator-routed trades (1inch, 0x, etc.)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_LABELS_BY_ADDRESSES",
-            description: "Address labels from Dune",
-            required: &["chain", "address_list"],
-        },
-        QueryInfo {
-            name: "QUERY_LABELS_BY_CATEGORY",
-            description: "Address labels by category",
-            required: &["chain", "category"],
-        },
-        QueryInfo {
-            name: "QUERY_LENDING_BORROW_BY_RANGE",
-            description: "Lending borrow events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_LENDING_SUPPLY_BY_RANGE",
-            description: "Lending supply events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_DEX_FLASH_LOANS_BY_RANGE",
-            description: "DEX-native flash loans",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "QUERY_UTILS_DAYS",
-            description: "Continuous days from utils.days",
-            required: &["chain", "from_time", "to_time"],
-        },
-        QueryInfo {
-            name: "QUERY_UTILS_HOURS",
-            description: "Continuous hours from utils.hours",
-            required: &["chain", "from_time", "to_time"],
-        },
-        // Section 8: Strategy Validation
-        QueryInfo {
-            name: "VALIDATE_SKIM_CAPTURE",
-            description: "Validate skim() capture opportunities (V2 balance drift)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_SYNC_RACE",
-            description: "Validate sync() race opportunities (defensive sync calls)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_INIT_PRICE_SNIPE",
-            description: "Validate init price snipe opportunities (V3 mispriced pools)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_BACKRUN",
-            description: "Validate backrunning opportunities (multi-pool txs after large swaps)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_LONG_TAIL_ARB",
-            description: "Validate long-tail token arbitrage (low-liquidity multi-pool txs)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_STABLECOIN_DEPEG",
-            description: "Validate stablecoin depeg arbitrage (Curve price deviations)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_CURVE_IMBALANCE",
-            description: "Validate Curve pool imbalance: pools with balances deviating from peg",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_CURVE_IMBALANCE_V2",
-            description: "Validate Curve imbalance using curvefi_polygon per-pool tables",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_LST_DEPEG_LIQ",
-            description: "Validate LST depeg collateral liquidation (AAVE LST-collateral liqs)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_MAKERDAO_CLIP",
-            description: "Validate MakerDAO Clip Dutch auction take() events",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_MAKERDAO_KICK",
-            description: "Validate MakerDAO OSM kick() events (via lending.borrow)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_GMX_V1_KEEPER",
-            description: "Validate GMX v1 keeper race (via lending.borrow)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_GMX_V2_ADL",
-            description: "Validate GMX V2 ADL front-run events (via lending.borrow)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_LIQUITY_RECOVERY",
-            description: "Validate Liquity recovery mode cascade (trove liquidations)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_SYNTHETIX_LIQ",
-            description: "Validate Synthetix liquidation events (via lending.borrow)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_PERP_KEEPER",
-            description: "Validate Gains Network keeper (via lending.borrow)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_FLASH_LIQ_PROFIT",
-            description: "Validate flash loan atomic liquidation (flash + liq in same tx)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo {
-            name: "VALIDATE_JIT_FEE_CAPTURE",
-            description: "Validate JIT liquidity fee capture (V3 Mint/Swap/Burn)",
-            required: &["chain", "from_block", "to_block"],
-        },
-        QueryInfo { name: "DISCOVER_CLIP_COLUMNS", description: "Show columns of maker Clipper_evt_Take", required: &[] },
-        QueryInfo { name: "DISCOVER_TRY_CLIP", description: "SELECT * FROM maker Clipper_evt_Take LIMIT 1", required: &[] },
-        QueryInfo { name: "DISCOVER_TRY_GMX", description: "Find GMX schemas on Arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_TRY_GAINS", description: "Find Gains schemas on Arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_TRY_SYNX", description: "Find Synthetix schemas on Ethereum", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_TABLES", description: "Find MakerDAO tables", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_MAKER", description: "SHOW TABLES FROM maker_ethereum", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_GMX_ARB", description: "SHOW TABLES FROM gmx_arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_GMX_ROUTER_ARB", description: "SHOW TABLES FROM gmx_router_arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_GAINS_ARB", description: "SHOW TABLES FROM gains_network_arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_SYNX_ETH", description: "SHOW TABLES FROM synthetix_ethereum", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_CURVE_POLY", description: "SHOW TABLES FROM curve_polygon", required: &[] },
-        QueryInfo { name: "DISCOVER_ALL_UNIV2_POLY", description: "SHOW SCHEMAS LIKE uniswap v2 polygon", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_FLIP", description: "SHOW TABLES FROM maker_ethereum LIKE Vow", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_CLIPPER", description: "SHOW TABLES FROM maker_ethereum LIKE Clip", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_ARB_SHOW", description: "SHOW SCHEMAS LIKE gmx arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_ARB_SHOW", description: "SHOW SCHEMAS LIKE gmx_router arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_ARB_SHOW", description: "SHOW SCHEMAS LIKE gains arbitrum", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_ETH_SHOW", description: "SHOW SCHEMAS LIKE synthetix ethereum", required: &[] },
-        QueryInfo { name: "DISCOVER_CURVE_POLY_SHOW", description: "SHOW SCHEMAS LIKE curve polygon", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_LIQ_TABLES", description: "SHOW TABLES FROM gmx_arbitrum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_LIQ_TABLES", description: "SHOW TABLES FROM gains_network_arbitrum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_LIQ_TABLES", description: "SHOW TABLES FROM synthetix_ethereum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_V3_LIQ_TABLES", description: "SHOW TABLES FROM synthetix_v3_ethereum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_VOW_FLIP", description: "SHOW TABLES FROM maker_ethereum LIKE Flip", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_CLIPPER_TAKE", description: "SHOW TABLES FROM maker_ethereum LIKE Take", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_TABLES", description: "SHOW TABLES FROM gmx_v2_arbitrum LIKE Order", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V21_TABLES", description: "SHOW TABLES FROM gmx_v21_arbitrum LIKE Order", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_FULL", description: "Find MakerDAO evt tables with art column", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_V2_FULL", description: "Find MakerDAO evt tables with usr column", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_VAULT_FULL", description: "Find GMX tables with feeAmount column", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_ORDER_FULL", description: "Find GMX v2 evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_LIQ_FULL", description: "Find Gains arb evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_LIQ_FULL", description: "Find Synthetix eth liquidation tables", required: &[] },
-        QueryInfo { name: "DISCOVER_CURVE_TOKEN_EXCHANGE", description: "Find Curve polygon TokenExchange tables", required: &[] },
-        QueryInfo { name: "DISCOVER_UNIV2_SYNC", description: "Find UniV2 polygon Sync tables", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKER_EVT_TABLES", description: "Find MakerDAO evt tables via information_schema", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_VAULT_EVT", description: "Find GMX arbitrum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_EVT", description: "Find GMX v2 arbitrum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V21_EVT", description: "Find GMX v21 arbitrum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_EVT", description: "Find Gains network arbitrum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_EVT", description: "Find Synthetix ethereum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_V3_EVT", description: "Find Synthetix v3 ethereum evt tables", required: &[] },
-        QueryInfo { name: "DISCOVER_CURVEFI_POLY_TABLES", description: "SHOW TABLES FROM curvefi_polygon", required: &[] },
-        QueryInfo { name: "DISCOVER_CURVEFI_POLY_LIKE", description: "SHOW TABLES FROM curvefi_polygon LIKE TokenExchange", required: &[] },
-        QueryInfo { name: "DISCOVER_MAKERDAO_SCHEMA_SHOW", description: "SHOW SCHEMAS LIKE maker ethereum", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_LIQ_IN_V2", description: "SHOW TABLES FROM gmx_v2_arbitrum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_ORDER_IN_V2", description: "SHOW TABLES FROM gmx_v2_arbitrum LIKE Order", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_ADLP_IN_V2", description: "SHOW TABLES FROM gmx_v2_arbitrum LIKE Adl", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_ADLP_IN_V2_UPPER", description: "SHOW TABLES FROM gmx_v2_arbitrum LIKE ADL", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_ARB_TABLES", description: "SHOW TABLES FROM gains_network_arbitrum LIKE Liquidat", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_GTOKEN", description: "SHOW TABLES FROM gains_network_arbitrum LIKE GToken", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_DUIF", description: "SHOW TABLES FROM gains_network_arbitrum LIKE duif", required: &[] },
-        QueryInfo { name: "DISCOVER_GAINS_DN", description: "SHOW TABLES FROM gains_network_arbitrum LIKE dncdnc", required: &[] },
-        QueryInfo { name: "DISCOVER_SYNX_V3_COLS", description: "SELECT * FROM synthetix_v3.core_evt_liquidation LIMIT 5", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V1_VAULT_LIQ", description: "SELECT * FROM gmx_arbitrum.Vault_evt_Liquidation LIMIT 5", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_LIQ_HANDLER", description: "SELECT * FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror LIMIT 5", required: &[] },
-        QueryInfo { name: "DISCOVER_GMX_V2_ADL_HANDLER", description: "SELECT * FROM gmx_v2_arbitrum.adlhandler_evt_oracleerror LIMIT 5", required: &[] },
-    ]
+    let mut q = Vec::new();
+    macro_rules! q {
+        ($name:ident, $desc:expr, $req:expr) => {
+            q.push(QueryInfo {
+                name: stringify!($name),
+                description: $desc,
+                required: $req,
+                sql: queries::$name,
+            });
+        };
+    }
+    // Section 1: Pool Discovery
+    q!(QUERY_V2_POOLS_BY_FACTORY, "V2-style pools via dex.trades", &["chain", "from_block", "to_block"]);
+    q!(QUERY_V3_POOLS_BY_FACTORY, "V3 pools via dex.trades", &["chain", "from_block", "to_block"]);
+    q!(QUERY_CURVE_POOLS, "Curve pools via PoolAdded events", &["chain", "from_block", "to_block"]);
+    q!(QUERY_BALANCER_POOLS, "Balancer V2 pools via PoolRegistered event", &["chain", "from_block", "to_block"]);
+    q!(QUERY_ALL_ACTIVE_POOLS, "All active DEX pools from dex.trades", &["chain", "from_block", "to_block"]);
+    q!(QUERY_POOLS_WITH_METADATA, "Pools with token symbols and decimals", &["chain", "from_block", "to_block"]);
+    q!(QUERY_POOLS_BY_FACTORY_ADDRESS, "Pools by specific factory address", &["chain", "from_block", "to_block", "factory_address"]);
+    // Section 2: Trade & Swap Analysis
+    q!(QUERY_TRADES_IN_BLOCK, "All DEX trades in a specific block", &["chain", "block"]);
+    q!(QUERY_TRADES_IN_RANGE, "All DEX trades in a block range", &["chain", "from_block", "to_block"]);
+    q!(QUERY_TRADES_BY_POOL, "Trades involving a specific pool", &["chain", "from_block", "to_block", "pool_address"]);
+    q!(QUERY_TRADES_BY_TOKEN_PAIR, "Trades for a specific token pair", &["chain", "from_block", "to_block", "token_in", "token_out"]);
+    q!(QUERY_LARGE_SWAPS, "Large swaps (whale detection)", &["chain", "from_block", "to_block", "min_usd"]);
+    q!(QUERY_VERIFY_TRADE_BY_TX, "Verify a specific trade by tx_hash", &["chain", "block", "tx_hash"]);
+    // Section 3: MEV Detection
+    q!(QUERY_SANDWICHES_BY_RANGE, "Sandwich attacks in a block range", &["chain", "from_block", "to_block"]);
+    q!(QUERY_SANDWICHES_BY_BLOCK, "Sandwich attacks in a specific block", &["chain", "block"]);
+    q!(QUERY_SANDWICHES_BY_TIME, "Sandwich attacks in a time range", &["chain", "from_time", "to_time"]);
+    q!(QUERY_SANDWICHED_VICTIMS_BY_RANGE, "Victim trades that were sandwiched", &["chain", "from_block", "to_block"]);
+    q!(QUERY_ARBITRAGES_BY_RANGE, "Arbitrage transactions in a block range", &["chain", "from_block", "to_block"]);
+    q!(QUERY_ARBITRAGES_BY_BLOCK, "Arbitrage transactions in a specific block", &["chain", "block"]);
+    q!(QUERY_ARBITRAGES_BY_TIME, "Arbitrage transactions in a time range", &["chain", "from_time", "to_time"]);
+    q!(QUERY_FLASH_LOANS_BY_RANGE, "Flash loan events in a block range", &["chain", "from_block", "to_block"]);
+    q!(QUERY_FLASH_LOANS_BY_BLOCK, "Flash loans in a specific block", &["chain", "block"]);
+    q!(QUERY_AAVE_V3_LIQUIDATIONS, "Aave V3 liquidation events", &["chain", "from_block", "to_block"]);
+    q!(QUERY_AAVE_V3_LIQUIDATIONS_BY_BLOCK, "Aave V3 liquidations in a specific block", &["chain", "block"]);
+    q!(QUERY_COMPOUND_V3_LIQUIDATIONS, "Compound V3 liquidation events", &["chain", "from_block", "to_block"]);
+    q!(QUERY_LIQUIDATIONS_ALL, "Combined liquidation events (all protocols)", &["chain", "from_block", "to_block"]);
+    q!(QUERY_LIQUIDATIONS_BY_BLOCK, "Combined liquidations in a specific block", &["chain", "block"]);
+    q!(QUERY_VERIFY_SANDWICH, "Verify if a tx is part of a sandwich", &["chain", "block", "tx_hash"]);
+    q!(QUERY_FAILED_TXS, "Failed (reverted) transactions", &["chain", "from_block", "to_block"]);
+    q!(QUERY_FAILED_TXS_BY_BLOCK, "Failed transactions in a specific block", &["chain", "block"]);
+    // Section 4: Token & Price Data
+    q!(QUERY_TOKEN_METADATA, "ERC20 token metadata", &["chain", "token_list"]);
+    q!(QUERY_ALL_TOKENS, "All known tokens on a chain", &["chain"]);
+    q!(QUERY_TOKEN_PRICE_AT_BLOCK, "Historical USD price at block time", &["chain", "token_address", "block_timestamp"]);
+    q!(QUERY_TOKEN_PRICE_HISTORY, "Price history over a time window", &["chain", "token_address", "from_time", "to_time"]);
+    q!(QUERY_TOKEN_PRICE_LATEST, "Latest USD price for a token", &["chain", "token_address"]);
+    // Section 5: Block & Gas Data
+    q!(QUERY_BLOCK_METADATA, "Block metadata (timestamp, gas, tx count)", &["chain", "from_block", "to_block"]);
+    q!(QUERY_SINGLE_BLOCK, "Metadata for a single block", &["chain", "block"]);
+    q!(QUERY_GAS_PRICE_HISTORY, "Gas price distribution stats per block", &["chain", "from_block", "to_block"]);
+    // Section 6: Pattern Analysis
+    q!(QUERY_SANDWICH_PATTERN, "Detect sandwich pattern in a block", &["chain", "block"]);
+    q!(QUERY_JIT_PATTERN, "Detect JIT liquidity pattern", &["chain", "block"]);
+    q!(QUERY_HIGH_VALUE_BLOCKS, "Blocks with high MEV value", &["chain", "from_block", "to_block"]);
+    q!(QUERY_POOL_LIQUIDITY, "Pool liquidity snapshots", &["chain", "to_block"]);
+    q!(QUERY_GAS_BY_HOUR, "Hourly average gas price", &["chain", "from_time", "to_time"]);
+    q!(QUERY_WHALE_TRANSFERS, "Large token transfers (whale detection)", &["chain", "from_block", "to_block", "min_usd"]);
+    q!(QUERY_WHALE_TRANSFERS_BY_BLOCK, "Large transfers in a specific block", &["chain", "block", "min_usd"]);
+    // Section 7: Cross-Chain & Aggregation
+    q!(QUERY_BRIDGE_FLOWS, "Cross-chain bridge transfer volumes", &["chain", "from_time", "to_time"]);
+    q!(QUERY_BRIDGE_FLOWS_NET, "Cross-chain bridge net flows", &["chain", "from_time", "to_time"]);
+    q!(QUERY_TOKEN_PRICE_VIA_TRADES, "Token price via nearby trades", &["chain", "token_address", "block_number", "from_block", "to_block"]);
+    q!(QUERY_AGGREGATOR_TRADES_IN_RANGE, "Aggregator-routed trades (1inch, 0x, etc.)", &["chain", "from_block", "to_block"]);
+    q!(QUERY_LABELS_BY_ADDRESSES, "Address labels from Dune", &["chain", "address_list"]);
+    q!(QUERY_LABELS_BY_CATEGORY, "Address labels by category", &["chain", "category"]);
+    q!(QUERY_LENDING_BORROW_BY_RANGE, "Lending borrow events", &["chain", "from_block", "to_block"]);
+    q!(QUERY_LENDING_SUPPLY_BY_RANGE, "Lending supply events", &["chain", "from_block", "to_block"]);
+    q!(QUERY_DEX_FLASH_LOANS_BY_RANGE, "DEX-native flash loans", &["chain", "from_block", "to_block"]);
+    q!(QUERY_UTILS_DAYS, "Continuous days from utils.days", &["chain", "from_time", "to_time"]);
+    q!(QUERY_UTILS_HOURS, "Continuous hours from utils.hours", &["chain", "from_time", "to_time"]);
+    // Section 8: Strategy Validation
+    q!(VALIDATE_SKIM_CAPTURE, "Validate skim() capture opportunities (V2 balance drift)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_SYNC_RACE, "Validate sync() race opportunities (defensive sync calls)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_INIT_PRICE_SNIPE, "Validate init price snipe opportunities (V3 mispriced pools)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_BACKRUN, "Validate backrunning opportunities (multi-pool txs after large swaps)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_LONG_TAIL_ARB, "Validate long-tail token arbitrage (low-liquidity multi-pool txs)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_STABLECOIN_DEPEG, "Validate stablecoin depeg arbitrage (Curve price deviations)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_CURVE_IMBALANCE, "Validate Curve pool imbalance: pools with balances deviating from peg", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_CURVE_IMBALANCE_V2, "Validate Curve imbalance using curvefi_polygon per-pool tables", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_LST_DEPEG_LIQ, "Validate LST depeg collateral liquidation (AAVE LST-collateral liqs)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_MAKERDAO_CLIP, "Validate MakerDAO Clip Dutch auction take() events", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_MAKERDAO_KICK, "Validate MakerDAO OSM kick() events (via lending.borrow)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_GMX_V1_KEEPER, "Validate GMX v1 keeper race (via lending.borrow)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_GMX_V2_ADL, "Validate GMX V2 ADL front-run events (via lending.borrow)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_LIQUITY_RECOVERY, "Validate Liquity recovery mode cascade (trove liquidations)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_SYNTHETIX_LIQ, "Validate Synthetix liquidation events (via lending.borrow)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_PERP_KEEPER, "Validate Gains Network keeper (via lending.borrow)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_FLASH_LIQ_PROFIT, "Validate flash loan atomic liquidation (flash + liq in same tx)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_JIT_FEE_CAPTURE, "Validate JIT liquidity fee capture (V3 Mint/Swap/Burn)", &["chain", "from_block", "to_block"]);
+    q!(DISCOVER_CLIP_COLUMNS, "Show columns of maker Clipper_evt_Take", &[]);
+    q!(DISCOVER_TRY_CLIP, "SELECT * FROM maker Clipper_evt_Take LIMIT 1", &[]);
+    q!(DISCOVER_TRY_GMX, "Find GMX schemas on Arbitrum", &[]);
+    q!(DISCOVER_TRY_GAINS, "Find Gains schemas on Arbitrum", &[]);
+    q!(DISCOVER_TRY_SYNX, "Find Synthetix schemas on Ethereum", &[]);
+    q!(DISCOVER_MAKER_TABLES, "Find MakerDAO tables", &[]);
+    q!(DISCOVER_ALL_MAKER, "SHOW TABLES FROM maker_ethereum", &[]);
+    q!(DISCOVER_ALL_GMX_ARB, "SHOW TABLES FROM gmx_arbitrum", &[]);
+    q!(DISCOVER_ALL_GMX_ROUTER_ARB, "SHOW TABLES FROM gmx_router_arbitrum", &[]);
+    q!(DISCOVER_ALL_GAINS_ARB, "SHOW TABLES FROM gains_network_arbitrum", &[]);
+    q!(DISCOVER_ALL_SYNX_ETH, "SHOW TABLES FROM synthetix_ethereum", &[]);
+    q!(DISCOVER_ALL_CURVE_POLY, "SHOW TABLES FROM curve_polygon", &[]);
+    q!(DISCOVER_ALL_UNIV2_POLY, "SHOW SCHEMAS LIKE uniswap v2 polygon", &[]);
+    q!(DISCOVER_MAKER_FLIP, "SHOW TABLES FROM maker_ethereum LIKE Vow", &[]);
+    q!(DISCOVER_MAKER_CLIPPER, "SHOW TABLES FROM maker_ethereum LIKE Clip", &[]);
+    q!(DISCOVER_GMX_ARB_SHOW, "SHOW SCHEMAS LIKE gmx arbitrum", &[]);
+    q!(DISCOVER_GMX_V2_ARB_SHOW, "SHOW SCHEMAS LIKE gmx_router arbitrum", &[]);
+    q!(DISCOVER_GAINS_ARB_SHOW, "SHOW SCHEMAS LIKE gains arbitrum", &[]);
+    q!(DISCOVER_SYNX_ETH_SHOW, "SHOW SCHEMAS LIKE synthetix ethereum", &[]);
+    q!(DISCOVER_CURVE_POLY_SHOW, "SHOW SCHEMAS LIKE curve polygon", &[]);
+    q!(DISCOVER_GMX_LIQ_TABLES, "SHOW TABLES FROM gmx_arbitrum LIKE Liquidat", &[]);
+    q!(DISCOVER_GAINS_LIQ_TABLES, "SHOW TABLES FROM gains_network_arbitrum LIKE Liquidat", &[]);
+    q!(DISCOVER_SYNX_LIQ_TABLES, "SHOW TABLES FROM synthetix_ethereum LIKE Liquidat", &[]);
+    q!(DISCOVER_SYNX_V3_LIQ_TABLES, "SHOW TABLES FROM synthetix_v3_ethereum LIKE Liquidat", &[]);
+    q!(DISCOVER_MAKER_VOW_FLIP, "SHOW TABLES FROM maker_ethereum LIKE Flip", &[]);
+    q!(DISCOVER_MAKER_CLIPPER_TAKE, "SHOW TABLES FROM maker_ethereum LIKE Take", &[]);
+    q!(DISCOVER_GMX_V2_TABLES, "SHOW TABLES FROM gmx_v2_arbitrum LIKE Order", &[]);
+    q!(DISCOVER_GMX_V21_TABLES, "SHOW TABLES FROM gmx_v21_arbitrum LIKE Order", &[]);
+    q!(DISCOVER_MAKER_FULL, "Find MakerDAO evt tables with art column", &[]);
+    q!(DISCOVER_MAKER_V2_FULL, "Find MakerDAO evt tables with usr column", &[]);
+    q!(DISCOVER_GMX_VAULT_FULL, "Find GMX tables with feeAmount column", &[]);
+    q!(DISCOVER_GMX_V2_ORDER_FULL, "Find GMX v2 evt tables", &[]);
+    q!(DISCOVER_GAINS_LIQ_FULL, "Find Gains arb evt tables", &[]);
+    q!(DISCOVER_SYNX_LIQ_FULL, "Find Synthetix eth liquidation tables", &[]);
+    q!(DISCOVER_CURVE_TOKEN_EXCHANGE, "Find Curve polygon TokenExchange tables", &[]);
+    q!(DISCOVER_UNIV2_SYNC, "Find UniV2 polygon Sync tables", &[]);
+    q!(DISCOVER_MAKER_EVT_TABLES, "Find MakerDAO evt tables via information_schema", &[]);
+    q!(DISCOVER_GMX_VAULT_EVT, "Find GMX arbitrum evt tables", &[]);
+    q!(DISCOVER_GMX_V2_EVT, "Find GMX v2 arbitrum evt tables", &[]);
+    q!(DISCOVER_GMX_V21_EVT, "Find GMX v21 arbitrum evt tables", &[]);
+    q!(DISCOVER_GAINS_EVT, "Find Gains network arbitrum evt tables", &[]);
+    q!(DISCOVER_SYNX_EVT, "Find Synthetix ethereum evt tables", &[]);
+    q!(DISCOVER_SYNX_V3_EVT, "Find Synthetix v3 ethereum evt tables", &[]);
+    q!(DISCOVER_CURVEFI_POLY_TABLES, "SHOW TABLES FROM curvefi_polygon", &[]);
+    q!(DISCOVER_CURVEFI_POLY_LIKE, "SHOW TABLES FROM curvefi_polygon LIKE TokenExchange", &[]);
+    q!(DISCOVER_MAKERDAO_SCHEMA_SHOW, "SHOW SCHEMAS LIKE maker ethereum", &[]);
+    q!(DISCOVER_GMX_LIQ_IN_V2, "SHOW TABLES FROM gmx_v2_arbitrum LIKE Liquidat", &[]);
+    q!(DISCOVER_GMX_ORDER_IN_V2, "SHOW TABLES FROM gmx_v2_arbitrum LIKE Order", &[]);
+    q!(DISCOVER_GMX_ADLP_IN_V2, "SHOW TABLES FROM gmx_v2_arbitrum LIKE Adl", &[]);
+    q!(DISCOVER_GMX_ADLP_IN_V2_UPPER, "SHOW TABLES FROM gmx_v2_arbitrum LIKE ADL", &[]);
+    q!(DISCOVER_GAINS_ARB_TABLES, "SHOW TABLES FROM gains_network_arbitrum LIKE Liquidat", &[]);
+    q!(DISCOVER_GAINS_GTOKEN, "SHOW TABLES FROM gains_network_arbitrum LIKE GToken", &[]);
+    q!(DISCOVER_GAINS_DUIF, "SHOW TABLES FROM gains_network_arbitrum LIKE duif", &[]);
+    q!(DISCOVER_GAINS_DN, "SHOW TABLES FROM gains_network_arbitrum LIKE dncdnc", &[]);
+    q!(DISCOVER_SYNX_V3_COLS, "SELECT * FROM synthetix_v3.core_evt_liquidation LIMIT 5", &[]);
+    q!(DISCOVER_GMX_V1_VAULT_LIQ, "SELECT * FROM gmx_arbitrum.Vault_evt_Liquidation LIMIT 5", &[]);
+    q!(DISCOVER_GMX_V2_LIQ_HANDLER, "SELECT * FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror LIMIT 5", &[]);
+    q!(DISCOVER_GMX_V2_ADL_HANDLER, "SELECT * FROM gmx_v2_arbitrum.adlhandler_evt_oracleerror LIMIT 5", &[]);
+    q
 }
 
 fn get_query_sql(name: &str) -> Option<&'static str> {
-    match name {
-        "QUERY_V2_POOLS_BY_FACTORY" => Some(queries::QUERY_V2_POOLS_BY_FACTORY),
-        "QUERY_V3_POOLS_BY_FACTORY" => Some(queries::QUERY_V3_POOLS_BY_FACTORY),
-        "QUERY_CURVE_POOLS" => Some(queries::QUERY_CURVE_POOLS),
-        "QUERY_BALANCER_POOLS" => Some(queries::QUERY_BALANCER_POOLS),
-        "QUERY_ALL_ACTIVE_POOLS" => Some(queries::QUERY_ALL_ACTIVE_POOLS),
-        "QUERY_POOLS_WITH_METADATA" => Some(queries::QUERY_POOLS_WITH_METADATA),
-        "QUERY_POOLS_BY_FACTORY_ADDRESS" => Some(queries::QUERY_POOLS_BY_FACTORY_ADDRESS),
-        "QUERY_TRADES_IN_BLOCK" => Some(queries::QUERY_TRADES_IN_BLOCK),
-        "QUERY_TRADES_IN_RANGE" => Some(queries::QUERY_TRADES_IN_RANGE),
-        "QUERY_TRADES_BY_POOL" => Some(queries::QUERY_TRADES_BY_POOL),
-        "QUERY_TRADES_BY_TOKEN_PAIR" => Some(queries::QUERY_TRADES_BY_TOKEN_PAIR),
-        "QUERY_LARGE_SWAPS" => Some(queries::QUERY_LARGE_SWAPS),
-        "QUERY_VERIFY_TRADE_BY_TX" => Some(queries::QUERY_VERIFY_TRADE_BY_TX),
-        "QUERY_SANDWICHES_BY_RANGE" => Some(queries::QUERY_SANDWICHES_BY_RANGE),
-        "QUERY_SANDWICHES_BY_BLOCK" => Some(queries::QUERY_SANDWICHES_BY_BLOCK),
-        "QUERY_SANDWICHES_BY_TIME" => Some(queries::QUERY_SANDWICHES_BY_TIME),
-        "QUERY_SANDWICHED_VICTIMS_BY_RANGE" => Some(queries::QUERY_SANDWICHED_VICTIMS_BY_RANGE),
-        "QUERY_ARBITRAGES_BY_RANGE" => Some(queries::QUERY_ARBITRAGES_BY_RANGE),
-        "QUERY_ARBITRAGES_BY_BLOCK" => Some(queries::QUERY_ARBITRAGES_BY_BLOCK),
-        "QUERY_ARBITRAGES_BY_TIME" => Some(queries::QUERY_ARBITRAGES_BY_TIME),
-        "QUERY_FLASH_LOANS_BY_RANGE" => Some(queries::QUERY_FLASH_LOANS_BY_RANGE),
-        "QUERY_FLASH_LOANS_BY_BLOCK" => Some(queries::QUERY_FLASH_LOANS_BY_BLOCK),
-        "QUERY_AAVE_V3_LIQUIDATIONS" => Some(queries::QUERY_AAVE_V3_LIQUIDATIONS),
-        "QUERY_AAVE_V3_LIQUIDATIONS_BY_BLOCK" => Some(queries::QUERY_AAVE_V3_LIQUIDATIONS_BY_BLOCK),
-        "QUERY_COMPOUND_V3_LIQUIDATIONS" => Some(queries::QUERY_COMPOUND_V3_LIQUIDATIONS),
-        "QUERY_LIQUIDATIONS_ALL" => Some(queries::QUERY_LIQUIDATIONS_ALL),
-        "QUERY_LIQUIDATIONS_BY_BLOCK" => Some(queries::QUERY_LIQUIDATIONS_BY_BLOCK),
-        "QUERY_VERIFY_SANDWICH" => Some(queries::QUERY_VERIFY_SANDWICH),
-        "QUERY_FAILED_TXS" => Some(queries::QUERY_FAILED_TXS),
-        "QUERY_FAILED_TXS_BY_BLOCK" => Some(queries::QUERY_FAILED_TXS_BY_BLOCK),
-        "QUERY_TOKEN_METADATA" => Some(queries::QUERY_TOKEN_METADATA),
-        "QUERY_ALL_TOKENS" => Some(queries::QUERY_ALL_TOKENS),
-        "QUERY_TOKEN_PRICE_AT_BLOCK" => Some(queries::QUERY_TOKEN_PRICE_AT_BLOCK),
-        "QUERY_TOKEN_PRICE_HISTORY" => Some(queries::QUERY_TOKEN_PRICE_HISTORY),
-        "QUERY_TOKEN_PRICE_LATEST" => Some(queries::QUERY_TOKEN_PRICE_LATEST),
-        "QUERY_BLOCK_METADATA" => Some(queries::QUERY_BLOCK_METADATA),
-        "QUERY_SINGLE_BLOCK" => Some(queries::QUERY_SINGLE_BLOCK),
-        "QUERY_GAS_PRICE_HISTORY" => Some(queries::QUERY_GAS_PRICE_HISTORY),
-        "QUERY_SANDWICH_PATTERN" => Some(queries::QUERY_SANDWICH_PATTERN),
-        "QUERY_JIT_PATTERN" => Some(queries::QUERY_JIT_PATTERN),
-        "QUERY_HIGH_VALUE_BLOCKS" => Some(queries::QUERY_HIGH_VALUE_BLOCKS),
-        "QUERY_POOL_LIQUIDITY" => Some(queries::QUERY_POOL_LIQUIDITY),
-        "QUERY_GAS_BY_HOUR" => Some(queries::QUERY_GAS_BY_HOUR),
-        "QUERY_WHALE_TRANSFERS" => Some(queries::QUERY_WHALE_TRANSFERS),
-        "QUERY_WHALE_TRANSFERS_BY_BLOCK" => Some(queries::QUERY_WHALE_TRANSFERS_BY_BLOCK),
-        "QUERY_BRIDGE_FLOWS" => Some(queries::QUERY_BRIDGE_FLOWS),
-        "QUERY_BRIDGE_FLOWS_NET" => Some(queries::QUERY_BRIDGE_FLOWS_NET),
-        "QUERY_TOKEN_PRICE_VIA_TRADES" => Some(queries::QUERY_TOKEN_PRICE_VIA_TRADES),
-        "QUERY_AGGREGATOR_TRADES_IN_RANGE" => Some(queries::QUERY_AGGREGATOR_TRADES_IN_RANGE),
-        "QUERY_LABELS_BY_ADDRESSES" => Some(queries::QUERY_LABELS_BY_ADDRESSES),
-        "QUERY_LABELS_BY_CATEGORY" => Some(queries::QUERY_LABELS_BY_CATEGORY),
-        "QUERY_LENDING_BORROW_BY_RANGE" => Some(queries::QUERY_LENDING_BORROW_BY_RANGE),
-        "QUERY_LENDING_SUPPLY_BY_RANGE" => Some(queries::QUERY_LENDING_SUPPLY_BY_RANGE),
-        "QUERY_DEX_FLASH_LOANS_BY_RANGE" => Some(queries::QUERY_DEX_FLASH_LOANS_BY_RANGE),
-        "QUERY_UTILS_DAYS" => Some(queries::QUERY_UTILS_DAYS),
-        "QUERY_UTILS_HOURS" => Some(queries::QUERY_UTILS_HOURS),
-        // Section 8: Strategy Validation
-        "VALIDATE_SKIM_CAPTURE" => Some(queries::VALIDATE_SKIM_CAPTURE),
-        "VALIDATE_SYNC_RACE" => Some(queries::VALIDATE_SYNC_RACE),
-        "VALIDATE_INIT_PRICE_SNIPE" => Some(queries::VALIDATE_INIT_PRICE_SNIPE),
-        "VALIDATE_BACKRUN" => Some(queries::VALIDATE_BACKRUN),
-        "VALIDATE_LONG_TAIL_ARB" => Some(queries::VALIDATE_LONG_TAIL_ARB),
-        "VALIDATE_STABLECOIN_DEPEG" => Some(queries::VALIDATE_STABLECOIN_DEPEG),
-        "VALIDATE_CURVE_IMBALANCE" => Some(queries::VALIDATE_CURVE_IMBALANCE),
-        "VALIDATE_CURVE_IMBALANCE_V2" => Some(queries::VALIDATE_CURVE_IMBALANCE_V2),
-        "VALIDATE_LST_DEPEG_LIQ" => Some(queries::VALIDATE_LST_DEPEG_LIQ),
-        "VALIDATE_MAKERDAO_CLIP" => Some(queries::VALIDATE_MAKERDAO_CLIP),
-        "VALIDATE_MAKERDAO_KICK" => Some(queries::VALIDATE_MAKERDAO_KICK),
-        "VALIDATE_GMX_V1_KEEPER" => Some(queries::VALIDATE_GMX_V1_KEEPER),
-        "VALIDATE_GMX_V2_ADL" => Some(queries::VALIDATE_GMX_V2_ADL),
-        "VALIDATE_LIQUITY_RECOVERY" => Some(queries::VALIDATE_LIQUITY_RECOVERY),
-        "VALIDATE_SYNTHETIX_LIQ" => Some(queries::VALIDATE_SYNTHETIX_LIQ),
-        "VALIDATE_PERP_KEEPER" => Some(queries::VALIDATE_PERP_KEEPER),
-        "VALIDATE_FLASH_LIQ_PROFIT" => Some(queries::VALIDATE_FLASH_LIQ_PROFIT),
-        "VALIDATE_JIT_FEE_CAPTURE" => Some(queries::VALIDATE_JIT_FEE_CAPTURE),
-        "DISCOVER_TABLES" => Some(queries::DISCOVER_TABLES),
-        "DISCOVER_MAKERDAO_COLUMNS" => Some(queries::DISCOVER_MAKERDAO_COLUMNS),
-        "DISCOVER_CLIP_COLUMNS" => Some(queries::DISCOVER_CLIP_COLUMNS),
-        "DISCOVER_GMX_TABLES" => Some(queries::DISCOVER_GMX_TABLES),
-        "DISCOVER_GAINS_TABLES" => Some(queries::DISCOVER_GAINS_TABLES),
-        "DISCOVER_SYNX_TABLES" => Some(queries::DISCOVER_SYNX_TABLES),
-        "DISCOVER_MAKER_TABLES" => Some(queries::DISCOVER_MAKER_TABLES),
-        "DISCOVER_TRY_CLIP" => Some(queries::DISCOVER_TRY_CLIP),
-        "DISCOVER_TRY_GMX" => Some(queries::DISCOVER_TRY_GMX),
-        "DISCOVER_TRY_GAINS" => Some(queries::DISCOVER_TRY_GAINS),
-        "DISCOVER_TRY_SYNX" => Some(queries::DISCOVER_TRY_SYNX),
-        "DISCOVER_ALL_MAKER" => Some(queries::DISCOVER_ALL_MAKER),
-        "DISCOVER_ALL_GMX_ARB" => Some(queries::DISCOVER_ALL_GMX_ARB),
-        "DISCOVER_ALL_GMX_ROUTER_ARB" => Some(queries::DISCOVER_ALL_GMX_ROUTER_ARB),
-        "DISCOVER_ALL_GAINS_ARB" => Some(queries::DISCOVER_ALL_GAINS_ARB),
-        "DISCOVER_ALL_SYNX_ETH" => Some(queries::DISCOVER_ALL_SYNX_ETH),
-        "DISCOVER_ALL_CURVE_POLY" => Some(queries::DISCOVER_ALL_CURVE_POLY),
-        "DISCOVER_ALL_UNIV2_POLY" => Some(queries::DISCOVER_ALL_UNIV2_POLY),
-        "DISCOVER_MAKER_FLIP" => Some(queries::DISCOVER_MAKER_FLIP),
-        "DISCOVER_MAKER_CLIPPER" => Some(queries::DISCOVER_MAKER_CLIPPER),
-        "DISCOVER_GMX_ARB_SHOW" => Some(queries::DISCOVER_GMX_ARB_SHOW),
-        "DISCOVER_GMX_V2_ARB_SHOW" => Some(queries::DISCOVER_GMX_V2_ARB_SHOW),
-        "DISCOVER_GAINS_ARB_SHOW" => Some(queries::DISCOVER_GAINS_ARB_SHOW),
-        "DISCOVER_SYNX_ETH_SHOW" => Some(queries::DISCOVER_SYNX_ETH_SHOW),
-        "DISCOVER_CURVE_POLY_SHOW" => Some(queries::DISCOVER_CURVE_POLY_SHOW),
-        "DISCOVER_GMX_LIQ_TABLES" => Some(queries::DISCOVER_GMX_LIQ_TABLES),
-        "DISCOVER_GAINS_LIQ_TABLES" => Some(queries::DISCOVER_GAINS_LIQ_TABLES),
-        "DISCOVER_SYNX_LIQ_TABLES" => Some(queries::DISCOVER_SYNX_LIQ_TABLES),
-        "DISCOVER_SYNX_V3_LIQ_TABLES" => Some(queries::DISCOVER_SYNX_V3_LIQ_TABLES),
-        "DISCOVER_MAKER_VOW_FLIP" => Some(queries::DISCOVER_MAKER_VOW_FLIP),
-        "DISCOVER_MAKER_CLIPPER_TAKE" => Some(queries::DISCOVER_MAKER_CLIPPER_TAKE),
-        "DISCOVER_GMX_V2_TABLES" => Some(queries::DISCOVER_GMX_V2_TABLES),
-        "DISCOVER_GMX_V21_TABLES" => Some(queries::DISCOVER_GMX_V21_TABLES),
-        "DISCOVER_MAKER_FULL" => Some(queries::DISCOVER_MAKER_FULL),
-        "DISCOVER_MAKER_V2_FULL" => Some(queries::DISCOVER_MAKER_V2_FULL),
-        "DISCOVER_GMX_VAULT_FULL" => Some(queries::DISCOVER_GMX_VAULT_FULL),
-        "DISCOVER_GMX_V2_ORDER_FULL" => Some(queries::DISCOVER_GMX_V2_ORDER_FULL),
-        "DISCOVER_GAINS_LIQ_FULL" => Some(queries::DISCOVER_GAINS_LIQ_FULL),
-        "DISCOVER_SYNX_LIQ_FULL" => Some(queries::DISCOVER_SYNX_LIQ_FULL),
-        "DISCOVER_CURVE_TOKEN_EXCHANGE" => Some(queries::DISCOVER_CURVE_TOKEN_EXCHANGE),
-        "DISCOVER_UNIV2_SYNC" => Some(queries::DISCOVER_UNIV2_SYNC),
-        "DISCOVER_MAKER_EVT_TABLES" => Some(queries::DISCOVER_MAKER_EVT_TABLES),
-        "DISCOVER_GMX_VAULT_EVT" => Some(queries::DISCOVER_GMX_VAULT_EVT),
-        "DISCOVER_GMX_V2_EVT" => Some(queries::DISCOVER_GMX_V2_EVT),
-        "DISCOVER_GMX_V21_EVT" => Some(queries::DISCOVER_GMX_V21_EVT),
-        "DISCOVER_GAINS_EVT" => Some(queries::DISCOVER_GAINS_EVT),
-        "DISCOVER_SYNX_EVT" => Some(queries::DISCOVER_SYNX_EVT),
-        "DISCOVER_SYNX_V3_EVT" => Some(queries::DISCOVER_SYNX_V3_EVT),
-        "DISCOVER_CURVEFI_POLY_TABLES" => Some(queries::DISCOVER_CURVEFI_POLY_TABLES),
-        "DISCOVER_CURVEFI_POLY_LIKE" => Some(queries::DISCOVER_CURVEFI_POLY_LIKE),
-        "DISCOVER_MAKERDAO_SCHEMA_SHOW" => Some(queries::DISCOVER_MAKERDAO_SCHEMA_SHOW),
-        "DISCOVER_GMX_LIQ_IN_V2" => Some(queries::DISCOVER_GMX_LIQ_IN_V2),
-        "DISCOVER_GMX_ORDER_IN_V2" => Some(queries::DISCOVER_GMX_ORDER_IN_V2),
-        "DISCOVER_GMX_ADLP_IN_V2" => Some(queries::DISCOVER_GMX_ADLP_IN_V2),
-        "DISCOVER_GMX_ADLP_IN_V2_UPPER" => Some(queries::DISCOVER_GMX_ADLP_IN_V2_UPPER),
-        "DISCOVER_GAINS_ARB_TABLES" => Some(queries::DISCOVER_GAINS_ARB_TABLES),
-        "DISCOVER_GAINS_GTOKEN" => Some(queries::DISCOVER_GAINS_GTOKEN),
-        "DISCOVER_GAINS_DUIF" => Some(queries::DISCOVER_GAINS_DUIF),
-        "DISCOVER_GAINS_DN" => Some(queries::DISCOVER_GAINS_DN),
-        "DISCOVER_SYNX_V3_COLS" => Some(queries::DISCOVER_SYNX_V3_COLS),
-        "DISCOVER_GMX_V1_VAULT_LIQ" => Some(queries::DISCOVER_GMX_V1_VAULT_LIQ),
-        "DISCOVER_GMX_V2_LIQ_HANDLER" => Some(queries::DISCOVER_GMX_V2_LIQ_HANDLER),
-        "DISCOVER_GMX_V2_ADL_HANDLER" => Some(queries::DISCOVER_GMX_V2_ADL_HANDLER),
-        _ => None,
-    }
-}
-
-fn dune_chain_label(chain: &str) -> String {
-    match chain.to_lowercase().as_str() {
-        "avalanche" => "avalanche_c".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn approx_block_month_min(block_number: u64, chain: &str) -> String {
-    let (genesis_ts, secs_per_block) = match chain {
-        "ethereum" => (1438269988_i64, 12.0),
-        "polygon" => (1591031691, 2.1),
-        "bsc" => (1597734000, 3.0),
-        "avalanche_c" => (1624402800, 2.0),
-        "arbitrum" => (1630812600, 0.26),
-        "base" => (1686787200, 2.0),
-        "optimism" => (1631808000, 2.0),
-        _ => (1609459200, 12.0),
-    };
-    let elapsed = block_number as f64 * secs_per_block;
-    let approx_ts = genesis_ts + elapsed as i64;
-    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
-        .unwrap_or_default();
-    naive.format("%Y-%m-%d").to_string()
+    Some(all_queries().into_iter().find(|q| q.name == name)?.sql)
 }
 
 fn render_sql(

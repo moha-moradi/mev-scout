@@ -4,7 +4,7 @@
 > independent work streams that can be parallelized. Every change includes a
 > **safety gate** -- the step that must pass before the work is considered done.
 >
-> **Last updated:** 2026-07-28 -- status verified against codebase.
+> **Last updated:** 2026-07-29 -- status verified against codebase.
 
 ---
 
@@ -110,130 +110,109 @@ on `rusqlite::Error::SqliteFailure` with a `Some(msg)` message, only ignores
 <a id="phase-1"></a>
 ## Phase 1 -- High-Impact Deduplication (P1)
 
-### 1.1 Extract shared RPC initialization helper [PARTIAL]
+### 1.1 Extract shared RPC initialization helper [DONE]
 
 **Files:** `cli/src/rpc_setup.rs`, `cli/src/commands/{run,fetch,live,replay,discover}.rs`
 
 **Remediation:** `cli/src/rpc_setup.rs` was created with `init_rpc` (35 lines).
-**But no command uses it.** All 5 commands still duplicate the manual RPC setup.
+All 5 command files now import and call `crate::rpc_setup::init_rpc`. No manual RPC
+setup blocks remain.
 
-**Remaining work:**
-- Add `use crate::rpc_setup::init_rpc;` to each of the 5 command files
-- Replace the 5-7 line manual RPC setup block in `run.rs:26-31`, `fetch.rs:20-26`,
-  `live.rs:17-23`, `replay.rs:19-24`, `discover.rs:31-44` with a single `init_rpc` call
-- Verify each command still passes its tests
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-cli`.
 
 ---
 
-### 1.2 Deduplicate `retry_call` / `retry_call_archive` [TODO]
+### 1.2 Deduplicate `retry_call` / `retry_call_archive` [DONE]
 
-**Files:** `core/src/rpc/client.rs:195-271` vs `279-354`
+**Files:** `core/src/rpc/client.rs:195-271`
 
-**Smell:** ~150 lines of near-identical retry logic. Only differences: (1) `sorted_available()`
-vs `sorted_available_archive()`, (2) error message wording.
+**Remediation:** `retry_call_archive` no longer exists. The single `retry_call` function
+takes an `archive_only: bool` parameter to handle both paths.
 
-**Remediation:**
-- Extract `retry_call_inner(sorted_providers_fn, f)` parameterized by a closure.
-- Have `retry_call` and `retry_call_archive` call it.
-
-**Remaining work:** Not started. Both functions remain fully duplicated (~77 and ~75 lines).
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-core`; manual test against live RPC.
 
 ---
 
-### 1.3 Extract shared `BlockData` construction [TODO]
+### 1.3 Extract shared `BlockData` construction [DONE]
 
-**Files:** `core/src/rpc/client.rs:674-682`, `728-736`, `892-900`
+**Files:** `core/src/rpc/client.rs:1057`
 
-**Smell:** Block to BlockData conversion duplicated in `get_block`, `get_pending_block`,
-and `batch_rpc_call`.
+**Remediation:** `block_to_data()` helper exists at `client.rs:1057`. Called from
+`get_block`, `get_pending_block`, and `batch_rpc_call`. No inline `BlockData { ... }`
+construction remains.
 
-**Remediation:**
-- Extract `fn block_to_internal(block: &Block) -> (BlockData, Vec<TxData>)`.
-- All three call sites use it.
-
-**Remaining work:** Not started. All three locations contain identical code constructing
-`BlockData { number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase }`.
+**Remaining work:** None.
 
 **Safety gate:** Existing tests pass.
 
 ---
 
-### 1.4 Consolidate Dune utility functions [PARTIAL]
+### 1.4 Consolidate Dune utility functions [DONE]
 
-**Files:** `core/src/dune/util.rs`, `dune/audit.rs`, `dune/pool_discovery.rs`
+**Files:** `core/src/dune/util.rs`, `dune/audit.rs`, `dune/pool_discovery.rs`, `dune/mod.rs`
 
 **Remediation:** `core/src/dune/util.rs` was created with `render_query`, `approx_block_month_min`,
-and `dune_chain_label`. **But it was never wired into the module tree or adopted by consumers.**
+`dune_chain_label`, `chain_timing`, `estimate_latest_block`, `dune_indexing_lag_blocks`.
+`pub mod util;` added to `core/src/dune/mod.rs`. All consumers (`audit.rs`, `pool_discovery.rs`)
+import from `super::util` instead of having private duplicates. External consumers
+(`token_discovery.rs`, `token_cache.rs`) also import from `util` instead of `pool_discovery`.
 
-**Remaining work:**
-- Add `pub mod util;` to `core/src/dune/mod.rs`
-- In `audit.rs`: delete private `render_query` (line 14) and `approx_block_month_min` (line 24),
-  replace with `use super::util::{render_query, approx_block_month_min};`
-- In `pool_discovery.rs`: delete private `render_query` (line 11), `approx_block_month_min`
-  (line 21), and `dune_chain_label` (line 41), replace with imports from `util`
-- In `dune_query.rs`: delete private `dune_chain_label` (line 598) and `approx_block_month_min`
-  (line 605), replace with imports from `util`
-- Three separate copies exist; all should be deleted in favor of `util`
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-core`.
 
 ---
 
-### 1.5 Unify chain genesis parameter tables [TODO]
+### 1.5 Unify chain genesis parameter tables [DONE]
 
-**Files:** `dune_query.rs:605-621`, `audit.rs:24-39`, `pool_discovery.rs:21-36`, `util.rs:8-32`
+**Files:** `core/src/dune/util.rs`
 
 **Smell:** Chain to (genesis_ts, secs_per_block, blocks_per_day, lag) mapping in 4 places.
 
-**Remediation:** Use `ChainTimingParams` from `util.rs` as single source of truth.
+**Remediation:** Consolidated into `ChainTimingParams` + `chain_timing()` in `util.rs`.
+All consumers (`audit.rs`, `pool_discovery.rs`, `dune_query.rs`, `token_cache.rs`) import
+from `util`. No private duplicates remain.
 
-**Remaining work:** `ChainTimingParams` exists in `util.rs:1` and `chain_timing()` at `util.rs:8`,
-but no consumer uses it. `audit.rs:24-39`, `pool_discovery.rs:21-36`, and
-`dune_query.rs:605-621` each have their own hardcoded match -- four copies remain.
+**Remaining work:** None.
 
 **Safety gate:** `cargo test`; verify `dune-find-blocks` output unchanged.
 
 ---
 
-### 1.6 Unify V3/V4 pool state types [TODO]
+### 1.6 Unify V3/V4 pool state types [DONE]
 
-**Files:** `core/src/pool/state/pool_types.rs:228-284`
+**Files:** `core/src/pool/state/pool_types.rs`
 
 **Smell:** `UniswapV3PoolState` and `UniswapV4PoolState` are identical 7-field structs
 with a field-by-field `From` impl.
 
 **Remediation:**
-- Rename to `ConcentratedLiquidityState` (or type-alias V4 = V3).
-- Remove the `From` impl; both variants use the same type.
-- Update `apply.rs` to handle both with a single code path.
+- `UniswapV4PoolState` is now `pub type UniswapV4PoolState = UniswapV3PoolState;`
+- Duplicate struct definition, `impl UniswapV4PoolState`, and `From<UniswapV4PoolState> for UniswapV3PoolState` removed
+- Duplicate `ConcentratedPoolState` impl for `UniswapV4PoolState` in `factory.rs` removed
+- All `.into()` calls on V4→V3 are now no-ops and have been cleaned up
 
-**Remaining work:** Not started. Both structs remain separate and identical with the same
-7 fields. A `From<UniswapV4PoolState> for UniswapV3PoolState` impl exists (line 286) but
-the structs themselves were not unified.
+**Remaining work:** None.
 
 **Safety gate:** `cargo test`; run backtest on a block containing V4 swaps.
 
 ---
 
-### 1.7 Deduplicate `apply.rs` V3/V4 swap handling [TODO]
+### 1.7 Deduplicate `apply.rs` V3/V4 swap handling [DONE]
 
-**Files:** `core/src/pool/state/apply.rs:48-105,109-133`
+**Files:** `core/src/pool/state/apply.rs`
 
 **Smell:** V3 and V4 branches in `apply_v3_swap` are identical ~20-line blocks.
 Same duplication in `apply_v3_mint_burn`.
 
-**Remediation:** After 1.6 unifies the types, collapse into one match arm:
-```rust
-if let Some(PoolState::UniswapV3(state) | PoolState::UniswapV4(state)) = self.pools.get_mut(address) {
-```
+**Remediation:** After 1.6 unified the types, both `apply_v3_swap` and `apply_v3_mint_burn`
+use `PoolState::UniswapV3(state) | PoolState::UniswapV4(state)` match arms with shared logic.
 
-**Remaining work:** Not started. `apply_v3_swap` V3 branch (lines 58-81) and V4 branch
-(lines 83-105) have identical logic. `apply_v3_mint_burn` V3 branch (lines 116-124) and
-V4 branch (lines 125-133) have identical tick/liquidity update logic.
+**Remaining work:** None.
 
 **Safety gate:** Same as 1.6.
 
@@ -250,7 +229,7 @@ V4 branch (lines 125-133) have identical tick/liquidity update logic.
 
 ---
 
-### 1.9 Deduplicate overrides.rs chain/block-range copying [TODO]
+### 1.9 Deduplicate overrides.rs chain/block-range copying [PARTIAL]
 
 **Files:** `cli/src/overrides.rs:6-123`
 
@@ -268,25 +247,25 @@ fn apply_chain_args(o: &mut CliOverrides, c: &ChainArgs) {
 fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) { ... }
 ```
 
-**Remaining work:** Not started. 10 match arms each manually copy chain args with the
-same 5-line pattern. No helpers exist.
+**Remaining work:** `apply_chain_args` (lines 4-10) and `apply_block_range` (lines 12-18)
+exist. But 8 of 11 match arms still do per-command field-by-field copying (e.g. Run arm
+has 15 manual assignments). Further consolidation is possible.
 
 **Safety gate:** `cargo test -p mev-scout-cli`.
 
 ---
 
-### 1.10 Merge `dune_query.rs` two-source-of-truth [PARTIAL]
+### 1.10 Merge `dune_query.rs` two-source-of-truth [DONE]
 
-**Files:** `cli/src/commands/dune_query.rs:7-11,454-596`
+**Files:** `cli/src/commands/dune_query.rs`
 
-**Remediation plan:** Add `sql: &'static str` field to `QueryInfo`. Replace 140-arm match
-with a simple lookup.
+**Remediation plan:** `sql: &'static str` field added to `QueryInfo`. `all_queries()` uses a
+`q!` macro referencing `queries::$NAME` automatically via `stringify!`. `get_query_sql` is
+now a one-liner lookup on `all_queries()` -- the 140-arm match is eliminated.
+Private `dune_chain_label` and `approx_block_month_min` have been replaced with imports
+from `dune::util`.
 
-**Remaining work:**
-- `QueryInfo` (lines 7-11) does **not** have a `sql` field -- only `name`, `description`, `required`
-- The ~140-arm `match` in `get_query_sql` (lines 454-596) still exists
-- `dune_query.rs` has its own private `dune_chain_label` (line 598) and `approx_block_month_min`
-  (line 605) that should be replaced with imports from `dune::util` (see 1.4)
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-cli`; verify `--list` and `--all` output unchanged.
 
@@ -954,9 +933,9 @@ Also `info_mut()` at line 469.
 | Phase | Items | Total | Done | Partial | TODO | Status |
 |-------|-------|-------|------|---------|------|--------|
 | Phase 0 | 0.1-0.4 | 4 | 4 | 0 | 0 | 100% |
-| Phase 1 | 1.1-1.10 | 10 | 1 | 3 | 6 | 25% |
+| Phase 1 | 1.1-1.10 | 10 | 9 | 1 | 0 | 90% |
 | Phase 2 | 2.1-2.8 | 8 | 3 | 1 | 4 | 44% |
 | Phase 3 | 3.1-3.8 | 8 | 0 | 1 | 7 | 6% |
 | Phase 4 | 4.1-4.7 | 7 | 1 | 2 | 4 | 29% |
 | Phase 5 | 5.1-5.28 | 28 | 17 | 2 | 9 | 68% |
-| **Total** | **65 items** | **65** | **26** | **9** | **30** | **~49%** |
+| **Total** | **65 items** | **65** | **34** | **7** | **24** | **~52%** |
