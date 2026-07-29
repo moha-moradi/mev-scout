@@ -220,7 +220,7 @@ impl JitDetector {
         pool: Address,
         mint: &ActiveMint,
         timestamp: u64,
-        _burned: bool,
+        burned: bool,
         base_fee_per_gas: u128,
         gas_config: &GasConfig,
         pool_fee: u32,
@@ -287,14 +287,14 @@ impl JitDetector {
             })
             .unwrap_or(80_000);
         let calldata = calldata_gas_estimate(1);
-        let gas_limit = if _burned {
+        let gas_limit = if burned {
             40_000 + calldata + pool_gas + 150_000 + 150_000
         } else {
             40_000 + calldata + pool_gas + 150_000
         };
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // raw_profit = Some(raw) when normalization actually converted the value
-        let raw_profit = if normalized_fees != raw_fees { Some(U256::from(raw_fees)) } else { None };
+        let raw_profit = (normalized_fees != raw_fees).then(|| U256::from(raw_fees));
         // H9: JIT fee scales linearly with position size — compute ±1%/±2% slippage
         let jit_slippage = |pct: u128| -> Option<U256> {
             if normalized_fees == 0 { return None; }

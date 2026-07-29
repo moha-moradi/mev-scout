@@ -177,7 +177,7 @@ pub fn validate_replay(config: &Config) -> std::result::Result<(ChainName, Chain
         }
     }
 
-    if let Some(url) = &config.rpc_url {
+    if let Some(url) = &config.rpc.rpc_url {
         validate_rpc_url(url)?;
     }
 
@@ -191,7 +191,7 @@ pub fn validate_and_resolve(config: &Config) -> std::result::Result<ValidationRe
 pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config.flash_loan_provider.parse().map_err(|e| {
+    let provider: FlashLoanProvider = config.backtest.flash_loan_provider.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 
@@ -219,7 +219,7 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     }
 
     let strategies: Vec<Strategy> = if check_strategies {
-        let s = Strategy::from_comma_list(&config.strategies)
+        let s = Strategy::from_comma_list(&config.backtest.strategies)
             .map_err(|e| ConfigError::Validation(format!("Error: {e}")))?;
         s
     } else {
@@ -228,18 +228,18 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
 
     let range_mode = check_range_conflicts(config)?;
 
-    if let Some(url) = &config.rpc_url {
+    if let Some(url) = &config.rpc.rpc_url {
         validate_rpc_url(url)?;
     }
-    if !config.rpc_urls.is_empty() {
-        validate_rpc_urls(&config.rpc_urls)?;
+    if !config.rpc.rpc_urls.is_empty() {
+        validate_rpc_urls(&config.rpc.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config.gas_model.parse().map_err(|e| {
+    let gas_model: GasModel = config.gas.gas_model.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 
-    let _output: OutputFormat = config.output.parse().map_err(|e| {
+    let _: OutputFormat = config.output.output.parse().map_err(|e| {
         ConfigError::Validation(format!("Error: {e}"))
     })?;
 

@@ -3,10 +3,10 @@ pub mod config;
 pub mod replay;
 pub mod rpc;
 
-pub use cache::*;
-pub use config::*;
-pub use replay::*;
-pub use rpc::*;
+pub use cache::{CacheError, SqliteError};
+pub use config::ConfigError;
+pub use replay::ReplayError;
+pub use rpc::RpcError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

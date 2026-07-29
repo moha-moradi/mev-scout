@@ -535,7 +535,7 @@ impl Fetcher {
                 let sig_resolver = self.sig_resolver.clone();
 
                 async move {
-                    let _permit = sem.acquire().await.unwrap();
+                    let _permit = sem.acquire().await.expect("semaphore closed");
 
                     let t0 = Instant::now();
                     let result = if batch_rpc {

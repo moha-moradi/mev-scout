@@ -229,27 +229,19 @@ use `PoolState::UniswapV3(state) | PoolState::UniswapV4(state)` match arms with 
 
 ---
 
-### 1.9 Deduplicate overrides.rs chain/block-range copying [PARTIAL]
+### 1.9 Deduplicate overrides.rs chain/block-range copying [DONE]
 
-**Files:** `cli/src/overrides.rs:6-123`
+**Files:** `cli/src/overrides.rs`
 
 **Smell:** Chain args copied in 7 match arms; block-range args in 3 arms.
 
 **Remediation:**
-```rust
-fn apply_chain_args(o: &mut CliOverrides, c: &ChainArgs) {
-    o.chain = Some(c.chain.clone());
-    o.rpc_url = c.rpc_url.clone();
-    o.rpc_urls = c.rpc_urls.clone();
-    o.rpc_rps = c.rpc_rps.clone();
-    o.rps_limit = Some(c.rps_limit);
-}
-fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) { ... }
-```
+`apply_chain_args` and `apply_block_range` extracted as helpers.
+Added `apply_storage_args` (3 call sites) and `apply_dune_chain_args` (3 call sites)
+to eliminate remaining per-command field-by-field duplication for `db_path`/`parquet_dir`
+and `chain`/`dune_api_key` respectively.
 
-**Remaining work:** `apply_chain_args` (lines 4-10) and `apply_block_range` (lines 12-18)
-exist. But 8 of 11 match arms still do per-command field-by-field copying (e.g. Run arm
-has 15 manual assignments). Further consolidation is possible.
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-cli`.
 
@@ -274,9 +266,9 @@ from `dune::util`.
 <a id="phase-2"></a>
 ## Phase 2 -- Structural Refactors (P2)
 
-### 2.1 Decompose `Config` into sub-structs [TODO]
+### 2.1 Decompose `Config` into sub-structs [DONE]
 
-**Files:** `core/src/config/settings.rs:21-140`
+**Files:** `core/src/config/settings.rs`
 
 **Smell:** 30+ field God Object mixing backtest, live, Dune, RPC, gas, output, per-chain concerns.
 
@@ -292,31 +284,26 @@ pub struct Config {
     pub dune: DuneConfig,
 }
 ```
+All sub-structs use `#[serde(flatten)]` for backward TOML compatibility. `CliOverrides` similarly decomposed. `merge_cli()` uses `merge_sub!` macro to delegate to sub-struct merge methods.
 
-**Remaining work:** Not started. `Config` is still a flat 30+ field struct. Only separation
-is comment section dividers.
+**Remaining work:** None.
 
 **Safety gate:** `cargo test -p mev-scout-core`; existing TOML configs still parse.
 
 ---
 
-### 2.2 Introduce `MevOpportunity` builder [PARTIAL]
+### 2.2 Introduce `MevOpportunity` builder [DONE]
 
-**Files:** `core/src/types/opportunity.rs:113-203`
+**Files:** `core/src/types/opportunity.rs`
 
 **Smell:** 22-field struct literal with many `None` defaults repeated across every detector.
 
-**Remediation plan:** Full builder pattern with `Result`-returning methods.
+**Remediation plan:** Builder methods (`with_jit_fields`, `with_sandwich_fields`, `with_path`)
+return `Result<Self, &'static str>` instead of using `debug_assert!`, so invalid strategy
+combinations produce an error in all build profiles instead of only debug.
 
-**Remaining work:**
-- `MevOpportunity::new()` exists (line 116) with builder-style methods
-  `with_canonical_id()`, `with_jit_fields()`, `with_sandwich_fields()`, `with_path()`
-  (lines 154-202)
-- But builder methods still use `debug_assert!` (lines 171, 184, 196) instead of
-  returning `Result`, so invalid combinations are silently accepted in release builds
-- Replace `debug_assert!` with `Result` returns (also addresses item 3.3)
-
-**Safety gate:** `cargo test`; each detector's output unchanged.
+**Remaining work:** None. Builder methods are available (unused by current detectors but
+ready for adoption).
 
 ---
 
@@ -452,18 +439,14 @@ trait Command {
 
 ---
 
-### 3.3 Fix `debug_assert!` usage in public API [TODO]
+### 3.3 Fix `debug_assert!` usage in public API [DONE]
 
 **Files:** `core/src/types/opportunity.rs:171,184,196`
 
-**Smell:** `debug_assert!` only fires in debug builds; release silently produces garbage.
+**Remediation:** Superseded by item 2.2. All three builder methods now return
+`Result<Self, &'static str>` instead of using `debug_assert!`.
 
-**Remaining work:** Not started. All three builder methods still use `debug_assert!`:
-- Line 171: `debug_assert!(self.strategy == Strategy::Jit || ...` in `with_jit_fields`
-- Line 184: `debug_assert!(self.strategy == Strategy::Sandwich, ...` in `with_sandwich_fields`
-- Line 196: `debug_assert!(self.strategy == Strategy::MultiHopArb, ...` in `with_path`
-
-**Safety gate:** `cargo test`.
+**Remaining work:** None (see 2.2).
 
 ---
 
@@ -933,9 +916,9 @@ Also `info_mut()` at line 469.
 | Phase | Items | Total | Done | Partial | TODO | Status |
 |-------|-------|-------|------|---------|------|--------|
 | Phase 0 | 0.1-0.4 | 4 | 4 | 0 | 0 | 100% |
-| Phase 1 | 1.1-1.10 | 10 | 9 | 1 | 0 | 90% |
-| Phase 2 | 2.1-2.8 | 8 | 3 | 1 | 4 | 44% |
-| Phase 3 | 3.1-3.8 | 8 | 0 | 1 | 7 | 6% |
+| Phase 1 | 1.1-1.10 | 10 | 10 | 0 | 0 | 100% |
+| Phase 2 | 2.1-2.8 | 8 | 5 | 0 | 3 | 62% |
+| Phase 3 | 3.1-3.8 | 8 | 1 | 1 | 6 | 12% |
 | Phase 4 | 4.1-4.7 | 7 | 1 | 2 | 4 | 29% |
 | Phase 5 | 5.1-5.28 | 28 | 17 | 2 | 9 | 68% |
-| **Total** | **65 items** | **65** | **34** | **7** | **24** | **~52%** |
+| **Total** | **65 items** | **65** | **38** | **5** | **22** | **~58%** |

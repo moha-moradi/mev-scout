@@ -113,7 +113,7 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
                             "Unknown"
                         }
                     };
-                    let name = info.name.clone().unwrap_or_else(|| format!("{}", info.address));
+                    let name = info.name.as_deref().map(String::from).unwrap_or_else(|| format!("{}", info.address));
                     format!("{} — {}", name, event_type)
                 })
             }).collect();

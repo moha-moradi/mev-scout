@@ -2,6 +2,7 @@
 
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{BalancerPoolState, BalancerPoolVariant};
+use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER};
 
 /// Dispatch to the correct Balancer quoting formula based on pool variant.
 /// Weighted pools use the weighted product formula; Stable pools use StableSwap.
@@ -38,13 +39,13 @@ pub fn balancer_output_amount(
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = 1_000_000u128 - fee as u128;
-    let amount_after_fee = amount_in.checked_mul(fee_factor)? / 1_000_000;
+    let fee_factor = PPM_DENOMINATOR - fee as u128;
+    let amount_after_fee = amount_in.checked_mul(fee_factor)? / PPM_DENOMINATOR;
 
     let r_in = U256::from(reserve_in);
     let r_out = U256::from(reserve_out);
-    let w_in = U256::from(if weight_in == 0 { 1e18 as u128 } else { weight_in });
-    let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
+    let w_in = U256::from(if weight_in == 0 { WEI_PER_ETHER } else { weight_in });
+    let w_out = U256::from(if weight_out == 0 { WEI_PER_ETHER } else { weight_out });
     let amount = U256::from(amount_after_fee);
 
     let numerator = r_in;
@@ -90,7 +91,7 @@ pub fn balancer_stable_output_amount(
         .map(|(i, &b)| {
             let raw = b as f64;
             if has_scaling {
-                raw * pool.scaling_factors[i] as f64 / 1e18f64
+                raw * pool.scaling_factors[i] as f64 / WEI_PER_ETHER as f64
             } else {
                 raw
             }
@@ -122,7 +123,7 @@ pub fn balancer_stable_output_amount(
     let a = pool.amplification.unwrap_or(100) as f64;
     let n_scaled = scaled_balances.len();
     let nn = (n_scaled as f64).powf(n_scaled as f64);
-    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
+    let fee_factor = 1.0 - (pool.info.fee as f64) / PPM_DENOMINATOR as f64;
 
     // Phase 1: Compute invariant D
     let sum: f64 = scaled_balances.iter().sum();
@@ -151,14 +152,14 @@ pub fn balancer_stable_output_amount(
 
     let x_out_new = super::stable_swap::newton_stableswap_output(n_scaled, ann, d, sum_others, prod_others)?;
     let output = scaled_balances[so] - x_out_new;
-    if output <= 0.0 { None } else { Some(output as u128) }
+    (output > 0.0).then(|| output as u128)
 }
 
 /// Extract Balancer weights for a specific token pair (token_in → token_out).
 /// Returns (weight_in, weight_out). Falls back to equal weights (1e18 each)
 /// if the weights vector is empty or doesn't match the token count.
 fn balancer_weights(pool: &BalancerPoolState, token_in: Address, token_out: Address) -> (u128, u128) {
-    let default_w = 1_000_000_000_000_000_000u128;
+    let default_w = WEI_PER_ETHER;
     if pool.weights.len() != pool.balances.len() || pool.weights.is_empty() {
         return (default_w, default_w);
     }

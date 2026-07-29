@@ -22,9 +22,7 @@ pub struct CrossBlockDetector {
 }
 
 /// Lightweight pool price snapshot at a given block boundary.
-#[allow(dead_code)]
 struct BlockSnapshot {
-    block_number: u64,
     /// pool_address -> price ratio (reserve1/reserve0 for V2,
     /// derived from sqrtPriceX96 for V3)
     prices: HashMap<Address, f64>,
@@ -48,12 +46,12 @@ impl CrossBlockDetector {
 
     /// Record pool state after processing a block.
     /// This captures lightweight price data for all tracked pools.
-    pub fn record_block(&mut self, block_number: u64, pm: &PoolManager) {
+    pub fn record_block(&mut self, _block_number: u64, pm: &PoolManager) {
         let prices = Self::snapshot_prices(pm);
         if self.snapshots.len() >= self.window_size {
             self.snapshots.pop_front();
         }
-        self.snapshots.push_back(BlockSnapshot { block_number, prices });
+        self.snapshots.push_back(BlockSnapshot { prices });
     }
 
     /// Snapshot current prices for all pools in the manager.

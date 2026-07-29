@@ -113,7 +113,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     }
 
     let mut pool_manager = PoolManager::new();
-    pool_manager.set_max_pairs_per_token(config.max_pairs_per_token);
+    pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
     pool_manager.set_concurrency_limit(provider_configs.len() as u32);
     if let Some(vault_str) = &validation_result.chain_config.balancer_vault {
         if let Ok(vault_addr) = vault_str.parse::<Address>() {
@@ -144,19 +144,19 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     );
 
     let gas_config = GasConfig {
-        gas_limit: config.gas_limit,
+        gas_limit: config.gas.gas_limit,
         gas_model: validation_result.gas_model,
-        priority_fee_gwei: config.priority_fee_gwei,
+        priority_fee_gwei: config.gas.priority_fee_gwei,
         flash_loan_provider: validation_result.flash_loan_provider,
         winning_bid_premium: 0.0,
         percentile_gas_price: None,
     };
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(config.proximity_window)
-        .with_capture_pending(config.capture_pending);
+        .with_proximity_window(config.backtest.proximity_window)
+        .with_capture_pending(config.backtest.capture_pending);
 
-    if config.cross_block_window > 0 {
-        runner = runner.with_cross_block(config.cross_block_window);
+    if config.backtest.cross_block_window > 0 {
+        runner = runner.with_cross_block(config.backtest.cross_block_window);
     }
 
     if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
@@ -182,7 +182,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         created_at: epoch_secs(),
         opportunities: all_opportunities.clone(),
     };
-    if let Err(e) = save_results_json(&config.export_path, &run_id, &results_file) {
+    if let Err(e) = save_results_json(&config.output.export_path, &run_id, &results_file) {
         tracing::warn!("Failed to save results: {}", e);
     }
 

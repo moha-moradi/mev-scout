@@ -374,7 +374,7 @@ async fn test_dune_guided_backtest() {
                         token1: Address::ZERO,
                         fee: 30,
                         name: None,
-                        dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV2,
+                        dex_type: mev_scout_core::dex_type::DexType::UniswapV2,
                         tick_spacing: None,
                         creation_block: 0,
                         pool_id: None,
@@ -520,7 +520,7 @@ async fn test_synthetic_backtest_on_real_block() {
         ),
     ];
 
-    use mev_scout_core::pool::dex_type::DexType;
+    use mev_scout_core::dex_type::DexType;
     use mev_scout_core::pool::state::UniswapV2PoolState;
 
     for (addr, t0, t1) in &pools {

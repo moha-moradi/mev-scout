@@ -6,7 +6,7 @@ use tracing;
 use super::client::DuneClient;
 use super::queries;
 use super::util::render_query;
-use crate::pool::dex_type::DexType;
+use crate::dex_type::DexType;
 use crate::pool::discovery::DiscoveredPool;
 
 /// Derive tick_spacing from a Uniswap V3 fee tier.
@@ -171,10 +171,8 @@ pub async fn discover_active_pools_from_dune(
             (DexType::UniswapV2, DuneClient::col_as_u64(row, "fee").unwrap_or(30) as u32)
         };
 
-        let ts = match dex_type {
-            DexType::UniswapV3 | DexType::UniswapV4 => Some(tick_spacing_from_fee(fee)),
-            _ => None,
-        };
+        let ts = matches!(dex_type, DexType::UniswapV3 | DexType::UniswapV4)
+            .then(|| tick_spacing_from_fee(fee));
 
         pools.push(DiscoveredPool::new(addr, t0, t1, fee, dex_type, creation_block)
             .with_tick_spacing(ts));

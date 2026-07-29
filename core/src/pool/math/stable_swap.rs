@@ -31,7 +31,7 @@ pub fn newton_stableswap_invariant(
         if d_next <= 0.0 { break; }
         d = d_next;
     }
-    if d <= 0.0 { None } else { Some(d) }
+    (d > 0.0).then_some(d)
 }
 
 /// Newton's method to find the new output token balance after a swap.
@@ -73,5 +73,5 @@ pub fn newton_stableswap_output(
         x = x_next;
     }
 
-    if x <= 0.0 { None } else { Some(x) }
+    (x > 0.0).then_some(x)
 }

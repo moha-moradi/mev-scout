@@ -206,14 +206,14 @@ impl BlockReplayer {
     pub fn load_txs(&self, block_num: u64) -> anyhow::Result<Vec<TxData>> {
         self.cache
             .get_txs(block_num)?
-            .ok_or_else(|| anyhow::anyhow!("Txs for block {} not found in cache", block_num))
+            .ok_or_else(|| anyhow::anyhow!("txs for block {} not found in cache", block_num))
     }
 
     pub fn load_block_data(&self, block_num: u64) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block = self
             .cache
             .get_block(block_num)?
-            .ok_or_else(|| anyhow::anyhow!("Block {} not found in cache", block_num))?;
+            .ok_or_else(|| anyhow::anyhow!("block {} not found in cache", block_num))?;
         let txs = self
             .cache
             .get_txs(block_num)?
@@ -224,7 +224,7 @@ impl BlockReplayer {
     pub fn load_receipts(&self, block_num: u64) -> anyhow::Result<Vec<crate::data::ReceiptData>> {
         self.cache
             .get_receipts(block_num)?
-            .ok_or_else(|| anyhow::anyhow!("Receipts for block {} not found in cache", block_num))
+            .ok_or_else(|| anyhow::anyhow!("receipts for block {} not found in cache", block_num))
     }
 
     pub fn rpc(&self) -> &RpcClient {

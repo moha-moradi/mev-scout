@@ -1,0 +1,3 @@
+pub const HTTP_TIMEOUT_SECS: u64 = 30;
+pub const DEAD_PROVIDER_COOLDOWN_SECS: u64 = 300;
+pub const MAX_BACKOFF_SECS: u64 = 300;

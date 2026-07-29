@@ -2,7 +2,7 @@
 //!
 //! LB pools use discrete bins with a configurable bin step (basis points).
 //! The price of bin `i` relative to bin 0 is:
-//!   price(i) = ((10000 + binStep) / 10000) ^ i
+//!   price(i) = ((BPS_DENOMINATOR + binStep) / BPS_DENOMINATOR) ^ i
 //!
 //! Within the active bin, swaps follow constant-product x * y = k.
 //! Cross-bin swaps aggregate liquidity across multiple bins, each at a
@@ -12,10 +12,11 @@
 //!   - `lb_max_output`: maximum output draining the active bin
 
 use alloy::primitives::U256;
+use super::consts::BPS_DENOMINATOR;
 
 /// Compute the price of bin `active_id` relative to bin 0.
 ///
-/// Uses integer math: `price = ((10000 + binStep) / 10000) ^ active_id`
+/// Uses integer math: `price = ((BPS_DENOMINATOR + binStep) / BPS_DENOMINATOR) ^ active_id`
 /// Returned as a Q64.64 fixed-point number (1.0 = 2^64).
 ///
 /// Uses Q64.64 internally to avoid U256 overflow during squaring.
@@ -25,8 +26,8 @@ pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
         return 1u128 << 64;
     }
     // Q64.64: 1.0 = 2^64
-    let base_num = 10000u128 + bin_step as u128;
-    let scale = 10000u128;
+    let base_num = BPS_DENOMINATOR + bin_step as u128;
+    let scale = BPS_DENOMINATOR as u128;
     let mut result: u128 = 1u128 << 64;
     // base in Q64.64
     let mut base: u128 = ((base_num as u128) << 64) / scale;
@@ -48,7 +49,7 @@ pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
 /// Quote an output amount for a swap within the active bin.
 ///
 /// Within a single bin, LB is effectively constant-product:
-/// `output = amountIn * (10000 - fee) * reserveOut / (reserveIn * 10000 + amountIn * (10000 - fee))`
+/// `output = amountIn * (BPS_DENOMINATOR - fee) * reserveOut / (reserveIn * BPS_DENOMINATOR + amountIn * (BPS_DENOMINATOR - fee))`
 ///
 /// This is conservative: it only considers the active bin's reserves.
 /// Cross-bin liquidity provides additional depth, so the actual output
@@ -62,10 +63,10 @@ pub fn lb_output_amount(
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
+    let fee_factor = BPS_DENOMINATOR - fee as u128;
     let amount_in_eff = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_eff.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_mul(10000u128)?.checked_add(amount_in_eff)?;
+    let denominator = reserve_in.checked_mul(BPS_DENOMINATOR)?.checked_add(amount_in_eff)?;
     let output = numerator / denominator;
     if output == 0 {
         return None;
@@ -75,14 +76,14 @@ pub fn lb_output_amount(
 
 /// Maximum output draining the active bin (swap entire reserve).
 ///
-/// Returns `reserve_out * (10000 - fee) / 10000` — the maximum extractable
+/// Returns `reserve_out * (BPS_DENOMINATOR - fee) / BPS_DENOMINATOR` — the maximum extractable
 /// output after fee deduction.
 pub fn lb_max_output(reserve_out: u128, fee: u32) -> Option<u128> {
     if reserve_out == 0 {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
-    let output = (reserve_out as u128 * fee_factor) / 10000u128;
+    let fee_factor = BPS_DENOMINATOR - fee as u128;
+    let output = (reserve_out as u128 * fee_factor) / BPS_DENOMINATOR;
     if output == 0 {
         return None;
     }

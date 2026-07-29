@@ -53,7 +53,7 @@ pub fn pendle_output_amount(
 
     if swap_ratio_1000 <= 200 {
         // Small swap: constant product is accurate enough
-        return if cp_output == 0 { None } else { Some(cp_output) };
+        return (cp_output != 0).then_some(cp_output);
     }
 
     // Damping factor for larger swaps (> 20% of pool depth).
@@ -83,7 +83,7 @@ pub fn pendle_max_output(total_out: u128) -> Option<u128> {
     }
     // Leave 0.1% as dust to avoid draining the pool
     let max = total_out * 999 / 1000;
-    if max == 0 { None } else { Some(max) }
+    (max != 0).then_some(max)
 }
 
 #[cfg(test)]

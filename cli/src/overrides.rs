@@ -3,10 +3,10 @@ use mev_scout_core::config::CliOverrides;
 
 fn apply_chain_args(o: &mut CliOverrides, c: &ChainArgs) {
     o.chain = Some(c.chain.clone());
-    o.rpc_url = c.rpc_url.clone();
-    o.rpc_urls = c.rpc_urls.clone();
-    o.rpc_rps = c.rpc_rps.clone();
-    o.rps_limit = Some(c.rps_limit);
+    o.rpc.rpc_url = c.rpc_url.clone();
+    o.rpc.rpc_urls = c.rpc_urls.clone();
+    o.rpc.rpc_rps = c.rpc_rps.clone();
+    o.rpc.rps_limit = Some(c.rps_limit);
 }
 
 fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
@@ -17,62 +17,69 @@ fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
     o.to_block = b.to_block;
 }
 
+fn apply_storage_args(o: &mut CliOverrides, db_path: &Option<String>, parquet_dir: &Option<String>) {
+    o.output.db_path.clone_from(db_path);
+    o.output.parquet_dir.clone_from(parquet_dir);
+}
+
+fn apply_dune_chain_args(o: &mut CliOverrides, chain: &str, dune_api_key: &Option<String>) {
+    o.chain = Some(chain.to_string());
+    o.dune.dune_api_key.clone_from(dune_api_key);
+}
+
 pub fn build_overrides(cli: &Cli) -> CliOverrides {
     let mut o = CliOverrides::default();
     match &cli.command {
         Command::Run(args) => {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);
-            o.flash_loan_provider = Some(args.flash_loan_provider.clone());
-            o.strategies = Some(args.strategies.clone());
-            o.gas_model = Some(args.gas_model.clone());
-            o.gas_limit = Some(args.gas_limit);
-            o.priority_fee_gwei = Some(args.priority_fee);
-            o.output = Some(args.output.clone());
-            o.export_path = Some(args.export_path.clone());
-            o.db_path = args.db_path.clone();
-            o.parquet_dir = args.parquet_dir.clone();
-            o.price_oracle_mode = Some(args.price_oracle_mode.clone());
-            o.token_prices = args.token_prices.clone();
-            o.proximity_window = Some(args.proximity_window);
-            o.capture_pending = Some(args.capture_pending);
-            o.cross_block_window = Some(args.cross_block_window);
+            apply_storage_args(&mut o, &args.db_path, &args.parquet_dir);
+            o.backtest.flash_loan_provider = Some(args.flash_loan_provider.clone());
+            o.backtest.strategies = Some(args.strategies.clone());
+            o.gas.gas_model = Some(args.gas_model.clone());
+            o.gas.gas_limit = Some(args.gas_limit);
+            o.gas.priority_fee_gwei = Some(args.priority_fee);
+            o.output.output = Some(args.output.clone());
+            o.output.export_path = Some(args.export_path.clone());
+            o.backtest.price_oracle_mode = Some(args.price_oracle_mode.clone());
+            o.backtest.token_prices = args.token_prices.clone();
+            o.backtest.proximity_window = Some(args.proximity_window);
+            o.backtest.capture_pending = Some(args.capture_pending);
+            o.backtest.cross_block_window = Some(args.cross_block_window);
         }
         Command::Fetch(args) => {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);
-            o.block_concurrency = args.block_concurrency;
-            o.db_path = args.db_path.clone();
-            o.parquet_dir = args.parquet_dir.clone();
+            apply_storage_args(&mut o, &args.db_path, &args.parquet_dir);
+            o.rpc.block_concurrency = args.block_concurrency;
         }
         Command::Replay(args) => {
             o.block = Some(args.block);
             apply_chain_args(&mut o, &args.chain_args);
-            o.db_path = args.db_path.clone();
-            o.parquet_dir = args.parquet_dir.clone();
+            apply_storage_args(&mut o, &args.db_path, &args.parquet_dir);
         }
         Command::Report(_) => {}
         Command::Config => {}
         Command::Discover(args) => {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);
-            o.db_path = args.db_path.clone();
+            apply_storage_args(&mut o, &args.db_path, &None);
         }
         Command::Live(args) => {
             apply_chain_args(&mut o, &args.chain_args);
-            o.strategies = Some(args.strategies.clone());
-            o.gas_model = Some(args.gas_model.clone());
-            o.gas_limit = Some(args.gas_limit);
-            o.priority_fee_gwei = Some(args.priority_fee);
-            o.output = Some("json".to_string());
-            o.export_path = Some(args.export_path.clone());
-            o.db_path = args.db_path.clone();
-            o.price_oracle_mode = Some(args.price_oracle_mode.clone());
-            o.token_prices = args.token_prices.clone();
-            o.initial_balance = Some(args.initial_balance);
-            o.min_profit_threshold = Some(args.min_profit);
-            o.poll_interval_ms = Some(args.poll_interval);
-            o.max_executions = args.max_executions;
+            apply_storage_args(&mut o, &args.db_path, &None);
+            o.backtest.strategies = Some(args.strategies.clone());
+            o.gas.gas_model = Some(args.gas_model.clone());
+            o.gas.gas_limit = Some(args.gas_limit);
+            o.gas.priority_fee_gwei = Some(args.priority_fee);
+            o.output.output = Some("json".to_string());
+            o.output.export_path = Some(args.export_path.clone());
+            o.backtest.price_oracle_mode = Some(args.price_oracle_mode.clone());
+            o.backtest.token_prices = args.token_prices.clone();
+            o.live.initial_balance = Some(args.initial_balance);
+            o.live.min_profit_threshold = Some(args.min_profit);
+            o.live.poll_interval_ms = Some(args.poll_interval);
+            o.live.max_executions = args.max_executions;
         }
         Command::Audit(args) => {
             apply_chain_args(&mut o, &args.chain_args);
@@ -80,20 +87,17 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.to_block = Some(args.to_block);
         }
         Command::DuneCheck(args) => {
-            o.chain = Some(args.chain.clone());
-            o.dune_api_key = args.dune_api_key.clone();
+            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
         }
         Command::DuneFindBlocks(args) => {
-            o.chain = Some(args.chain.clone());
-            o.dune_api_key = args.dune_api_key.clone();
+            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
         }
         Command::DuneQuery(args) => {
-            o.chain = Some(args.chain.clone());
-            o.dune_api_key = args.dune_api_key.clone();
+            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
         }
         Command::Tokens(args) => {
             apply_chain_args(&mut o, &args.chain_args);
-            o.dune_api_key = args.dune_api_key.clone();
+            o.dune.dune_api_key = args.dune_api_key.clone();
         }
     }
     o

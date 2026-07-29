@@ -123,12 +123,12 @@ impl PriceCache {
         }
         let resp = req.send().await?;
         if !resp.status().is_success() {
-            anyhow::bail!("CoinGecko returned HTTP {}", resp.status());
+            anyhow::bail!("coinGecko returned HTTP {}", resp.status());
         }
         let map: std::collections::HashMap<String, CoinGeckoPriceResponse> = resp.json().await?;
         match map.get(lookup_key) {
             Some(entry) => Ok(entry.usd),
-            None => anyhow::bail!("'{lookup_key}' not found in CoinGecko response"),
+            None => anyhow::bail!("'{lookup_key}' not found in coinGecko response"),
         }
     }
 

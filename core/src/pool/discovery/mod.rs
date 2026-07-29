@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -17,11 +18,17 @@ use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::SqliteStore;
-use crate::pool::dex_type::DexType;
+use crate::dex_type::DexType;
 use crate::pool::state::PoolInfo;
 use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
 use crate::rpc::RpcClient;
 use crate::pipeline::topics;
+
+/// Type alias for DEX activity event hits — shared across per-DEX scanners.
+pub(crate) type PoolHits = HashMap<
+    Address,
+    (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64),
+>;
 
 pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,address,uint256)")
@@ -226,9 +233,9 @@ impl From<DiscoveredPool> for PoolInfo {
             hook_address: d.hook_address,
             bin_step: d.bin_step,
             maturity_timestamp: d.maturity_timestamp,
-            dex_name: d.dex_name,
-            token0_symbol: d.token0_symbol,
-            token1_symbol: d.token1_symbol,
+            dex_name: d.dex_name.map(Arc::from),
+            token0_symbol: d.token0_symbol.map(Arc::from),
+            token1_symbol: d.token1_symbol.map(Arc::from),
         }
     }
 }
@@ -385,7 +392,7 @@ async fn get_logs_with_retry(
             }
         }
     }
-    Err(last_err.unwrap())
+    Err(last_err.expect("last_err should be Some after loop failure"))
 }
 
 async fn get_logs_split_recursive(
@@ -520,6 +527,27 @@ async fn scan_factory_creation_events_pinned(
         }
     }
 }
+
+// ── Module-level macro: fetch logs with optional provider pinning ──
+macro_rules! get_logs_pinned {
+    ($rpc:expr, $filter:expr, $provider_idx:expr) => {
+        match $provider_idx {
+            Some(idx) => $rpc.get_logs_for(idx, $filter).await,
+            None => $rpc.get_logs($filter).await,
+        }
+    };
+}
+
+// ── Per-DEX scanner submodules ──
+mod v2;
+mod v3;
+mod balancer;
+mod curve;
+mod solidly;
+mod camelot;
+mod trader_joe;
+mod pendle;
+mod v4;
 
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).
@@ -681,16 +709,6 @@ async fn discover_pools_shard(
         *topics::BALANCER_SWAP,
     ];
 
-    // Helper: fetch logs with optional provider pinning
-    macro_rules! get_logs_pinned {
-        ($rpc:expr, $filter:expr) => {
-            match provider_idx {
-                Some(idx) => $rpc.get_logs_for(idx, $filter).await,
-                None => $rpc.get_logs($filter).await,
-            }
-        };
-    }
-
     let mut current = from_block;
 
     while current <= to_block {
@@ -710,7 +728,7 @@ async fn discover_pools_shard(
             .from_block(current)
             .to_block(batch_end);
 
-        let fast_result = get_logs_pinned!(rpc, &fast_filter);
+        let fast_result = get_logs_pinned!(rpc, &fast_filter, provider_idx);
         match fast_result {
             Ok(logs) => {
                 for log in &logs {
@@ -726,7 +744,7 @@ async fn discover_pools_shard(
                     .event_signature(all_dex_topics.clone())
                     .from_block(current)
                     .to_block(batch_end);
-                match get_logs_pinned!(rpc, &full_filter) {
+                match get_logs_pinned!(rpc, &full_filter, provider_idx) {
                     Ok(logs) => {
                         for log in &logs {
                             process_discovery_log(log, &mut active_blocks, &mut pool_hits);
@@ -742,310 +760,15 @@ async fn discover_pools_shard(
             }
         }
 
-        // ── V2 factory creation scan (PairCreated) ──
-        if let Some(factories) = config.v2_factories {
-            let fee = config.v2_fee_override.unwrap_or(30);
-            scan_factory_creation_events_pinned(
-                rpc, factories, *V2_PAIR_CREATED_TOPIC, current, batch_end,
-                &mut active_blocks, &mut factory_pools, provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 64 || topics.len() < 3 {
-                        return None;
-                    }
-                    let addr = Address::from_slice(&log_data.data[12..32]);
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
-                    let creation_block = log.block_number.unwrap_or(0);
-                    Some((addr, DiscoveredPool::new(addr, token0, token1, fee, DexType::UniswapV2, creation_block)
-                        .with_factory(Some(log.address()))))
-                },
-            ).await;
-        }
-
-        // ── V3 factory creation scan (PoolCreated) ──
-        if let Some(factories) = config.v3_factories {
-            scan_factory_creation_events_pinned(
-                rpc, factories, *V3_POOL_CREATED_TOPIC, current, batch_end,
-                &mut active_blocks, &mut factory_pools, provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 64 || topics.len() < 4 {
-                        return None;
-                    }
-                    let pool_addr = Address::from_slice(&log_data.data[44..64]);
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
-                    let fee = u32::from_be_bytes([
-                        topics[3][28], topics[3][29], topics[3][30], topics[3][31],
-                    ]);
-                    let tick_spacing = {
-                        let mut ts_bytes = [0u8; 4];
-                        ts_bytes.copy_from_slice(&log_data.data[28..32]);
-                        Some(i32::from_be_bytes(ts_bytes))
-                    };
-                    let creation_block = log.block_number.unwrap_or(0);
-                    Some((pool_addr, DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::UniswapV3, creation_block)
-                        .with_tick_spacing(tick_spacing)
-                        .with_factory(Some(log.address()))))
-                },
-            ).await;
-        }
-
-        // ── Balancer vault scan (PoolRegistered) ──
-        if let Some(vault) = config.balancer_vault {
-            let filter = Filter::new()
-                .address(vault)
-                .event_signature(*BALANCER_POOL_REGISTERED_TOPIC)
-                .from_block(current)
-                .to_block(batch_end);
-            match get_logs_pinned!(rpc, &filter) {
-                Ok(logs) => {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let topics = log.topics();
-                        if topics.len() < 4 {
-                            continue;
-                        }
-                        let pool_type = topics[3][31];
-                        if pool_type == 2 || pool_type > 3 {
-                            continue;
-                        }
-                        let mut pool_id = [0u8; 32];
-                        pool_id.copy_from_slice(topics[1].as_slice());
-                        let pool_addr = Address::from_slice(&topics[2][12..32]);
-                        let creation_block = log.block_number.unwrap_or(0);
-                        pool_hits.entry(pool_addr).or_insert((
-                            DexType::Balancer, Some(pool_id), None, creation_block,
-                        ));
-                        factory_pools.entry(pool_addr).or_insert(
-                            DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Balancer, creation_block)
-                                .with_pool_id(Some(pool_id))
-                                .with_factory(Some(vault))
-                                .with_balancer_pool_type(Some(pool_type)));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Balancer vault scan failed for {current}..{batch_end}: {e:#}"
-                    );
-                }
-            }
-        }
-
-        // ── Curve registry scan (PoolAdded) ──
-        if let Some(registry) = config.curve_registry {
-            let filter = Filter::new()
-                .address(registry)
-                .event_signature(*CURVE_POOL_ADDED_TOPIC)
-                .from_block(current)
-                .to_block(batch_end);
-            match get_logs_pinned!(rpc, &filter) {
-                Ok(logs) => {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let topics = log.topics();
-                        if topics.len() < 2 {
-                            continue;
-                        }
-                        let pool_addr = Address::from_slice(&topics[1][12..32]);
-                        let creation_block = log.block_number.unwrap_or(0);
-                        pool_hits.entry(pool_addr).or_insert((
-                            DexType::Curve, None, None, creation_block,
-                        ));
-                        factory_pools.entry(pool_addr).or_insert(
-                            DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Curve, creation_block)
-                                .with_factory(Some(registry)));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Curve registry scan failed for {current}..{batch_end}: {e:#}"
-                    );
-                }
-            }
-        }
-
-        // ── Solidly factory creation scan ──
-        if let Some(factories) = config.solidly_factories {
-            let fee = config.solidly_fee_bps.or(config.v2_fee_override).unwrap_or(30);
-            scan_factory_creation_events_pinned(
-                rpc, factories, *SOLIDLY_PAIR_CREATED_TOPIC, current, batch_end,
-                &mut active_blocks, &mut factory_pools, provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 64 || topics.len() < 3 {
-                        return None;
-                    }
-                    let pair_addr = Address::from_slice(&log_data.data[44..64]);
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
-                    let is_stable = log_data.data[31] != 0;
-                    let creation_block = log.block_number.unwrap_or(0);
-                    Some((pair_addr, DiscoveredPool::new(pair_addr, token0, token1, fee, DexType::Solidly, creation_block)
-                        .with_factory(Some(log.address()))
-                        .with_is_stable(Some(is_stable))))
-                },
-            ).await;
-        }
-
-        // ── Camelot factory creation scan ──
-        if let Some(factories) = config.camelot_factories {
-            scan_factory_creation_events_pinned(
-                rpc, factories, *CAMELOT_PAIR_CREATED_TOPIC, current, batch_end,
-                &mut active_blocks, &mut factory_pools, provider_idx,
-                |log| {
-                    let log_data = log.data();
-                    let topics = log.topics();
-                    if log_data.data.len() < 96 || topics.len() < 3 {
-                        return None;
-                    }
-                    let pair_addr = Address::from_slice(&log_data.data[12..32]);
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
-                    let fee = alloy::primitives::U256::from_be_slice(&log_data.data[32..64])
-                        .to::<u64>() as u32;
-                    let is_stable = log_data.data[95] != 0;
-                    let creation_block = log.block_number.unwrap_or(0);
-                    Some((pair_addr, DiscoveredPool::new(pair_addr, token0, token1, fee, DexType::Camelot, creation_block)
-                        .with_factory(Some(log.address()))
-                        .with_is_stable(Some(is_stable))))
-                },
-            ).await;
-        }
-
-        // ── Trader Joe V2 LB factory scan (LBPairCreated) ──
-        if let Some(factory) = config.trader_joe_factory {
-            let filter = Filter::new()
-                .address(factory)
-                .event_signature(*LB_PAIR_CREATED_TOPIC)
-                .from_block(current)
-                .to_block(batch_end);
-            match get_logs_pinned!(rpc, &filter) {
-                Ok(logs) => {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let topics = log.topics();
-                        let log_data = log.data();
-                        if topics.len() < 4 || log_data.data.len() < 64 {
-                            continue;
-                        }
-                        let lb_pair = Address::from_slice(&topics[1][12..32]);
-                        let token0 = Address::from_slice(&topics[2][12..32]);
-                        let token1 = Address::from_slice(&topics[3][12..32]);
-                        let creation_block = log.block_number.unwrap_or(0);
-                        pool_hits.entry(lb_pair).or_insert((
-                            DexType::TraderJoeLB, None, None, creation_block,
-                        ));
-                        factory_pools.entry(lb_pair).or_insert(
-                            DiscoveredPool::new(lb_pair, token0, token1, 0, DexType::TraderJoeLB, creation_block)
-                                .with_factory(Some(factory)));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Trader Joe LB factory scan failed for {current}..{batch_end}: {e:#}"
-                    );
-                }
-            }
-        }
-
-        // ── Pendle Finance factory scan (NewMarket) ──
-        if let Some(factory) = config.pendle_factory {
-            let filter = Filter::new()
-                .address(factory)
-                .event_signature(*PENDLE_NEW_MARKET_TOPIC)
-                .from_block(current)
-                .to_block(batch_end);
-            match get_logs_pinned!(rpc, &filter) {
-                Ok(logs) => {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let topics = log.topics();
-                        let log_data = log.data();
-                        if topics.len() < 3 || log_data.data.len() < 32 {
-                            continue;
-                        }
-                        let market_addr = Address::from_slice(&topics[1][12..32]);
-                        let pt_addr = Address::from_slice(&topics[2][12..32]);
-                        let expiry = alloy::primitives::U256::from_be_slice(&log_data.data[..32])
-                            .to::<u64>();
-                        let creation_block = log.block_number.unwrap_or(0);
-                        factory_pools.entry(market_addr).or_insert(
-                            DiscoveredPool::new(market_addr, pt_addr, Address::ZERO, 0, DexType::Pendle, creation_block)
-                                .with_factory(Some(factory))
-                                .with_maturity_timestamp(Some(expiry)));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Pendle factory scan failed for {current}..{batch_end}: {e:#}"
-                    );
-                }
-            }
-        }
-
-        // ── V4 singleton PoolManager Initialize scan ──
-        if let Some(pool_manager) = config.v4_pool_manager {
-            let filter = Filter::new()
-                .address(pool_manager)
-                .event_signature(*V4_INITIALIZE_TOPIC)
-                .from_block(current)
-                .to_block(batch_end);
-            match get_logs_pinned!(rpc, &filter) {
-                Ok(logs) => {
-                    for log in &logs {
-                        if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
-                        }
-                        let topics = log.topics();
-                        let log_data = log.data();
-                        if topics.len() < 4 || log_data.data.len() < 160 {
-                            continue;
-                        }
-                        let token0 = Address::from_slice(&topics[2][12..32]);
-                        let token1 = Address::from_slice(&topics[3][12..32]);
-                        let fee = {
-                            let mut fb = [0u8; 4];
-                            fb[1] = log_data.data[29];
-                            fb[2] = log_data.data[30];
-                            fb[3] = log_data.data[31];
-                            u32::from_be_bytes(fb)
-                        };
-                        let tick_spacing = {
-                            let mut ts = [0u8; 4];
-                            ts.copy_from_slice(&log_data.data[60..64]);
-                            i32::from_be_bytes(ts)
-                        };
-                        let hook_address = Address::from_slice(&log_data.data[84..104]);
-                        let hook_address = if hook_address.is_zero() { None } else { Some(hook_address) };
-                        let creation_block = log.block_number.unwrap_or(0);
-                        let pool_addr = Address::from_slice(&topics[1][12..32]);
-                        factory_pools.entry(pool_addr).or_insert(
-                            DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::UniswapV4, creation_block)
-                                .with_tick_spacing(Some(tick_spacing))
-                                .with_factory(Some(pool_manager))
-                                .with_hook_address(hook_address));
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "V4 PoolManager scan failed for {current}..{batch_end}: {e:#}"
-                    );
-                }
-            }
-        }
+        v2::scan_v2_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        v3::scan_v3_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        balancer::scan_balancer_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
+        curve::scan_curve_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
+        solidly::scan_solidly_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        camelot::scan_camelot_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        trader_joe::scan_trader_joe_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
+        pendle::scan_pendle_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        v4::scan_v4_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
 
         if let Some(ref f) = on_batch {
             f();
@@ -1109,7 +832,7 @@ async fn discover_pools_shard(
                                             tokens.push(Address::from_slice(&result.0[pos+12..pos+32]));
                                         }
                                     }
-                                    if tokens.is_empty() { None } else { Some(tokens) }
+                                    (!tokens.is_empty()).then_some(tokens)
                                 } else { None }
                             } else { None };
                             Some((addr, pool_id, tokens))
@@ -1177,7 +900,7 @@ async fn discover_pools_shard(
                             _ => break,
                         }
                     }
-                    if tokens.is_empty() { None } else { Some((addr, tokens)) }
+                    (!tokens.is_empty()).then(|| (addr, tokens))
                 }
             }).collect();
 
@@ -1239,9 +962,9 @@ async fn discover_pools_shard(
                     .with_bin_step(cached.bin_step)
                     .with_maturity_timestamp(cached.maturity_timestamp)
                     .with_underlying_tokens(cached.underlying_tokens)
-                    .with_dex_name(cached.dex_name)
-                    .with_token0_symbol(cached.token0_symbol)
-                    .with_token1_symbol(cached.token1_symbol);
+                    .with_dex_name(cached.dex_name.as_deref().map(String::from))
+                    .with_token0_symbol(cached.token0_symbol.as_deref().map(String::from))
+                    .with_token1_symbol(cached.token1_symbol.as_deref().map(String::from));
                 factory_pools.entry(*addr).or_insert(dp);
                 cache_hits += 1;
                 continue;
@@ -1475,7 +1198,7 @@ async fn discover_pools_shard(
     // First, add all factory-discovered pools (they have creation_block, factory, etc.)
     for (_, mut dp) in factory_pools.drain() {
         if dp.dex_name.is_none() {
-            dp.dex_name = Some(dp.dex_type.label().to_string());
+            dp.dex_name = Some(dp.dex_type.to_string());
         }
         dp.token0_symbol = symbol_results.get(&dp.token0).cloned();
         dp.token1_symbol = symbol_results.get(&dp.token1).cloned();
@@ -1512,7 +1235,7 @@ async fn discover_pools_shard(
             .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
             .with_pool_id(pool_id)
             .with_underlying_tokens(underlying_tokens)
-            .with_dex_name(Some(dex_type.label().to_string()))
+            .with_dex_name(Some(dex_type.to_string()))
             .with_token0_symbol(symbol_results.get(&token0).cloned())
             .with_token1_symbol(symbol_results.get(&token1).cloned()));
     }
@@ -1593,13 +1316,13 @@ pub async fn discover_pools_with_sources(
     disc_config: &DiscoveryConfig<'_>,
     on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let use_dune = config.dune_primary_pool_discovery && config.dune_api_key.is_some();
+    let use_dune = config.dune.dune_primary_pool_discovery && config.dune.dune_api_key.is_some();
     let chain_str = chain_name.to_string();
 
     let mut all_pools: Vec<DiscoveredPool> = Vec::new();
 
     if use_dune {
-        let api_key = config.dune_api_key.as_ref().expect("checked above");
+        let api_key = config.dune.dune_api_key.as_ref().expect("checked above");
         let dune = crate::dune::DuneClient::new(api_key.clone());
 
         let fee = disc_config.v2_fee_override.unwrap_or(30);

@@ -186,11 +186,7 @@ impl GasModel {
     /// Return the target percentile for this gas model.
     /// For `Distribution(p)` returns p. For `HistoricalExact` and `Fixed` returns `None`.
     pub fn target_percentile(&self) -> Option<u8> {
-        match self {
-            GasModel::Distribution(p) => Some(*p),
-            GasModel::Live => None,
-            _ => None,
-        }
+        if let GasModel::Distribution(p) = self { Some(*p) } else { None }
     }
 }
 
@@ -313,7 +309,8 @@ pub enum OutputFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[strum(ascii_case_insensitive)]
 pub enum ExecutorType {
     #[strum(serialize = "flash_loan_arbitrage")]
     FlashLoanArbitrage,

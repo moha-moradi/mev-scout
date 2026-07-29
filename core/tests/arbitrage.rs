@@ -1,5 +1,5 @@
 use alloy::primitives::{address, U256};
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{
     PoolInfo, PoolManager, PoolState, UniswapV3PoolState,
 };
@@ -175,7 +175,7 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             token1: usdc(),
             fee: 30,
             name: None,
-            dex_type: mev_scout_core::pool::dex_type::DexType::UniswapV3,
+            dex_type: mev_scout_core::dex_type::DexType::UniswapV3,
             tick_spacing: Some(60),
             creation_block: 0,
             pool_id: None,

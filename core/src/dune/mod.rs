@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod client;
+pub mod consts;
 pub mod pool_discovery;
 pub mod queries;
 pub mod token_discovery;

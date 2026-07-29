@@ -7,7 +7,7 @@ use mev_scout_core::fetch::Fetcher;
 
 use mev_scout_core::types::MevOpportunity;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState,

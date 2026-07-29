@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use alloy::primitives::{U256, U512};
 
 use crate::pool::state::UniswapV3PoolState;
+use super::consts::{LIQUIDITY_FRACTION_DENOM, PPM_DENOMINATOR, SQRT_RATIO_CACHE_CAPACITY};
 
 const MIN_TICK: i32 = -887272;
 const MAX_TICK: i32 = 887272;
@@ -16,7 +17,7 @@ static MAX_SQRT_RATIO: std::sync::LazyLock<U256> =
     std::sync::LazyLock::new(|| get_sqrt_ratio_at_tick(MAX_TICK - 1));
 
 static SQRT_RATIO_CACHE: std::sync::LazyLock<Mutex<HashMap<i32, U256>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(4096)));
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::with_capacity(SQRT_RATIO_CACHE_CAPACITY)));
 
 fn limbs_to_u512(lo: &[u64; 4]) -> U512 {
     U512::from_limbs([lo[0], lo[1], lo[2], lo[3], 0, 0, 0, 0])
@@ -424,41 +425,6 @@ fn get_swap_target(
     }
 }
 
-#[allow(dead_code)]
-fn get_tick_spacing_from_fee(fee: u32) -> i32 {
-    if fee <= 100 {
-        1
-    } else if fee <= 500 {
-        10
-    } else if fee <= 3000 {
-        60
-    } else {
-        200
-    }
-}
-
-#[allow(dead_code)]
-fn get_tick_at_sqrt_ratio(sqrt_price_x96: U256) -> i32 {
-    if sqrt_price_x96 < *MIN_SQRT_RATIO || sqrt_price_x96 > *MAX_SQRT_RATIO {
-        return 0;
-    }
-    let mut low = MIN_TICK;
-    let mut high = MAX_TICK;
-    while low <= high {
-        let mid = low + (high - low) / 2;
-        let mid_ratio = get_sqrt_ratio_at_tick(mid);
-        if mid_ratio == sqrt_price_x96 {
-            return mid;
-        }
-        if mid_ratio < sqrt_price_x96 {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-    high
-}
-
 /// Estimate gas cost for a V3 swap in the given direction, accounting for
 /// initialized tick crossings. Each tick crossing costs ~25k gas on top of
 /// the base swap cost (~80k). Capped at 20 crossings to avoid runaway estimates.
@@ -503,7 +469,7 @@ pub fn max_v3_tradeable_amount(
     let (target_sqrt, _) = get_swap_target(pool, zero_for_one);
 
     if target_sqrt == pool.sqrt_price_x96 {
-        return pool.liquidity.saturating_div(100);
+        return pool.liquidity.saturating_div(LIQUIDITY_FRACTION_DENOM);
     }
 
     let max_in = if zero_for_one {
@@ -524,17 +490,17 @@ pub fn max_v3_tradeable_amount(
     .unwrap_or(U256::ZERO);
 
     if max_in.is_zero() {
-        return pool.liquidity.saturating_div(100);
+        return pool.liquidity.saturating_div(LIQUIDITY_FRACTION_DENOM);
     }
 
     let fee = pool.info.fee as u128;
-    let max_input_with_fee = max_in * U256::from(1_000_000u64)
-        / U256::from(1_000_000u64 - fee.min(999_999) as u64);
+    let max_input_with_fee = max_in * U256::from(PPM_DENOMINATOR as u64)
+        / U256::from(PPM_DENOMINATOR as u64 - fee.min(PPM_DENOMINATOR as u128 - 1) as u64);
 
     let limbs = max_input_with_fee.as_limbs();
     let result = limbs[0] as u128;
     if result == 0 {
-        pool.liquidity.saturating_div(100)
+        pool.liquidity.saturating_div(LIQUIDITY_FRACTION_DENOM)
     } else {
         result
     }

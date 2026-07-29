@@ -2,6 +2,7 @@
 //! and block-range sharding for load distribution across public/private RPC endpoints.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::rpc::consts::{DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -48,14 +49,14 @@ impl RpcClient {
     /// `with_provider_rps` to set per-provider limits).
     pub fn from_urls(urls: &[&str], chain_id: u64) -> anyhow::Result<Self> {
         if urls.is_empty() {
-            anyhow::bail!("At least one RPC URL is required");
+            anyhow::bail!("at least one RPC URL is required");
         }
         let http_client = Self::build_http_client()?;
         let providers: Vec<ProviderState> = urls
             .iter()
             .enumerate()
             .map(|(i, url)| {
-                let u: Url = url.parse().map_err(|e| anyhow::anyhow!("Invalid RPC URL '{url}': {e}"))?;
+                let u: Url = url.parse().map_err(|e| anyhow::anyhow!("invalid RPC URL '{url}': {e}"))?;
                 let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
                 let provider = RootProvider::new(rpc_client);
                 Ok(ProviderState::new(provider, None, format!("provider-{i}"), url.to_string()))
@@ -75,9 +76,9 @@ impl RpcClient {
         reqwest::Client::builder()
             .gzip(true)
             .tcp_nodelay(true)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build()
-            .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {e}"))
+            .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
     }
 
     /// Reset all providers to healthy state.
@@ -277,11 +278,11 @@ impl RpcClient {
         match last_err {
             Some(e) => {
                 let which = if archive_only { "archive RPC" } else { "RPC" };
-                anyhow::bail!("All {which} providers failed: {e:#}")
+                anyhow::bail!("all {which} providers failed: {e:#}")
             }
             None => {
                 let which = if archive_only { "archive RPC" } else { "RPC" };
-                anyhow::bail!("All {which} providers exhausted or in cooldown")
+                anyhow::bail!("all {which} providers exhausted or in cooldown")
             }
         }
     }
@@ -367,7 +368,7 @@ impl RpcClient {
             if let Some(state) = provs.get_mut(i) {
                 if let Err(ref e) = phase1 {
                     tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
-                    state.mark_dead(tokio::time::Duration::from_secs(300));
+                    state.mark_dead(tokio::time::Duration::from_secs(DEAD_PROVIDER_COOLDOWN_SECS));
                     results[i] = phase1;
                     continue;
                 }
@@ -458,7 +459,7 @@ impl RpcClient {
                 .hashes()
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))?
-                .ok_or_else(|| anyhow::anyhow!("Block {} not found", block_number))?;
+                .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
             Ok(block.header.timestamp)
         }, false)
         .await
@@ -583,7 +584,7 @@ impl RpcClient {
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
 
                 if raw.is_null() {
-                    anyhow::bail!("Block {} not found", block_number);
+                    anyhow::bail!("block {} not found", block_number);
                 }
 
                 let mut raw = raw;
@@ -629,7 +630,7 @@ impl RpcClient {
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
 
                 if raw.is_null() {
-                    anyhow::bail!("Pending block not available");
+                    anyhow::bail!("pending block not available");
                 }
 
                 let mut raw = raw;
@@ -666,7 +667,7 @@ impl RpcClient {
                     .get_block_receipts(alloy::eips::BlockId::number(block_number))
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))?
-                    .ok_or_else(|| anyhow::anyhow!("Receipts not found for block {}", block_number))
+                    .ok_or_else(|| anyhow::anyhow!("receipts not found for block {}", block_number))
             }, false)
             .await?;
 
@@ -773,7 +774,7 @@ impl RpcClient {
 
         let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
         if raw.is_null() {
-            anyhow::bail!("Block {} not found", block_number);
+            anyhow::bail!("block {} not found", block_number);
         }
         let mut raw = raw;
         Self::clean_block_transactions(&mut raw);
@@ -927,7 +928,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-            None => anyhow::bail!("No providers available"),
+            None => anyhow::bail!("no providers available"),
         }
     }
 
@@ -958,7 +959,7 @@ impl RpcClient {
 
         if failures.len() == results.len() {
             anyhow::bail!(
-                "All RPC providers failed connection check:\n{}",
+                "all RPC providers failed connection check:\n{}",
                 failures.join("\n"),
             );
         }

@@ -12,33 +12,32 @@ use crate::types::{
     ChainName, FlashLoanProvider, RangeMode, Strategy,
 };
 
-/// Top-level runtime configuration for MEV backtest runs.
-///
-/// Loaded from TOML files, with CLI overrides merged at startup.
-/// Controls chain selection, RPC connectivity, strategy filters, gas model,
-/// output format, caching, and per-chain contract addresses.
+// ── Sub-config structs ──────────────────────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    /// Target EVM chain name (e.g. "polygon", "ethereum")
-    #[serde(default = "default_chain")]
-    pub chain: String,
+pub struct RpcConfig {
     /// Custom RPC endpoint; falls back to publicnode if unset
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rpc_url: Option<String>,
-    /// Additional RPC URLs for multi-provider load distribution (comma-separated in CLI).
-    /// When set alongside `rpc_url`, all URLs are used for load distribution.
+    /// Additional RPC URLs for multi-provider load distribution
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_urls: Vec<String>,
-    /// Per-provider RPS limits, one per entry in the combined `effective_rpc_urls` list.
-    /// Empty = use default RPS from `ProviderEndpoint` metadata.
+    /// Per-provider RPS limits
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_rps: Vec<f64>,
-    /// Flash loan provider: "auto", "balancer", "aave", or "uniswap"
-    #[serde(default = "default_flash_loan_provider")]
-    pub flash_loan_provider: String,
-    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit,sandwich")
-    #[serde(default = "default_strategies")]
-    pub strategies: String,
+    /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
+    #[serde(default = "default_rps_limit")]
+    pub rps_limit: f64,
+    /// Block-level concurrency within each provider shard
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_concurrency: Option<usize>,
+    /// CoinGecko API key for USD price lookups
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coingecko_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GasConfig {
     /// Gas cost model: "historical_exact" or "fixed"
     #[serde(default = "default_gas_model")]
     pub gas_model: String,
@@ -48,6 +47,41 @@ pub struct Config {
     /// Priority fee premium in gwei (added on top of base fee)
     #[serde(default = "default_priority_fee_gwei")]
     pub priority_fee_gwei: f64,
+    /// Optional per-strategy gas limit overrides
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub gas_limits: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BacktestConfig {
+    /// Flash loan provider: "auto", "balancer", "aave", or "uniswap"
+    #[serde(default = "default_flash_loan_provider")]
+    pub flash_loan_provider: String,
+    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit,sandwich")
+    #[serde(default = "default_strategies")]
+    pub strategies: String,
+    /// Maximum number of pool pairs per token for two-hop arbitrage search
+    #[serde(default = "default_max_pairs_per_token")]
+    pub max_pairs_per_token: usize,
+    /// Proximity window (in tx indices) for JitArb detection (default: 3)
+    #[serde(default = "default_proximity_window")]
+    pub proximity_window: usize,
+    /// Capture pending transactions from the mempool during backtest
+    #[serde(default)]
+    pub capture_pending: bool,
+    /// Cross-block MEV detection window size (0 = disabled)
+    #[serde(default)]
+    pub cross_block_window: usize,
+    /// Price oracle mode: "coingecko", "onchain", or "hybrid"
+    #[serde(default)]
+    pub price_oracle_mode: String,
+    /// Per-token USD prices: comma-separated "ADDR=price" pairs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_prices: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
     /// Output format: "table", "json", or "csv"
     #[serde(default = "default_output_format")]
     pub output: String,
@@ -57,11 +91,147 @@ pub struct Config {
     /// Directory for SQLite database file
     #[serde(default = "default_db_path")]
     pub db_path: String,
-
-    /// Directory for Parquet intermediate files (optional, unset = no Parquet)
+    /// Directory for Parquet intermediate files (optional)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parquet_dir: Option<String>,
-    /// Block range (not serialized to TOML directly, handled via CLI merge)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveConfig {
+    /// Starting virtual balance (native token, e.g. 10.0 ETH)
+    #[serde(default = "default_initial_balance")]
+    pub initial_balance: f64,
+    /// Minimum profit threshold (native token) to execute a virtual trade
+    #[serde(default = "default_min_profit_threshold")]
+    pub min_profit_threshold: f64,
+    /// Mempool poll interval in milliseconds
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+    /// Optional cap on virtual executions (None = unlimited)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_executions: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuneConfig {
+    /// Dune Analytics API key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dune_api_key: Option<String>,
+    /// When true, use Dune pool discovery as the primary source
+    #[serde(default)]
+    pub dune_primary_pool_discovery: bool,
+}
+
+// ── Default helpers ─────────────────────────────────────────────────
+
+fn default_initial_balance() -> f64 { 10.0 }
+fn default_min_profit_threshold() -> f64 { 0.001 }
+fn default_poll_interval_ms() -> u64 { 1000 }
+fn default_rps_limit() -> f64 { 0.0 }
+fn default_chain() -> String { "polygon".to_string() }
+fn default_flash_loan_provider() -> String { "auto".to_string() }
+fn default_strategies() -> String { "all".to_string() }
+fn default_gas_model() -> String { "historical_exact".to_string() }
+fn default_gas_limit() -> u64 { 200_000 }
+fn default_priority_fee_gwei() -> f64 { 0.0 }
+fn default_output_format() -> String { "table".to_string() }
+fn default_export_path() -> String { "./results".to_string() }
+fn default_db_path() -> String { String::new() }
+fn default_max_pairs_per_token() -> usize { 50 }
+fn default_proximity_window() -> usize { 3 }
+
+// ── Default impls for sub-structs ───────────────────────────────────
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        RpcConfig {
+            rpc_url: None,
+            rpc_urls: Vec::new(),
+            rpc_rps: Vec::new(),
+            rps_limit: default_rps_limit(),
+            block_concurrency: None,
+            coingecko_api_key: None,
+        }
+    }
+}
+
+impl Default for GasConfig {
+    fn default() -> Self {
+        GasConfig {
+            gas_model: default_gas_model(),
+            gas_limit: default_gas_limit(),
+            priority_fee_gwei: default_priority_fee_gwei(),
+            gas_limits: HashMap::new(),
+        }
+    }
+}
+
+impl Default for BacktestConfig {
+    fn default() -> Self {
+        BacktestConfig {
+            flash_loan_provider: default_flash_loan_provider(),
+            strategies: default_strategies(),
+            max_pairs_per_token: default_max_pairs_per_token(),
+            proximity_window: default_proximity_window(),
+            capture_pending: false,
+            cross_block_window: 0,
+            price_oracle_mode: "coingecko".to_string(),
+            token_prices: None,
+        }
+    }
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        OutputConfig {
+            output: default_output_format(),
+            export_path: default_export_path(),
+            db_path: default_db_path(),
+            parquet_dir: None,
+        }
+    }
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        LiveConfig {
+            initial_balance: default_initial_balance(),
+            min_profit_threshold: default_min_profit_threshold(),
+            poll_interval_ms: default_poll_interval_ms(),
+            max_executions: None,
+        }
+    }
+}
+
+impl Default for DuneConfig {
+    fn default() -> Self {
+        DuneConfig {
+            dune_api_key: None,
+            dune_primary_pool_discovery: false,
+        }
+    }
+}
+
+// ── Top-level Config ────────────────────────────────────────────────
+
+/// Top-level runtime configuration for MEV backtest runs.
+///
+/// Loaded from TOML files, with CLI overrides merged at startup.
+/// Uses `#[serde(flatten)]` on sub-configs so existing flat TOML files
+/// continue to work without changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Target EVM chain name (e.g. "polygon", "ethereum")
+    #[serde(default = "default_chain")]
+    pub chain: String,
+    /// Per-chain configuration overrides keyed by chain name
+    #[serde(default)]
+    pub chains: HashMap<String, ChainConfig>,
+    /// Path to the loaded config file, if any
+    #[serde(skip)]
+    pub config_path: Option<PathBuf>,
+
+    // ── Block range (not serialized to TOML, CLI-only) ──────────────
     #[serde(skip)]
     pub days: Option<u64>,
     #[serde(skip)]
@@ -72,185 +242,56 @@ pub struct Config {
     pub from_block: Option<u64>,
     #[serde(skip)]
     pub to_block: Option<u64>,
-    /// Per-chain configuration overrides keyed by chain name
-    #[serde(default)]
-    pub chains: HashMap<String, ChainConfig>,
-    /// Path to the loaded config file, if any
-    #[serde(skip)]
-    pub config_path: Option<PathBuf>,
-    /// CoinGecko API key for USD price lookups. Optional — free tier works but is rate-limited.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coingecko_api_key: Option<String>,
-    /// Optional per-strategy gas limit overrides.
-    /// Keys are strategy names like "two_hop_arb", "sandwich", etc.
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub gas_limits: std::collections::HashMap<String, u64>,
-    /// Maximum number of pool pairs per token for two-hop arbitrage search.
-    /// Higher values increase detection coverage but slow down pair computation.
-    #[serde(default = "default_max_pairs_per_token")]
-    pub max_pairs_per_token: usize,
-    /// Block-level concurrency within each provider shard (default: 100 via CLI).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub block_concurrency: Option<usize>,
-    /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
-    #[serde(default = "default_rps_limit")]
-    pub rps_limit: f64,
-    /// Price oracle mode: "coingecko", "onchain", or "hybrid" (default: "coingecko").
-    #[serde(default)]
-    pub price_oracle_mode: String,
-    /// Per-token USD prices: comma-separated "ADDR=price" pairs (e.g. "0x...=0.999,0x...=1800").
-    /// Overrides CoinGecko prices for the specified tokens.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_prices: Option<String>,
-    /// Proximity window (in tx indices) for JitArb detection (default: 3).
-    #[serde(default = "default_proximity_window")]
-    pub proximity_window: usize,
-    /// Capture pending transactions from the mempool during backtest (default: false).
-    #[serde(default)]
-    pub capture_pending: bool,
-    /// Cross-block MEV detection window size (default: 0 = disabled).
-    /// When > 1, tracks pool price snapshots across consecutive blocks.
-    #[serde(default)]
-    pub cross_block_window: usize,
 
-    // ── Live mode fields ──────────────────────────────────────────────
-    /// Starting virtual balance (native token, e.g. 10.0 ETH).
-    #[serde(default = "default_initial_balance")]
-    pub initial_balance: f64,
-    /// Minimum profit threshold (native token) to execute a virtual trade.
-    #[serde(default = "default_min_profit_threshold")]
-    pub min_profit_threshold: f64,
-    /// Mempool poll interval in milliseconds.
-    #[serde(default = "default_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-    /// Optional cap on virtual executions (None = unlimited).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_executions: Option<u64>,
-
-    // ── Dune Analytics integration ───────────────────────────────────────
-    /// Dune Analytics API key. If set, enables Dune-based pool discovery and
-    /// cross-validation features. Optional — all features gracefully degrade
-    /// when unset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_api_key: Option<String>,
-    /// When true, use Dune pool discovery as the primary source (on-chain fallback always runs).
-    #[serde(default)]
-    pub dune_primary_pool_discovery: bool,
-
-}
-
-fn default_initial_balance() -> f64 { 10.0 }
-fn default_min_profit_threshold() -> f64 { 0.001 }
-fn default_poll_interval_ms() -> u64 { 1000 }
-
-fn default_rps_limit() -> f64 { 0.0 }
-
-fn default_chain() -> String {
-    "polygon".to_string()
-}
-
-fn default_flash_loan_provider() -> String {
-    "auto".to_string()
-}
-
-fn default_strategies() -> String {
-    "all".to_string()
-}
-
-fn default_gas_model() -> String {
-    "historical_exact".to_string()
-}
-
-fn default_gas_limit() -> u64 {
-    200_000
-}
-
-fn default_priority_fee_gwei() -> f64 {
-    0.0
-}
-
-fn default_output_format() -> String {
-    "table".to_string()
-}
-
-fn default_export_path() -> String {
-    "./results".to_string()
-}
-
-fn default_db_path() -> String {
-    String::new() // empty = resolve to per-chain default
+    // ── Sub-configs (flattened for TOML compat) ─────────────────────
+    #[serde(flatten)]
+    pub rpc: RpcConfig,
+    #[serde(flatten)]
+    pub gas: GasConfig,
+    #[serde(flatten)]
+    pub backtest: BacktestConfig,
+    #[serde(flatten)]
+    pub output: OutputConfig,
+    #[serde(flatten)]
+    pub live: LiveConfig,
+    #[serde(flatten)]
+    pub dune: DuneConfig,
 }
 
 impl Config {
     /// Return the effective database path for the given chain.
-    /// If the user provided a custom path via config or CLI, use that.
-    /// Otherwise, use a per-chain path: `./cache/{chain}-mev-scout.sqlite`.
     pub fn effective_db_path(&self, chain: &ChainName) -> String {
-        if self.db_path.is_empty() {
+        if self.output.db_path.is_empty() {
             format!("./cache/{}-mev-scout.sqlite", chain)
         } else {
-            self.db_path.clone()
+            self.output.db_path.clone()
         }
     }
 }
-
-fn default_max_pairs_per_token() -> usize {
-    50
-}
-
-fn default_proximity_window() -> usize { 3 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             chain: default_chain(),
-            rpc_url: None,
-            rpc_urls: Vec::new(),
-            rpc_rps: Vec::new(),
-            flash_loan_provider: default_flash_loan_provider(),
-            strategies: default_strategies(),
-            gas_model: default_gas_model(),
-            gas_limit: default_gas_limit(),
-            priority_fee_gwei: default_priority_fee_gwei(),
-            output: default_output_format(),
-            export_path: default_export_path(),
-            db_path: default_db_path(),
-            parquet_dir: None,
+            chains: default_chains(),
+            config_path: None,
             days: None,
             blocks: None,
             block: None,
             from_block: None,
             to_block: None,
-            chains: default_chains(),
-            config_path: None,
-            coingecko_api_key: None,
-            gas_limits: std::collections::HashMap::new(),
-            max_pairs_per_token: default_max_pairs_per_token(),
-            block_concurrency: None,
-            rps_limit: default_rps_limit(),
-            price_oracle_mode: "coingecko".to_string(),
-            token_prices: None,
-            proximity_window: default_proximity_window(),
-            capture_pending: false,
-            cross_block_window: 0,
-            initial_balance: default_initial_balance(),
-            min_profit_threshold: default_min_profit_threshold(),
-            poll_interval_ms: default_poll_interval_ms(),
-            max_executions: None,
-            dune_api_key: None,
-            dune_primary_pool_discovery: false,
+            rpc: RpcConfig::default(),
+            gas: GasConfig::default(),
+            backtest: BacktestConfig::default(),
+            output: OutputConfig::default(),
+            live: LiveConfig::default(),
+            dune: DuneConfig::default(),
         }
     }
 }
 
-
-
 impl Config {
     /// Parse a TOML configuration file from disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read or parsed as valid TOML.
     pub fn load(path: &str) -> error::Result<Self> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| error::Error::Other(format!("Failed to read config file '{}': {}", path, e)))?;
@@ -264,8 +305,6 @@ impl Config {
     pub fn load_or_default(path: &str) -> Self {
         let mut cfg = Self::load(path).unwrap_or_default();
         cfg.config_path = Some(PathBuf::from(path));
-        // Merge default chain configs so any chain referenced in cfg.chain
-        // has a fallback, even if the TOML file has no [chains.*] section.
         let defaults = default_chains();
         for (name, default_cfg) in defaults {
             cfg.chains.entry(name).or_insert(default_cfg);
@@ -273,17 +312,9 @@ impl Config {
         cfg
     }
 
-    /// Return a Config pre-populated with all 7 default chain configurations.
-    pub fn default_with_chains() -> Self {
-        Config::default()
-    }
-
     /// Resolved RPC URL list: user override(s) first, then public fallbacks for known chains.
-    ///
-    /// Returns URLs from `rpc_urls` first, then `rpc_url` (legacy single), then public endpoints.
-    /// Errors only if no RPC source is available (no user URL and unknown chain).
     pub fn effective_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let urls = Self::merge_rpc_urls(&self.rpc_urls, &self.rpc_url);
+        let urls = Self::merge_rpc_urls(&self.rpc.rpc_urls, &self.rpc.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
                 "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
@@ -293,13 +324,7 @@ impl Config {
     }
 
     /// Build full provider configs by merging user-supplied URLs with public fallbacks.
-    ///
-    /// Returns `Vec<(String, Option<f64>, bool)>` — URL, optional per-provider RPS limit, and
-    /// whether the endpoint is known to support archive queries. When `rpc_rps` has matching
-    /// entries, those are used; otherwise defaults from `ChainName::public_rpc_endpoints()` are
-    /// used for public endpoints. Falls back to public endpoints for known chains if no user RPC
-    /// is provided.
-    pub fn effective_provider_configs(&self, chain_name: crate::types::ChainName) -> error::Result<Vec<(String, Option<f64>, bool)>> {
+    pub fn effective_provider_configs(&self, chain_name: ChainName) -> error::Result<Vec<(String, Option<f64>, bool)>> {
         let urls = self.effective_rpc_urls().unwrap_or_default();
         if !urls.is_empty() {
             let public_endpoints = chain_name.public_rpc_endpoints();
@@ -307,21 +332,20 @@ impl Config {
                 .into_iter()
                 .enumerate()
                 .map(|(i, url)| {
-                    let rps = self.rpc_rps.get(i).copied();
+                    let rps = self.rpc.rpc_rps.get(i).copied();
                     if let Some(r) = rps {
-                        // Check if any known public endpoint matches
                         let archive = public_endpoints
                             .iter()
                             .find(|e| url.contains(e.url) || e.url.contains(&url))
                             .map(|e| e.archive)
-                            .unwrap_or(true); // Unknown endpoints assumed archive until proven otherwise
+                            .unwrap_or(true);
                         return (url, Some(r), archive);
                     }
                     let (default_rps, archive) = public_endpoints
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
                         .map(|e| (Some(e.default_rps), e.archive))
-                        .unwrap_or((Some(self.rps_limit), true));
+                        .unwrap_or((Some(self.rpc.rps_limit), true));
                     (url, default_rps, archive)
                 })
                 .collect();
@@ -338,22 +362,11 @@ impl Config {
     }
 
     /// Auto-calculate optimal `block_concurrency` from provider RPS limits.
-    ///
-    /// When `block_concurrency` is explicitly set in config/CLI, that value is used.
-    /// Otherwise, calculates from the minimum per-provider RPS:
-    ///   `min(min_rps × 2, MAX_PER_SHARD).max(MIN_PER_SHARD)`
-    ///
-    /// The ×2 factor keeps the fetch pipeline full (tasks queue on the rate limiter
-    /// while waiting for their turn, so concurrency must exceed RPS to avoid idle slots).
-    /// The cap prevents overwhelming free/public RPC providers with too many
-    /// simultaneous connections.
-    ///
-    /// Defaults to 20 when no RPS limits are configured (safe for public RPCs).
     pub fn effective_block_concurrency(
         &self,
         provider_configs: &[(String, Option<f64>, bool)],
     ) -> usize {
-        if let Some(bc) = self.block_concurrency {
+        if let Some(bc) = self.rpc.block_concurrency {
             tracing::info!("block_concurrency: using explicit value {bc}");
             return bc;
         }
@@ -382,10 +395,9 @@ impl Config {
         bc
     }
 
-    /// Return only the user-specified RPC URLs (no public fallbacks), for backward compat.
-    /// Errors if no user URL is provided.
+    /// Return only the user-specified RPC URLs (no public fallbacks).
     pub fn user_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let urls = Self::merge_rpc_urls(&self.rpc_urls, &self.rpc_url);
+        let urls = Self::merge_rpc_urls(&self.rpc.rpc_urls, &self.rpc.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
                 "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
@@ -395,7 +407,6 @@ impl Config {
     }
 
     /// Merge `rpc_urls` (Vec) and `rpc_url` (legacy single) into a deduplicated list.
-    /// The legacy single URL is appended only if it is not already present in `rpc_urls`.
     fn merge_rpc_urls(base: &[String], extra: &Option<String>) -> Vec<String> {
         let mut urls = base.to_vec();
         if let Some(single) = extra {
@@ -445,45 +456,94 @@ Parquet dir:         {}
 "#,
             chain_name,
             chain_cfg.chain_id,
-            self.rpc_url.clone().unwrap_or_else(|| "RPC not set".to_string()),
+            self.rpc.rpc_url.clone().unwrap_or_else(|| "RPC not set".to_string()),
             range_mode,
             range_mode.resolve_description(),
             strat_list,
             provider_desc,
-            self.gas_model,
-            if self.cross_block_window > 0 { format!("{} blocks", self.cross_block_window) } else { "disabled".to_string() },
+            self.gas.gas_model,
+            if self.backtest.cross_block_window > 0 { format!("{} blocks", self.backtest.cross_block_window) } else { "disabled".to_string() },
             self.effective_db_path(&chain_name),
-            self.parquet_dir.as_deref().unwrap_or("(none)"),
+            self.output.parquet_dir.as_deref().unwrap_or("(none)"),
         )
     }
 }
 
 /// Merge an optional CLI override into a config field.
 macro_rules! merge_opt {
-    // Non-Copy types: override Option<T> → config T (clone out)
     ($cfg:expr, $cli:expr, $field:ident) => {
         if let Some(ref v) = $cli.$field {
             $cfg.$field = v.clone();
         }
     };
-    // Non-Copy types: override Option<T> → config Option<T>
     ($cfg:expr, $cli:expr, $field:ident, into_option) => {
         if let Some(ref v) = $cli.$field {
             $cfg.$field = Some(v.clone());
         }
     };
-    // Copy types: override Option<Copy> → config Copy
     ($cfg:expr, $cli:expr, $field:ident, copy) => {
         if let Some(v) = $cli.$field {
             $cfg.$field = v;
         }
     };
-    // Copy types: override Option<Copy> → config Option<Copy>
     ($cfg:expr, $cli:expr, $field:ident, copy_some) => {
         if let Some(v) = $cli.$field {
             $cfg.$field = Some(v);
         }
     };
+}
+
+// ── CliOverrides (mirrors Config structure) ─────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct RpcOverrides {
+    pub rpc_url: Option<String>,
+    pub rpc_urls: Option<Vec<String>>,
+    pub rpc_rps: Option<Vec<f64>>,
+    pub rps_limit: Option<f64>,
+    pub block_concurrency: Option<usize>,
+    pub coingecko_api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GasOverrides {
+    pub gas_model: Option<String>,
+    pub gas_limit: Option<u64>,
+    pub priority_fee_gwei: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BacktestOverrides {
+    pub flash_loan_provider: Option<String>,
+    pub strategies: Option<String>,
+    pub max_pairs_per_token: Option<usize>,
+    pub proximity_window: Option<usize>,
+    pub capture_pending: Option<bool>,
+    pub cross_block_window: Option<usize>,
+    pub price_oracle_mode: Option<String>,
+    pub token_prices: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OutputOverrides {
+    pub output: Option<String>,
+    pub export_path: Option<String>,
+    pub db_path: Option<String>,
+    pub parquet_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LiveOverrides {
+    pub initial_balance: Option<f64>,
+    pub min_profit_threshold: Option<f64>,
+    pub poll_interval_ms: Option<u64>,
+    pub max_executions: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DuneOverrides {
+    pub dune_api_key: Option<String>,
+    pub dune_primary_pool_discovery: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -494,36 +554,102 @@ pub struct CliOverrides {
     pub from_block: Option<u64>,
     pub to_block: Option<u64>,
     pub chain: Option<String>,
-    pub rpc_url: Option<String>,
-    pub rpc_urls: Option<Vec<String>>,
-    pub rpc_rps: Option<Vec<f64>>,
-    pub block_concurrency: Option<usize>,
-    pub rps_limit: Option<f64>,
-    pub flash_loan_provider: Option<String>,
-    pub strategies: Option<String>,
-    pub gas_model: Option<String>,
-    pub gas_limit: Option<u64>,
-    pub priority_fee_gwei: Option<f64>,
-    pub output: Option<String>,
-    pub export_path: Option<String>,
-    pub db_path: Option<String>,
-    pub parquet_dir: Option<String>,
-    pub coingecko_api_key: Option<String>,
-    pub price_oracle_mode: Option<String>,
-    pub token_prices: Option<String>,
-    pub proximity_window: Option<usize>,
-    pub capture_pending: Option<bool>,
-    pub cross_block_window: Option<usize>,
+    pub rpc: RpcOverrides,
+    pub gas: GasOverrides,
+    pub backtest: BacktestOverrides,
+    pub output: OutputOverrides,
+    pub live: LiveOverrides,
+    pub dune: DuneOverrides,
+}
 
-    // ── Live mode overrides ───────────────────────────────────────────
-    pub initial_balance: Option<f64>,
-    pub min_profit_threshold: Option<f64>,
-    pub poll_interval_ms: Option<u64>,
-    pub max_executions: Option<u64>,
+macro_rules! merge_sub {
+    ($cfg:expr, $cli:expr, $sub:ident, [$(($field:ident $(, $variant:ident)?)),*]) => {
+        $(
+            merge_opt!($cfg.$sub, $cli.$sub, $field $(, $variant)*);
+        )*
+    };
+}
 
-    // ── Dune overrides ─────────────────────────────────────────────────
-    pub dune_api_key: Option<String>,
-    pub dune_primary_pool_discovery: Option<bool>,
+// ── ConfigBuilder ───────────────────────────────────────────────────
+
+/// Builder for programmatic `Config` construction without TOML files.
+///
+/// Starts from `Config::default()` and overrides only the fields explicitly
+/// set via chaining methods. Replaces ad-hoc struct construction in tests
+/// and CLI command adapters.
+///
+/// # Example
+///
+/// ```ignore
+/// use crate::config::{ConfigBuilder, RpcConfig};
+///
+/// let config = ConfigBuilder::default()
+///     .with_chain("polygon")
+///     .with_rpc(RpcConfig {
+///         rpc_url: Some("https://my-rpc.example.com".into()),
+///         ..RpcConfig::default()
+///     })
+///     .build();
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct ConfigBuilder {
+    chain: Option<String>,
+    days: Option<u64>,
+    blocks: Option<u64>,
+    block: Option<u64>,
+    from_block: Option<u64>,
+    to_block: Option<u64>,
+    rpc: Option<RpcConfig>,
+    gas: Option<GasConfig>,
+    backtest: Option<BacktestConfig>,
+    output: Option<OutputConfig>,
+    live: Option<LiveConfig>,
+    dune: Option<DuneConfig>,
+}
+
+impl ConfigBuilder {
+    /// Set the chain name (e.g. "polygon", "ethereum").
+    pub fn with_chain(mut self, chain: impl Into<String>) -> Self { self.chain = Some(chain.into()); self }
+    /// Set --days CLI equivalent.
+    pub fn with_days(mut self, days: u64) -> Self { self.days = Some(days); self }
+    /// Set --blocks CLI equivalent.
+    pub fn with_blocks(mut self, blocks: u64) -> Self { self.blocks = Some(blocks); self }
+    /// Set --block CLI equivalent.
+    pub fn with_block(mut self, block: u64) -> Self { self.block = Some(block); self }
+    /// Set --from-block CLI equivalent.
+    pub fn with_from_block(mut self, from: u64) -> Self { self.from_block = Some(from); self }
+    /// Set --to-block CLI equivalent.
+    pub fn with_to_block(mut self, to: u64) -> Self { self.to_block = Some(to); self }
+    /// Replace the RPC sub-config entirely.
+    pub fn with_rpc(mut self, rpc: RpcConfig) -> Self { self.rpc = Some(rpc); self }
+    /// Replace the gas sub-config entirely.
+    pub fn with_gas(mut self, gas: GasConfig) -> Self { self.gas = Some(gas); self }
+    /// Replace the backtest sub-config entirely.
+    pub fn with_backtest(mut self, backtest: BacktestConfig) -> Self { self.backtest = Some(backtest); self }
+    /// Replace the output sub-config entirely.
+    pub fn with_output(mut self, output: OutputConfig) -> Self { self.output = Some(output); self }
+    /// Replace the live sub-config entirely.
+    pub fn with_live(mut self, live: LiveConfig) -> Self { self.live = Some(live); self }
+    /// Replace the Dune sub-config entirely.
+    pub fn with_dune(mut self, dune: DuneConfig) -> Self { self.dune = Some(dune); self }
+
+    /// Build a `Config`, starting from defaults and overriding set fields.
+    pub fn build(self) -> Config {
+        let mut cfg = Config::default();
+        if let Some(v) = self.chain { cfg.chain = v; }
+        if let Some(v) = self.days { cfg.days = Some(v); }
+        if let Some(v) = self.blocks { cfg.blocks = Some(v); }
+        if let Some(v) = self.block { cfg.block = Some(v); }
+        if let Some(v) = self.from_block { cfg.from_block = Some(v); }
+        if let Some(v) = self.to_block { cfg.to_block = Some(v); }
+        if let Some(v) = self.rpc { cfg.rpc = v; }
+        if let Some(v) = self.gas { cfg.gas = v; }
+        if let Some(v) = self.backtest { cfg.backtest = v; }
+        if let Some(v) = self.output { cfg.output = v; }
+        if let Some(v) = self.live { cfg.live = v; }
+        if let Some(v) = self.dune { cfg.dune = v; }
+        cfg
+    }
 }
 
 impl Config {
@@ -534,38 +660,52 @@ impl Config {
         merge_opt!(self, overrides, from_block, copy_some);
         merge_opt!(self, overrides, to_block, copy_some);
         merge_opt!(self, overrides, chain);
-        merge_opt!(self, overrides, rpc_url, into_option);
-        merge_opt!(self, overrides, rpc_urls);
-        merge_opt!(self, overrides, rpc_rps);
-        merge_opt!(self, overrides, flash_loan_provider);        merge_opt!(self, overrides, strategies);
-        merge_opt!(self, overrides, gas_model);
-        merge_opt!(self, overrides, gas_limit, copy);
-        merge_opt!(self, overrides, priority_fee_gwei, copy);
-        merge_opt!(self, overrides, output);
-        merge_opt!(self, overrides, export_path);
-        merge_opt!(self, overrides, db_path);
-        merge_opt!(self, overrides, parquet_dir, into_option);
-        merge_opt!(self, overrides, coingecko_api_key, into_option);
-        merge_opt!(self, overrides, block_concurrency, copy_some);
-        merge_opt!(self, overrides, rps_limit, copy);
-        merge_opt!(self, overrides, price_oracle_mode);
-        merge_opt!(self, overrides, token_prices, into_option);
-        merge_opt!(self, overrides, proximity_window, copy);
-        merge_opt!(self, overrides, capture_pending, copy);
-        merge_opt!(self, overrides, cross_block_window, copy);
-        merge_opt!(self, overrides, initial_balance, copy);
-        merge_opt!(self, overrides, min_profit_threshold, copy);
-        merge_opt!(self, overrides, poll_interval_ms, copy);
-        merge_opt!(self, overrides, max_executions, copy_some);
-        merge_opt!(self, overrides, dune_api_key, into_option);
-        merge_opt!(self, overrides, dune_primary_pool_discovery, copy);
+
+        merge_sub!(self, overrides, rpc, [
+            (rpc_url, into_option),
+            (rpc_urls),
+            (rpc_rps),
+            (rps_limit, copy),
+            (block_concurrency, copy_some),
+            (coingecko_api_key, into_option)
+        ]);
+        merge_sub!(self, overrides, gas, [
+            (gas_model),
+            (gas_limit, copy),
+            (priority_fee_gwei, copy)
+        ]);
+        merge_sub!(self, overrides, backtest, [
+            (flash_loan_provider),
+            (strategies),
+            (max_pairs_per_token, copy),
+            (proximity_window, copy),
+            (capture_pending, copy),
+            (cross_block_window, copy),
+            (price_oracle_mode),
+            (token_prices, into_option)
+        ]);
+        merge_sub!(self, overrides, output, [
+            (output),
+            (export_path),
+            (db_path),
+            (parquet_dir, into_option)
+        ]);
+        merge_sub!(self, overrides, live, [
+            (initial_balance, copy),
+            (min_profit_threshold, copy),
+            (poll_interval_ms, copy),
+            (max_executions, copy_some)
+        ]);
+        merge_sub!(self, overrides, dune, [
+            (dune_api_key, into_option),
+            (dune_primary_pool_discovery, copy)
+        ]);
     }
 
-    /// Parse the `--token-price` value (e.g. "0xABC=0.999,0xDEF=1800") into a
-    /// `HashMap<Address, f64>`. Returns an empty map when config value is `None`.
-    pub fn parse_token_prices(&self) -> std::collections::HashMap<alloy::primitives::Address, f64> {
-        let mut map = std::collections::HashMap::new();
-        let Some(s) = &self.token_prices else { return map };
+    /// Parse the `--token-price` value into a `HashMap<Address, f64>`.
+    pub fn parse_token_prices(&self) -> HashMap<alloy::primitives::Address, f64> {
+        let mut map = HashMap::new();
+        let Some(s) = &self.backtest.token_prices else { return map };
         for pair in s.split(',') {
             let pair = pair.trim();
             if pair.is_empty() { continue; }
@@ -582,5 +722,3 @@ impl Config {
         map
     }
 }
-
-

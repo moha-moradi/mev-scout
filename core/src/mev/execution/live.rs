@@ -159,9 +159,9 @@ impl LiveRunner {
         if let Some(ref replay_path) = self.config.replay_file {
             tracing::info!("Replay-file mode: loading txs from {}", replay_path);
             let file_content = std::fs::read_to_string(replay_path)
-                .map_err(|e| anyhow::anyhow!("Failed to read replay file: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("failed to read replay file: {}", e))?;
             let pending_txs: Vec<crate::data::TxData> = serde_json::from_str(&file_content)
-                .map_err(|e| anyhow::anyhow!("Failed to parse replay file: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("failed to parse replay file: {}", e))?;
             tracing::info!("Loaded {} pending txs from replay file", pending_txs.len());
 
             // Skip settled block processing in replay mode — just use current pool state

@@ -14,7 +14,7 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
 
     // Resolve Dune API key
     let api_key = args.dune_api_key.as_deref()
-        .or(config.dune_api_key.as_deref())
+        .or(config.dune.dune_api_key.as_deref())
         .ok_or_else(|| anyhow::anyhow!(
             "dune API key required (set --dune-api-key or configure dune_api_key in config)"
         ))?;

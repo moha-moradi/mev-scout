@@ -4,7 +4,7 @@ use mev_scout_core::mev::detectors::jit::JitDetector;
 use mev_scout_core::mev::detectors::jit_arb::JitArbDetector;
 use mev_scout_core::mev::detectors::sandwich::SandwichDetector;
 use mev_scout_core::pool::decoders::{V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState};
 use mev_scout_core::types::Strategy;
 

@@ -1,5 +1,6 @@
 use alloy::primitives::Address;
 use anyhow::Context;
+use crate::dune::consts::DUNE_TIMEOUT_SECS;
 use serde_json::Value;
 use std::time::Duration;
 use tracing;
@@ -36,7 +37,7 @@ impl DuneClient {
             api_key: api_key.into(),
             http: reqwest::Client::builder()
                 .user_agent("mev-scout/0.1")
-                .timeout(Duration::from_secs(180))
+                .timeout(Duration::from_secs(DUNE_TIMEOUT_SECS))
                 .build()
                 .expect("reqwest Client::new"),
             base_url: Self::DUNE_API_BASE.to_string(),
@@ -118,7 +119,7 @@ impl DuneClient {
                 .json(&body)
                 .send()
                 .await
-                .context("Failed to execute raw Dune SQL")?;
+                .context("failed to execute raw Dune SQL")?;
 
             if response.status().as_u16() == 429 {
                 let retry_after = response
@@ -136,7 +137,7 @@ impl DuneClient {
             if !resp_status.is_success() {
                 let body_text = response.text().await.unwrap_or_default();
                 anyhow::bail!(
-                    "Dune raw SQL execution rejected (HTTP {}): {}",
+                    "dune raw SQL execution rejected (HTTP {}): {}",
                     resp_status,
                     body_text
                 );
@@ -146,7 +147,7 @@ impl DuneClient {
             return self.poll_execution(&resp.execution_id).await;
         }
 
-        anyhow::bail!("Dune SQL execution failed after {} retries (rate limited)", max_retries)
+        anyhow::bail!("dune SQL execution failed after {} retries (rate limited)", max_retries)
     }
 
     /// Poll execution status until completed or failed.
@@ -219,7 +220,7 @@ impl DuneClient {
                 }
                 s if s == "QUERY_STATE_FAILED" || s == "QUERY_STATE_CANCELED" || s == "QUERY_STATE_EXPIRED" => {
                     let msg = status.error.map(|e| e.message).unwrap_or_default();
-                    return Err(anyhow::anyhow!("Dune query {}: {}", s, msg));
+                    return Err(anyhow::anyhow!("dune query {}: {}", s, msg));
                 }
                 _ => {
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -228,7 +229,7 @@ impl DuneClient {
         }
 
         Err(anyhow::anyhow!(
-            "Dune query timed out after {} seconds",
+            "dune query timed out after {} seconds",
             max_polls
         ))
     }

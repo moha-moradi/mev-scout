@@ -1,3 +1,5 @@
+use crate::dune::consts::DUNE_LAG_DAYS;
+
 pub struct ChainTimingParams {
     pub genesis_ts: i64,
     pub secs_per_block: f64,
@@ -7,14 +9,14 @@ pub struct ChainTimingParams {
 
 pub fn chain_timing(chain: &str) -> ChainTimingParams {
     match chain.to_lowercase().as_str() {
-        "ethereum" => ChainTimingParams { genesis_ts: 1438269988, secs_per_block: 12.0, blocks_per_day: 7200, dune_lag_secs: 60 * 24 * 3600 },
-        "polygon" => ChainTimingParams { genesis_ts: 1591031691, secs_per_block: 2.1, blocks_per_day: 41000, dune_lag_secs: 60 * 24 * 3600 },
-        "bsc" => ChainTimingParams { genesis_ts: 1597734000, secs_per_block: 3.0, blocks_per_day: 28800, dune_lag_secs: 60 * 24 * 3600 },
-        "avalanche" | "avalanche_c" => ChainTimingParams { genesis_ts: 1624402800, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: 60 * 24 * 3600 },
-        "arbitrum" => ChainTimingParams { genesis_ts: 1630812600, secs_per_block: 0.26, blocks_per_day: 330000, dune_lag_secs: 60 * 24 * 3600 },
-        "base" => ChainTimingParams { genesis_ts: 1686787200, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: 60 * 24 * 3600 },
-        "optimism" => ChainTimingParams { genesis_ts: 1631808000, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: 60 * 24 * 3600 },
-        _ => ChainTimingParams { genesis_ts: 1609459200, secs_per_block: 12.0, blocks_per_day: 7200, dune_lag_secs: 60 * 24 * 3600 },
+        "ethereum" => ChainTimingParams { genesis_ts: 1438269988, secs_per_block: 12.0, blocks_per_day: 7200, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "polygon" => ChainTimingParams { genesis_ts: 1591031691, secs_per_block: 2.1, blocks_per_day: 41000, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "bsc" => ChainTimingParams { genesis_ts: 1597734000, secs_per_block: 3.0, blocks_per_day: 28800, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "avalanche" | "avalanche_c" => ChainTimingParams { genesis_ts: 1624402800, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "arbitrum" => ChainTimingParams { genesis_ts: 1630812600, secs_per_block: 0.26, blocks_per_day: 330000, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "base" => ChainTimingParams { genesis_ts: 1686787200, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        "optimism" => ChainTimingParams { genesis_ts: 1631808000, secs_per_block: 2.0, blocks_per_day: 43200, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
+        _ => ChainTimingParams { genesis_ts: 1609459200, secs_per_block: 12.0, blocks_per_day: 7200, dune_lag_secs: (DUNE_LAG_DAYS * 24 * 3600) as i64 },
     }
 }
 

@@ -349,9 +349,7 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         arr
     });
     let factory = row.get::<_, Option<Vec<u8>>>(8).ok()
-        .and_then(|v| v.and_then(|bytes| {
-            if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
-        }));
+        .and_then(|v| v.and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes))));
     let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
     let underlying_tokens: Option<Vec<Address>> = row.get::<_, Option<String>>(10).ok()
         .flatten()
@@ -363,13 +361,11 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
                 .filter(|b| b.len() == 20)
                 .map(|b| Address::from_slice(&b))
                 .collect();
-            if addrs.is_empty() { None } else { Some(addrs) }
+            (!addrs.is_empty()).then_some(addrs)
         });
     let balancer_pool_type = row.get::<_, Option<i64>>(11).ok().flatten().map(|v| v as u8);
     let hook_address = row.get::<_, Option<Vec<u8>>>(12).ok()
-        .and_then(|v| v.and_then(|bytes| {
-            if bytes.len() == 20 { Some(Address::from_slice(&bytes)) } else { None }
-        }));
+        .and_then(|v| v.and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes))));
     let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
     let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
     let dex_name = row.get::<_, Option<String>>(15).ok().flatten();
@@ -400,9 +396,9 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         hook_address,
         bin_step,
         maturity_timestamp,
-        dex_name,
-        token0_symbol,
-        token1_symbol,
+        dex_name: dex_name.map(Arc::from),
+        token0_symbol: token0_symbol.map(Arc::from),
+        token1_symbol: token1_symbol.map(Arc::from),
     })
 }
 
@@ -435,17 +431,17 @@ fn row_to_manifest(row: &rusqlite::Row) -> anyhow::Result<RunManifest> {
     })
 }
 
-fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::pool::dex_type::DexType> {
+fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::dex_type::DexType> {
     match v {
-        0 => Ok(crate::pool::dex_type::DexType::UniswapV2),
-        1 => Ok(crate::pool::dex_type::DexType::UniswapV3),
-        2 => Ok(crate::pool::dex_type::DexType::Curve),
-        3 => Ok(crate::pool::dex_type::DexType::Balancer),
-        5 => Ok(crate::pool::dex_type::DexType::Solidly),
-        6 => Ok(crate::pool::dex_type::DexType::Camelot),
-        7 => Ok(crate::pool::dex_type::DexType::UniswapV4),
-        8 => Ok(crate::pool::dex_type::DexType::TraderJoeLB),
-        9 => Ok(crate::pool::dex_type::DexType::Pendle),
+        0 => Ok(crate::dex_type::DexType::UniswapV2),
+        1 => Ok(crate::dex_type::DexType::UniswapV3),
+        2 => Ok(crate::dex_type::DexType::Curve),
+        3 => Ok(crate::dex_type::DexType::Balancer),
+        5 => Ok(crate::dex_type::DexType::Solidly),
+        6 => Ok(crate::dex_type::DexType::Camelot),
+        7 => Ok(crate::dex_type::DexType::UniswapV4),
+        8 => Ok(crate::dex_type::DexType::TraderJoeLB),
+        9 => Ok(crate::dex_type::DexType::Pendle),
         n => anyhow::bail!("invalid dex_type discriminant: {}", n),
     }
 }

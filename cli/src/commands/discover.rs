@@ -10,7 +10,7 @@ use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
 use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
@@ -20,7 +20,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
     let source = args.source.to_lowercase();
     let use_onchain = source == "onchain" || source == "all";
-    let use_dune = (source == "dune" || source == "all") && config.dune_api_key.is_some();
+    let use_dune = (source == "dune" || source == "all") && config.dune.dune_api_key.is_some();
 
     if args.batch_size > 5000 {
         eprintln!("  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
@@ -72,8 +72,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     // ── Bulk-populate token cache from Dune on cold start ──
-    if config.dune_api_key.is_some() && token_cache.len() < 50 {
-        let api_key = config.dune_api_key.as_ref().expect("checked above");
+    if config.dune.dune_api_key.is_some() && token_cache.len() < 50 {
+        let api_key = config.dune.dune_api_key.as_ref().expect("checked above");
         let dune = DuneClient::new(api_key.clone());
         match token_cache.fetch_from_dune(&dune, &chain_name.to_string()).await {
             Ok(new_count) if new_count > 0 => {
@@ -214,7 +214,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
     // ── Phase 2: Dune Analytics discovery (runs first to support --min-pools) ──
     if use_dune {
-        let api_key = config.dune_api_key.as_ref().expect("dune_api_key checked above");
+        let api_key = config.dune.dune_api_key.as_ref().expect("dune_api_key checked above");
         let dune = DuneClient::new(api_key.clone());
         tracing::info!("Starting Dune pool discovery for {}", chain_name);
 

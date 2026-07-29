@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use alloy::providers::RootProvider;
+use crate::rpc::consts::MAX_BACKOFF_SECS;
 
 /// Token-bucket rate limiter for throttling RPC requests.
 ///
@@ -221,7 +222,7 @@ impl ProviderState {
 
     pub fn record_failure(&mut self) {
         self.consecutive_failures += 1;
-        let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(300);
+        let backoff_secs = 2u64.saturating_pow(self.consecutive_failures as u32).min(MAX_BACKOFF_SECS);
         self.cooldown_until =
             Some(tokio::time::Instant::now() + tokio::time::Duration::from_secs(backoff_secs));
         self.weight = (self.weight * 0.5).max(self.original_weight * 0.1);

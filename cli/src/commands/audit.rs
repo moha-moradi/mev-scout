@@ -7,7 +7,7 @@ use mev_scout_core::types::ResultsFile;
 use crate::cli::AuditArgs;
 
 pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> {
-    let dune_api_key = match &config.dune_api_key {
+    let dune_api_key = match &config.dune.dune_api_key {
         Some(k) => k,
         None => anyhow::bail!("dune API key not configured (set dune_api_key in config)"),
     };
@@ -19,7 +19,7 @@ pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> 
 
     // Load MEV Scout opportunities if a previous run is specified
     let scout_opportunities = if let Some(run_id) = &args.run_id {
-        let path = std::path::Path::new(&config.export_path).join(format!("{run_id}.json"));
+        let path = std::path::Path::new(&config.output.export_path).join(format!("{run_id}.json"));
         if !path.exists() {
             anyhow::bail!("results file not found ({})", path.display());
         }

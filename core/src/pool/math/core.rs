@@ -3,6 +3,7 @@
 
 use alloy::primitives::Address;
 use crate::pool::state::PoolState;
+use super::consts::BPS_DENOMINATOR;
 use super::v3::quote_v3_exact_in;
 use super::curve;
 use super::balancer;
@@ -86,7 +87,7 @@ pub fn quote_exact_in(
 /// Compute output amount for a given input amount under constant product.
 ///
 /// Implements the Uniswap V2 AMM formula with fee:
-/// `dx * (10000 - fee) * reserve_out / (reserve_in * 10000 + dx * (10000 - fee))`
+/// `dx * (BPS_DENOMINATOR - fee) * reserve_out / (reserve_in * BPS_DENOMINATOR + dx * (BPS_DENOMINATOR - fee))`
 ///
 /// Returns `None` if the input is zero, reserves are depleted, or the output rounds to zero.
 pub fn constant_product_output_amount(
@@ -98,10 +99,10 @@ pub fn constant_product_output_amount(
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
+    let fee_factor = BPS_DENOMINATOR - fee as u128;
     let amount_in_with_fee = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_with_fee.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_mul(10000u128)?.checked_add(amount_in_with_fee)?;
+    let denominator = reserve_in.checked_mul(BPS_DENOMINATOR)?.checked_add(amount_in_with_fee)?;
     let output = numerator / denominator;
     if output == 0 {
         return None;
@@ -122,8 +123,8 @@ pub fn constant_product_input_amount(
     if amount_out == 0 || reserve_in == 0 || reserve_out == 0 || amount_out >= reserve_out {
         return None;
     }
-    let fee_factor = 10000u128 - fee as u128;
-    let numerator = reserve_in.checked_mul(amount_out)?.checked_mul(10000u128)?;
+    let fee_factor = BPS_DENOMINATOR - fee as u128;
+    let numerator = reserve_in.checked_mul(amount_out)?.checked_mul(BPS_DENOMINATOR)?;
     let denominator = (reserve_out.checked_sub(amount_out)?).checked_mul(fee_factor)?;
     let input = numerator / denominator;
     if input == 0 {
@@ -256,7 +257,7 @@ fn golden_section_maximize(
     if x2 >= hi { x2 = hi - 1; }
     if x1 >= x2 {
         let p = eval_profit(lo.max(1), quote_fn);
-        return if p > 0 { Some(lo.max(1)) } else { None };
+        return (p > 0).then(|| lo.max(1));
     }
 
     let mut f1 = eval_profit(x1, quote_fn);

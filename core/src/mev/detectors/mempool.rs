@@ -442,14 +442,13 @@ fn estimate_v3_exact_in(data: &[u8], pool_manager: &PoolManager) -> Vec<PendingP
             // Fallback: use any pool for the pair
         }
         // For V3, we estimate output via sqrt price if available, otherwise skip
-        let output = match pool_manager.get(&pool_addr) {
-            Some(PoolState::UniswapV3(v3)) => {
+        let output = pool_manager.get(&pool_addr).and_then(|pool| match pool {
+            PoolState::UniswapV3(v3) => {
                 let zero_for_one = v3.info.token0 == hop.token_in;
                 crate::pool::math::v3::quote_v3_exact_in(v3, current_amount, zero_for_one)
             }
-            Some(pool) => crate::pool::math::quote_exact_in(pool, hop.token_in, hop.token_out, current_amount),
-            None => None,
-        };
+            pool => crate::pool::math::quote_exact_in(pool, hop.token_in, hop.token_out, current_amount),
+        });
         let output = match output {
             Some(o) => o,
             None => break,
@@ -458,41 +457,6 @@ fn estimate_v3_exact_in(data: &[u8], pool_manager: &PoolManager) -> Vec<PendingP
         current_amount = output;
     }
     effects
-}
-
-/// Parse `exactOutput((bytes,address,uint256,uint256,uint256))`.
-/// Selector: 0xf28c0498
-#[allow(dead_code)]
-fn parse_v3_exact_output(data: &[u8]) -> Option<(Vec<V3Hop>, u128)> {
-    if data.len() < 36 {
-        return None;
-    }
-    let tuple_offset = abi_decode_u256(data, 4)?;
-    let tuple_offset = tuple_offset.as_limbs()[0] as usize;
-    let struct_start = 4 + tuple_offset;
-    if struct_start + 160 > data.len() {
-        return None;
-    }
-    let path_offset = abi_decode_u256(data, struct_start)?;
-    let path_offset = path_offset.as_limbs()[0] as usize;
-    let path_data_start = struct_start + path_offset;
-    if path_data_start + 32 > data.len() {
-        return None;
-    }
-    let path_len = abi_decode_u256(data, path_data_start)?;
-    let path_len = path_len.as_limbs()[0] as usize;
-    let path_bytes_start = path_data_start + 32;
-    if path_bytes_start + path_len > data.len() {
-        return None;
-    }
-    let path_bytes = &data[path_bytes_start..path_bytes_start + path_len];
-    let hops = parse_v3_path(path_bytes);
-    if hops.is_empty() {
-        return None;
-    }
-    // amountOut is at struct_start + 96 (4th field: 0=path, 32=recipient, 64=deadline, 96=amountOut)
-    let amount_out = abi_decode_u128(data, struct_start + 96)?;
-    Some((hops, amount_out))
 }
 
 /// Estimate effects for a V3 exactOutput swap (walk path backwards).

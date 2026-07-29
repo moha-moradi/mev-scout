@@ -6,7 +6,7 @@ use mev_scout_core::data::{BlockData, ReceiptData, TxData};
 use mev_scout_core::mev::detectors::multi_hop::MultiHopArbDetector;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::BacktestRunner;
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, PendlePoolState, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
 };

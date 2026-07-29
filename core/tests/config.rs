@@ -1,8 +1,11 @@
-use alloy::primitives::{address, U256};
-use mev_scout_core::config::{CliOverrides, Config};
-use mev_scout_core::pool::dex_type::DexType;
+use alloy::primitives::address;
+use mev_scout_core::config::{
+    CliOverrides, Config, ConfigBuilder,
+    BacktestOverrides, GasOverrides, OutputConfig,
+};
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::DiscoveredPool;
-use mev_scout_core::pool::state::{PoolInfo, PoolManager};
+use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::types::{MevOpportunity, ResultsFile, Strategy};
 
 mod common;
@@ -60,8 +63,8 @@ fn test_config_toml_output() {
     // Parse back — must be valid TOML
     let parsed: Config = toml::from_str(&toml_str).unwrap();
     assert_eq!(parsed.chain, config.chain);
-    assert_eq!(parsed.strategies, config.strategies);
-    assert_eq!(parsed.gas_limit, config.gas_limit);
+    assert_eq!(parsed.backtest.strategies, config.backtest.strategies);
+    assert_eq!(parsed.gas.gas_limit, config.gas.gas_limit);
 }
 
 /// ── Test 8: CLI override merging ────────────────────────────────────────────
@@ -71,49 +74,28 @@ fn test_cli_override_merging() {
 
     let overrides = CliOverrides {
         chain: Some("avalanche".into()),
-        strategies: Some("two_hop_arb,sandwich".into()),
-        gas_model: Some("p90".into()),
-        proximity_window: Some(5),
-        days: None,
-        blocks: None,
-        block: None,
-        from_block: None,
-        to_block: None,
-        rpc_url: None,
-        rpc_urls: None,
-        rpc_rps: None,
-        rps_limit: None,
-        flash_loan_provider: None,
-        gas_limit: None,
-        priority_fee_gwei: None,
-        output: None,
-        export_path: None,
-        db_path: None,
-        parquet_dir: None,
-        coingecko_api_key: None,
-        price_oracle_mode: None,
-        token_prices: None,
-        capture_pending: None,
-        cross_block_window: None,
-        block_concurrency: None,
-        initial_balance: None,
-        min_profit_threshold: None,
-        poll_interval_ms: None,
-        max_executions: None,
-        dune_api_key: None,
-        dune_primary_pool_discovery: None,
+        backtest: BacktestOverrides {
+            strategies: Some("two_hop_arb,sandwich".into()),
+            proximity_window: Some(5),
+            ..BacktestOverrides::default()
+        },
+        gas: GasOverrides {
+            gas_model: Some("p90".into()),
+            ..GasOverrides::default()
+        },
+        ..CliOverrides::default()
     };
     config.merge_cli(&overrides);
 
     assert_eq!(config.chain, "avalanche");
-    assert_eq!(config.strategies, "two_hop_arb,sandwich");
-    assert_eq!(config.gas_model, "p90");
-    assert_eq!(config.proximity_window, 5);
+    assert_eq!(config.backtest.strategies, "two_hop_arb,sandwich");
+    assert_eq!(config.gas.gas_model, "p90");
+    assert_eq!(config.backtest.proximity_window, 5);
 
     // Unset fields keep defaults
-    assert_eq!(config.gas_limit, 200_000);
-    assert_eq!(config.priority_fee_gwei, 0.0);
-    assert_eq!(config.output, "table");
+    assert_eq!(config.gas.gas_limit, 200_000);
+    assert_eq!(config.gas.priority_fee_gwei, 0.0);
+    assert_eq!(config.output.output, "table");
 }
 
 /// ── Test 9: Discover V3 pools synthetic (topic verification) ───────────────
@@ -152,4 +134,35 @@ fn test_discover_v3_pipeline() {
     assert_eq!(info.factory, Some(address!("cafe0000000000000000000000000000000000aa")));
 }
 
+/// ── Test 10: ConfigBuilder produces correct config ───────────────────────────
+#[test]
+fn test_config_builder() {
+    let config = ConfigBuilder::default()
+        .with_chain("ethereum")
+        .with_output(OutputConfig {
+            output: "json".into(),
+            export_path: "./out".into(),
+            ..OutputConfig::default()
+        })
+        .build();
 
+    assert_eq!(config.chain, "ethereum");
+    assert_eq!(config.output.output, "json");
+    assert_eq!(config.output.export_path, "./out");
+
+    // Unset fields keep defaults
+    assert_eq!(config.gas.gas_limit, 200_000);
+    assert_eq!(config.backtest.strategies, "all");
+    assert!(config.rpc.rpc_url.is_none());
+    assert!(config.days.is_none());
+    assert!(config.from_block.is_none());
+}
+
+#[test]
+fn test_config_builder_empty_is_default() {
+    let built = ConfigBuilder::default().build();
+    let default = Config::default();
+    assert_eq!(built.chain, default.chain);
+    assert_eq!(built.rpc.rpc_url, default.rpc.rpc_url);
+    assert_eq!(built.gas.gas_limit, default.gas.gas_limit);
+}

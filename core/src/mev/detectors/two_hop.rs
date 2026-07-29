@@ -79,7 +79,7 @@ impl TwoHopArbDetector {
         opportunities
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn check_direction(
         pm: &PoolManager,
         buy_pool: Address,
@@ -398,7 +398,7 @@ fn two_hop_profit_at(
         }
     };
 
-    if output > input_amount { Some(output - input_amount) } else { None }
+    (output > input_amount).then(|| output - input_amount)
 }
 
 /// Extract the token_in (spent) and token_out (received) for a two-hop arb
@@ -521,7 +521,7 @@ fn estimate_arb_pair_profit(
     let intermediate = quote_exact_in(pool_a, token_in, shared_token, test_input)?;
     let output = quote_exact_in(pool_b, shared_token, token_out, intermediate)?;
 
-    if output > test_input { Some(output - test_input) } else { None }
+    (output > test_input).then(|| output - test_input)
 }
 
 /// Curve output amount dispatcher — forwards to `curve_math::curve_output_amount`.

@@ -10,9 +10,23 @@
 use std::collections::HashMap;
 
 use alloy::primitives::Address;
+use serde::Deserialize;
 
 use super::store::SqliteStore;
 use crate::dune::client::DuneClient;
+
+#[derive(Deserialize)]
+struct TokenInfo {
+    symbol: String,
+    decimals: i32,
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct KnownTokens {
+    wrapped_native_by_chain: HashMap<String, TokenInfo>,
+    always_warm: Vec<TokenInfo>,
+}
 use crate::dune::util::dune_chain_label;
 use crate::dune::queries::QUERY_ALL_TOKENS;
 
@@ -125,85 +139,25 @@ impl TokenCache {
 
     /// Create a new empty cache and pre-populate with well-known tokens.
     pub fn warm(chain_id: u64) -> Self {
+        let data: KnownTokens = serde_json::from_str(include_str!("../../data/known_tokens.json"))
+            .expect("invalid known_tokens.json");
+
         let mut inner = HashMap::new();
 
-        // Common wrapped native tokens
-        let wrapped_native = match chain_id {
-            1    => ("WETH",  18, "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-            10   => ("WETH",  18, "0x4200000000000000000000000000000000000006"),
-            56   => ("WBNB",  18, "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"),
-            137  => ("WPOL",  18, "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"),
-            42161 => ("WETH", 18, "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"),
-            43114 => ("WAVAX",18, "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"),
-            8453  => ("WETH", 18, "0x4200000000000000000000000000000000000006"),
-            _     => ("WETH", 18, "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"),
-        };
-        if let Ok(addr) = wrapped_native.2.parse::<Address>() {
-            inner.insert(addr, (wrapped_native.0.to_string(), Some(wrapped_native.1)));
+        if let Some(w) = data.wrapped_native_by_chain.get(&chain_id.to_string()) {
+            if let Ok(addr) = w.address.parse::<Address>() {
+                inner.insert(addr, (w.symbol.clone(), Some(w.decimals)));
+            }
         }
-
-        // Major stablecoins
-        let stables: &[(&str, i32, &str)] = &[
-            // USDC
-            ("USDC", 6, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),  // Ethereum
-            ("USDC", 6, "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"),  // Polygon (bridged)
-            ("USDC", 6, "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"),  // Polygon (native)
-            ("USDC.e", 6, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"), // Arbitrum
-            ("USDC", 6, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"),  // Base
-            ("USDC", 6, "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"),  // Optimism
-            ("USDC.e", 6, "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"), // Avalanche
-            // USDT
-            ("USDT", 6, "0xdAC17F958D2ee523a2206206994597C13D831ec7"),  // Ethereum
-            ("USDT", 6, "0xc2132D05D31c914a87C6611C10748AEb04B58e8F"),  // Polygon
-            ("USDT", 6, "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"),  // Arbitrum
-            ("USDT", 6, "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"),  // Base
-            ("USDT", 6, "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"),  // Optimism
-            ("USDT.e", 6, "0xc7198437980c041389c85c43e942b31037ADb125"), // Avalanche
-            // DAI
-            ("DAI", 18, "0x6B175474E89094C44Da98b954EedeAC495271d0F"),  // Ethereum
-            ("DAI", 18, "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063"),  // Polygon
-            ("DAI", 18, "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"),  // Arbitrum
-            ("DAI", 18, "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"),  // Base
-            ("DAI", 18, "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"),  // Optimism
-            ("DAI.e", 18, "0xd586E7F844cEa2F50bf48A84c291e3C71F0fDa99"), // Avalanche
-        ];
-        for (sym, dec, addr_str) in stables {
-            if let Ok(addr) = addr_str.parse::<Address>() {
-                inner.entry(addr).or_insert_with(|| (sym.to_string(), Some(*dec)));
+        if inner.is_empty() {
+            if let Ok(addr) = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse::<Address>() {
+                inner.insert(addr, ("WETH".to_string(), Some(18)));
             }
         }
 
-        // Major tokens (multi-chain)
-        let majors: &[(&str, i32, &str)] = &[
-            ("WBTC", 8, "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),  // Ethereum
-            ("WBTC", 8, "0x1BFD67037B42Cf73acF204719844fc479E662510"),  // Polygon
-            ("WBTC", 8, "0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f"),  // Arbitrum
-            ("WBTC", 8, "0x68f180fcCe6836688e9084f035309E29Bf0A2095"),  // Base
-            ("WBTC", 8, "0x68f180fcCe6836688e9084f035309E29Bf0A2095"),  // Optimism
-            ("WBTC.e", 8, "0x50b7545627a5162F82A992c33b87aDc75187B218"), // Avalanche
-            ("QUICK", 18, "0x1FD188D040B1457bA878CB776D34bA332840f702"), // Polygon (QuickSwap)
-            ("AAVE", 18, "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9"),  // Ethereum
-            ("LINK", 18, "0x514910771AF9Ca656af840dff83E8264EcF986CA"),  // Ethereum
-            ("LINK", 18, "0x53E0bca35eC356BD5ddDFebbD1Fc0fD03FaBad39"),  // Polygon
-            ("UNI", 18, "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984"),  // Ethereum
-            ("CRV", 18, "0xD533a949740bb3306d119CC777fa900bA034cd52"),  // Ethereum
-            ("CRV", 18, "0x172370d5Cd63279eFa6d502Dab29171933a610AF"),  // Polygon
-            ("WMATIC", 18, "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270"), // Polygon (alias)
-            ("BAL", 18, "0xba100000625a3754423978a60c9317c58a424e3D"),  // Ethereum
-            ("SUSHI", 18, "0x6B3595068778DD592e39A122f4f5a5cF09C90fE2"),  // Ethereum
-            ("SUSHI", 18, "0x0b3F86A235AEc7424616818A8af15aDc172Cf580"),  // Polygon
-            ("COMP", 18, "0xc00e94Cb662C3520282E6f5717214004A7f26888"),  // Ethereum
-            ("MKR", 18, "0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2"),  // Ethereum
-            ("SNX", 18, "0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F"),  // Ethereum
-            ("LDO", 18, "0x5A98FcBEA516Cf06857215779Fd812CA3beF1B32"),  // Ethereum
-            ("ENS", 18, "0xC18360217D8F7Ab5e7c516566761Ea12Ce7F9D72"),  // Ethereum
-            ("RPL", 18, "0xD33526068D116c6E47163D64144803178950399F"),  // Ethereum
-            ("GRT", 18, "0xc944E90C64B2c07662A292be6244BDf05Cda44a7"),  // Ethereum
-            ("FET", 18, "0x1D207E85335D92a511fa229d51030dfe324B862A"),  // Ethereum
-        ];
-        for (sym, dec, addr_str) in majors {
-            if let Ok(addr) = addr_str.parse::<Address>() {
-                inner.entry(addr).or_insert_with(|| (sym.to_string(), Some(*dec)));
+        for t in &data.always_warm {
+            if let Ok(addr) = t.address.parse::<Address>() {
+                inner.entry(addr).or_insert_with(|| (t.symbol.clone(), Some(t.decimals)));
             }
         }
 
@@ -238,6 +192,12 @@ impl TokenCache {
     #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Returns `true` if the cache is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 
     /// Return token addresses that are NOT in the cache (need RPC resolution).

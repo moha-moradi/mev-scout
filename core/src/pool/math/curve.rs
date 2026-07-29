@@ -2,6 +2,7 @@
 
 use alloy::primitives::Address;
 use crate::pool::state::{CurvePoolState, CurvePoolVariant};
+use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER};
 
 /// Dispatch to the correct Curve quoting formula based on pool variant.
 pub fn curve_output_amount(
@@ -54,7 +55,7 @@ pub fn curve_stableswap_output_amount(
 
     let a = pool.a_coeff as f64;
     let nn = (n as f64).powf(n as f64);
-    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
+    let fee_factor = 1.0 - (pool.info.fee as f64) / PPM_DENOMINATOR as f64;
 
     // Phase 1: Compute invariant D from all balances (Newton's method)
     let sum: f64 = balances.iter().sum();
@@ -84,7 +85,7 @@ pub fn curve_stableswap_output_amount(
     let x_out_new = super::stable_swap::newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
 
     let output = balances[idx_out] - x_out_new;
-    if output <= 0.0 { None } else { Some(output as u128) }
+    (output > 0.0).then(|| output as u128)
 }
 
 /// CryptoSwap (V2) output amount.
@@ -139,7 +140,7 @@ pub fn curve_cryptoswap_output_amount(
     // Phase 2: Static fee (Tier 1 approximation — see T2.1 for dynamic fee)
     // For CryptoSwap V2, the dynamic fee = fee + (price_deviation * fee_gamma),
     // but for now we use the static fee() value as a conservative approximation.
-    let fee_factor = 1.0 - (pool.info.fee as f64) / 1_000_000.0;
+    let fee_factor = 1.0 - (pool.info.fee as f64) / PPM_DENOMINATOR as f64;
 
     // Phase 3: Solve for x_out' (Newton over y)
     // Price scale: adjust balances using price_scale before invariant computation.
@@ -149,7 +150,7 @@ pub fn curve_cryptoswap_output_amount(
         for i in 1..n {
             let scale = pool.price_scale[i - 1] as f64;
             if scale > 0.0 {
-                ps[i] = 1e18f64 / scale;
+                ps[i] = WEI_PER_ETHER as f64 / scale;
             }
         }
         ps
@@ -183,7 +184,7 @@ pub fn curve_cryptoswap_output_amount(
     // Convert back from adjusted to actual balance
     let x_out_new = x_out_new_adj / price_scales[idx_out];
     let output = balances[idx_out] - x_out_new;
-    if output <= 0.0 { None } else { Some(output as u128) }
+    (output > 0.0).then(|| output as u128)
 }
 
 /// Newton's method to find the CryptoSwap invariant D.
@@ -222,7 +223,7 @@ fn newton_cryptoswap_invariant(
         if d_next <= 0.0 { break; }
         d = d_next;
     }
-    if d <= 0.0 { None } else { Some(d) }
+    (d > 0.0).then_some(d)
 }
 
 /// Newton's method to find the new output token balance in a CryptoSwap pool.
@@ -274,5 +275,5 @@ fn newton_cryptoswap_output(
         x = x_next;
     }
 
-    if x <= 0.0 { None } else { Some(x) }
+    (x > 0.0).then_some(x)
 }

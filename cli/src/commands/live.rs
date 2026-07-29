@@ -74,15 +74,15 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
 
     let pool_manager = std::mem::take(&mut runner.pool_manager);
 
-    let initial_balance_wei = alloy::primitives::U256::from((config.initial_balance * 1_000_000_000_000_000_000.0) as u128);
-    let min_profit_wei = alloy::primitives::U256::from((config.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
+    let initial_balance_wei = alloy::primitives::U256::from((config.live.initial_balance * 1_000_000_000_000_000_000.0) as u128);
+    let min_profit_wei = alloy::primitives::U256::from((config.live.min_profit_threshold * 1_000_000_000_000_000_000.0) as u128);
 
-    let oracle_mode: PriceOracleMode = match config.price_oracle_mode.parse() {
+    let oracle_mode: PriceOracleMode = match config.backtest.price_oracle_mode.parse() {
         Ok(m) => m,
         Err(_) => {
             tracing::warn!(
                 "Invalid price_oracle_mode '{}', falling back to coingecko",
-                config.price_oracle_mode,
+                config.backtest.price_oracle_mode,
             );
             PriceOracleMode::CoinGeckoOnly
         }
@@ -94,18 +94,18 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let live_config = LiveConfig {
         initial_balance_wei,
         min_profit_threshold_wei: min_profit_wei,
-        poll_interval_ms: config.poll_interval_ms,
-        max_executions: config.max_executions,
+        poll_interval_ms: config.live.poll_interval_ms,
+        max_executions: config.live.max_executions,
         strategies: strategies.clone(),
         gas_config,
         resync_interval: args.resync_interval,
-        export_path: config.export_path.clone(),
+        export_path: config.output.export_path.clone(),
         replay_file: args.replay_file.clone(),
         chain_display_name: chain_name.to_string(),
         price_oracle_mode: oracle_mode,
         token_prices,
         chain_defaults,
-        rpc_url: config.rpc_url.clone().unwrap_or_default(),
+        rpc_url: config.rpc.rpc_url.clone().unwrap_or_default(),
     };
 
     let mut live_runner = LiveRunner::new(

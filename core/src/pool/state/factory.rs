@@ -6,7 +6,7 @@ use alloy::primitives::{keccak256, Address, Bytes, U256};
 use futures::future::{join3, join_all};
 use tokio::sync::Semaphore;
 
-use crate::pool::dex_type::DexType;
+use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
 use crate::pool::state::manager::PoolManager;
 use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
@@ -365,7 +365,7 @@ impl PoolManager {
                 PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
                 PoolState::Pendle(s) => s.total_pt == 0 && s.total_sy == 0,
             };
-            if is_unhealthy { Some(*addr) } else { None }
+            is_unhealthy.then(|| *addr)
         }).collect();
 
         let removed_count = unhealthy.len();
@@ -849,7 +849,7 @@ impl PoolManager {
         let result = rpc.call(vault, data, block).await?;
         let return_data = result.0;
         if return_data.len() < 96 {
-            anyhow::bail!("Balancer getPoolTokens returned too short data");
+            anyhow::bail!("balancer getPoolTokens returned too short data");
         }
 
         // ABI decode: (address[], uint256[], uint256)
@@ -876,7 +876,7 @@ impl PoolManager {
         }
 
         if balances.len() < 2 {
-            anyhow::bail!("Balancer pool has fewer than 2 tokens");
+            anyhow::bail!("balancer pool has fewer than 2 tokens");
         }
 
         // --- Steps 2-4: Fetch weights, fee, scaling factors in parallel ---
@@ -949,7 +949,7 @@ impl PoolManager {
                 match rpc.call(pool, Bytes::from(calldata), block).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let addr = Address::from_slice(&result.0[12..32]);
-                        rp.push(if addr.is_zero() { None } else { Some(addr) });
+                        rp.push((!addr.is_zero()).then_some(addr));
                     }
                     _ => rp.push(None),
                 }
@@ -1390,7 +1390,7 @@ impl PoolManager {
             match rpc.call(pool, Bytes::from(calldata), block).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let addr = Address::from_slice(&result.0[12..32]);
-                    if !addr.is_zero() { Some(addr) } else { None }
+                    (!addr.is_zero()).then_some(addr)
                 }
                 _ => None,
             }

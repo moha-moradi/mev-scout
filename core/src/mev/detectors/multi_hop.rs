@@ -220,7 +220,7 @@ impl MultiHopArbDetector {
                 let info = pool.info();
                 cur_token = if info.token0 == cur_token { info.token1 } else { info.token0 };
             }
-            if cur > x { Some(cur - x) } else { None }
+            (cur > x).then(|| cur - x)
         };
         let normalize_slippage = |p: u128| -> Option<U256> {
             if token_in == token_out {

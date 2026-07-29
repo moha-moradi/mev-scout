@@ -1,36 +1,43 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::LazyLock;
-use alloy::primitives::{address, Address, U256};
+use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
-use crate::pool::dex_type::DexType;
+use crate::dex_type::DexType;
 
-/// Known fee-on-transfer (FoT) tokens — mainnet addresses.
-/// These tokens deduct a fee on every transfer, causing reserve divergences in V2 pools.
-static FOT_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
-    let mut s = HashSet::new();
-    // USDT (Ethereum) — fee on transfer for non-exchange addresses
-    s.insert(address!("dac17f958d2ee523a2206206994597c13d831ec7"));
-    // SafeMoon
-    s.insert(address!("80860b64f856deade4d8f1e0103500207c12ff0f"));
-    // PAXG (Pax Gold)
-    s.insert(address!("45804880de22913dafe09f4980848ecece09f8fc"));
-    s
+/// Serde helpers for `Option<Arc<str>>` fields.
+pub mod arc_str_opt {
+    use std::sync::Arc;
+    use serde::de::Deserializer;
+    use serde::ser::Serializer;
+
+    pub fn serialize<S: Serializer>(v: &Option<Arc<str>>, s: S) -> Result<S::Ok, S::Error> {
+        <Option<&str> as serde::Serialize>::serialize(&v.as_deref(), s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Arc<str>>, D::Error> {
+        <Option<String> as serde::Deserialize>::deserialize(d).map(|opt| opt.map(Arc::from))
+    }
+}
+
+#[derive(Deserialize)]
+struct TokenLists {
+    fee_on_transfer: Vec<String>,
+    rebase: Vec<String>,
+}
+
+static TOKEN_LISTS: LazyLock<TokenLists> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../data/fot_tokens.json"))
+        .expect("invalid fot_tokens.json")
 });
 
-/// Known rebase tokens — mainnet addresses.
-/// These tokens periodically adjust balances (rebasing), so balanceOf > reserve.
+static FOT_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
+    TOKEN_LISTS.fee_on_transfer.iter().filter_map(|s| s.parse::<Address>().ok()).collect()
+});
+
 static REBASE_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
-    let mut s = HashSet::new();
-    // AMPL (Ampleforth)
-    s.insert(address!("d46ba6d942050d489dbd938a2c909a5d5039a161"));
-    // stETH (Lido)
-    s.insert(address!("ae7ab96520de3a18e5e111b5eaab095312d7fe84"));
-    // reth (Rocket Pool)
-    s.insert(address!("ae78736cd615f374d3085123a210448e74fc6393"));
-    // cbETH (Coinbase)
-    s.insert(address!("be9895146f7af43049ca1c1ae358b0541ea49704"));
-    s
+    TOKEN_LISTS.rebase.iter().filter_map(|s| s.parse::<Address>().ok()).collect()
 });
 
 /// Returns true if the given token is a known fee-on-transfer token.
@@ -125,7 +132,7 @@ pub struct PoolInfo {
     pub token0: Address,
     pub token1: Address,
     pub fee: u32,
-    pub name: Option<String>,
+    pub name: Option<Arc<str>>,
     #[serde(rename = "type")]
     pub dex_type: DexType,
     #[serde(default)]
@@ -165,13 +172,13 @@ pub struct PoolInfo {
     pub maturity_timestamp: Option<u64>,
     /// Human-readable DEX protocol name (e.g. "QuickSwap", "SushiSwap", "Velodrome").
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dex_name: Option<String>,
+    pub dex_name: Option<Arc<str>>,
     /// Token0 symbol (e.g. "WETH", "USDC").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token0_symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "arc_str_opt")]
+    pub token0_symbol: Option<Arc<str>>,
     /// Token1 symbol (e.g. "WETH", "USDC").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token1_symbol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "arc_str_opt")]
+    pub token1_symbol: Option<Arc<str>>,
 }
 
 impl Default for PoolInfo {
@@ -317,7 +324,7 @@ impl PendlePoolState {
 }
 
 /// Curve pool variant — determines which quoting formula to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum::Display)]
 pub enum CurvePoolVariant {
     #[default]
     /// Standard StableSwap (Plain or Lending pools).
@@ -349,7 +356,7 @@ pub struct CurvePoolState {
 }
 
 /// Balancer pool variant — determines which quoting formula to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum::Display)]
 pub enum BalancerPoolVariant {
     #[default]
     Weighted,
@@ -437,8 +444,8 @@ impl PoolState {
         }
     }
 
-    pub fn dex_label(&self) -> &'static str {
-        self.info().dex_type.label()
+    pub fn dex_label(&self) -> String {
+        self.info().dex_type.to_string()
     }
 
     /// Estimated gas cost for a single swap on this pool type.
@@ -448,14 +455,15 @@ impl PoolState {
     /// - Curve swap: ~100k
     /// - Balancer swap: ~100k
     pub fn gas_estimate(&self) -> u64 {
+        use crate::pool::math::consts::{DEFAULT_POOL_GAS, STABLE_POOL_GAS, V3_POOL_GAS};
         match self {
-            PoolState::UniswapV2(_) => 80_000,
-            PoolState::UniswapV3(_) => 120_000,
-            PoolState::UniswapV4(_) => 120_000,
-            PoolState::Curve(_) => 100_000,
-            PoolState::Balancer(_) => 100_000,
-            PoolState::TraderJoeLB(_) => 100_000,
-            PoolState::Pendle(_) => 100_000,
+            PoolState::UniswapV2(_) => DEFAULT_POOL_GAS,
+            PoolState::UniswapV3(_) => V3_POOL_GAS,
+            PoolState::UniswapV4(_) => V3_POOL_GAS,
+            PoolState::Curve(_) => STABLE_POOL_GAS,
+            PoolState::Balancer(_) => STABLE_POOL_GAS,
+            PoolState::TraderJoeLB(_) => STABLE_POOL_GAS,
+            PoolState::Pendle(_) => STABLE_POOL_GAS,
         }
     }
 }

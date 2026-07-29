@@ -100,31 +100,31 @@ impl ChainName {
     }
 
     /// Default Uniswap V2 factory addresses for this chain (built-in, no config file needed).
-    pub fn default_uniswap_v2_factories(&self) -> Vec<&'static str> {
+    pub fn default_uniswap_v2_factories(&self) -> &'static [&'static str] {
         match self {
-            ChainName::Polygon => vec![
+            ChainName::Polygon => &[
                 "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32", // QuickSwap
                 "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
                 "0xCf083Be4164828f00cAE704EC15a36D711491284", // ApeSwap
                 "0xE7Fb3e833eFE5F9c441105EB65Ef8b261266423B", // DFYN
                 "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d", // Meshswap
             ],
-            ChainName::Avalanche => vec![
+            ChainName::Avalanche => &[
                 "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
                 "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe V1
             ],
-            ChainName::Bsc => vec![
+            ChainName::Bsc => &[
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
                 "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
             ],
-            ChainName::Arbitrum => vec![], // Camelot handled via default_camelot_factories
-            ChainName::Base => vec![],     // Aerodrome handled via default_solidly_factories
-            ChainName::Ethereum => vec![
+            ChainName::Arbitrum => &[], // Camelot handled via default_camelot_factories
+            ChainName::Base => &[],     // Aerodrome handled via default_solidly_factories
+            ChainName::Ethereum => &[
                 "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // Uniswap V2
                 "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", // SushiSwap
                 "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9", // ShibaSwap
             ],
-            ChainName::Optimism => vec![
+            ChainName::Optimism => &[
                 "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
             ],
         }

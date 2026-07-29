@@ -54,12 +54,12 @@ impl SignatureResolver {
     /// Checks the in-memory cache first, then queries the local sig DB.
     /// Returns `Ok(None)` if the selector is not found.
     pub fn resolve_method(&self, selector: &[u8; 4]) -> anyhow::Result<Option<String>> {
-        if let Some(result) = self.method_cache.read().unwrap().get(selector) {
+        if let Some(result) = self.method_cache.read().expect("method cache poisoned").get(selector) {
             return Ok(result.clone());
         }
 
         let result: Option<String> = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().expect("DB connection poisoned");
             conn.query_row(
                 "SELECT signature FROM methods WHERE selector = ?1",
                 rusqlite::params![selector.to_vec()],
@@ -69,7 +69,7 @@ impl SignatureResolver {
         };
 
         {
-            let mut cache = self.method_cache.write().unwrap();
+            let mut cache = self.method_cache.write().expect("method cache poisoned");
             if cache.len() < CACHE_CAPACITY {
                 cache.insert(*selector, result.clone());
             }
@@ -83,12 +83,12 @@ impl SignatureResolver {
     /// Checks the in-memory cache first, then queries the local sig DB.
     /// Returns `Ok(None)` if the topic is not found.
     pub fn resolve_event(&self, topic: &B256) -> anyhow::Result<Option<String>> {
-        if let Some(result) = self.event_cache.read().unwrap().get(topic) {
+        if let Some(result) = self.event_cache.read().expect("event cache poisoned").get(topic) {
             return Ok(result.clone());
         }
 
         let result: Option<String> = {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.conn.lock().expect("DB connection poisoned");
             conn.query_row(
                 "SELECT signature FROM events WHERE topic = ?1",
                 rusqlite::params![topic.as_slice().to_vec()],
@@ -98,7 +98,7 @@ impl SignatureResolver {
         };
 
         {
-            let mut cache = self.event_cache.write().unwrap();
+            let mut cache = self.event_cache.write().expect("event cache poisoned");
             if cache.len() < CACHE_CAPACITY {
                 cache.insert(*topic, result.clone());
             }

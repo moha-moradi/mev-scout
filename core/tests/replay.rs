@@ -5,7 +5,7 @@ use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::scanner::ActivityScanner;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::decoders::{V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::pool::dex_type::DexType;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;

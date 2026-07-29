@@ -601,24 +601,24 @@ impl BacktestRunner {
 /// next call to `arbitrage_pairs()`).
 pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
     match info.dex_type {
-        crate::pool::dex_type::DexType::UniswapV2 => {
+        crate::dex_type::DexType::UniswapV2 => {
             pool_manager.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
                 info,
                 reserve0: 0,
                 reserve1: 0,
             }));
         }
-        crate::pool::dex_type::DexType::UniswapV3 => {
+        crate::dex_type::DexType::UniswapV3 => {
             pool_manager.add_pool(PoolState::UniswapV3(
                 crate::pool::state::UniswapV3PoolState::new(info),
             ));
         }
-        crate::pool::dex_type::DexType::UniswapV4 => {
+        crate::dex_type::DexType::UniswapV4 => {
             pool_manager.add_pool(PoolState::UniswapV4(
                 crate::pool::state::UniswapV4PoolState::new(info),
             ));
         }
-        crate::pool::dex_type::DexType::Curve => {
+        crate::dex_type::DexType::Curve => {
             pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
                 info,
                 balances: vec![],
@@ -630,7 +630,7 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 base_pool: None,
             }));
         }
-        crate::pool::dex_type::DexType::Balancer => {
+        crate::dex_type::DexType::Balancer => {
             pool_manager.add_pool(PoolState::Balancer(
                 crate::pool::state::BalancerPoolState {
                     info,
@@ -646,21 +646,21 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 },
             ));
         }
-        crate::pool::dex_type::DexType::TraderJoeLB => {
+        crate::dex_type::DexType::TraderJoeLB => {
             let bin_step = info.bin_step.unwrap_or(0);
             pool_manager.add_pool(PoolState::TraderJoeLB(
                 crate::pool::state::pool_types::TraderJoeLBPoolState::new(info, 0, bin_step),
             ));
         }
-        crate::pool::dex_type::DexType::Pendle => {
+        crate::dex_type::DexType::Pendle => {
             pool_manager.add_pool(PoolState::Pendle(
                 crate::pool::state::pool_types::PendlePoolState::new(info),
             ));
         }
-        crate::pool::dex_type::DexType::Solidly | crate::pool::dex_type::DexType::Camelot => {
+        crate::dex_type::DexType::Solidly | crate::dex_type::DexType::Camelot => {
             if info.is_stable == Some(true) {
                 // Solidly/Camelot stable pools use StableSwap invariant (A=200 for Solidly)
-                let a_coeff = if info.dex_type == crate::pool::dex_type::DexType::Solidly { 200 } else { 100 };
+                let a_coeff = if info.dex_type == crate::dex_type::DexType::Solidly { 200 } else { 100 };
                 pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
                     info: info.clone(),
                     balances: vec![0, 0],

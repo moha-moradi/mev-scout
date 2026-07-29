@@ -327,18 +327,16 @@ impl PoolManager {
 
     /// Get V2 pool state by address (returns None if not a V2 pool or not found).
     pub fn get_v2_state(&self, address: &Address) -> Option<&UniswapV2PoolState> {
-        match self.pools.get(address) {
-            Some(PoolState::UniswapV2(state)) => Some(state),
-            _ => None,
-        }
+        self.pools.get(address).and_then(|p| {
+            if let PoolState::UniswapV2(state) = p { Some(state) } else { None }
+        })
     }
 
     /// Get V3 pool state by address (returns None if not a V3 pool or not found).
     pub fn get_v3_state(&self, address: &Address) -> Option<&UniswapV3PoolState> {
-        match self.pools.get(address) {
-            Some(PoolState::UniswapV3(state)) => Some(state),
-            _ => None,
-        }
+        self.pools.get(address).and_then(|p| {
+            if let PoolState::UniswapV3(state) = p { Some(state) } else { None }
+        })
     }
 
     /// Given V3/V4 sqrt price, liquidity, and token ordering, compute

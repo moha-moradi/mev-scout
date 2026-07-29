@@ -6,7 +6,7 @@ pub async fn cmd_dune_check(config: &Config, args: &DuneCheckArgs) -> anyhow::Re
     let api_key = args
         .dune_api_key
         .clone()
-        .or_else(|| config.dune_api_key.clone())
+        .or_else(|| config.dune.dune_api_key.clone())
         .ok_or_else(|| anyhow::anyhow!(
             "No Dune API key found. Set it in mev-scout.toml (dune_api_key = \"...\") or pass --dune-api-key"
         ))?;
