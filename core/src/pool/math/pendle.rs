@@ -13,6 +13,8 @@
 //! large swaps more), so we catch opportunities that may have smaller
 //! actual profit. This is safer than underestimating.
 
+use super::consts::{PERMILLE_DENOMINATOR, MIN_DAMPING_PERMILLE, MAX_EXTRACTION_NUMERATOR};
+
 /// Quote an output amount for a Pendle AMM swap using the logistic UAMM model.
 ///
 /// For small swaps (< 20% of pool depth), uses constant product approximation.
@@ -49,9 +51,9 @@ pub fn pendle_output_amount(
     // produces less output than a constant-product model predicts.
     // We apply: damping = 1 / (1 + (swap_ratio / 0.8)^2)
     // where swap_ratio = amount_in / total_in.
-    let swap_ratio_1000 = (amount_in as u128).checked_mul(1000)? / total_in; // permille
+    let swap_ratio_1000 = (amount_in as u128).checked_mul(PERMILLE_DENOMINATOR)? / total_in;
 
-    if swap_ratio_1000 <= 200 {
+    if swap_ratio_1000 <= MIN_DAMPING_PERMILLE {
         // Small swap: constant product is accurate enough
         return (cp_output != 0).then_some(cp_output);
     }
@@ -62,9 +64,9 @@ pub fn pendle_output_amount(
     // At 20%: 800/1000 = 80%
     // At 50%: 500/1000 = 50%
     // At 100%: 200/1000 = 20%
-    let damping_permille = 1000u128.saturating_sub(swap_ratio_1000).max(200);
+    let damping_permille = PERMILLE_DENOMINATOR.saturating_sub(swap_ratio_1000).max(MIN_DAMPING_PERMILLE);
 
-    let damped_output = cp_output.checked_mul(damping_permille)? / 1000u128;
+    let damped_output = cp_output.checked_mul(damping_permille)? / PERMILLE_DENOMINATOR;
 
     if damped_output == 0 {
         None
@@ -81,8 +83,7 @@ pub fn pendle_max_output(total_out: u128) -> Option<u128> {
     if total_out == 0 {
         return None;
     }
-    // Leave 0.1% as dust to avoid draining the pool
-    let max = total_out * 999 / 1000;
+    let max = total_out * MAX_EXTRACTION_NUMERATOR / PERMILLE_DENOMINATOR;
     (max != 0).then_some(max)
 }
 

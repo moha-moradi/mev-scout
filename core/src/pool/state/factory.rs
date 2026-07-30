@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
 use crate::pool::state::manager::PoolManager;
+use crate::pool::math::consts::{BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO};
 use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
 pub enum PoolInitResult {
     V2Reserves { reserve0: u128, reserve1: u128 },
@@ -455,9 +456,62 @@ impl PoolManager {
         results.into_iter().flatten().collect()
     }
 
-    /// Fetch the appropriate on-chain state for a pool based on its type.
-    /// If `pre_fetched_tokens` is provided (from discovery cache), redundant
-    /// RPC calls like Curve `coins()` or Balancer `getPoolTokens()` are skipped.
+    // ── Per-DEX init functions ──
+
+    async fn init_v2_pool(
+        rpc: &RpcClient, pool: Address, block: u64, factory: Option<Address>,
+    ) -> Option<PoolInitResult> {
+        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
+        Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
+    }
+
+    async fn init_v3_pool(
+        rpc: &RpcClient, pool: Address, block: u64, tick_spacing: i32,
+    ) -> Option<PoolInitResult> {
+        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+        Some(PoolInitResult::V3State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
+    }
+
+    async fn init_v4_pool(
+        rpc: &RpcClient, pool: Address, block: u64, tick_spacing: i32,
+    ) -> Option<PoolInitResult> {
+        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+        Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
+    }
+
+    async fn init_balancer_pool(
+        rpc: &RpcClient, vault: Address, pool: Address, pool_id: &[u8; 32],
+        block: u64, balancer_pool_type: Option<u8>, pre_fetched_tokens: Option<Vec<Address>>,
+    ) -> Option<PoolInitResult> {
+        Self::fetch_balancer_state(rpc, vault, pool, pool_id, block, balancer_pool_type, pre_fetched_tokens).await.ok()
+    }
+
+    async fn init_curve_pool(
+        rpc: &RpcClient, pool: Address, block: u64, pre_fetched_tokens: Option<Vec<Address>>,
+    ) -> Option<PoolInitResult> {
+        Self::fetch_curve_state(rpc, pool, block, pre_fetched_tokens).await
+    }
+
+    async fn init_solidly_camelot_pool(
+        rpc: &RpcClient, pool: Address, block: u64, factory: Option<Address>,
+    ) -> Option<PoolInitResult> {
+        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
+        Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
+    }
+
+    async fn init_lb_pool(
+        rpc: &RpcClient, pool: Address, block: u64,
+    ) -> Option<PoolInitResult> {
+        Self::fetch_lb_state(rpc, pool, block).await
+    }
+
+    async fn init_pendle_pool(
+        rpc: &RpcClient, pool: Address, block: u64,
+    ) -> Option<PoolInitResult> {
+        Self::fetch_pendle_state(rpc, pool, block).await
+    }
+
+    /// Dispatch to the per-DEX init function based on pool type.
     async fn fetch_pool_state(
         rpc: &RpcClient,
         pool: Address,
@@ -471,36 +525,18 @@ impl PoolManager {
         pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
         match dt {
-            DexType::UniswapV2 => {
-                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
-                Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
-            }
-            DexType::UniswapV3 => {
-                let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
-                Some(PoolInitResult::V3State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
-            }
-            DexType::UniswapV4 => {
-                let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
-                Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
-            }
+            DexType::UniswapV2 => Self::init_v2_pool(rpc, pool, block, factory).await,
+            DexType::UniswapV3 => Self::init_v3_pool(rpc, pool, block, tick_spacing).await,
+            DexType::UniswapV4 => Self::init_v4_pool(rpc, pool, block, tick_spacing).await,
             DexType::Balancer => {
                 let vault = vault?;
                 let pool_id = pool_id?;
-                Self::fetch_balancer_state(rpc, vault, pool, &pool_id, block, balancer_pool_type, pre_fetched_tokens).await.ok()
+                Self::init_balancer_pool(rpc, vault, pool, &pool_id, block, balancer_pool_type, pre_fetched_tokens).await
             }
-            DexType::Curve => {
-                Self::fetch_curve_state(rpc, pool, block, pre_fetched_tokens).await
-            }
-            DexType::Solidly | DexType::Camelot => {
-                let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
-                Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
-            }
-            DexType::TraderJoeLB => {
-                Self::fetch_lb_state(rpc, pool, block).await
-            }
-            DexType::Pendle => {
-                Self::fetch_pendle_state(rpc, pool, block).await
-            }
+            DexType::Curve => Self::init_curve_pool(rpc, pool, block, pre_fetched_tokens).await,
+            DexType::Solidly | DexType::Camelot => Self::init_solidly_camelot_pool(rpc, pool, block, factory).await,
+            DexType::TraderJoeLB => Self::init_lb_pool(rpc, pool, block).await,
+            DexType::Pendle => Self::init_pendle_pool(rpc, pool, block).await,
         }
     }
 
@@ -556,7 +592,7 @@ impl PoolManager {
         let (big, small) = if r0 > r1 { (r0, r1) } else { (r1, r0) };
         if small == 0 { return false; }
         let ratio = big / small;
-        ratio < 100
+        ratio < MAX_V2_RESERVE_RATIO
     }
 
     /// Given raw slot 6 (packed uint112 reserve0 | uint112 reserve1 | uint32 blockTimestampLast),
@@ -910,7 +946,7 @@ impl PoolManager {
                     Ok(result) if result.0.len() >= 32 => {
                         let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
                         // Balancer returns fee in 1e18 scale; convert to PoolInfo bps (1e6 = 100%)
-                        (chain_fee / 1_000_000_000_000) as u32
+                        (chain_fee / BALANCER_FEE_ETHER_DIVISOR) as u32
                     }
                     _ => 0,
                 }
@@ -1364,7 +1400,7 @@ impl PoolManager {
             match rpc.call(pool, Bytes::from(calldata), block).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
-                    (chain_fee / 10_000) as u32
+                    (chain_fee / BPS_DENOMINATOR) as u32
                 }
                 _ => 0,
             }

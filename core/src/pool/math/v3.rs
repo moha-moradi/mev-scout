@@ -516,6 +516,40 @@ pub fn max_v3_tradeable_amount(
 /// (M2 fix) instead of being capped at the nearest tick_spacing boundary.
 ///
 /// Returns `None` for zero input, zero liquidity, or zero sqrt-price.
+/// Update tick and liquidity when crossing an initialized tick boundary.
+/// Returns `true` if the caller should break out of the swap loop
+/// (liquidity reached zero).
+fn cross_tick(
+    ticks: &BTreeMap<i32, i128>,
+    current_tick: &mut i32,
+    liquidity: &mut u128,
+    next_tick: Option<i32>,
+    zero_for_one: bool,
+) -> bool {
+    *current_tick = if zero_for_one {
+        next_tick.unwrap_or(MIN_TICK)
+    } else {
+        next_tick.unwrap_or(MAX_TICK)
+    };
+    if let Some(liq_delta) = next_tick.and_then(|t| ticks.get(&t)) {
+        let delta = *liq_delta;
+        if zero_for_one {
+            *liquidity = if delta > 0 {
+                liquidity.saturating_sub(delta as u128)
+            } else {
+                liquidity.saturating_add((-delta) as u128)
+            };
+        } else {
+            *liquidity = if delta > 0 {
+                liquidity.saturating_add(delta as u128)
+            } else {
+                liquidity.saturating_sub((-delta) as u128)
+            };
+        }
+    }
+    *liquidity == 0
+}
+
 pub fn quote_v3_exact_in(
     pool: &UniswapV3PoolState,
     amount_in: u128,
@@ -562,35 +596,11 @@ pub fn quote_v3_exact_in(
         }
 
         if next_sqrt_price == target_sqrt_price && has_real_tick {
-            let next_tick = find_next_initialized_tick(
-                &pool.ticks, current_tick, zero_for_one,
-            );
-            current_tick = if zero_for_one {
-                next_tick.unwrap_or(MIN_TICK)
-            } else {
-                next_tick.unwrap_or(MAX_TICK)
-            };
-            if let Some(liq_delta) = pool.ticks.get(&next_tick.unwrap_or(0)) {
-                let delta = *liq_delta;
-                if zero_for_one {
-                    liquidity = if delta > 0 {
-                        liquidity.saturating_sub(delta as u128)
-                    } else {
-                        liquidity.saturating_add((-delta) as u128)
-                    };
-                } else {
-                    liquidity = if delta > 0 {
-                        liquidity.saturating_add(delta as u128)
-                    } else {
-                        liquidity.saturating_sub((-delta) as u128)
-                    };
-                }
-            }
-            if liquidity == 0 {
+            let next = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+            if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next, zero_for_one) {
                 break;
             }
         } else if next_sqrt_price == target_sqrt_price {
-            // Synthetic boundary reached — no known liquidity beyond, stop
             break;
         }
 
@@ -696,35 +706,11 @@ pub fn quote_v3_exact_out(
         }
 
         if next_sqrt_price == target_sqrt_price && has_real_tick {
-            let next_tick = find_next_initialized_tick(
-                &pool.ticks, current_tick, zero_for_one,
-            );
-            current_tick = if zero_for_one {
-                next_tick.unwrap_or(MIN_TICK)
-            } else {
-                next_tick.unwrap_or(MAX_TICK)
-            };
-            if let Some(liq_delta) = pool.ticks.get(&next_tick.unwrap_or(0)) {
-                let delta = *liq_delta;
-                if zero_for_one {
-                    liquidity = if delta > 0 {
-                        liquidity.saturating_sub(delta as u128)
-                    } else {
-                        liquidity.saturating_add((-delta) as u128)
-                    };
-                } else {
-                    liquidity = if delta > 0 {
-                        liquidity.saturating_add(delta as u128)
-                    } else {
-                        liquidity.saturating_sub((-delta) as u128)
-                    };
-                }
-            }
-            if liquidity == 0 {
+            let next = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+            if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next, zero_for_one) {
                 break;
             }
         } else if next_sqrt_price == target_sqrt_price {
-            // Synthetic boundary — no known liquidity beyond, stop
             break;
         }
 

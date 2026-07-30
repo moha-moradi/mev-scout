@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crate::cli::DuneCheckArgs;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
@@ -34,7 +35,8 @@ ORDER BY tx_count DESC"#,
         chain, block
     );
 
-    let result = client.execute_raw_sql(&sql).await?;
+    let result = client.execute_raw_sql(&sql).await
+        .context("Dune query execution failed")?;
 
     let rows = match result.result {
         Some(ref r) => &r.rows,

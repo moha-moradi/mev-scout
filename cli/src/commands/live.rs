@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crate::cli::LiveArgs;
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
@@ -21,7 +22,8 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
 
     let strategies = Strategy::from_comma_list(&args.strategies)
-        .map_err(|e| anyhow::anyhow!("Error parsing strategies: {e}"))?;
+        .map_err(anyhow::Error::msg)
+        .context("Error parsing strategies")?;
 
     let gas_model: GasModel = args.gas_model.parse().unwrap_or(GasModel::Live);
 

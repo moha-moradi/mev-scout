@@ -2,7 +2,7 @@
 
 use alloy::primitives::Address;
 use crate::pool::state::{CurvePoolState, CurvePoolVariant};
-use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER};
+use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER, NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS};
 
 /// Dispatch to the correct Curve quoting formula based on pool variant.
 pub fn curve_output_amount(
@@ -206,15 +206,13 @@ fn newton_cryptoswap_invariant(
     let gamma2 = gamma * gamma;
 
     let mut d = guess;
-    for _ in 0..128 {
+    for _ in 0..NEWTON_INVARIANT_ITERATIONS {
         let d_n = d.powf(nf);
-        let k0 = prod * nn / d_n; // K₀ = Πx · N^N / D^N
+        let k0 = prod * nn / d_n;
         if k0 <= 0.0 { break; }
         let k = k0 * gamma2 / ((gamma + 1.0 - k0) * (gamma + 1.0 - k0));
         if k.is_nan() || k.is_infinite() { break; }
 
-        // f(D) = K · D² + (ann·gamma)·D - ann·gamma·sum = 0
-        // f'(D) = 2·K·D + ann·gamma
         let f = k * d * d + ann * gamma * d - ann * gamma * sum;
         let deriv = 2.0 * k * d + ann * gamma;
         if deriv.abs() < 1e-30 { break; }
@@ -253,19 +251,16 @@ fn newton_cryptoswap_output(
         return None;
     }
 
-    // f(x) = k·x² + k·(2·S - D)·x + k·S·(S - D) + ann·gamma·(S - D)
-    // f'(x) = 2·k·x + k·(2·S - D)
-    // Initial guess: x ≈ D / (n · price_scale_factor)
     let mut x = d / nf;
     if x <= 0.0 {
         return None;
     }
 
     let s = sum_others;
-    let b = 2.0 * s - d; // 2S - D
+    let b = 2.0 * s - d;
     let c_term = k * s * (s - d) + ann * gamma * (s - d);
 
-    for _ in 0..64 {
+    for _ in 0..NEWTON_OUTPUT_ITERATIONS {
         let f = k * x * x + k * b * x + c_term;
         let deriv = 2.0 * k * x + k * b;
         if deriv.abs() < 1e-30 { break; }

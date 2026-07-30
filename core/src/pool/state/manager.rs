@@ -2,6 +2,7 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use alloy::primitives::{Address, U256};
+use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
 use crate::pool::state::pool_types::{PoolState, UniswapV2PoolState, UniswapV3PoolState};
 
 /// Manages runtime pool state for all tracked pools during block replay.
@@ -504,8 +505,8 @@ pub fn check_dedup_key(
     let new_snapshot = (la, lb);
 
     if let Some(&(prev_la, prev_lb)) = seen.get(key) {
-        let threshold_a = cmp::max(prev_la / 1000, 1);
-        let threshold_b = cmp::max(prev_lb / 1000, 1);
+        let threshold_a = cmp::max(prev_la / LIQUIDITY_CHANGE_THRESHOLD_DIVISOR, 1);
+        let threshold_b = cmp::max(prev_lb / LIQUIDITY_CHANGE_THRESHOLD_DIVISOR, 1);
         if la.abs_diff(prev_la) <= threshold_a && lb.abs_diff(prev_lb) <= threshold_b {
             return false;
         }

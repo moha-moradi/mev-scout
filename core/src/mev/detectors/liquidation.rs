@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{keccak256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::types::MevOpportunity;
+use crate::pool::math::consts::{BPS_DENOMINATOR, PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::state::{calldata_gas_estimate, PoolManager};
 use crate::rpc::RpcClient;
 use crate::types::{GasConfig, Strategy};
@@ -456,14 +457,14 @@ impl LiquidationDetector {
 
             // H9: Compute slippage — profit scales linearly with debt_to_cover (fixed bonus rate)
             let liq_slippage = |pct: u128| -> Option<U256> {
-                let debt_adj = debt_to_cover.saturating_mul(pct) / 100;
+                let debt_adj = debt_to_cover.saturating_mul(pct) / PERCENT_DENOMINATOR;
                 if debt_adj == 0 { return None; }
                 let debt_native_adj = pool_manager
                     .normalize_to_native(debt_asset, debt_adj)
                     .unwrap_or(debt_adj);
                 let profit_adj = debt_native_adj
                     .saturating_mul(bonus_bps as u128)
-                    .saturating_div(10000);
+                    .saturating_div(BPS_DENOMINATOR);
                 Some(U256::from(profit_adj))
             };
             opportunities.push(MevOpportunity {
@@ -518,13 +519,13 @@ impl LiquidationDetector {
 
         // H9: Compute slippage — profit scales linearly with debt_to_cover
         let liq_slippage = |pct: u128| -> Option<U256> {
-            let debt_adj = ev.debt_to_cover.saturating_mul(pct) / 100;
+            let debt_adj = ev.debt_to_cover.saturating_mul(pct) / PERCENT_DENOMINATOR;
             if debt_adj == 0 { return None; }
             let debt_native_adj = pool_manager
                 .normalize_to_native(ev.debt_asset, debt_adj)
                 .unwrap_or(debt_adj);
-            let ratio_adj = debt_native_adj * 1_000_000 / debt_native.max(1);
-            Some(U256::from(profit_native.saturating_mul(ratio_adj) / 1_000_000))
+            let ratio_adj = debt_native_adj * PPM_DENOMINATOR / debt_native.max(1);
+                Some(U256::from(profit_native.saturating_mul(ratio_adj) / PPM_DENOMINATOR))
         };
         Some(MevOpportunity {
             canonical_id: None,

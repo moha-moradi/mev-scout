@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::{keccak256, Address};
+use anyhow::Context;
 
 use crate::cli::ReplayArgs;
 use crate::rpc_setup::init_rpc;
@@ -51,7 +52,7 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     );
     let txs = replayer
         .load_txs(block_num)
-        .map_err(|e| anyhow::anyhow!("Failed to load txs for block {}: {}", block_num, e))?;
+        .with_context(|| format!("Failed to load txs for block {block_num}"))?;
     let actual_count = txs.len();
     let end_tx = tx_index.min(actual_count.saturating_sub(1));
 
@@ -64,7 +65,7 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     let start = std::time::Instant::now();
     let (_snapshot, results) = replayer
         .replay_to(block_num, end_tx)
-        .map_err(|e| anyhow::anyhow!("Replay failed for block {}: {}", block_num, e))?;
+        .with_context(|| format!("Replay failed for block {block_num}"))?;
     let elapsed = start.elapsed();
 
     println!(

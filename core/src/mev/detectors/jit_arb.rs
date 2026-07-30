@@ -5,6 +5,7 @@ use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
 use crate::pool::math::{quote_exact_in, constant_product_output_amount};
+use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::math::v3::estimate_v3_swap_gas;
 use crate::types::MevOpportunity;
@@ -242,7 +243,7 @@ impl JitArbDetector {
         // H9: JitArb profit = arb_profit (fixed) + fee_rev (scales with position size)
         let jit_arb_slippage = |pct: u128| -> Option<U256> {
             if fee_rev == 0 { return None; }
-            let fee_adj = fee_rev.saturating_mul(pct) / 100;
+            let fee_adj = fee_rev.saturating_mul(pct) / PERCENT_DENOMINATOR;
             let total_adj = arb_profit.saturating_add(fee_adj);
             Some(U256::from(total_adj))
         };
@@ -409,7 +410,7 @@ fn estimate_jit_fee_revenue(
         }
 
         // Fee revenue ≈ position liquidity share × swap fee amount
-        let swap_fee = sw.amount_in.saturating_mul(fee_rate) / 1_000_000;
+        let swap_fee = sw.amount_in.saturating_mul(fee_rate) / PPM_DENOMINATOR;
         let earned = mint.amount
             .saturating_mul(swap_fee)
             .saturating_div(pool_liquidity);

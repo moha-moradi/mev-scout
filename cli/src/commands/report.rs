@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crate::cli::ReportArgs;
 use crate::display::render_results_table;
 use mev_scout_core::config::Config;
@@ -40,9 +41,9 @@ pub async fn cmd_report(_config: &Config, args: &ReportArgs) -> anyhow::Result<(
     }
 
     let json_str = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow::anyhow!("Failed to read '{}': {}", path.display(), e))?;
+        .with_context(|| format!("Failed to read '{}'", path.display()))?;
     let results_file: ResultsFile = serde_json::from_str(&json_str)
-        .map_err(|e| anyhow::anyhow!("Failed to parse '{}': {}", path.display(), e))?;
+        .with_context(|| format!("Failed to parse '{}'", path.display()))?;
 
     let output_format: OutputFormat = args.output.parse().unwrap_or(OutputFormat::Table);
 

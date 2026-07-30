@@ -2,10 +2,10 @@ pub mod aggregate;
 pub mod gas;
 pub mod runner;
 pub mod scanner;
-pub use aggregate::*;
-pub use gas::*;
-pub use runner::*;
-pub use scanner::*;
+pub use aggregate::{aggregate, aggregate_with_prices, AggregationResult, DexMeta, DexMetrics, StrategyMetrics, SummaryMetrics};
+pub use gas::GasPriceDistribution;
+pub use runner::{add_pool_to_manager, BacktestRunner};
+pub use scanner::{topics, ActivityScanner};
 
 use serde::{Deserialize, Serialize};
 

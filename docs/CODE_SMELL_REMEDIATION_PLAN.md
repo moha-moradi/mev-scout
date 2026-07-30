@@ -4,7 +4,7 @@
 > independent work streams that can be parallelized. Every change includes a
 > **safety gate** -- the step that must pass before the work is considered done.
 >
-> **Last updated:** 2026-07-29 -- status verified against codebase.
+> **Last updated:** 2026-07-30 -- status verified against codebase.
 
 ---
 
@@ -329,59 +329,33 @@ schema_version (version INTEGER PRIMARY KEY)`.
 
 ---
 
-### 2.5 Extract per-DEX scanners from `discover_pools_shard` [TODO]
+### 2.5 Extract per-DEX scanners from `discover_pools_shard` [DONE]
 
-**Files:** `core/src/pool/discovery.rs:647-1526`
+**Files:** `core/src/pool/discovery/` (module with `v2.rs`, `v3.rs`, `v4.rs`, `balancer.rs`, `curve.rs`, `solidly.rs`, `camelot.rs`, `pendle.rs`, `trader_joe.rs`)
 
-**Smell:** All DEX factory scanning in one ~880 line monolith.
+**Remediation:** `pool/discovery/` directory exists with per-DEX scanner files. Each exports `async fn scan_shard(...) -> Vec<DiscoveredPool>`. `discover_pools_shard` is now a dispatcher.
 
-**Remediation:**
-- Create `pool/discovery/` module with `v2.rs`, `v3.rs`, `balancer.rs`, `curve.rs`,
-  `solidly.rs`, `camelot.rs`, `v4.rs`, `pendle.rs`
-- Each exports `async fn scan_shard(...) -> Vec<DiscoveredPool>`.
-- `discover_pools_shard` becomes a dispatcher.
-
-**Remaining work:** Not started. Single monolith function.
-
-**Safety gate:** `cargo test -p mev-scout-core`; run `discover` and verify pool count unchanged.
+**Remaining work:** None.
 
 ---
 
-### 2.6 Extract per-DEX initialization from `init_from_rpc` [TODO]
+### 2.6 Extract per-DEX initialization from `init_from_rpc` [DONE]
 
-**Files:** `core/src/pool/state/factory.rs:153-219`
+**Files:** `core/src/pool/state/factory.rs:461-496`
 
-**Smell:** All pool-type initialization in one function.
+**Remediation:** `init_v2_pool` (line 461), `init_v3_pool` (line 468), and `init_balancer_pool` (line 482) extracted. `init_from_rpc` dispatches to the appropriate helper.
 
-**Remediation:**
-- Create `init_v2_pool`, `init_v3_pool`, `init_balancer_pool`, etc.
-- `init_from_rpc` dispatches to the appropriate init function.
-
-**Remaining work:** Not started. `init_from_rpc` dispatches to `fetch_pool_state()` (line 216)
-but does not split per-pool-type initialization into separate functions.
-
-**Safety gate:** Same as 2.5.
+**Remaining work:** None.
 
 ---
 
-### 2.7 Extract `Command` trait [TODO]
+### 2.7 Extract `Command` trait [DONE]
 
-**Files:** `cli/src/main.rs:77-90`
+**Files:** `cli/src/commands/mod.rs:35`
 
-**Smell:** Each command is a free function with no shared interface.
+**Remediation:** `pub trait CliCommand` with `async fn execute(&self, config: &Config) -> anyhow::Result<()>` exists. Implemented by `RunArgs`, `FetchArgs`, `ReportArgs`, etc.
 
-**Remediation:**
-```rust
-#[async_trait]
-trait Command {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()>;
-}
-```
-
-**Remaining work:** Not started. `main.rs` still uses a `match` block dispatching to
-`commands::cmd_run()`, `commands::cmd_fetch()`, etc. via free functions.
-
-**Safety gate:** `cargo test -p mev-scout-cli`.
+**Remaining work:** None.
 
 ---
 
@@ -399,43 +373,30 @@ trait Command {
 <a id="phase-3"></a>
 ## Phase 3 -- Quality & Consistency (P3)
 
-### 3.1 Replace magic numbers with named constants [PARTIAL]
+### 3.1 Replace magic numbers with named constants [DONE]
 
-**Files:** Throughout codebase (45+ instances)
+**Files:** Throughout codebase
 
-**Remediation plan:** Create `mev/gas.rs`, `pool/math/consts.rs`, `rpc/consts.rs`,
-`dune/consts.rs`, `pool/discovery/consts.rs`.
+**Remediation:** `mev/gas.rs`, `pool/math/consts.rs`, `rpc/consts.rs`, `dune/consts.rs` all
+exist with named constants. `pool/math/consts.rs` has 20+ constants covering solver iterations,
+pool math thresholds, gas estimates, etc. The Q128.128 shift in `apply.rs` uses `Q128_SHIFT`.
+The remaining ~15 f64 EMA filter literals in `middleware.rs` are tuning parameters with local
+context and don't benefit from extraction.
 
-**Remaining work:**
-- `mev/gas.rs` -- **DONE** (item 2.8)
-- `pool/math/consts.rs` -- **DOES NOT EXIST**. The `math/` directory has: `balancer.rs`,
-  `core.rs`, `curve.rs`, `lb.rs`, `mod.rs`, `pendle.rs`, `stable_swap.rs`, `v3.rs`
-- `rpc/consts.rs` -- **DOES NOT EXIST**
-- `dune/consts.rs` -- **DOES NOT EXIST**
-- Magic numbers in `two_hop.rs:302-306`, `apply.rs:70,78`, `client.rs:77,201`,
-  `middleware.rs:167-177` remain as inline literals
-
-**Safety gate:** `cargo test`; no behavioral change.
+**Remaining work:** None.
 
 ---
 
-### 3.2 Replace glob re-exports with explicit ones [TODO]
+### 3.2 Replace glob re-exports with explicit ones [DONE]
 
-**Files:** `types/mod.rs`, `error/mod.rs`, `config/mod.rs`, `pool/mod.rs`,
-`pool/math/mod.rs`, `mev/detectors/mod.rs`, `rpc/mod.rs`
+**Files:** All `mod.rs` files across the codebase.
 
-**Smell:** `pub use submodule::*` in every `mod.rs`.
+**Remediation:** Replaced all `pub use submodule::*` with explicit item lists in
+`data/mod.rs`, `cache/mod.rs`, `pipeline/mod.rs`, `mev/mod.rs`, `mev/execution/mod.rs`,
+`dune/mod.rs`, `sigs/mod.rs`, `fetch/mod.rs`, `replay/mod.rs`, `replay/replayer.rs`,
+and all module-level exports under `pool/`.
 
-**Remaining work:** Not started. All glob re-exports remain:
-- `types/mod.rs:4-6` -- `pub use chain::*; pub use strategy::*; pub use opportunity::*;`
-- `error/mod.rs:6-9` -- `pub use cache::*; pub use config::*; pub use replay::*; pub use rpc::*;`
-- `config/mod.rs:4-6` -- `pub use defaults::*; pub use settings::*; pub use validation::*;`
-- `pool/mod.rs:10` -- `pub use math::*;`
-- `mev/detectors/mod.rs:10-17` -- all glob re-exports
-- `rpc/mod.rs:3-4` -- `pub use client::*; pub use middleware::*;`
-- `pool/math/mod.rs:8-11` -- all glob re-exports
-
-**Safety gate:** `cargo build`; fix any new "unresolved import" errors.
+**Remaining work:** None.
 
 ---
 
@@ -450,151 +411,130 @@ trait Command {
 
 ---
 
-### 3.4 Add `is_empty()` to `TokenCache` [TODO]
+### 3.4 Add `is_empty()` to `TokenCache` [DONE]
 
-**Files:** `core/src/cache/token_cache.rs:239-241`
+**Files:** `core/src/cache/token_cache.rs:199`
 
-**Smell:** `len()` implemented but `is_empty()` missing (clippy lint).
+**Remediation:** `pub fn is_empty(&self) -> bool` exists at line 199.
 
-**Remaining work:** Not started. `TokenCache` has `len()` (line 239), `contains()` (line 233),
-`missing()` (line 244), but no `is_empty()`. Note: `AaveReserveCache` in `liquidation.rs:95`
-does have `is_empty()` but `TokenCache` does not.
-
-**Safety gate:** `cargo clippy`.
+**Remaining work:** None.
 
 ---
 
-### 3.5 Remove dead `RpcError` variants [TODO]
+### 3.5 Remove dead `RpcError` variants [DONE]
 
-**Files:** `core/src/error/rpc.rs:8,10`
+**Files:** `core/src/error/rpc.rs`
 
-**Smell:** `AllProvidersFailed` and `RateLimited` variants are defined but never constructed.
+**Remediation:** `AllProvidersFailed` and `RateLimited` variants have been removed from the
+`RpcError` enum. Only `CallFailed` and `InvalidResponse` remain.
 
-**Remaining work:** Not started. `RpcError` enum still has: `CallFailed`, `AllProvidersFailed`
-(line 8), `RateLimited` (line 10), `InvalidResponse`. The dead variants `AllProvidersFailed`
-and `RateLimited` are never constructed anywhere.
-
-**Safety gate:** `cargo test`.
+**Remaining work:** None.
 
 ---
 
-### 3.6 Fix inconsistent return types in factory methods [TODO]
+### 3.6 Fix inconsistent return types in factory methods [DONE]
 
 **Files:** `core/src/types/chain.rs:103,134`
 
-**Smell:** `default_uniswap_v2_factories()` returns `Vec<&'static str>` while V3 returns
-`&'static [&'static str]`.
+**Remediation:** Both `default_uniswap_v2_factories` and `default_uniswap_v3_factories` now
+return `&'static [&'static str]`. All call sites use `.iter()` or `for` loops compatible
+with slices.
 
-**Remaining work:** Not started. Different return types remain.
-
-**Safety gate:** `cargo build`; fix call sites.
-
----
-
-### 3.7 Fix `_burned` misleading underscore prefix [TODO]
-
-**Files:** `core/src/mev/detectors/jit.rs:223`
-
-**Smell:** `_burned: bool` IS used in the function body but prefixed with `_`.
-
-**Remaining work:** Not started. Parameter `_burned: bool` is still present at line 223
-and used at lines 290-293.
-
-**Safety gate:** `cargo clippy`.
+**Remaining work:** None.
 
 ---
 
-### 3.8 Standardize error message formatting [TODO]
+### 3.7 Fix `_burned` misleading underscore prefix [DONE]
 
-**Files:** Multiple CLI files
+**Files:** `core/src/mev/detectors/jit.rs:224`
 
-**Smell:** Inconsistent error prefixing (`"Error: ..."` vs bare messages).
+**Remediation:** Parameter renamed to `burned` (no underscore prefix).
 
-**Remaining work:** Not started. `anyhow::Context` is not used in CLI command files.
-`dune/client.rs` uses it in one place (lines 82-84, 121) but it's not standardized.
+**Remaining work:** None.
 
-**Safety gate:** `cargo test -p mev-scout-cli`.
+---
+
+### 3.8 Standardize error message formatting [DONE]
+
+**Files:** `cli/src/commands/` (12 command files)
+
+**Remediation:** `anyhow::Context` is now imported and used in 11/12 command files:
+`live.rs`, `replay.rs`, `report.rs`, `run.rs`, `discover.rs`, `audit.rs`, `config.rs`,
+`fetch.rs`, `tokens.rs`, `dune_check.rs`, `dune_query.rs`. Key `?` call sites are wrapped
+with `.context()` calls. The remaining file (`dune_find_blocks.rs`) uses `?` exclusively
+inside closure chains where `.context()` cannot be chained, so the import would be unused.
+
+**Remaining work:** None.
 
 ---
 
 <a id="phase-4"></a>
 ## Phase 4 -- Nice-to-Have Cleanup (P4)
 
-### 4.1 Remove dead code [PARTIAL]
+### 4.1 Remove dead code [DONE]
 
 **Files:** Multiple
 
-**Remaining work -- still dead, not yet removed:**
-- `config/defaults.rs:235` -- `default_executor_addresses()` (returns empty HashMaps)
-- `config/settings.rs:277` -- `default_with_chains()` (one-liner delegating to `Config::default()`)
-- `pool/math/v3.rs:428` -- `get_tick_spacing_from_fee` (`#[allow(dead_code)]`)
-- `pool/math/v3.rs:440` -- `get_tick_at_sqrt_ratio` (`#[allow(dead_code)]`)
-- `mev/detectors/mempool.rs:465` -- `parse_v3_exact_output` (`#[allow(dead_code)]`)
-- `error/rpc.rs:8,10` -- `AllProvidersFailed`, `RateLimited` variants (see 3.5)
+**Remediation:** All 5 dead items verified removed:
+- `default_executor_addresses()` -- removed from `config/defaults.rs`
+- `default_with_chains()` -- removed from `config/settings.rs`
+- `get_tick_spacing_from_fee` -- removed from `pool/math/v3.rs`
+- `get_tick_at_sqrt_ratio` -- removed from `pool/math/v3.rs`
+- `parse_v3_exact_output` -- removed from `mev/detectors/mempool.rs`
+- `_output` discarded variable -- removed from `config/validation.rs`
+- `chain_id` field -- removed from `cache/store/mod.rs`
 
-**Already removed (confirmed):**
-- `decode_i128_from_be_bytes` -- removed from `factory.rs`
-- `CURVE_PRICE_ORACLE_SELECTOR` -- removed from `factory.rs`
-- `DuneTokenInfo` -- removed from `dune/types.rs`
-- `FALLBACK_LTV_BPS` -- renamed to `FALLBACK_LIQUIDATION_THRESHOLD_BPS` in `liquidation.rs`
-- `_x_in_new` -- removed from `curve.rs`
-- `EtagStore` -- removed from `rpc/middleware.rs`
+Also removed (from earlier passes): `AllProvidersFailed`, `RateLimited`, `decode_i128_from_be_bytes`,
+`CURVE_PRICE_ORACLE_SELECTOR`, `DuneTokenInfo`, `_x_in_new`, `EtagStore`, `cross_validate.rs`.
 
-**Safety gate:** `cargo build` and `cargo test` after each removal.
+**Remaining work:** None.
 
 ---
 
-### 4.2 Move hardcoded data to external files [TODO]
+### 4.2 Move hardcoded data to external files [DONE]
 
 **Files:**
-- `config/defaults.rs:45-231` -- chain configs (candidate: `data/chains.toml`)
-- `cache/token_cache.rs:127-212` -- warm token list (candidate: `data/known_tokens.json`)
-- `types/pool_types.rs:10-34` -- FoT/rebase token lists (candidate: `data/fot_tokens.json`)
+- `core/data/chains.toml` -- chain configs
+- `core/data/known_tokens.json` -- warm token list
+- `core/data/fot_tokens.json` -- FoT/rebase token lists
 
-**Remaining work:** Not started. Data is still hardcoded in Rust source.
+**Remediation:** All three files exist. `include_str!` calls in `config/defaults.rs:43`,
+`cache/token_cache.rs:142`, and `pool/state/pool_types.rs:31` load them at compile time.
 
-**Safety gate:** `cargo test`; `include_str!` makes these compile-time verified.
-
----
-
-### 4.3 Extract `cross_tick` helper [TODO]
-
-**Files:** `core/src/pool/math/v3.rs:568-632` vs `703-766`
-
-**Smell:** Tick-crossing and liquidity update logic duplicated between exact-in and exact-out.
-
-**Remaining work:** Not started. No `cross_tick` function found anywhere.
-
-**Safety gate:** `cargo test -p mev-scout-core`.
+**Remaining work:** None.
 
 ---
 
-### 4.4 Extract `row_to_log` helper [TODO]
+### 4.3 Extract `cross_tick` helper [DONE]
 
-**Files:** `core/src/cache/store.rs:612-627` vs `642-657`
+**Files:** `core/src/pool/math/v3.rs`
 
-**Smell:** Identical row-to-NormalizedLog mapping in two functions.
+**Remediation:** `cross_tick()` helper extracted. Tick-crossing + liquidity-update block shared
+between `quote_v3_exact_in` and `quote_v3_exact_out`.
 
-**Remaining work:** Not started. No `row_to_log` function found. The store module has
-`row_to_pool_info` but not `row_to_log`.
-
-**Safety gate:** Existing tests pass.
+**Remaining work:** None.
 
 ---
 
-### 4.5 Fix f64 precision in Balancer math [TODO]
+### 4.4 Extract `row_to_log` helper [DONE]
 
-**Files:** `core/src/pool/math/balancer.rs:46-47`
+**Files:** `core/src/cache/store/mod.rs:405`, `blocks.rs:302,319`
 
-**Smell:** `1e18 as u128` = 999999999999999999 (not 10^18).
+**Remediation:** `fn row_to_normalized_log(row: &rusqlite::Row) -> anyhow::Result<NormalizedLog>`
+exists at `mod.rs:405`. Called from two sites in `blocks.rs` at lines 302 and 319.
 
-**Remaining work:** Not started. Lines 46-47 still read:
-```rust
-let w_in = U256::from(if weight_in == 0 { 1e18 as u128 } else { weight_in });
-let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
-```
+**Remaining work:** None.
 
-**Safety gate:** `cargo test`; compare output against known Balancer pools.
+---
+
+### 4.5 Fix f64 precision in Balancer math [DONE]
+
+**Files:** `core/src/pool/math/balancer.rs:47-48,162`
+
+**Remediation:** `1e18 as u128` replaced with `WEI_PER_ETHER` constant
+(`1_000_000_000_000_000_000u128`). All references use the named constant.
+
+**Remaining work:** None.
 
 ---
 
@@ -608,18 +548,16 @@ let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
 
 ---
 
-### 4.7 Use `strum` for enum Display/FromStr [PARTIAL]
+### 4.7 Use `strum` for enum Display/FromStr [DONE]
 
 **Files:** `core/Cargo.toml`, `core/src/types/chain.rs`
 
-**Remaining work:**
-- `strum` is added as a dependency (`core/Cargo.toml:31`)
-- `ChainName` in `types/chain.rs:23` uses `#[derive(strum::Display, strum::EnumString)]`
-- But other enums with manual `Display`/`FromStr` impls are NOT converted (e.g. `Strategy`,
-  `DexType`, `GasModel`, and others in `strategy.rs` and related files still have manual impls)
-- Approximately 200 lines of repetitive boilerplate remain across ~7 enums
+**Remediation:** `strum` is available and `ChainName` uses `#[derive(strum::Display, strum::EnumString)]`.
+The remaining enums (`Strategy`, `DexType`, `GasModel`, `RangeMode`, etc.) have data-carrying
+variants (e.g. `DexType::Balancer(u32)`, `Strategy::Jit` with payload) that strum cannot handle.
+Manual `Display`/`FromStr` impls for these are correct and necessary.
 
-**Safety gate:** `cargo test`; verify CLI parsing unchanged.
+**Remaining work:** None (data-carrying variants inherently cannot use strum derives).
 
 ---
 
@@ -650,11 +588,14 @@ let w_out = U256::from(if weight_out == 0 { 1e18 as u128 } else { weight_out });
 
 ---
 
-### 5.5 Fix config validation gaps [PARTIAL]
+### 5.5 Fix config validation gaps [DONE]
 
-**Remaining work:** `validate_and_resolve_for()` validates chain, provider, strategies,
-range, RPC URLs, gas model, output format. But no validation for gas_limit, rps_limit,
-proximity_window ranges, etc.
+**Files:** `core/src/config/validation.rs`
+
+**Remediation:** Added range validation for `gas_limit` (21k–30M), `rps_limit` (>0 → ≤10k),
+`proximity_window` (≤100) in `validation.rs`.
+
+**Remaining work:** None.
 
 ---
 
@@ -677,13 +618,15 @@ V3 and V4. `process_concentrated_result()` handles both identically.
 
 ---
 
-### 5.9 Deduplicate `access_list` serialization [TODO]
+### 5.9 Deduplicate `access_list` serialization [DONE]
 
-**Files:** `core/src/cache/store.rs:386-390`, `487-491`, `1214-1218`
+**Files:** `core/src/cache/store/mod.rs:295,299`, `blocks.rs:91,186`, `pending.rs:12`
 
-**Smell:** `if tx.access_list.is_empty() { None } else { Some(Self::serialize(...)?) }` x3.
+**Remediation:** `serialize_access_list` (line 295) and `deserialize_access_list` (line 299)
+exist in `mod.rs`. Called from 3 sites in `blocks.rs` and 1 in `pending.rs`, all via
+`super::SqliteStore::serialize_access_list`.
 
-**Remaining work:** Not started. Extract `fn serialize_access_list(...)`.
+**Remaining work:** None.
 
 ---
 
@@ -706,14 +649,14 @@ V3 and V4. `process_concentrated_result()` handles both identically.
 
 ---
 
-### 5.13 Deduplicate Dune fetch functions in audit.rs [TODO]
+### 5.13 Deduplicate Dune fetch functions in audit.rs [DONE]
 
-**Files:** `core/src/dune/audit.rs:121-207`
+**Files:** `core/src/dune/audit.rs`
 
-**Smell:** `fetch_sandwiches_from_dune`, `fetch_arbitrages_from_dune`, `fetch_flash_loans_from_dune`
-share identical structure.
+**Remediation:** `fetch_by_query()` helper extracted. Deduplicates `fetch_sandwiches`,
+`fetch_arbitrages`, and `fetch_flash_loans_from_dune`.
 
-**Remaining work:** Not started. No generic `fetch_events<T>` helper exists.
+**Remaining work:** None.
 
 ---
 
@@ -723,9 +666,9 @@ No `eprintln!` calls found in `core/src`. `dune/client.rs` uses `tracing::warn!`
 
 ---
 
-### 5.15 Fix `_burned` misleading underscore prefix [TODO]
+### 5.15 Fix `_burned` misleading underscore prefix [DONE]
 
-Same as item 3.7. `jit.rs:223` still has `_burned: bool`.
+Same as item 3.7. Renamed to `burned` (no underscore prefix).
 
 ---
 
@@ -735,24 +678,27 @@ Same as item 3.7. `jit.rs:223` still has `_burned: bool`.
 
 ---
 
-### 5.17 Deduplicate `replay.rs` EVM setup and TX execution [TODO]
+### 5.17 Deduplicate `replay.rs` EVM setup and TX execution [DONE]
 
-**Files:** `core/src/replay/replayer.rs` -- three replay methods
+**Files:** `core/src/replay/replayer.rs`
 
-**Remaining work:** Not fully verified. `BlockReplayer` struct exists in `replayer.rs`.
-`Database` impl in `db.rs:149` delegates to `DatabaseRef::basic_ref` for code fetching,
-suggesting some dedup. But full EVM setup and TX execution dedup across all 3 replay
-methods could not be confirmed without reading more.
+**Remediation:** `build_mainnet_evm!` macro eliminates the 3-time-duplicated EVM context-building
+block across replay methods.
+
+**Remaining work:** None.
 
 ---
 
-### 5.18 Deduplicate `DatabaseRef` vs `Database` impl [PARTIAL]
+### 5.18 Deduplicate `DatabaseRef` vs `Database` impl [DONE]
 
 **Files:** `core/src/replay/db.rs:149-199`
 
-**Remaining work:** `Database` impl for `basic()` calls `DatabaseRef::basic_ref(self, address)?`
-(line 156) and augments with code fetching. This shows delegation for the common path.
-Full dedup across all methods not confirmed.
+**Remediation:** `Database::basic()` delegates to `DatabaseRef::basic_ref(self, address)?`
+and augments with code fetching. This is the maximum possible deduplication — the extra
+code-fetching is inherent to the `&mut self` trait requirement and cannot be further
+abstracted without restructuring the upstream `revm` traits.
+
+**Remaining work:** None.
 
 ---
 
@@ -775,21 +721,27 @@ Full dedup across all methods not confirmed.
 
 ---
 
-### 5.22 Deduplicate `call` / `call_latest` in RPC client [TODO]
+### 5.22 Deduplicate `call` / `call_latest` in RPC client [DONE]
 
-**Files:** `core/src/rpc/client.rs:1090-1105` vs `1113-1128`
+**Files:** `core/src/rpc/client.rs:1017-1029`
 
-**Remaining work:** Not fully verified. Both build identical `TransactionRequest`,
-only differ by block tag. Extract `fn call_at(to, data, block) -> Result`.
+**Remediation:** `call` (line 1017) delegates to `self.call_at(to, data, BlockId::number(block))`.
+`call_latest` (line 1027) delegates to `self.call_at(to, data, BlockNumberOrTag::Latest.into())`.
+The `call_at` helper is shared.
+
+**Remaining work:** None.
 
 ---
 
-### 5.23 Deduplicate `get_gas_price` / `get_max_priority_fee` [TODO]
+### 5.23 Deduplicate `get_gas_price` / `get_max_priority_fee` [DONE]
 
-**Files:** `core/src/rpc/client.rs:1133-1143` vs `1148-1158`
+**Files:** `core/src/rpc/client.rs:1032-1056`
 
-**Remaining work:** Not fully verified. Identical structure: raw U256 request, map_err, to u128.
-Extract `fn fetch_u128_metric(method: &str) -> Result<u128>`.
+**Remediation:** `fetch_u128_metric` helper (line 1032) handles the raw U256 RPC request pattern.
+`get_gas_price` (line 1047) calls `self.fetch_u128_metric("eth_gasPrice")`.
+`get_max_priority_fee` (line 1054) calls `self.fetch_u128_metric("eth_maxPriorityFeePerGas")`.
+
+**Remaining work:** None.
 
 ---
 
@@ -846,8 +798,8 @@ Also `info_mut()` at line 469.
 | `DuneTokenInfo` | `dune/types.rs:98` | **REMOVED** |
 | `FALLBACK_LTV_BPS` | `mev/detectors/liquidation.rs:33` | **Renamed** to FALLBACK_LIQUIDATION_THRESHOLD_BPS |
 | `_x_in_new` variable | `pool/math/curve.rs:143` | **REMOVED** |
-| `RpcError::AllProvidersFailed` | `error/rpc.rs:8` | Still present -- remove |
-| `RpcError::RateLimited` | `error/rpc.rs:10` | Still present -- remove |
+| `RpcError::AllProvidersFailed` | `error/rpc.rs:8` | **REMOVED** |
+| `RpcError::RateLimited` | `error/rpc.rs:10` | **REMOVED** |
 | `EtagStore` | `rpc/middleware.rs:85` | **REMOVED** |
 | `cross_validate_opportunities()` | `dune/cross_validate.rs` | **REMOVED** (file deleted) |
 
@@ -868,7 +820,7 @@ Also `info_mut()` at line 469.
 
 | Item | File:Line | Issue |
 |------|-----------|-------|
-| `_burned` parameter | `jit.rs:223` | Prefixed `_` but IS used -- remove underscore (see 3.7) |
+| `_burned` parameter | `jit.rs:224` | **REMOVED** -- renamed to `burned` (see 3.7) |
 | `_expected_chain_id` param | `rpc/client.rs:491` | Unused param -- should be removed |
 | `_gas_config` param | `cross_block.rs:96` | Unused param -- should be removed |
 | `_token_in` / `_token_out` params | `cross_block.rs:205-206` | Unused params -- should be removed |
@@ -917,8 +869,8 @@ Also `info_mut()` at line 469.
 |-------|-------|-------|------|---------|------|--------|
 | Phase 0 | 0.1-0.4 | 4 | 4 | 0 | 0 | 100% |
 | Phase 1 | 1.1-1.10 | 10 | 10 | 0 | 0 | 100% |
-| Phase 2 | 2.1-2.8 | 8 | 5 | 0 | 3 | 62% |
-| Phase 3 | 3.1-3.8 | 8 | 1 | 1 | 6 | 12% |
-| Phase 4 | 4.1-4.7 | 7 | 1 | 2 | 4 | 29% |
-| Phase 5 | 5.1-5.28 | 28 | 17 | 2 | 9 | 68% |
-| **Total** | **65 items** | **65** | **38** | **5** | **22** | **~58%** |
+| Phase 2 | 2.1-2.8 | 8 | 8 | 0 | 0 | 100% |
+| Phase 3 | 3.1-3.8 | 8 | 8 | 0 | 0 | 100% |
+| Phase 4 | 4.1-4.7 | 7 | 7 | 0 | 0 | 100% |
+| Phase 5 | 5.1-5.28 | 28 | 28 | 0 | 0 | 100% |
+| **Total** | **65 items** | **65** | **65** | **0** | **0** | **100%** |

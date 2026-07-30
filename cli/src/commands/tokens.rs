@@ -1,3 +1,4 @@
+use anyhow::Context;
 use comfy_table::Table;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
@@ -9,7 +10,7 @@ use crate::cli::TokensArgs;
 
 pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()> {
     let (chain_name, _chain_config) = validation::resolve_chain(config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .context("failed to resolve chain")?;
     let chain_id = chain_name.chain_id();
 
     // Resolve Dune API key

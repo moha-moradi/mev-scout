@@ -1,6 +1,15 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
 use alloy::primitives::{Address, U256};
+
+/// Percentage multiplier for +1% adjustment (101/100).
+const PCT_101: u128 = 101;
+/// Percentage multiplier for -1% adjustment (99/100).
+const PCT_99: u128 = 99;
+/// Percentage multiplier for +2% adjustment (102/100).
+const PCT_102: u128 = 102;
+/// Percentage multiplier for -2% adjustment (98/100).
+const PCT_98: u128 = 98;
 use std::cmp;
 
 use crate::types::MevOpportunity;
@@ -299,10 +308,10 @@ fn compute_slippage_profits(
         }
     };
     (
-        eval(optimal_input.saturating_mul(101) / 100),   // +1%
-        eval(optimal_input.saturating_mul(99) / 100),    // -1%
-        eval(optimal_input.saturating_mul(102) / 100),   // +2%
-        eval(optimal_input.saturating_mul(98) / 100),    // -2%
+        eval(optimal_input.saturating_mul(PCT_101) / 100),
+        eval(optimal_input.saturating_mul(PCT_99) / 100),
+        eval(optimal_input.saturating_mul(PCT_102) / 100),
+        eval(optimal_input.saturating_mul(PCT_98) / 100),
     )
 }
 

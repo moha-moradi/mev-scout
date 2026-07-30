@@ -12,6 +12,7 @@ use crate::pool::decoders::{
 use crate::pool::math::quote_exact_in;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in};
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
@@ -306,9 +307,9 @@ impl SandwichDetector {
             _ => {
                 // Non-V2: estimate backrun using the same relative exchange rate
                 // as the historical backrun, which accounts for the victim swap's effect.
-                let back_rate = (back.amount_out as u128).saturating_mul(1_000_000)
+                let back_rate = (back.amount_out as u128).saturating_mul(PPM_DENOMINATOR)
                     .saturating_div((back.amount_in as u128).max(1));
-                front_out_adj.saturating_mul(back_rate).saturating_div(1_000_000)
+                front_out_adj.saturating_mul(back_rate).saturating_div(PPM_DENOMINATOR)
             }
         };
 
@@ -478,7 +479,7 @@ impl SandwichDetector {
                 };
                 let sandwich_slippage = |pct: u128| -> Option<U256> {
                     if front.amount_in == 0 { return None; }
-                    let adj_in = (front.amount_in as u128).saturating_mul(pct) / 100;
+                    let adj_in = (front.amount_in as u128).saturating_mul(pct) / PERCENT_DENOMINATOR;
                     if adj_in == 0 { return None; }
                     let raw_adj = Self::sandwich_raw_profit_at(
                         pool_manager, front, victim, back,

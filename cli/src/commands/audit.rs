@@ -1,3 +1,4 @@
+use anyhow::Context;
 use comfy_table::Table;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::audit::run_audit;
@@ -23,8 +24,9 @@ pub async fn cmd_audit(config: &Config, args: &AuditArgs) -> anyhow::Result<()> 
         if !path.exists() {
             anyhow::bail!("results file not found ({})", path.display());
         }
-        let json_str = std::fs::read_to_string(&path)?;
-        let results: ResultsFile = serde_json::from_str(&json_str)?;
+    let json_str = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read results file: {}", path.display()))?;
+    let results: ResultsFile = serde_json::from_str(&json_str)?;
         tracing::info!("Loaded {} opportunities from run '{run_id}'", results.opportunities.len());
         results.opportunities
     } else if let Some(path) = &args.results_file {

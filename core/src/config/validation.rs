@@ -25,7 +25,7 @@ pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainCo
     let chain_name: ChainName = config
         .chain
         .parse()
-        .map_err(|e| ConfigError::Validation(format!("Error: {e}")))?;
+        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
 
     let chain_config = config
         .chains
@@ -33,7 +33,7 @@ pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainCo
         .cloned()
         .ok_or_else(|| {
             ConfigError::Validation(format!(
-                "Error: no [chains.{}] section found in config.",
+                "no [chains.{}] section found in config.",
                 chain_name
             ))
         })?;
@@ -44,12 +44,12 @@ pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainCo
 pub fn validate_rpc_url(url: &str) -> std::result::Result<(), ConfigError> {
     if url.trim().is_empty() {
         return Err(ConfigError::Validation(
-            "Error: RPC URL cannot be empty.".to_string(),
+            "RPC URL cannot be empty.".to_string(),
         ));
     }
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ConfigError::Validation(format!(
-            "Error: RPC URL '{}' must start with http:// or https://.",
+            "RPC URL '{}' must start with http:// or https://.",
             url
         )));
     }
@@ -81,7 +81,7 @@ pub fn resolve_block_range(
 
     if flags.len() > 1 {
         return Err(ConfigError::Validation(format!(
-            "Error: {} cannot be used together.\n\
+            "{} cannot be used together.\n\
              Use exactly one of: --days, --blocks, --block, or --from-block/--to-block.",
             flags.join(" and ")
         )));
@@ -89,14 +89,14 @@ pub fn resolve_block_range(
 
     if (from_block.is_some() && to_block.is_none()) || (from_block.is_none() && to_block.is_some()) {
         return Err(ConfigError::Validation(
-            "Error: --from-block and --to-block must be used together.".to_string(),
+            "--from-block and --to-block must be used together.".to_string(),
         ));
     }
 
     if let (Some(f), Some(t)) = (from_block, to_block) {
         if t <= f {
             return Err(ConfigError::Validation(format!(
-                "Error: --to-block ({t}) must be greater than --from-block ({f})."
+                "--to-block ({t}) must be greater than --from-block ({f})."
             )));
         }
         return Ok(RangeMode::Range(f, t));
@@ -105,7 +105,7 @@ pub fn resolve_block_range(
     if let Some(d) = days {
         if !(1..=365).contains(&d) {
             return Err(ConfigError::Validation(
-                "Error: --days must be between 1 and 365.".to_string(),
+                "--days must be between 1 and 365.".to_string(),
             ));
         }
         return Ok(RangeMode::Days(d));
@@ -114,7 +114,7 @@ pub fn resolve_block_range(
     if let Some(b) = blocks {
         if b < 1 {
             return Err(ConfigError::Validation(
-                "Error: --blocks must be >= 1.".to_string(),
+                "--blocks must be >= 1.".to_string(),
             ));
         }
         return Ok(RangeMode::Blocks(b));
@@ -123,14 +123,14 @@ pub fn resolve_block_range(
     if let Some(b) = block {
         if b == 0 {
             return Err(ConfigError::Validation(
-                "Error: --block must be > 0.".to_string(),
+                "--block must be > 0.".to_string(),
             ));
         }
         return Ok(RangeMode::Single(b));
     }
 
     Err(ConfigError::Validation(
-        "Error: no block range specified.\n\
+        "no block range specified.\n\
          Use one of: --days, --blocks, --block, or --from-block + --to-block."
             .to_string(),
     ))
@@ -149,22 +149,22 @@ pub fn validate_replay(config: &Config) -> std::result::Result<(ChainName, Chain
         Ok(RangeMode::Single(b)) if b > 0 => {},
         Ok(RangeMode::Single(_)) => {
             return Err(ConfigError::Validation(
-                "Error: --block must be > 0.".to_string(),
+                "--block must be > 0.".to_string(),
             ));
         }
         Ok(RangeMode::Days(_)) => {
             return Err(ConfigError::Validation(
-                "Error: --days is not supported by the replay subcommand. Use --block instead.".to_string(),
+                "--days is not supported by the replay subcommand. Use --block instead.".to_string(),
             ));
         }
         Ok(RangeMode::Blocks(_)) => {
             return Err(ConfigError::Validation(
-                "Error: --blocks is not supported by the replay subcommand. Use --block instead.".to_string(),
+                "--blocks is not supported by the replay subcommand. Use --block instead.".to_string(),
             ));
         }
         Ok(RangeMode::Range(_, _)) => {
             return Err(ConfigError::Validation(
-                "Error: --from-block/--to-block is not supported by the replay subcommand. Use --block instead.".to_string(),
+                "--from-block/--to-block is not supported by the replay subcommand. Use --block instead.".to_string(),
             ));
         }
         Err(e) => {
@@ -172,7 +172,7 @@ pub fn validate_replay(config: &Config) -> std::result::Result<(ChainName, Chain
             // replay-specific missing --block error.
             let _ = e;
             return Err(ConfigError::Validation(
-                "Error: --block is required for the replay subcommand and must be > 0.".to_string(),
+                "--block is required for the replay subcommand and must be > 0.".to_string(),
             ));
         }
     }
@@ -192,7 +192,7 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     let (chain_name, chain_config) = resolve_chain(config)?;
 
     let provider: FlashLoanProvider = config.backtest.flash_loan_provider.parse().map_err(|e| {
-        ConfigError::Validation(format!("Error: {e}"))
+        ConfigError::Validation(format!("{e}"))
     })?;
 
     if provider.is_forced() {
@@ -220,7 +220,7 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
 
     let strategies: Vec<Strategy> = if check_strategies {
         let s = Strategy::from_comma_list(&config.backtest.strategies)
-            .map_err(|e| ConfigError::Validation(format!("Error: {e}")))?;
+            .map_err(|e| ConfigError::Validation(format!("{e}")))?;
         s
     } else {
         Vec::new()
@@ -236,12 +236,33 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     }
 
     let gas_model: GasModel = config.gas.gas_model.parse().map_err(|e| {
-        ConfigError::Validation(format!("Error: {e}"))
+        ConfigError::Validation(format!("{e}"))
     })?;
 
     let _: OutputFormat = config.output.output.parse().map_err(|e| {
-        ConfigError::Validation(format!("Error: {e}"))
+        ConfigError::Validation(format!("{e}"))
     })?;
+
+    if !(21_000..=30_000_000).contains(&config.gas.gas_limit) {
+        return Err(ConfigError::InvalidValue {
+            field: "gas_limit".into(),
+            message: format!("must be between 21,000 and 30,000,000, got {}", config.gas.gas_limit),
+        });
+    }
+
+    if config.rpc.rps_limit > 0.0 && config.rpc.rps_limit > 10_000.0 {
+        return Err(ConfigError::InvalidValue {
+            field: "rps_limit".into(),
+            message: format!("must be between 0 and 10,000, got {}", config.rpc.rps_limit),
+        });
+    }
+
+    if config.backtest.proximity_window > 100 {
+        return Err(ConfigError::InvalidValue {
+            field: "proximity_window".into(),
+            message: format!("must be between 0 and 100, got {}", config.backtest.proximity_window),
+        });
+    }
 
     Ok(ValidationResult {
         chain_name,

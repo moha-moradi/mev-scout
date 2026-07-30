@@ -5,6 +5,7 @@ use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
 use crate::types::MevOpportunity;
+use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::math::v3::estimate_v3_swap_gas;
 use crate::types::{GasConfig, Strategy};
@@ -266,7 +267,7 @@ impl JitDetector {
                 } else {
                     (mint.swap_volume as u128)
                         .saturating_mul(pool_fee as u128)
-                        .saturating_div(1_000_000)
+                        .saturating_div(PPM_DENOMINATOR)
                 };
                 // Normalize fallback estimate using token0 as reference
                 let (t0, _) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));
@@ -298,7 +299,7 @@ impl JitDetector {
         // H9: JIT fee scales linearly with position size — compute ±1%/±2% slippage
         let jit_slippage = |pct: u128| -> Option<U256> {
             if normalized_fees == 0 { return None; }
-            Some(U256::from(normalized_fees.saturating_mul(pct) / 100))
+            Some(U256::from(normalized_fees.saturating_mul(pct) / PERCENT_DENOMINATOR))
         };
         MevOpportunity {
             canonical_id: None,

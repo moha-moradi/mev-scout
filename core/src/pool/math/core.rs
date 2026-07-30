@@ -3,7 +3,7 @@
 
 use alloy::primitives::Address;
 use crate::pool::state::PoolState;
-use super::consts::BPS_DENOMINATOR;
+use super::consts::{BPS_DENOMINATOR, TERNARY_SEARCH_ITERATIONS, GOLDEN_SECTION_REFINE_ITERATIONS, N_HOP_GRID_POINTS};
 use super::v3::quote_v3_exact_in;
 use super::curve;
 use super::balancer;
@@ -169,7 +169,7 @@ pub fn optimal_two_hop_arb(
     let mut hi = max_input;
     let mut best: Option<TwoHopArbResult> = None;
 
-    for _ in 0..80 {
+    for _ in 0..TERNARY_SEARCH_ITERATIONS {
         let m1 = lo + (hi - lo) / 3;
         let m2 = hi - (hi - lo) / 3;
 
@@ -341,7 +341,7 @@ fn grid_plus_refine(
     let lo = best_input.saturating_sub(radius);
     let hi = (best_input + radius).min(max_input);
 
-    if let Some(refined) = golden_section_maximize(lo, hi, quote_fn, 40) {
+    if let Some(refined) = golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
         if let Some(output) = quote_fn(refined) {
             if output > refined && output - refined > best_profit {
                 best_profit = output - refined;
@@ -356,20 +356,20 @@ fn grid_plus_refine(
     // input range; a single grid + refine can miss peaks between grid points.
     // Multiple golden-section searches from random start points provide
     // stochastic coverage of the full search space.
-    let num_restarts = 5;
+    let num_restarts = 5u32;
     for i in 0..num_restarts {
         let ratio = ((i as f64 + 1.0) * 0.618033988749895).fract();
         let start = ((max_input as f64) * ratio) as u128;
         if start == 0 || start >= max_input {
             continue;
         }
-        let r_radius = max_input / 8;
+        let r_radius = max_input / 8u128;
         let r_lo = start.saturating_sub(r_radius).max(1);
         let r_hi = (start + r_radius).min(max_input);
         if r_lo >= r_hi {
             continue;
         }
-        if let Some(x) = golden_section_maximize(r_lo, r_hi, quote_fn, 30) {
+        if let Some(x) = golden_section_maximize(r_lo, r_hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
             if let Some(output) = quote_fn(x) {
                 if output > x {
                     let profit = output - x;
@@ -396,7 +396,7 @@ pub fn optimal_n_hop_generic(
     max_input: u128,
     quote_fn: &impl Fn(u128) -> Option<u128>,
 ) -> Option<(u128, u128)> {
-    grid_plus_refine(max_input, quote_fn, 50)
+    grid_plus_refine(max_input, quote_fn, N_HOP_GRID_POINTS)
 }
 
 /// Version of `optimal_two_hop_arb` that accepts generic quoting functions.

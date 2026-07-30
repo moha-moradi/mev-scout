@@ -1,5 +1,7 @@
 //! Shared StableSwap Newton's method math used by both Curve and Balancer.
 
+use super::consts::NEWTON_INVARIANT_ITERATIONS;
+
 /// Newton's method to find the StableSwap invariant D from N balances.
 ///
 /// Solves: f(D) = D^(n+1) / (nⁿ·P) + (A·nⁿ - 1)·D - A·nⁿ·S = 0
@@ -20,7 +22,7 @@ pub fn newton_stableswap_invariant(
     let c = ann - 1.0;
     let target = ann * sum;
     let mut d = guess;
-    for _ in 0..128 {
+    for _ in 0..NEWTON_INVARIANT_ITERATIONS {
         let d_np1 = d.powf(np1);
         let d_n = d.powf(nf);
         let f = d_np1 / denom + c * d - target;

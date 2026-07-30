@@ -1,3 +1,4 @@
+use anyhow::Context;
 use mev_scout_core::utils::epoch_secs;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -17,7 +18,8 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
         Err(e) => anyhow::bail!("{e}"),
     };
 
-    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let setup = init_rpc(config, chain_name.clone(), true).await
+        .context("failed to initialize RPC client")?;
     let provider_configs = setup.provider_configs;
     let rpc = setup.rpc;
     tracing::info!("{}", rpc.provider_summary().await);

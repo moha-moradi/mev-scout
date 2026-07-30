@@ -20,6 +20,20 @@
 //! result against cached receipts (status, gas used, logs). Polygon system
 //! logs from `0x1001` and `0x1010` are filtered during comparison.
 
+/// Build a `MainnetEvm` for the given block, handling DB creation and Polygon setup.
+macro_rules! build_mainnet_evm {
+    ($self:expr, $block_num:expr, $block:expr) => {{
+        let cache_db = $self.create_db_for_block($block_num)?;
+        let cfg_env = $self.build_cfg_env($block_num);
+        let block_env = $self.build_block_env($block);
+        Context::mainnet()
+            .with_db(cache_db)
+            .with_cfg(cfg_env)
+            .with_block(block_env)
+            .build_mainnet()
+    }};
+}
+
 use alloy::primitives::{address, keccak256, Address, B256, Bytes, U256};
 use revm::bytecode::Bytecode;
 use revm::context::block::BlockEnv;
@@ -39,7 +53,7 @@ use crate::cache::SqliteStore;
 use crate::data::{BlockData, ExecutedLog, ExecutedTx, LogData, ReceiptData, TxData};
 use crate::rpc::RpcClient;
 
-pub use super::db::*;
+pub use super::db::{CachedRpcDb, DbError};
 
 /// Polygon BLS12-377 precompile addresses (Heimdall fork)
 const BLS12_377_ADDRESSES: [u8; 4] = [0x09, 0x0a, 0x0b, 0x0c];
@@ -439,17 +453,7 @@ impl BlockReplayer {
             end
         );
 
-        let cache_db = self.create_db_for_block(block_num)?;
-
-        let cfg_env = self.build_cfg_env(block_num);
-        let block_env = self.build_block_env(&_block);
-
-        let ctx = Context::mainnet()
-            .with_db(cache_db)
-            .with_cfg(cfg_env)
-            .with_block(block_env);
-
-        let mut evm = ctx.build_mainnet();
+        let mut evm = build_mainnet_evm!(self, block_num, &_block);
         let mut results = Vec::with_capacity(end + 1);
         let mut total_match = 0u64;
         let mut total_mismatch = 0u64;
@@ -524,17 +528,7 @@ impl BlockReplayer {
         let (block, txs) = self.load_block_data(block_num)?;
         let receipts = self.load_receipts(block_num)?;
 
-        let cache_db = self.create_db_for_block(block_num)?;
-
-        let cfg_env = self.build_cfg_env(block_num);
-        let block_env = self.build_block_env(&block);
-
-        let ctx = Context::mainnet()
-            .with_db(cache_db)
-            .with_cfg(cfg_env)
-            .with_block(block_env);
-
-        let mut evm = ctx.build_mainnet();
+        let mut evm = build_mainnet_evm!(self, block_num, &block);
 
         for (i, tx) in txs.iter().enumerate() {
             let tx_env = self.tx_data_to_tx_env(tx);
@@ -589,17 +583,7 @@ impl BlockReplayer {
         let (block, txs) = self.load_block_data(block_num)?;
         let receipts = self.load_receipts(block_num)?;
 
-        let cache_db = self.create_db_for_block(block_num)?;
-
-        let cfg_env = self.build_cfg_env(block_num);
-        let block_env = self.build_block_env(&block);
-
-        let ctx = Context::mainnet()
-            .with_db(cache_db)
-            .with_cfg(cfg_env)
-            .with_block(block_env);
-
-        let mut evm = ctx.build_mainnet();
+        let mut evm = build_mainnet_evm!(self, block_num, &block);
 
         for (i, tx) in txs.iter().enumerate() {
             let receipt_logs = receipts

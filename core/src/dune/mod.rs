@@ -8,4 +8,12 @@ pub mod types;
 pub mod util;
 
 pub use client::DuneClient;
-pub use types::*;
+pub use types::{
+    DuneAddressLabel, DuneAggregatorTrade, DuneApiError, DuneBlockInfo, DuneBridgeFlow,
+    DuneBridgeNetFlow, DuneDexFlashLoan, DuneDiscoveredPool, DuneExecutionError,
+    DuneExecutionResponse, DuneExecutionResult, DuneExecutionStatus, DuneFailedTx,
+    DuneGasByHour, DuneGasPrice, DuneLargeSwap, DuneLatestPrice, DuneLendingBorrowEvent,
+    DuneLendingSupplyEvent, DuneLiquidation, DunePoolWithMetadata, DuneResultMetadata,
+    DuneResults, DuneRow, DuneSandwich, DuneSandwichedVictim, DuneTokenWithStats, DuneTrade,
+    DuneUtilsDay, DuneUtilsHour, DuneWhaleTransfer,
+};

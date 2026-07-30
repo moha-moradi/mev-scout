@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::collections::HashSet;
 
 use alloy::primitives::Address;
@@ -15,7 +16,7 @@ use mev_scout_core::resolver::RangeResolver;
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
     let (chain_name, chain_config) = validation::resolve_chain(config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .context("failed to resolve chain configuration")?;
     let chain_id = chain_name.chain_id();
 
     let source = args.source.to_lowercase();

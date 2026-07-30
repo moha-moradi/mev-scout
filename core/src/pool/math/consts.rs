@@ -15,3 +15,21 @@ pub const V3_POOL_GAS: u64 = 120_000;
 pub const STABLE_POOL_GAS: u64 = 100_000;
 pub const JIT_OVERHEAD: u64 = 150_000;
 pub const LIQUIDATION_GAS_LIMIT: u64 = 180_000;
+
+// Iteration bounds for numerical solvers
+pub const TERNARY_SEARCH_ITERATIONS: i32 = 80;
+pub const GOLDEN_SECTION_REFINE_ITERATIONS: usize = 40;
+pub const NEWTON_INVARIANT_ITERATIONS: i32 = 128;
+pub const NEWTON_OUTPUT_ITERATIONS: i32 = 64;
+pub const N_HOP_GRID_POINTS: usize = 50;
+
+// Pool math thresholds
+pub const MAX_V2_RESERVE_RATIO: u128 = 100;
+pub const Q128_SHIFT: u32 = 128; // Q128.128 fixed-point shift (V3 fee growth)
+pub const MIN_DAMPING_PERMILLE: u128 = 200;
+pub const MAX_EXTRACTION_NUMERATOR: u128 = 999;
+pub const BALANCER_FEE_ETHER_DIVISOR: u128 = 1_000_000_000_000;
+
+// Discovery / backtest constants
+pub const LIQUIDITY_CHANGE_THRESHOLD_DIVISOR: u128 = 1000;
+pub const PERCENT_DENOMINATOR: u128 = 100;

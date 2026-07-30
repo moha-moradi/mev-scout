@@ -1,6 +1,7 @@
 use alloy::primitives::{b256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders;
+use crate::pool::math::consts::{PPM_DENOMINATOR, Q128_SHIFT};
 use crate::pool::state::manager::PoolManager;
 use crate::pool::state::pool_types::PoolState;
 use crate::utils::u128_from_be_bytes;
@@ -64,17 +65,17 @@ impl PoolManager {
                 let fee_tier = state.info.fee as u128;
                 if amount0 < 0 {
                     let input = amount0.unsigned_abs();
-                    let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                    let fee = input.saturating_mul(fee_tier) / PPM_DENOMINATOR;
                     if fee > 0 && liquidity > 0 {
-                        let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                        let inc = (U256::from(fee) << Q128_SHIFT) / U256::from(liquidity);
                         state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
                     }
                 }
                 if amount1 < 0 {
                     let input = amount1.unsigned_abs();
-                    let fee = input.saturating_mul(fee_tier) / 1_000_000u128;
+                    let fee = input.saturating_mul(fee_tier) / PPM_DENOMINATOR;
                     if fee > 0 && liquidity > 0 {
-                        let inc = (U256::from(fee) << 128) / U256::from(liquidity);
+                        let inc = (U256::from(fee) << Q128_SHIFT) / U256::from(liquidity);
                         state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
                     }
                 }

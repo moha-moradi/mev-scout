@@ -76,18 +76,5 @@ async fn main() -> anyhow::Result<()> {
     let overrides = overrides::build_overrides(&cli);
     config.merge_cli(&overrides);
 
-    match &cli.command {
-        Command::Run(args) => commands::cmd_run(&config, args).await,
-        Command::Fetch(args) => commands::cmd_fetch(&config, args).await,
-        Command::Report(args) => commands::cmd_report(&config, args).await,
-        Command::Config => commands::cmd_config(&config).await,
-        Command::Replay(args) => commands::cmd_replay(&config, args).await,
-        Command::Discover(args) => commands::cmd_discover(&config, args).await,
-        Command::Live(args) => commands::cmd_live(&config, args).await,
-        Command::Audit(args) => commands::cmd_audit(&config, args).await,
-        Command::DuneCheck(args) => commands::cmd_dune_check(&config, args).await,
-        Command::DuneFindBlocks(args) => commands::cmd_dune_find_blocks(&config, args).await,
-        Command::DuneQuery(args) => commands::cmd_dune_query(&config, args).await,
-        Command::Tokens(args) => commands::cmd_tokens(&config, args).await,
-    }
+    commands::execute(&cli.command, &config).await
 }

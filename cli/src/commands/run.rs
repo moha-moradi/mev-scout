@@ -1,3 +1,4 @@
+use anyhow::Context;
 use mev_scout_core::utils::epoch_secs;
 
 use alloy::primitives::Address;
@@ -17,10 +18,8 @@ use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::types::{GasConfig, ResultsFile};
 
 pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
-    let validation_result = match validation::validate_and_resolve(config) {
-        Ok(r) => r,
-        Err(e) => anyhow::bail!("{}", e),
-    };
+    let validation_result = validation::validate_and_resolve(config)
+        .context("invalid configuration")?;
     print_startup_plan(&validation_result, config);
 
     let setup = init_rpc(config, validation_result.chain_name, true).await?;

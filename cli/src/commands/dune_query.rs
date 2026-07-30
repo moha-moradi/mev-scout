@@ -1,3 +1,4 @@
+use anyhow::Context;
 use crate::cli::DuneQueryArgs;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::client::DuneClient;
@@ -425,7 +426,8 @@ pub async fn cmd_dune_query(config: &Config, args: &DuneQueryArgs) -> anyhow::Re
     eprintln!("Running {} on {}...", query_name, args.chain);
     eprintln!("SQL:\n{}\n", sql);
 
-    let result = client.execute_raw_sql(&sql).await?;
+    let result = client.execute_raw_sql(&sql).await
+        .context("Dune query execution failed")?;
 
     match result.result {
         Some(ref r) => {
