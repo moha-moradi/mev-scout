@@ -20,3 +20,8 @@ rpc_rps = [20,20,15,15,15]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2
+
+# Depth (in blocks) at which the archive-support probe runs. Lower values let
+# retention-limited endpoints (e.g. Polygon full nodes) pass the probe so
+# replay/run can attempt recent blocks near the tip.
+archive_probe_depth_blocks = 32

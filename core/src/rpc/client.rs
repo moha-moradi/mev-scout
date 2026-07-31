@@ -1,8 +1,8 @@
 //! Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 //! and block-range sharding for load distribution across public/private RPC endpoints.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use crate::rpc::consts::{DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::rpc::consts::{ARCHIVE_PROBE_DEPTH_BLOCKS, DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,6 +22,51 @@ use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData
 
 use super::middleware::{ProviderState, RateLimiter};
 
+/// Whether an RPC error message describes a transient transport-level failure
+/// (fresh-connection handshake resets, timeouts, connection closed/refused)
+/// rather than a definitive JSON-RPC response (e.g. reverts, missing state).
+/// Shared endpoints intermittently reset the first connection of a new process;
+/// those attempts are safe to retry.
+fn is_transport_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("error sending request")
+        || m.contains("connection")
+        || m.contains("timed out")
+        || m.contains("timeout")
+        || m.contains("reset")
+        || m.contains("refused")
+        || m.contains("closed")
+}
+
+/// Retry an RPC future a few times when it fails with a transient transport
+/// error. Definitive JSON-RPC errors are returned immediately (not retried).
+async fn retry_transport<F, Fut, T, E>(mut f: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    const MAX_ATTEMPTS: usize = 3;
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                let msg = e.to_string();
+                if attempts < MAX_ATTEMPTS && is_transport_error(&msg) {
+                    tokio::time::sleep(
+                        tokio::time::Duration::from_millis(400 * attempts as u64),
+                    )
+                    .await;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
 /// Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 /// and health tracking.
 ///
@@ -33,6 +78,7 @@ pub struct RpcClient {
     providers: Arc<tokio::sync::Mutex<Vec<ProviderState>>>,
     chain_id: u64,
     current: Arc<AtomicUsize>,
+    archive_probe_depth: Arc<AtomicU64>,
 }
 
 impl RpcClient {
@@ -66,6 +112,7 @@ impl RpcClient {
             providers: Arc::new(tokio::sync::Mutex::new(providers)),
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
+            archive_probe_depth: Arc::new(AtomicU64::new(ARCHIVE_PROBE_DEPTH_BLOCKS)),
         })
     }
 
@@ -146,6 +193,17 @@ impl RpcClient {
         }
     }
 
+    /// Set the block depth behind the tip at which the archive-support probe runs.
+    ///
+    /// Endpoints with limited state retention (e.g. Polygon full nodes, ~128 blocks)
+    /// only serve `eth_getProof` near the tip. Setting a lower depth lets them be
+    /// classified as archive-capable, at the cost of replay/run only working for
+    /// blocks within this depth of the tip.
+    pub fn with_archive_probe_depth(&self, depth_blocks: u64) {
+        self.archive_probe_depth
+            .store(depth_blocks, Ordering::Relaxed);
+    }
+
     /// Get available providers sorted by effective weight descending (fastest + highest RPS first).
     async fn sorted_available(&self) -> Vec<(usize, ProviderState)> {
         let provs = self.providers.lock().await;
@@ -223,10 +281,34 @@ impl RpcClient {
 
                 provider.acquire_permit().await;
 
-                let t0 = Instant::now();
-                match f(provider.provider().clone()).await {
-                    Ok(val) => {
-                        let latency = t0.elapsed();
+                // Retry transient transport errors (e.g. fresh-connection
+                // handshake resets on shared endpoints) on the same provider
+                // before giving up and moving to the next one.
+                let mut attempts = 0;
+                let outcome = loop {
+                    attempts += 1;
+                    let t0 = Instant::now();
+                    match f(provider.provider().clone()).await {
+                        Ok(val) => break Ok((val, t0.elapsed())),
+                        Err(e) => {
+                            let err_msg = format!("{e:#}");
+                            let is_evm_revert = err_msg.contains("execution reverted");
+                            let transient = !is_evm_revert && is_transport_error(&err_msg);
+                            if transient && attempts < 3 {
+                                tracing::debug!(
+                                    "transport error on {} (attempt {attempts}): {err_msg}",
+                                    provider.label(),
+                                );
+                                tokio::time::sleep(tokio::time::Duration::from_millis(300 * attempts as u64)).await;
+                                continue;
+                            }
+                            break Err((e, is_evm_revert));
+                        }
+                    }
+                };
+
+                match outcome {
+                    Ok((val, latency)) => {
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             p.record_success(latency);
@@ -235,9 +317,8 @@ impl RpcClient {
                         self.current.store(*idx, Ordering::Relaxed);
                         return Ok(val);
                     }
-                    Err(e) => {
+                    Err((e, is_evm_revert)) => {
                         let err_msg = format!("{e:#}");
-                        let is_evm_revert = err_msg.contains("execution reverted");
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             if is_evm_revert {
@@ -281,6 +362,27 @@ impl RpcClient {
                 anyhow::bail!("all {which} providers failed: {e:#}")
             }
             None => {
+                if archive_only {
+                    let provs = self.providers.lock().await;
+                    let archive_total = provs.iter().filter(|p| p.archive()).count();
+                    let archive_alive = provs
+                        .iter()
+                        .filter(|p| p.archive() && p.is_available())
+                        .count();
+                    drop(provs);
+                    if archive_total == 0 {
+                        anyhow::bail!(
+                            "no archive-capable RPC provider is available — this operation requires \
+                             historical state via eth_getProof. Add a genuine archive RPC endpoint \
+                             (e.g. Alchemy, QuickNode, Chainstack, Infura) to the config and retry"
+                        );
+                    } else if archive_alive == 0 {
+                        anyhow::bail!(
+                            "archive-capable RPC providers exist ({archive_total}) but none are \
+                             currently available (all in cooldown) — retry after the cooldown expires"
+                        );
+                    }
+                }
                 let which = if archive_only { "archive RPC" } else { "RPC" };
                 anyhow::bail!("all {which} providers exhausted or in cooldown")
             }
@@ -341,6 +443,7 @@ impl RpcClient {
             let provs = self.providers.lock().await;
             provs.iter().enumerate().map(|(i, s)| (i, s.provider().clone(), s.label().to_string())).collect()
         };
+        let probe_depth = self.archive_probe_depth.load(Ordering::Relaxed);
 
         // Validate all providers concurrently (Phase 1 + Phase 2).
         let validations: Vec<_> = snapshots
@@ -351,7 +454,7 @@ impl RpcClient {
                 let i = *i;
                 async move {
                     let phase1 = Self::check_provider_chain(&provider, &label, expected_chain_id).await;
-                    let phase2 = Self::check_provider_archive(&provider, &label, expected_chain_id).await;
+                    let phase2 = Self::check_provider_archive(&provider, &label, probe_depth).await;
                     (i, label, phase1, phase2)
                 }
             })
@@ -396,8 +499,7 @@ impl RpcClient {
         label: &str,
         expected_chain_id: u64,
     ) -> anyhow::Result<()> {
-        let actual_chain_id = provider
-            .get_chain_id()
+        let actual_chain_id = retry_transport(|| provider.get_chain_id())
             .await
             .map_err(|e| anyhow::anyhow!("{label}: eth_chainId failed: {e}"))?;
 
@@ -407,8 +509,7 @@ impl RpcClient {
             );
         }
 
-        let _tip = provider
-            .get_block_number()
+        let _tip = retry_transport(|| provider.get_block_number())
             .await
             .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}"))?;
 
@@ -416,23 +517,37 @@ impl RpcClient {
     }
 
     /// Phase 2: probe archive support via `eth_getProof`.
+    ///
+    /// Probes historical state at `tip - probe_depth` (not the tip), because
+    /// replay/run fetch state at arbitrary historical blocks. Shared, pruned,
+    /// or load-balanced endpoints often serve `eth_getProof` at the tip while
+    /// failing on older state — probing the tip would wrongly mark them as
+    /// archive. `probe_depth` is configurable; lower values let endpoints with
+    /// limited state retention (e.g. Polygon full nodes, ~128 blocks) pass.
+    ///
     /// Returns `Ok(())` if archive is supported, `Err` otherwise.
     /// The provider stays alive either way — archive is just metadata.
     async fn check_provider_archive(
         provider: &RootProvider,
         label: &str,
-        _expected_chain_id: u64,
+        probe_depth: u64,
     ) -> anyhow::Result<()> {
-        let tip = provider
-            .get_block_number()
+        let tip = retry_transport(|| provider.get_block_number())
             .await
             .map_err(|e| anyhow::anyhow!("{label}: eth_blockNumber failed: {e}"))?;
 
-        provider
-            .get_proof(Address::ZERO, vec![])
-            .number(tip)
-            .await
-            .map_err(|e| anyhow::anyhow!("eth_getProof failed: {e}"))?;
+        // Avoid genesis (empty state) on very young chains.
+        let probe_block = tip
+            .saturating_sub(probe_depth)
+            .max(1);
+
+        retry_transport(|| async {
+            provider.get_proof(Address::ZERO, vec![]).number(probe_block).await
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!(
+            "eth_getProof at block {probe_block} (tip {tip} − {probe_depth} depth) failed: {e}"
+        ))?;
 
         Ok(())
     }
@@ -1102,6 +1217,22 @@ fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {
                     .map(|item| AccessListItem {
                         address: item.address,
                         slots: item.storage_keys.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        authorization_list: tx
+            .inner
+            .authorization_list()
+            .map(|al| {
+                al.iter()
+                    .map(|a| crate::data::AuthorizationData {
+                        chain_id: *a.inner().chain_id(),
+                        address: *a.inner().address(),
+                        nonce: a.inner().nonce(),
+                        y_parity: a.y_parity(),
+                        r: a.r(),
+                        s: a.s(),
                     })
                     .collect()
             })

@@ -58,8 +58,8 @@ impl super::SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, sig_hash, sig_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, sig_hash, sig_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             )?;
             let mut rc_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
@@ -89,6 +89,7 @@ impl super::SqliteStore {
 
                 for (tx_i, tx_data) in txs.iter().enumerate() {
                     let access_list_blob = super::SqliteStore::serialize_access_list(&tx_data.access_list)?;
+                    let authorization_list_blob = super::SqliteStore::serialize_access_list(&tx_data.authorization_list)?;
                     let (sig_hash, sig_name) = block_tx_sigs.and_then(|s| s.get(tx_i))
                         .map(|(ref sel, ref name)| (Some(sel.to_vec()), name.clone()))
                         .unwrap_or((None, None));
@@ -106,6 +107,7 @@ impl super::SqliteStore {
                         tx_data.max_priority_fee_per_gas.map(|v| v as i64),
                         tx_data.nonce as i64,
                         access_list_blob,
+                        authorization_list_blob,
                         sig_hash,
                         sig_name,
                     ])?;
@@ -179,11 +181,12 @@ impl super::SqliteStore {
     pub fn put_txs(&self, block_num: u64, txs: &[TxData]) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         )?;
         for tx in txs {
             let access_list_blob = super::SqliteStore::serialize_access_list(&tx.access_list)?;
+            let auth_blob = super::SqliteStore::serialize_access_list(&tx.authorization_list)?;
             stmt.execute(rusqlite::params![
                 super::SqliteStore::b256_to_blob(&tx.hash),
                 block_num as i64,
@@ -198,6 +201,7 @@ impl super::SqliteStore {
                 tx.max_priority_fee_per_gas.map(|v| v as i64),
                 tx.nonce as i64,
                 access_list_blob,
+                auth_blob,
             ])?;
         }
         conn.execute(
@@ -213,13 +217,16 @@ impl super::SqliteStore {
             return Ok(None);
         }
         let mut stmt = conn.prepare(
-            "SELECT hash, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list
+            "SELECT hash, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list
              FROM transactions WHERE block_number = ?1 ORDER BY tx_index",
         )?;
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
         let mut txs = Vec::new();
         while let Some(row) = rows.next()? {
             let access_list = row.get::<_, Option<Vec<u8>>>(11)?
+                .map(|b| super::SqliteStore::deserialize_access_list(&b).unwrap_or_default())
+                .unwrap_or_default();
+            let authorization_list = row.get::<_, Option<Vec<u8>>>(12)?
                 .map(|b| super::SqliteStore::deserialize_access_list(&b).unwrap_or_default())
                 .unwrap_or_default();
             txs.push(TxData {
@@ -235,6 +242,7 @@ impl super::SqliteStore {
                 max_priority_fee_per_gas: row.get::<_, Option<i64>>(9)?.map(|v| v as u128),
                 nonce: row.get::<_, i64>(10)? as u64,
                 access_list,
+                authorization_list,
             });
         }
         Ok(Some(txs))

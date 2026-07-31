@@ -36,6 +36,19 @@ pub struct TxData {
     pub max_priority_fee_per_gas: Option<u128>,
     pub nonce: u64,
     pub access_list: Vec<AccessListItem>,
+    #[serde(default)]
+    pub authorization_list: Vec<AuthorizationData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A transaction's authorization list entry (EIP-7702).
+pub struct AuthorizationData {
+    pub chain_id: U256,
+    pub address: Address,
+    pub nonce: u64,
+    pub y_parity: u8,
+    pub r: U256,
+    pub s: U256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

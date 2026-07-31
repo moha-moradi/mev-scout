@@ -1,4 +1,5 @@
 use mev_scout_core::config::Config;
+use mev_scout_core::rpc::consts::ARCHIVE_PROBE_DEPTH_BLOCKS;
 use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::ChainName;
 
@@ -25,6 +26,12 @@ pub async fn init_rpc(
     .await;
     rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>())
         .await;
+    rpc.with_archive_probe_depth(
+        config
+            .rpc
+            .archive_probe_depth_blocks
+            .unwrap_or(ARCHIVE_PROBE_DEPTH_BLOCKS),
+    );
     if check_connection {
         rpc.check_connection(chain_id).await?;
     }

@@ -156,30 +156,37 @@ impl Database for CachedRpcDb {
         let result = DatabaseRef::basic_ref(self, address)?;
 
         if let Some(ref info) = result {
-            if info.code_hash != KECCAK_EMPTY && info.code.is_none()
+            if info.code_hash != KECCAK_EMPTY
                 && !self.cache_state.codes.contains_key(&info.code_hash)
             {
-                let code_bytes = {
-                    let from_cache = self
-                        .cache
-                        .get_code(address)
-                        .ok()
-                        .flatten()
-                        .filter(|bytes| keccak256(bytes) == info.code_hash);
-                    match from_cache {
-                        Some(bytes) => bytes,
-                        None => {
-                            let bytes = self
-                                .block_on_rpc(self.rpc.get_code(address, self.block_number))
-                                .map_err(DbError)?;
-                            self.cache.put_code(address, &bytes).map_err(DbError)?;
-                            bytes
-                        }
+                match &info.code {
+                    Some(code) => {
+                        self.cache_state.codes.insert(info.code_hash, code.clone());
                     }
-                };
-                self.cache_state
-                    .codes
-                    .insert(info.code_hash, Bytecode::new_raw(code_bytes));
+                    None => {
+                        let code_bytes = {
+                            let from_cache = self
+                                .cache
+                                .get_code(address)
+                                .ok()
+                                .flatten()
+                                .filter(|bytes| keccak256(bytes) == info.code_hash);
+                            match from_cache {
+                                Some(bytes) => bytes,
+                                None => {
+                                    let bytes = self
+                                        .block_on_rpc(self.rpc.get_code(address, self.block_number))
+                                        .map_err(DbError)?;
+                                    self.cache.put_code(address, &bytes).map_err(DbError)?;
+                                    bytes
+                                }
+                            }
+                        };
+                        self.cache_state
+                            .codes
+                            .insert(info.code_hash, Bytecode::new_raw(code_bytes));
+                    }
+                }
                 self.cache_state
                     .code_hash_to_address
                     .insert(info.code_hash, address);
@@ -245,15 +252,7 @@ impl DatabaseRef for CachedRpcDb {
             .get_account(self.block_number, address)
             .map_err(DbError)?
         {
-            let code = if acct.code_hash != KECCAK_EMPTY {
-                self.cache
-                    .get_code(address)
-                    .ok()
-                    .flatten()
-                    .map(Bytecode::new_raw)
-            } else {
-                None
-            };
+            let code = self.load_code(address, acct.code_hash)?;
             return Ok(Some(AccountInfo {
                 nonce: acct.nonce,
                 balance: acct.balance,
@@ -265,16 +264,7 @@ impl DatabaseRef for CachedRpcDb {
         let (nonce, balance, code_hash, _) = self
             .block_on_rpc(self.rpc.get_proof(address, &[], self.block_number))
             .map_err(DbError)?;
-        let code = if code_hash != KECCAK_EMPTY {
-            self.cache
-                .get_code(address)
-                .ok()
-                .flatten()
-                .filter(|bytes| keccak256(bytes) == code_hash)
-                .map(Bytecode::new_raw)
-        } else {
-            None
-        };
+        let code = self.load_code(address, code_hash)?;
         Ok(Some(AccountInfo {
             nonce,
             balance,
@@ -318,5 +308,36 @@ impl DatabaseRef for CachedRpcDb {
             Some(block) => Ok(block.hash),
             None => Ok(B256::ZERO),
         }
+    }
+}
+
+impl CachedRpcDb {
+    /// Resolve the runtime bytecode for an account. Prefers the SQLite code
+    /// cache (verified against the requested code hash) and falls back to an
+    /// archive `eth_getCode` RPC call, caching the result.
+    ///
+    /// Returning `code` directly from `basic_ref` keeps revm from routing
+    /// through `code_by_hash`, which cannot resolve a hash without a known
+    /// address (`CacheDB` only calls `basic_ref`, never the mutable `basic`).
+    fn load_code(&self, address: Address, code_hash: B256) -> Result<Option<Bytecode>, DbError> {
+        if code_hash == KECCAK_EMPTY {
+            return Ok(None);
+        }
+        if let Some(bytes) = self
+            .cache
+            .get_code(address)
+            .ok()
+            .flatten()
+            .filter(|bytes| keccak256(bytes) == code_hash)
+        {
+            return Ok(Some(Bytecode::new_raw(bytes)));
+        }
+        let bytes = self
+            .block_on_rpc(self.rpc.get_code(address, self.block_number))
+            .map_err(DbError)?;
+        if !bytes.is_empty() {
+            let _ = self.cache.put_code(address, &bytes);
+        }
+        Ok(Some(Bytecode::new_raw(bytes)))
     }
 }

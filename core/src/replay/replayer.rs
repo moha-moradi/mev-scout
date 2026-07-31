@@ -34,13 +34,15 @@ macro_rules! build_mainnet_evm {
     }};
 }
 
+use alloy::eips::eip7702::{Authorization, SignedAuthorization};
 use alloy::primitives::{address, keccak256, Address, B256, Bytes, U256};
+use alloy::signers::Either;
 use revm::bytecode::Bytecode;
 use revm::context::block::BlockEnv;
 use revm::context::cfg::CfgEnv;
 use revm::context::tx::TxEnv;
 use revm::context_interface::block::BlobExcessGasAndPrice;
-use revm::context_interface::result::{ExecutionResult, ResultGas};
+use revm::context_interface::result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas};
 use revm::context_interface::transaction::{AccessList, AccessListItem};
 use revm::database::CacheDB;
 use revm::handler::{ExecuteCommitEvm, MainBuilder, MainContext};
@@ -67,10 +69,17 @@ fn addr_from_last_byte(b: u8) -> Address {
 }
 
 /// Select EVM spec ID based on chain and block number.
+///
+/// Polygon hardfork activation blocks (Bor):
+/// - Bhilai (EIP-7702 / Pectra): 73,440,256
+/// - Agra (Cancun): 50,523,000
+/// - London: 23,850,000
 pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
     match chain_id {
         137 => {
-            if block_number >= 50_523_000 {
+            if block_number >= 73_440_256 {
+                SpecId::PRAGUE
+            } else if block_number >= 50_523_000 {
                 SpecId::CANCUN
             } else if block_number >= 23_850_000 {
                 SpecId::LONDON
@@ -300,7 +309,55 @@ impl BlockReplayer {
             chain_id: Some(self.chain_id),
             blob_hashes: Vec::new(),
             max_fee_per_blob_gas: 0,
-            authorization_list: Vec::new(),
+            authorization_list: tx
+                .authorization_list
+                .iter()
+                .map(|a| {
+                    Either::Left(SignedAuthorization::new_unchecked(
+                        Authorization {
+                            chain_id: a.chain_id,
+                            address: a.address,
+                            nonce: a.nonce,
+                        },
+                        a.y_parity,
+                        a.r,
+                        a.s,
+                    ))
+                })
+                .collect(),
+        }
+    }
+
+    /// Map a `transact_commit` result to an `ExecutionResult`.
+    ///
+    /// A `Database` error means the historical state layer failed (e.g. no
+    /// archive RPC, RPC outage) — replay results would be invalid for every
+    /// transaction, so this is treated as fatal and aborts the replay. All
+    /// other errors (invalid tx, halts, custom) are per-transaction outcomes
+    /// and are surfaced as a synthetic revert for receipt comparison.
+    fn exec_or_revert(
+        block_num: u64,
+        tx_index: usize,
+        tx_hash: B256,
+        tx_gas_limit: u64,
+        result: Result<ExecutionResult, EVMError<DbError, InvalidTransaction>>,
+    ) -> anyhow::Result<ExecutionResult> {
+        match result {
+            Ok(r) => Ok(r),
+            Err(EVMError::Database(db_err)) => anyhow::bail!(
+                "state load failed while replaying block {block_num} tx {tx_index} ({tx_hash}): {db_err}"
+            ),
+            Err(e) => {
+                tracing::warn!(
+                    "Block {block_num} tx {tx_index} ({tx_hash}) execution error: {:?}",
+                    e
+                );
+                Ok(ExecutionResult::Revert {
+                    gas: ResultGas::new_with_state_gas(tx_gas_limit, 0, 0, 0),
+                    logs: Vec::new(),
+                    output: Bytes::new(),
+                })
+            }
         }
     }
 
@@ -353,27 +410,27 @@ impl BlockReplayer {
                 receipt_logs.len()
             ));
         } else {
-            // Use the receipt log order as reference; find matching exec log by address
-            for (i, r_log) in receipt_logs.iter().enumerate() {
-                let exec_log = exec_logs_filtered.iter().find(|l| l.address == r_log.address);
-                match exec_log {
-                    None => mismatches.push(format!("log[{}].address not found in exec", i)),
-                    Some(l) => {
-                        let r_topics = &r_log.topics;
-                        let l_topics = l.data.topics();
-                        if l_topics.len() != r_topics.len() {
-                            mismatches.push(format!(
-                                "log[{}].topic_count (exec={}, receipt={})",
-                                i,
-                                l_topics.len(),
-                                r_topics.len()
-                            ));
-                        } else {
-                            for (t, (lt, rt)) in l_topics.iter().zip(r_topics.iter()).enumerate() {
-                                if lt != rt {
-                                    mismatches.push(format!("log[{}].topic[{}]", i, t));
-                                }
-                            }
+            // EVM emits logs in execution order, so the sequences must line up positionally.
+            for (i, (l, r_log)) in exec_logs_filtered.iter().zip(receipt_logs.iter()).enumerate() {
+                if l.address != r_log.address {
+                    mismatches.push(format!("log[{}].address (exec={}, receipt={})", i, l.address, r_log.address));
+                }
+                if l.data.data != r_log.data {
+                    mismatches.push(format!("log[{}].data", i));
+                }
+                let r_topics = &r_log.topics;
+                let l_topics = l.data.topics();
+                if l_topics.len() != r_topics.len() {
+                    mismatches.push(format!(
+                        "log[{}].topic_count (exec={}, receipt={})",
+                        i,
+                        l_topics.len(),
+                        r_topics.len()
+                    ));
+                } else {
+                    for (t, (lt, rt)) in l_topics.iter().zip(r_topics.iter()).enumerate() {
+                        if lt != rt {
+                            mismatches.push(format!("log[{}].topic[{}]", i, t));
                         }
                     }
                 }
@@ -460,23 +517,13 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate().take(end + 1) {
             let tx_env = self.tx_data_to_tx_env(tx);
-            let exec_result = match evm.transact_commit(tx_env) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(
-                        "Block {} tx {} ({}) execution error: {:?}",
-                        block_num,
-                        i,
-                        tx.hash,
-                        e
-                    );
-                    ExecutionResult::Revert {
-                        gas: ResultGas::new_with_state_gas(tx.gas_limit, 0, 0, 0),
-                        logs: Vec::new(),
-                        output: Bytes::new(),
-                    }
-                }
-            };
+            let exec_result = Self::exec_or_revert(
+                block_num,
+                i,
+                tx.hash,
+                tx.gas_limit,
+                evm.transact_commit(tx_env),
+            )?;
             let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
             executed.index = i as u64;
             if executed.error.is_some() {
@@ -532,23 +579,13 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate() {
             let tx_env = self.tx_data_to_tx_env(tx);
-            let exec_result = match evm.transact_commit(tx_env) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(
-                        "Block {} tx {} ({}) execution error: {:?}",
-                        block_num,
-                        i,
-                        tx.hash,
-                        e
-                    );
-                    ExecutionResult::Revert {
-                        gas: ResultGas::new_with_state_gas(tx.gas_limit, 0, 0, 0),
-                        logs: Vec::new(),
-                        output: Bytes::new(),
-                    }
-                }
-            };
+            let exec_result = Self::exec_or_revert(
+                block_num,
+                i,
+                tx.hash,
+                tx.gas_limit,
+                evm.transact_commit(tx_env),
+            )?;
             let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
             executed.index = i as u64;
             on_tx(i, &executed, &evm.ctx.journaled_state.database)?;
@@ -593,23 +630,13 @@ impl BlockReplayer {
 
             let mut executed = if filter(tx, receipt_logs) {
                 let tx_env = self.tx_data_to_tx_env(tx);
-                let exec_result = match evm.transact_commit(tx_env) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Block {} tx {} ({}) execution error: {:?}",
-                            block_num,
-                            i,
-                            tx.hash,
-                            e
-                        );
-                        ExecutionResult::Revert {
-                            gas: ResultGas::new_with_state_gas(tx.gas_limit, 0, 0, 0),
-                            logs: Vec::new(),
-                            output: Bytes::new(),
-                        }
-                    }
-                };
+                let exec_result = Self::exec_or_revert(
+                    block_num,
+                    i,
+                    tx.hash,
+                    tx.gas_limit,
+                    evm.transact_commit(tx_env),
+                )?;
                 Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
             } else {
                 Self::synthesize_tx(tx, receipts.get(i))

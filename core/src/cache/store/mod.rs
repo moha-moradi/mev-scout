@@ -260,6 +260,8 @@ impl SqliteStore {
             // v6: transaction signature columns
             "ALTER TABLE transactions ADD COLUMN sig_hash BLOB",
             "ALTER TABLE transactions ADD COLUMN sig_name TEXT",
+            // v7: EIP-7702 authorization list on transactions
+            "ALTER TABLE transactions ADD COLUMN authorization_list BLOB",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {
@@ -292,11 +294,13 @@ impl SqliteStore {
         Ok(bincode::deserialize(bytes)?)
     }
 
-    pub fn serialize_access_list(list: &[AccessListItem]) -> anyhow::Result<Option<Vec<u8>>> {
+    pub fn serialize_access_list<T: Serialize>(list: &[T]) -> anyhow::Result<Option<Vec<u8>>> {
         if list.is_empty() { Ok(None) } else { Ok(Some(Self::serialize(list)?)) }
     }
 
-    pub fn deserialize_access_list(bytes: &[u8]) -> anyhow::Result<Vec<AccessListItem>> {
+    pub fn deserialize_access_list<T: serde::de::DeserializeOwned>(
+        bytes: &[u8],
+    ) -> anyhow::Result<Vec<T>> {
         Self::deserialize(bytes)
     }
 

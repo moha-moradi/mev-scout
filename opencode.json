@@ -1,30 +1,6 @@
 {
     "$schema": "https://opencode.ai/config.json",
     "plugin": [
-        [
-            "@skwid138/opencode-council",
-            {
-                "council": {
-                    "models": [
-                        {
-                            "providerID": "opencode",
-                            "modelID": "big-pickle"
-                        },
-                        {
-                            "providerID": "opencode",
-                            "modelID": "deepseek-v4-flash-free"
-                        },
-                        {
-                            "providerID": "opencode",
-                            "modelID": "nemotron-3-ultra-free"
-                        }
-                    ],
-                    "quorum": 3,
-                    "debug": false,
-                    "reviewer_temperature": 0.3
-                }
-            }
-        ],
         "envsitter-guard",
         "opencode-worktree",
         "opencode-skillful",
