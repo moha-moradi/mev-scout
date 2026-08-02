@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 
 use crate::cache::SqliteStore;
+use crate::data::ExecutedLog;
 use crate::types::MevOpportunity;
 use crate::mev::detectors::CrossBlockDetector;
 use crate::mev::detectors::{mempool, detect_pending_opportunities};
@@ -225,7 +226,7 @@ impl BacktestRunner {
             pool_manager.pool_count(),
             block_num
         );
-        pool_manager.init_from_rpc(rpc, block_num).await;
+        pool_manager.init_from_rpc(rpc, block_num, cache).await;
 
         let initialized = pool_manager.initialized_count();
         tracing::info!(
@@ -456,6 +457,121 @@ impl BacktestRunner {
             pending_tx_count: 0, // populated at range level by run_range_with_pga
             mempool_opp_count: 0, // populated at range level by run_range_with_pga
         }, gas_prices.into_inner()))
+    }
+
+    /// Lightweight, archive-free pool-state sync used by live mode.
+    ///
+    /// Unlike `run_block()`, this does NOT execute transactions through revm.
+    /// It reads the cached block header + receipts, synthesizes the log stream,
+    /// and applies Swap/Sync/Mint/Burn events directly to `pool_manager` via
+    /// `update_from_logs()`. This keeps pool state authoritative near the tip
+    /// using only regular full-node RPC calls — no `eth_getProof`, so no archive
+    /// node is required.
+    ///
+    /// Two-hop and multi-hop arb detection still run against the updated state,
+    /// but EVM-context strategies (JIT, sandwich, liquidation) are skipped
+    /// because they require full transaction execution.
+    pub fn sync_block_from_logs(
+        &mut self,
+        block_num: u64,
+    ) -> error::Result<(Vec<MevOpportunity>, BlockReplayStats, Vec<u128>)> {
+        let (block_data, txs) = self.replayer.load_block_data(block_num)?;
+        let receipts = self.replayer.load_receipts(block_num)?;
+        let total_tx_count = txs.len();
+        if txs.is_empty() {
+            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0, pending_tx_count: 0, mempool_opp_count: 0 }, Vec::new()));
+        }
+
+        let timestamp = block_data.timestamp;
+        let base_fee_per_gas = block_data.base_fee_per_gas.unwrap_or(0);
+
+        let pool_addrs: std::collections::HashSet<_> =
+            self.pool_manager.pool_addresses().into_iter().collect();
+        let token_addrs: std::collections::HashSet<_> =
+            self.pool_manager.token_addresses().into_iter().collect();
+
+        let mut all_opportunities = Vec::new();
+        let mut two_hop_detector = TwoHopArbDetector::new(block_num);
+        let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
+        let mut dex_tx_count = 0usize;
+
+        for (i, tx) in txs.iter().enumerate() {
+            let logs: Vec<ExecutedLog> = receipts
+                .get(i)
+                .map(|r| {
+                    r.logs
+                        .iter()
+                        .map(|l| ExecutedLog {
+                            address: l.address,
+                            topics: l.topics.clone(),
+                            data: l.data.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let matched = tx.to.is_some_and(|to| {
+                pool_addrs.contains(&to) || token_addrs.contains(&to)
+            })
+                || logs.iter().any(|l| {
+                    pool_addrs.contains(&l.address) || token_addrs.contains(&l.address)
+                });
+            if matched {
+                dex_tx_count += 1;
+            }
+
+            // Detect against pre-tx pool state, THEN apply log updates
+            // (mirrors run_block's detect-before-apply ordering).
+            let opps = two_hop_detector.detect(
+                &self.pool_manager,
+                i,
+                timestamp,
+                base_fee_per_gas,
+                self.gas_config,
+            );
+            all_opportunities.extend(opps);
+
+            let multi_opps = multi_hop_detector.detect(
+                &self.pool_manager,
+                i,
+                timestamp,
+                base_fee_per_gas,
+                self.gas_config,
+            );
+            all_opportunities.extend(multi_opps);
+
+            self.pool_manager.update_from_logs(&logs);
+        }
+
+        // Filter: drop opportunities where expected profit doesn't cover gas
+        all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
+
+        for opp in &mut all_opportunities {
+            opp.canonical_id = Some(crate::types::compute_canonical_id(
+                opp.strategy,
+                opp.block_number,
+                opp.pool_a,
+                opp.pool_b,
+                opp.token_in,
+                opp.token_out,
+                opp.victim_tx_index,
+                opp.backrun_tx_index,
+            ));
+        }
+
+        self.last_processed_block = block_num;
+
+        if let Some(ref mut detector) = self.cross_block_detector {
+            detector.record_block(block_num, &self.pool_manager);
+        }
+
+        Ok((all_opportunities, BlockReplayStats {
+            block_number: block_num,
+            total_tx_count,
+            dex_tx_count,
+            pending_tx_count: 0,
+            mempool_opp_count: 0,
+        }, Vec::new()))
     }
 
     /// Run backtest over a resolved block range, collecting all detected

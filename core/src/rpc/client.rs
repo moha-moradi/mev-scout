@@ -22,20 +22,44 @@ use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData
 
 use super::middleware::{ProviderState, RateLimiter};
 
+/// Block reference for pool-state queries: either an explicit block number
+/// (requires archive/recent-state-capable providers) or the `latest` tag
+/// (served by any full node).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockRef {
+    Number(u64),
+    Latest,
+}
+
 /// Whether an RPC error message describes a transient transport-level failure
-/// (fresh-connection handshake resets, timeouts, connection closed/refused)
-/// rather than a definitive JSON-RPC response (e.g. reverts, missing state).
-/// Shared endpoints intermittently reset the first connection of a new process;
-/// those attempts are safe to retry.
+/// (fresh-connection handshake resets, timeouts, connection closed/refused,
+/// connection send failures) or an upstream rate-limit signal (HTTP 429).
+/// These are safe to retry rather than definitive JSON-RPC responses
+/// (e.g. reverts, missing state).
 fn is_transport_error(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
-    m.contains("error sending request")
-        || m.contains("connection")
+    m.contains("connection")
+        || m.contains("error sending request")
+        || m.contains("send request")
         || m.contains("timed out")
         || m.contains("timeout")
         || m.contains("reset")
         || m.contains("refused")
         || m.contains("closed")
+        || is_rate_limit_error(msg)
+}
+
+/// Whether an RPC error message signals an upstream rate limit (HTTP 429).
+/// Rate-limited requests should trigger a rate reduction + retry rather than
+/// the full failure/cooldown penalty, since the endpoint is still healthy.
+fn is_rate_limit_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("429")
+        || m.contains("too many requests")
+        || m.contains("rate limit")
+        || m.contains("throttl")
+        || m.contains("out of cu")
+        || m.contains("402")
 }
 
 /// Retry an RPC future a few times when it fails with a transient transport
@@ -279,14 +303,16 @@ impl RpcClient {
                 tried.insert(*idx);
                 found_next = true;
 
-                provider.acquire_permit().await;
-
                 // Retry transient transport errors (e.g. fresh-connection
                 // handshake resets on shared endpoints) on the same provider
                 // before giving up and moving to the next one.
                 let mut attempts = 0;
                 let outcome = loop {
                     attempts += 1;
+                    // Acquire a token before EVERY attempt (initial + retries).
+                    // Retries must re-acquire so they can't burst past the
+                    // configured per-provider RPS while upstream throttles us.
+                    provider.acquire_permit().await;
                     let t0 = Instant::now();
                     match f(provider.provider().clone()).await {
                         Ok(val) => break Ok((val, t0.elapsed())),
@@ -296,7 +322,7 @@ impl RpcClient {
                             let transient = !is_evm_revert && is_transport_error(&err_msg);
                             if transient && attempts < 3 {
                                 tracing::debug!(
-                                    "transport error on {} (attempt {attempts}): {err_msg}",
+                                    "transport/rate-limit error on {} (attempt {attempts}): {err_msg}",
                                     provider.label(),
                                 );
                                 tokio::time::sleep(tokio::time::Duration::from_millis(300 * attempts as u64)).await;
@@ -319,6 +345,7 @@ impl RpcClient {
                     }
                     Err((e, is_evm_revert)) => {
                         let err_msg = format!("{e:#}");
+                        let rate_limited = !is_evm_revert && is_rate_limit_error(&err_msg);
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             if is_evm_revert {
@@ -326,6 +353,18 @@ impl RpcClient {
                                     "EVM revert on {} (expected for non-standard tokens): {}",
                                     p.label(),
                                     err_msg,
+                                );
+                            } else if rate_limited {
+                                // Upstream throttled us (429 / quota). The endpoint is
+                                // healthy — reduce its rate so the token bucket adapts
+                                // below the upstream cap, with only a short cooldown.
+                                p.record_rate_limited();
+                                p.sync_rate_limiter().await;
+                                tracing::warn!(
+                                    "Rate limited on {} (rate {:.1}, cooldown {:?}): {err_msg}",
+                                    p.label(),
+                                    p.weight(),
+                                    p.cooldown_until(),
                                 );
                             } else {
                                 p.record_failure();
@@ -1109,6 +1148,22 @@ impl RpcClient {
 
     /// Execute an `eth_call` at a specific block.
     async fn call_at(&self, to: Address, data: Bytes, block: BlockId) -> anyhow::Result<Bytes> {
+        self.call_at_with(to, data, block, true).await
+    }
+
+    /// Execute an `eth_call` at a given block/tag, routing through the
+    /// archive-capable provider pool only when `archive_only` is true.
+    ///
+    /// The `latest` tag is served by any full node, so `call_latest` passes
+    /// `false` to avoid the "no archive-capable RPC provider" failure on
+    /// full-node-only setups. Numeric historical blocks still require archive.
+    async fn call_at_with(
+        &self,
+        to: Address,
+        data: Bytes,
+        block: BlockId,
+        archive_only: bool,
+    ) -> anyhow::Result<Bytes> {
         self.retry_call(|provider| {
             let data = data.clone();
             async move {
@@ -1121,7 +1176,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             }
-        }, true)
+        }, archive_only)
         .await
     }
 
@@ -1140,7 +1195,50 @@ impl RpcClient {
     /// state is not needed. Avoids `historical state not available` errors
     /// from providers without full archive support.
     pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {
-        self.call_at(to, data, BlockNumberOrTag::Latest.into()).await
+        self.call_at_with(to, data, BlockNumberOrTag::Latest.into(), false)
+            .await
+    }
+
+    /// Fetch a single storage slot at the latest block via `eth_getStorageAt`.
+    ///
+    /// Works on any full node (no archive requirement) and is used by live
+    /// mode's pool-state init to avoid `historical state not available` errors.
+    ///
+    /// Routes through the non-archive provider pool: the `latest` tag is
+    /// served by every node, so this must not require archive capability.
+    pub async fn get_storage_at_latest(
+        &self,
+        address: Address,
+        slot: U256,
+    ) -> anyhow::Result<U256> {
+        self.retry_call(|provider| async move {
+            provider
+                .get_storage_at(address, slot)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        }, false)
+        .await
+    }
+
+    /// Execute an `eth_call` at either a specific block or the latest tag.
+    pub async fn call_ref(&self, to: Address, data: Bytes, br: BlockRef) -> anyhow::Result<Bytes> {
+        match br {
+            BlockRef::Number(block) => self.call(to, data, block).await,
+            BlockRef::Latest => self.call_latest(to, data).await,
+        }
+    }
+
+    /// Fetch a storage slot at either a specific block or the latest tag.
+    pub async fn get_storage_at_ref(
+        &self,
+        address: Address,
+        slot: U256,
+        br: BlockRef,
+    ) -> anyhow::Result<U256> {
+        match br {
+            BlockRef::Number(block) => self.get_storage_at(address, slot, block).await,
+            BlockRef::Latest => self.get_storage_at_latest(address, slot).await,
+        }
     }
 
     /// Fetch a u128 metric via a raw `U256` RPC method.
@@ -1257,6 +1355,54 @@ fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
             })
             .collect(),
         contract_address: receipt.contract_address,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_rate_limit_error, is_transport_error};
+
+    #[test]
+    fn classifies_http_429_as_transient() {
+        for msg in [
+            "HTTP error 429 with empty body",
+            "HTTP error 429",
+            "rate limit exceeded",
+            "too many requests",
+            "request was throttled",
+            "HTTP error 402 with body: Out of CU",
+        ] {
+            assert!(is_rate_limit_error(msg), "should detect rate limit: {msg}");
+            assert!(is_transport_error(msg), "429/quota should be retryable: {msg}");
+        }
+    }
+
+    #[test]
+    fn classifies_connection_failures_as_transient() {
+        for msg in [
+            "error sending request for url (https://example.com)",
+            "error sending request",
+            "connection reset by peer",
+            "connection refused",
+            "connection closed",
+            "timed out",
+            "operation timed out",
+        ] {
+            assert!(is_transport_error(msg), "should be transient: {msg}");
+        }
+    }
+
+    #[test]
+    fn does_not_retry_definitive_errors() {
+        for msg in [
+            "execution reverted",
+            "missing trie node 0xabc (state not available)",
+            "invalid argument: hex string",
+            "chain ID mismatch: got 137, expected 43114",
+            "VM Exception while processing transaction: revert",
+        ] {
+            assert!(!is_transport_error(msg), "should not be transient: {msg}");
+        }
     }
 }
 

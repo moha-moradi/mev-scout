@@ -247,8 +247,9 @@ impl LiveRunner {
                 // Read-through cache: fetch block if not cached
                 self.fetch_block_if_uncached(block_num).await?;
 
-                // Replay block and run detection
-                match self.backtest_runner.run_block(block_num) {
+                // Sync pool state from receipts (no revm, no archive required)
+                // and run arb detection against the log-updated state.
+                match self.backtest_runner.sync_block_from_logs(block_num) {
                     Ok((opportunities, stats, _)) => {
                         tracing::debug!(
                             "Block {}: {} txs, {} DEX txs, {} opportunities",
@@ -558,7 +559,7 @@ impl LiveRunner {
 
     /// Full resync of pool state from chain.
     async fn resync_pool_state(&mut self) {
-        let block_num = self.last_processed_block.saturating_sub(1);
+        let block_num = self.last_processed_block;
         tracing::info!("Resyncing pool state at block {}", block_num);
         BacktestRunner::init_pools(
             &mut self.pool_manager,

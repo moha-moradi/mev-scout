@@ -198,6 +198,7 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
             max_priority_fee_per_gas: None,
             nonce: i as u64,
             access_list: vec![],
+            authorization_list: vec![],
         });
         receipts.push(ReceiptData {
             tx_hash,

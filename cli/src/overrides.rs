@@ -6,6 +6,7 @@ fn apply_chain_args(o: &mut CliOverrides, c: &ChainArgs) {
     o.rpc.rpc_url = c.rpc_url.clone();
     o.rpc.rpc_urls = c.rpc_urls.clone();
     o.rpc.rpc_rps = c.rpc_rps.clone();
+    o.rpc.ws_url = c.ws_url.clone();
     o.rpc.rps_limit = Some(c.rps_limit);
 }
 
@@ -93,6 +94,9 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
         }
         Command::DuneQuery(args) => {
+            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
+        }
+        Command::DuneReport(args) => {
             apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
         }
         Command::Tokens(args) => {

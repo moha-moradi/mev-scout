@@ -398,7 +398,7 @@ async fn test_dune_guided_backtest() {
         }
 
         let prev_block = block.saturating_sub(1);
-        pm.init_from_rpc(&rpc, prev_block).await;
+        pm.init_from_rpc(&rpc, prev_block, None).await;
         let initialized = pm.initialized_count();
         eprintln!("  Initialized {initialized}/{} pools at block {prev_block}", pm.pool_count());
 
@@ -560,7 +560,7 @@ async fn test_synthetic_backtest_on_real_block() {
     );
 
     let prev = block.saturating_sub(1);
-    pm.init_from_rpc(&rpc, prev).await;
+    pm.init_from_rpc(&rpc, prev, None).await;
     let initialized = pm.initialized_count();
     eprintln!("Initialized {initialized}/{} pools at block {prev}", pm.pool_count());
 

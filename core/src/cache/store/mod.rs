@@ -11,6 +11,7 @@ pub mod integrity;
 pub mod manifests;
 pub mod pending;
 pub mod pools;
+pub mod ticks;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -19,7 +20,6 @@ use alloy::primitives::{b256, Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::data::types::AccessListItem;
 use crate::pool::state::PoolInfo;
 
 /// Metadata for a completed simulation run, stored alongside cached block data.
@@ -70,7 +70,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 7;
+    const SCHEMA_VERSION: u64 = 8;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -162,6 +162,15 @@ impl SqliteStore {
                 block_number INTEGER NOT NULL,
                 state_data BLOB NOT NULL,
                 PRIMARY KEY (address, block_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS v3_tick_cache (
+                address     BLOB NOT NULL,
+                center_word INTEGER NOT NULL,
+                tick_spacing INTEGER NOT NULL,
+                ticks       BLOB NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (address, center_word)
             );
 
             CREATE TABLE IF NOT EXISTS discovery_cursors (
@@ -262,6 +271,15 @@ impl SqliteStore {
             "ALTER TABLE transactions ADD COLUMN sig_name TEXT",
             // v7: EIP-7702 authorization list on transactions
             "ALTER TABLE transactions ADD COLUMN authorization_list BLOB",
+            // v8: V3 tick bootstrap cache (keyed by tick-bitmap center word)
+            "CREATE TABLE IF NOT EXISTS v3_tick_cache (
+                address     BLOB NOT NULL,
+                center_word INTEGER NOT NULL,
+                tick_spacing INTEGER NOT NULL,
+                ticks       BLOB NOT NULL,
+                updated_at  INTEGER NOT NULL,
+                PRIMARY KEY (address, center_word)
+            )",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {

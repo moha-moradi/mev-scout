@@ -6,7 +6,7 @@ use crate::mev::detectors::TwoHopArbDetector;
 use crate::types::MevOpportunity;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState};
-use crate::rpc::RpcClient;
+use crate::rpc::{BlockRef, RpcClient};
 use crate::types::GasConfig;
 use crate::utils::{abi_decode_address, abi_decode_u128, abi_decode_u256};
 
@@ -131,11 +131,16 @@ pub async fn simulate_pending_tx_pool_impact(
     }
 
     // Step 2: Validate the tx doesn't revert via eth_call
-    // Use block_number (parent of pending block) as the state to simulate against
-    let sim_block = block_number.saturating_sub(1).max(1);
+    // In live mode (use_latest) simulate against the latest state to match the
+    // latest-tag pool init; otherwise use block_number (parent of pending block).
+    let sim_br = if pool_manager.use_latest {
+        BlockRef::Latest
+    } else {
+        BlockRef::Number(block_number.saturating_sub(1).max(1))
+    };
     match tx.to {
         Some(to) => {
-            match rpc.call(to, tx.input.clone(), sim_block).await {
+            match rpc.call_ref(to, tx.input.clone(), sim_br).await {
                 Ok(_) => {
                     // Tx succeeded — return estimated pool effects
                     effects

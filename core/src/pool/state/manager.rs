@@ -35,6 +35,10 @@ pub struct PoolManager {
     pub(crate) token_max_pairs: HashMap<Address, usize>,
     /// Maximum number of concurrent RPC calls during pool initialization.
     pub(crate) concurrency_limit: u32,
+    /// When true, pool-state init queries use the `latest` block tag instead of
+    /// a numeric block. Served by any full node (no archive requirement) — used
+    /// by live mode. Backtest/replay keep numeric blocks for historical state.
+    pub(crate) use_latest: bool,
 }
 
 impl PoolManager {
@@ -53,6 +57,7 @@ impl PoolManager {
             max_pairs_per_token: 50,
             token_max_pairs: HashMap::new(),
             concurrency_limit: 1,
+            use_latest: false,
         }
     }
 
@@ -68,6 +73,7 @@ impl PoolManager {
             max_pairs_per_token: 50,
             token_max_pairs: HashMap::new(),
             concurrency_limit: 1,
+            use_latest: false,
         }
     }
 
@@ -91,6 +97,18 @@ impl PoolManager {
     /// Lower values (1-3) are safer for public RPCs with rate limits.
     pub fn set_concurrency_limit(&mut self, limit: u32) {
         self.concurrency_limit = limit.max(1);
+    }
+
+    /// Set whether pool-state init should query the `latest` block tag instead of
+    /// a numeric block (archive-free, for live mode).
+    pub fn set_use_latest(&mut self, use_latest: bool) {
+        self.use_latest = use_latest;
+    }
+
+    /// Builder variant of [`Self::set_use_latest`].
+    pub fn with_use_latest(mut self, use_latest: bool) -> Self {
+        self.set_use_latest(use_latest);
+        self
     }
 
     /// Add a pool and update the token index.
@@ -481,6 +499,7 @@ impl Clone for PoolManager {
             max_pairs_per_token: self.max_pairs_per_token,
             token_max_pairs: self.token_max_pairs.clone(),
             concurrency_limit: self.concurrency_limit,
+            use_latest: self.use_latest,
         }
     }
 }

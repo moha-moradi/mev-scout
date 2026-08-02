@@ -3,6 +3,7 @@ pub mod client;
 pub mod consts;
 pub mod pool_discovery;
 pub mod queries;
+pub mod report;
 pub mod token_discovery;
 pub mod types;
 pub mod util;

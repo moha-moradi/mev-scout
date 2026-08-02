@@ -314,7 +314,7 @@ async fn test_real_state_initialization_and_two_hop() {
     pm.add_pool(pool_info_to_state(qs));
     pm.add_pool(pool_info_to_state(ss));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
 
     let initialized = pm.initialized_count();
     eprintln!("Initialized {}/2 pools at block {block_num}", initialized);
@@ -389,7 +389,7 @@ async fn test_real_multi_hop_detection() {
     pm.add_pool(pool_info_to_state(qs_wmatic_usdt));
     pm.add_pool(pool_info_to_state(qs_usdc_usdt));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
 
     let initialized = pm.initialized_count();
     eprintln!("Initialized {}/3 pools at block {block_num}", initialized);
@@ -492,7 +492,7 @@ async fn test_real_detection_all_sushi_wmatic_pools() {
     let count = pm.pool_count();
     assert_eq!(count, 6, "Should find all SushiSwap WMATIC pools, got {count}");
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
 
     let initialized = pm.initialized_count();
     eprintln!("Initialized {initialized}/{count} SushiSwap WMATIC pools at block {block_num}");
@@ -583,7 +583,7 @@ async fn test_real_v2_v3_cross_dex_polygon() {
     pm.add_pool(pool_info_to_state(v2));
     pm.add_pool(PoolState::UniswapV3(UniswapV3PoolState::new(v3_info)));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
 
     let initialized = pm.initialized_count();
     eprintln!("Initialized {}/2 pools (V2 QuickSwap + V3 Uniswap V3) at block {block_num}", initialized);

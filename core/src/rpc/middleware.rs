@@ -228,6 +228,18 @@ impl ProviderState {
         self.weight = (self.weight * 0.5).max(self.original_weight * 0.1);
     }
 
+    /// Record an upstream rate-limit signal (HTTP 429 / quota).
+    ///
+    /// The endpoint is healthy, so unlike `record_failure` this reduces the
+    /// effective rate (token-bucket weight) so traffic adapts below the
+    /// upstream cap, with only a short cooldown and no exponential
+    /// `consecutive_failures` cascade.
+    pub fn record_rate_limited(&mut self) {
+        self.weight = (self.weight * 0.7).max(self.original_weight * 0.1);
+        self.cooldown_until =
+            Some(tokio::time::Instant::now() + tokio::time::Duration::from_millis(500));
+    }
+
     /// Sync the rate limiter's token-bucket rate to match the current adaptive weight.
     ///
     /// Must be called after `record_failure()` or `record_success()` to propagate

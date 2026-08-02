@@ -22,6 +22,11 @@ pub struct RpcConfig {
     /// Additional RPC URLs for multi-provider load distribution
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_urls: Vec<String>,
+    /// WebSocket RPC endpoint for live mode's push-based event feed
+    /// (`eth_subscribe` newHeads + newPendingTransactions). Optional: when
+    /// unset, live mode falls back to HTTP polling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_url: Option<String>,
     /// Per-provider RPS limits
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_rps: Vec<f64>,
@@ -153,6 +158,7 @@ impl Default for RpcConfig {
         RpcConfig {
             rpc_url: None,
             rpc_urls: Vec::new(),
+            ws_url: None,
             rpc_rps: Vec::new(),
             rps_limit: default_rps_limit(),
             block_concurrency: None,
@@ -507,6 +513,7 @@ pub struct RpcOverrides {
     pub rpc_url: Option<String>,
     pub rpc_urls: Option<Vec<String>>,
     pub rpc_rps: Option<Vec<f64>>,
+    pub ws_url: Option<String>,
     pub rps_limit: Option<f64>,
     pub block_concurrency: Option<usize>,
     pub coingecko_api_key: Option<String>,
@@ -672,6 +679,7 @@ impl Config {
             (rpc_url, into_option),
             (rpc_urls),
             (rpc_rps),
+            (ws_url, into_option),
             (rps_limit, copy),
             (block_concurrency, copy_some),
             (coingecko_api_key, into_option)

@@ -252,7 +252,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
     };
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info.clone()));
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
 
     let initialized = pm.initialized_count();
     eprintln!(

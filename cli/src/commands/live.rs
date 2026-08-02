@@ -1,12 +1,14 @@
 use anyhow::Context;
 use crate::cli::LiveArgs;
 use crate::rpc_setup::init_rpc;
-use mev_scout_core::cache::SqliteStore;
+use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::Config;
 use mev_scout_core::mev::execution::{LiveConfig, LiveRunner};
 use mev_scout_core::pipeline::BacktestRunner;
+use mev_scout_core::pool::discovery::{discover_and_cache, DiscoveryConfig};
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
+use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::{ChainName, GasConfig, GasModel, PriceOracleMode, Strategy};
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
@@ -35,6 +37,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     };
 
     let mut pool_manager = PoolManager::new();
+    pool_manager.set_concurrency_limit(setup.provider_configs.len().max(1) as u32);
     if let Some(vault_str) = config.chains.get(&chain_name.to_string())
         .and_then(|c| c.balancer_vault.as_ref())
     {
@@ -51,7 +54,23 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     }
 
     let latest_block = rpc.get_block_number().await.unwrap_or(0);
-    let init_block = latest_block.saturating_sub(1);
+    let init_block = latest_block;
+
+    // Live mode has no archive requirement: pool state is initialized and
+    // validated against the `latest` tag so any full node can serve it.
+    pool_manager = pool_manager.with_use_latest(true);
+
+    // Fresh cache (no pools discovered yet): run on-chain discovery so live
+    // mode has pools to scan even without a prior `discover` run.
+    if cache.count_discovered_pools().unwrap_or(0) == 0 {
+        match run_auto_discovery(config, chain_name.clone(), chain_id, &rpc, &cache, latest_block).await {
+            Ok(count) if count > 0 => {
+                tracing::info!("Auto-discovery: cached {} pools", count);
+            }
+            Ok(_) => tracing::warn!("Auto-discovery: no pools found in range"),
+            Err(e) => tracing::warn!("Auto-discovery failed (continuing with empty pool set): {e:#}"),
+        }
+    }
 
     if !strategies.is_empty() {
         BacktestRunner::init_pools(
@@ -131,4 +150,70 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     live_runner.run(cancel_rx).await?;
 
     Ok(())
+}
+
+/// On-chain pool discovery for a chain whose discovery cache is empty.
+///
+/// Scans factory events from `pool_discovery_start_block` (chain config) or a
+/// bounded recent window up to `to_block`, then caches the pools so the normal
+/// `init_pools` path can load them. Best-effort: failures are non-fatal.
+async fn run_auto_discovery(
+    config: &Config,
+    chain_name: ChainName,
+    chain_id: u64,
+    rpc: &RpcClient,
+    cache: &SqliteStore,
+    to_block: u64,
+) -> anyhow::Result<usize> {
+    let chain_config = config.chains.get(&chain_name.to_string()).cloned().unwrap_or_default();
+
+    let parse_list = |v: &Option<Vec<String>>, fallback: Vec<&'static str>| -> Vec<alloy::primitives::Address> {
+        match v {
+            Some(list) => list.iter().filter_map(|s| s.parse().ok()).collect(),
+            None => fallback.into_iter().filter_map(|s| s.parse().ok()).collect(),
+        }
+    };
+
+    let v2_factories = parse_list(&chain_config.uniswap_v2_factories, chain_name.default_uniswap_v2_factories().to_vec());
+    let v3_factories = parse_list(&chain_config.uniswap_v3_factories, chain_name.default_uniswap_v3_factories().to_vec());
+    let solidly_factories = parse_list(&chain_config.solidly_factories, chain_name.default_solidly_factories());
+    let camelot_factories = parse_list(&chain_config.camelot_factories, chain_name.default_camelot_factories());
+
+    let vault = chain_config.balancer_vault.as_ref().and_then(|s| s.parse().ok());
+    let registry = chain_config.curve_registry.as_ref().and_then(|s| s.parse().ok());
+    let v4_pool_manager = chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok());
+    let trader_joe_factory = chain_config.trader_joe_factory.as_ref().and_then(|s| s.parse().ok());
+    let pendle_factory = chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok());
+
+    let from = chain_config
+        .pool_discovery_start_block
+        .unwrap_or(to_block.saturating_sub(2_000_000));
+
+    let token_cache = TokenCache::warm(chain_id);
+    let disc_config = DiscoveryConfig {
+        batch_size: chain_config.pool_discovery_batch_size.unwrap_or(2000),
+        v2_fee_override: chain_config.uniswap_v2_default_fee,
+        balancer_vault: vault,
+        v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
+        v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
+        curve_registry: registry,
+        solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
+        camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+        solidly_fee_bps: Some(30),
+        v4_pool_manager,
+        trader_joe_factory,
+        pendle_factory,
+        rpc_concurrency: 24,
+        token_cache: Some(&token_cache),
+        pool_cache: Some(cache),
+    };
+
+    tracing::info!(
+        "Discovery cache empty for {} — running on-chain pool discovery {} → {}",
+        chain_name,
+        from,
+        to_block,
+    );
+    let (pools, _active_blocks) = discover_and_cache(rpc, cache, from, to_block, &disc_config, None).await?;
+    Ok(pools.len())
 }

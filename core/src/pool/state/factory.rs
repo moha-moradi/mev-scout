@@ -6,8 +6,9 @@ use alloy::primitives::{keccak256, Address, Bytes, U256};
 use futures::future::{join3, join_all};
 use tokio::sync::Semaphore;
 
+use crate::cache::SqliteStore;
 use crate::dex_type::DexType;
-use crate::rpc::RpcClient;
+use crate::rpc::{BlockRef, RpcClient};
 use crate::pool::state::manager::PoolManager;
 use crate::pool::math::consts::{BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO};
 use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
@@ -142,7 +143,17 @@ impl ConcentratedPoolState for UniswapV3PoolState {
 }
 
 impl PoolManager {
-    pub async fn init_from_rpc(&mut self, rpc: &RpcClient, block_num: u64) {
+    pub async fn init_from_rpc(
+        &mut self,
+        rpc: &RpcClient,
+        block_num: u64,
+        cache: Option<&SqliteStore>,
+    ) {
+        let br: BlockRef = if self.use_latest {
+            BlockRef::Latest
+        } else {
+            BlockRef::Number(block_num)
+        };
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();
         let max_concurrent = self.concurrency_limit as usize;
         let cap = pool_addrs.len().clamp(1, max_concurrent);
@@ -205,7 +216,7 @@ impl PoolManager {
                 });
                 async move {
                     let _permit = sem.acquire_owned().await.ok();
-                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, block_num, balancer_pool_type, pre_fetched).await)
+                    (addr, Self::fetch_pool_state(&rpc, addr, dt, pool_id, tick_spacing, vault, factory, br, balancer_pool_type, pre_fetched, cache).await)
                 }
             })
             .collect();
@@ -320,7 +331,7 @@ impl PoolManager {
                         if state.info.token1.is_zero() && !state.info.token0.is_zero() {
                             let mut sy_calldata = Vec::with_capacity(4);
                             sy_calldata.extend_from_slice(&PENDLE_SY_SELECTOR);
-                            if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), block_num).await {
+                            if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await {
                                 if result.len() >= 32 {
                                     let resolved_sy = Address::from_slice(&result[12..32]);
                                     if !resolved_sy.is_zero() {
@@ -459,56 +470,58 @@ impl PoolManager {
     // ── Per-DEX init functions ──
 
     async fn init_v2_pool(
-        rpc: &RpcClient, pool: Address, block: u64, factory: Option<Address>,
+        rpc: &RpcClient, pool: Address, br: BlockRef, factory: Option<Address>,
     ) -> Option<PoolInitResult> {
-        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
+        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, br, factory).await?;
         Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
     }
 
     async fn init_v3_pool(
-        rpc: &RpcClient, pool: Address, block: u64, tick_spacing: i32,
+        rpc: &RpcClient, pool: Address, br: BlockRef, tick_spacing: i32,
+        cache: Option<&SqliteStore>,
     ) -> Option<PoolInitResult> {
-        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, br, tick_spacing, cache).await?;
         Some(PoolInitResult::V3State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
     }
 
     async fn init_v4_pool(
-        rpc: &RpcClient, pool: Address, block: u64, tick_spacing: i32,
+        rpc: &RpcClient, pool: Address, br: BlockRef, tick_spacing: i32,
+        cache: Option<&SqliteStore>,
     ) -> Option<PoolInitResult> {
-        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, block, tick_spacing).await?;
+        let (sqrt, tick, liq, ticks) = Self::fetch_v3_state(rpc, pool, br, tick_spacing, cache).await?;
         Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
     }
 
     async fn init_balancer_pool(
         rpc: &RpcClient, vault: Address, pool: Address, pool_id: &[u8; 32],
-        block: u64, balancer_pool_type: Option<u8>, pre_fetched_tokens: Option<Vec<Address>>,
+        br: BlockRef, balancer_pool_type: Option<u8>, pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
-        Self::fetch_balancer_state(rpc, vault, pool, pool_id, block, balancer_pool_type, pre_fetched_tokens).await.ok()
+        Self::fetch_balancer_state(rpc, vault, pool, pool_id, br, balancer_pool_type, pre_fetched_tokens).await.ok()
     }
 
     async fn init_curve_pool(
-        rpc: &RpcClient, pool: Address, block: u64, pre_fetched_tokens: Option<Vec<Address>>,
+        rpc: &RpcClient, pool: Address, br: BlockRef, pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
-        Self::fetch_curve_state(rpc, pool, block, pre_fetched_tokens).await
+        Self::fetch_curve_state(rpc, pool, br, pre_fetched_tokens).await
     }
 
     async fn init_solidly_camelot_pool(
-        rpc: &RpcClient, pool: Address, block: u64, factory: Option<Address>,
+        rpc: &RpcClient, pool: Address, br: BlockRef, factory: Option<Address>,
     ) -> Option<PoolInitResult> {
-        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, block, factory).await?;
+        let (r0, r1) = Self::fetch_v2_reserves(rpc, pool, br, factory).await?;
         Some(PoolInitResult::V2Reserves { reserve0: r0, reserve1: r1 })
     }
 
     async fn init_lb_pool(
-        rpc: &RpcClient, pool: Address, block: u64,
+        rpc: &RpcClient, pool: Address, br: BlockRef,
     ) -> Option<PoolInitResult> {
-        Self::fetch_lb_state(rpc, pool, block).await
+        Self::fetch_lb_state(rpc, pool, br).await
     }
 
     async fn init_pendle_pool(
-        rpc: &RpcClient, pool: Address, block: u64,
+        rpc: &RpcClient, pool: Address, br: BlockRef,
     ) -> Option<PoolInitResult> {
-        Self::fetch_pendle_state(rpc, pool, block).await
+        Self::fetch_pendle_state(rpc, pool, br).await
     }
 
     /// Dispatch to the per-DEX init function based on pool type.
@@ -520,34 +533,41 @@ impl PoolManager {
         tick_spacing: i32,
         vault: Option<Address>,
         factory: Option<Address>,
-        block: u64,
+        br: BlockRef,
         balancer_pool_type: Option<u8>,
         pre_fetched_tokens: Option<Vec<Address>>,
+        cache: Option<&SqliteStore>,
     ) -> Option<PoolInitResult> {
         match dt {
-            DexType::UniswapV2 => Self::init_v2_pool(rpc, pool, block, factory).await,
-            DexType::UniswapV3 => Self::init_v3_pool(rpc, pool, block, tick_spacing).await,
-            DexType::UniswapV4 => Self::init_v4_pool(rpc, pool, block, tick_spacing).await,
+            DexType::UniswapV2 => Self::init_v2_pool(rpc, pool, br, factory).await,
+            DexType::UniswapV3 => Self::init_v3_pool(rpc, pool, br, tick_spacing, cache).await,
+            DexType::UniswapV4 => Self::init_v4_pool(rpc, pool, br, tick_spacing, cache).await,
             DexType::Balancer => {
                 let vault = vault?;
                 let pool_id = pool_id?;
-                Self::init_balancer_pool(rpc, vault, pool, &pool_id, block, balancer_pool_type, pre_fetched_tokens).await
+                Self::init_balancer_pool(rpc, vault, pool, &pool_id, br, balancer_pool_type, pre_fetched_tokens).await
             }
-            DexType::Curve => Self::init_curve_pool(rpc, pool, block, pre_fetched_tokens).await,
-            DexType::Solidly | DexType::Camelot => Self::init_solidly_camelot_pool(rpc, pool, block, factory).await,
-            DexType::TraderJoeLB => Self::init_lb_pool(rpc, pool, block).await,
-            DexType::Pendle => Self::init_pendle_pool(rpc, pool, block).await,
+            DexType::Curve => Self::init_curve_pool(rpc, pool, br, pre_fetched_tokens).await,
+            DexType::Solidly | DexType::Camelot => Self::init_solidly_camelot_pool(rpc, pool, br, factory).await,
+            DexType::TraderJoeLB => Self::init_lb_pool(rpc, pool, br).await,
+            DexType::Pendle => Self::init_pendle_pool(rpc, pool, br).await,
         }
     }
 
-    async fn call_once(rpc: &RpcClient, pool: Address, data: Bytes, block: u64) -> Result<Bytes, ()> {
-        rpc.call(pool, data, block).await.map_err(|_| ())
+    /// Execute an `eth_call` at a `BlockRef` (numeric block or latest tag).
+    async fn call_once(rpc: &RpcClient, pool: Address, data: Bytes, br: BlockRef) -> anyhow::Result<Bytes> {
+        rpc.call_ref(pool, data, br).await
+    }
+
+    /// Fetch a storage slot at a `BlockRef` (numeric block or latest tag).
+    async fn storage_once(rpc: &RpcClient, pool: Address, slot: U256, br: BlockRef) -> anyhow::Result<U256> {
+        rpc.get_storage_at_ref(pool, slot, br).await
     }
 
     async fn fetch_v2_reserves(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
         factory: Option<Address>,
     ) -> Option<(u128, u128)> {
         let slots: Vec<U256> = crate::types::v2_storage_slots_for_factory(factory)
@@ -557,7 +577,7 @@ impl PoolManager {
 
         // M9: eth_getStorageAt is primary path (cheaper, works on more nodes).
         // eth_call getReserves() is the fallback.
-        if let Some(reserves) = Self::fetch_v2_reserves_storage(rpc, pool, block, &slots).await {
+        if let Some(reserves) = Self::fetch_v2_reserves_storage(rpc, pool, br, &slots).await {
             if Self::validate_v2_reserves(reserves) {
                 return Some(reserves);
             }
@@ -566,7 +586,7 @@ impl PoolManager {
 
         // Fallback: eth_call getReserves()
         let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
-        if let Ok(result) = Self::call_once(rpc, pool, data, block).await {
+        if let Ok(result) = Self::call_once(rpc, pool, data, br).await {
             if result.len() >= 64 {
                 let r0 = Self::decode_u128_from_abi_word(&result[..32]);
                 let r1 = Self::decode_u128_from_abi_word(&result[32..64]);
@@ -622,11 +642,11 @@ impl PoolManager {
     async fn fetch_v2_reserves_storage(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
         slots: &[U256],
     ) -> Option<(u128, u128)> {
         for &slot in slots {
-            if let Ok(raw) = rpc.get_storage_at(pool, slot, block).await {
+            if let Ok(raw) = Self::storage_once(rpc, pool, slot, br).await {
                 let (r0, r1) = Self::decode_v2_reserves_from_storage(raw);
                 if r0 > 0 || r1 > 0 {
                     return Some((r0, r1));
@@ -635,7 +655,7 @@ impl PoolManager {
         }
         // Last resort: try the first slot even if zero
         let first = slots.first().copied().unwrap_or(U256::from(6u64));
-        let raw = rpc.get_storage_at(pool, first, block).await.ok()?;
+        let raw = Self::storage_once(rpc, pool, first, br).await.ok()?;
         Some(Self::decode_v2_reserves_from_storage(raw))
     }
 
@@ -645,11 +665,12 @@ impl PoolManager {
     async fn fetch_v3_state(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
         tick_spacing: i32,
+        cache: Option<&SqliteStore>,
     ) -> Option<(U256, i32, u128, std::collections::BTreeMap<i32, i128>)> {
-        let slot0_result = Self::call_once(rpc, pool, V3_SLOT0_SELECTOR.clone(), block).await;
-        let liq_result = Self::call_once(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), block).await;
+        let slot0_result = Self::call_once(rpc, pool, V3_SLOT0_SELECTOR.clone(), br).await;
+        let liq_result = Self::call_once(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), br).await;
         if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
             if slot0.len() >= 96 && liq.len() >= 32 {
                 let mut buf = [0u8; 32];
@@ -662,7 +683,7 @@ impl PoolManager {
 
                 // Bootstrap tick data from on-chain tick bitmap + per-tick queries
                 // This makes pre-existing LP positions visible from the first block.
-                let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, block).await;
+                let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, br, cache).await;
 
                 return Some((sqrt_price_x96, tick, liquidity, initialized_ticks));
             }
@@ -684,8 +705,8 @@ impl PoolManager {
             }
         }
         tracing::trace!("falling back to storage for V3 pool {}", pool);
-        let (sqrt, tick, liq) = Self::fetch_v3_state_storage(rpc, pool, block).await?;
-        let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, block).await;
+        let (sqrt, tick, liq) = Self::fetch_v3_state_storage(rpc, pool, br).await?;
+        let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, br, cache).await;
         Some((sqrt, tick, liq, initialized_ticks))
     }
 
@@ -700,7 +721,8 @@ impl PoolManager {
         pool: Address,
         current_tick: i32,
         tick_spacing: i32,
-        block: u64,
+        br: BlockRef,
+        cache: Option<&SqliteStore>,
     ) -> std::collections::BTreeMap<i32, i128> {
         let max_ticks = 200usize;
         let mut ticks = std::collections::BTreeMap::new();
@@ -713,7 +735,21 @@ impl PoolManager {
         };
         let center_word = compressed >> 8;
 
-        // Scan 5 word positions (���1280 tick range) centered on current tick
+        // Reuse a previously-bootstrapped tick map when the scan window
+        // (tick-bitmap center word) hasn't moved. This makes resyncs and
+        // restarts near-instant instead of re-querying the chain for up to
+        // 200 ticks per pool.
+        if let Some((cached_spacing, cached)) = cache
+            .and_then(|c| c.get_v3_tick_cache(&pool, center_word).ok())
+            .flatten()
+        {
+            if cached_spacing == tick_spacing && !cached.is_empty() {
+                tracing::trace!("Reusing cached ticks for V3 pool {} (window {})", pool, center_word);
+                return cached;
+            }
+        }
+
+        // Scan 5 word positions (~1280 tick range) centered on current tick
         for word_offset in -2i16..=2i16 {
             if ticks.len() >= max_ticks {
                 break;
@@ -732,7 +768,7 @@ impl PoolManager {
             }
             calldata.extend_from_slice(&arg);
 
-            let bitmap_bytes = match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
+            let bitmap_bytes = match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(b) if b.len() >= 32 => b,
                 _ => continue,
             };
@@ -764,7 +800,7 @@ impl PoolManager {
                 let actual_tick = compressed_tick.wrapping_mul(tick_spacing);
 
                 // Fetch liquidityNet for this tick via ticks(int24)
-                if let Some(liq_net) = Self::fetch_v3_tick_liquidity_net(rpc, pool, actual_tick, block).await {
+                if let Some(liq_net) = Self::fetch_v3_tick_liquidity_net(rpc, pool, actual_tick, br).await {
                     if liq_net != 0 {
                         ticks.insert(actual_tick, liq_net);
                     }
@@ -774,11 +810,18 @@ impl PoolManager {
 
         if !ticks.is_empty() {
             tracing::debug!(
-                "Bootstrapped {} initialized ticks for V3 pool {} at block {}",
+                "Bootstrapped {} initialized ticks for V3 pool {} at {:?}",
                 ticks.len(),
                 pool,
-                block,
+                br,
             );
+        }
+
+        // Persist the bootstrapped tick map for future inits/resyncs.
+        if let Some(c) = cache {
+            if let Err(e) = c.put_v3_tick_cache(&pool, center_word, tick_spacing, &ticks) {
+                tracing::debug!("Failed to cache V3 ticks for {}: {}", pool, e);
+            }
         }
 
         ticks
@@ -789,7 +832,7 @@ impl PoolManager {
         rpc: &RpcClient,
         pool: Address,
         tick: i32,
-        block: u64,
+        br: BlockRef,
     ) -> Option<i128> {
         // Build calldata for ticks(int24)
         let mut calldata = Vec::with_capacity(36);
@@ -802,7 +845,7 @@ impl PoolManager {
         }
         calldata.extend_from_slice(&arg);
 
-        let result = Self::call_once(rpc, pool, Bytes::from(calldata), block).await.ok()?;
+        let result = Self::call_once(rpc, pool, Bytes::from(calldata), br).await.ok()?;
 
         // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
         // Tuple with ABIEncoderV2: 8 fields ?� 32 bytes = 256 bytes
@@ -853,10 +896,10 @@ impl PoolManager {
     async fn fetch_v3_state_storage(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
     ) -> Option<(U256, i32, u128)> {
-        let slot0_raw = rpc.get_storage_at(pool, U256::ZERO, block).await.ok()?;
-        let slot1_raw = rpc.get_storage_at(pool, U256::from(1), block).await.ok()?;
+        let slot0_raw = Self::storage_once(rpc, pool, U256::ZERO, br).await.ok()?;
+        let slot1_raw = Self::storage_once(rpc, pool, U256::from(1), br).await.ok()?;
         Some(Self::decode_v3_state_from_storage(slot0_raw, slot1_raw))
     }
 
@@ -868,7 +911,7 @@ impl PoolManager {
         vault: Address,
         pool: Address,
         pool_id: &[u8; 32],
-        block: u64,
+        br: BlockRef,
         pool_type_hint: Option<u8>,
         _pre_fetched_tokens: Option<Vec<Address>>,
     ) -> anyhow::Result<PoolInitResult> {
@@ -882,7 +925,7 @@ impl PoolManager {
             Bytes::from(calldata)
         };
 
-        let result = rpc.call(vault, data, block).await?;
+        let result = Self::call_once(rpc, vault, data, br).await?;
         let return_data = result.0;
         if return_data.len() < 96 {
             anyhow::bail!("balancer getPoolTokens returned too short data");
@@ -920,7 +963,7 @@ impl PoolManager {
             async {
                 let mut calldata = Vec::with_capacity(4);
                 calldata.extend_from_slice(&GET_NORMALIZED_WEIGHTS_SELECTOR);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
+                match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let w_off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
                         let w_count = if w_off + 32 <= result.0.len() {
@@ -942,7 +985,7 @@ impl PoolManager {
             async {
                 let mut calldata = Vec::with_capacity(4);
                 calldata.extend_from_slice(&GET_SWAP_FEE_PERCENTAGE_SELECTOR);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
+                match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
                         // Balancer returns fee in 1e18 scale; convert to PoolInfo bps (1e6 = 100%)
@@ -954,7 +997,7 @@ impl PoolManager {
             async {
                 let mut calldata = Vec::with_capacity(4);
                 calldata.extend_from_slice(&GET_SCALING_FACTORS_SELECTOR);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
+                match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 64 => {
                         let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
                         let count = if off + 32 <= result.0.len() {
@@ -982,7 +1025,7 @@ impl PoolManager {
                 let mut calldata = Vec::with_capacity(36);
                 calldata.extend_from_slice(&GET_RATE_PROVIDER_SELECTOR);
                 calldata.extend_from_slice(&U256::from(i).to_be_bytes::<32>());
-                match rpc.call(pool, Bytes::from(calldata), block).await {
+                match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let addr = Address::from_slice(&result.0[12..32]);
                         rp.push((!addr.is_zero()).then_some(addr));
@@ -1011,7 +1054,7 @@ impl PoolManager {
             // No weights �?� try amplification parameter to detect Stable pool
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&GET_AMPLIFICATION_PARAMETER_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 96 => {
                     let value = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
                     let precision = U256::from_be_slice(&result.0[64..96]).as_limbs()[0] as u128;
@@ -1054,7 +1097,7 @@ impl PoolManager {
         let pool = self.pools.get(addr)?;
         match pool {
             PoolState::UniswapV2(v2) => {
-                let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block, v2.info.factory).await?;
+                let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, BlockRef::Number(block), v2.info.factory).await?;
                 Some(PoolState::UniswapV2(UniswapV2PoolState {
                     info: v2.info.clone(),
                     reserve0: r0,
@@ -1064,7 +1107,7 @@ impl PoolManager {
             PoolState::UniswapV3(v3) => {
                 let spacing = v3.info.tick_spacing.unwrap_or(60) as i32;
                 let (sqrt, tick, liq, ticks) =
-                    Self::fetch_v3_state(rpc, *addr, block, spacing).await?;
+                    Self::fetch_v3_state(rpc, *addr, BlockRef::Number(block), spacing, None).await?;
                 Some(PoolState::UniswapV3(UniswapV3PoolState {
                     info: v3.info.clone(),
                     sqrt_price_x96: sqrt,
@@ -1078,7 +1121,7 @@ impl PoolManager {
             PoolState::UniswapV4(v4) => {
                 let spacing = v4.info.tick_spacing.unwrap_or(60) as i32;
                 let (sqrt, tick, liq, ticks) =
-                    Self::fetch_v3_state(rpc, *addr, block, spacing).await?;
+                    Self::fetch_v3_state(rpc, *addr, BlockRef::Number(block), spacing, None).await?;
                 Some(PoolState::UniswapV4(UniswapV4PoolState {
                     info: v4.info.clone(),
                     sqrt_price_x96: sqrt,
@@ -1092,7 +1135,7 @@ impl PoolManager {
             PoolState::Curve(curve) => {
                 // Solidly/Camelot stable pools stored as CurvePoolState use V2 reserves
                 if curve.info.dex_type == DexType::Solidly || curve.info.dex_type == DexType::Camelot {
-                    let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, block, curve.info.factory).await?;
+                    let (r0, r1) = Self::fetch_v2_reserves(rpc, *addr, BlockRef::Number(block), curve.info.factory).await?;
                     let mut balances = curve.balances.clone();
                     if balances.len() >= 2 {
                         balances[0] = r0;
@@ -1111,7 +1154,7 @@ impl PoolManager {
                         base_pool: curve.base_pool,
                     }));
                 }
-                let result = Self::fetch_curve_state(rpc, *addr, block, None).await?;
+                let result = Self::fetch_curve_state(rpc, *addr, BlockRef::Number(block), None).await?;
                 match result {
                     PoolInitResult::CurveState { tokens, balances, a_coeff, fee_bps, variant, gamma, price_scale, base_pool } => {
                         let token_index: HashMap<Address, usize> = tokens
@@ -1139,7 +1182,7 @@ impl PoolManager {
             PoolState::Balancer(bal) => {
                 let vault = self.balancer_vault?;
                 let pool_id = bal.pool_id?;
-                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, block, bal.info.balancer_pool_type, None).await.ok()?;
+                let result = Self::fetch_balancer_state(rpc, vault, *addr, &pool_id, BlockRef::Number(block), bal.info.balancer_pool_type, None).await.ok()?;
                 match result {
                     PoolInitResult::BalancerState { tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers } => {
                         let token_index: HashMap<Address, usize> = tokens
@@ -1167,7 +1210,7 @@ impl PoolManager {
                 }
             }
             PoolState::TraderJoeLB(lb) => {
-                let result = Self::fetch_lb_state(rpc, *addr, block).await?;
+                let result = Self::fetch_lb_state(rpc, *addr, BlockRef::Number(block)).await?;
                 match result {
                     PoolInitResult::LBState { active_id, bin_step, reserve_x, reserve_y } => {
                         Some(PoolState::TraderJoeLB(TraderJoeLBPoolState {
@@ -1182,7 +1225,7 @@ impl PoolManager {
                 }
             }
             PoolState::Pendle(pendle) => {
-                let result = Self::fetch_pendle_state(rpc, *addr, block).await?;
+                let result = Self::fetch_pendle_state(rpc, *addr, BlockRef::Number(block)).await?;
                 match result {
                     PoolInitResult::PendleState { total_pt, total_sy, .. } => {
                         Some(PoolState::Pendle(PendlePoolState {
@@ -1203,18 +1246,18 @@ impl PoolManager {
     async fn fetch_lb_state(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
     ) -> Option<PoolInitResult> {
         // Step 1: getActiveId()
         let active_id = {
-            let result = Self::call_once(rpc, pool, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52]), block).await.ok()?;
+            let result = Self::call_once(rpc, pool, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52]), br).await.ok()?;
             if result.len() < 32 { return None; }
             U256::from_be_slice(&result[..32]).to::<u64>() as u32
         };
 
         // Step 2: getBinStep()
         let bin_step = {
-            let result = Self::call_once(rpc, pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR), block).await.ok().unwrap_or_default();
+            let result = Self::call_once(rpc, pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR), br).await.ok().unwrap_or_default();
             if result.len() >= 32 {
                 U256::from_be_slice(&result[..32]).to::<u64>() as u32
             } else {
@@ -1230,7 +1273,7 @@ impl PoolManager {
             let id_bytes = (active_id as u64).to_be_bytes();
             arg[24..32].copy_from_slice(&id_bytes);
             calldata.extend_from_slice(&arg);
-            match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.len() >= 64 => {
                     let rx = U256::from_be_slice(&result[..32]).as_limbs()[0] as u128;
                     let ry = U256::from_be_slice(&result[32..64]).as_limbs()[0] as u128;
@@ -1248,7 +1291,7 @@ impl PoolManager {
     async fn fetch_pendle_state(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
     ) -> Option<PoolInitResult> {
         // Step 1: Get SY address from PT.SY() — PT address is stored as token0
         // We need to know which token is PT; from discovery, token0 = PT.
@@ -1260,7 +1303,7 @@ impl PoolManager {
         let mut calldata = Vec::with_capacity(36);
         calldata.extend_from_slice(&PENDLE_READ_STATE_SELECTOR);
         calldata.extend_from_slice(&[0u8; 32]); // address(0) as router
-        let (total_pt, total_sy) = match Self::call_once(rpc, pool, Bytes::from(calldata), block).await {
+        let (total_pt, total_sy) = match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
             Ok(result) if result.len() >= 64 => {
                 let pt = U256::from_be_slice(&result[..32]).as_limbs()[0] as u128;
                 let sy = U256::from_be_slice(&result[32..64]).as_limbs()[0] as u128;
@@ -1286,7 +1329,7 @@ impl PoolManager {
     async fn fetch_curve_state(
         rpc: &RpcClient,
         pool: Address,
-        block: u64,
+        br: BlockRef,
         pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
         static CURVE_COINS_SELECTOR: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
@@ -1305,7 +1348,7 @@ impl PoolManager {
                     let mut arg = [0u8; 32];
                     arg[31] = i as u8;
                     calldata.extend_from_slice(&arg);
-                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                    match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                         }
@@ -1323,7 +1366,7 @@ impl PoolManager {
                     let mut arg = [0u8; 32];
                     arg[31] = i;
                     calldata.extend_from_slice(&arg);
-                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                    match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                         Ok(result) if result.0.len() >= 32 => {
                             let addr = Address::from_slice(&result.0[12..32]);
                             if addr.is_zero() { break; }
@@ -1335,7 +1378,7 @@ impl PoolManager {
                             let mut arg2 = [0u8; 32];
                             arg2[31] = i;
                             calldata2.extend_from_slice(&arg2);
-                            match rpc.call(pool, Bytes::from(calldata2), block).await {
+                            match Self::call_once(rpc, pool, Bytes::from(calldata2), br).await {
                                 Ok(result) if result.0.len() >= 32 => {
                                     let addr = Address::from_slice(&result.0[12..32]);
                                     if addr.is_zero() { break; }
@@ -1353,7 +1396,7 @@ impl PoolManager {
                     let mut arg = [0u8; 32];
                     arg[31] = i;
                     calldata.extend_from_slice(&arg);
-                    match rpc.call(pool, Bytes::from(calldata), block).await {
+                    match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                         }
@@ -1375,7 +1418,7 @@ impl PoolManager {
             // Try get_A() first (CryptoSwap V2), fallback to A() (StableSwap V1)
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_GET_A_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                 }
@@ -1383,7 +1426,7 @@ impl PoolManager {
                     // Fallback to A()
                     let mut calldata2 = Vec::with_capacity(4);
                     calldata2.extend_from_slice(&CURVE_A_SELECTOR);
-                    match rpc.call(pool, Bytes::from(calldata2), block).await {
+                    match Self::call_once(rpc, pool, Bytes::from(calldata2), br).await {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                         }
@@ -1397,7 +1440,7 @@ impl PoolManager {
         let fee_bps = {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_FEE_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
                     (chain_fee / BPS_DENOMINATOR) as u32
@@ -1410,7 +1453,7 @@ impl PoolManager {
         let gamma_result = {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(r) if r.0.len() >= 32 && !r.0[..32].iter().all(|&b| b == 0) => {
                     Some(U256::from_be_slice(&r.0[..32]).as_limbs()[0] as u128)
                 }
@@ -1423,7 +1466,7 @@ impl PoolManager {
         let base_pool = if !is_crypto {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_BASE_POOL_SELECTOR);
-            match rpc.call(pool, Bytes::from(calldata), block).await {
+            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let addr = Address::from_slice(&result.0[12..32]);
                     (!addr.is_zero()).then_some(addr)
@@ -1440,7 +1483,7 @@ impl PoolManager {
             let price_scales = {
                 let mut calldata = Vec::with_capacity(4);
                 calldata.extend_from_slice(&CURVE_PRICE_SCALE_SELECTOR);
-                match rpc.call(pool, Bytes::from(calldata), block).await {
+                match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 64 => {
                         let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
                         let count = if off + 32 <= result.0.len() {

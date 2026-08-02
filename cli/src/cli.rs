@@ -67,6 +67,12 @@ pub enum Command {
     /// Use --list to see available queries, --query NAME to run one, or --all for all.
     DuneQuery(DuneQueryArgs),
 
+    /// Generate a monthly per-strategy MEV revenue report from Dune Analytics.
+    /// Runs one query per measurable strategy from mev_strategies_analysis_summary.md
+    /// for the selected chain and outputs Markdown, a self-contained HTML dashboard, or JSON.
+    /// Measures the total addressable market, not revenue from a specific bot.
+    DuneReport(DuneReportArgs),
+
     /// Discover and cache token metadata from Dune Analytics.
     /// Supports filters: all, active, blue-chip, new, long-tail.
     /// Populates the token cache used by pool discovery to avoid RPC symbol() calls.
@@ -107,6 +113,11 @@ pub struct ChainArgs {
     /// Archive node RPC endpoint
     #[arg(short = 'r', long = "rpc", value_name = "URL")]
     pub rpc_url: Option<String>,
+
+    /// WebSocket RPC endpoint for live mode's push-based event feed
+    /// (newHeads + newPendingTransactions). Falls back to HTTP polling if unset.
+    #[arg(long = "ws-url", value_name = "WSS_URL")]
+    pub ws_url: Option<String>,
 
     /// RPC requests per second rate limit (default: 0 = unlimited).
     /// 0 disables client-side rate limiting; servers enforce their own limits.
@@ -527,6 +538,37 @@ pub struct DuneQueryArgs {
     /// Output format: table, json, csv
     #[arg(long, default_value = "table", value_name = "FORMAT")]
     pub output: String,
+
+    /// Dune API key (overrides config file)
+    #[arg(long = "dune-api-key", value_name = "KEY")]
+    pub dune_api_key: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DuneReportArgs {
+    /// Chain name (default: ethereum — most strategy tables are Ethereum-native)
+    #[arg(short = 'n', long, default_value = "ethereum", value_name = "NAME")]
+    pub chain: String,
+
+    /// Look back N days (default: 30; used when --from-block/--to-block are absent)
+    #[arg(long, default_value = "30", value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
+    pub days: u64,
+
+    /// Start block number (overrides --days)
+    #[arg(long, value_name = "NUMBER")]
+    pub from_block: Option<u64>,
+
+    /// End block number (overrides --days)
+    #[arg(long, value_name = "NUMBER")]
+    pub to_block: Option<u64>,
+
+    /// Output format: markdown, html, json
+    #[arg(long, default_value = "markdown", value_name = "FORMAT")]
+    pub output: String,
+
+    /// Write output to a file instead of stdout
+    #[arg(long = "output-file", value_name = "PATH")]
+    pub output_file: Option<String>,
 
     /// Dune API key (overrides config file)
     #[arg(long = "dune-api-key", value_name = "KEY")]

@@ -345,7 +345,7 @@ async fn test_e2e_pool_initialization() {
         quick_wmatic_usdt(), wmatic(), usdt(), "QuickSwap WMATIC/USDT",
     )));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
     let initialized = pm.initialized_count();
     eprintln!("  Initialized {initialized}/3 pools at block {block_num}");
     assert!(initialized >= 2, "Expected >=2 initialized pools, got {initialized}");
@@ -386,7 +386,7 @@ async fn test_e2e_two_hop_arbitrage() {
         sushi_wmatic_usdt(), wmatic(), usdt(), "SushiSwap WMATIC/USDT",
     )));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
     let initialized = pm.initialized_count();
     eprintln!("  Initialized {initialized} pools at block {block_num}");
 
@@ -445,7 +445,7 @@ async fn test_e2e_cross_dex_arbitrage() {
         uni_v3_wmatic_usdc(), wmatic(), usdc(), 500, "Uniswap V3",
     )));
 
-    pm.init_from_rpc(&rpc, block_num).await;
+    pm.init_from_rpc(&rpc, block_num, None).await;
     let initialized = pm.initialized_count();
     eprintln!("  Initialized {initialized}/2 pools at block {block_num}");
     if initialized < 2 {
