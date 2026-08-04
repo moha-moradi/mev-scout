@@ -93,7 +93,7 @@ fn all_queries() -> Vec<QueryInfo> {
     q!(VALIDATE_SYNC_RACE, "Validate sync() race opportunities (defensive sync calls)", &["chain", "from_block", "to_block"]);
     q!(VALIDATE_INIT_PRICE_SNIPE, "Validate init price snipe opportunities (V3 mispriced pools)", &["chain", "from_block", "to_block"]);
     q!(VALIDATE_BACKRUN, "Validate backrunning opportunities (multi-pool txs after large swaps)", &["chain", "from_block", "to_block"]);
-    q!(VALIDATE_LONG_TAIL_ARB, "Validate long-tail token arbitrage (low-liquidity multi-pool txs)", &["chain", "from_block", "to_block"]);
+    q!(VALIDATE_LONG_TAIL_ARB, "Validate long-tail arb (amount-chained closed loops; --min-profit filters noise)", &["chain", "from_block", "to_block"]);
     q!(VALIDATE_STABLECOIN_DEPEG, "Validate stablecoin depeg arbitrage (Curve price deviations)", &["chain", "from_block", "to_block"]);
     q!(VALIDATE_CURVE_IMBALANCE, "Validate Curve pool imbalance: pools with balances deviating from peg", &["chain", "from_block", "to_block"]);
     q!(VALIDATE_CURVE_IMBALANCE_V2, "Validate Curve imbalance using curvefi_polygon per-pool tables", &["chain", "from_block", "to_block"]);
@@ -202,6 +202,11 @@ fn render_sql(
     }
     if let Some(min) = args.min_usd {
         sql = sql.replace("{min_usd}", &min.to_string());
+    }
+    if let Some(min) = args.min_profit_usd {
+        sql = sql.replace("{min_profit_usd}", &min.to_string());
+    } else {
+        sql = sql.replace("{min_profit_usd}", "0");
     }
     if let Some(ref addr) = args.factory_address {
         sql = sql.replace("{factory_address}", addr);

@@ -164,7 +164,7 @@ impl DuneClient {
             self.base_url, execution_id
         );
 
-        let max_polls = 120; // 120 seconds max
+        let max_polls = 580; // 580 seconds max
         for _ in 0..max_polls {
             let response = self
                 .http

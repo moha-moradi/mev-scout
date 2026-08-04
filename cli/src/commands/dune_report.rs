@@ -53,7 +53,7 @@ pub async fn cmd_dune_report(config: &Config, args: &DuneReportArgs) -> anyhow::
     );
 
     let client = DuneClient::new(api_key);
-    let report = StrategyReport::run(&client, &args.chain, from_block, to_block)
+    let report = StrategyReport::run(&client, &args.chain, from_block, to_block, args.min_profit)
         .await
         .context("Dune report generation failed")?;
 

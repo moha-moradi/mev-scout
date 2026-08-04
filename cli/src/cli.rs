@@ -519,6 +519,10 @@ pub struct DuneQueryArgs {
     #[arg(long, value_name = "USD")]
     pub min_usd: Option<f64>,
 
+    /// Minimum per-opportunity profit in USD (for {min_profit_usd} queries)
+    #[arg(long = "min-profit", value_name = "USD")]
+    pub min_profit_usd: Option<f64>,
+
     /// Factory address (for factory-specific queries)
     #[arg(long, value_name = "ADDRESS")]
     pub factory_address: Option<String>,
@@ -565,6 +569,11 @@ pub struct DuneReportArgs {
     /// Output format: markdown, html, json
     #[arg(long, default_value = "markdown", value_name = "FORMAT")]
     pub output: String,
+
+    /// Minimum per-opportunity profit in USD (filters out micro-arb noise; only
+    /// affects queries that support the {min_profit_usd} placeholder)
+    #[arg(long = "min-profit", default_value = "0", value_name = "USD")]
+    pub min_profit: f64,
 
     /// Write output to a file instead of stdout
     #[arg(long = "output-file", value_name = "PATH")]

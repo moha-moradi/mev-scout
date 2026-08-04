@@ -13,6 +13,7 @@
 //! - `{pool_address}` / `{token_address}` / `{tx_hash}` — hex addresses with `0x` prefix
 //! - `{token_list}` — comma-separated token addresses for `IN` clause
 //! - `{min_usd}` — minimum USD threshold for filtering
+//! - `{min_profit_usd}` — minimum per-opportunity profit in USD (e.g. `10`)
 //! - `{factory_address}` — DEX factory contract address
 //!
 //! # Column Order
@@ -85,41 +86,71 @@ FROM v3_pools vp
 ORDER BY vp.creation_block ASC
 "#;
 
-/// Curve pools via `PoolAdded` events from Curve's Registry and PoolRegistry contracts.
+/// Curve pools.
 ///
-/// Uses chain-specific decoded event tables.
+/// Discovery strategy:
+/// - `dex.trades` (project = 'curve') covers ethereum (and other chains with curated
+///   curve data). Note: polygon `dex.trades` does NOT contain a `curve` project, so on
+///   polygon the query also unions pool-deployment events from the verified
+///   `curvefi_polygon.stableswapfactory_evt_*` factory tables (guarded by
+///   `'{chain}' = 'polygon'`, so they no-op on other chains).
 /// Columns: `pool_address`(0), `coins`(1) [JSON array of token addresses], `n_coins`(2),
 ///          `creation_block`(3), `pool_type`(4), `registry`(5)
 pub const QUERY_CURVE_POOLS: &str = r#"
-WITH curve_contracts AS (
-  SELECT contract_address FROM {chain}.contracts WHERE namespace = 'curve' AND name = 'Registry'
-  UNION
-  SELECT contract_address FROM {chain}.contracts WHERE namespace = 'curve' AND name = 'PoolRegistry'
-  UNION
-  SELECT contract_address FROM {chain}.contracts WHERE namespace = 'curve' AND name = 'MetaPoolFactory'
+WITH curve_pools AS (
+  SELECT
+    t.project_contract_address AS pool_address,
+    MIN(t.block_number) AS creation_block
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.project = 'curve'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+  GROUP BY 1
+
+  UNION ALL
+
+  SELECT
+    contract_address AS pool_address,
+    MIN(evt_block_number) AS creation_block
+  FROM curvefi_polygon.stableswapfactory_evt_plainpooldeployed
+  WHERE '{chain}' = 'polygon'
+    AND evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  GROUP BY 1
+
+  UNION ALL
+
+  SELECT
+    contract_address AS pool_address,
+    MIN(evt_block_number) AS creation_block
+  FROM curvefi_polygon.stableswapfactory_evt_metapooldeployed
+  WHERE '{chain}' = 'polygon'
+    AND evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  GROUP BY 1
+
+  UNION ALL
+
+  SELECT
+    contract_address AS pool_address,
+    MIN(evt_block_number) AS creation_block
+  FROM curvefi_polygon.stableswapfactory_evt_tricryptopooldeployed
+  WHERE '{chain}' = 'polygon'
+    AND evt_block_number >= {from_block}
+    AND evt_block_number <= {to_block}
+  GROUP BY 1
 )
 SELECT
-  p.pool AS pool_address,
-  p.coins AS coins_json,
-  ARRAY_LENGTH(p.coins) AS n_coins,
-  p.evt_block_number AS creation_block,
-  'curve_' || CAST(ARRAY_LENGTH(p.coins) AS VARCHAR) AS pool_type,
-  p.contract_address AS registry
-FROM curve_{chain}.Registry_evt_PoolAdded p
-WHERE p.evt_block_number >= {from_block}
-  AND p.evt_block_number <= {to_block}
-UNION ALL
-SELECT
-  p.pool,
-  p.coins,
-  ARRAY_LENGTH(p.coins),
-  p.evt_block_number,
-  'curve_' || CAST(ARRAY_LENGTH(p.coins) AS VARCHAR),
-  p.contract_address
-FROM curve_{chain}.PoolRegistry_evt_PoolAdded p
-WHERE p.evt_block_number >= {from_block}
-  AND p.evt_block_number <= {to_block}
-ORDER BY creation_block ASC
+  cp.pool_address,
+  NULL AS coins_json,
+  2 AS n_coins,
+  cp.creation_block,
+  'curve_2' AS pool_type,
+  NULL AS registry
+FROM curve_pools cp
+ORDER BY cp.creation_block ASC
 "#;
 
 /// Balancer V2 pools via `PoolRegistered` event.
@@ -128,9 +159,9 @@ ORDER BY creation_block ASC
 ///          `creation_block`(3), `vault_address`(4)
 pub const QUERY_BALANCER_POOLS: &str = r#"
 SELECT
-  p.pool AS pool_address,
-  p.poolId AS pool_id,
-  p.poolType AS pool_type,
+  p.pooladdress AS pool_address,
+  p.poolid AS pool_id,
+  NULL AS pool_type,
   p.evt_block_number AS creation_block,
   p.contract_address AS vault_address
 FROM balancer_v2_{chain}.Vault_evt_PoolRegistered p
@@ -213,6 +244,7 @@ LEFT JOIN tokens.erc20 t0
 LEFT JOIN tokens.erc20 t1
   ON t1.blockchain = '{chain}' AND t1.contract_address = ap.token1
 ORDER BY ap.last_active_block DESC
+LIMIT 100000
 "#;
 
 /// Discover pools of a specific DEX fork by factory address.
@@ -226,7 +258,7 @@ SELECT
   p.token0,
   p.token1,
   p.evt_block_number AS creation_block
-FROM uniswap_v2_{chain}.Factory_evt_PairCreated p
+FROM uniswap_v2_{chain}.uniswapv2factory_evt_paircreated p
 WHERE p.contract_address = '{factory_address}'::bytea
   AND p.evt_block_number >= {from_block}
   AND p.evt_block_number <= {to_block}
@@ -284,6 +316,7 @@ WHERE t.blockchain = '{chain}'
   AND t.block_number >= {from_block}
   AND t.block_number <= {to_block}
 ORDER BY t.block_number, t.tx_hash
+LIMIT 100000
 "#;
 
 /// All trades involving a specific pool (useful for analyzing a single pool).
@@ -411,6 +444,7 @@ WHERE s.blockchain = '{chain}'
   AND s.block_number >= {from_block}
   AND s.block_number <= {to_block}
 ORDER BY s.block_number, s.tx_hash
+LIMIT 100000
 "#;
 
 /// Sandwich attacks in a specific block.
@@ -470,6 +504,7 @@ WHERE v.blockchain = '{chain}'
   AND v.block_number >= {from_block}
   AND v.block_number <= {to_block}
 ORDER BY v.block_number, v.tx_hash
+LIMIT 100000
 "#;
 
 /// Detect arbitrage transactions: one tx that swaps through >= 2 different pools.
@@ -535,7 +570,8 @@ SELECT DISTINCT
   MAX(tp.amount_usd) OVER (PARTITION BY tp.tx_hash) AS amount_usd
 FROM tx_pools tp
 WHERE tp.pool_count >= 2
-ORDER BY tp.tx_hash
+ORDER BY tp.block_number, tp.tx_hash
+LIMIT 100000
 "#;
 
 /// Arbitrage transactions in a time range.
@@ -647,24 +683,60 @@ ORDER BY l.evt_tx_hash
 
 /// Compound V3 liquidation events.
 ///
+/// Compound V3 has no `Comet_evt_Absorb` table; liquidations are captured via
+/// `call_absorb` traces per market. Verified markets: Polygon `cusdcv3polygon`
+/// and `cusdtv3`; Ethereum `comet`, `cusdcv3`, `cusdtv3`, `cwethv3`, `cusdsv3`.
+/// Block-number ranges disambiguate the active chain.
+///
 /// Columns: `block_number`(0), `tx_hash`(1), `user`(2), `liquidator`(3),
 ///          `collateral_asset`(4), `debt_asset`(5), `collateral_amount`(6),
 ///          `debt_amount`(7), `block_time`(8)
 pub const QUERY_COMPOUND_V3_LIQUIDATIONS: &str = r#"
+WITH absorbs AS (
+  SELECT
+    call_block_number AS block_number,
+    call_tx_hash AS tx_hash,
+    absorber AS liquidator,
+    call_block_time AS block_time
+  FROM compound_v3_polygon.cusdcv3polygon_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_polygon.cusdtv3_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_ethereum.comet_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_ethereum.cusdcv3_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_ethereum.cusdtv3_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_ethereum.cwethv3_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+  UNION ALL
+  SELECT call_block_number, call_tx_hash, absorber, call_block_time
+  FROM compound_v3_ethereum.cusdsv3_call_absorb
+  WHERE call_block_number >= {from_block} AND call_block_number <= {to_block}
+)
 SELECT
-  a.evt_block_number AS block_number,
-  a.evt_tx_hash AS tx_hash,
-  a.actor AS user,
+  a.block_number,
+  a.tx_hash,
+  NULL AS user,
   a.liquidator,
-  a.collateralAsset AS collateral_asset,
-  a.baseAsset AS debt_asset,
-  a.collateralAmount AS collateral_amount,
-  a.baseAmount AS debt_amount,
-  a.evt_block_time AS block_time
-FROM compound_v3_{chain}.Comet_evt_Absorb a
-WHERE a.evt_block_number >= {from_block}
-  AND a.evt_block_number <= {to_block}
-ORDER BY a.evt_block_number, a.evt_tx_hash
+  NULL AS collateral_asset,
+  NULL AS debt_asset,
+  NULL AS collateral_amount,
+  NULL AS debt_amount,
+  a.block_time
+FROM absorbs a
+ORDER BY a.block_number, a.tx_hash
 "#;
 
 /// Combined liquidation events from the consolidated `lending.borrow` dataset.
@@ -691,6 +763,7 @@ WHERE l.blockchain = '{chain}'
   AND l.block_number >= {from_block}
   AND l.block_number <= {to_block}
 ORDER BY l.block_number, l.tx_hash
+LIMIT 100000
 "#;
 
 /// Combined liquidations in a specific block.
@@ -750,46 +823,44 @@ LIMIT 10
 /// Failed (reverted) transactions with value > threshold in a block range.
 /// These are potential MEV signals: searchers bidding on failed bundles.
 ///
-/// Uses the curated `gas.fees` dataset for cross-chain gas and fee data.
+/// Uses the raw `{chain}.transactions` dataset (the curated `gas.fees` dataset
+/// does not expose `success`/`value`/`error` columns).
 /// Columns: `block_number`(0), `tx_hash`(1), `from`(2), `to`(3),
 ///          `value_eth`(4), `gas_used`(5), `gas_price_gwei`(6), `error`(7)
 pub const QUERY_FAILED_TXS: &str = r#"
 SELECT
   g.block_number,
-  g.tx_hash,
-  g.tx_from AS from_address,
-  g.tx_to AS to_address,
-  CAST(g.tx_value AS DOUBLE) / 1e18 AS value_eth,
+  g.hash AS tx_hash,
+  g."from" AS from_address,
+  g."to" AS to_address,
+  CAST(g.value AS DOUBLE) / 1e18 AS value_eth,
   g.gas_used,
-  g.effective_gas_price / 1e9 AS gas_price_gwei,
-  g.error AS error_reason
-FROM gas.fees g
-WHERE g.blockchain = '{chain}'
-  AND g.block_date >= DATE '{block_month_min}'
-  AND g.block_number >= {from_block}
+  CAST(g.gas_price AS DOUBLE) / 1e9 AS gas_price_gwei,
+  NULL AS error_reason
+FROM {chain}.transactions g
+WHERE g.block_number >= {from_block}
   AND g.block_number <= {to_block}
   AND g.success = FALSE
-  AND g.tx_value > 0
-ORDER BY g.tx_value DESC
+  AND g.value > 0
+ORDER BY g.value DESC
 "#;
 
 /// Failed transactions in a specific block.
 pub const QUERY_FAILED_TXS_BY_BLOCK: &str = r#"
 SELECT
   g.block_number,
-  g.tx_hash,
-  g.tx_from AS from_address,
-  g.tx_to AS to_address,
-  CAST(g.tx_value AS DOUBLE) / 1e18 AS value_eth,
+  g.hash AS tx_hash,
+  g."from" AS from_address,
+  g."to" AS to_address,
+  CAST(g.value AS DOUBLE) / 1e18 AS value_eth,
   g.gas_used,
-  g.effective_gas_price / 1e9 AS gas_price_gwei,
-  g.error AS error_reason
-FROM gas.fees g
-WHERE g.blockchain = '{chain}'
-  AND g.block_number = {block_number}
+  CAST(g.gas_price AS DOUBLE) / 1e9 AS gas_price_gwei,
+  NULL AS error_reason
+FROM {chain}.transactions g
+WHERE g.block_number = {block_number}
   AND g.success = FALSE
-  AND g.tx_value > 0
-ORDER BY g.tx_value DESC
+  AND g.value > 0
+ORDER BY g.value DESC
 "#;
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -823,42 +894,43 @@ SELECT
 FROM tokens.erc20 t
 WHERE t.blockchain = '{chain}'
 ORDER BY t.symbol
+LIMIT 100000
 "#;
 
 /// Historical USD price for a token at a specific block time.
 ///
 /// Uses the hybrid `prices.minute` table (Coinpaprika + DEX-derived, 900K+ tokens).
-/// Columns: `minute`(0), `price`(1), `symbol`(2), `decimals`(3)
+/// Columns: `timestamp`(0), `price`(1), `symbol`(2), `decimals`(3)
 pub const QUERY_TOKEN_PRICE_AT_BLOCK: &str = r#"
 SELECT
-  p.minute,
+  p.timestamp,
   p.price,
   p.symbol,
   p.decimals
 FROM prices.minute p
 WHERE p.blockchain = '{chain}'
   AND p.contract_address = '{token_address}'::bytea
-  AND p.minute <= TIMESTAMP '{block_timestamp}'
-  AND p.minute >= TIMESTAMP '{block_timestamp}' - INTERVAL '1' hour
-ORDER BY p.minute DESC
+  AND p.timestamp <= TIMESTAMP '{block_timestamp}'
+  AND p.timestamp >= TIMESTAMP '{block_timestamp}' - INTERVAL '1' hour
+ORDER BY p.timestamp DESC
 LIMIT 1
 "#;
 
 /// Price history for a token over a time window (for TWAP / price analysis).
 ///
 /// Uses the hybrid `prices.minute` table.
-/// Columns: `minute`(0), `price`(1), `symbol`(2)
+/// Columns: `timestamp`(0), `price`(1), `symbol`(2)
 pub const QUERY_TOKEN_PRICE_HISTORY: &str = r#"
 SELECT
-  p.minute,
+  p.timestamp,
   p.price,
   p.symbol
 FROM prices.minute p
 WHERE p.blockchain = '{chain}'
   AND p.contract_address = '{token_address}'::bytea
-  AND p.minute >= TIMESTAMP '{from_time}'
-  AND p.minute <= TIMESTAMP '{to_time}'
-ORDER BY p.minute
+  AND p.timestamp >= TIMESTAMP '{from_time}'
+  AND p.timestamp <= TIMESTAMP '{to_time}'
+ORDER BY p.timestamp
 "#;
 
 /// Latest USD price for a token (uses the `prices.latest` hybrid table).
@@ -895,6 +967,7 @@ FROM {chain}.blocks b
 WHERE b.number >= {from_block}
   AND b.number <= {to_block}
 ORDER BY b.number
+LIMIT 100000
 "#;
 
 /// Block metadata for a single block.
@@ -920,13 +993,13 @@ pub const QUERY_GAS_PRICE_HISTORY: &str = r#"
 WITH tx_gas AS (
   SELECT
     g.block_number,
-    g.effective_gas_price / 1e9 AS gas_price_gwei
+    CAST(g.gas_price AS DOUBLE) / 1e9 AS gas_price_gwei
   FROM gas.fees g
   WHERE g.blockchain = '{chain}'
     AND g.block_date >= DATE '{block_month_min}'
     AND g.block_number >= {from_block}
     AND g.block_number <= {to_block}
-    AND g.effective_gas_price > 0
+    AND g.gas_price > 0
 )
 SELECT
   tg.block_number,
@@ -1030,11 +1103,18 @@ SELECT * FROM block_events ORDER BY pool_address, tx_hash
 /// from reorging a previous block exceeds the cost.
 /// Identifies blocks with high value that attackers might want to replace.
 ///
-/// Uses hybrid `prices.minute` for ETH price conversion.
+/// Uses `prices.usd` for ETH price conversion (0xc02aaa39... is ethereum WETH;
+/// on other chains the join simply yields NULL). The price scan is bounded to the
+/// block-range time window to keep it within Dune's small-query limit.
 /// Columns: `block_number`(0), `total_mev_value_eth`(1), `total_tx_value_eth`(2),
 ///          `tx_count`(3), `base_fee_gwei`(4), `timestamp`(5)
 pub const QUERY_HIGH_VALUE_BLOCKS: &str = r#"
-WITH block_value AS (
+WITH bounds AS (
+  SELECT MIN(time) AS lo, MAX(time) AS hi
+  FROM {chain}.blocks
+  WHERE number IN ({from_block}, {to_block})
+),
+block_value AS (
   SELECT
     t.block_number,
     SUM(COALESCE(t.amount_usd, 0)) AS total_mev_value_usd,
@@ -1045,21 +1125,30 @@ WITH block_value AS (
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
   GROUP BY t.block_number
+),
+eth_price AS (
+  SELECT
+    p.minute AS ts,
+    p.price
+  FROM prices.usd p
+  CROSS JOIN bounds b
+  WHERE p.blockchain = '{chain}'
+    AND p.contract_address = 0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2
+    AND p.minute >= b.lo
+    AND p.minute <= b.hi
 )
 SELECT
   bv.block_number,
-  (bv.total_mev_value_usd / NULLIF(p.price, 0)) / 1e18 AS total_mev_value_eth,
+  bv.total_mev_value_usd / NULLIF(ep.price, 0) AS total_mev_value_eth,
   NULL AS total_tx_value_eth,
   bv.tx_count,
   CAST(blk.base_fee_per_gas AS DOUBLE) / 1e9 AS base_fee_gwei,
   blk.time AS timestamp
 FROM block_value bv
 JOIN {chain}.blocks blk ON blk.number = bv.block_number
-LEFT JOIN prices.minute p
-  ON p.blockchain = '{chain}'
-  AND p.contract_address = 0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2
-  AND p.minute = DATE_TRUNC('minute', blk.time)
+LEFT JOIN eth_price ep ON ep.ts = DATE_TRUNC('minute', blk.time)
 ORDER BY bv.total_mev_value_usd DESC
+LIMIT 1000
 "#;
 
 /// Pool liquidity snapshots — reserve and TVL info for DEX pools
@@ -1118,16 +1207,16 @@ ORDER BY rt.tvl_usd DESC
 pub const QUERY_GAS_BY_HOUR: &str = r#"
 SELECT
   DATE_TRUNC('hour', g.block_time) AS hour,
-  AVG(g.effective_gas_price / 1e9) AS avg_gas_price_gwei,
-  MIN(g.effective_gas_price / 1e9) AS min_gas_price_gwei,
-  MAX(g.effective_gas_price / 1e9) AS max_gas_price_gwei,
-  APPROX_PERCENTILE(g.effective_gas_price / 1e9, 0.50) AS median_gas_price_gwei,
+  AVG(CAST(g.gas_price AS DOUBLE) / 1e9) AS avg_gas_price_gwei,
+  MIN(CAST(g.gas_price AS DOUBLE) / 1e9) AS min_gas_price_gwei,
+  MAX(CAST(g.gas_price AS DOUBLE) / 1e9) AS max_gas_price_gwei,
+  APPROX_PERCENTILE(CAST(g.gas_price AS DOUBLE) / 1e9, 0.50) AS median_gas_price_gwei,
   COUNT(*) AS tx_count
 FROM gas.fees g
 WHERE g.blockchain = '{chain}'
   AND g.block_time >= TIMESTAMP '{from_time}'
   AND g.block_time < TIMESTAMP '{to_time}'
-  AND g.effective_gas_price > 0
+  AND g.gas_price > 0
 GROUP BY 1
 ORDER BY 1
 "#;
@@ -1280,12 +1369,19 @@ LIMIT 1
 /// Shows the user's intended single-hop trade rather than the multi-hop routing.
 /// Useful for distinguishing organic trades from MEV activity.
 ///
-/// Columns: `block_number`(0), `tx_hash`(1), `project`(2), `token_bought_address`(3),
+/// `dex_aggregator.trades` has no `block_number` column, so the block range is
+/// converted to timestamps via `{chain}.blocks`.
+/// Columns: `block_time`(0), `tx_hash`(1), `project`(2), `token_bought_address`(3),
 ///          `token_sold_address`(4), `token_bought_amount`(5), `token_sold_amount`(6),
-///          `amount_usd`(7), `taker`(8), `block_time`(9)
+///          `amount_usd`(7), `taker`(8)
 pub const QUERY_AGGREGATOR_TRADES_IN_RANGE: &str = r#"
+WITH bounds AS (
+  SELECT MIN(time) AS lo, MAX(time) AS hi
+  FROM {chain}.blocks
+  WHERE number IN ({from_block}, {to_block})
+)
 SELECT
-  a.block_number,
+  a.block_time,
   a.tx_hash,
   a.project,
   a.token_bought_address,
@@ -1293,14 +1389,15 @@ SELECT
   a.token_bought_amount,
   a.token_sold_amount,
   a.amount_usd,
-  a.taker,
-  a.block_time
+  a.taker
 FROM dex_aggregator.trades a
+CROSS JOIN bounds b
 WHERE a.blockchain = '{chain}'
   AND a.block_month >= DATE '{block_month_min}'
-  AND a.block_number >= {from_block}
-  AND a.block_number <= {to_block}
-ORDER BY a.block_number, a.tx_hash
+  AND a.block_time >= b.lo
+  AND a.block_time <= b.hi
+ORDER BY a.block_time, a.tx_hash
+LIMIT 100000
 "#;
 
 /// Address labels from Dune's consolidated labels dataset.
@@ -1358,14 +1455,14 @@ ORDER BY l.block_number, l.tx_hash
 /// `lending.supply` dataset.
 ///
 /// Columns: `block_number`(0), `tx_hash`(1), `protocol`(2), `transaction_type`(3),
-///          `supplier`(4), `token_address`(5), `amount`(6), `amount_usd`(7), `block_time`(8)
+///          `depositor`(4), `token_address`(5), `amount`(6), `amount_usd`(7), `block_time`(8)
 pub const QUERY_LENDING_SUPPLY_BY_RANGE: &str = r#"
 SELECT
   l.block_number,
   l.tx_hash,
   l.project AS protocol,
   l.transaction_type,
-  l.supplier,
+  l.depositor,
   l.token_address,
   l.amount,
   l.amount_usd,
@@ -1376,27 +1473,37 @@ WHERE l.blockchain = '{chain}'
   AND l.block_number >= {from_block}
   AND l.block_number <= {to_block}
 ORDER BY l.block_number, l.tx_hash
+LIMIT 100000
 "#;
 
 /// DEX-native flash loans (Balancer, Uniswap V3, dYdX) from `dex.flashloans`.
 /// Complements the lending-protocol flash loans from `lending.flashloans`.
 ///
-/// Columns: `block_number`(0), `tx_hash`(1), `project`(2), `token_address`(3),
+/// `dex.flashloans` has no `block_number` column and uses `currency_contract`
+/// (not `token_address`), so the block range is converted to timestamps via
+/// `{chain}.blocks`.
+/// Columns: `block_time`(0), `tx_hash`(1), `project`(2), `token_address`(3),
 ///          `amount_usd`(4), `amount`(5), `fee`(6)
 pub const QUERY_DEX_FLASH_LOANS_BY_RANGE: &str = r#"
+WITH bounds AS (
+  SELECT MIN(time) AS lo, MAX(time) AS hi
+  FROM {chain}.blocks
+  WHERE number IN ({from_block}, {to_block})
+)
 SELECT
-  f.block_number,
+  f.block_time,
   f.tx_hash,
   f.project,
-  f.token_address,
+  f.currency_contract AS token_address,
   f.amount_usd,
   f.amount,
   f.fee
 FROM dex.flashloans f
+CROSS JOIN bounds b
 WHERE f.blockchain = '{chain}'
-  AND f.block_number >= {from_block}
-  AND f.block_number <= {to_block}
-ORDER BY f.block_number, f.tx_hash
+  AND f.block_time >= b.lo
+  AND f.block_time <= b.hi
+ORDER BY f.block_time, f.tx_hash
 "#;
 
 /// Time-series scaffolding: continuous days from `utils.days`.
@@ -1430,15 +1537,49 @@ ORDER BY h.timestamp
 
 /// Validate skim() capture opportunities: V2 pairs where balanceOf > reserve.
 ///
-/// Dune does not expose `balanceOf` directly. Proxy: count V2 Sync events
-/// where the token amounts suggest a balance-reserve discrepancy by comparing
-/// consecutive Sync events on the same pair. When reserves drop without a
-/// corresponding Swap, a skim() likely occurred.
+/// Dune does not expose `balanceOf` directly, so this uses an indirect signal:
+/// Sync events on a V2 pair WITHOUT a Swap, Mint, or Burn in the same tx (i.e.
+/// pure `sync()` calls) where a reserve INCREASED vs the previous Sync on the
+/// pair. A reserve increase on sync() means token balance had drifted above the
+/// stored reserve (rebase / fee-on-transfer / accidental transfer) — exactly the
+/// amount a skim() would have extracted, but it was preempted by sync(). Since
+/// skim() itself emits no event, this is an upper-bound proxy for the opportunity
+/// size a skim bot could have captured by winning the race.
+///
+/// Reserve amounts are raw uint256 token units; they are converted to USD via
+/// `tokens.erc20` decimals and daily `prices.usd`. Mint/Burn txs are excluded
+/// because LP adds/removes also raise reserves and are NOT skim opportunities.
+///
+/// NOTE: `uniswap_v2_{chain}.uniswapv2pair_evt_sync/swap/mint/burn` and
+/// `uniswapv2factory_evt_paircreated` decoded tables must exist for the target
+/// chain (confirmed on Polygon; on other chains verify with DISCOVER_UNIV2_SYNC).
 ///
 /// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
 ///          `period_start`(3), `period_end`(4), `period_days`(5)
 pub const VALIDATE_SKIM_CAPTURE: &str = r#"
-WITH v2_syncs AS (
+WITH bounds AS (
+  SELECT MIN(time) AS lo, MAX(time) AS hi
+  FROM {chain}.blocks
+  WHERE number >= {from_block}
+    AND number <= {to_block}
+),
+daily_prices AS (
+  SELECT
+    p.contract_address,
+    DATE_TRUNC('day', p.minute) AS day,
+    AVG(p.price) AS price
+  FROM prices.usd p
+  CROSS JOIN bounds b
+  WHERE p.blockchain = '{chain}'
+    AND p.minute >= b.lo
+    AND p.minute <= b.hi
+  GROUP BY 1, 2
+),
+pair_tokens AS (
+  SELECT pair AS pool, token0, token1
+  FROM uniswap_v2_{chain}.uniswapv2factory_evt_paircreated
+),
+v2_syncs AS (
   SELECT
     s.contract_address AS pool,
     s.evt_block_number AS block_number,
@@ -1448,43 +1589,54 @@ WITH v2_syncs AS (
     s.reserve1,
     LAG(s.reserve0) OVER (PARTITION BY s.contract_address ORDER BY s.evt_block_number, s.evt_tx_hash) AS prev_reserve0,
     LAG(s.reserve1) OVER (PARTITION BY s.contract_address ORDER BY s.evt_block_number, s.evt_tx_hash) AS prev_reserve1
-  FROM uniswap_v2_{chain}.Pair_evt_Sync s
+  FROM uniswap_v2_{chain}.uniswapv2pair_evt_sync s
   WHERE s.evt_block_number >= {from_block}
     AND s.evt_block_number <= {to_block}
 ),
-sync_without_swap AS (
+sync_only AS (
   SELECT
     cs.pool,
-    cs.block_number,
-    cs.tx_hash,
     cs.block_time,
-    cs.reserve0,
-    cs.reserve1,
-    cs.prev_reserve0,
-    cs.prev_reserve1,
-    CASE WHEN cs.reserve0 >= cs.prev_reserve0 THEN cs.reserve0 - cs.prev_reserve0 ELSE cs.prev_reserve0 - cs.reserve0 END AS reserve0_delta,
-    CASE WHEN cs.reserve1 >= cs.prev_reserve1 THEN cs.reserve1 - cs.prev_reserve1 ELSE cs.prev_reserve1 - cs.reserve1 END AS reserve1_delta
+    pt.token0,
+    pt.token1,
+    CASE WHEN cs.reserve0 > cs.prev_reserve0 THEN cs.reserve0 - cs.prev_reserve0 ELSE 0 END AS drift0,
+    CASE WHEN cs.reserve1 > cs.prev_reserve1 THEN cs.reserve1 - cs.prev_reserve1 ELSE 0 END AS drift1
   FROM v2_syncs cs
-  LEFT JOIN uniswap_v2_{chain}.Pair_evt_Swap sw
+  LEFT JOIN uniswap_v2_{chain}.uniswapv2pair_evt_swap sw
     ON sw.contract_address = cs.pool
     AND sw.evt_tx_hash = cs.tx_hash
+  LEFT JOIN uniswap_v2_{chain}.uniswapv2pair_evt_mint mn
+    ON mn.contract_address = cs.pool
+    AND mn.evt_tx_hash = cs.tx_hash
+  LEFT JOIN uniswap_v2_{chain}.uniswapv2pair_evt_burn br
+    ON br.contract_address = cs.pool
+    AND br.evt_tx_hash = cs.tx_hash
+  LEFT JOIN pair_tokens pt ON pt.pool = cs.pool
   WHERE sw.evt_tx_hash IS NULL
+    AND mn.evt_tx_hash IS NULL
+    AND br.evt_tx_hash IS NULL
     AND cs.prev_reserve0 IS NOT NULL
-    AND (
-      (cs.reserve0 >= cs.prev_reserve0 AND cs.reserve0 - cs.prev_reserve0 > 0)
-      OR (cs.reserve0 < cs.prev_reserve0 AND cs.prev_reserve0 - cs.reserve0 > 0)
-      OR (cs.reserve1 >= cs.prev_reserve1 AND cs.reserve1 - cs.prev_reserve1 > 0)
-      OR (cs.reserve1 < cs.prev_reserve1 AND cs.prev_reserve1 - cs.reserve1 > 0)
-    )
+    AND (cs.reserve0 > cs.prev_reserve0 OR cs.reserve1 > cs.prev_reserve1)
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(CASE WHEN reserve0_delta > 0 THEN reserve0_delta ELSE reserve1_delta END), 0) AS avg_profit_usd,
-  COALESCE(SUM(CASE WHEN reserve0_delta > 0 THEN reserve0_delta ELSE reserve1_delta END), 0) AS total_profit_usd,
+  COALESCE(AVG(d0_usd + d1_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(d0_usd + d1_usd), 0) AS total_profit_usd,
   MIN(block_time) AS period_start,
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
-FROM sync_without_swap
+FROM (
+  SELECT
+    sk.pool,
+    sk.block_time,
+    COALESCE(CAST(sk.drift0 AS DOUBLE) / POWER(10, COALESCE(e0.decimals, 18)) * p0.price, 0) AS d0_usd,
+    COALESCE(CAST(sk.drift1 AS DOUBLE) / POWER(10, COALESCE(e1.decimals, 18)) * p1.price, 0) AS d1_usd
+  FROM sync_only sk
+  LEFT JOIN tokens.erc20 e0 ON e0.blockchain = '{chain}' AND e0.contract_address = sk.token0
+  LEFT JOIN tokens.erc20 e1 ON e1.blockchain = '{chain}' AND e1.contract_address = sk.token1
+  LEFT JOIN daily_prices p0 ON p0.contract_address = sk.token0 AND p0.day = DATE_TRUNC('day', sk.block_time)
+  LEFT JOIN daily_prices p1 ON p1.contract_address = sk.token1 AND p1.day = DATE_TRUNC('day', sk.block_time)
+) val
 "#;
 
 /// Validate sync() race opportunities: defensive sync calls (Sync without Swap).
@@ -1500,7 +1652,7 @@ WITH v2_syncs AS (
     s.evt_block_number AS block_number,
     s.evt_tx_hash AS tx_hash,
     s.evt_block_time AS block_time
-  FROM uniswap_v2_{chain}.Pair_evt_Sync s
+  FROM uniswap_v2_{chain}.uniswapv2pair_evt_sync s
   WHERE s.evt_block_number >= {from_block}
     AND s.evt_block_number <= {to_block}
 )
@@ -1512,7 +1664,7 @@ SELECT
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
 FROM v2_syncs cs
-LEFT JOIN uniswap_v2_{chain}.Pair_evt_Swap sw
+LEFT JOIN uniswap_v2_{chain}.uniswapv2pair_evt_swap sw
   ON sw.contract_address = cs.pool
   AND sw.evt_tx_hash = cs.tx_hash
 WHERE sw.evt_tx_hash IS NULL
@@ -1520,26 +1672,28 @@ WHERE sw.evt_tx_hash IS NULL
 
 /// Validate init price snipe opportunities: V3 pools with mispriced initialization.
 ///
-/// Finds V3 PoolCreated events, then checks the first swap price deviation
-/// from the median price of the same token pair on other pools.
+/// A pool is considered "new" when its FIRST trade in `dex.trades` falls inside the
+/// block window (i.e. the pool was created and immediately traded during the period).
 ///
-/// NOTE: On Polygon, the factory event table is `factory_polygon_evt_PoolCreated`.
-/// On Ethereum, it's `Factory_evt_PoolCreated`. Hardcoded for Polygon.
+/// NOTE: This deliberately does NOT read the decoded `PoolCreated` event tables.
+/// On Polygon the `uniswap_v3_polygon.factory_polygon_evt_PoolCreated` decode is
+/// hollow (no rows), so pool discovery is done via `dex.trades` MIN(block_number),
+/// which is populated on every supported chain.
 ///
 /// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
 ///          `period_start`(3), `period_end`(4), `period_days`(5)
 pub const VALIDATE_INIT_PRICE_SNIPE: &str = r#"
 WITH new_pools AS (
   SELECT
-    p.evt_block_number AS block_number,
-    p.evt_tx_hash AS tx_hash,
-    p.contract_address AS pool_address,
-    p.token0,
-    p.token1,
-    p.evt_block_time AS block_time
-  FROM uniswap_v3_{chain}.factory_polygon_evt_PoolCreated p
-  WHERE p.evt_block_number >= {from_block}
-    AND p.evt_block_number <= {to_block}
+    t.project_contract_address AS pool_address,
+    MIN(t.block_number) AS creation_block
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.version = '3'
+    AND t.block_month >= DATE '{block_month_min}'
+  GROUP BY 1
+  HAVING MIN(t.block_number) >= {from_block}
+    AND MIN(t.block_number) <= {to_block}
 ),
 first_swaps AS (
   SELECT
@@ -1553,7 +1707,6 @@ first_swaps AS (
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
-    AND t.project = 'uniswap_v3'
     AND t.project_contract_address IN (SELECT pool_address FROM new_pools)
 )
 SELECT
@@ -1572,29 +1725,94 @@ WHERE fs.rn = 1
 /// Validate backrunning: multi-pool transactions following a large swap in the same block.
 ///
 /// A backrun is proxied by: a tx that interacts with 2+ pools in a block where
-/// a preceding tx moved > $10K on one of those pools.
+/// a DIFFERENT tx in that block moved > $10K on one of the same pools. Refinements
+/// vs earlier versions:
+/// - Direction check: the backrun leg on the affected pool must counter-trade the
+///   large swap (buy what it sold, sell what it bought). Trades that add to the
+///   imbalance are not backruns.
+/// - Affected-pool-only volume: profit is sized on the counter-trading leg(s) on
+///   the pool(s) the large swap hit, not the whole multi-pool tx volume.
+/// - Ordering + success: `{chain}.transactions` provides the intra-block tx index
+///   (the large swap must strictly precede the backrun) and `success` (both txs
+///   must succeed).
+/// - Gas: backrun tx gas (`gas_used × gas_price`) is priced in POL via daily
+///   `prices.usd` for the native token and subtracted from gross profit.
+///
+/// Profit model: `gross = 0.003 × counter-volume` (fee-rate proxy) minus gas cost.
+/// Opportunities with `net_profit <= 0` are excluded. Note this is still a modeled
+/// upper-bound proxy: a V2 pool's 0.3% fee is equal to the assumed capture rate,
+/// so most V2 backruns will net ≈0 or negative after gas — that is the point.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_BACKRUN: &str = r#"
-WITH large_swaps AS (
+WITH bounds AS (
+  SELECT MIN(time) AS lo, MAX(time) AS hi
+  FROM {chain}.blocks
+  WHERE number >= {from_block}
+    AND number <= {to_block}
+),
+native_prices AS (
+  SELECT
+    DATE_TRUNC('day', p.minute) AS day,
+    AVG(p.price) AS price
+  FROM prices.usd p
+  CROSS JOIN bounds b
+  WHERE p.blockchain = '{chain}'
+    AND p.contract_address = 0x0000000000000000000000000000000000001010
+    AND p.minute >= b.lo
+    AND p.minute <= b.hi
+  GROUP BY 1
+),
+tx_info AS (
+  SELECT
+    tx.block_number,
+    tx.hash AS tx_hash,
+    tx."index" AS tx_index,
+    tx.success,
+    tx.gas_used,
+    tx.gas_price
+  FROM {chain}.transactions tx
+  WHERE tx.block_number >= {from_block}
+    AND tx.block_number <= {to_block}
+),
+large_swaps AS (
   SELECT
     t.block_number,
     t.project_contract_address AS pool_address,
-    t.amount_usd,
-    t.tx_hash
+    t.token_bought_address,
+    t.token_sold_address,
+    t.tx_hash,
+    ti.tx_index
   FROM dex.trades t
+  JOIN tx_info ti
+    ON ti.block_number = t.block_number
+   AND ti.tx_hash = t.tx_hash
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
     AND t.amount_usd >= 10000
+    AND ti.success = TRUE
+),
+multi_pool_pools AS (
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    t.project_contract_address AS pool_address,
+    t.token_bought_address,
+    t.token_sold_address,
+    t.amount_usd
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
 ),
 multi_pool_txs AS (
   SELECT
     t.block_number,
     t.tx_hash,
     COUNT(DISTINCT t.project_contract_address) AS pool_count,
-    SUM(t.amount_usd) AS total_amount_usd,
     MIN(t.block_time) AS block_time
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
@@ -1603,39 +1821,115 @@ multi_pool_txs AS (
     AND t.block_number <= {to_block}
   GROUP BY t.block_number, t.tx_hash
   HAVING COUNT(DISTINCT t.project_contract_address) >= 2
+),
+matched_legs AS (
+  SELECT DISTINCT
+    mpp.block_number,
+    mpp.tx_hash,
+    mpp.pool_address,
+    mpp.amount_usd,
+    ti.tx_index,
+    ti.gas_used,
+    ti.gas_price
+  FROM multi_pool_pools mpp
+  JOIN tx_info ti
+    ON ti.block_number = mpp.block_number
+   AND ti.tx_hash = mpp.tx_hash
+  JOIN large_swaps ls
+    ON ls.block_number = mpp.block_number
+   AND ls.pool_address = mpp.pool_address
+   AND ls.tx_hash != mpp.tx_hash
+   AND mpp.token_bought_address = ls.token_sold_address
+   AND mpp.token_sold_address = ls.token_bought_address
+   AND ls.tx_index < ti.tx_index
+  WHERE ti.success = TRUE
+),
+backrun_candidates AS (
+  SELECT
+    ml.block_number,
+    ml.tx_hash,
+    SUM(ml.amount_usd) AS backrun_volume_usd,
+    MAX(ml.gas_used) AS gas_used,
+    MAX(ml.gas_price) AS gas_price,
+    MIN(mt.block_time) AS block_time
+  FROM matched_legs ml
+  JOIN multi_pool_txs mt
+    ON mt.block_number = ml.block_number
+   AND mt.tx_hash = ml.tx_hash
+  GROUP BY ml.block_number, ml.tx_hash
+),
+priced AS (
+  SELECT
+    bc.block_number,
+    bc.tx_hash,
+    bc.block_time,
+    bc.backrun_volume_usd * 0.003
+      - COALESCE(CAST(bc.gas_used AS DOUBLE) * CAST(bc.gas_price AS DOUBLE) / 1e18 * np.price, 0) AS net_profit_usd
+  FROM backrun_candidates bc
+  LEFT JOIN native_prices np
+    ON np.day = DATE_TRUNC('day', bc.block_time)
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(mpt.total_amount_usd * 0.003), 0) AS avg_profit_usd,
-  COALESCE(SUM(mpt.total_amount_usd * 0.003), 0) AS total_profit_usd,
-  MIN(mpt.block_time) AS period_start,
-  MAX(mpt.block_time) AS period_end,
-  DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
-FROM multi_pool_txs mpt
-INNER JOIN large_swaps ls
-  ON ls.block_number = mpt.block_number
-  AND ls.tx_hash = mpt.tx_hash
+  COALESCE(AVG(p.net_profit_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(p.net_profit_usd), 0) AS total_profit_usd,
+  MIN(p.block_time) AS period_start,
+  MAX(p.block_time) AS period_end,
+  DATE_DIFF('day', MIN(p.block_time), MAX(p.block_time)) AS period_days
+FROM priced p
+WHERE p.net_profit_usd > 0
 "#;
 
-/// Validate long-tail token arb: multi-pool arbs involving low-liquidity tokens.
+/// Validate long-tail token arb: closed-loop multi-pool txs on low-liquidity tokens.
+///
+/// Improvements over the volume-proxy version:
+/// - Long-tail volume counts BOTH bought and sold sides (a token that is only
+///   ever sold no longer gets misclassified as zero-volume).
+/// - A real closed-loop check: every token bought in the tx must also be sold
+///   an equal number of times, so path trades that start and end on different
+///   tokens are excluded.
+/// - Amount-chaining: for every token except exactly one, the raw bought amount
+///   must equal the raw sold amount. This guarantees the legs form a single
+///   executed cycle (intermediate tokens chain to the next leg) and that the
+///   single residual token is the loop's start/end token.
+/// - Profit uses a same-token raw ratio (decimal-independent): the residual
+///   token's bought/sold minus 1, times the USD capital deployed into it.
+/// - Only opportunities above `{min_profit_usd}` are counted (defaults to 0).
+///   Median and p90 of per-opportunity profit are returned alongside the mean
+///   so the skewed distribution (mean dominated by a few large arbs) is visible.
 ///
 /// Tokens with < $100K total volume in the period are considered long-tail.
 ///
-/// Columns: same as VALIDATE_SKIM_CAPTURE
+/// Parameters: `{min_profit_usd}` — minimum per-opportunity profit in USD.
+/// Columns: `opportunity_count`(0), `avg_profit_usd`(1), `total_profit_usd`(2),
+///          `period_start`(3), `period_end`(4), `period_days`(5),
+///          `median_profit_usd`(6), `p90_profit_usd`(7)
 pub const VALIDATE_LONG_TAIL_ARB: &str = r#"
 WITH token_volume AS (
   SELECT
-    t.token_bought_address AS token,
-    SUM(t.amount_usd) AS total_vol
-  FROM dex.trades t
-  WHERE t.blockchain = '{chain}'
-    AND t.block_month >= DATE '{block_month_min}'
-    AND t.block_number >= {from_block}
-    AND t.block_number <= {to_block}
-  GROUP BY t.token_bought_address
+    legs.token,
+    SUM(legs.vol_usd) AS total_vol
+  FROM (
+    SELECT t.token_bought_address AS token, t.amount_usd AS vol_usd
+    FROM dex.trades t
+    WHERE t.blockchain = '{chain}'
+      AND t.block_month >= DATE '{block_month_min}'
+      AND t.block_number >= {from_block}
+      AND t.block_number <= {to_block}
+    UNION ALL
+    SELECT t.token_sold_address AS token, t.amount_usd AS vol_usd
+    FROM dex.trades t
+    WHERE t.blockchain = '{chain}'
+      AND t.block_month >= DATE '{block_month_min}'
+      AND t.block_number >= {from_block}
+      AND t.block_number <= {to_block}
+  ) legs
+  GROUP BY legs.token
 ),
 long_tail_tokens AS (
-  SELECT token FROM token_volume WHERE total_vol < 100000
+  SELECT token
+  FROM token_volume
+  WHERE total_vol < 100000
 ),
 long_tail_txs AS (
   SELECT DISTINCT t.tx_hash
@@ -1647,30 +1941,115 @@ long_tail_txs AS (
     AND (t.token_bought_address IN (SELECT token FROM long_tail_tokens)
          OR t.token_sold_address IN (SELECT token FROM long_tail_tokens))
 ),
-multi_pool_txs AS (
+leg_tokens AS (
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    t.token_bought_address AS token,
+    t.token_bought_amount AS amount,
+    t.amount_usd AS leg_usd,
+    1 AS side
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+  UNION ALL
+  SELECT
+    t.block_number,
+    t.tx_hash,
+    t.token_sold_address,
+    t.token_sold_amount,
+    t.amount_usd,
+    -1
+  FROM dex.trades t
+  WHERE t.blockchain = '{chain}'
+    AND t.block_month >= DATE '{block_month_min}'
+    AND t.block_number >= {from_block}
+    AND t.block_number <= {to_block}
+),
+token_ledger AS (
+  SELECT
+    block_number,
+    tx_hash,
+    token,
+    SUM(side) AS count_balance,
+    SUM(CASE WHEN side = 1 THEN amount ELSE -amount END) AS amount_balance,
+    SUM(CASE WHEN side = 1 THEN amount END) AS bought,
+    SUM(CASE WHEN side = -1 THEN amount END) AS sold,
+    SUM(CASE WHEN side = 1 THEN leg_usd END) AS bought_usd,
+    SUM(CASE WHEN side = -1 THEN leg_usd END) AS sold_usd
+  FROM leg_tokens
+  GROUP BY block_number, tx_hash, token
+),
+open_loops AS (
+  SELECT DISTINCT block_number, tx_hash
+  FROM token_ledger
+  WHERE count_balance != 0
+),
+split_loops AS (
+  SELECT block_number, tx_hash
+  FROM token_ledger
+  WHERE count_balance = 0
+  GROUP BY block_number, tx_hash
+  HAVING COUNT(CASE WHEN amount_balance != 0 THEN 1 END) != 1
+),
+closed_loops AS (
   SELECT
     t.block_number,
     t.tx_hash,
     COUNT(DISTINCT t.project_contract_address) AS pool_count,
-    SUM(t.amount_usd) AS total_amount_usd,
     MIN(t.block_time) AS block_time
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
+    AND NOT EXISTS (
+      SELECT 1 FROM open_loops o
+      WHERE o.block_number = t.block_number AND o.tx_hash = t.tx_hash
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM split_loops s
+      WHERE s.block_number = t.block_number AND s.tx_hash = t.tx_hash
+    )
   GROUP BY t.block_number, t.tx_hash
   HAVING COUNT(DISTINCT t.project_contract_address) >= 2
+),
+loop_tokens AS (
+  SELECT
+    tl.block_number,
+    tl.tx_hash,
+    cl.block_time,
+    tl.bought,
+    tl.sold,
+    tl.sold_usd
+  FROM token_ledger tl
+  INNER JOIN closed_loops cl
+    ON cl.block_number = tl.block_number AND cl.tx_hash = tl.tx_hash
+  WHERE tl.amount_balance != 0
+),
+priced AS (
+  SELECT
+    lt.block_number,
+    lt.tx_hash,
+    lt.block_time,
+    (CAST(lt.bought AS DOUBLE) / NULLIF(CAST(lt.sold AS DOUBLE), 0) - 1) * lt.sold_usd AS profit_usd
+  FROM loop_tokens lt
+  WHERE lt.sold > 0 AND lt.bought > 0
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(mpt.total_amount_usd * 0.005), 0) AS avg_profit_usd,
-  COALESCE(SUM(mpt.total_amount_usd * 0.005), 0) AS total_profit_usd,
-  MIN(mpt.block_time) AS period_start,
-  MAX(mpt.block_time) AS period_end,
-  DATE_DIFF('day', MIN(mpt.block_time), MAX(mpt.block_time)) AS period_days
-FROM multi_pool_txs mpt
-INNER JOIN long_tail_txs ltt ON ltt.tx_hash = mpt.tx_hash
+  COALESCE(AVG(p.profit_usd), 0) AS avg_profit_usd,
+  COALESCE(SUM(p.profit_usd), 0) AS total_profit_usd,
+  MIN(p.block_time) AS period_start,
+  MAX(p.block_time) AS period_end,
+  DATE_DIFF('day', MIN(p.block_time), MAX(p.block_time)) AS period_days,
+  APPROX_PERCENTILE(p.profit_usd, 0.50) AS median_profit_usd,
+  APPROX_PERCENTILE(p.profit_usd, 0.90) AS p90_profit_usd
+FROM priced p
+INNER JOIN long_tail_txs ltt ON ltt.tx_hash = p.tx_hash
+WHERE p.profit_usd > {min_profit_usd}
 "#;
 
 /// Validate stablecoin depeg arbitrage: Curve pool price deviations > 1% from $1.
@@ -1737,9 +2116,12 @@ SELECT
 FROM curve_trades
 "#;
 
-/// Validate Curve pool imbalance (V2) using curvefi_polygon per-pool tables.
+/// Validate Curve pool imbalance (V2) using per-pool TokenExchange tables.
 ///
-/// Uses per-pool tables from curvefi_polygon schema (2pool, 3pool, fraxbp_pool).
+/// Chain-specific table names verified on Dune: polygon uses `curvefi_polygon`
+/// (stableswap, atricrypto3), ethereum uses `curve_ethereum` (curvestableswapng,
+/// tricryptousdt). `curvefi_polygon`/`curve_ethereum` schemas exist globally, so
+/// the UNION is valid on any chain; block-number ranges disambiguate.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_CURVE_IMBALANCE_V2: &str = r#"
@@ -1751,20 +2133,27 @@ SELECT
   max(block_time) as period_end,
   date_diff('day', min(block_time), max(block_time)) as period_days
 FROM (
-  SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
+  SELECT t.evt_tx_hash, t.evt_block_time as block_time,
+    t.bought_id_uint256 AS bought_id,
+    t.sold_id_uint256 AS sold_id,
     t.tokens_sold / 1e18 as tokens_sold_amount, t.tokens_bought / 1e18 as tokens_bought_amount,
     0.003 as abs_amount_usd
-  FROM curvefi_polygon."2pool_evt_tokenexchange" t
+  FROM curvefi_polygon.stableswap_evt_tokenexchange t
   WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
   UNION ALL
   SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
     t.tokens_sold / 1e18, t.tokens_bought / 1e18, 0.003
-  FROM curvefi_polygon."3pool_evt_tokenexchange" t
+  FROM curvefi_polygon.atricrypto3_evt_tokenexchange t
   WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
   UNION ALL
   SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
     t.tokens_sold / 1e18, t.tokens_bought / 1e18, 0.003
-  FROM curvefi_polygon."fraxbp_pool_evt_tokenexchange" t
+  FROM curve_ethereum.curvestableswapng_evt_tokenexchange t
+  WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
+  UNION ALL
+  SELECT t.evt_tx_hash, t.evt_block_time as block_time, t.bought_id, t.sold_id,
+    t.tokens_sold / 1e18, t.tokens_bought / 1e18, 0.003
+  FROM curve_ethereum.tricryptousdt_evt_tokenexchange t
   WHERE t.evt_block_number BETWEEN {from_block} AND {to_block}
 ) curve_exchanges
 "#;
@@ -1800,6 +2189,9 @@ WHERE l.evt_block_number >= {from_block}
 
 /// Validate MakerDAO Clip Dutch auction take() events.
 ///
+/// Maker is Ethereum-only; `maker_ethereum.Clipper_evt_Take` is verified. Running
+/// with another chain's block range returns zero rows (no matching Ethereum blocks).
+///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_MAKERDAO_CLIP: &str = r#"
 SELECT
@@ -1809,7 +2201,7 @@ SELECT
   MIN(t.evt_block_time) AS period_start,
   MAX(t.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(t.evt_block_time), MAX(t.evt_block_time)) AS period_days
-FROM maker_{chain}.Clipper_evt_Take t
+FROM maker_ethereum.Clipper_evt_Take t
 WHERE t.evt_block_number >= {from_block}
   AND t.evt_block_number <= {to_block}
 "#;
@@ -1835,7 +2227,9 @@ WHERE blockchain = '{chain}'
 "#;
 
 /// Validate GMX v1 keeper race: liquidation events on GMX v1.
-/// Uses gmx_{chain} decoded Vault liquidation events.
+///
+/// GMX v1 is Arbitrum/Avalanche only; `gmx_arbitrum.vault_evt_liquidateposition`
+/// is verified on Dune. Running with another chain's block range returns zero rows.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_GMX_V1_KEEPER: &str = r#"
@@ -1845,7 +2239,7 @@ WITH liqs AS (
     evt_block_number,
     evt_block_time,
     size / 1e30 AS size_usd
-  FROM gmx_{chain}.Vault_evt_Liquidation
+  FROM gmx_arbitrum.vault_evt_liquidateposition
   WHERE evt_block_number BETWEEN {from_block} AND {to_block}
 )
 SELECT
@@ -1859,17 +2253,20 @@ FROM liqs
 "#;
 
 /// Validate GMX V2 ADL front-run: automatic deleveraging events.
-/// Uses gmx_v2_{chain} oracle error events from liquidation/adl handlers as proxy.
+///
+/// GMX V2 is Arbitrum/Avalanche only; `gmx_v2_arbitrum.liquidationhandler_evt_oracleerror`
+/// and `adlhandler_evt_oracleerror` are verified on Dune. Running with another
+/// chain's block range returns zero rows.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_GMX_V2_ADL: &str = r#"
 WITH events AS (
   SELECT evt_tx_hash, evt_block_number, evt_block_time, 1 AS est_count
-  FROM gmx_v2_{chain}.liquidationhandler_evt_oracleerror
+  FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror
   WHERE evt_block_number BETWEEN {from_block} AND {to_block}
   UNION ALL
   SELECT evt_tx_hash, evt_block_number, evt_block_time, 1 AS est_count
-  FROM gmx_v2_{chain}.adlhandler_evt_oracleerror
+  FROM gmx_v2_arbitrum.adlhandler_evt_oracleerror
   WHERE evt_block_number BETWEEN {from_block} AND {to_block}
 )
 SELECT
@@ -1884,6 +2281,9 @@ FROM events
 
 /// Validate Liquity recovery mode cascade: trove liquidation events.
 ///
+/// Liquity is Ethereum-only; `liquity_ethereum.trovemanager_evt_troveliquidated`
+/// is verified on Dune. Running with another chain's block range returns zero rows.
+///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_LIQUITY_RECOVERY: &str = r#"
 SELECT
@@ -1893,25 +2293,27 @@ SELECT
   MIN(l.evt_block_time) AS period_start,
   MAX(l.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(l.evt_block_time), MAX(l.evt_block_time)) AS period_days
-FROM liquity_{chain}.TroveManager_evt_TroveLiquidated l
+FROM liquity_ethereum.trovemanager_evt_troveliquidated l
 WHERE l.evt_block_number >= {from_block}
   AND l.evt_block_number <= {to_block}
 "#;
 
 /// Validate Synthetix V3 liquidation events.
-/// Table: synthetix_v3_{chain}.core_evt_liquidation
-/// liquidationData JSON contains: debtLiquidated, collateralSeized
+/// Table: synthetix_v3_ethereum.core_evt_liquidation (verified on Dune).
+/// liquidationData JSON contains: debtLiquidated, collateralSeized.
+/// Note: synthetix_v3 is not available on Polygon; the Ethereum schema is used
+/// for all chains (returns zero rows for non-Ethereum block ranges).
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_SYNTHETIX_LIQ: &str = r#"
 SELECT
   count(*) as opportunity_count,
-  coalesce(avg(CAST(json_extract_scalar(liquidationData, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as avg_profit_usd,
-  coalesce(sum(CAST(json_extract_scalar(liquidationData, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as total_profit_usd,
+  coalesce(avg(CAST(json_extract_scalar(liquidationdata, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as avg_profit_usd,
+  coalesce(sum(CAST(json_extract_scalar(liquidationdata, '$.debtLiquidated') AS DOUBLE) / 1e18), 0) as total_profit_usd,
   min(evt_block_time) as period_start,
   max(evt_block_time) as period_end,
   date_diff('day', min(evt_block_time), max(evt_block_time)) as period_days
-FROM synthetix_v3_{chain}.core_evt_liquidation
+FROM synthetix_v3_ethereum.core_evt_liquidation
 WHERE evt_block_number BETWEEN {from_block} AND {to_block}
 "#;
 
@@ -1978,7 +2380,7 @@ WITH v3_events AS (
     contract_address AS pool_address,
     'mint' AS event_type,
     evt_block_time AS block_time
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
+  FROM uniswap_v3_{chain}.uniswapv3pool_evt_mint
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -1988,7 +2390,7 @@ WITH v3_events AS (
     contract_address,
     'burn',
     evt_block_time
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
+  FROM uniswap_v3_{chain}.uniswapv3pool_evt_burn
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -2071,13 +2473,13 @@ pub const DISCOVER_ALL_MAKER: &str = r#"SHOW TABLES FROM maker_ethereum"#;
 
 pub const DISCOVER_ALL_GMX_ARB: &str = r#"SHOW TABLES FROM gmx_arbitrum"#;
 
-pub const DISCOVER_ALL_GMX_ROUTER_ARB: &str = r#"SHOW TABLES FROM gmx_router_arbitrum"#;
+pub const DISCOVER_ALL_GMX_ROUTER_ARB: &str = r#"SHOW TABLES FROM gmx_v2_arbitrum"#;
 
 pub const DISCOVER_ALL_GAINS_ARB: &str = r#"SHOW TABLES FROM gains_network_arbitrum"#;
 
 pub const DISCOVER_ALL_SYNX_ETH: &str = r#"SHOW TABLES FROM synthetix_ethereum"#;
 
-pub const DISCOVER_ALL_CURVE_POLY: &str = r#"SHOW TABLES FROM curve_polygon"#;
+pub const DISCOVER_ALL_CURVE_POLY: &str = r#"SHOW TABLES FROM curvefi_polygon"#;
 
 pub const DISCOVER_ALL_UNIV2_POLY: &str = r#"SHOW SCHEMAS LIKE '%uniswap%v2%polygon%'"#;
 
@@ -2165,7 +2567,7 @@ pub const DISCOVER_GAINS_DN: &str = r#"SHOW TABLES FROM gains_network_arbitrum L
 
 pub const DISCOVER_SYNX_V3_COLS: &str = r#"SELECT * FROM synthetix_v3_ethereum.core_evt_liquidation LIMIT 5"#;
 
-pub const DISCOVER_GMX_V1_VAULT_LIQ: &str = r#"SELECT * FROM gmx_arbitrum.Vault_evt_Liquidation LIMIT 5"#;
+pub const DISCOVER_GMX_V1_VAULT_LIQ: &str = r#"SELECT * FROM gmx_arbitrum.vault_evt_liquidateposition LIMIT 5"#;
 
 pub const DISCOVER_GMX_V2_LIQ_HANDLER: &str = r#"SELECT * FROM gmx_v2_arbitrum.liquidationhandler_evt_oracleerror LIMIT 5"#;
 

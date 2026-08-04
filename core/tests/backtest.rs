@@ -15,6 +15,9 @@ use std::collections::HashMap;
 use alloy::primitives::{Address, U256};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::dune::DuneClient;
+use mev_scout_core::dune::util::{
+    approx_block_month_min, chain_timing, dune_indexing_lag_blocks, estimate_latest_block,
+};
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
@@ -52,70 +55,6 @@ async fn try_rpc() -> Option<(RpcClient, u64)> {
     Some((rpc, block))
 }
 
-/// Approximate the block_month date for Dune partition pruning (copied from dune_find_blocks.rs).
-fn approx_block_month_min(block_number: u64, chain: &str) -> String {
-    let (genesis_ts, secs_per_block) = match chain {
-        "ethereum" => (1438269988_i64, 12.0),
-        "polygon" => (1591031691, 2.1),
-        "bsc" => (1597734000, 3.0),
-        "avalanche_c" | "avalanche" => (1624402800, 2.0),
-        "arbitrum" => (1630812600, 0.26),
-        "base" => (1686787200, 2.0),
-        "optimism" => (1631808000, 2.0),
-        _ => (1609459200, 12.0),
-    };
-    let elapsed = block_number as f64 * secs_per_block;
-    let approx_ts = genesis_ts + elapsed as i64;
-    chrono::DateTime::from_timestamp(approx_ts, 0)
-        .unwrap_or_default()
-        .format("%Y-%m-%d")
-        .to_string()
-}
-
-fn estimate_blocks_per_day(chain: &str) -> u64 {
-    match chain {
-        "ethereum" => 7200,
-        "polygon" => 41000,
-        "bsc" => 28800,
-        "avalanche" | "avalanche_c" => 43200,
-        "arbitrum" => 330000,
-        "base" => 43200,
-        "optimism" => 43200,
-        _ => 7200,
-    }
-}
-
-fn estimate_latest_block(chain: &str) -> u64 {
-    let (genesis_ts, secs_per_block) = match chain {
-        "ethereum" => (1438269988_i64, 12.0),
-        "polygon" => (1591031691, 2.1),
-        "bsc" => (1597734000, 3.0),
-        "avalanche_c" | "avalanche" => (1624402800, 2.0),
-        "arbitrum" => (1630812600, 0.26),
-        "base" => (1686787200, 2.0),
-        "optimism" => (1631808000, 2.0),
-        _ => (1609459200, 12.0),
-    };
-    let now = chrono::Utc::now().timestamp();
-    let elapsed_secs = now - genesis_ts;
-    (elapsed_secs as f64 / secs_per_block) as u64
-}
-
-fn dune_indexing_lag(chain: &str) -> u64 {
-    let lag_secs = 60 * 24 * 3600; // ~60 days
-    let secs_per_block = match chain {
-        "ethereum" => 12.0,
-        "polygon" => 2.1,
-        "bsc" => 3.0,
-        "avalanche_c" | "avalanche" => 2.0,
-        "arbitrum" => 0.26,
-        "base" => 2.0,
-        "optimism" => 2.0,
-        _ => 12.0,
-    };
-    (lag_secs as f64 / secs_per_block) as u64
-}
-
 /// Query Dune for blocks with high MEV activity and return them sorted by score descending.
 async fn dune_find_candidate_blocks(
     client: &DuneClient,
@@ -123,10 +62,10 @@ async fn dune_find_candidate_blocks(
     days: u64,
     top: usize,
 ) -> Vec<u64> {
-    let blocks_per_day = estimate_blocks_per_day(chain);
+    let blocks_per_day = chain_timing(chain).blocks_per_day;
     let range_blocks = days * blocks_per_day;
     let latest = estimate_latest_block(chain);
-    let lag = dune_indexing_lag(chain);
+    let lag = dune_indexing_lag_blocks(chain);
     let to_block = latest.saturating_sub(lag);
     let from_block = to_block.saturating_sub(range_blocks);
     let block_month_min = approx_block_month_min(from_block, chain);

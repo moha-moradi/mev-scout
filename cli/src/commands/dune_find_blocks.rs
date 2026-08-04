@@ -1,89 +1,10 @@
 use crate::cli::DuneFindBlocksArgs;
 use mev_scout_core::config::Config;
 use mev_scout_core::dune::DuneClient;
-
-/// Approximate the minimum block_month date for Dune partition pruning.
-fn approx_block_month_min(block_number: u64, chain: &str) -> String {
-    let (genesis_ts, secs_per_block) = match chain {
-        "ethereum" => (1438269988_i64, 12.0),
-        "polygon" => (1591031691, 2.1),
-        "bsc" => (1597734000, 3.0),
-        "avalanche_c" | "avalanche" => (1624402800, 2.0),
-        "arbitrum" => (1630812600, 0.26),
-        "base" => (1686787200, 2.0),
-        "optimism" => (1631808000, 2.0),
-        _ => (1609459200, 12.0),
-    };
-    let elapsed = block_number as f64 * secs_per_block;
-    let approx_ts = genesis_ts + elapsed as i64;
-    let naive = chrono::DateTime::from_timestamp(approx_ts, 0)
-        .unwrap_or_default();
-    naive.format("%Y-%m-%d").to_string()
-}
-
-/// Map chain name to Dune chain label.
-fn dune_chain_label(chain: &str) -> String {
-    match chain.to_lowercase().as_str() {
-        "avalanche" => "avalanche_c".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn estimate_blocks_per_day(chain: &str) -> u64 {
-    match chain {
-        "ethereum" => 7200,
-        "polygon" => 41000,
-        "bsc" => 28800,
-        "avalanche" | "avalanche_c" => 43200,
-        "arbitrum" => 330000,
-        "base" => 43200,
-        "optimism" => 43200,
-        _ => 7200,
-    }
-}
-
-/// Estimate the latest block number from current time (reverse of approx_block_month_min).
-fn estimate_latest_block(chain: &str) -> u64 {
-    let (genesis_ts, secs_per_block) = match chain {
-        "ethereum" => (1438269988_i64, 12.0),
-        "polygon" => (1591031691, 2.1),
-        "bsc" => (1597734000, 3.0),
-        "avalanche_c" | "avalanche" => (1624402800, 2.0),
-        "arbitrum" => (1630812600, 0.26),
-        "base" => (1686787200, 2.0),
-        "optimism" => (1631808000, 2.0),
-        _ => (1609459200, 12.0),
-    };
-    let now = chrono::Utc::now().timestamp();
-    let elapsed_secs = now - genesis_ts;
-    (elapsed_secs as f64 / secs_per_block) as u64
-}
-
-/// Dune indexing lag in blocks (conservative estimate per chain).
-/// Dune data pipelines typically lag well behind chain head on free tier.
-fn dune_indexing_lag(chain: &str) -> u64 {
-    let lag_secs = match chain {
-        "ethereum" => 60 * 24 * 3600,     // ~60 days
-        "polygon" => 60 * 24 * 3600,
-        "bsc" => 60 * 24 * 3600,
-        "avalanche_c" | "avalanche" => 60 * 24 * 3600,
-        "arbitrum" => 60 * 24 * 3600,
-        "base" => 60 * 24 * 3600,
-        "optimism" => 60 * 24 * 3600,
-        _ => 60 * 24 * 3600,
-    };
-    let secs_per_block = match chain {
-        "ethereum" => 12.0,
-        "polygon" => 2.1,
-        "bsc" => 3.0,
-        "avalanche_c" | "avalanche" => 2.0,
-        "arbitrum" => 0.26,
-        "base" => 2.0,
-        "optimism" => 2.0,
-        _ => 12.0,
-    };
-    (lag_secs as f64 / secs_per_block) as u64
-}
+use mev_scout_core::dune::util::{
+    approx_block_month_min, chain_timing, dune_chain_label, dune_indexing_lag_blocks,
+    estimate_latest_block,
+};
 
 pub async fn cmd_dune_find_blocks(
     config: &Config,
@@ -103,12 +24,12 @@ pub async fn cmd_dune_find_blocks(
     let chain = &args.chain;
     let chain_label = dune_chain_label(chain);
 
-    let blocks_per_day = estimate_blocks_per_day(chain);
+    let blocks_per_day = chain_timing(&chain_label).blocks_per_day;
     let range_blocks = args.days * blocks_per_day;
 
     let to_block = args.to_block.unwrap_or_else(|| {
         let latest = estimate_latest_block(&chain_label);
-        let lag = dune_indexing_lag(&chain_label);
+        let lag = dune_indexing_lag_blocks(&chain_label);
         latest.saturating_sub(lag)
     });
     let from_block = to_block.saturating_sub(range_blocks);

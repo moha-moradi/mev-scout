@@ -374,7 +374,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 ## 8. Dune On-Chain Validation Report
 
 > **Methodology**: Corrected Dune SQL queries executed via `mev-scout dune-query` against three chains:
-> - **Polygon** (blocks 88,685,241–89,915,241, ~30 days)
+> - **Polygon** (blocks 89,612,119–91,340,119, ~30 days; `VALIDATE_BACKRUN` re-run 2026-08-03 after fixing the backrun join to require a different tx on the same block/pool)
 > - **Ethereum** (blocks 28,249,309–28,465,309, ~30 days)
 > - **Arbitrum** (blocks 563,334,992–573,234,992, ~30 days)
 > All frequency/income claims in this document were compared against real on-chain data.
@@ -383,7 +383,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 
 | # | Strategy | Query | Result (30-day range, ~21 days actual data) | Projected /mo | Claim in Analysis | Verdict |
 |---|----------|-------|:-----------------:|:-------------:|-------------------|---------|
-| 4 | **Backrunning** | `VALIDATE_BACKRUN` | **7,728 opps, $2.86M est** | ~11K, $4.1M | 1K–5K/mo, $500–$5K | **2–10x higher than claimed** |
+| 4 | **Backrunning** | `VALIDATE_BACKRUN` | **9,663 opps, $387K est** (pre-refinement) | ~10K, $400K | 1K–5K/mo, $500–$5K | **Prior 7,728/$2.86M was inflated by a query bug** (joined large swap to the multi-pool tx by `tx_hash =`, counting large multi-pool arbs instead of backruns). Fixed join → 9,663 opps, $387K, $40 avg/opp. **Pending re-run** with direction/ordering/success/gas refinements (2026-08-03), expected to drop sharply. |
 | 10 | **Long-tail token arb** | `VALIDATE_LONG_TAIL_ARB` | **150,430 opps, $39.5K est** | ~215K, $56K | 1K–10K/mo, $300–$2K | **14x+ inflated** |
 | 18 | **Flash loan atomic liq** | `VALIDATE_FLASH_LIQ_PROFIT` | **226 txs, $111K vol** | ~323 | 100–500/mo, $500–$3K | **Frequency accurate**, volume ~20x higher than 21-day |
 | 3 | **Init price snipe** | `VALIDATE_INIT_PRICE_SNIPE` | **0** | 0 | 30–200/mo, $100–$2K | **Zero on Polygon** — no V3 PoolCreated events |

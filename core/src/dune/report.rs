@@ -23,7 +23,7 @@ use serde::Serialize;
 
 use super::client::DuneClient;
 use super::queries;
-use super::util::{approx_block_month_min, chain_timing, dune_chain_label};
+use super::util::{approx_block_month_min, dune_chain_label};
 
 /// Status of a single strategy measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,8 @@ pub struct StrategyReportItem {
     pub status: String,
     pub opportunity_count: u64,
     pub avg_profit_usd: f64,
+    pub median_profit_usd: f64,
+    pub p90_profit_usd: f64,
     pub total_profit_usd: f64,
     pub period_start: String,
     pub period_end: String,
@@ -153,8 +155,7 @@ pub const DEFERRED_MEASURABLE: &[&str] = &[
 
 /// Approximate the timestamp of a block number (for time-based queries).
 fn approx_block_timestamp(block: u64, chain: &str) -> chrono::NaiveDateTime {
-    let p = chain_timing(chain);
-    let ts = p.genesis_ts + (block as f64 * p.secs_per_block) as i64;
+    let ts = super::util::block_timestamp_secs(block, chain);
     chrono::DateTime::from_timestamp(ts, 0)
         .unwrap_or_default()
         .naive_utc()
@@ -194,13 +195,7 @@ fn fmt_count(v: u64) -> String {
 }
 
 /// The list of report queries for a chain, in doc order.
-fn strategy_queries(chain: &str) -> Vec<ReportQuery> {
-    let chain_label = dune_chain_label(chain);
-    let v3_factory_table = match chain_label.as_str() {
-        "polygon" => "uniswap_v3_polygon.factory_polygon_evt_PoolCreated".to_string(),
-        other => format!("uniswap_v3_{other}.Factory_evt_PoolCreated"),
-    };
-
+fn strategy_queries(_chain: &str) -> Vec<ReportQuery> {
     vec![
         // #1 sync() race / #2 skim() capture — V2 Sync events without swaps.
         ReportQuery {
@@ -222,25 +217,27 @@ fn strategy_queries(chain: &str) -> Vec<ReportQuery> {
             sql: queries::VALIDATE_SKIM_CAPTURE.to_string(),
         },
         // #3 Init price snipe — new V3 pools whose first swap volume is proxy for snipe value.
+        // Pool discovery via dex.trades MIN(block_number): the decoded PoolCreated
+        // factory tables are hollow on Polygon.
         ReportQuery {
             strategy_id: 3,
             strategy: "Init price snipe".into(),
             query: "VALIDATE_INIT_PRICE_SNIPE (chain-aware)".into(),
-            source: "uniswap_v3_{chain} PoolCreated + first trade".into(),
+            source: "dex.trades first-trade per pool".into(),
             claim: Some((100.0, 2000.0)),
             note: "first-swap USD volume after pool creation (opportunity size, not capture)".into(),
             sql: format!(
                 r#"WITH new_pools AS (
   SELECT
-    p.evt_block_number AS block_number,
-    p.evt_tx_hash AS tx_hash,
-    p.contract_address AS pool_address,
-    p.token0,
-    p.token1,
-    p.evt_block_time AS block_time
-  FROM {f} p
-  WHERE p.evt_block_number >= {{from_block}}
-    AND p.evt_block_number <= {{to_block}}
+    t.project_contract_address AS pool_address,
+    MIN(t.block_number) AS creation_block
+  FROM dex.trades t
+  WHERE t.blockchain = '{{chain}}'
+    AND t.version = '3'
+    AND t.block_month >= DATE '{{block_month_min}}'
+  GROUP BY 1
+  HAVING MIN(t.block_number) >= {{from_block}}
+    AND MIN(t.block_number) <= {{to_block}}
 ),
 first_swaps AS (
   SELECT
@@ -252,7 +249,6 @@ first_swaps AS (
   FROM dex.trades t
   WHERE t.blockchain = '{{chain}}'
     AND t.block_month >= DATE '{{block_month_min}}'
-    AND t.project = 'uniswap_v3'
     AND t.project_contract_address IN (SELECT pool_address FROM new_pools)
 )
 SELECT
@@ -266,7 +262,6 @@ FROM first_swaps fs
 JOIN new_pools np ON np.pool_address = fs.pool_address
 WHERE fs.rn = 1
   AND fs.amount_usd > 0"#,
-                f = v3_factory_table,
             ),
         },
         // #4 Backrunning — multi-pool txs following a >$10K swap.
@@ -276,7 +271,7 @@ WHERE fs.rn = 1
             query: "VALIDATE_BACKRUN".into(),
             source: "dex.trades".into(),
             claim: Some((500.0, 5000.0)),
-            note: "multi-pool tx volume × 0.3% fee-rate proxy".into(),
+            note: "counter-trade volume × 0.3% minus gas (direction, ordering, success refined)".into(),
             sql: queries::VALIDATE_BACKRUN.to_string(),
         },
         // #10 Long-tail token arb.
@@ -286,7 +281,7 @@ WHERE fs.rn = 1
             query: "VALIDATE_LONG_TAIL_ARB".into(),
             source: "dex.trades".into(),
             claim: Some((300.0, 2000.0)),
-            note: "low-volume-token multi-pool tx volume × 0.5%".into(),
+            note: "amount-chained closed-loop txs on low-volume tokens; realized same-token return, net-positive only".into(),
             sql: queries::VALIDATE_LONG_TAIL_ARB.to_string(),
         },
         // #11 Sandwich — curated attacker-side dataset.
@@ -543,6 +538,7 @@ fn render_query_sql(
     to_block: u64,
     from_time: &str,
     to_time: &str,
+    min_profit_usd: f64,
 ) -> String {
     template
         .replace("{chain}", chain)
@@ -551,6 +547,7 @@ fn render_query_sql(
         .replace("{to_block}", &to_block.to_string())
         .replace("{from_time}", from_time)
         .replace("{to_time}", to_time)
+        .replace("{min_profit_usd}", &min_profit_usd.to_string())
 }
 
 /// Parse a numeric value from a Dune row that may be number or string.
@@ -631,6 +628,8 @@ fn item_from_row(rq: &ReportQuery, row: &super::types::DuneRow) -> StrategyRepor
         },
         opportunity_count: count,
         avg_profit_usd: row_f64(row, "avg_profit_usd"),
+        median_profit_usd: row_f64(row, "median_profit_usd"),
+        p90_profit_usd: row_f64(row, "p90_profit_usd"),
         total_profit_usd: total,
         period_start: row_str(row, "period_start"),
         period_end: row_str(row, "period_end"),
@@ -653,6 +652,8 @@ fn item_empty(rq: &ReportQuery, status: ReportStatus, err: Option<String>) -> St
         status: status.label().to_string(),
         opportunity_count: 0,
         avg_profit_usd: 0.0,
+        median_profit_usd: 0.0,
+        p90_profit_usd: 0.0,
         total_profit_usd: 0.0,
         period_start: String::new(),
         period_end: String::new(),
@@ -675,6 +676,7 @@ impl StrategyReport {
         chain: &str,
         from_block: u64,
         to_block: u64,
+        min_profit_usd: f64,
     ) -> anyhow::Result<Self> {
         let chain_label = dune_chain_label(chain);
         let block_month_min = approx_block_month_min(from_block, &chain_label);
@@ -699,6 +701,7 @@ impl StrategyReport {
                 to_block,
                 &from_time,
                 &to_time,
+                min_profit_usd,
             );
 
             let item = match client.execute_raw_sql(&sql).await {
@@ -775,20 +778,24 @@ impl StrategyReport {
              plus victims' losses), not revenue from a specific bot. Each row states its profit basis; \
              estimates carry large error bars. Strategies whose decoded tables do not exist on Dune are listed at the end.\n\n",
         );
-        out.push_str("| # | Strategy | Status | Opps | Avg $ | Total $ | Est. /mo | Claim /mo | Verdict | Basis |\n");
-        out.push_str("|---|----------|--------|-----:|-------:|--------:|---------:|-----------|---------|-------|\n");
+        out.push_str("| # | Strategy | Status | Opps | Avg $ | Med $ | P90 $ | Total $ | Est. /mo | Claim /mo | Verdict | Basis |\n");
+        out.push_str("|---|----------|--------|-----:|-------:|------:|------:|--------:|---------:|-----------|---------|-------|\n");
         for i in &self.items {
             let claim = match (i.claim_low_usd, i.claim_high_usd) {
                 (Some(lo), Some(hi)) => format!("${}–${}", fmt_usd(lo), fmt_usd(hi)),
                 _ => "—".to_string(),
             };
+            let med = if i.median_profit_usd > 0.0 { fmt_usd_2(i.median_profit_usd) } else { "—".to_string() };
+            let p90 = if i.p90_profit_usd > 0.0 { fmt_usd_2(i.p90_profit_usd) } else { "—".to_string() };
             out.push_str(&format!(
-                "| {} | {} | {} | {} | ${} | ${} | ${} | {} | {} | {} |\n",
+                "| {} | {} | {} | {} | ${} | {} | {} | ${} | ${} | {} | {} | {} |\n",
                 i.strategy_id,
                 i.strategy,
                 i.status,
                 fmt_count(i.opportunity_count),
                 fmt_usd_2(i.avg_profit_usd),
+                med,
+                p90,
                 fmt_usd(i.total_profit_usd),
                 fmt_usd(i.est_monthly_usd),
                 claim,
@@ -846,11 +853,13 @@ impl StrategyReport {
                 "in claim range" => "verdict-in",
                 _ => "",
             };
+            let med = if i.median_profit_usd > 0.0 { fmt_usd_2(i.median_profit_usd) } else { "—".to_string() };
+            let p90 = if i.p90_profit_usd > 0.0 { fmt_usd_2(i.p90_profit_usd) } else { "—".to_string() };
             rows.push_str(&format!(
                 "<tr>\
                  <td class='mono'>{}</td><td>{}</td>\
                  <td><span class='badge {}'>{}</span></td>\
-                 <td class='num'>{}</td><td class='num'>{}</td><td class='num'>{}</td>\
+                 <td class='num'>{}</td><td class='num'>{}</td><td class='num'>{}</td><td class='num'>{}</td><td class='num'>{}</td>\
                  <td><div class='bar-wrap'><div class='bar' style='width:{}%'></div><span class='bar-val'>{}</span></div></td>\
                  <td class='num muted'>{}</td>\
                  <td><span class='verdict {}'>{}</span></td>\
@@ -861,6 +870,8 @@ impl StrategyReport {
                 i.status,
                 fmt_count(i.opportunity_count),
                 fmt_usd(i.avg_profit_usd),
+                med,
+                p90,
                 fmt_usd(i.total_profit_usd),
                 pct.max(1),
                 fmt_usd(i.est_monthly_usd),
@@ -922,7 +933,7 @@ impl StrategyReport {
 </div>
 <table>
 <thead>
-<tr><th>#</th><th>Strategy</th><th>Status</th><th class="num">Opps</th><th class="num">Avg $</th><th class="num">Total $</th><th>Est. monthly</th><th class="num">Claim /mo</th><th>Verdict</th><th>Basis</th></tr>
+<tr><th>#</th><th>Strategy</th><th>Status</th><th class="num">Opps</th><th class="num">Avg $</th><th class="num">Med $</th><th class="num">P90 $</th><th class="num">Total $</th><th>Est. monthly</th><th class="num">Claim /mo</th><th>Verdict</th><th>Basis</th></tr>
 </thead>
 <tbody>{rows}</tbody>
 </table>
@@ -973,6 +984,8 @@ mod tests {
             status: "ok".to_string(),
             opportunity_count: 100,
             avg_profit_usd: total / 100.0,
+            median_profit_usd: total / 100.0,
+            p90_profit_usd: total / 50.0,
             total_profit_usd: total,
             period_start: "2026-07-01 00:00:00".to_string(),
             period_end: "2026-07-30 00:00:00".to_string(),
