@@ -1060,9 +1060,12 @@ ORDER BY bt.tx_hash
 /// Detect potential JIT (Just-In-Time) liquidity: a tx that adds liquidity
 /// right before a large swap, then removes it right after.
 ///
-/// Uses chain-specific decoded event tables via `{chain}` placeholder:
-/// `uniswap_v3_{chain}.UniswapV3Pool_evt_Mint/Burn`.
-/// Ensure the decoded table exists on Dune for your target chain.
+/// Polygon: the `uniswap_v3_polygon` decode stopped in 2022-09, so pool events
+/// come from the live QuickSwap V3 (Algebra) decode
+/// (`quickswap_v3_polygon.algebrapool_evt_mint/burn`). V3 swaps on Polygon are
+/// labelled `project='quickswap' AND version='3'` in `dex.trades`
+/// (`project='uniswap_v3'` returns 0 rows there; Dune's `dex.liquidity` table
+/// does not exist).
 ///
 /// Columns: `block_number`(0), `large_swap_tx`(1), `mint_tx`(2), `burn_tx`(3),
 ///          `pool_address`(4), `swap_amount_usd`(5), `profit_est_usd`(6)
@@ -1074,7 +1077,7 @@ WITH block_events AS (
     contract_address AS pool_address,
     'mint' AS event_type,
     NULL AS amount_usd
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
+  FROM quickswap_v3_polygon.algebrapool_evt_mint
   WHERE evt_block_number = {block_number}
   UNION ALL
   SELECT
@@ -1083,7 +1086,7 @@ WITH block_events AS (
     contract_address,
     'burn',
     NULL
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
+  FROM quickswap_v3_polygon.algebrapool_evt_burn
   WHERE evt_block_number = {block_number}
   UNION ALL
   SELECT
@@ -1095,6 +1098,8 @@ WITH block_events AS (
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_number = {block_number}
+    AND t.project = 'quickswap'
+    AND t.version = '3'
 )
 SELECT * FROM block_events ORDER BY pool_address, tx_hash
 "#;
@@ -2371,6 +2376,18 @@ FROM flash_liqs
 
 /// Validate JIT liquidity (V3): Mint→Swap→Burn patterns in same block, same pool.
 ///
+/// Polygon: the `uniswap_v3_polygon` decoded tables stopped being populated at
+/// 2022-09, so pool events come from the live QuickSwap V3 (Algebra) decode
+/// (`quickswap_v3_polygon.algebrapool_evt_mint/burn`). V3 swaps on Polygon are
+/// labelled `project='quickswap' AND version='3'` in `dex.trades`
+/// (`project='uniswap_v3'` returns 0 rows there; Dune's `dex.liquidity` table
+/// does not exist).
+///
+/// Profit estimate: a JIT provider captures the swap fee on the liquidity it
+/// adds, so `profit_est = collocated_swap_volume_usd * fee_rate`. `dex.trades`
+/// has no fee column, so we use the QuickSwap V3 / Algebra default fee tier
+/// (0.05%). This is an approximation of fee capture, not an exact figure.
+///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_JIT_FEE_CAPTURE: &str = r#"
 WITH v3_events AS (
@@ -2379,8 +2396,9 @@ WITH v3_events AS (
     evt_tx_hash AS tx_hash,
     contract_address AS pool_address,
     'mint' AS event_type,
-    evt_block_time AS block_time
-  FROM uniswap_v3_{chain}.uniswapv3pool_evt_mint
+    evt_block_time AS block_time,
+    CAST(NULL AS DOUBLE) AS amount_usd
+  FROM quickswap_v3_polygon.algebrapool_evt_mint
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -2389,8 +2407,9 @@ WITH v3_events AS (
     evt_tx_hash,
     contract_address,
     'burn',
-    evt_block_time
-  FROM uniswap_v3_{chain}.uniswapv3pool_evt_burn
+    evt_block_time,
+    CAST(NULL AS DOUBLE)
+  FROM quickswap_v3_polygon.algebrapool_evt_burn
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -2399,13 +2418,15 @@ WITH v3_events AS (
     t.tx_hash,
     t.project_contract_address,
     'swap',
-    t.block_time
+    t.block_time,
+    t.amount_usd
   FROM dex.trades t
   WHERE t.blockchain = '{chain}'
     AND t.block_month >= DATE '{block_month_min}'
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
-    AND t.project = 'uniswap_v3'
+    AND t.project = 'quickswap'
+    AND t.version = '3'
 ),
 pool_block_events AS (
   SELECT
@@ -2414,14 +2435,15 @@ pool_block_events AS (
     block_time,
     tx_hash,
     ARRAY_AGG(DISTINCT event_type) AS event_types,
-    COUNT(DISTINCT event_type) AS event_count
+    COUNT(DISTINCT event_type) AS event_count,
+    SUM(amount_usd) AS swap_volume_usd
   FROM v3_events
   GROUP BY pool_address, block_number, block_time, tx_hash
 )
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(1000), 0) AS avg_profit_usd,
-  COALESCE(SUM(1000), 0) AS total_profit_usd,
+  COALESCE(AVG(swap_volume_usd * 0.0005), 0) AS avg_profit_usd,
+  COALESCE(SUM(swap_volume_usd * 0.0005), 0) AS total_profit_usd,
   MIN(block_time) AS period_start,
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days

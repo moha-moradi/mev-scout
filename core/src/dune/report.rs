@@ -399,9 +399,9 @@ WHERE t.blockchain = '{chain}'
             strategy_id: 28,
             strategy: "JIT liquidity (V3)".into(),
             query: "VALIDATE_JIT_FEE_CAPTURE".into(),
-            source: "uniswap_v3_{chain} Mint/Burn + dex.trades".into(),
+            source: "quickswap_v3_polygon Mint/Burn (Algebra) + dex.trades".into(),
             claim: Some((2000.0, 10000.0)),
-            note: "Mint+Swap+Burn bundles; $1,000/event placeholder in template".into(),
+            note: "Mint+Swap+Burn bundles; profit = collocated swap volume x 0.05% (QuickSwap V3 default fee; dex.trades has no fee column)".into(),
             sql: queries::VALIDATE_JIT_FEE_CAPTURE.to_string(),
         },
         // #31 LST depeg collateral liq.

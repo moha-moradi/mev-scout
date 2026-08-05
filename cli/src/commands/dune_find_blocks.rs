@@ -170,6 +170,8 @@ LIMIT {limit}"#,
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     if find_jit {
+        // Polygon: uniswap_v3_polygon decode stopped at 2022-09; use the live
+        // QuickSwap V3 (Algebra) decode and the quickswap v3 dex.trades label.
         let sql = format!(
             r#"WITH v3_events AS (
   SELECT
@@ -177,7 +179,7 @@ LIMIT {limit}"#,
     evt_tx_hash AS tx_hash,
     contract_address AS pool_address,
     'mint' AS event_type
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Mint
+  FROM quickswap_v3_polygon.algebrapool_evt_mint
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -186,7 +188,7 @@ LIMIT {limit}"#,
     evt_tx_hash,
     contract_address,
     'burn'
-  FROM uniswap_v3_{chain}.UniswapV3Pool_evt_Burn
+  FROM quickswap_v3_polygon.algebrapool_evt_burn
   WHERE evt_block_number >= {from_block}
     AND evt_block_number <= {to_block}
   UNION ALL
@@ -200,7 +202,8 @@ LIMIT {limit}"#,
     AND t.block_month >= DATE '{block_month_min}'
     AND t.block_number >= {from_block}
     AND t.block_number <= {to_block}
-    AND t.project = 'uniswap_v3'
+    AND t.project = 'quickswap'
+    AND t.version = '3'
 ),
 pool_tx_events AS (
   SELECT

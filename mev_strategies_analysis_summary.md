@@ -424,7 +424,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 
 **Flash loan atomic liq (Strategy #18)**: The analysis claims 100–500/mo. Dune shows **226 flash loan liquidation transactions in ~21 days** (~323/month). This is **within the claimed range**. Total volume $111K across 226 transactions (~$493/tx avg).
 
-**JIT liquidity (Strategy #28)**: Dropped from 280 opportunities in the initial 21-day run to **0** in the 30-day run. This inconsistency suggests Dune's `UniswapV3Pool_evt_Mint`/`Burn` table availability varies by block range. Requires re-investigation.
+**JIT liquidity (Strategy #28)**: Dropped from 280 opportunities in the initial 21-day run to **0** in the 30-day run. **Root cause found**: the `uniswap_v3_polygon.UniswapV3Pool_evt_Mint`/`_Burn` decode (and its `uniswapv3pool_evt_*` lowercase twin) stops at **2022-09** — Dune stopped decoding it — so any query filtered to recent blocks returns nothing. `algebra_finance_polygon` mint/burn last have rows only through **2024-06**, and Dune's `dex.liquidity` table does not exist. The live replacement is the QuickSwap V3 (Algebra) decode `quickswap_v3_polygon.algebrapool_evt_mint/burn`, and V3 swaps on Polygon are labelled `project='quickswap' AND version='3'` in `dex.trades` (`project='uniswap_v3'` returns 0 rows). A rewritten JIT query on this source found **545 Mint+Swap+Burn bundles in June 2026 (~18/day)**. The old hardcoded `$1,000/event` profit placeholder was replaced with `collocated_swap_volume_usd x 0.05%` (QuickSwap V3 default fee tier; `dex.trades` has no fee column), so profit figures now scale with actual swap volume.
 
 ### 8.6 Dune Table Availability Assessment
 
