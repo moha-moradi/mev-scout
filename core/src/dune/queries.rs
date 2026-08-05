@@ -2339,9 +2339,13 @@ FROM (SELECT 1) dummy
 WHERE 1=0
 "#;
 
-/// Validate flash loan atomic liquidation: flash loans paired with liquidations in same tx.
+/// Validate flash loan atomic liquidation: flash loans paired with liquidations in the
+/// *same transaction* (atomic). Matches on both `block_number` and `tx_hash`, so flash
+/// loans from unrelated transactions in the same block are not counted.
 ///
-/// Columns: same as VALIDATE_SKIM_CAPTURE
+/// Note: the returned USD columns are flash-loan sizes (volume proxy), not realized profit.
+/// Columns: `opportunity_count`(0), `avg_flash_usd`(1), `total_flash_usd`(2),
+///          `period_start`(3), `period_end`(4), `period_days`(5)
 pub const VALIDATE_FLASH_LIQ_PROFIT: &str = r#"
 WITH flash_liqs AS (
   SELECT
@@ -2355,19 +2359,19 @@ WITH flash_liqs AS (
     AND f.block_month >= DATE '{block_month_min}'
     AND f.block_number >= {from_block}
     AND f.block_number <= {to_block}
-    AND f.block_number IN (
-      SELECT l.block_number
+    AND EXISTS (
+      SELECT 1
       FROM lending.borrow l
       WHERE l.blockchain = '{chain}'
         AND l.transaction_type = 'borrow_liquidation'
-        AND l.block_number >= {from_block}
-        AND l.block_number <= {to_block}
+        AND l.block_number = f.block_number
+        AND l.tx_hash = f.tx_hash
     )
 )
 SELECT
-  COUNT(*) AS opportunity_count,
-  COALESCE(AVG(flash_amount_usd), 0) AS avg_profit_usd,
-  COALESCE(SUM(flash_amount_usd), 0) AS total_profit_usd,
+  COUNT(DISTINCT tx_hash) AS opportunity_count,
+  COALESCE(AVG(flash_amount_usd), 0) AS avg_flash_usd,
+  COALESCE(SUM(flash_amount_usd), 0) AS total_flash_usd,
   MIN(block_time) AS period_start,
   MAX(block_time) AS period_end,
   DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
