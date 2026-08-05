@@ -2165,19 +2165,65 @@ FROM (
 
 /// Validate LST depeg collateral liquidation: AAVE liquidations where collateral is an LST.
 ///
-/// LSTs: stETH, rETH, cbETH, frxETH, sETH2, wstETH.
+/// The LST list is chain-conditional (guarded by `'{chain}' = ...`, so unused
+/// branches no-op). Verified against each pool's `getReservesList`/`getReserveData`
+/// on-chain (BNB wBETH from governance docs; BSC RPC unreliable):
+/// - ethereum: wstETH, rETH, cbETH, weETH, osETH, ezETH
+/// - polygon: stMATIC, MaticX, wstETH (bridged)
+/// - arbitrum: wstETH, rETH, weETH, rsETH
+/// - optimism: rETH
+/// - base: cbETH, wstETH
+/// - avalanche_c: sAVAX
+/// - bsc: wBETH
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_LST_DEPEG_LIQ: &str = r#"
 WITH lst_tokens AS (
   SELECT token FROM (VALUES
-    (0xae7ab96520de3a18e5e13f1536244d8eb00c4f53),  -- stETH
+    (0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0),  -- wstETH
     (0xae78736cd615f374d3085123a210448e74fc6393),  -- rETH
     (0xbe9895146f7af43049ca1c1ae358b0541ea49704),  -- cbETH
-    (0x5c84bf60de35539930200046e585fa8d3676e2e7),  -- frxETH
-    (0xf34960d37339CCE23a98cDcaA5ACB0da7b9Ccb32),  -- sETH2
-    (0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0)   -- wstETH
+    (0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee),  -- weETH
+    (0xf1c9acdc66974dfb6decb12aa385b9cd01190e38),  -- osETH
+    (0xbf5495efe5db9ce00f80364c8b423567e58d2110)   -- ezETH
   ) AS t(token)
+  WHERE '{chain}' = 'ethereum'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0x3a58a54c066fdc0f2d55fc9c89f0415c92ebf3c4),  -- stMATIC
+    (0xfa68fb4628dff1028cfec22b4162fccd0d45efb6),  -- MaticX
+    (0x03b54a6e9a984069379fae1a4fc4dbae93b3bccd)   -- wstETH (bridged)
+  ) AS t(token)
+  WHERE '{chain}' = 'polygon'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0x5979d7b546e38e414f7e9822514be443a4800529),  -- wstETH
+    (0xec70dcb4a1efa46b8f2d97c310c9c4790ba5ffa8),  -- rETH
+    (0x35751007a407ca6feffe80b3cb397736d2cf4dbe),  -- weETH
+    (0x4186bfc76e2e237523cbc30fd220fe055156b41f)   -- rsETH
+  ) AS t(token)
+  WHERE '{chain}' = 'arbitrum'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0x9bcef72be871e61ed4fbbc7630889bee758eb81d)   -- rETH
+  ) AS t(token)
+  WHERE '{chain}' = 'optimism'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf),  -- cbETH
+    (0xc1cba3fcea344f92d9239c08c0568f6f2f0ee452)   -- wstETH
+  ) AS t(token)
+  WHERE '{chain}' = 'base'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0x2b2c81e08f1af8835a78bb2a90ae924ace0ea4be)   -- sAVAX
+  ) AS t(token)
+  WHERE '{chain}' = 'avalanche_c'
+  UNION ALL
+  SELECT token FROM (VALUES
+    (0xa2e3356610840701bdf5611a53974510ae27e2e1)   -- wBETH
+  ) AS t(token)
+  WHERE '{chain}' = 'bsc'
 )
 SELECT
   COUNT(*) AS opportunity_count,
@@ -2197,12 +2243,16 @@ WHERE l.evt_block_number >= {from_block}
 /// Maker is Ethereum-only; `maker_ethereum.Clipper_evt_Take` is verified. Running
 /// with another chain's block range returns zero rows (no matching Ethereum blocks).
 ///
+/// USD proxy: `owe` (DAI actually paid per take) is used instead of `lot` (collateral
+/// token units) so `avg_profit_usd`/`total_profit_usd` are DAI-denominated. Note the
+/// Clip contract stores `owe`/`tab` in rad (1e45) while `lot` is wad (1e18).
+///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_MAKERDAO_CLIP: &str = r#"
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(t.lot / 1e18), 0) AS avg_profit_usd,
-  COALESCE(SUM(t.lot / 1e18), 0) AS total_profit_usd,
+  COALESCE(AVG(t.owe / 1e45), 0) AS avg_profit_usd,
+  COALESCE(SUM(t.owe / 1e45), 0) AS total_profit_usd,
   MIN(t.evt_block_time) AS period_start,
   MAX(t.evt_block_time) AS period_end,
   DATE_DIFF('day', MIN(t.evt_block_time), MAX(t.evt_block_time)) AS period_days

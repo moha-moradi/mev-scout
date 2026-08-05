@@ -4,7 +4,7 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 chain = "polygon"
 rpc_urls = [
   
-
+"https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs",
   "https://lb.drpc.live/polygon/AolDryJPNULVk2IKbKzdz_PXsub6gmIR8afhwosiOHdW",
   "https://lb.drpc.live/polygon/Atek2uI_sEPeiLPQHycqLfsE5emegmUR8afiwosiOHdW",
   "https://shared.ap-southeast-1.getblock.io/ac064dad442e40ceb3ac122654aa5495",

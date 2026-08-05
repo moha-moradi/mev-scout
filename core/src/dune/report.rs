@@ -411,7 +411,7 @@ WHERE t.blockchain = '{chain}'
             query: "VALIDATE_LST_DEPEG_LIQ".into(),
             source: "aave_v3_{chain}.Pool_evt_LiquidationCall".into(),
             claim: Some((2000.0, 20000.0)),
-            note: "LST-collateral liquidation amount (raw, no bonus). Ethereum-native".into(),
+            note: "LST-collateral liquidation amount (raw, no bonus). Chain-aware LST list: eth=wstETH/rETH/cbETH/weETH/osETH/ezETH, polygon=stMATIC/MaticX/wstETH, arb=wstETH/rETH/weETH/rsETH, op=rETH, base=cbETH/wstETH, avax=sAVAX, bnb=wBETH".into(),
             sql: queries::VALIDATE_LST_DEPEG_LIQ.to_string(),
         },
         // #19 MakerDAO Clip Dutch auction.
@@ -421,7 +421,7 @@ WHERE t.blockchain = '{chain}'
             query: "VALIDATE_MAKERDAO_CLIP".into(),
             source: "maker_{chain}.Clipper_evt_Take".into(),
             claim: Some((500.0, 3000.0)),
-            note: "lot size (collateral per take); Ethereum only, sparse".into(),
+            note: "owe (DAI paid per take, rad-scaled 1e45); Ethereum only, sparse".into(),
             sql: queries::VALIDATE_MAKERDAO_CLIP.to_string(),
         },
         // #45 MakerDAO OSM preview + kick().
