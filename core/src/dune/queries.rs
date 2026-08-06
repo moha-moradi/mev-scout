@@ -2262,23 +2262,58 @@ WHERE t.evt_block_number >= {from_block}
 "#;
 
 /// Validate MakerDAO OSM kick() events (vault liquidation initiation).
-/// Uses lending.borrow curated table since Vow_evt_Flip is not decoded on Dune.
+///
+/// Maker liquidations are absent from `lending.borrow` (project='maker' returns 0
+/// rows) and the `maker_ethereum.*` decoded tables stalled on Dune (~2026-06-26),
+/// so this reads raw logs from `evms.logs` which is always current.
+///
+/// The reported profit is the ACTUAL kicker reward: `Dog.bark()` calls
+/// `Clipper.kick()`, which mints DAI to the keeper (`kpr`) in the same tx via
+/// `vat.suck(vow, kpr, coin)` where `coin = tip + wmul(tab, chip)` (both
+/// governance-set). The reward is emitted on the Clipper `Kick` event, so it is
+/// known immediately — no need to track the auction outcome.
+///
+/// - Dog contract (Ethereum): 0x135954d155898d42c90d2a57824c690e0c7bef1b
+/// - Bark topic0: keccak256("Bark(bytes32,address,uint256,uint256,uint256,address,uint256)")
+///   = 0x85258d09e1e4ef299ff3fc11e74af99563f022d21f3f940db982229dc2a3358c
+///   (ilk/urn/id indexed; data: ink(1-32), art(33-64), due(65-96), clip(97-128))
+/// - Kick topic0: keccak256("Kick(uint256,uint256,uint256,uint256,address,address,uint256)")
+///   = 0x7c5bfdc0a5e8192f6cd4972f382cec69116862fb62e6abff8003874c58e064b8
+///   (id/usr/kpr indexed; data: top(1-32), tab(33-64), lot(65-96), coin(97-128))
+/// - `coin` is in rad (1e45) → DAI.
 ///
 /// Columns: same as VALIDATE_SKIM_CAPTURE
 pub const VALIDATE_MAKERDAO_KICK: &str = r#"
+WITH bark AS (
+  SELECT
+    l.block_time,
+    l.tx_hash,
+    bytearray_substring(l.data, 109, 20) AS clip
+  FROM evms.logs l
+  WHERE l.blockchain = '{chain}'
+    AND l.contract_address = 0x135954d155898d42c90d2a57824c690e0c7bef1b
+    AND l.topic0 = 0x85258d09e1e4ef299ff3fc11e74af99563f022d21f3f940db982229dc2a3358c
+    AND l.block_number BETWEEN {from_block} AND {to_block}
+),
+kick AS (
+  SELECT
+    l.tx_hash,
+    l.contract_address AS clip,
+    CAST(bytearray_to_uint256(bytearray_substring(l.data, 97, 32)) AS DOUBLE) / 1e45 AS reward_dai
+  FROM evms.logs l
+  WHERE l.blockchain = '{chain}'
+    AND l.topic0 = 0x7c5bfdc0a5e8192f6cd4972f382cec69116862fb62e6abff8003874c58e064b8
+    AND l.block_number BETWEEN {from_block} AND {to_block}
+)
 SELECT
   COUNT(*) AS opportunity_count,
-  COALESCE(AVG(amount_usd), 0) AS avg_profit_usd,
-  COALESCE(SUM(amount_usd), 0) AS total_profit_usd,
-  MIN(block_time) AS period_start,
-  MAX(block_time) AS period_end,
-  DATE_DIFF('day', MIN(block_time), MAX(block_time)) AS period_days
-FROM lending.borrow
-WHERE blockchain = '{chain}'
-  AND project = 'maker'
-  AND transaction_type = 'liquidation'
-  AND block_month >= DATE '{block_month_min}'
-  AND block_number BETWEEN {from_block} AND {to_block}
+  COALESCE(AVG(k.reward_dai), 0) AS avg_profit_usd,
+  COALESCE(SUM(k.reward_dai), 0) AS total_profit_usd,
+  MIN(b.block_time) AS period_start,
+  MAX(b.block_time) AS period_end,
+  DATE_DIFF('day', MIN(b.block_time), MAX(b.block_time)) AS period_days
+FROM bark b
+JOIN kick k ON k.tx_hash = b.tx_hash AND k.clip = b.clip
 "#;
 
 /// Validate GMX v1 keeper race: liquidation events on GMX v1.

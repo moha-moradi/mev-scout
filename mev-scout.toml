@@ -3,25 +3,25 @@ dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
 
 chain = "polygon"
 rpc_urls = [
-  
-"https://polygon-mainnet.g.alchemy.com/v2/d4ZKI9Tx9OnDE9E1r7ifs",
+  "https://polygon-mainnet.g.alchemy.com/v2/alch_dxSHvBLUTU0Ux84OJBGyV",
   "https://lb.drpc.live/polygon/AolDryJPNULVk2IKbKzdz_PXsub6gmIR8afhwosiOHdW",
   "https://lb.drpc.live/polygon/Atek2uI_sEPeiLPQHycqLfsE5emegmUR8afiwosiOHdW",
   "https://shared.ap-southeast-1.getblock.io/ac064dad442e40ceb3ac122654aa5495",
   "https://shared.ap-southeast-1.getblock.io/80a93b3d0084480488c75ef568f2970c",
-  "https://shared.ap-southeast-1.getblock.io/8e43573318f54d18bcd55338743fb73a",  # provider-4: archive RPC health check failures
+  "https://shared.ap-southeast-1.getblock.io/8e43573318f54d18bcd55338743fb73a",  # provider-5: archive RPC health check failures
   "https://shared.ap-southeast-1.getblock.io/66f5566ac71f4be287490abe7d5772be"
 
 ]
 
 # Per-provider RPS limits (matches rpc_urls order).
-# GetBlock: 20 RPS (known cap); others: 3 RPS (test for 429s on free/public).
-rpc_rps = [20,20,15,15,15]
+# Alchemy: 20 RPS; DRPC: 20 RPS; GetBlock: 15 RPS (known cap).
+rpc_rps = [20, 20, 20, 15, 15, 15, 15]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2
 
-# Depth (in blocks) at which the archive-support probe runs. Lower values let
-# retention-limited endpoints (e.g. Polygon full nodes) pass the probe so
-# replay/run can attempt recent blocks near the tip.
-archive_probe_depth_blocks = 32
+# Depth (in blocks) at which the archive-support probe runs. Kept at the
+# default 10_000 so only genuine archive nodes (e.g. the Alchemy endpoint)
+# pass the probe; pruned full nodes are correctly demoted to non-archive and
+# only used for block/log/fetch workloads.
+archive_probe_depth_blocks = 10000

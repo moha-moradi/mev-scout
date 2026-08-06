@@ -429,9 +429,9 @@ WHERE t.blockchain = '{chain}'
             strategy_id: 45,
             strategy: "MakerDAO OSM kick()".into(),
             query: "VALIDATE_MAKERDAO_KICK".into(),
-            source: "lending.borrow (project='maker')".into(),
-            claim: Some((500.0, 5000.0)),
-            note: "maker liquidation USD volume; kicker reward ≈ small % — volume is upper bound".into(),
+            source: "evms.logs (Dog.bark + Clipper.kick)".into(),
+            claim: None,
+            note: "ACTUAL kicker reward (coin minted to kpr via vat.suck at kick; rad 1e45 → DAI); = tip + chip×tab".into(),
             sql: queries::VALIDATE_MAKERDAO_KICK.to_string(),
         },
         // #39 Liquity recovery mode cascade.
@@ -596,10 +596,22 @@ fn row_str(row: &super::types::DuneRow, key: &str) -> String {
         .to_string()
 }
 
+/// Read a float column by name, preferring the first candidate key that is
+/// present in the row. Lets a query label its aggregates as e.g. `*_volume_usd`
+/// while the report framework still fills its `*_profit_usd` fields.
+fn row_f64_any(row: &super::types::DuneRow, keys: &[&str]) -> f64 {
+    for k in keys {
+        if row.contains_key(*k) {
+            return row_f64(row, *k);
+        }
+    }
+    0.0
+}
+
 /// Build an item from the first row of a successful result.
 fn item_from_row(rq: &ReportQuery, row: &super::types::DuneRow) -> StrategyReportItem {
     let count = row_u64(row, "opportunity_count");
-    let total = row_f64(row, "total_profit_usd");
+    let total = row_f64_any(row, &["total_volume_usd", "total_profit_usd"]);
     let days = row_u64(row, "period_days");
     let est_monthly = if days >= 1 { total / days as f64 * 30.0 } else { total };
 
@@ -627,7 +639,7 @@ fn item_from_row(rq: &ReportQuery, row: &super::types::DuneRow) -> StrategyRepor
             ReportStatus::NoData.label().to_string()
         },
         opportunity_count: count,
-        avg_profit_usd: row_f64(row, "avg_profit_usd"),
+        avg_profit_usd: row_f64_any(row, &["avg_volume_usd", "avg_profit_usd"]),
         median_profit_usd: row_f64(row, "median_profit_usd"),
         p90_profit_usd: row_f64(row, "p90_profit_usd"),
         total_profit_usd: total,
