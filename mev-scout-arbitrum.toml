@@ -1,0 +1,19 @@
+dune_api_key = "OKfH0tGoc9OVYWOXIaE7yr2jpbEOsEy0"
+
+chain = "arbitrum"
+rpc_urls = [
+  "https://arb-mainnet.g.alchemy.com/v2/booRpg6FM7gc9g8GC0SdN", # dantemoradi
+]
+
+# Per-provider RPS limits (matches rpc_urls order).
+# Alchemy: 20 RPS.
+rpc_rps = [20]
+
+# Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
+rps_limit = 2
+
+# Depth (in blocks) at which the archive-support probe runs. Kept at the
+# default 10_000 so only genuine archive nodes (e.g. the Alchemy endpoint)
+# pass the probe; pruned full nodes are correctly demoted to non-archive and
+# only used for block/log/fetch workloads.
+archive_probe_depth_blocks = 10000
