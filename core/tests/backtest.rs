@@ -32,7 +32,27 @@ const CHAIN_ID: u64 = 137; // Polygon
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn rpc_url() -> Option<String> {
-    std::env::var("RPC_URL").ok()
+    std::env::var("RPC_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(config_rpc_url)
+}
+
+/// First configured RPC URL from the repo's `mev-scout.toml`, if reachable.
+fn config_rpc_url() -> Option<String> {
+    let candidates = ["mev-scout.toml", "../mev-scout.toml", "core/mev-scout.toml", "../../mev-scout.toml"];
+    for path in candidates {
+        if !std::path::Path::new(path).exists() {
+            continue;
+        }
+        let cfg = mev_scout_core::config::Config::load(path).ok()?;
+        if let Some(url) = cfg.rpc.rpc_urls.into_iter().next() {
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+    }
+    None
 }
 
 fn dune_api_key() -> Option<String> {

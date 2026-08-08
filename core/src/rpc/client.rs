@@ -937,6 +937,12 @@ impl RpcClient {
 
         let mut receipts_raw: Value =
             receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        if receipts_raw.is_null() {
+            anyhow::bail!(
+                "block {block_number} receipts not found (eth_getBlockReceipts returned null — \
+                 the node may not have indexed this block yet)"
+            );
+        }
         Self::clean_receipts(&mut receipts_raw);
         let receipts_json_size = receipts_raw.to_string().len();
         let receipts: Vec<TransactionReceipt> =

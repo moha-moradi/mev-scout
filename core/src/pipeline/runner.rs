@@ -636,9 +636,10 @@ impl BacktestRunner {
                     all.extend(opps);
                     all_stats.push(stats);
 
-                    // L2: Record pool state snapshot for cross-block detection
+                    // L2: run cross-block detection. The block snapshot was
+                    // already recorded by run_block() above — recording it again
+                    // here would double-count each block in the sliding window.
                     if let Some(ref mut detector) = self.cross_block_detector {
-                        detector.record_block(block_num, &self.pool_manager);
                         if detector.snapshot_count() >= 2 {
                             let cross_opps = detector.detect(
                                 block_num,

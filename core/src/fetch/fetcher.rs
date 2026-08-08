@@ -374,17 +374,28 @@ impl Fetcher {
         let mut fetched = 0u64;
         for block_num in start..=end {
             let t0 = Instant::now();
-            let (block, txs, receipts) = if let Some(idx) = provider_idx {
-                self.rpc.get_block_and_receipts_batch_for(idx, block_num).await?
-            } else if self.batch_rpc {
-                self.rpc.get_block_and_receipts_batch(block_num).await?
-            } else {
-                let (block_res, receipts_res) = tokio::join!(
-                    self.rpc.get_block(block_num),
-                    self.rpc.get_receipts(block_num),
-                );
-                let (block, txs) = block_res?;
-                (block, txs, receipts_res?)
+            let block_fetch = async {
+                if let Some(idx) = provider_idx {
+                    self.rpc.get_block_and_receipts_batch_for(idx, block_num).await
+                } else if self.batch_rpc {
+                    self.rpc.get_block_and_receipts_batch(block_num).await
+                } else {
+                    let (block_res, receipts_res) = tokio::join!(
+                        self.rpc.get_block(block_num),
+                        self.rpc.get_receipts(block_num),
+                    );
+                    match (block_res, receipts_res) {
+                        (Ok((b, t)), Ok(r)) => Ok((b, t, r)),
+                        (Err(e), _) | (_, Err(e)) => Err(e),
+                    }
+                }
+            };
+            let (block, txs, receipts) = match block_fetch.await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("Block {block_num} fetch failed (will retry as gap): {e:#}");
+                    continue;
+                }
             };
             let t_rpc = t0.elapsed().as_secs_f64() * 1000.0;
 
