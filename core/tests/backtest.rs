@@ -228,7 +228,9 @@ async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Addr
 /// 4. Assert that opportunities are found (or at least that the pipeline completes)
 ///
 /// Skips gracefully when `RPC_URL` or `DUNE_API_KEY` are not set.
-#[tokio::test]
+/// Multi-threaded: replaying real Polygon blocks calls `block_in_place`
+/// (register_polygon_precompiles), which requires a multi-threaded runtime.
+#[tokio::test(flavor = "multi_thread")]
 async fn test_dune_guided_backtest() {
     let dune_key = match dune_api_key() {
         Some(k) => k,
@@ -426,7 +428,9 @@ async fn test_dune_guided_backtest() {
 /// Validate the fetch→init→backtest pipeline works correctly using synthetic
 /// pool data against a real Polygon block. This tests the core pipeline without
 /// Dune dependency.
-#[tokio::test]
+/// Multi-threaded: replaying a real Polygon block calls `block_in_place`
+/// (register_polygon_precompiles), which requires a multi-threaded runtime.
+#[tokio::test(flavor = "multi_thread")]
 async fn test_synthetic_backtest_on_real_block() {
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
