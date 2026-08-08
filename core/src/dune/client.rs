@@ -94,7 +94,7 @@ impl DuneClient {
         &self,
         sql: &str,
     ) -> anyhow::Result<DuneExecutionResult> {
-        self.execute_raw_sql_with_performance(sql, "small").await
+        self.execute_raw_sql_with_performance(sql, "medium").await
     }
 
     /// Execute raw SQL with explicit performance tier ("small", "medium", "large").
