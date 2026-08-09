@@ -154,10 +154,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         .with_proximity_window(config.backtest.proximity_window)
         .with_capture_pending(config.backtest.capture_pending);
 
-    if config.backtest.cross_block_window > 0 {
-        runner = runner.with_cross_block(config.backtest.cross_block_window);
-    }
-
     if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
         if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
             runner.prefetch_aave_reserves(aave_pool, resolved.start_block.saturating_sub(1)).await;

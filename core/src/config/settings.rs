@@ -80,9 +80,6 @@ pub struct BacktestConfig {
     /// Capture pending transactions from the mempool during backtest
     #[serde(default)]
     pub capture_pending: bool,
-    /// Cross-block MEV detection window size (0 = disabled)
-    #[serde(default)]
-    pub cross_block_window: usize,
     /// Price oracle mode: "coingecko", "onchain", or "hybrid"
     #[serde(default)]
     pub price_oracle_mode: String,
@@ -187,7 +184,6 @@ impl Default for BacktestConfig {
             max_pairs_per_token: default_max_pairs_per_token(),
             proximity_window: default_proximity_window(),
             capture_pending: false,
-            cross_block_window: 0,
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
         }
@@ -463,7 +459,6 @@ Block range:         {} → {}
 Strategies:          {}
 Flash loan:          {}
 Gas model:           {}
-Cross-block window:  {}
 DB path:             {}
 Parquet dir:         {}
 "#,
@@ -475,7 +470,6 @@ Parquet dir:         {}
             strat_list,
             provider_desc,
             self.gas.gas_model,
-            if self.backtest.cross_block_window > 0 { format!("{} blocks", self.backtest.cross_block_window) } else { "disabled".to_string() },
             self.effective_db_path(&chain_name),
             self.output.parquet_dir.as_deref().unwrap_or("(none)"),
         )
@@ -533,7 +527,6 @@ pub struct BacktestOverrides {
     pub max_pairs_per_token: Option<usize>,
     pub proximity_window: Option<usize>,
     pub capture_pending: Option<bool>,
-    pub cross_block_window: Option<usize>,
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
 }
@@ -695,7 +688,6 @@ impl Config {
             (max_pairs_per_token, copy),
             (proximity_window, copy),
             (capture_pending, copy),
-            (cross_block_window, copy),
             (price_oracle_mode),
             (token_prices, into_option)
         ]);

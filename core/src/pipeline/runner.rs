@@ -5,7 +5,6 @@ use std::cell::RefCell;
 use crate::cache::SqliteStore;
 use crate::data::ExecutedLog;
 use crate::types::MevOpportunity;
-use crate::mev::detectors::CrossBlockDetector;
 use crate::mev::detectors::{mempool, detect_pending_opportunities};
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::{AaveReserveCache, LiquidationDetector};
@@ -40,8 +39,6 @@ pub struct BacktestRunner {
     proximity_window: usize,
     aave_reserve_cache: AaveReserveCache,
     capture_pending: bool,
-    cross_block_window: usize,
-    cross_block_detector: Option<CrossBlockDetector>,
     pub last_processed_block: u64,
 }
 
@@ -70,8 +67,6 @@ impl BacktestRunner {
             proximity_window: 3,
             aave_reserve_cache: AaveReserveCache::default(),
             capture_pending: false,
-            cross_block_window: 3,
-            cross_block_detector: None,
             last_processed_block: 0,
         }
     }
@@ -97,35 +92,9 @@ impl BacktestRunner {
         self
     }
 
-    /// Enable cross-block MEV detection with the given sliding window size.
-    /// When enabled (> 1), the runner tracks pool price snapshots across
-    /// consecutive blocks and emits persistent arb and time-bandit opportunities.
-    pub fn with_cross_block(mut self, window: usize) -> Self {
-        self.cross_block_window = window.max(2);
-        self.cross_block_detector = Some(CrossBlockDetector::new(self.cross_block_window));
-        self
-    }
-
-    /// Returns true if cross-block detection is enabled.
-    pub fn cross_block_enabled(&self) -> bool {
-        self.cross_block_detector.is_some()
-    }
-
     /// Expose a reference to the Aave reserve cache for inspection.
     pub fn aave_reserve_cache(&self) -> &AaveReserveCache {
         &self.aave_reserve_cache
-    }
-
-    /// Run cross-block detection on the accumulated sliding window.
-    /// Returns detected CrossBlockArb / TimeBandit opportunities.
-    /// Must have called `with_cross_block()` and processed at least 2 blocks.
-    pub fn detect_cross_block(&self) -> Vec<MevOpportunity> {
-        if let Some(ref detector) = self.cross_block_detector {
-            if detector.snapshot_count() >= 2 {
-                return detector.detect(self.last_processed_block, 0, self.gas_config);
-            }
-        }
-        Vec::new()
     }
 
     /// Pre-fetch Aave V3 reserve data for all known token addresses.
@@ -445,11 +414,6 @@ impl BacktestRunner {
         self.pool_manager = pool_manager.into_inner();
         self.last_processed_block = block_num;
 
-        // Record cross-block snapshot if enabled
-        if let Some(ref mut detector) = self.cross_block_detector {
-            detector.record_block(block_num, &self.pool_manager);
-        }
-
         Ok((all_opportunities, BlockReplayStats {
             block_number: block_num,
             total_tx_count,
@@ -561,10 +525,6 @@ impl BacktestRunner {
 
         self.last_processed_block = block_num;
 
-        if let Some(ref mut detector) = self.cross_block_detector {
-            detector.record_block(block_num, &self.pool_manager);
-        }
-
         Ok((all_opportunities, BlockReplayStats {
             block_number: block_num,
             total_tx_count,
@@ -620,42 +580,19 @@ impl BacktestRunner {
                         gas_dist.add_tx_gas_price(*price);
                     }
                     // Record block-level data for EIP-1559 forecasting
-                    let block_timestamp = match self.replayer.load_block_data(block_num) {
+                    match self.replayer.load_block_data(block_num) {
                         Ok((block, _)) => {
                             let base_fee = block.base_fee_per_gas.unwrap_or(0);
                             gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
-                            block.timestamp
                         }
                         Err(_) => {
                             gas_dist.record_block(0, 0, 30_000_000);
-                            0
                         }
-                    };
+                    }
                     gas_dist.finalize_block();
 
                     all.extend(opps);
                     all_stats.push(stats);
-
-                    // L2: run cross-block detection. The block snapshot was
-                    // already recorded by run_block() above — recording it again
-                    // here would double-count each block in the sliding window.
-                    if let Some(ref mut detector) = self.cross_block_detector {
-                        if detector.snapshot_count() >= 2 {
-                            let cross_opps = detector.detect(
-                                block_num,
-                                block_timestamp,
-                                self.gas_config,
-                            );
-                            if !cross_opps.is_empty() {
-                                tracing::info!(
-                                    "Block {}: {} cross-block opportunities detected",
-                                    block_num,
-                                    cross_opps.len(),
-                                );
-                                all.extend(cross_opps);
-                            }
-                        }
-                    }
                 }
                 Err(e) => {
                     // Restore pool state to the pre-block checkpoint so

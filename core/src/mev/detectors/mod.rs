@@ -1,4 +1,3 @@
-pub mod cross_block;
 pub mod jit;
 pub mod jit_arb;
 pub mod liquidation;
@@ -7,7 +6,6 @@ pub mod multi_hop;
 pub mod sandwich;
 pub mod two_hop;
 
-pub use cross_block::CrossBlockDetector;
 pub use jit::JitDetector;
 pub use jit_arb::JitArbDetector;
 pub use liquidation::{AaveReserveCache, AaveReserveData, LiquidationDetector, compute_health_factor};

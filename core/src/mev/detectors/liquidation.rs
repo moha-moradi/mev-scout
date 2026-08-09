@@ -235,8 +235,14 @@ impl LiquidationDetector {
         let collateral_asset = Address::from_slice(&log.topics[1][12..32]);
         let debt_asset = Address::from_slice(&log.topics[2][12..32]);
         let user = Address::from_slice(&log.topics[3][12..32]);
-        let debt_to_cover = U256::from_be_slice(&log.data[..32]).to::<u128>();
-        let liquidated_collateral = U256::from_be_slice(&log.data[32..64]).to::<u128>();
+        let debt_to_cover = match to_u128_checked(U256::from_be_slice(&log.data[..32])) {
+            Some(v) => v,
+            None => return,
+        };
+        let liquidated_collateral = match to_u128_checked(U256::from_be_slice(&log.data[32..64])) {
+            Some(v) => v,
+            None => return,
+        };
         if debt_to_cover == 0 || liquidated_collateral == 0 {
             return;
         }
@@ -269,7 +275,10 @@ impl LiquidationDetector {
         }
         let reserve = Address::from_slice(&log.topics[1][12..32]);
         let on_behalf = Address::from_slice(&log.topics[3][12..32]);
-        let amount = U256::from_be_slice(&log.data[..32]).to::<u128>();
+        let amount = match to_u128_checked(U256::from_be_slice(&log.data[..32])) {
+            Some(v) => v,
+            None => return,
+        };
         if amount == 0 {
             return;
         }
@@ -287,7 +296,10 @@ impl LiquidationDetector {
         }
         let reserve = Address::from_slice(&log.topics[1][12..32]);
         let on_behalf = Address::from_slice(&log.topics[3][12..32]);
-        let amount = U256::from_be_slice(&log.data[..32]).to::<u128>();
+        let amount = match to_u128_checked(U256::from_be_slice(&log.data[..32])) {
+            Some(v) => v,
+            None => return,
+        };
         if amount == 0 {
             return;
         }
@@ -304,7 +316,10 @@ impl LiquidationDetector {
         }
         let reserve = Address::from_slice(&log.topics[1][12..32]);
         let user = Address::from_slice(&log.topics[2][12..32]);
-        let amount = U256::from_be_slice(&log.data[..32]).to::<u128>();
+        let amount = match to_u128_checked(U256::from_be_slice(&log.data[..32])) {
+            Some(v) => v,
+            None => return,
+        };
         if amount == 0 {
             return;
         }
@@ -322,7 +337,10 @@ impl LiquidationDetector {
         }
         let reserve = Address::from_slice(&log.topics[1][12..32]);
         let on_behalf = Address::from_slice(&log.topics[3][12..32]);
-        let amount = U256::from_be_slice(&log.data[..32]).to::<u128>();
+        let amount = match to_u128_checked(U256::from_be_slice(&log.data[..32])) {
+            Some(v) => v,
+            None => return,
+        };
         if amount == 0 {
             return;
         }
@@ -554,6 +572,15 @@ impl LiquidationDetector {
             mempool_only: false,
             confidence: None,
         })
+    }
+}
+
+/// Convert a U256 to u128, returning `None` when the value overflows.
+fn to_u128_checked(u: U256) -> Option<u128> {
+    if u.bit_len() > 128 {
+        None
+    } else {
+        Some(u.to::<u128>())
     }
 }
 

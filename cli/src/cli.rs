@@ -217,13 +217,6 @@ pub struct RunArgs {
     #[arg(long = "capture-pending", help_heading = "Mempool")]
     pub capture_pending: bool,
 
-    /// Cross-block MEV detection window size (default: 0 = disabled).
-    /// When > 1, tracks pool price snapshots across consecutive blocks and
-    /// emits persistent arb (CrossBlockArb) and time-bandit (TimeBandit)
-    /// opportunities. Requires at least 2 blocks in the range.
-    #[arg(long = "cross-block-window", default_value = "0", value_name = "N", help_heading = "Strategies")]
-    pub cross_block_window: usize,
-
 }
 
 #[derive(Args, Debug, Clone)]

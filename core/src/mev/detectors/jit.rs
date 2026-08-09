@@ -241,8 +241,8 @@ impl JitDetector {
                 if !d0.is_zero() || !d1.is_zero() {
                     let fee0_u256: U256 = U256::from(mint.amount) * d0 >> 128;
                     let fee1_u256: U256 = U256::from(mint.amount) * d1 >> 128;
-                    let fee0_raw = fee0_u256.to::<u128>();
-                    let fee1_raw = fee1_u256.to::<u128>();
+                    let fee0_raw = fee0_u256.saturating_to::<u128>();
+                    let fee1_raw = fee1_u256.saturating_to::<u128>();
                     let raw_total = fee0_raw.saturating_add(fee1_raw);
                     // Normalize each fee component to native
                     let (t0, t1) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));

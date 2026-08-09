@@ -10,7 +10,7 @@ use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2Poo
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
-use mev_scout_core::types::{GasConfig, GasModel, RangeMode, Strategy};
+use mev_scout_core::types::{GasConfig, GasModel, RangeMode};
 
 mod common;
 use common::*;
@@ -382,69 +382,4 @@ fn test_runner_proximity_window() {
     }
     let opps_narrow = detector_narrow.detect(12345, &pm, 0, &gas_cfg);
     assert!(opps_narrow.is_empty(), "Window=1 should NOT detect JitArb (gap=4 > 1)");
-}
-
-/// ── Test 5: Cross-block detection via BacktestRunner ────────────────────────
-#[tokio::test]
-async fn test_runner_cross_block_detection() {
-    let dir = temp_test_dir("cross_block");
-
-    // Use synthetic_arb_pools which have imbalanced V2 pools:
-    //   Pool A: USDC/WMATIC, reserve0=1e12, reserve1=2e18 → price = 2e6
-    //   Pool B: USDT/WMATIC, reserve0=1e12, reserve1=5e17 → price = 5e5
-    // Gap = ln(2e6 / 5e5) ≈ 1.39 > MIN_ARB_GAP (0.005) → persistent arb
-
-    // Block 1
-    let cache1 = prep_synthetic_cache(&dir, 1, 2);
-    let handle = tokio::runtime::Handle::current();
-    let rpc = RpcClient::new("http://0.0.0.0:1", 1).unwrap();
-    let replayer1 = BlockReplayer::new(handle, cache1, rpc, 1);
-    let pm = synthetic_arb_pools();
-
-    let mut runner = BacktestRunner::new(replayer1, pm, GasConfig::default()).with_cross_block(3);
-
-    let resolved = ResolvedRange {
-        start_block: 1,
-        end_block: 2,
-        block_count: 2,
-        mode: RangeMode::Range(1, 2),
-    };
-
-    // Add block 2 cache data before running
-    prep_synthetic_cache(&dir, 2, 1);
-
-    let (opps, stats) = runner.run_range(&resolved).unwrap();
-
-    assert_eq!(stats.len(), 2, "Should process 2 blocks");
-
-    // Cross-block opportunities should be emitted
-    let cross_opps: Vec<_> = opps
-        .iter()
-        .filter(|o| o.strategy == Strategy::CrossBlockArb)
-        .collect();
-
-    assert!(
-        !cross_opps.is_empty(),
-        "Should detect cross-block opportunities with imbalanced pools across 2 blocks; got {} total opps",
-        opps.len(),
-    );
-
-    // Verify confidence is set on cross-block opportunities
-    for opp in &cross_opps {
-        assert!(opp.confidence.is_some(), "Cross-block opps should have confidence set");
-        let c = opp.confidence.unwrap();
-        assert!(c > 0.0 && c <= 1.0, "Confidence should be in (0.0, 1.0], got {}", c);
-    }
-
-    // CrossBlockArb with persistence >= 2 across 2 blocks with window=3 → confidence = 2/3
-    for opp in cross_opps.iter().filter(|o| o.strategy == Strategy::CrossBlockArb) {
-        let c = opp.confidence.unwrap();
-        assert!(
-            (c - 2.0 / 3.0).abs() < 1e-6,
-            "CrossBlockArb confidence should be 2/3 ≈ 0.667 with persistence=2, window=3, got {}",
-            c
-        );
-    }
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

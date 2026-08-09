@@ -285,7 +285,20 @@ impl RpcClient {
         let mut last_err = None;
 
         let mut sorted = if archive_only {
-            self.sorted_available_archive().await
+            let arch = self.sorted_available_archive().await;
+            if arch.is_empty() {
+                // No archive-capable provider exists, but pruned full nodes can
+                // still serve state within their retention window (typically the
+                // most recent ~128 blocks). Fall back to any alive provider so
+                // recent historical-state calls succeed; genuinely ancient blocks
+                // will fail per-provider with a descriptive error instead.
+                tracing::debug!(
+                    "no archive-capable provider available — falling back to full-node providers for this state call"
+                );
+                self.sorted_available().await
+            } else {
+                arch
+            }
         } else {
             self.sorted_available().await
         };

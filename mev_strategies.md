@@ -2740,7 +2740,6 @@ Status of each strategy in the MEV Scout codebase:
 | 4 | **JitArb** | `core/src/mev/detectors/jit_arb.rs` | ~420 | `tests/sandwich.rs` | Yes | Yes | JIT + arbitrage. Proximity-window matching. |
 | 5 | **Sandwich** | `core/src/mev/detectors/sandwich.rs` | ~530 | `tests/sandwich.rs` | Yes | Yes | V2, V3, Curve, Balancer. Front→Victim→Back matching. Re-quote profit. |
 | 6 | **Liquidation** | `core/src/mev/detectors/liquidation.rs` | ~575 | `tests/liquidation.rs` (empty) | Yes | Yes | AAVE V3 reactive + proactive. Reserve cache. Health factor scanning. |
-| 7 | **CrossBlockArb** | `core/src/mev/detectors/cross_block.rs` | ~236 | None | Yes | Yes | Sliding window. Persistent arb detection. Time-bandit detection. |
 
 **Supporting infrastructure** (all built):
 - **Mempool** (`mempool.rs`): Calldata parsing, V2/V3 exact-in, pending tx effects, eth_call simulation
@@ -2752,7 +2751,7 @@ Status of each strategy in the MEV Scout codebase:
 
 **Recent backtest run** (`results/run_1783523729.json`):
 - Chain: Polygon | Blocks: 89,878,932–89,879,031 (100 blocks)
-- Strategies: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation, cross_block_arb
+- Strategies: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation
 - Result: 0 opportunities detected (range may not have had live opportunities)
 
 ### 16.2 Planned — Phase 0 (Quick Wins)
@@ -2847,7 +2846,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 
 | Capability | Status | Details |
 |-----------|--------|---------|
-| **Detection** | 7 strategies coded | TwoHopArb, MultiHopArb, JIT, JitArb, Sandwich, Liquidation, CrossBlockArb |
+| **Detection** | 6 strategies coded | TwoHopArb, MultiHopArb, JIT, JitArb, Sandwich, Liquidation |
 | **Simulation (revm)** | Built | `replay/` module with full revm block replay |
 | **Backtesting** | Active | `scripts/test_backtest.ps1` runs Dune-guided backtests across historical blocks |
 | **Live mode** | Active | `LiveRunner` in `execution/live.rs` processes real blocks + mempool |

@@ -374,7 +374,7 @@ impl PoolManager {
             let sqrt = sqrt_price_x96;
             if sqrt.is_zero() { return None; }
             let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
-            let p = p_u256.to::<u128>();
+            let p = p_u256.saturating_to::<u128>();
             if p == 0 { return None; }
             p
         } else {
@@ -383,7 +383,7 @@ impl PoolManager {
             let one: U256 = U256::from(1u128) << 192;
             let inv: U256 = one / sqrt;
             let p_u256: U256 = inv.saturating_mul(inv) >> 192;
-            let p = p_u256.to::<u128>();
+            let p = p_u256.saturating_to::<u128>();
             if p == 0 { return None; }
             p
         };

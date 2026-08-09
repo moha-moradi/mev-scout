@@ -89,9 +89,6 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     );
 
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config);
-    if strategies.contains(&Strategy::CrossBlockArb) {
-        runner = runner.with_cross_block(3);
-    }
 
     let pool_manager = std::mem::take(&mut runner.pool_manager);
 

@@ -59,8 +59,6 @@ pub enum Strategy {
     Sandwich,
     #[strum(serialize = "liquidation")]
     Liquidation,
-    #[strum(serialize = "cross_block_arb")]
-    CrossBlockArb,
 }
 
 impl Strategy {
@@ -72,7 +70,6 @@ impl Strategy {
             Strategy::JitArb,
             Strategy::Sandwich,
             Strategy::Liquidation,
-            Strategy::CrossBlockArb,
         ]
     }
 
@@ -329,7 +326,6 @@ impl ExecutorType {
             Strategy::Sandwich => Some(ExecutorType::Sandwich),
             Strategy::Liquidation => Some(ExecutorType::Liquidation),
             Strategy::Jit | Strategy::JitArb => Some(ExecutorType::JitLiquidity),
-            _ => None,
         }
     }
 }

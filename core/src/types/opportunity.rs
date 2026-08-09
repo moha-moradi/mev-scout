@@ -79,8 +79,8 @@ pub struct MevOpportunity {
     /// rather than settled on-chain blocks.
     #[serde(default)]
     pub mempool_only: bool,
-    /// Confidence score (0.0–1.0) for speculative detection methods like
-    /// cross-block MEV. None = standard on-chain detected opportunity.
+    /// Confidence score (0.0–1.0) for speculative detection methods.
+    /// None = standard on-chain detected opportunity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
 }

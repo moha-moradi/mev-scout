@@ -271,15 +271,6 @@ impl LiveRunner {
                 self.last_processed_block = block_num;
             }
 
-            // Cross-block detection on accumulated window
-            if self.backtest_runner.cross_block_enabled() {
-                let cross_opps = self.backtest_runner.detect_cross_block();
-                if !cross_opps.is_empty() {
-                    tracing::info!("Cross-block: {} opportunities detected", cross_opps.len());
-                    self.process_settled_opportunities(cross_opps);
-                }
-            }
-
             // ── Phase B: Mempool scanning ─────────────────────────────
             mempool_scans += 1;
 

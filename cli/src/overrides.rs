@@ -46,7 +46,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             o.backtest.token_prices = args.token_prices.clone();
             o.backtest.proximity_window = Some(args.proximity_window);
             o.backtest.capture_pending = Some(args.capture_pending);
-            o.backtest.cross_block_window = Some(args.cross_block_window);
         }
         Command::Fetch(args) => {
             apply_block_range(&mut o, &args.block_range);

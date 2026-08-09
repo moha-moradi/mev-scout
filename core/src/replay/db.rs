@@ -261,10 +261,37 @@ impl DatabaseRef for CachedRpcDb {
                 account_id: None,
             }));
         }
-        let (nonce, balance, code_hash, _) = self
+        let (nonce, balance, code_hash, code) = match self
             .block_on_rpc(self.rpc.get_proof(address, &[], self.block_number))
-            .map_err(DbError)?;
-        let code = self.load_code(address, code_hash)?;
+        {
+            Ok((nonce, balance, code_hash, _)) => {
+                let code = self.load_code(address, code_hash)?;
+                (nonce, balance, code_hash, code)
+            }
+            // `eth_getProof` requires full state-trie witnesses, which pruned
+            // full nodes only retain for the most recent ~128 blocks. Fall back
+            // to the three depth-unlimited methods (getTransactionCount +
+            // getBalance + getCode) that Alchemy/DRPC serve at any historical
+            // depth, so replays work without a genuine archive node.
+            Err(e) => {
+                tracing::debug!(
+                    "get_proof failed at block {} for {} (retention-limited), falling back to get_account: {e:#}",
+                    self.block_number,
+                    address,
+                );
+                let (nonce, balance, code) = self
+                    .block_on_rpc(self.rpc.get_account(address, self.block_number))
+                    .map_err(DbError)?;
+                let code_hash = keccak256(&code);
+                let bytecode = if code.is_empty() {
+                    None
+                } else {
+                    let _ = self.cache.put_code(address, &code);
+                    Some(Bytecode::new_raw(code))
+                };
+                (nonce, balance, code_hash, bytecode)
+            }
+        };
         Ok(Some(AccountInfo {
             nonce,
             balance,
