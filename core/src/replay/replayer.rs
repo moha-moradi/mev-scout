@@ -210,6 +210,16 @@ pub struct BlockReplayer {
     chain_id: u64,
 }
 
+/// Outcome of executing a single transaction through revm.
+enum ExecOutcome {
+    /// Transaction executed (success, revert, or halt).
+    Executed(ExecutionResult),
+    /// The historical state layer failed (e.g. no archive RPC reachable).
+    /// The caller decides whether to synthesize a result from the cached
+    /// receipt and continue, or to abort the replay.
+    StateLoadFailed(String),
+}
+
 impl BlockReplayer {
     pub fn new(
         handle: tokio::runtime::Handle,
@@ -328,31 +338,35 @@ impl BlockReplayer {
         }
     }
 
-    /// Map a `transact_commit` result to an `ExecutionResult`.
+    /// Map a `transact_commit` result to an `ExecOutcome`.
     ///
     /// A `Database` error means the historical state layer failed (e.g. no
     /// archive RPC, RPC outage) — replay results would be invalid for every
-    /// transaction, so this is treated as fatal and aborts the replay. All
-    /// other errors (invalid tx, halts, custom) are per-transaction outcomes
-    /// and are surfaced as a synthetic revert for receipt comparison.
+    /// transaction, so callers must decide how to handle it (abort, or degrade
+    /// to receipt synthesis for verification-style replays). All other errors
+    /// (invalid tx, halts, custom) are per-transaction outcomes and are
+    /// surfaced as a synthetic revert for receipt comparison.
     fn exec_or_revert(
         block_num: u64,
         tx_index: usize,
         tx_hash: B256,
         tx_gas_limit: u64,
         result: Result<ExecutionResult, EVMError<DbError, InvalidTransaction>>,
-    ) -> anyhow::Result<ExecutionResult> {
+    ) -> ExecOutcome {
         match result {
-            Ok(r) => Ok(r),
-            Err(EVMError::Database(db_err)) => anyhow::bail!(
-                "state load failed while replaying block {block_num} tx {tx_index} ({tx_hash}): {db_err}"
-            ),
+            Ok(r) => ExecOutcome::Executed(r),
+            Err(EVMError::Database(db_err)) => {
+                tracing::warn!(
+                    "Block {block_num} tx {tx_index} ({tx_hash}) state load failed: {db_err}"
+                );
+                ExecOutcome::StateLoadFailed(format!("{db_err}"))
+            }
             Err(e) => {
                 tracing::warn!(
                     "Block {block_num} tx {tx_index} ({tx_hash}) execution error: {:?}",
                     e
                 );
-                Ok(ExecutionResult::Revert {
+                ExecOutcome::Executed(ExecutionResult::Revert {
                     gas: ResultGas::new_with_state_gas(tx_gas_limit, 0, 0, 0),
                     logs: Vec::new(),
                     output: Bytes::new(),
@@ -517,14 +531,20 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate().take(end + 1) {
             let tx_env = self.tx_data_to_tx_env(tx);
-            let exec_result = Self::exec_or_revert(
+            let mut executed = match Self::exec_or_revert(
                 block_num,
                 i,
                 tx.hash,
                 tx.gas_limit,
                 evm.transact_commit(tx_env),
-            )?;
-            let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
+            ) {
+                ExecOutcome::Executed(exec_result) => {
+                    Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
+                }
+                ExecOutcome::StateLoadFailed(err_msg) => {
+                    Self::synthesize_tx(tx, receipts.get(i), &err_msg)
+                }
+            };
             executed.index = i as u64;
             if executed.error.is_some() {
                 total_mismatch += 1;
@@ -579,14 +599,20 @@ impl BlockReplayer {
 
         for (i, tx) in txs.iter().enumerate() {
             let tx_env = self.tx_data_to_tx_env(tx);
-            let exec_result = Self::exec_or_revert(
+            let mut executed = match Self::exec_or_revert(
                 block_num,
                 i,
                 tx.hash,
                 tx.gas_limit,
                 evm.transact_commit(tx_env),
-            )?;
-            let mut executed = Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num);
+            ) {
+                ExecOutcome::Executed(exec_result) => {
+                    Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
+                }
+                ExecOutcome::StateLoadFailed(err_msg) => {
+                    Self::synthesize_tx(tx, receipts.get(i), &err_msg)
+                }
+            };
             executed.index = i as u64;
             on_tx(i, &executed, &evm.ctx.journaled_state.database)?;
         }
@@ -630,16 +656,22 @@ impl BlockReplayer {
 
             let mut executed = if filter(tx, receipt_logs) {
                 let tx_env = self.tx_data_to_tx_env(tx);
-                let exec_result = Self::exec_or_revert(
+                match Self::exec_or_revert(
                     block_num,
                     i,
                     tx.hash,
                     tx.gas_limit,
                     evm.transact_commit(tx_env),
-                )?;
-                Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
+                ) {
+                    ExecOutcome::Executed(exec_result) => {
+                        Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
+                    }
+                    ExecOutcome::StateLoadFailed(err_msg) => {
+                        Self::synthesize_tx(tx, receipts.get(i), &err_msg)
+                    }
+                }
             } else {
-                Self::synthesize_tx(tx, receipts.get(i))
+                Self::synthesize_tx(tx, receipts.get(i), "skipped")
             };
             executed.index = i as u64;
 
@@ -668,8 +700,10 @@ impl BlockReplayer {
     }
 
     /// Build an `ExecutedTx` from cached receipt data without EVM execution.
-    /// Used by `replay_each_filtered` for the fast path (non-pool txs).
-    fn synthesize_tx(tx: &TxData, receipt: Option<&ReceiptData>) -> ExecutedTx {
+    /// Used by `replay_each_filtered` for the fast path (non-pool txs) and by
+    /// verification replays when state could not be loaded. `error_msg` is
+    /// surfaced as the per-tx mismatch reason (e.g. `"skipped"`).
+    fn synthesize_tx(tx: &TxData, receipt: Option<&ReceiptData>, error_msg: &str) -> ExecutedTx {
         ExecutedTx {
             tx_hash: tx.hash,
             index: 0,
@@ -689,7 +723,7 @@ impl BlockReplayer {
                 })
                 .unwrap_or_default(),
             output: Bytes::new(),
-            error: Some("skipped".to_string()),
+            error: Some(error_msg.to_string()),
         }
     }
 }

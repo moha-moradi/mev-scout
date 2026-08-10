@@ -347,14 +347,14 @@ impl Config {
                             .iter()
                             .find(|e| url.contains(e.url) || e.url.contains(&url))
                             .map(|e| e.archive)
-                            .unwrap_or(true);
+                            .unwrap_or(false);
                         return (url, Some(r), archive);
                     }
                     let (default_rps, archive) = public_endpoints
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
                         .map(|e| (Some(e.default_rps), e.archive))
-                        .unwrap_or((Some(self.rpc.rps_limit), true));
+                        .unwrap_or((Some(self.rpc.rps_limit), false));
                     (url, default_rps, archive)
                 })
                 .collect();

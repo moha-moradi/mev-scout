@@ -52,6 +52,14 @@ impl ChainName {
         }
     }
 
+    /// Map a numeric chain ID to the known chain, if any.
+    pub fn from_chain_id(chain_id: u64) -> Option<ChainName> {
+        ChainName::all()
+            .iter()
+            .copied()
+            .find(|c| c.chain_id() == chain_id)
+    }
+
     /// Public (free-tier) RPC endpoints with metadata (URL, RPS, archive support).
     ///
     /// Each entry includes an observed safe RPS for public-tier usage.

@@ -19,7 +19,7 @@ use crate::pipeline::{BlockReplayStats, GasPriceDistribution};
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
 use crate::error;
-use crate::types::GasConfig;
+use crate::types::{GasConfig, GasModel};
 
 /// Orchestrates MEV backtest execution by replaying blocks through revm and
 /// running detection strategies against updated pool state.
@@ -559,7 +559,15 @@ impl BacktestRunner {
         for block_num in resolved.start_block..=resolved.end_block {
             // H10: Set the percentile gas price from historical distribution
             // before each block so detectors use it for gas cost computation.
-            if let Some(p) = self.gas_config.gas_model.target_percentile() {
+            // `HistoricalExact` also gets a P90 fallback so blocks with a
+            // missing base fee (pre-EIP-1559 chains, failed fetches) still
+            // pay a realistic gas estimate instead of zero.
+            let percentile = match self.gas_config.gas_model.target_percentile() {
+                Some(p) => Some(p),
+                None if self.gas_config.gas_model == GasModel::HistoricalExact => Some(90),
+                None => None,
+            };
+            if let Some(p) = percentile {
                 self.gas_config.percentile_gas_price = gas_dist.percentile(p);
             }
 

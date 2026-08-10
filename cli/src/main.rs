@@ -76,5 +76,11 @@ async fn main() -> anyhow::Result<()> {
     let overrides = overrides::build_overrides(&cli);
     config.merge_cli(&overrides);
 
+    // `--chain auto` resolves the chain from the configured RPC endpoint's
+    // chain ID, silently falling back to the default chain when that fails.
+    if config.chain.eq_ignore_ascii_case("auto") {
+        rpc_setup::resolve_auto_chain(&mut config).await?;
+    }
+
     commands::execute(&cli.command, &config).await
 }

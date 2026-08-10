@@ -219,14 +219,29 @@ impl GasConfig {
     /// pre-computed `percentile_gas_price` from the historical distribution
     /// when available, falling back to the crude `base_fee * 150%` multiplier
     /// when distribution data has not been collected yet (H10).
+    ///
+    /// For `GasModel::HistoricalExact`, when a block's base fee is missing
+    /// (`0`), the same percentile fallback is applied so gas is never
+    /// treated as free.
     pub fn compute_gas_cost_with_limit(
         &self,
         gas_limit: u64,
         base_fee_per_gas: u128,
     ) -> u128 {
         let pf_wei = self.effective_priority_fee_wei();
+        // Historical-exact fallback when a block's base fee is missing
+        // (e.g. pre-EIP-1559 chains, failed fetches): use the pre-computed
+        // P90 percentile estimate so gas is not treated as free.
+        let exact_gas = |base_fee: u128| {
+            if base_fee == 0 {
+                self.percentile_gas_price
+                    .unwrap_or_else(|| base_fee.saturating_mul(150).saturating_div(100))
+            } else {
+                base_fee
+            }
+        };
         let effective_price = match self.gas_model {
-            GasModel::HistoricalExact => base_fee_per_gas.saturating_add(pf_wei),
+            GasModel::HistoricalExact => exact_gas(base_fee_per_gas).saturating_add(pf_wei),
             GasModel::Fixed => pf_wei,
             GasModel::Distribution(_) => {
                 // Use histogram-derived percentile when available (H10),

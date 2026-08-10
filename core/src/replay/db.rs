@@ -326,8 +326,16 @@ impl DatabaseRef for CachedRpcDb {
         {
             return Ok(value);
         }
-        self.block_on_rpc(self.rpc.get_storage_at(address, index, self.block_number))
-            .map_err(DbError)
+        let value = self
+            .block_on_rpc(self.rpc.get_storage_at(address, index, self.block_number))
+            .map_err(DbError)?;
+        // Persist RPC-fetched slots (keyed by block + address + slot) so
+        // subsequent replays over the same range read from SQLite instead of
+        // re-hitting archive RPC. The `storage_slots` table already exists.
+        self.cache
+            .put_slot(self.block_number, address, index, value)
+            .map_err(DbError)?;
+        Ok(value)
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {

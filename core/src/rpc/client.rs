@@ -206,8 +206,9 @@ impl RpcClient {
     /// For endpoints where the `archive` flag is already known (e.g. from
     /// `ProviderEndpoint.archive` in the chain catalog), this sets the flag
     /// upfront so the `validate_all()` archive probe can skip the `eth_getProof`
-    /// check if it confirms the flag. Unknown endpoints default to `true` and
-    /// are verified during `validate_all()`.
+    /// check if it confirms the flag. Unknown custom endpoints default to
+    /// non-archive and are promoted only if the `eth_getProof` probe succeeds
+    /// during `validate_all()`.
     pub async fn with_provider_archive(&self, archive_list: &[bool]) {
         let mut provs = self.providers.lock().await;
         for (i, &archive) in archive_list.iter().enumerate() {
@@ -271,6 +272,30 @@ impl RpcClient {
         available
     }
 
+    /// If archive-capable providers exist but are all currently in cooldown,
+    /// return the shortest remaining cooldown to wait before retrying (capped
+    /// at a few seconds), so `retry_call` can ride out a transient archive
+    /// blip instead of bailing immediately. Returns `None` when there is no
+    /// archive provider alive, or one is already available.
+    async fn shortest_archive_cooldown_wait(&self) -> Option<std::time::Duration> {
+        let provs = self.providers.lock().await;
+        let archives: Vec<_> = provs
+            .iter()
+            .filter(|p| p.archive() && p.is_alive())
+            .collect();
+        if archives.is_empty() || archives.iter().any(|p| p.is_available()) {
+            return None;
+        }
+        let now = tokio::time::Instant::now();
+        let shortest = archives
+            .iter()
+            .filter_map(|p| p.cooldown_until())
+            .map(|until| until.checked_duration_since(now).unwrap_or_default())
+            .min()
+            .unwrap_or_default();
+        Some(shortest.min(std::time::Duration::from_secs(2)))
+    }
+
     /// Execute an RPC call with per-provider rate limiting, priority selection
     /// (fastest + highest RPS first), and health tracking with exponential-backoff cooldown.
     ///
@@ -282,7 +307,11 @@ impl RpcClient {
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
         const MAX_PROVIDERS: usize = 3;
+        // How many times to wait out a transient all-in-cooldown state before
+        // giving up (each wait is capped at `MAX_COOLDOWN_WAIT`).
+        const MAX_COOLDOWN_WAITS: u32 = 3;
         let mut last_err = None;
+        let mut cooldown_waits = 0u32;
 
         let mut sorted = if archive_only {
             let arch = self.sorted_available_archive().await;
@@ -398,6 +427,22 @@ impl RpcClient {
             }
 
             if !found_next {
+                // No provider could be tried this pass. If this is an archive-only
+                // call and archive-capable providers exist but are all in cooldown
+                // (transient 429s / connection resets), wait for the shortest
+                // cooldown and retry a few times before giving up.
+                if archive_only && cooldown_waits < MAX_COOLDOWN_WAITS {
+                    if let Some(wait) = self.shortest_archive_cooldown_wait().await {
+                        cooldown_waits += 1;
+                        tracing::warn!(
+                            "All archive providers in cooldown — retrying in {wait:?} (attempt {cooldown_waits}/{MAX_COOLDOWN_WAITS})"
+                        );
+                        tokio::time::sleep(wait).await;
+                        tried.clear();
+                        sorted = self.sorted_available_archive().await;
+                        continue;
+                    }
+                }
                 break;
             }
 
@@ -416,7 +461,10 @@ impl RpcClient {
             None => {
                 if archive_only {
                     let provs = self.providers.lock().await;
-                    let archive_total = provs.iter().filter(|p| p.archive()).count();
+                    let archive_total = provs
+                        .iter()
+                        .filter(|p| p.archive() && p.is_alive())
+                        .count();
                     let archive_alive = provs
                         .iter()
                         .filter(|p| p.archive() && p.is_available())
@@ -524,6 +572,10 @@ impl RpcClient {
                 if let Err(ref e) = phase1 {
                     tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
                     state.mark_dead(tokio::time::Duration::from_secs(DEAD_PROVIDER_COOLDOWN_SECS));
+                    // A provider that cannot even serve `eth_chainId` is certainly
+                    // not archive-capable — demote it so it doesn't inflate the
+                    // "archive providers exist" accounting with dead endpoints.
+                    state.set_archive(false);
                     results[i] = phase1;
                     continue;
                 }
