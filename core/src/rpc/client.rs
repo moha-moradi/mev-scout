@@ -62,6 +62,30 @@ fn is_rate_limit_error(msg: &str) -> bool {
         || m.contains("402")
 }
 
+/// Whether an RPC error message means the requested historical state is
+/// deterministically unavailable on this provider (state pruned / not an
+/// archive node, e.g. `historical state 0x.. is not available` from
+/// GetBlock, `missing trie node` from Geth).
+///
+/// The provider itself is healthy — this is a capability limitation, not a
+/// failure — so it must NOT trigger the failure/cooldown penalty. Treating it
+/// as a failure poisons the whole replay: a few state-unavailable hits put the
+/// only non-archive providers into exponential-backoff cooldown and every
+/// subsequent tx fails with "all RPC providers exhausted or in cooldown".
+fn is_state_unavailable_error(msg: &str) -> bool {
+    let m = msg.to_ascii_lowercase();
+    m.contains("historical state")
+        || m.contains("state is not available")
+        || m.contains("state not available")
+        || m.contains("no state available")
+        || m.contains("missing trie node")
+        || m.contains("missing trie")
+        || m.contains("trie node")
+        || m.contains("cannot fetch a block number in the future")
+        || m.contains("header not found")
+        || m.contains("no header for hash")
+}
+
 /// Retry an RPC future a few times when it fails with a transient transport
 /// error. Definitive JSON-RPC errors are returned immediately (not retried).
 async fn retry_transport<F, Fut, T, E>(mut f: F) -> Result<T, E>
@@ -296,6 +320,19 @@ impl RpcClient {
         Some(shortest.min(std::time::Duration::from_secs(2)))
     }
 
+    /// Whether at least one live provider is currently flagged archive-capable
+    /// (i.e. passed the `eth_getProof` probe).
+    ///
+    /// Used by the replayer's `CachedRpcDb` to decide whether the `eth_getProof`
+    /// fast path is worth attempting before falling back to the depth-unlimited
+    /// methods (`getBalance`/`getTransactionCount`/`getCode`/`getStorageAt`).
+    /// When no archive provider exists, attempting `eth_getProof` against full
+    /// nodes only wastes calls and pushes healthy providers into cooldown.
+    pub async fn archive_provider_available(&self) -> bool {
+        let provs = self.providers.lock().await;
+        provs.iter().any(|p| p.archive() && p.is_alive())
+    }
+
     /// Execute an RPC call with per-provider rate limiting, priority selection
     /// (fastest + highest RPS first), and health tracking with exponential-backoff cooldown.
     ///
@@ -306,7 +343,6 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        const MAX_PROVIDERS: usize = 3;
         // How many times to wait out a transient all-in-cooldown state before
         // giving up (each wait is capped at `MAX_COOLDOWN_WAIT`).
         const MAX_COOLDOWN_WAITS: u32 = 3;
@@ -339,7 +375,12 @@ impl RpcClient {
                 if tried.contains(idx) {
                     continue;
                 }
-                if tried.len() >= MAX_PROVIDERS {
+                // No fixed provider cap: exhaust every alive provider before
+                // giving up. GetBlock shared keys inconsistently serve
+                // historical state (load-balanced across nodes with different
+                // retention), and state-unavailable skips are no-penalty, so
+                // the last provider tried may be the only one with the state.
+                if tried.len() >= sorted.len() {
                     break;
                 }
                 tried.insert(*idx);
@@ -388,6 +429,7 @@ impl RpcClient {
                     Err((e, is_evm_revert)) => {
                         let err_msg = format!("{e:#}");
                         let rate_limited = !is_evm_revert && is_rate_limit_error(&err_msg);
+                        let state_unavailable = !is_evm_revert && is_state_unavailable_error(&err_msg);
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             if is_evm_revert {
@@ -407,6 +449,15 @@ impl RpcClient {
                                     p.label(),
                                     p.weight(),
                                     p.cooldown_until(),
+                                );
+                            } else if state_unavailable {
+                                // Deterministic capability error (state pruned / not an
+                                // archive node). The provider is healthy — skip it without
+                                // the failure/cooldown penalty so the next provider is
+                                // tried immediately and later calls aren't poisoned.
+                                tracing::debug!(
+                                    "State unavailable on {} (skipping, no penalty): {err_msg}",
+                                    p.label(),
                                 );
                             } else {
                                 p.record_failure();
@@ -1076,6 +1127,11 @@ impl RpcClient {
     }
 
     /// Fetch a single storage slot value at a historical block via `eth_getStorageAt`.
+    ///
+    /// Depth-unlimited — served by pruned full nodes within their retention
+    /// window and by most providers at any historical depth without archive.
+    /// Routed through the full provider pool (`archive_only = false`) so replay
+    /// works without a genuine archive node for recent blocks.
     pub async fn get_storage_at(
         &self,
         address: Address,
@@ -1088,14 +1144,17 @@ impl RpcClient {
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        }, true)
+        }, false)
         .await
     }
 
     /// Fetch account state (nonce, balance, bytecode) at a historical block.
     ///
     /// Fires three parallel RPC calls: `eth_getTransactionCount`, `eth_getBalance`,
-
+    /// and `eth_getCode` (via [`RpcClient::get_code`]). All three are depth-unlimited —
+    /// pruned full nodes serve them within their retention window and most providers
+    /// serve them at any historical depth without archive. Routed through the full
+    /// provider pool so replay works without a genuine archive node.
     pub async fn get_account(
         &self,
         address: Address,
@@ -1108,20 +1167,24 @@ impl RpcClient {
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }, true),
+            }, false),
             self.retry_call(|provider| async move {
                 provider
                     .get_balance(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }, true),
+            }, false),
             self.get_code(address, block),
         )?;
         Ok((nonce, balance, code))
     }
 
     /// Fetch contract bytecode at a historical block via `eth_getCode`.
+    ///
+    /// Depth-unlimited — served by pruned full nodes within their retention
+    /// window and by most providers at any historical depth without archive.
+    /// Routed through the full provider pool so replay works without archive.
     pub async fn get_code(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
         self.retry_call(|provider| async move {
             provider
@@ -1129,7 +1192,7 @@ impl RpcClient {
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        }, true)
+        }, false)
         .await
     }
 
