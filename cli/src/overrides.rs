@@ -6,7 +6,6 @@ fn apply_chain_args(o: &mut CliOverrides, c: &ChainArgs) {
     o.rpc.rpc_url = c.rpc_url.clone();
     o.rpc.rpc_urls = c.rpc_urls.clone();
     o.rpc.rpc_rps = c.rpc_rps.clone();
-    o.rpc.ws_url = c.ws_url.clone();
     o.rpc.rps_limit = Some(c.rps_limit);
 }
 
@@ -64,22 +63,6 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);
             apply_storage_args(&mut o, &args.db_path, &None);
-        }
-        Command::Live(args) => {
-            apply_chain_args(&mut o, &args.chain_args);
-            apply_storage_args(&mut o, &args.db_path, &None);
-            o.backtest.strategies = Some(args.strategies.clone());
-            o.gas.gas_model = Some(args.gas_model.clone());
-            o.gas.gas_limit = Some(args.gas_limit);
-            o.gas.priority_fee_gwei = Some(args.priority_fee);
-            o.output.output = Some("json".to_string());
-            o.output.export_path = Some(args.export_path.clone());
-            o.backtest.price_oracle_mode = Some(args.price_oracle_mode.clone());
-            o.backtest.token_prices = args.token_prices.clone();
-            o.live.initial_balance = Some(args.initial_balance);
-            o.live.min_profit_threshold = Some(args.min_profit);
-            o.live.poll_interval_ms = Some(args.poll_interval);
-            o.live.max_executions = args.max_executions;
         }
         Command::Audit(args) => {
             apply_chain_args(&mut o, &args.chain_args);

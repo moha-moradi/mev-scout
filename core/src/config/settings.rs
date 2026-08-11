@@ -22,11 +22,6 @@ pub struct RpcConfig {
     /// Additional RPC URLs for multi-provider load distribution
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_urls: Vec<String>,
-    /// WebSocket RPC endpoint for live mode's push-based event feed
-    /// (`eth_subscribe` newHeads + newPendingTransactions). Optional: when
-    /// unset, live mode falls back to HTTP polling.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ws_url: Option<String>,
     /// Per-provider RPS limits
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rpc_rps: Vec<f64>,
@@ -105,22 +100,6 @@ pub struct OutputConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LiveConfig {
-    /// Starting virtual balance (native token, e.g. 10.0 ETH)
-    #[serde(default = "default_initial_balance")]
-    pub initial_balance: f64,
-    /// Minimum profit threshold (native token) to execute a virtual trade
-    #[serde(default = "default_min_profit_threshold")]
-    pub min_profit_threshold: f64,
-    /// Mempool poll interval in milliseconds
-    #[serde(default = "default_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-    /// Optional cap on virtual executions (None = unlimited)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_executions: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuneConfig {
     /// Dune Analytics API key
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,9 +111,6 @@ pub struct DuneConfig {
 
 // ── Default helpers ─────────────────────────────────────────────────
 
-fn default_initial_balance() -> f64 { 10.0 }
-fn default_min_profit_threshold() -> f64 { 0.001 }
-fn default_poll_interval_ms() -> u64 { 1000 }
 fn default_rps_limit() -> f64 { 0.0 }
 fn default_chain() -> String { "polygon".to_string() }
 fn default_flash_loan_provider() -> String { "auto".to_string() }
@@ -155,7 +131,6 @@ impl Default for RpcConfig {
         RpcConfig {
             rpc_url: None,
             rpc_urls: Vec::new(),
-            ws_url: None,
             rpc_rps: Vec::new(),
             rps_limit: default_rps_limit(),
             block_concurrency: None,
@@ -197,17 +172,6 @@ impl Default for OutputConfig {
             export_path: default_export_path(),
             db_path: default_db_path(),
             parquet_dir: None,
-        }
-    }
-}
-
-impl Default for LiveConfig {
-    fn default() -> Self {
-        LiveConfig {
-            initial_balance: default_initial_balance(),
-            min_profit_threshold: default_min_profit_threshold(),
-            poll_interval_ms: default_poll_interval_ms(),
-            max_executions: None,
         }
     }
 }
@@ -262,8 +226,6 @@ pub struct Config {
     #[serde(flatten)]
     pub output: OutputConfig,
     #[serde(flatten)]
-    pub live: LiveConfig,
-    #[serde(flatten)]
     pub dune: DuneConfig,
 }
 
@@ -293,7 +255,6 @@ impl Default for Config {
             gas: GasConfig::default(),
             backtest: BacktestConfig::default(),
             output: OutputConfig::default(),
-            live: LiveConfig::default(),
             dune: DuneConfig::default(),
         }
     }
@@ -507,7 +468,6 @@ pub struct RpcOverrides {
     pub rpc_url: Option<String>,
     pub rpc_urls: Option<Vec<String>>,
     pub rpc_rps: Option<Vec<f64>>,
-    pub ws_url: Option<String>,
     pub rps_limit: Option<f64>,
     pub block_concurrency: Option<usize>,
     pub coingecko_api_key: Option<String>,
@@ -540,14 +500,6 @@ pub struct OutputOverrides {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct LiveOverrides {
-    pub initial_balance: Option<f64>,
-    pub min_profit_threshold: Option<f64>,
-    pub poll_interval_ms: Option<u64>,
-    pub max_executions: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct DuneOverrides {
     pub dune_api_key: Option<String>,
     pub dune_primary_pool_discovery: Option<bool>,
@@ -565,7 +517,6 @@ pub struct CliOverrides {
     pub gas: GasOverrides,
     pub backtest: BacktestOverrides,
     pub output: OutputOverrides,
-    pub live: LiveOverrides,
     pub dune: DuneOverrides,
 }
 
@@ -610,7 +561,6 @@ pub struct ConfigBuilder {
     gas: Option<GasConfig>,
     backtest: Option<BacktestConfig>,
     output: Option<OutputConfig>,
-    live: Option<LiveConfig>,
     dune: Option<DuneConfig>,
 }
 
@@ -635,8 +585,6 @@ impl ConfigBuilder {
     pub fn with_backtest(mut self, backtest: BacktestConfig) -> Self { self.backtest = Some(backtest); self }
     /// Replace the output sub-config entirely.
     pub fn with_output(mut self, output: OutputConfig) -> Self { self.output = Some(output); self }
-    /// Replace the live sub-config entirely.
-    pub fn with_live(mut self, live: LiveConfig) -> Self { self.live = Some(live); self }
     /// Replace the Dune sub-config entirely.
     pub fn with_dune(mut self, dune: DuneConfig) -> Self { self.dune = Some(dune); self }
 
@@ -653,7 +601,6 @@ impl ConfigBuilder {
         if let Some(v) = self.gas { cfg.gas = v; }
         if let Some(v) = self.backtest { cfg.backtest = v; }
         if let Some(v) = self.output { cfg.output = v; }
-        if let Some(v) = self.live { cfg.live = v; }
         if let Some(v) = self.dune { cfg.dune = v; }
         cfg
     }
@@ -672,7 +619,6 @@ impl Config {
             (rpc_url, into_option),
             (rpc_urls),
             (rpc_rps),
-            (ws_url, into_option),
             (rps_limit, copy),
             (block_concurrency, copy_some),
             (coingecko_api_key, into_option)
@@ -696,12 +642,6 @@ impl Config {
             (export_path),
             (db_path),
             (parquet_dir, into_option)
-        ]);
-        merge_sub!(self, overrides, live, [
-            (initial_balance, copy),
-            (min_profit_threshold, copy),
-            (poll_interval_ms, copy),
-            (max_executions, copy_some)
         ]);
         merge_sub!(self, overrides, dune, [
             (dune_api_key, into_option),

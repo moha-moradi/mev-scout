@@ -5,20 +5,13 @@ mod display;
 mod overrides;
 mod rpc_setup;
 
-use std::path::PathBuf;
-use std::sync::OnceLock;
-
 use clap::Parser;
-use mev_scout_core::utils::epoch_secs;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Command};
+use crate::cli::Cli;
 use mev_scout_core::config::Config;
 
-/// Guard that keeps the non-blocking file writer alive for the process lifetime.
-static LOG_GUARD: OnceLock<tracing_appender::non_blocking::WorkerGuard> = OnceLock::new();
-
-fn setup_logging(verbose: bool, quiet: bool, log_file: Option<PathBuf>) {
+fn setup_logging(verbose: bool, quiet: bool) {
     let filter = if quiet {
         EnvFilter::new("error")
     } else if verbose {
@@ -27,39 +20,18 @@ fn setup_logging(verbose: bool, quiet: bool, log_file: Option<PathBuf>) {
         EnvFilter::new("info")
     };
 
-    let subscriber = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
         .with_env_filter(filter)
         .without_time()
-        .with_target(false);
-
-    if let Some(path) = log_file {
-        // Create directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let file = std::fs::File::create(&path).expect("Failed to create log file");
-        let (non_blocking, guard) = tracing_appender::non_blocking(file);
-        // Store guard in a static to keep it alive
-        let _ = LOG_GUARD.set(guard);
-        subscriber.with_writer(non_blocking).init();
-    } else {
-        subscriber.init();
-    }
+        .with_target(false)
+        .init();
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Determine log file path for live mode + verbose
-    let log_file = if cli.verbose && matches!(&cli.command, Command::Live(_)) {
-        let run_id = epoch_secs();
-        Some(PathBuf::from(format!("live_{}.log", run_id)))
-    } else {
-        None
-    };
-
-    setup_logging(cli.verbose, cli.quiet, log_file);
+    setup_logging(cli.verbose, cli.quiet);
 
     let mut config = match &cli.config {
         Some(path) => Config::load_or_default(path),

@@ -6,7 +6,6 @@ mod dune_find_blocks;
 mod dune_query;
 mod dune_report;
 mod fetch;
-mod live;
 mod replay;
 mod report;
 mod run;
@@ -20,7 +19,6 @@ pub use dune_find_blocks::cmd_dune_find_blocks;
 pub use dune_query::cmd_dune_query;
 pub use dune_report::cmd_dune_report;
 pub use fetch::cmd_fetch;
-pub use live::cmd_live;
 pub use replay::cmd_replay;
 pub use report::cmd_report;
 pub use run::cmd_run;
@@ -28,7 +26,7 @@ pub use tokens::cmd_tokens;
 
 use async_trait::async_trait;
 use mev_scout_core::config::Config;
-use crate::cli::{AuditArgs, DiscoverArgs, DuneCheckArgs, DuneFindBlocksArgs, DuneQueryArgs, DuneReportArgs, FetchArgs, LiveArgs, ReplayArgs, ReportArgs, RunArgs, TokensArgs};
+use crate::cli::{AuditArgs, DiscoverArgs, DuneCheckArgs, DuneFindBlocksArgs, DuneQueryArgs, DuneReportArgs, FetchArgs, ReplayArgs, ReportArgs, RunArgs, TokensArgs};
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
@@ -61,11 +59,6 @@ impl CliCommand for ReplayArgs {
 #[async_trait(?Send)]
 impl CliCommand for DiscoverArgs {
     async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_discover(config, self).await }
-}
-
-#[async_trait(?Send)]
-impl CliCommand for LiveArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_live(config, self).await }
 }
 
 #[async_trait(?Send)]
@@ -108,7 +101,6 @@ pub async fn execute(cmd: &crate::cli::Command, config: &Config) -> anyhow::Resu
         Config => cmd_config(config).await,
         Replay(a) => a.execute(config).await,
         Discover(a) => a.execute(config).await,
-        Live(a) => a.execute(config).await,
         Audit(a) => a.execute(config).await,
         DuneCheck(a) => a.execute(config).await,
         DuneFindBlocks(a) => a.execute(config).await,
