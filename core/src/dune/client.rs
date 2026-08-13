@@ -78,6 +78,19 @@ impl DuneClient {
         query_id: u64,
         params: &[(&str, &str)],
     ) -> anyhow::Result<DuneExecutionResult> {
+        self.execute_query_by_id_with_performance(query_id, params, "").await
+    }
+
+    /// Execute a saved query with an explicit performance tier.
+    ///
+    /// Community/free plans typically require `"free"`; paid plans use
+    /// `"small"`, `"medium"`, or `"large"`.
+    pub async fn execute_query_by_id_with_performance(
+        &self,
+        query_id: u64,
+        params: &[(&str, &str)],
+        performance: &str,
+    ) -> anyhow::Result<DuneExecutionResult> {
         let url = format!("{}/query/{}/execute", self.base_url, query_id);
 
         let mut body = serde_json::Map::new();
@@ -87,49 +100,97 @@ impl DuneClient {
                 Value::String((*v).to_string()),
             );
         }
+        if !performance.is_empty() {
+            body.insert(
+                "performance".to_string(),
+                Value::String(performance.to_string()),
+            );
+        }
 
-        let resp: DuneExecutionResponse = self
+        let resp = self
             .http
             .post(&url)
             .header("x-dune-api-key", &self.api_key)
             .json(&body)
             .send()
             .await
-            .context("Failed to execute Dune query")?
-            .error_for_status()
-            .context("Dune query execution rejected")?
-            .json()
-            .await?;
+            .context("Failed to execute Dune query")?;
+
+        let status = resp.status();
+        let body_text = resp
+            .text()
+            .await
+            .context("Failed to read Dune execute response")?;
+
+        if !status.is_success() {
+            anyhow::bail!(
+                "Dune query execution rejected (HTTP {}): {}",
+                status,
+                body_text
+            );
+        }
+
+        let resp: DuneExecutionResponse = serde_json::from_str(&body_text)
+            .context("Failed to parse Dune execute response")?;
 
         self.poll_execution(&resp.execution_id).await
     }
 
-    /// Execute raw SQL directly on Dune.
-    ///
-    /// Dune deprecated the raw-SQL execute endpoint, so the SQL is first
-    /// saved as a private query (named from a stable hash of the SQL) and
-    /// then executed by ID. The created query is reused on later runs.
+    /// Execute raw SQL directly on Dune via `POST /v1/sql/execute`.
     pub async fn execute_raw_sql(
         &self,
         sql: &str,
     ) -> anyhow::Result<DuneExecutionResult> {
-        self.execute_raw_sql_with_performance(sql, "medium").await
+        self.execute_raw_sql_with_performance(sql, "small").await
     }
 
-    /// Execute raw SQL with explicit performance tier ("small", "medium", "large").
-    ///
-    /// The performance tier is accepted for API compatibility; the created
-    /// query runs at its normal tier.
+    /// Execute raw SQL with explicit performance tier
+    /// (`"free"`, `"small"`, `"medium"`, or `"large"`).
     pub async fn execute_raw_sql_with_performance(
         &self,
         sql: &str,
-        _performance: &str,
+        performance: &str,
     ) -> anyhow::Result<DuneExecutionResult> {
-        let query_id = self.get_or_create_query_id(sql).await?;
-        self.execute_query_by_id(query_id, &[]).await
+        let url = format!("{}/sql/execute", self.base_url);
+        let body = if performance.is_empty() {
+            serde_json::json!({ "sql": sql })
+        } else {
+            serde_json::json!({
+                "sql": sql,
+                "performance": performance,
+            })
+        };
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("x-dune-api-key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to execute Dune SQL")?;
+
+        let status = resp.status();
+        let body_text = resp
+            .text()
+            .await
+            .context("Failed to read Dune sql/execute response")?;
+
+        if !status.is_success() {
+            anyhow::bail!(
+                "Dune SQL execution rejected (HTTP {}): {}",
+                status,
+                body_text
+            );
+        }
+
+        let resp: DuneExecutionResponse = serde_json::from_str(&body_text)
+            .context("Failed to parse Dune sql/execute response")?;
+
+        self.poll_execution(&resp.execution_id).await
     }
 
-    // ── Raw-SQL via saved queries ───────────────────────────────────────
+    // ── Raw-SQL via saved queries (legacy fallback) ─────────────────────
 
     /// Return the query ID for `sql`, creating a saved query if needed.
     ///
