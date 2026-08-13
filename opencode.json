@@ -8,6 +8,7 @@
         "opencode-pty",
         "@opencode/websearch-cited",
         "opencode-supermemory",
-        "@openspoon/subtask2"
+        "@openspoon/subtask2",
+        "@plannotator/opencode@latest"
     ]
 }

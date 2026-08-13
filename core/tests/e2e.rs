@@ -235,7 +235,7 @@ fn print_opportunities(opps: &[MevOpportunity]) {
     }
 }
 
-/// Test 1: RPC connectivity + block number + chain ID validation
+/// Test 1: RPC connectivity + block number validation
 #[tokio::test]
 async fn test_e2e_rpc_connectivity() {
     eprintln!("--- test_e2e_rpc_connectivity ---");
@@ -244,8 +244,7 @@ async fn test_e2e_rpc_connectivity() {
         None => { eprintln!("SKIP: no RPC available"); return; }
     };
     eprintln!("  Connected to Polygon at block {block_num}");
-    let chain_id = rpc.get_chain_id().await.unwrap();
-    assert_eq!(chain_id, POLYGON_CHAIN_ID, "Chain ID mismatch");
+    assert_eq!(rpc.chain_id(), POLYGON_CHAIN_ID, "Chain ID mismatch");
     assert!(block_num > 50_000_000, "Block number seems too low: {block_num}");
 }
 

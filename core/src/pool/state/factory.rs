@@ -1255,9 +1255,11 @@ impl PoolManager {
             U256::from_be_slice(&result[..32]).to::<u64>() as u32
         };
 
-        // Step 2: getBinStep()
+        // Step 2: getBinStep() — immutable (set at pool creation), so it is
+        // fetched at the `latest` tag, which any full node serves, instead of
+        // requiring historical archive state.
         let bin_step = {
-            let result = Self::call_once(rpc, pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR), br).await.ok().unwrap_or_default();
+            let result = rpc.call_latest(pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR)).await.ok().unwrap_or_default();
             if result.len() >= 32 {
                 U256::from_be_slice(&result[..32]).to::<u64>() as u32
             } else {

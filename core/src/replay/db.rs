@@ -261,35 +261,11 @@ impl DatabaseRef for CachedRpcDb {
                 account_id: None,
             }));
         }
-        // Only attempt the `eth_getProof` fast path when an archive-capable
-        // provider actually exists. Trying it against full nodes wastes calls,
-        // hammers healthy providers into cooldown (their witnesses are pruned
-        // even for recent blocks), and then starves the depth-unlimited fallback
-        // below of any available provider.
-        let (nonce, balance, code_hash, code) =
-            if self.block_on_rpc(self.rpc.archive_provider_available()) {
-                match self.block_on_rpc(self.rpc.get_proof(address, &[], self.block_number)) {
-                    Ok((nonce, balance, code_hash, _)) => {
-                        let code = self.load_code(address, code_hash)?;
-                        (nonce, balance, code_hash, code)
-                    }
-                    // `eth_getProof` requires full state-trie witnesses, which pruned
-                    // full nodes only retain for the most recent ~128 blocks. Fall back
-                    // to the three depth-unlimited methods (getTransactionCount +
-                    // getBalance + getCode) that Alchemy/DRPC serve at any historical
-                    // depth, so replays work without a genuine archive node.
-                    Err(e) => {
-                        tracing::debug!(
-                            "get_proof failed at block {} for {} (retention-limited), falling back to get_account: {e:#}",
-                            self.block_number,
-                            address,
-                        );
-                        self.account_via_rpc(address)?
-                    }
-                }
-            } else {
-                self.account_via_rpc(address)?
-            };
+        // Fetch account state via the depth-unlimited methods (getTransactionCount
+        // + getBalance + getCode), which pruned full nodes serve within their
+        // retention window and most providers serve at any historical depth,
+        // so replays work without a genuine archive node.
+        let (nonce, balance, code_hash, code) = self.account_via_rpc(address)?;
         Ok(Some(AccountInfo {
             nonce,
             balance,

@@ -28,12 +28,6 @@ pub struct RpcConfig {
     /// RPC rate limit in requests per second (default: 500). 0 = unlimited.
     #[serde(default = "default_rps_limit")]
     pub rps_limit: f64,
-    /// Depth (in blocks) at which the archive-support probe runs (default: 10_000).
-    /// Lower it for endpoints with limited historical state retention — e.g.
-    /// Polygon full nodes keep only ~128 blocks of state. Note: replay/run then
-    /// only work for blocks within this depth of the chain tip.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub archive_probe_depth_blocks: Option<u64>,
     /// Block-level concurrency within each provider shard
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_concurrency: Option<usize>,
@@ -135,7 +129,6 @@ impl Default for RpcConfig {
             rps_limit: default_rps_limit(),
             block_concurrency: None,
             coingecko_api_key: None,
-            archive_probe_depth_blocks: None,
         }
     }
 }

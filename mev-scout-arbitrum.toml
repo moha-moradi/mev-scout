@@ -11,9 +11,3 @@ rpc_rps = [20]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2
-
-# Depth (in blocks) at which the archive-support probe runs. Kept at the
-# default 10_000 so only genuine archive nodes (e.g. the Alchemy endpoint)
-# pass the probe; pruned full nodes are correctly demoted to non-archive and
-# only used for block/log/fetch workloads.
-archive_probe_depth_blocks = 10000

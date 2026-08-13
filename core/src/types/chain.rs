@@ -52,14 +52,6 @@ impl ChainName {
         }
     }
 
-    /// Map a numeric chain ID to the known chain, if any.
-    pub fn from_chain_id(chain_id: u64) -> Option<ChainName> {
-        ChainName::all()
-            .iter()
-            .copied()
-            .find(|c| c.chain_id() == chain_id)
-    }
-
     /// Public (free-tier) RPC endpoints with metadata (URL, RPS, archive support).
     ///
     /// Each entry includes an observed safe RPS for public-tier usage.
@@ -178,17 +170,6 @@ impl ChainName {
         }
     }
 
-    pub fn all() -> &'static [ChainName] {
-        &[
-            ChainName::Polygon,
-            ChainName::Avalanche,
-            ChainName::Bsc,
-            ChainName::Arbitrum,
-            ChainName::Base,
-            ChainName::Ethereum,
-            ChainName::Optimism,
-        ]
-    }
 }
 
 /// Return the storage slot(s) to try for a V2 pool created by the given factory.
