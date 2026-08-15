@@ -363,6 +363,22 @@ impl CachedRpcDb {
             let _ = self.cache.put_code(address, &code);
             Some(Bytecode::new_raw(code))
         };
+        // Persist the account (nonce/balance/code hash) keyed by state block so
+        // subsequent replays over the same block read from SQLite instead of
+        // re-hitting RPC. `Database::basic` is never called by revm's CacheDB
+        // (it routes to `basic_ref`), so the `put_account` there is dead — this
+        // is the only path that actually runs.
+        self.cache
+            .put_account(
+                self.block_number,
+                address,
+                &AccountData {
+                    nonce,
+                    balance,
+                    code_hash,
+                },
+            )
+            .map_err(DbError)?;
         Ok((nonce, balance, code_hash, bytecode))
     }
 }

@@ -89,6 +89,14 @@ pub struct ProviderState {
     /// Set during `validate_all`: `true` if the `eth_getProof` probe succeeds, `false` otherwise.
     /// Non-archive providers are still alive for block/log/fetch workloads.
     archive: bool,
+    /// Whether this provider can serve historical state via the depth-unlimited
+    /// methods (`eth_getBalance`/`eth_getTransactionCount`/`eth_getCode`/
+    /// `eth_getStorageAt` at a block number). Set to `false` the first time a
+    /// state call returns "historical state is not available". Providers with
+    /// `state_capable == false` are skipped for replay state reads so they don't
+    /// waste a round-trip on every read; they remain usable for block/log/fetch
+    /// workloads that don't need historical state.
+    state_capable: bool,
 }
 
 impl ProviderState {
@@ -107,6 +115,7 @@ impl ProviderState {
             label,
             url,
             archive: true,
+            state_capable: true,
         }
     }
 
@@ -154,6 +163,17 @@ impl ProviderState {
 
     pub fn archive(&self) -> bool {
         self.archive
+    }
+
+    pub fn state_capable(&self) -> bool {
+        self.state_capable
+    }
+
+    /// Record that this provider deterministically cannot serve historical
+    /// state (pruned full node / retention window exhausted). The provider is
+    /// still healthy for block/log/fetch workloads, so this is not a failure.
+    pub fn mark_state_unavailable(&mut self) {
+        self.state_capable = false;
     }
 
     // ── Mutators ───────────────────────────────────────────────────────

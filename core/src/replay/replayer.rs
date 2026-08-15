@@ -164,16 +164,22 @@ pub fn register_polygon_precompiles(
         },
     );
 
-    for b in 0x01u8..=0x1f {
-        if BLS12_377_ADDRESSES.contains(&b) {
-            continue;
-        }
-        let addr = addr_from_last_byte(b);
-        if let Ok(code) = tokio::task::block_in_place(|| handle.block_on(rpc.get_code_no_retry(addr, prev_block))) {
+    let probe_addrs: Vec<u8> = (0x01u8..=0x1f)
+        .filter(|b| !BLS12_377_ADDRESSES.contains(b))
+        .collect();
+    let probe_futures: Vec<_> = probe_addrs
+        .iter()
+        .map(|b| rpc.get_code_no_retry(addr_from_last_byte(*b), prev_block))
+        .collect();
+    let probe_codes = tokio::task::block_in_place(|| {
+        handle.block_on(futures::future::join_all(probe_futures))
+    });
+    for (b, code) in probe_addrs.iter().zip(probe_codes) {
+        if let Ok(code) = code {
             if !code.is_empty() {
                 tracing::warn!(
                     "Unrecognised non-empty contract at precompile-range address {} ({} bytes)",
-                    addr,
+                    addr_from_last_byte(*b),
                     code.len()
                 );
             }

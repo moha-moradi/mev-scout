@@ -126,6 +126,11 @@ pub struct RpcClient {
     providers: Arc<tokio::sync::Mutex<Vec<ProviderState>>>,
     chain_id: u64,
     current: Arc<AtomicUsize>,
+    /// Round-robin offset so consecutive calls lead with a different provider.
+    /// Without this, equal-weight providers stable-sort onto the same winner
+    /// and all traffic pins to a single rate limiter (e.g. one 10 RPS endpoint
+    /// while four identical siblings sit idle).
+    dispatch_counter: Arc<AtomicUsize>,
 }
 
 impl RpcClient {
@@ -159,6 +164,7 @@ impl RpcClient {
             providers: Arc::new(tokio::sync::Mutex::new(providers)),
             chain_id,
             current: Arc::new(AtomicUsize::new(0)),
+            dispatch_counter: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -239,6 +245,18 @@ impl RpcClient {
         }
     }
 
+    /// Rotate the priority list so the next call leads with a different
+    /// provider. Keeps the relative weight ordering (retries still prefer
+    /// higher-weight providers) while spreading the first-try pick across all
+    /// available endpoints instead of stable-sorting onto one winner.
+    fn rotate_for_load(&self, mut available: Vec<(usize, ProviderState)>) -> Vec<(usize, ProviderState)> {
+        if available.len() > 1 {
+            let offset = self.dispatch_counter.fetch_add(1, Ordering::Relaxed) % available.len();
+            available.rotate_left(offset);
+        }
+        available
+    }
+
     /// Get available providers sorted by effective weight descending (fastest + highest RPS first).
     async fn sorted_available(&self) -> Vec<(usize, ProviderState)> {
         let provs = self.providers.lock().await;
@@ -255,7 +273,35 @@ impl RpcClient {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        available
+        drop(provs);
+        self.rotate_for_load(available)
+    }
+
+    /// Get alive providers that can serve historical state, sorted by effective
+    /// weight descending.
+    ///
+    /// Used by replay state reads (`eth_getBalance`, `eth_getStorageAt`,
+    /// `eth_getCode`, ...). Providers that once returned "historical state is
+    /// not available" are excluded so they don't waste a round-trip on every
+    /// read; they remain available for block/log/fetch workloads via
+    /// [`RpcClient::sorted_available`].
+    async fn sorted_available_state(&self) -> Vec<(usize, ProviderState)> {
+        let provs = self.providers.lock().await;
+        let mut available: Vec<(usize, ProviderState)> = provs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_available() && p.state_capable())
+            .map(|(i, p)| (i, ProviderState::clone(p)))
+            .collect();
+
+        available.sort_by(|a, b| {
+            b.1.effective_weight()
+                .partial_cmp(&a.1.effective_weight())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        drop(provs);
+        self.rotate_for_load(available)
     }
 
     /// Get available **archive-capable** providers sorted by effective weight descending.
@@ -279,7 +325,8 @@ impl RpcClient {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        available
+        drop(provs);
+        self.rotate_for_load(available)
     }
 
     /// If archive-capable providers exist but are all currently in cooldown,
@@ -316,13 +363,48 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
+        self.retry_call_impl(f, archive_only, false).await
+    }
+
+    /// Like [`RpcClient::retry_call`], but routes through the state-capable
+    /// provider pool only: providers that once returned "historical state is
+    /// not available" are skipped. Used by replay state reads so pruned/non-
+    /// archive endpoints don't waste a round-trip on every read.
+    async fn retry_call_state<F, Fut, T>(&self, f: F) -> anyhow::Result<T>
+    where
+        F: Fn(RootProvider) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
+        self.retry_call_impl(f, false, true).await
+    }
+
+    async fn retry_call_impl<F, Fut, T>(
+        &self,
+        f: F,
+        archive_only: bool,
+        state_req: bool,
+    ) -> anyhow::Result<T>
+    where
+        F: Fn(RootProvider) -> Fut,
+        Fut: std::future::Future<Output = anyhow::Result<T>>,
+    {
         // How many times to wait out a transient all-in-cooldown state before
         // giving up (each wait is capped at `MAX_COOLDOWN_WAIT`).
         const MAX_COOLDOWN_WAITS: u32 = 3;
         let mut last_err = None;
         let mut cooldown_waits = 0u32;
 
-        let mut sorted = if archive_only {
+        let mut sorted = if state_req {
+            let state = self.sorted_available_state().await;
+            if state.is_empty() {
+                // No provider has confirmed state capability yet this session —
+                // fall back to all alive providers so the first state call can
+                // still succeed and populate the capability flags.
+                self.sorted_available().await
+            } else {
+                state
+            }
+        } else if archive_only {
             let arch = self.sorted_available_archive().await;
             if arch.is_empty() {
                 // No archive-capable provider exists, but pruned full nodes can
@@ -428,8 +510,10 @@ impl RpcClient {
                                 // archive node). The provider is healthy — skip it without
                                 // the failure/cooldown penalty so the next provider is
                                 // tried immediately and later calls aren't poisoned.
+                                // Remember the capability so state reads don't re-try it.
+                                p.mark_state_unavailable();
                                 tracing::debug!(
-                                    "State unavailable on {} (skipping, no penalty): {err_msg}",
+                                    "State unavailable on {} (skipping, no penalty, state capability cleared): {err_msg}",
                                     p.label(),
                                 );
                             } else {
@@ -470,7 +554,14 @@ impl RpcClient {
                 break;
             }
 
-            sorted = if archive_only {
+            sorted = if state_req {
+                let state = self.sorted_available_state().await;
+                if state.is_empty() {
+                    self.sorted_available().await
+                } else {
+                    state
+                }
+            } else if archive_only {
                 self.sorted_available_archive().await
             } else {
                 self.sorted_available().await
@@ -1010,13 +1101,13 @@ impl RpcClient {
         slot: U256,
         block: u64,
     ) -> anyhow::Result<U256> {
-        self.retry_call(|provider| async move {
+        self.retry_call_state(|provider| async move {
             provider
                 .get_storage_at(address, slot)
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        }, false)
+        })
         .await
     }
 
@@ -1033,20 +1124,20 @@ impl RpcClient {
         block: u64,
     ) -> anyhow::Result<(u64, U256, Bytes)> {
         let (nonce, balance, code) = futures::try_join!(
-            self.retry_call(|provider| async move {
+            self.retry_call_state(|provider| async move {
                 provider
                     .get_transaction_count(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }, false),
-            self.retry_call(|provider| async move {
+            }),
+            self.retry_call_state(|provider| async move {
                 provider
                     .get_balance(address)
                     .number(block)
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
-            }, false),
+            }),
             self.get_code(address, block),
         )?;
         Ok((nonce, balance, code))
@@ -1058,13 +1149,13 @@ impl RpcClient {
     /// window and by most providers at any historical depth without archive.
     /// Routed through the full provider pool so replay works without archive.
     pub async fn get_code(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
-        self.retry_call(|provider| async move {
+        self.retry_call_state(|provider| async move {
             provider
                 .get_code_at(address)
                 .number(block)
                 .await
                 .map_err(|e| anyhow::anyhow!("{}", e))
-        }, false)
+        })
         .await
     }
 
@@ -1073,9 +1164,11 @@ impl RpcClient {
     pub async fn get_code_no_retry(&self, address: Address, block: u64) -> anyhow::Result<Bytes> {
         let first = {
             let provs = self.providers.lock().await;
-            // Prefer an archive provider; fall back to any alive provider if none available
+            // Prefer an archive provider that can serve historical state;
+            // fall back to any alive provider if none available.
             provs.iter()
-                .find(|p| p.is_available() && p.archive())
+                .find(|p| p.is_available() && p.archive() && p.state_capable())
+                .or_else(|| provs.iter().find(|p| p.is_available() && p.state_capable()))
                 .or_else(|| provs.iter().find(|p| p.is_available()))
                 .cloned()
         };
