@@ -1,20 +1,19 @@
 use alloy::primitives::U256;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::Config;
-use mev_scout_core::replay::CachedRpcDb;
-use mev_scout_core::replay::{register_polygon_precompiles, spec_id_for_block, BlockReplayer};
+use mev_scout_core::replay::{BlockReplayer, CachedRpcDb};
 use mev_scout_core::rpc::RpcClient;
 use revm::context::block::BlockEnv;
 use revm::context::cfg::CfgEnv;
 use revm::context::tx::TxEnv;
-use revm::context_interface::transaction::AccessList;
 use revm::context_interface::block::BlobExcessGasAndPrice;
+use revm::context_interface::transaction::AccessList;
 use revm::database::CacheDB;
 use revm::handler::{MainBuilder, MainContext};
-use revm::primitives::hardfork::SpecId;
-use revm::primitives::TxKind;
 use revm::interpreter::{Interpreter, InterpreterTypes};
 use revm::interpreter::interpreter_types::Jumps;
+use revm::primitives::hardfork::SpecId;
+use revm::primitives::TxKind;
 use revm::context_interface::result::ExecutionResult;
 use revm::{Context, InspectEvm, Inspector};
 use std::env;
@@ -38,8 +37,8 @@ impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for StepTracer {
 
 fn main() -> anyhow::Result<()> {
     let toml = env::args().nth(1).unwrap_or_else(|| "mev-scout.toml".into());
-    let block_num: u64 = env::args().nth(2).unwrap_or_else(|| "92045880".into()).parse()?;
-    let tx_index: usize = env::args().nth(3).unwrap_or_else(|| "5".into()).parse()?;
+    let block_num: u64 = env::args().nth(2).unwrap_or_else(|| "92053774".into()).parse()?;
+    let tx_index: usize = env::args().nth(3).unwrap_or_else(|| "24".into()).parse()?;
 
     let config = Config::load(&toml)?;
     let chain_name: mev_scout_core::types::ChainName = config.chain.parse()?;
@@ -67,7 +66,10 @@ fn main() -> anyhow::Result<()> {
 
     let replayer = BlockReplayer::new(handle.clone(), cache.clone(), rpc.clone(), chain_id);
     let (block, txs) = replayer.load_block_data(block_num)?;
+    let receipts = replayer.load_receipts(block_num)?;
+
     let tx = &txs[tx_index];
+    let receipt = &receipts[tx_index];
     println!(
         "tx {tx_index}: to={} gas_limit={} value={} calldata={}",
         tx.to.map(|a| a.to_string()).unwrap_or_else(|| "create".into()),
@@ -76,13 +78,23 @@ fn main() -> anyhow::Result<()> {
         tx.input.len()
     );
 
-    // build the same DB as production
-    let db = CachedRpcDb::new(handle, cache, rpc, chain_id, block_num);
-    let mut cache_db = CacheDB::new(db);
-    register_polygon_precompiles(&mut cache_db, block_num)?;
+    // Replay from tx 0 up to tx_index-1 to build correct intermediate state.
+    let (mut cache_db, _results) = if tx_index == 0 {
+        let cache_db = CacheDB::new(CachedRpcDb::new(
+            handle,
+            cache,
+            rpc,
+            chain_id,
+            block_num,
+        ));
+        mev_scout_core::replay::register_polygon_precompiles(&mut cache_db, block_num)?;
+        (cache_db, Vec::new())
+    } else {
+        replayer.replay_to(block_num, tx_index - 1)?
+    };
 
-    // same cfg/block env as production
-    let spec = spec_id_for_block(chain_id, block_num);
+    // Build the EVM with an inspector and run tx_index.
+    let spec = mev_scout_core::replay::spec_id_for_block(chain_id, block_num);
     let mut cfg = CfgEnv::new_with_spec(spec);
     cfg.chain_id = chain_id;
     cfg.limit_contract_code_size = Some(0x6000);
@@ -126,7 +138,10 @@ fn main() -> anyhow::Result<()> {
     };
 
     let inspector = StepTracer { prev: None, ops: Vec::new() };
-    let ctx = Context::mainnet().with_db(cache_db).with_cfg(cfg).with_block(block_env);
+    let ctx = Context::mainnet()
+        .with_db(cache_db)
+        .with_cfg(cfg)
+        .with_block(block_env);
     let mut evm = ctx.build_mainnet_with_inspector(inspector);
     let result = evm.inspect_one_tx(tx_env)?;
 
@@ -138,23 +153,16 @@ fn main() -> anyhow::Result<()> {
     let mut call = 0u64;
     let mut logs = 0u64;
     let mut others = 0u64;
-    let mut cold_sloads = 0u64;
-    let mut warm_sloads = 0u64;
     let mut count_sload = 0u64;
     let mut count_sstore = 0u64;
     for (op, cost, _after) in &ops {
         if op == "SLOAD" {
             count_sload += 1;
-            if *cost == 2100 {
-                cold_sloads += 1;
-            } else if *cost == 100 {
-                warm_sloads += 1;
-            }
             sload += cost;
         } else if op == "SSTORE" {
             count_sstore += 1;
             sstore += cost;
-        } else if op == "CALL" || op == "STATICCALL" || op == "DELEGATECALL" || op == "CALLCODE" {
+        } else if ["CALL", "STATICCALL", "DELEGATECALL", "CALLCODE"].contains(&op.as_str()) {
             call += cost;
         } else if op.starts_with("LOG") {
             logs += cost;
@@ -163,7 +171,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     println!(
-        "gas by op class: SLOAD={sload} ({count_sload} ops, cold={cold_sloads} warm={warm_sloads}) SSTORE={sstore} ({count_sstore} ops) CALLs={call} LOGs={logs} others={others}"
+        "gas by op class: SLOAD={sload} ({count_sload} ops) SSTORE={sstore} ({count_sstore} ops) CALLs={call} LOGs={logs} others={others}"
     );
 
     let (refunded, floor, spent) = match &result {
@@ -175,19 +183,33 @@ fn main() -> anyhow::Result<()> {
             gas.total_gas_spent(),
         ),
     };
-    println!("result: gas_used={} status={:?}", result.gas_used(), result.is_success());
+    println!(
+        "result: gas_used={} status={:?}",
+        result.tx_gas_used(),
+        result.is_success()
+    );
+    println!(
+        "receipt: gas_used={} delta={}",
+        receipt.gas_used,
+        receipt.gas_used.saturating_sub(result.tx_gas_used())
+    );
     println!("gas: total_spent={spent} refunded={refunded} floor={floor}");
 
-    // dump SLOAD/SSTORE details
-    let mut i = 0usize;
-    for (op, cost, after) in &ops {
-        if i > 0 {
-            let key = ops[i - 1].0.clone();
-            if (op == "SLOAD" || op == "SSTORE") && *cost > 0 {
-                println!("  pc-op {op} cost={cost} (prev_op={key})");
-            }
-        }
-        i += 1;
+    // Print top-20 most expensive ops
+    let mut sorted = ops.clone();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("\n=== top-20 expensive ops ===");
+    for (op, cost, _after) in sorted.iter().take(20) {
+        println!("  {op} cost={cost}");
     }
+
+    // Print all SLOAD/SSTORE details with costs
+    println!("\n=== SLOAD/SSTORE details ===");
+    for (op, cost, _after) in &ops {
+        if op == "SLOAD" || op == "SSTORE" {
+            println!("  {op} cost={cost}");
+        }
+    }
+
     Ok(())
 }
