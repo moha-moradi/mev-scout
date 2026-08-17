@@ -10,28 +10,82 @@ use revm::context_interface::block::BlobExcessGasAndPrice;
 use revm::context_interface::transaction::AccessList;
 use revm::database::CacheDB;
 use revm::handler::{MainBuilder, MainContext};
-use revm::interpreter::{Interpreter, InterpreterTypes};
 use revm::interpreter::interpreter_types::Jumps;
+use revm::interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterTypes};
 use revm::primitives::hardfork::SpecId;
 use revm::primitives::TxKind;
 use revm::context_interface::result::ExecutionResult;
-use revm::{Context, InspectEvm, Inspector};
+use revm::{Context, InspectEvm};
+use revm::inspector::Inspector;
+use revm::inspector::inspectors::GasInspector;
 use std::env;
 
 struct StepTracer {
-    prev: Option<u64>,
-    ops: Vec<(String, u64, u64)>,
+    gas_inspector: GasInspector,
+    opcode: u8,
+    ops: Vec<(u8, u64, u64)>,
 }
 
 impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for StepTracer {
+    fn initialize_interp(&mut self, interp: &mut Interpreter<INTR>, _ctx: &mut CTX) {
+        self.gas_inspector.initialize_interp(&interp.gas);
+    }
+
     fn step(&mut self, interp: &mut Interpreter<INTR>, _ctx: &mut CTX) {
-        let now = interp.gas.remaining();
-        let op = interp.bytecode.opcode().to_string();
-        if let Some(p) = self.prev {
-            let cost = p.saturating_sub(now);
-            self.ops.push((op, cost, now));
+        self.gas_inspector.step(&interp.gas);
+        self.opcode = interp.bytecode.opcode();
+    }
+
+    fn step_end(&mut self, interp: &mut Interpreter<INTR>, _ctx: &mut CTX) {
+        self.gas_inspector.step_end(&interp.gas);
+        let cost = self.gas_inspector.last_gas_cost();
+        let remaining = self.gas_inspector.gas_remaining();
+        if cost > 0 {
+            self.ops.push((self.opcode, cost, remaining));
         }
-        self.prev = Some(now);
+    }
+
+    fn call_end(&mut self, _ctx: &mut CTX, _inputs: &CallInputs, outcome: &mut CallOutcome) {
+        self.gas_inspector.call_end(outcome);
+    }
+
+    fn create_end(&mut self, _ctx: &mut CTX, _inputs: &CreateInputs, outcome: &mut CreateOutcome) {
+        self.gas_inspector.create_end(outcome);
+    }
+}
+
+fn op_name(op: u8) -> &'static str {
+    match op {
+        0x00 => "STOP", 0x01 => "ADD", 0x02 => "MUL", 0x03 => "SUB",
+        0x04 => "DIV", 0x05 => "SDIV", 0x06 => "MOD", 0x07 => "SMOD",
+        0x08 => "ADDMOD", 0x09 => "MULMOD", 0x0a => "EXP", 0x0b => "SIGNEXTEND",
+        0x10 => "LT", 0x11 => "GT", 0x12 => "SLT", 0x13 => "SGT",
+        0x14 => "EQ", 0x15 => "ISZERO", 0x16 => "AND", 0x17 => "OR",
+        0x18 => "XOR", 0x19 => "NOT", 0x1a => "BYTE", 0x1b => "SHL",
+        0x1c => "SHR", 0x1d => "SAR", 0x1e => "SHA3",
+        0x30 => "ADDRESS", 0x31 => "BALANCE", 0x32 => "ORIGIN",
+        0x33 => "CALLER", 0x34 => "CALLVALUE", 0x35 => "CALLDATALOAD",
+        0x36 => "CALLDATASIZE", 0x37 => "CALLDATACOPY",
+        0x38 => "CODESIZE", 0x39 => "CODECOPY", 0x3a => "GASPRICE",
+        0x3b => "EXTCODESIZE", 0x3c => "EXTCODECOPY",
+        0x3d => "RETURNDATASIZE", 0x3e => "RETURNDATACOPY",
+        0x3f => "EXTCODEHASH", 0x40 => "BLOCKHASH",
+        0x41 => "COINBASE", 0x42 => "TIMESTAMP", 0x43 => "NUMBER",
+        0x44 => "DIFFICULTY", 0x45 => "GASLIMIT", 0x46 => "CHAINID",
+        0x47 => "SELFBALANCE",
+        0x48 => "BASEFEE", 0x49 => "BLOBHASH", 0x4a => "BLOBBASEFEE",
+        0x50 => "POP", 0x51 => "MLOAD", 0x52 => "MSTORE", 0x53 => "MSTORE8",
+        0x54 => "SLOAD", 0x55 => "SSTORE", 0x56 => "JUMP", 0x57 => "JUMPI",
+        0x58 => "PC", 0x59 => "MSIZE", 0x5a => "GAS", 0x5b => "JUMPDEST",
+        0x5c => "TLOAD", 0x5d => "TSTORE",
+        0x5e => "MCOPY", 0x5f => "PUSH0",
+        0x60..=0x7f => "PUSH", 0x80..=0x8f => "DUP",
+        0x90..=0x9f => "SWAP", 0xa0..=0xa4 => "LOG",
+        0xa5 => "PUSH128", 0xa6 => "PUSH256",
+        0xf0 => "CREATE", 0xf1 => "CALL", 0xf2 => "CALLCODE",
+        0xf3 => "RETURN", 0xf4 => "DELEGATECALL", 0xf5 => "CREATE2",
+        0xfa => "STATICCALL", 0xfd => "REVERT", 0xff => "SELFDESTRUCT",
+        _ => "???",
     }
 }
 
@@ -78,22 +132,13 @@ fn main() -> anyhow::Result<()> {
         tx.input.len()
     );
 
-    // Replay from tx 0 up to tx_index-1 to build correct intermediate state.
-    let (mut cache_db, _results) = if tx_index == 0 {
-        let cache_db = CacheDB::new(CachedRpcDb::new(
-            handle,
-            cache,
-            rpc,
-            chain_id,
-            block_num,
-        ));
-        mev_scout_core::replay::register_polygon_precompiles(&mut cache_db, block_num)?;
-        (cache_db, Vec::new())
+    let mut cache_db: CacheDB<CachedRpcDb> = if tx_index == 0 {
+        CacheDB::new(CachedRpcDb::new(handle, cache, rpc, chain_id, block_num))
     } else {
-        replayer.replay_to(block_num, tx_index - 1)?
+        replayer.replay_to(block_num, tx_index - 1)?.0
     };
+    mev_scout_core::replay::register_polygon_precompiles(&mut cache_db, block_num)?;
 
-    // Build the EVM with an inspector and run tx_index.
     let spec = mev_scout_core::replay::spec_id_for_block(chain_id, block_num);
     let mut cfg = CfgEnv::new_with_spec(spec);
     cfg.chain_id = chain_id;
@@ -137,41 +182,42 @@ fn main() -> anyhow::Result<()> {
         authorization_list: Vec::new(),
     };
 
-    let inspector = StepTracer { prev: None, ops: Vec::new() };
-    let ctx = Context::mainnet()
-        .with_db(cache_db)
-        .with_cfg(cfg)
-        .with_block(block_env);
+    let inspector = StepTracer {
+        gas_inspector: GasInspector::new(),
+        opcode: 0,
+        ops: Vec::new(),
+    };
+    let ctx = Context::mainnet().with_db(cache_db).with_cfg(cfg).with_block(block_env);
     let mut evm = ctx.build_mainnet_with_inspector(inspector);
     let result = evm.inspect_one_tx(tx_env)?;
 
     let ops = std::mem::take(&mut evm.inspector.ops);
-    println!("\n=== total steps: {} ===", ops.len());
+    println!("\n=== total gas-charging steps: {} ===", ops.len());
 
     let mut sload = 0u64;
     let mut sstore = 0u64;
     let mut call = 0u64;
-    let mut logs = 0u64;
+    let mut log_gas = 0u64;
     let mut others = 0u64;
     let mut count_sload = 0u64;
     let mut count_sstore = 0u64;
-    for (op, cost, _after) in &ops {
-        if op == "SLOAD" {
+    for (op, cost, _remaining) in &ops {
+        if *op == 0x54 {
             count_sload += 1;
             sload += cost;
-        } else if op == "SSTORE" {
+        } else if *op == 0x55 {
             count_sstore += 1;
             sstore += cost;
-        } else if ["CALL", "STATICCALL", "DELEGATECALL", "CALLCODE"].contains(&op.as_str()) {
+        } else if matches!(*op, 0xf1 | 0xf2 | 0xf3 | 0xf4 | 0xfa) {
             call += cost;
-        } else if op.starts_with("LOG") {
-            logs += cost;
+        } else if matches!(*op, 0xa0..=0xa4) {
+            log_gas += cost;
         } else {
             others += cost;
         }
     }
     println!(
-        "gas by op class: SLOAD={sload} ({count_sload} ops) SSTORE={sstore} ({count_sstore} ops) CALLs={call} LOGs={logs} others={others}"
+        "gas by class: SLOAD={sload} ({count_sload}x) SSTORE={sstore} ({count_sstore}x) CALLs={call} LOGs={log_gas} others={others}"
     );
 
     let (refunded, floor, spent) = match &result {
@@ -184,7 +230,7 @@ fn main() -> anyhow::Result<()> {
         ),
     };
     println!(
-        "result: gas_used={} status={:?}",
+        "result: exec_gas_used={} status={:?}",
         result.tx_gas_used(),
         result.is_success()
     );
@@ -195,20 +241,19 @@ fn main() -> anyhow::Result<()> {
     );
     println!("gas: total_spent={spent} refunded={refunded} floor={floor}");
 
-    // Print top-20 most expensive ops
+    // top-20 most expensive ops
     let mut sorted = ops.clone();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
     println!("\n=== top-20 expensive ops ===");
-    for (op, cost, _after) in sorted.iter().take(20) {
-        println!("  {op} cost={cost}");
+    for (op, cost, remaining) in sorted.iter().take(20) {
+        println!("  {} (0x{:02x}) cost={}", op_name(*op), op, cost);
     }
 
-    // Print all SLOAD/SSTORE details with costs
-    println!("\n=== SLOAD/SSTORE details ===");
-    for (op, cost, _after) in &ops {
-        if op == "SLOAD" || op == "SSTORE" {
-            println!("  {op} cost={cost}");
-        }
+    // all SLOAD/SSTORE ops
+    let ss_ops: Vec<_> = ops.iter().filter(|(op, _, _)| *op == 0x54 || *op == 0x55).collect();
+    println!("\n=== SLOAD/SSTORE details ({} total) ===", ss_ops.len());
+    for (op, cost, remaining) in ss_ops.iter().take(40) {
+        println!("  {} cost={}", op_name(*op), cost);
     }
 
     Ok(())
