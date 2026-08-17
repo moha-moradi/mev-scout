@@ -18,6 +18,8 @@ pub struct BlockData {
     pub gas_limit: u64,
     pub gas_used: u64,
     pub coinbase: Address,
+    pub difficulty: U256,
+    pub mix_hash: B256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -70,7 +70,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 8;
+    const SCHEMA_VERSION: u64 = 9;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -88,7 +88,9 @@ impl SqliteStore {
                 base_fee_per_gas INTEGER,
                 gas_limit  INTEGER NOT NULL,
                 gas_used   INTEGER NOT NULL,
-                coinbase   BLOB NOT NULL
+                coinbase   BLOB NOT NULL,
+                difficulty INTEGER NOT NULL DEFAULT 0,
+                mix_hash   BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'
             );
 
             CREATE TABLE IF NOT EXISTS block_meta (
@@ -280,6 +282,9 @@ impl SqliteStore {
                 updated_at  INTEGER NOT NULL,
                 PRIMARY KEY (address, center_word)
             )",
+            // v9: difficulty and mix_hash for accurate EVM replay
+            "ALTER TABLE blocks ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE blocks ADD COLUMN mix_hash BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {

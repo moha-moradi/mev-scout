@@ -315,7 +315,12 @@ impl DatabaseRef for CachedRpcDb {
     fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
         match self.cache.get_block(number).map_err(DbError)? {
             Some(block) => Ok(block.hash),
-            None => Ok(B256::ZERO),
+            None => {
+                let hash = self
+                    .block_on_rpc(self.rpc.get_block_hash(number))
+                    .map_err(DbError)?;
+                Ok(hash)
+            }
         }
     }
 }

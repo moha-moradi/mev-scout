@@ -1,4 +1,4 @@
-use alloy::primitives::B256;
+use alloy::primitives::{B256, U256};
 use rusqlite::Connection;
 
 use crate::data::types::{BlockData, ReceiptData, TxData};
@@ -7,8 +7,8 @@ impl super::SqliteStore {
     pub fn put_block(&self, block_num: u64, block: &BlockData) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase, difficulty, mix_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 block_num as i64,
                 super::SqliteStore::b256_to_blob(&block.hash),
@@ -17,6 +17,8 @@ impl super::SqliteStore {
                 block.gas_limit as i64,
                 block.gas_used as i64,
                 super::SqliteStore::addr_to_blob(&block.coinbase),
+                block.difficulty.to_be_bytes::<32>().to_vec(),
+                super::SqliteStore::b256_to_blob(&block.mix_hash),
             ],
         )?;
         Ok(())
@@ -54,8 +56,8 @@ impl super::SqliteStore {
 
         {
             let mut block_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR REPLACE INTO blocks (number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase, difficulty, mix_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             let mut tx_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, sig_hash, sig_name)
@@ -82,6 +84,8 @@ impl super::SqliteStore {
                     block.gas_limit as i64,
                     block.gas_used as i64,
                     super::SqliteStore::addr_to_blob(&block.coinbase),
+                    block.difficulty.to_be_bytes::<32>().to_vec(),
+                    super::SqliteStore::b256_to_blob(&block.mix_hash),
                 ])?;
 
                 let block_tx_sigs = tx_sigs_batch.and_then(|b| b.get(block_idx));
@@ -161,19 +165,29 @@ impl super::SqliteStore {
     pub fn get_block(&self, block_num: u64) -> anyhow::Result<Option<BlockData>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase FROM blocks WHERE number = ?1",
+            "SELECT number, hash, timestamp, base_fee_per_gas, gas_limit, gas_used, coinbase, difficulty, mix_hash FROM blocks WHERE number = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
         match rows.next()? {
-            Some(row) => Ok(Some(BlockData {
-                number: row.get::<_, i64>(0)? as u64,
-                hash: super::SqliteStore::blob_to_b256(&row.get::<_, Vec<u8>>(1)?),
-                timestamp: row.get::<_, i64>(2)? as u64,
-                base_fee_per_gas: row.get::<_, Option<i64>>(3)?.map(|v| v as u128),
-                gas_limit: row.get::<_, i64>(4)? as u64,
-                gas_used: row.get::<_, i64>(5)? as u64,
-                coinbase: super::SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(6)?),
-            })),
+            Some(row) => {
+                let difficulty_bytes: Vec<u8> = row.get(7)?;
+                let difficulty = if difficulty_bytes.len() == 32 {
+                    U256::from_be_slice(&difficulty_bytes)
+                } else {
+                    U256::ZERO
+                };
+                Ok(Some(BlockData {
+                    number: row.get::<_, i64>(0)? as u64,
+                    hash: super::SqliteStore::blob_to_b256(&row.get::<_, Vec<u8>>(1)?),
+                    timestamp: row.get::<_, i64>(2)? as u64,
+                    base_fee_per_gas: row.get::<_, Option<i64>>(3)?.map(|v| v as u128),
+                    gas_limit: row.get::<_, i64>(4)? as u64,
+                    gas_used: row.get::<_, i64>(5)? as u64,
+                    coinbase: super::SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(6)?),
+                    difficulty,
+                    mix_hash: super::SqliteStore::blob_to_b256(&row.get::<_, Vec<u8>>(8)?),
+                }))
+            }
             None => Ok(None),
         }
     }

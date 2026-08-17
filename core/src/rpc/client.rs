@@ -10,7 +10,7 @@ use alloy::consensus::Transaction;
 use alloy::eips::BlockId;
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::TransactionBuilder;
-use alloy::primitives::{Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
@@ -295,9 +295,16 @@ impl RpcClient {
             .collect();
 
         available.sort_by(|a, b| {
-            b.1.effective_weight()
-                .partial_cmp(&a.1.effective_weight())
-                .unwrap_or(std::cmp::Ordering::Equal)
+            // Prefer archive-capable providers for accurate historical state.
+            let a_archive = a.1.archive() as u8;
+            let b_archive = b.1.archive() as u8;
+            b_archive
+                .cmp(&a_archive)
+                .then_with(|| {
+                    b.1.effective_weight()
+                        .partial_cmp(&a.1.effective_weight())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         drop(provs);
@@ -732,6 +739,20 @@ impl RpcClient {
                 .map_err(|e| anyhow::anyhow!("{}", e))?
                 .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
             Ok(block.header.timestamp)
+        }, false)
+        .await
+    }
+
+    /// Fetch just a block's hash (header-only, no transactions).
+    pub async fn get_block_hash(&self, block_number: u64) -> anyhow::Result<B256> {
+        self.retry_call(|provider| async move {
+            let block = provider
+                .get_block_by_number(block_number.into())
+                .hashes()
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+                .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
+            Ok(block.header.hash)
         }, false)
         .await
     }
@@ -1321,6 +1342,8 @@ impl RpcClient {
             gas_limit: block.header.gas_limit,
             gas_used: block.header.gas_used,
             coinbase: block.header.beneficiary,
+            difficulty: block.header.difficulty,
+            mix_hash: block.header.mix_hash,
         }
     }
 

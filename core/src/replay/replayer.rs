@@ -291,8 +291,8 @@ impl BlockReplayer {
             timestamp: U256::from(block.timestamp),
             gas_limit: block.gas_limit,
             basefee: block.base_fee_per_gas.unwrap_or(0) as u64,
-            difficulty: U256::ZERO,
-            prevrandao: Some(B256::ZERO),
+            difficulty: block.difficulty,
+            prevrandao: Some(block.mix_hash),
             blob_excess_gas_and_price,
             slot_num: 0,
         }
