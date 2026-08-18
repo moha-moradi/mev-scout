@@ -1,6 +1,6 @@
 # MEV Scout - Improvement Plan
 
-## 1. Fix Dune SQL Deprecated Endpoint (HIGH PRIORITY)
+## 1. Fix Dune SQL Deprecated Endpoint ✅ DONE
 
 ### Problem
 Every Dune query fails with `Deprecated query engine` because `execute_raw_sql` hits the retired `POST /v1/sql/execute` endpoint.
@@ -8,18 +8,12 @@ Every Dune query fails with `Deprecated query engine` because `execute_raw_sql` 
 ### Root Cause
 `core/src/dune/client.rs:139-191` — `execute_raw_sql_with_performance` calls `/v1/sql/execute` directly.
 
-### Fix
-Modify `execute_raw_sql_with_performance` to use the **save-then-execute** pattern that already exists in the code:
-
-```rust
-// core/src/dune/client.rs — execute_raw_sql_with_performance
-pub async fn execute_raw_sql_with_performance(&self, sql: &str, performance: &str)
-    -> anyhow::Result<DuneExecutionResult>
-{
-    let query_id = self.get_or_create_query_id(sql).await?;
-    self.execute_query_by_id_with_performance(query_id, &[], performance).await
-}
-```
+### Fix Applied
+Modified `execute_raw_sql_with_performance` to use the **save-then-execute** pattern:
+- `execute_raw_sql` now calls `get_or_create_query_id` then `execute_query_by_id_with_performance`
+- `create_query` now specifies `"engine": "dune_sql"` (Dune Engine v2)
+- Changed default performance tier from `"small"` to `""` (let Dune decide)
+- **Result**: 0 compiler warnings (previously 6 dead-code warnings)
 
 ### Affected Callers (12+ locations)
 | File | Context |
@@ -56,17 +50,13 @@ Without this, V3 two-hop arb opportunities may have incorrect profit estimates.
 
 ---
 
-## 3. Set Default Priority Fee (MEDIUM PRIORITY)
+## 3. Set Default Priority Fee ✅ DONE
 
 ### Problem
 `priority_fee_gwei=0` causes profit overestimation. The tool warns about this on every run.
 
-### Fix
-Change default in `cli/src/cli.rs:162`:
-```rust
-#[arg(long, default_value_t = 1.0, ...)]  // was 0.0
-pub priority_fee: f64,
-```
+### Fix Applied
+Changed default in `cli/src/cli.rs:161` from `0.0` to `1.0`.
 
 ---
 
@@ -107,24 +97,25 @@ Set default `batch_size` to 100 for Alchemy chains, or detect provider tier and 
 
 ---
 
-## 7. Config Display "RPC not set" (LOW PRIORITY)
+## 7. Config Display "RPC not set" ✅ DONE
 
 ### Problem
 CLI prints "RPC not set" despite `rpc_urls` being configured in TOML.
 
 ### Root Cause
-The `--rpc` flag and `rpc_urls` config are separate fields. The display logic only checks `--rpc`.
+The `--rpc` flag and `rpc_urls` config are separate fields. The display logic only checked `rpc_url` (single/legacy).
 
-### Fix
-Update the startup plan display to show `rpc_urls` count when `--rpc` is not set.
+### Fix Applied
+Added `effective_rpc_display()` method that shows `"N provider(s) configured"` when `rpc_urls` or `rpc_url` is set, or `"No RPC configured — using public fallbacks"` otherwise.
 
 ---
 
 ## Execution Order
 
-1. **Dune fix** — Unblocks token cache, pool discovery, reports, audits
+1. ~~**Dune fix**~~ ✅ — Unblocks token cache, pool discovery, reports, audits
 2. **V3 tick maps** — Improves simulation accuracy
-3. **Priority fee default** — Quick fix, immediate accuracy gain
+3. ~~**Priority fee default**~~ ✅ — Quick fix, immediate accuracy gain
 4. **Candidate pruning** — Major performance improvement
 5. **Gas used handling** — Correctness improvement
-6. **Batch size / display** — UX polish
+6. **Batch size** — UX polish
+7. ~~**RPC display**~~ ✅ — UX polish

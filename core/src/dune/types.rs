@@ -51,42 +51,6 @@ pub struct DuneExecutionStatus {
     pub error: Option<DuneExecutionError>,
 }
 
-/// Deserialize a field, mapping explicit JSON `null` to `Default::default()`.
-fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Default + serde::Deserialize<'de>,
-{
-    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// Query overview from `GET /v1/queries`.
-#[derive(Debug, Deserialize)]
-pub struct DuneQueryOverview {
-    pub id: u64,
-    pub name: String,
-    pub description: Option<String>,
-    pub owner: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_null_as_default")]
-    pub tags: Vec<String>,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
-}
-
-/// Paginated response from `GET /v1/queries`.
-#[derive(Debug, Deserialize)]
-pub struct DuneQueryList {
-    #[serde(default, deserialize_with = "deserialize_null_as_default")]
-    pub queries: Vec<DuneQueryOverview>,
-    pub total: Option<u64>,
-}
-
-/// Response from `POST /v1/query` (create query).
-#[derive(Debug, Deserialize)]
-pub struct DuneCreateQueryResponse {
-    pub query_id: u64,
-}
-
 /// A single row from Dune query results — a map of column-name → value.
 pub type DuneRow = serde_json::Map<String, serde_json::Value>;
 
