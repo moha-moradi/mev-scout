@@ -158,7 +158,7 @@ pub struct RunArgs {
     pub gas_limit: u64,
 
     /// Priority fee premium in gwei (added on top of base fee)
-    #[arg(long, default_value_t = 0.0, value_name = "GWEI", help_heading = "Gas Model")]
+    #[arg(long, default_value_t = 1.0, value_name = "GWEI", help_heading = "Gas Model")]
     pub priority_fee: f64,
 
     /// Output format: table, csv, json

@@ -286,6 +286,17 @@ impl Config {
         Ok(urls)
     }
 
+    /// Human-readable RPC summary for the startup plan display.
+    fn effective_rpc_display(&self) -> String {
+        let user_count = self.rpc.rpc_urls.len()
+            + if self.rpc.rpc_url.is_some() { 1 } else { 0 };
+        if user_count > 0 {
+            format!("{} provider(s) configured", user_count)
+        } else {
+            "No RPC configured — using public fallbacks".to_string()
+        }
+    }
+
     /// Build full provider configs by merging user-supplied URLs with public fallbacks.
     pub fn effective_provider_configs(&self, chain_name: ChainName) -> error::Result<Vec<(String, Option<f64>, bool)>> {
         let urls = self.effective_rpc_urls().unwrap_or_default();
@@ -418,7 +429,7 @@ Parquet dir:         {}
 "#,
             chain_name,
             chain_cfg.chain_id,
-            self.rpc.rpc_url.clone().unwrap_or_else(|| "RPC not set".to_string()),
+            self.effective_rpc_display(),
             range_mode,
             range_mode.resolve_description(),
             strat_list,
