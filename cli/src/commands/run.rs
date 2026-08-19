@@ -152,7 +152,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     };
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.backtest.proximity_window)
-        .with_capture_pending(config.backtest.capture_pending);
+        .with_capture_pending(config.backtest.capture_pending)
+        .with_min_profit_wei(config.backtest.min_profit_wei)
+        .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx);
 
     if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
         if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {

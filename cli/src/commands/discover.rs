@@ -13,6 +13,7 @@ use mev_scout_core::dune::DuneClient;
 use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
+use mev_scout_core::rpc::recommended_get_logs_batch;
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
     let (chain_name, chain_config) = validation::resolve_chain(config)
@@ -196,7 +197,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     let disc_config = DiscoveryConfig {
-        batch_size: args.batch_size,
+        batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, args.batch_size),
         v2_fee_override: chain_config.uniswap_v2_default_fee,
         balancer_vault: vault,
         v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },

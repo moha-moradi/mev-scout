@@ -483,11 +483,16 @@ impl BlockReplayer {
             tracing::warn!("{}", msg);
         }
         let output_bytes = exec_result.output().cloned().unwrap_or_default();
+        // Prefer receipt.gasUsed over EVM execution gas when available,
+        // as eth_estimateGas often overestimates vs actual on-chain consumption.
+        let gas_used = receipt
+            .map(|r| r.gas_used)
+            .unwrap_or_else(|| exec_result.tx_gas_used());
         ExecutedTx {
             tx_hash: tx.hash,
             index: 0,
             status: exec_result.is_success(),
-            gas_used: exec_result.tx_gas_used(),
+            gas_used,
             gas_effective: tx.max_fee_per_gas,
             logs: exec_result
                 .logs()

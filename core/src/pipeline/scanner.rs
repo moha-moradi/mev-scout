@@ -84,7 +84,7 @@ impl ActivityScanner {
     pub fn new(rpc: RpcClient) -> Self {
         ActivityScanner {
             rpc,
-            batch_size: 2000,
+            batch_size: 500,
         }
     }
 

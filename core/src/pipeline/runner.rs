@@ -39,6 +39,10 @@ pub struct BacktestRunner {
     proximity_window: usize,
     aave_reserve_cache: AaveReserveCache,
     capture_pending: bool,
+    /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
+    min_profit_wei: u128,
+    /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
+    max_candidates_per_tx: usize,
     pub last_processed_block: u64,
 }
 
@@ -67,6 +71,8 @@ impl BacktestRunner {
             proximity_window: 3,
             aave_reserve_cache: AaveReserveCache::default(),
             capture_pending: false,
+            min_profit_wei: 0,
+            max_candidates_per_tx: 0,
             last_processed_block: 0,
         }
     }
@@ -89,6 +95,20 @@ impl BacktestRunner {
     /// each block range and logs the pending tx count into per-block stats.
     pub fn with_capture_pending(mut self, enabled: bool) -> Self {
         self.capture_pending = enabled;
+        self
+    }
+
+    /// Set minimum profit threshold (in wei) below which opportunities are filtered.
+    /// Set to 0 to disable dust filtering (default).
+    pub fn with_min_profit_wei(mut self, min_profit: u128) -> Self {
+        self.min_profit_wei = min_profit;
+        self
+    }
+
+    /// Set maximum candidates to keep per transaction (top by profit).
+    /// Set to 0 for unlimited (default).
+    pub fn with_max_candidates_per_tx(mut self, max: usize) -> Self {
+        self.max_candidates_per_tx = max;
         self
     }
 
@@ -397,6 +417,17 @@ impl BacktestRunner {
         // Filter: drop opportunities where expected profit doesn't cover gas
         all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
 
+        // Filter: drop dust opportunities below minimum profit threshold
+        if self.min_profit_wei > 0 {
+            all_opportunities.retain(|opp| opp.expected_profit > U256::from(self.min_profit_wei));
+        }
+
+        // Filter: cap candidates per transaction, keeping only top-profit ones
+        if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
+            all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
+            all_opportunities.truncate(self.max_candidates_per_tx);
+        }
+
         // Assign canonical dedup IDs (L9) to all opportunities
         for opp in &mut all_opportunities {
             opp.canonical_id = Some(crate::types::compute_canonical_id(
@@ -509,6 +540,17 @@ impl BacktestRunner {
 
         // Filter: drop opportunities where expected profit doesn't cover gas
         all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
+
+        // Filter: drop dust opportunities below minimum profit threshold
+        if self.min_profit_wei > 0 {
+            all_opportunities.retain(|opp| opp.expected_profit > U256::from(self.min_profit_wei));
+        }
+
+        // Filter: cap candidates per transaction, keeping only top-profit ones
+        if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
+            all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
+            all_opportunities.truncate(self.max_candidates_per_tx);
+        }
 
         for opp in &mut all_opportunities {
             opp.canonical_id = Some(crate::types::compute_canonical_id(

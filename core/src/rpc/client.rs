@@ -1425,6 +1425,20 @@ fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
     }
 }
 
+/// Recommended eth_getLogs batch size for a set of RPC URLs.
+///
+/// Alchemy free-tier endpoints cap `eth_getLogs` at ~10 blocks per request.
+/// This function returns 100 if any URL contains "alchemy.com", otherwise the
+/// caller's default. The lower batch avoids noisy retry warnings during the
+/// adaptive `probe_get_logs_limit` phase.
+pub fn recommended_get_logs_batch(urls: &[String], default: u64) -> u64 {
+    if urls.iter().any(|u| u.contains("alchemy.com")) {
+        100.min(default)
+    } else {
+        default
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_rate_limit_error, is_transport_error};

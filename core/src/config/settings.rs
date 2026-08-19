@@ -75,6 +75,12 @@ pub struct BacktestConfig {
     /// Per-token USD prices: comma-separated "ADDR=price" pairs
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_prices: Option<String>,
+    /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
+    #[serde(default)]
+    pub min_profit_wei: u128,
+    /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
+    #[serde(default)]
+    pub max_candidates_per_tx: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -154,6 +160,8 @@ impl Default for BacktestConfig {
             capture_pending: false,
             price_oracle_mode: "coingecko".to_string(),
             token_prices: None,
+            min_profit_wei: 0,
+            max_candidates_per_tx: 0,
         }
     }
 }
@@ -493,6 +501,8 @@ pub struct BacktestOverrides {
     pub capture_pending: Option<bool>,
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
+    pub min_profit_wei: Option<u128>,
+    pub max_candidates_per_tx: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -639,7 +649,9 @@ impl Config {
             (proximity_window, copy),
             (capture_pending, copy),
             (price_oracle_mode),
-            (token_prices, into_option)
+            (token_prices, into_option),
+            (min_profit_wei, copy),
+            (max_candidates_per_tx, copy)
         ]);
         merge_sub!(self, overrides, output, [
             (output),

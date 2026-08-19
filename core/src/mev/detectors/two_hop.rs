@@ -111,7 +111,7 @@ impl TwoHopArbDetector {
             return None;
         }
 
-        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b, shared_token);
+        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b, shared_token, gas_config.flash_loan_provider.gas_overhead());
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         // Subtract flash loan fee from gross profit
@@ -602,7 +602,7 @@ fn v2_reserves(
 ///
 /// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
 /// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
-fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address) -> u64 {
+fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address, flash_loan_gas: u64) -> u64 {
     let base_overhead = 40_000u64;
     let calldata = calldata_gas_estimate(2);
 
@@ -621,6 +621,6 @@ fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token
         other => other.gas_estimate(),
     };
 
-    base_overhead + calldata + a_gas + b_gas
+    base_overhead + calldata + a_gas + b_gas + flash_loan_gas
 }
 

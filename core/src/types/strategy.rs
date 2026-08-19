@@ -31,6 +31,19 @@ impl FlashLoanProvider {
         }
     }
 
+    /// Gas overhead for executing the flash loan wrapper call.
+    /// This covers `flashLoanSimple()` dispatch, provider accounting,
+    /// token transfers, callback execution, and repayment.
+    /// Measured from on-chain flash loan arb transactions.
+    pub fn gas_overhead(self) -> u64 {
+        match self {
+            FlashLoanProvider::Auto => 150_000,      // assumes Balancer (cheapest)
+            FlashLoanProvider::Balancer => 150_000,   // V2 Vault flash loan
+            FlashLoanProvider::Aave => 250_000,       // V3 Pool has heavier accounting
+            FlashLoanProvider::Uniswap => 200_000,    // V3 flash swap
+        }
+    }
+
     pub fn priority_list(auto_mode: bool) -> &'static [FlashLoanProvider] {
         if auto_mode {
             &[

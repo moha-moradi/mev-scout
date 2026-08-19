@@ -184,7 +184,7 @@ impl MultiHopArbDetector {
             return None;
         }
 
-        let gas_limit = estimate_gas_for_multi_hop(path, pm);
+        let gas_limit = estimate_gas_for_multi_hop(path, pm, gas_config.flash_loan_provider.gas_overhead());
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         let gross_profit = output_amount.saturating_sub(input_amount);
@@ -329,9 +329,9 @@ impl MultiHopArbDetector {
     }
 }
 
-fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager) -> u64 {
+fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager, flash_loan_gas: u64) -> u64 {
     let calldata = calldata_gas_estimate(path.len());
-    let mut total = 40_000u64 + calldata;
+    let mut total = 40_000u64 + calldata + flash_loan_gas;
     for addr in path {
         if let Some(pool) = pm.get(addr) {
             total = total.saturating_add(pool.gas_estimate());

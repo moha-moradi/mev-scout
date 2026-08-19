@@ -145,12 +145,12 @@ impl DuneClient {
         let body = if performance.is_empty() {
             serde_json::json!({
                 "sql": sql,
-                "engine": "dune_sql",
             })
         } else {
+            // NOTE: Dune deprecated the "engine" field (previously "dune_sql").
+            // The new API accepts just "sql" + "performance".
             serde_json::json!({
                 "sql": sql,
-                "engine": "dune_sql",
                 "performance": performance,
             })
         };
