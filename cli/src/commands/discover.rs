@@ -187,98 +187,23 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         pool_cache: Some(&cache),
     };
 
-    // ── Phase 2: Dune Analytics discovery (runs first to support --min-pools) ──
-    if use_dune {
-        let api_key = config.dune.dune_api_key.as_ref().expect("dune_api_key checked above");
-        let dune = DuneClient::new(api_key.clone());
-        tracing::info!("Starting Dune pool discovery for {}", chain_name);
-
-        let dune_pb = ProgressBar::new_spinner();
-        dune_pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("  {spinner:.cyan} Dune: {msg}")?
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        dune_pb.set_message("querying V2 pools...");
-        let dune_fee = chain_config.uniswap_v2_default_fee.unwrap_or(30);
-        match mev_scout_core::dune::pool_discovery::discover_v2_pools_from_dune(
-            &dune, &chain_name.to_string(), from, to, dune_fee,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("Dune V2: found {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => eprintln!("  Warning: Dune V2 discovery failed: {e:#}"),
+    // ── Phase 1: On-chain event scan discovery ──
+    match mev_scout_core::pool::discovery::discover_and_cache(
+        &rpc, &cache, from, to, &disc_config, Some(&tick),
+    ).await {
+        Ok((pools, active_blocks)) => {
+            tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
+            all_pools.extend(pools);
+            all_active_blocks.extend(active_blocks);
         }
-
-        dune_pb.set_message("querying V3 pools...");
-        dune_pb.tick();
-        match mev_scout_core::dune::pool_discovery::discover_v3_pools_from_dune(
-            &dune, &chain_name.to_string(), from, to,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("Dune V3: found {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => eprintln!("  Warning: Dune V3 discovery failed: {e:#}"),
-        }
-
-        dune_pb.set_message("querying active pools...");
-        dune_pb.tick();
-        match mev_scout_core::dune::pool_discovery::discover_active_pools_from_dune(
-            &dune, &chain_name.to_string(), from, to,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("Dune active pools: found {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => eprintln!("  Warning: Dune active pool discovery failed: {e:#}"),
-        }
-        dune_pb.finish_and_clear();
-
-        // ── Phase 5.3: --min-pools early exit ──
-        if args.min_pools > 0 && all_pools.len() >= args.min_pools {
-            if !args.json {
-                println!("  Skipping on-chain scan: {} Dune pools >= --min-pools threshold ({})",
-                    all_pools.len(), args.min_pools);
-            }
-            tracing::info!("Skipping on-chain scan: {} Dune pools >= --min-pools {}", all_pools.len(), args.min_pools);
-        } else {
-            // ── Phase 1: On-chain event scan discovery ──
-            if use_onchain {
-                match mev_scout_core::pool::discovery::discover_and_cache(
-                    &rpc, &cache, from, to, &disc_config, Some(&tick),
-                ).await {
-                    Ok((pools, active_blocks)) => {
-                        tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
-                        all_pools.extend(pools);
-                        all_active_blocks.extend(active_blocks);
-                    }
-                    Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
-                }
-            }
-        }
-    } else {
-        // ── Phase 1: On-chain event scan discovery (no Dune) ──
-        if use_onchain {
-            match mev_scout_core::pool::discovery::discover_and_cache(
-                &rpc, &cache, from, to, &disc_config, Some(&tick),
-            ).await {
-                Ok((pools, active_blocks)) => {
-                    tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
-                    all_pools.extend(pools);
-                    all_active_blocks.extend(active_blocks);
-                }
-                Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
-            }
-        }
+        Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
     }
     pb.finish_and_clear();
 
     // ── Phase 3: Dedup by address with field-level merge ──
-    // Dune provides fast bulk discovery; on-chain provides full factory-event
-    // metadata (is_stable, hook_address, custom fee, etc.). Merge both so
-    // the final pool has the best available data from each source.
+    // Factory-event metadata (is_stable, hook_address, custom fee, etc.)
+    // is already complete from the on-chain scan; dedup guards against
+    // overlapping factory scans.
     let mut pools: Vec<DiscoveredPool> = Vec::with_capacity(all_pools.len());
     for p in all_pools {
         match pools.iter_mut().find(|e| e.address == p.address) {
@@ -306,12 +231,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     if args.json {
         println!("{}", serde_json::to_string_pretty(&pools)?);
     } else {
-        if source == "dune" {
-            println!("  Dune Only — pool metadata may be partial (token0, token1 only).");
-            println!("  Use --source all or --source onchain for full metadata.");
-            println!();
-        }
-
         for p in &pools {
             let dex = p.dex_name.as_deref().unwrap_or(match p.dex_type {
                 DexType::UniswapV2 => "V2",

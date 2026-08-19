@@ -1,23 +1,17 @@
-//! Integration test: Dune-guided backtest pipeline.
+//! Integration test: RPC-guided backtest pipeline.
 //!
-//! Mirrors `scripts/test_backtest.ps1` — queries Dune Analytics for blocks with
-//! known MEV activity, then runs the full MEV Scout pipeline (fetch, pool init,
-//! backtest) against those blocks and asserts detection results.
+//! Samples a recent block window directly from the RPC endpoint (no Dune),
+//! then runs the full MEV Scout pipeline (fetch, pool init, backtest)
+//! against those blocks and asserts detection results.
 //!
 //! Requires environment variables:
-//!   - `RPC_URL`        — Polygon (or other chain) RPC endpoint
-//!   - `DUNE_API_KEY`   — Dune Analytics API key
+//!   - `RPC_URL` — Polygon (or other chain) RPC endpoint
 //!
-//! Both variables are optional — the test skips gracefully when absent.
-
-use std::collections::HashMap;
+//! The variable is optional — the test skips gracefully when absent.
 
 use alloy::primitives::{Address, U256};
 use mev_scout_core::cache::SqliteStore;
-use mev_scout_core::dune::DuneClient;
-use mev_scout_core::dune::util::{
-    approx_block_month_min, chain_timing, dune_indexing_lag_blocks, estimate_latest_block,
-};
+use mev_scout_core::chain::timing::chain_timing;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
@@ -55,10 +49,6 @@ fn config_rpc_url() -> Option<String> {
     None
 }
 
-fn dune_api_key() -> Option<String> {
-    std::env::var("DUNE_API_KEY").ok()
-}
-
 fn temp_test_dir(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!(
         "mev_scout_backtest_{name}_{}",
@@ -75,111 +65,34 @@ async fn try_rpc() -> Option<(RpcClient, u64)> {
     Some((rpc, block))
 }
 
-/// Query Dune for blocks with high MEV activity and return them sorted by score descending.
-async fn dune_find_candidate_blocks(
-    client: &DuneClient,
-    chain: &str,
-    days: u64,
-    top: usize,
-) -> Vec<u64> {
+/// Sample blocks evenly across a recent window (no candidate ranking needed).
+/// Returns up to `top` blocks spaced evenly from the tail of the window back.
+async fn sample_recent_blocks(rpc: &RpcClient, chain: &str, days: u64, top: usize) -> Vec<u64> {
     let blocks_per_day = chain_timing(chain).blocks_per_day;
-    let range_blocks = days * blocks_per_day;
-    let latest = estimate_latest_block(chain);
-    let lag = dune_indexing_lag_blocks(chain);
-    let to_block = latest.saturating_sub(lag);
-    let from_block = to_block.saturating_sub(range_blocks);
-    let block_month_min = approx_block_month_min(from_block, chain);
+    let latest = match rpc.get_block_number().await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("  Failed to get block number: {e}");
+            return vec![];
+        }
+    };
+    let range_blocks = (days * blocks_per_day).min(latest);
+    let from_block = latest.saturating_sub(range_blocks);
 
     eprintln!(
-        "  Dune block search: {chain}, blocks {from_block}–{to_block}, month>={block_month_min}"
+        "  Sampling {top} blocks evenly from {chain} window {from_block}–{latest} ({days} days)"
     );
 
-    let mut block_scores: HashMap<u64, u64> = HashMap::new();
-
-    // 1. Arbitrage query (multi-pool transactions in dex.trades)
-    let arb_sql = format!(
-        r#"WITH tx_pools AS (
-  SELECT
-    t.block_number,
-    t.tx_hash,
-    t.project_contract_address AS pool_address,
-    COUNT(*) OVER (PARTITION BY t.block_number, t.tx_hash) AS pool_count
-  FROM dex.trades t
-  WHERE t.blockchain = '{chain}'
-    AND t.block_month >= DATE '{block_month_min}'
-    AND t.block_number >= {from_block}
-    AND t.block_number <= {to_block}
-)
-SELECT block_number, COUNT(DISTINCT tx_hash) AS arb_count
-FROM tx_pools
-WHERE pool_count >= 2
-GROUP BY block_number
-ORDER BY arb_count DESC
-LIMIT {limit}"#,
-        limit = top * 3,
-    );
-
-    match client.execute_raw_sql(&arb_sql).await {
-        Ok(result) => {
-            if let Some(ref r) = result.result {
-                for row in &r.rows {
-                    let block = row.get("block_number").and_then(|v| v.as_u64());
-                    let count = row.get("arb_count").and_then(|v| {
-                        v.as_u64()
-                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-                    });
-                    if let (Some(b), Some(c)) = (block, count) {
-                        if b > 0 {
-                            *block_scores.entry(b).or_insert(0) += c;
-                        }
-                    }
-                }
-                eprintln!("  Found {} blocks with arbitrages", r.rows.len());
-            }
+    let step = (range_blocks as usize / top.max(1)).max(1);
+    let mut blocks = Vec::with_capacity(top);
+    for i in 0..top {
+        let b = latest.saturating_sub((i * step) as u64);
+        if b > from_block {
+            blocks.push(b);
         }
-        Err(e) => eprintln!("  Arbitrage query failed: {e}"),
     }
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    // 2. Sandwich query
-    let sandwich_sql = format!(
-        r#"SELECT block_number, COUNT(*) AS sandwich_count
-FROM dex.sandwiches
-WHERE blockchain = '{chain}'
-  AND block_month >= DATE '{block_month_min}'
-  AND block_number >= {from_block}
-  AND block_number <= {to_block}
-GROUP BY block_number
-ORDER BY sandwich_count DESC
-LIMIT {limit}"#,
-        limit = top * 3,
-    );
-
-    match client.execute_raw_sql(&sandwich_sql).await {
-        Ok(result) => {
-            if let Some(ref r) = result.result {
-                for row in &r.rows {
-                    let block = row.get("block_number").and_then(|v| v.as_u64());
-                    let count = row.get("sandwich_count").and_then(|v| {
-                        v.as_u64()
-                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
-                    });
-                    if let (Some(b), Some(c)) = (block, count) {
-                        if b > 0 {
-                            *block_scores.entry(b).or_insert(0) += c;
-                        }
-                    }
-                }
-                eprintln!("  Found {} blocks with sandwiches", r.rows.len());
-            }
-        }
-        Err(e) => eprintln!("  Sandwich query failed: {e}"),
-    }
-
-    let mut sorted: Vec<(u64, u64)> = block_scores.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    sorted.into_iter().take(top).map(|(b, _)| b).collect()
+    blocks.sort_unstable();
+    blocks
 }
 
 /// Discover pools via on-chain event logs (QuickSwap V2 factory on Polygon).
@@ -218,27 +131,20 @@ async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Addr
     }
 }
 
-// ── Test: Dune-guided backtest pipeline ──────────────────────────────────────
+// ── Test: RPC-guided backtest pipeline ──────────────────────────────────────
 
 /// End-to-end test that mirrors scripts/test_backtest.ps1:
 ///
-/// 1. Query Dune Analytics for blocks with high MEV activity (arbitrage + sandwich)
+/// 1. Sample a recent block window directly from the RPC (no Dune)
 /// 2. Discover pools on-chain (QuickSwap V2 on Polygon)
 /// 3. For each candidate block: fetch data → init pools → run backtest
 /// 4. Assert that opportunities are found (or at least that the pipeline completes)
 ///
-/// Skips gracefully when `RPC_URL` or `DUNE_API_KEY` are not set.
+/// Skips gracefully when `RPC_URL` is not set.
 /// Multi-threaded: replaying real Polygon blocks calls `block_in_place`
 /// (register_polygon_precompiles), which requires a multi-threaded runtime.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_dune_guided_backtest() {
-    let dune_key = match dune_api_key() {
-        Some(k) => k,
-        None => {
-            eprintln!("SKIP: DUNE_API_KEY not set");
-            return;
-        }
-    };
+async fn test_rpc_guided_backtest() {
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
         None => {
@@ -251,17 +157,16 @@ async fn test_dune_guided_backtest() {
     let days = 7u64;
     let top = 3usize;
 
-    // ── Step 1: Find candidate blocks via Dune ──────────────────────────────
-    eprintln!("=== Step 1: Finding MEV blocks via Dune ===");
-    let client = DuneClient::new(&dune_key);
-    let candidates = dune_find_candidate_blocks(&client, chain, days, top).await;
+    // ── Step 1: Sample candidate blocks from a recent RPC window ──────────
+    eprintln!("=== Step 1: Sampling MEV blocks from RPC window ===");
+    let candidates = sample_recent_blocks(&rpc, chain, days, top).await;
 
     if candidates.is_empty() {
-        eprintln!("  No candidate blocks found — Dune API may be rate-limited or unavailable");
+        eprintln!("  No candidate blocks sampled");
         eprintln!("  SKIP: no blocks to test");
         return;
     }
-    eprintln!("  Top {top} candidate blocks: {candidates:?}");
+    eprintln!("  Sample blocks: {candidates:?}");
 
     // ── Step 2: Discover pools ──────────────────────────────────────────────
     eprintln!("=== Step 2: Discovering pools ===");
@@ -270,7 +175,7 @@ async fn test_dune_guided_backtest() {
     eprintln!("  Discovered {} pool addresses", discovered.len());
 
     // ── Step 3: Test each candidate block ────────────────────────────────────
-    let dir = temp_test_dir("dune_guided");
+    let dir = temp_test_dir("rpc_guided");
     let mut total_opps = 0u64;
     let mut blocks_with_opps = 0u64;
 
@@ -417,7 +322,7 @@ async fn test_dune_guided_backtest() {
 
     assert!(
         !candidates.is_empty(),
-        "Should have found at least one candidate block from Dune"
+        "Should have sampled at least one candidate block from the RPC window"
     );
     // Pipeline completion is the primary assertion — finding opportunities
     // is desirable but not guaranteed (depends on block content and pool coverage).
@@ -426,8 +331,8 @@ async fn test_dune_guided_backtest() {
 // ── Test: Synthetic pipeline (no external dependencies) ──────────────────────
 
 /// Validate the fetch→init→backtest pipeline works correctly using synthetic
-/// pool data against a real Polygon block. This tests the core pipeline without
-/// Dune dependency.
+/// pool data against a real Polygon block. This tests the core pipeline with
+/// no external dependencies.
 /// Multi-threaded: replaying a real Polygon block calls `block_in_place`
 /// (register_polygon_precompiles), which requires a multi-threaded runtime.
 #[tokio::test(flavor = "multi_thread")]

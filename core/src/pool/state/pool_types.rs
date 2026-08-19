@@ -122,10 +122,10 @@ impl V4HookFlags {
     }
 }
 
-/// Static pool information loaded from the discovery cache (on-chain or Dune).
+/// Static pool information loaded from the discovery cache.
 ///
 /// `PoolInfo` is deserialized from the discovery cache (SQLite) after
-/// pools are discovered via on-chain eth_getLogs or Dune Analytics.
+/// pools are discovered via on-chain `eth_getLogs` factory-event scanning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolInfo {
     pub address: Address,

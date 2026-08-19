@@ -1,6 +1,3 @@
-dune_api_key = "iFHcU27oWTuOd8BcaP5xv3nX6v1bgY9M"
-#FMXc0XSRcHFuDyv6jNWmLGmouIObVO5p
-#IqaFAw9ana9buYRcl4ByGSiUB259kkuj
 chain = "polygon"
 rpc_urls = [
   "https://polygon-mainnet.g.alchemy.com/v2/alch_ktxuA5esYPZRKY7iY8uVG", #mo.moradi68
