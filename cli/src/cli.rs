@@ -49,6 +49,10 @@ pub enum Command {
     /// metadata, and populates the token cache used by pool discovery
     /// to avoid RPC symbol() calls.
     Tokens(TokensArgs),
+
+    /// Scan on-chain events (trades, transfers, flashloans, liquidations, labels).
+    /// Replaces the old Dune query system with direct RPC-based log scanning.
+    Scan(ScanArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -350,4 +354,64 @@ pub struct TokensArgs {
     /// Skip cache persistence (display only)
     #[arg(long)]
     pub no_cache: bool,
+}
+
+/// Event scan kind — determines which event topics to scan for.
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
+pub enum ScanKind {
+    /// DEX swap events (V2/V3/Algebra/Solidly/Curve)
+    Trades,
+    /// ERC-20 Transfer events (whale detection)
+    Transfers,
+    /// Flash loan events (Aave V2/V3, Balancer V2, Uniswap V3)
+    Flashloans,
+    /// Liquidation events (Aave V3, Compound V3)
+    Liquidations,
+    /// Address label lookup
+    Labels,
+}
+
+impl std::fmt::Display for ScanKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScanKind::Trades => write!(f, "trades"),
+            ScanKind::Transfers => write!(f, "transfers"),
+            ScanKind::Flashloans => write!(f, "flashloans"),
+            ScanKind::Liquidations => write!(f, "liquidations"),
+            ScanKind::Labels => write!(f, "labels"),
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ScanArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    #[command(flatten)]
+    pub block_range: BlockRangeArgs,
+
+    /// What to scan for
+    #[arg(long, value_enum, default_value = "trades")]
+    pub kind: ScanKind,
+
+    /// Filter by contract address (reusable)
+    #[arg(long = "address", value_name = "ADDRESS")]
+    pub addresses: Option<Vec<String>>,
+
+    /// Output format: table, json, csv
+    #[arg(long, default_value = "table", value_name = "FORMAT")]
+    pub output: String,
+
+    /// Maximum results to display (0 = unlimited)
+    #[arg(long, default_value = "500", value_name = "N")]
+    pub limit: usize,
+
+    /// Batch size for eth_getLogs requests (default: 500)
+    #[arg(long, default_value = "500", value_name = "N")]
+    pub batch_size: u64,
+
+    /// Minimum transfer value for whale detection (transfers only)
+    #[arg(long, value_name = "WEI")]
+    pub min_value: Option<String>,
 }

@@ -4,6 +4,7 @@ mod fetch;
 mod replay;
 mod report;
 mod run;
+mod scan;
 mod tokens;
 
 pub use config::cmd_config;
@@ -12,11 +13,12 @@ pub use fetch::cmd_fetch;
 pub use replay::cmd_replay;
 pub use report::cmd_report;
 pub use run::cmd_run;
+pub use scan::cmd_scan;
 pub use tokens::cmd_tokens;
 
 use async_trait::async_trait;
 use mev_scout_core::config::Config;
-use crate::cli::{DiscoverArgs, FetchArgs, ReplayArgs, ReportArgs, RunArgs, TokensArgs};
+use crate::cli::{DiscoverArgs, FetchArgs, ReplayArgs, ReportArgs, RunArgs, ScanArgs, TokensArgs};
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
@@ -56,6 +58,11 @@ impl CliCommand for TokensArgs {
     async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_tokens(config, self).await }
 }
 
+#[async_trait(?Send)]
+impl CliCommand for ScanArgs {
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_scan(config, self).await }
+}
+
 /// Dispatch a clap `Command` to its trait implementation.
 pub async fn execute(cmd: &crate::cli::Command, config: &Config) -> anyhow::Result<()> {
     use crate::cli::Command::*;
@@ -67,5 +74,6 @@ pub async fn execute(cmd: &crate::cli::Command, config: &Config) -> anyhow::Resu
         Replay(a) => a.execute(config).await,
         Discover(a) => a.execute(config).await,
         Tokens(a) => a.execute(config).await,
+        Scan(a) => a.execute(config).await,
     }
 }
