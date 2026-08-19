@@ -9,7 +9,6 @@ use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
-use mev_scout_core::dune::DuneClient;
 use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
@@ -20,17 +19,13 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         .context("failed to resolve chain configuration")?;
     let chain_id = chain_name.chain_id();
 
-    let source = args.source.to_lowercase();
-    let use_onchain = source == "onchain" || source == "all";
-    let use_dune = (source == "dune" || source == "all") && config.dune.dune_api_key.is_some();
-
     if args.batch_size > 5000 {
         eprintln!("  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
                    Free-tier endpoints (drpc, Ankr, CloudFlare) typically cap eth_getLogs at 5K–10K blocks. \
                    Consider using --batch-size 2000 for best results.", args.batch_size);
     }
 
-    let setup = init_rpc(config, chain_name.clone(), use_onchain).await?;
+    let setup = init_rpc(config, chain_name.clone(), true).await?;
     let rpc = setup.rpc;
 
     // Determine block range: CLI flags override pool_discovery_start_block
@@ -73,22 +68,6 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
     }
 
-    // ── Bulk-populate token cache from Dune on cold start ──
-    if config.dune.dune_api_key.is_some() && token_cache.len() < 50 {
-        let api_key = config.dune.dune_api_key.as_ref().expect("checked above");
-        let dune = DuneClient::new(api_key.clone());
-        match token_cache.fetch_from_dune(&dune, &chain_name.to_string()).await {
-            Ok(new_count) if new_count > 0 => {
-                if let Err(e) = token_cache.save_all_to_sqlite(&cache) {
-                    tracing::warn!("Failed to persist Dune tokens to SQLite: {e:#}");
-                }
-                tracing::info!("Token cache: populated {} tokens from Dune", new_count);
-            }
-            Ok(_) => tracing::info!("Token cache: Dune returned no new tokens"),
-            Err(e) => tracing::warn!("Token cache: Dune fetch failed (non-fatal): {e:#}"),
-        }
-    }
-
     // ── Phase 5.1: Incremental mode — override from_block from cache ──
     let (from, to) = if args.incremental {
         match cache.max_creation_block() {
@@ -126,13 +105,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         println!("  Pool Discovery");
         println!("  Chain:       {}", chain_name);
         println!("  Block range: {}–{}", from, to);
-        let sources: Vec<&str> = {
-            let mut v = Vec::new();
-            if use_dune { v.push("Dune Analytics"); }
-            if use_onchain { v.push("on-chain events"); }
-            v
-        };
-        println!("  Sources:     {}", sources.join(" + "));
+        println!("  Sources:     on-chain events (factory logs)");
         println!();
     }
 

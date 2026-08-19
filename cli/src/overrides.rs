@@ -22,11 +22,6 @@ fn apply_storage_args(o: &mut CliOverrides, db_path: &Option<String>, parquet_di
     o.output.parquet_dir.clone_from(parquet_dir);
 }
 
-fn apply_dune_chain_args(o: &mut CliOverrides, chain: &str, dune_api_key: &Option<String>) {
-    o.chain = Some(chain.to_string());
-    o.dune.dune_api_key.clone_from(dune_api_key);
-}
-
 pub fn build_overrides(cli: &Cli) -> CliOverrides {
     let mut o = CliOverrides::default();
     match &cli.command {
@@ -64,26 +59,8 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             apply_chain_args(&mut o, &args.chain_args);
             apply_storage_args(&mut o, &args.db_path, &None);
         }
-        Command::Audit(args) => {
-            apply_chain_args(&mut o, &args.chain_args);
-            o.from_block = Some(args.from_block);
-            o.to_block = Some(args.to_block);
-        }
-        Command::DuneCheck(args) => {
-            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
-        }
-        Command::DuneFindBlocks(args) => {
-            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
-        }
-        Command::DuneQuery(args) => {
-            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
-        }
-        Command::DuneReport(args) => {
-            apply_dune_chain_args(&mut o, &args.chain, &args.dune_api_key);
-        }
         Command::Tokens(args) => {
             apply_chain_args(&mut o, &args.chain_args);
-            o.dune.dune_api_key = args.dune_api_key.clone();
         }
     }
     o

@@ -5,7 +5,7 @@
 //! back to SQLite after each discovery run.
 //!
 //! Pre-populated with well-known tokens per chain to minimize cold-start
-//! RPC calls. Dune Analytics can also bulk-populate the cache.
+//! RPC calls.
 
 use std::collections::HashMap;
 
@@ -13,7 +13,6 @@ use alloy::primitives::Address;
 use serde::Deserialize;
 
 use super::store::SqliteStore;
-use crate::dune::client::DuneClient;
 
 #[derive(Deserialize)]
 struct TokenInfo {
@@ -27,8 +26,6 @@ struct KnownTokens {
     wrapped_native_by_chain: HashMap<String, TokenInfo>,
     always_warm: Vec<TokenInfo>,
 }
-use crate::dune::util::dune_chain_label;
-use crate::dune::queries::QUERY_ALL_TOKENS;
 
 /// In-memory token symbol cache backed by SQLite.
 ///
@@ -72,69 +69,6 @@ impl TokenCache {
 
         tracing::info!("Token cache: loaded {} cached symbols from SQLite", count);
         Ok(TokenCache { inner })
-    }
-
-    /// Fetch all known tokens from Dune Analytics and merge into the cache.
-    ///
-    /// Executes `QUERY_ALL_TOKENS` against Dune, which returns every ERC-20
-    /// token registered on the chain in `tokens.erc20`. Newly discovered
-    /// tokens are persisted to SQLite so future runs avoid the Dune call.
-    ///
-    /// Dune free-tier allows ~1,000 executions/hour, so this should be called
-    /// only once per discovery session (e.g. on cold start).
-    pub async fn fetch_from_dune(
-        &mut self,
-        client: &DuneClient,
-        chain: &str,
-    ) -> anyhow::Result<u64> {
-        let chain_label = dune_chain_label(chain);
-        let sql = QUERY_ALL_TOKENS.replace("{chain}", &chain_label);
-        tracing::info!("Token cache: querying Dune for all {} tokens...", chain_label);
-
-        let result = client.execute_raw_sql(&sql).await?;
-        let rows = match result.result {
-            Some(r) => r.rows,
-            None => {
-                tracing::warn!("Token cache: Dune returned no results");
-                return Ok(0);
-            }
-        };
-
-        let total = rows.len();
-        let mut new_count = 0u64;
-        for row in &rows {
-            let addr = match row.get("contract_address").and_then(|v| v.as_str()) {
-                Some(s) => match s.parse::<Address>() {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                },
-                None => continue,
-            };
-            let symbol = match row.get("symbol").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            let decimals = row.get("decimals").and_then(|v| {
-                if let Some(n) = v.as_u64() {
-                    Some(n as i32)
-                } else if let Some(s) = v.as_str() {
-                    s.parse::<i32>().ok()
-                } else {
-                    None
-                }
-            });
-
-            if !self.inner.contains_key(&addr) {
-                self.inner.insert(addr, (symbol, decimals));
-                new_count += 1;
-            }
-        }
-
-        tracing::info!(
-            "Token cache: fetched {} tokens from Dune ({} new, {} already cached)",
-            total, new_count, total - new_count as usize
-        );
-        Ok(new_count)
     }
 
     /// Create a new empty cache and pre-populate with well-known tokens.
@@ -270,7 +204,7 @@ impl TokenCache {
         Ok(())
     }
 
-    /// Merge another cache into this one (e.g., from Dune query results).
+    /// Merge another cache into this one.
     pub fn merge(&mut self, other: TokenCache) {
         for (addr, (symbol, decimals)) in other.inner {
             self.inner.entry(addr).or_insert((symbol, decimals));

@@ -184,8 +184,7 @@ impl DiscoveredPool {
 
     /// Merge metadata from `other` into `self`, filling only `None` fields.
     ///
-    /// Used to combine Dune-discovered pools (fast bulk discovery, partial metadata)
-    /// with on-chain-discovered pools (slower, full factory-event metadata).
+    /// Used to merge partially-complete discovery results from different runs.
     pub fn merge_from(&mut self, other: &DiscoveredPool) {
         debug_assert_eq!(self.address, other.address, "merge_from called with different addresses");
 
@@ -1297,99 +1296,6 @@ pub async fn discover_and_cache(
     }
 
     Ok((pools, active_blocks))
-}
-
-/// Discover pools from multiple sources with configurable priority.
-///
-/// If `dune_primary_pool_discovery` is true in config and a Dune API key is
-/// available, Dune pool discovery runs first and its results are supplemented
-/// by on-chain event scanning. Otherwise, only on-chain discovery is used.
-///
-/// All discovered pools are cached via `discover_and_cache`.
-pub async fn discover_pools_with_sources(
-    rpc: &RpcClient,
-    cache: &SqliteStore,
-    config: &crate::config::Config,
-    chain_name: crate::types::ChainName,
-    from_block: u64,
-    to_block: u64,
-    disc_config: &DiscoveryConfig<'_>,
-    on_batch: Option<&dyn Fn()>,
-) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let use_dune = config.dune.dune_primary_pool_discovery && config.dune.dune_api_key.is_some();
-    let chain_str = chain_name.to_string();
-
-    let mut all_pools: Vec<DiscoveredPool> = Vec::new();
-
-    if use_dune {
-        let api_key = config.dune.dune_api_key.as_ref().expect("checked above");
-        let dune = crate::dune::DuneClient::new(api_key.clone());
-
-        let fee = disc_config.v2_fee_override.unwrap_or(30);
-        match crate::dune::pool_discovery::discover_v2_pools_from_dune(
-            &dune, &chain_str, from_block, to_block, fee,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("[pipeline] Dune V2: {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => tracing::warn!("[pipeline] Dune V2 discovery failed: {e:#}"),
-        }
-        match crate::dune::pool_discovery::discover_v3_pools_from_dune(
-            &dune, &chain_str, from_block, to_block,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("[pipeline] Dune V3: {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => tracing::warn!("[pipeline] Dune V3 discovery failed: {e:#}"),
-        }
-        match crate::dune::pool_discovery::discover_active_pools_from_dune(
-            &dune, &chain_str, from_block, to_block,
-        ).await {
-            Ok(pools) => {
-                tracing::info!("[pipeline] Dune active: {} pools", pools.len());
-                all_pools.extend(pools);
-            }
-            Err(e) => tracing::warn!("[pipeline] Dune active pool discovery failed: {e:#}"),
-        }
-
-        // Dedup Dune results by address, cache them
-        let mut seen = std::collections::HashSet::new();
-        let mut deduped = Vec::with_capacity(all_pools.len());
-        let taken = std::mem::take(&mut all_pools);
-        for pool in taken {
-            if seen.insert(pool.address) {
-                let info: crate::pool::state::PoolInfo = pool.clone().into();
-                if let Err(e) = cache.put_discovered_pool(&info) {
-                    tracing::warn!("Failed to cache Dune pool {}: {}", pool.address, e);
-                }
-                deduped.push(pool);
-            }
-        }
-        all_pools = deduped;
-    }
-
-    // Always run on-chain discovery to catch pools Dune may have missed
-    let (onchain_pools, active_blocks) = discover_and_cache(
-        rpc, cache, from_block, to_block, disc_config,
-        on_batch,
-    ).await?;
-
-    // Merge: on-chain pools take priority (richer metadata), but keep all
-    let mut seen: std::collections::HashSet<Address> = all_pools.iter().map(|p| p.address).collect();
-    for pool in onchain_pools {
-        if seen.insert(pool.address) {
-            all_pools.push(pool);
-        }
-    }
-
-    tracing::info!(
-        "[pipeline] Total pools after multi-source discovery: {}",
-        all_pools.len(),
-    );
-
-    Ok((all_pools, active_blocks))
 }
 
 /// Post-discovery health check: queries on-chain state for V2/Solidly/Camelot

@@ -45,11 +45,11 @@ entirely.
 
 Explicitly dropped: Dune's `QUERY_ALL_TOKENS` scanned the entire token universe (~100k
 tokens) — overkill; the MEV-relevant set is only tokens in discovered pools.
-| Audit ground truth | `core/src/dune/audit.rs`; `cli/src/commands/audit.rs` | Rebuild against on-chain log scans (flash loans, liquidations); drop sandwich/arb Dune comparison |
+| Audit ground truth | `core/src/dune/audit.rs`; `cli/src/commands/audit.rs` | **DELETE** (user decision: no longer needed) |
 | Monthly report | `core/src/dune/report.rs` (16 VALIDATE_*); `cli/src/commands/dune_report.rs` | Delete command; existing RPC `report` command already aggregates per-strategy results |
-| Block finder | `cli/src/commands/dune_find_blocks.rs` | Replace with on-chain candidate ranking (`candidate_blocks.rs`) |
+| Block finder | `cli/src/commands/dune_find_blocks.rs` | **DELETE** (user decision: sandwich/arbitrage block identification no longer needed) |
 | Diagnostics | `cli/src/commands/dune_check.rs`, `dune_query.rs` | Replace with one `scan` command (trades/transfers/flashloans/liquidations/labels) |
-| Backtest candidates | `core/tests/backtest.rs:78-183` (`dune_find_candidate_blocks`) | On-chain ranking from block headers + event scans |
+| Backtest candidates | `core/tests/backtest.rs:78-183` (`dune_find_candidate_blocks`) | Sample a recent window directly from RPC (no candidate ranking needed) |
 | Config/CLI plumbing | `core/src/config/settings.rs` (DuneConfig/DuneOverrides), `cli/src/cli.rs` (5 Dune arg structs), `cli/src/overrides.rs`, `mev-scout.toml` | Remove dune fields; keep coingecko_api_key + price_oracle_mode |
 | Timing helpers | `core/src/dune/util.rs` (chain_timing, block_timestamp_secs, estimate_latest_block) | Move to `core/src/chain/timing.rs` (keep — not Dune-specific); drop `dune_chain_label`/`approx_block_month_min`/`render_query`/`dune_indexing_lag_blocks` |
 | Tests | `core/tests/dune_api.rs` (delete), `core/tests/backtest.rs` (rework) | Replace with decoder unit tests + opt-in E2E (MEV_SCOUT_E2E pattern) |
@@ -72,9 +72,8 @@ tokens) — overkill; the MEV-relevant set is only tokens in discovered pools.
    USD value via existing price oracle (CoinGecko/on-chain hybrid).
 6. **`transfers.rs`** — ERC20 Transfer scanner (whale detection), token metadata from token
    cache, USD from price oracle.
-7. **`candidate_blocks.rs`** — backtest block ranking: batch `eth_getBlockByNumber` headers over
-   window (cheap) → score by tx_count/gas_used; optionally intersect with flash-loan/liquidation
-   scan density.
+7. **`candidate_blocks.rs`** — ~~backtest block ranking~~ **DROPPED** (user decision: no block
+   identification needed). Backtest samples a recent window directly.
 8. **`labels.rs`** — address labels: bundled static JSON snapshot (CEX hot wallets, DEX/bridge
    protocol contracts, MEV bot addresses — open data, e.g. DefiLlama protocol addresses) +
    optional runtime fetch of DefiLlama API (free, no key) cached to SQLite.
@@ -85,12 +84,10 @@ tokens) — overkill; the MEV-relevant set is only tokens in discovered pools.
 - **`scan` command** (replaces `dune-query`):
   `mev-scout scan --kind trades|transfers|flashloans|liquidations|labels --from-block N --to-block M [--address X]`
   — reuses the existing table/JSON/CSV output.
-- Delete `dune-check`, `dune-find-blocks`, `dune-report` commands.
+- Delete `dune-check`, `dune-find-blocks`, `dune-report`, **`audit`** commands.
 - `tokens` command: on-chain mode (pool-derived token set + RPC metadata; filters reworked:
   active = seen in swap scans, TVL = reserves × price).
 - Expand `core/data/known_tokens.json` with community token lists (per chain).
-- `audit` command: re-purpose to verify run results against on-chain log ground truth
-  (flash loans, liquidations, swap-event counts per pool).
 - `discover` command: on-chain only; remove `--source dune|all`, `--min-pools` Dune semantics,
   token cache Dune warm-up.
 - `cli.rs`: remove Dune arg structs + `--dune-api-key`; `overrides.rs`: drop Dune plumbing.
@@ -113,11 +110,12 @@ tokens) — overkill; the MEV-relevant set is only tokens in discovered pools.
 ## Execution phases
 
 1. **Phase 1 — Removal:** delete `core/src/dune/` (keep timing helpers → `chain/timing.rs`),
-   Dune branches in discover/token_cache/audit, Dune CLI commands/args/config, dead
-   `discover_pools_with_sources`, `dune_api.rs` test. Build green.
-2. **Phase 2 — On-chain core:** `chain/{events,scanner,flashloans,liquidations,trades,transfers,candidate_blocks,labels}.rs`
+   Dune branches in discover/token_cache, delete `audit`/`dune-*` commands (incl. `dune-find-blocks`,
+   `dune_report`), delete `dune_api.rs` test, rework `backtest.rs` to sample a recent RPC window.
+   Build green.
+2. **Phase 2 — On-chain core:** `chain/{events,scanner,flashloans,liquidations,trades,transfers,labels}.rs`
    + unit tests.
-3. **Phase 3 — CLI rewiring:** `scan` command, rework `tokens`/`audit`/`discover`, delete
+3. **Phase 3 — CLI rewiring:** `scan` command, rework `tokens`/`discover`, delete
    `dune-*` commands.
 4. **Phase 4 — Backtest + docs:** on-chain candidate ranking, `mev-scout.toml` + README
    cleanup, full verification.
@@ -128,8 +126,8 @@ tokens) — overkill; the MEV-relevant set is only tokens in discovered pools.
   on-chain oracle may lack long-tail tokens → amounts shown in raw units when USD unavailable.
 - Wide-range topic scans are RPC-heavy; scanner chunks + respects `rpc_rps`/`rps_limit`.
   Candidate ranking (headers only) is cheap.
-- Sandwich/arbitrage ground-truth comparison disappears with Dune (no free API provides those
-  labels); our own detectors become the sole source — audit verifies them against raw event
-  scans instead.
+- Sandwich/arbitrage ground-truth comparison disappears with Dune — **audit command deleted**
+  and sandwich/arbitrage block identification removed (user decisions); our own detectors
+  remain the sole detection source.
 - `QUERY_TRADES_IN_BLOCK`/etc. interactive templates are replaced by the `scan` command;
   saved-query-by-ID (`execute_query_by_id`) is removed along with the client.

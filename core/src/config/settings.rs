@@ -99,16 +99,6 @@ pub struct OutputConfig {
     pub parquet_dir: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DuneConfig {
-    /// Dune Analytics API key
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dune_api_key: Option<String>,
-    /// When true, use Dune pool discovery as the primary source
-    #[serde(default)]
-    pub dune_primary_pool_discovery: bool,
-}
-
 // ── Default helpers ─────────────────────────────────────────────────
 
 fn default_rps_limit() -> f64 { 0.0 }
@@ -177,15 +167,6 @@ impl Default for OutputConfig {
     }
 }
 
-impl Default for DuneConfig {
-    fn default() -> Self {
-        DuneConfig {
-            dune_api_key: None,
-            dune_primary_pool_discovery: false,
-        }
-    }
-}
-
 // ── Top-level Config ────────────────────────────────────────────────
 
 /// Top-level runtime configuration for MEV backtest runs.
@@ -226,8 +207,6 @@ pub struct Config {
     pub backtest: BacktestConfig,
     #[serde(flatten)]
     pub output: OutputConfig,
-    #[serde(flatten)]
-    pub dune: DuneConfig,
 }
 
 impl Config {
@@ -256,7 +235,6 @@ impl Default for Config {
             gas: GasConfig::default(),
             backtest: BacktestConfig::default(),
             output: OutputConfig::default(),
-            dune: DuneConfig::default(),
         }
     }
 }
@@ -514,12 +492,6 @@ pub struct OutputOverrides {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct DuneOverrides {
-    pub dune_api_key: Option<String>,
-    pub dune_primary_pool_discovery: Option<bool>,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub days: Option<u64>,
     pub blocks: Option<u64>,
@@ -531,7 +503,6 @@ pub struct CliOverrides {
     pub gas: GasOverrides,
     pub backtest: BacktestOverrides,
     pub output: OutputOverrides,
-    pub dune: DuneOverrides,
 }
 
 macro_rules! merge_sub {
@@ -575,7 +546,6 @@ pub struct ConfigBuilder {
     gas: Option<GasConfig>,
     backtest: Option<BacktestConfig>,
     output: Option<OutputConfig>,
-    dune: Option<DuneConfig>,
 }
 
 impl ConfigBuilder {
@@ -599,8 +569,6 @@ impl ConfigBuilder {
     pub fn with_backtest(mut self, backtest: BacktestConfig) -> Self { self.backtest = Some(backtest); self }
     /// Replace the output sub-config entirely.
     pub fn with_output(mut self, output: OutputConfig) -> Self { self.output = Some(output); self }
-    /// Replace the Dune sub-config entirely.
-    pub fn with_dune(mut self, dune: DuneConfig) -> Self { self.dune = Some(dune); self }
 
     /// Build a `Config`, starting from defaults and overriding set fields.
     pub fn build(self) -> Config {
@@ -615,7 +583,6 @@ impl ConfigBuilder {
         if let Some(v) = self.gas { cfg.gas = v; }
         if let Some(v) = self.backtest { cfg.backtest = v; }
         if let Some(v) = self.output { cfg.output = v; }
-        if let Some(v) = self.dune { cfg.dune = v; }
         cfg
     }
 }
@@ -658,10 +625,6 @@ impl Config {
             (export_path),
             (db_path),
             (parquet_dir, into_option)
-        ]);
-        merge_sub!(self, overrides, dune, [
-            (dune_api_key, into_option),
-            (dune_primary_pool_discovery, copy)
         ]);
     }
 
