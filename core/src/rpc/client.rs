@@ -1347,6 +1347,71 @@ impl RpcClient {
         }
     }
 
+    /// Detect the state horizon — the earliest block number for which the RPC
+    /// providers can still serve historical state (balance, storage, code).
+    ///
+    /// Performs a binary search between `tip.saturating_sub(max_depth)` and `tip`,
+    /// probing `eth_getBalance` on a well-known address (WETH on each chain).
+    /// Returns the earliest block where state is available, or `tip - 100`
+    /// (conservative fallback for full nodes with standard retention).
+    ///
+    /// The result is suitable for deciding per-block whether full EVM replay
+    /// (`run_block`) or log-only processing (`sync_block_from_logs`) should
+    /// be used in the hybrid backtest path.
+    pub async fn detect_state_horizon(&self, tip: u64) -> u64 {
+        const MAX_DEPTH: u64 = 2000;
+        const PROBE_ADDRESS: alloy::primitives::Address = alloy::primitives::address!(
+            "d0e1139178bc088d7467266f75993d5164f4b058"
+        );
+
+        let lo = tip.saturating_sub(MAX_DEPTH);
+        let hi = tip.saturating_sub(1).max(1);
+
+        // Quick smoke test: can we get state at `hi` at all?
+        if self.get_balance(PROBE_ADDRESS, hi).await.is_err() {
+            tracing::warn!(
+                "State unavailable at block {hi} — falling back to tip - 100"
+            );
+            return tip.saturating_sub(100);
+        }
+
+        // Binary search: find the lowest block where state IS available.
+        let mut lo = lo;
+        let mut hi = hi;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            match self.get_balance(PROBE_ADDRESS, mid).await {
+                Ok(_) => hi = mid,
+                Err(_) => lo = mid + 1,
+            }
+        }
+
+        tracing::info!(
+            "State horizon detected: block {lo} (tip={tip}, depth={})",
+            tip - lo
+        );
+        lo
+    }
+
+    /// Fetch account balance at a historical block.
+    ///
+    /// Routed through the state-capable provider pool so pruned endpoints
+    /// are skipped for historical-state calls.
+    async fn get_balance(
+        &self,
+        address: alloy::primitives::Address,
+        block: u64,
+    ) -> anyhow::Result<alloy::primitives::U256> {
+        self.retry_call_state(|provider| async move {
+            provider
+                .get_balance(address)
+                .number(block)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .await
+    }
+
 }
 
 /// Extract the first 4 bytes of transaction calldata as a method selector.

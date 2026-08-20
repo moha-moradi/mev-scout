@@ -66,6 +66,33 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);
         }
+        Command::Live(args) => {
+            apply_chain_args(&mut o, &args.chain_args);
+            apply_storage_args(&mut o, &args.db_path, &None);
+            o.backtest.flash_loan_provider = Some(args.flash_loan_provider.clone());
+            o.backtest.strategies = Some(args.strategies.clone());
+            o.gas.gas_model = Some(args.gas_model.clone());
+            o.gas.gas_limit = Some(args.gas_limit);
+            o.gas.priority_fee_gwei = Some(args.priority_fee);
+            o.output.output = Some(args.output.clone());
+            o.output.export_path = Some(args.export_path.clone());
+            o.backtest.proximity_window = Some(args.proximity_window);
+            o.backtest.min_profit_wei = Some(args.min_profit_wei);
+        }
+        Command::Stream(args) => {
+            apply_block_range(&mut o, &args.block_range);
+            apply_chain_args(&mut o, &args.chain_args);
+            apply_storage_args(&mut o, &args.db_path, &args.parquet_dir);
+            o.backtest.flash_loan_provider = Some(args.flash_loan_provider.clone());
+            o.backtest.strategies = Some(args.strategies.clone());
+            o.gas.gas_model = Some(args.gas_model.clone());
+            o.gas.gas_limit = Some(args.gas_limit);
+            o.gas.priority_fee_gwei = Some(args.priority_fee);
+            o.output.output = Some(args.output.clone());
+            o.output.export_path = Some(args.export_path.clone());
+            o.backtest.proximity_window = Some(args.proximity_window);
+            o.backtest.min_profit_wei = Some(args.min_profit_wei);
+        }
     }
     o
 }

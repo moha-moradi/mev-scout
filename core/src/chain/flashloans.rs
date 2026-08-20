@@ -59,7 +59,7 @@ fn decode_flash_loan_log(log: &Log) -> Option<FlashLoanEvent> {
     // Uniswap V3 Flash — simple decode (sender, recipient, amount0, amount1, data)
     let topic = log.topics().first()?;
     if **topic == *V3_FLASH_TOPIC {
-        let data = &log.data.data;
+        let data = &log.data().data;
         let initiator = log.topics().get(1).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
         let target = log.topics().get(2).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
         let amount = if data.len() >= 32 {

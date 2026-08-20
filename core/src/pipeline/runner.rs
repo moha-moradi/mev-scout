@@ -15,7 +15,7 @@ use crate::mev::detectors::TwoHopArbDetector;
 use alloy::primitives::{Address, U256};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
-use crate::pipeline::{BlockReplayStats, GasPriceDistribution};
+use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
 use crate::error;
@@ -691,6 +691,164 @@ impl BacktestRunner {
         }
 
         Ok((all, all_stats))
+    }
+
+    /// Run backtest over a resolved block range, auto-detecting per block whether
+    /// full EVM replay is possible based on state availability.
+    ///
+    /// Blocks at or above `state_horizon` are processed via [`run_block`] (full
+    /// EVM replay, all strategies). Blocks below the horizon are processed via
+    /// [`sync_block_from_logs`] (log-based, arb strategies only). This allows
+    /// backtesting over ranges that extend beyond the full node's state
+    /// retention window without requiring an archive node.
+    ///
+    /// The returned [`BlockMode`] vector indicates which mode was used per block,
+    /// aligned 1:1 with `block_stats`.
+    pub fn run_range_hybrid(
+        &mut self,
+        resolved: &ResolvedRange,
+        state_horizon: u64,
+    ) -> error::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>, Vec<BlockMode>)> {
+        let mut all = Vec::new();
+        let mut all_stats = Vec::new();
+        let mut all_modes = Vec::new();
+        let mut gas_dist = GasPriceDistribution::new(50);
+
+        let log_only_count = resolved.start_block..resolved.end_block.min(state_horizon.saturating_sub(1));
+        let full_count = state_horizon.max(resolved.start_block)..=resolved.end_block;
+        let log_only_n = if log_only_count.start <= log_only_count.end {
+            log_only_count.end - log_only_count.start + 1
+        } else {
+            0
+        };
+        let full_n = if *full_count.start() <= *full_count.end() {
+            *full_count.end() - *full_count.start() + 1
+        } else {
+            0
+        };
+
+        tracing::info!(
+            "Hybrid range: blocks {}–{} ({} blocks) — {} log-only, {} full-replay (horizon={})",
+            resolved.start_block, resolved.end_block, resolved.block_count,
+            log_only_n, full_n, state_horizon,
+        );
+
+        for block_num in resolved.start_block..=resolved.end_block {
+            let use_full = block_num >= state_horizon;
+            let mode = if use_full { BlockMode::FullReplay } else { BlockMode::LogOnly };
+
+            let percentile = match self.gas_config.gas_model.target_percentile() {
+                Some(p) => Some(p),
+                None if self.gas_config.gas_model == GasModel::HistoricalExact => Some(90),
+                None => None,
+            };
+            if let Some(p) = percentile {
+                self.gas_config.percentile_gas_price = gas_dist.percentile(p);
+            }
+
+            let checkpoint = self.pool_manager.clone();
+
+            if use_full {
+                match self.run_block(block_num) {
+                    Ok((opps, stats, block_prices)) => {
+                        tracing::info!(
+                            "Block {} done (full-replay): {} opportunities ({} txs)",
+                            block_num, opps.len(), block_prices.len(),
+                        );
+                        for price in &block_prices {
+                            gas_dist.add_tx_gas_price(*price);
+                        }
+                        match self.replayer.load_block_data(block_num) {
+                            Ok((block, _)) => {
+                                let base_fee = block.base_fee_per_gas.unwrap_or(0);
+                                gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
+                            }
+                            Err(_) => {
+                                gas_dist.record_block(0, 0, 30_000_000);
+                            }
+                        }
+                        gas_dist.finalize_block();
+                        all.extend(opps);
+                        all_stats.push(stats);
+                        all_modes.push(mode);
+                    }
+                    Err(e) => {
+                        self.pool_manager = checkpoint;
+                        tracing::warn!(
+                            "Block {} full-replay failed ({}), falling back to log-only: {:?}",
+                            block_num, block_num, e,
+                        );
+                        match self.sync_block_from_logs(block_num) {
+                            Ok((opps, stats, _)) => {
+                                tracing::info!(
+                                    "Block {} done (log-only fallback): {} opportunities",
+                                    block_num, opps.len(),
+                                );
+                                all.extend(opps);
+                                all_stats.push(stats);
+                                all_modes.push(BlockMode::LogOnly);
+                            }
+                            Err(e2) => {
+                                self.pool_manager = checkpoint;
+                                tracing::error!("Block {} log-only also failed: {:?}", block_num, e2);
+                            }
+                        }
+                    }
+                }
+            } else {
+                match self.sync_block_from_logs(block_num) {
+                    Ok((opps, stats, _)) => {
+                        tracing::info!(
+                            "Block {} done (log-only): {} opportunities",
+                            block_num, opps.len(),
+                        );
+                        all.extend(opps);
+                        all_stats.push(stats);
+                        all_modes.push(mode);
+                    }
+                    Err(e) => {
+                        self.pool_manager = checkpoint;
+                        tracing::error!("Block {} log-only failed: {:?}", block_num, e);
+                    }
+                }
+            }
+        }
+
+        if self.capture_pending {
+            let rpc = self.replayer.rpc().clone();
+            if let Some(capture) = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(mempool::capture_pending_block(&rpc))
+            }) {
+                tracing::info!(
+                    "Pending block captured: {} transactions in mempool (block #{})",
+                    capture.tx_count, capture.block_number,
+                );
+                if let Some(last) = all_stats.last_mut() {
+                    last.pending_tx_count = capture.tx_count;
+                }
+                let pending_opps = detect_pending_opportunities(
+                    &self.pool_manager,
+                    self.gas_config,
+                    capture.base_fee_per_gas,
+                    capture.timestamp,
+                    capture.block_number,
+                );
+                if !pending_opps.is_empty() {
+                    tracing::info!(
+                        "Mempool detection: {} opportunities visible in mempool (block #{})",
+                        pending_opps.len(), capture.block_number,
+                    );
+                    if let Some(last) = all_stats.last_mut() {
+                        last.mempool_opp_count = pending_opps.len();
+                    }
+                    all.extend(pending_opps);
+                }
+            } else {
+                tracing::warn!("Failed to capture pending block — mempool may be unavailable");
+            }
+        }
+
+        Ok((all, all_stats, all_modes))
     }
 }
 

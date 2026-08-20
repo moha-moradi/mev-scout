@@ -53,6 +53,16 @@ pub enum Command {
     /// Scan on-chain events (trades, transfers, flashloans, liquidations, labels).
     /// Replaces the old Dune query system with direct RPC-based log scanning.
     Scan(ScanArgs),
+
+    /// Stream blocks in real-time, detecting MEV opportunities as they arrive.
+    /// Processes new blocks via log-based pool state updates (arb strategies)
+    /// with optional full EVM replay for complete detection.
+    Live(LiveArgs),
+
+    /// Backtest over a historical block range with hybrid mode detection.
+    /// Automatically uses full EVM replay when state is available and falls
+    /// back to log-only processing beyond the state horizon.
+    Stream(StreamArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -414,4 +424,123 @@ pub struct ScanArgs {
     /// Minimum transfer value for whale detection (transfers only)
     #[arg(long, value_name = "WEI")]
     pub min_value: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LiveArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Polling interval in milliseconds (default: 2000)
+    #[arg(long = "poll-interval", default_value = "2000", value_name = "MS", help_heading = "Live")]
+    pub poll_interval_ms: u64,
+
+    /// Enable full EVM replay per block (all strategies). Default: arb-only via log updates.
+    #[arg(long = "full-replay", help_heading = "Live")]
+    pub full_replay: bool,
+
+    /// Strategies to run: comma-separated or "all"
+    #[arg(long, default_value = "all", value_name = "LIST", help_heading = "Strategies")]
+    pub strategies: String,
+
+    /// Flash loan provider strategy: auto, balancer, aave, uniswap
+    #[arg(long, default_value = "auto", value_name = "PROVIDER", help_heading = "Flash Loan")]
+    pub flash_loan_provider: String,
+
+    /// Gas price model: historical_exact, p90, fixed, live
+    #[arg(long, default_value = "live", value_name = "MODEL", help_heading = "Gas Model")]
+    pub gas_model: String,
+
+    /// Gas limit for arb transaction cost estimation
+    #[arg(long, default_value_t = 200_000, value_name = "GAS", help_heading = "Gas Model", value_parser = clap::value_parser!(u64).range(1..))]
+    pub gas_limit: u64,
+
+    /// Priority fee premium in gwei (added on top of base fee)
+    #[arg(long, default_value_t = 1.0, value_name = "GWEI", help_heading = "Gas Model")]
+    pub priority_fee: f64,
+
+    /// Output format: table, csv, json
+    #[arg(long, default_value = "table", value_name = "FORMAT", help_heading = "Output")]
+    pub output: String,
+
+    /// Directory for CSV/JSON exports
+    #[arg(long, default_value = "./results", value_name = "PATH", help_heading = "Output")]
+    pub export_path: String,
+
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
+    pub db_path: Option<String>,
+
+    /// Proximity window (in tx indices) for JitArb detection (default: 3).
+    #[arg(long = "proximity-window", default_value = "3", value_name = "N", help_heading = "Strategies")]
+    pub proximity_window: usize,
+
+    /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
+    #[arg(long = "min-profit-wei", default_value = "0", value_name = "WEI", help_heading = "Strategies")]
+    pub min_profit_wei: u128,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct StreamArgs {
+    #[command(flatten)]
+    pub block_range: BlockRangeArgs,
+
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Batch size for fetching and processing blocks (default: 50)
+    #[arg(long = "batch-size", default_value = "50", value_name = "N", help_heading = "Stream")]
+    pub batch_size: u64,
+
+    /// Force full EVM replay for all blocks (will fail on blocks beyond state horizon)
+    #[arg(long = "full-replay", help_heading = "Stream")]
+    pub full_replay: bool,
+
+    /// Strategies to run: comma-separated or "all"
+    #[arg(long, default_value = "all", value_name = "LIST", help_heading = "Strategies")]
+    pub strategies: String,
+
+    /// Flash loan provider strategy: auto, balancer, aave, uniswap
+    #[arg(long, default_value = "auto", value_name = "PROVIDER", help_heading = "Flash Loan")]
+    pub flash_loan_provider: String,
+
+    /// Gas price model: historical_exact, p90, fixed
+    #[arg(long, default_value = "historical_exact", value_name = "MODEL", help_heading = "Gas Model")]
+    pub gas_model: String,
+
+    /// Gas limit for arb transaction cost estimation
+    #[arg(long, default_value_t = 200_000, value_name = "GAS", help_heading = "Gas Model", value_parser = clap::value_parser!(u64).range(1..))]
+    pub gas_limit: u64,
+
+    /// Priority fee premium in gwei (added on top of base fee)
+    #[arg(long, default_value_t = 1.0, value_name = "GWEI", help_heading = "Gas Model")]
+    pub priority_fee: f64,
+
+    /// Output format: table, csv, json
+    #[arg(long, default_value = "table", value_name = "FORMAT", help_heading = "Output")]
+    pub output: String,
+
+    /// Directory for CSV/JSON exports
+    #[arg(long, default_value = "./results", value_name = "PATH", help_heading = "Output")]
+    pub export_path: String,
+
+    /// SQLite database path (defaults to config's db_path or ./cache)
+    #[arg(long = "db-path", value_name = "PATH", help_heading = "Output")]
+    pub db_path: Option<String>,
+
+    /// Proximity window (in tx indices) for JitArb detection (default: 3).
+    #[arg(long = "proximity-window", default_value = "3", value_name = "N", help_heading = "Strategies")]
+    pub proximity_window: usize,
+
+    /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
+    #[arg(long = "min-profit-wei", default_value = "0", value_name = "WEI", help_heading = "Strategies")]
+    pub min_profit_wei: u128,
+
+    /// Enable JSON-RPC batching (send block+receipts in one HTTP POST).
+    #[arg(long = "batch-rpc", help_heading = "RPC")]
+    pub batch_rpc: bool,
+
+    /// Parquet directory (optional, unset = no Parquet output)
+    #[arg(long = "parquet-dir", value_name = "PATH", help_heading = "Output")]
+    pub parquet_dir: Option<String>,
 }

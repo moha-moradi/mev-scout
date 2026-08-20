@@ -18,3 +18,15 @@ pub struct BlockReplayStats {
     pub pending_tx_count: usize,
     pub mempool_opp_count: usize,
 }
+
+/// Processing mode used for a block in the hybrid backtest path.
+///
+/// Recorded per-block so the caller can report which blocks got full EVM
+/// replay vs log-only processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockMode {
+    /// Full EVM replay via revm — all strategies available.
+    FullReplay,
+    /// Log-only processing (archive-free) — arb strategies only.
+    LogOnly,
+}

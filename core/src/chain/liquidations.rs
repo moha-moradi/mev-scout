@@ -48,7 +48,7 @@ fn decode_liquidation_log(log: &Log) -> Option<LiquidationEvent> {
     let topic = log.topics().first()?;
     if **topic == *COMPOUND_V3_ABSORB_TOPIC {
         let absorber = log.topics().get(1).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
-        let data = &log.data.data;
+        let data = &log.data().data;
         let borrower = if data.len() >= 20 {
             Address::from_slice(&data[0..20])
         } else {

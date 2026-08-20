@@ -3,8 +3,7 @@
 //! Scans block ranges for ERC-20 Transfer events, useful for whale detection
 //! and token flow analysis.
 
-use alloy::primitives::{Address, B256};
-use alloy::rpc::types::Log;
+use alloy::primitives::Address;
 
 use super::events::{decode_transfer, TransferEvent, TRANSFER_TOPIC};
 use super::scanner::LogScanner;

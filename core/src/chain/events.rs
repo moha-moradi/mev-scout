@@ -185,7 +185,7 @@ pub fn decode_transfer(log: &Log) -> Option<TransferEvent> {
     }
     let from = Address::from_slice(&topics[1][12..]);
     let to = Address::from_slice(&topics[2][12..]);
-    let value = U256::from_be_slice(&log.data.data[0..32].try_into().ok()?);
+    let value = U256::from_be_slice(&log.data().data[0..32].try_into().ok()?);
     Some(TransferEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -214,7 +214,7 @@ pub fn decode_aave_v3_flash(log: &Log) -> Option<FlashLoanEvent> {
     } else {
         Address::ZERO
     };
-    let data = &log.data.data;
+    let data = &log.data().data;
     let token = if data.len() >= 32 {
         Address::from_slice(&data[0..20])
     } else {
@@ -260,7 +260,7 @@ pub fn decode_aave_v2_flash(log: &Log) -> Option<FlashLoanEvent> {
     } else {
         Address::ZERO
     };
-    let data = &log.data.data;
+    let data = &log.data().data;
     let token = if data.len() >= 32 {
         Address::from_slice(&data[0..20])
     } else {
@@ -306,7 +306,7 @@ pub fn decode_balancer_flash(log: &Log) -> Option<FlashLoanEvent> {
     } else {
         Address::ZERO
     };
-    let data = &log.data.data;
+    let data = &log.data().data;
     let token = if data.len() >= 20 {
         Address::from_slice(&data[0..20])
     } else {
@@ -352,7 +352,7 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
     } else {
         Address::ZERO
     };
-    let data = &log.data.data;
+    let data = &log.data().data;
     let liquidator = if data.len() >= 20 {
         Address::from_slice(&data[0..20])
     } else {
@@ -385,7 +385,7 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
 
 /// Decode a Uniswap V3 (or V4) Swap event log.
 pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
-    let data = &log.data.data;
+    let data = &log.data().data;
     let amount_in_raw = U256::from_be_slice(&data[0..32].try_into().ok()?);
     let amount_out_raw = U256::from_be_slice(&data[32..64].try_into().ok()?);
     if amount_in_raw.is_zero() && amount_out_raw.is_zero() {
@@ -399,15 +399,15 @@ pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
         pool,
         token_in: Address::ZERO,
         token_out: Address::ZERO,
-        amount_in: amount_in_raw.abs(),
-        amount_out: amount_out_raw.abs(),
+        amount_in: amount_in_raw,
+        amount_out: amount_out_raw,
         dex_type: "uniswap_v3".to_string(),
     })
 }
 
 /// Decode a Uniswap V2 Swap event log.
 pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
-    let data = &log.data.data;
+    let data = &log.data().data;
     let amount_in_raw = U256::from_be_slice(&data[0..32].try_into().ok()?);
     let amount_out_raw = U256::from_be_slice(&data[32..64].try_into().ok()?);
     Some(TradeEvent {
@@ -426,7 +426,7 @@ pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
 
 /// Decode a Curve TokenExchange event log.
 pub fn decode_curve_exchange(log: &Log, pool: Address) -> Option<TradeEvent> {
-    let data = &log.data.data;
+    let data = &log.data().data;
     let amount_in = if data.len() >= 32 {
         U256::from_be_slice(&data[32..64].try_into().ok()?)
     } else {
