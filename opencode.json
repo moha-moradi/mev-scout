@@ -4,11 +4,9 @@
         "envsitter-guard",
         "opencode-worktree",
         "opencode-skillful",
-        "@plannotator/opencode",
         "opencode-pty",
         "@opencode/websearch-cited",
         "opencode-supermemory",
-        "@openspoon/subtask2",
-        "@plannotator/opencode@latest"
+        "@openspoon/subtask2"
     ]
 }
