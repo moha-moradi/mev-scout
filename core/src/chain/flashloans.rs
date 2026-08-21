@@ -63,12 +63,12 @@ fn decode_flash_loan_log(log: &Log) -> Option<FlashLoanEvent> {
         let initiator = log.topics().get(1).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
         let target = log.topics().get(2).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
         let amount = if data.len() >= 32 {
-            alloy::primitives::U256::from_be_slice(&data[0..32].try_into().ok()?)
+            alloy::primitives::U256::from_be_slice(&data[0..32])
         } else {
             return None;
         };
         let fee = if data.len() >= 64 {
-            Some(alloy::primitives::U256::from_be_slice(&data[32..64].try_into().ok()?))
+            Some(alloy::primitives::U256::from_be_slice(&data[32..64]))
         } else {
             None
         };

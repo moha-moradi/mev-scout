@@ -185,7 +185,7 @@ pub fn decode_transfer(log: &Log) -> Option<TransferEvent> {
     }
     let from = Address::from_slice(&topics[1][12..]);
     let to = Address::from_slice(&topics[2][12..]);
-    let value = U256::from_be_slice(&log.data().data[0..32].try_into().ok()?);
+    let value = U256::from_be_slice(&log.data().data[0..32]);
     Some(TransferEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -221,12 +221,12 @@ pub fn decode_aave_v3_flash(log: &Log) -> Option<FlashLoanEvent> {
         Address::ZERO
     };
     let amount = if data.len() >= 64 {
-        U256::from_be_slice(&data[32..64].try_into().ok()?)
+        U256::from_be_slice(&data[32..64])
     } else {
         return None;
     };
     let fee = if data.len() >= 96 {
-        Some(U256::from_be_slice(&data[64..96].try_into().ok()?))
+        Some(U256::from_be_slice(&data[64..96]))
     } else {
         None
     };
@@ -267,12 +267,12 @@ pub fn decode_aave_v2_flash(log: &Log) -> Option<FlashLoanEvent> {
         Address::ZERO
     };
     let amount = if data.len() >= 64 {
-        U256::from_be_slice(&data[32..64].try_into().ok()?)
+        U256::from_be_slice(&data[32..64])
     } else {
         return None;
     };
     let fee = if data.len() >= 96 {
-        Some(U256::from_be_slice(&data[64..96].try_into().ok()?))
+        Some(U256::from_be_slice(&data[64..96]))
     } else {
         None
     };
@@ -313,7 +313,7 @@ pub fn decode_balancer_flash(log: &Log) -> Option<FlashLoanEvent> {
         Address::ZERO
     };
     let amount = if data.len() >= 52 {
-        U256::from_be_slice(&data[20..52].try_into().ok()?)
+        U256::from_be_slice(&data[20..52])
     } else {
         return None;
     };
@@ -359,12 +359,12 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
         Address::ZERO
     };
     let debt_to_cover = if data.len() >= 52 {
-        U256::from_be_slice(&data[20..52].try_into().ok()?)
+        U256::from_be_slice(&data[20..52])
     } else {
         U256::ZERO
     };
     let collateral_amount = if data.len() >= 84 {
-        U256::from_be_slice(&data[52..84].try_into().ok()?)
+        U256::from_be_slice(&data[52..84])
     } else {
         U256::ZERO
     };
@@ -386,8 +386,8 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
 /// Decode a Uniswap V3 (or V4) Swap event log.
 pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
-    let amount_in_raw = U256::from_be_slice(&data[0..32].try_into().ok()?);
-    let amount_out_raw = U256::from_be_slice(&data[32..64].try_into().ok()?);
+    let amount_in_raw = U256::from_be_slice(&data[0..32]);
+    let amount_out_raw = U256::from_be_slice(&data[32..64]);
     if amount_in_raw.is_zero() && amount_out_raw.is_zero() {
         return None;
     }
@@ -408,8 +408,8 @@ pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
 /// Decode a Uniswap V2 Swap event log.
 pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
-    let amount_in_raw = U256::from_be_slice(&data[0..32].try_into().ok()?);
-    let amount_out_raw = U256::from_be_slice(&data[32..64].try_into().ok()?);
+    let amount_in_raw = U256::from_be_slice(&data[0..32]);
+    let amount_out_raw = U256::from_be_slice(&data[32..64]);
     Some(TradeEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -428,12 +428,12 @@ pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
 pub fn decode_curve_exchange(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
     let amount_in = if data.len() >= 32 {
-        U256::from_be_slice(&data[32..64].try_into().ok()?)
+        U256::from_be_slice(&data[32..64])
     } else {
         return None;
     };
     let amount_out = if data.len() >= 96 {
-        U256::from_be_slice(&data[64..96].try_into().ok()?)
+        U256::from_be_slice(&data[64..96])
     } else {
         U256::ZERO
     };
@@ -454,7 +454,7 @@ pub fn decode_curve_exchange(log: &Log, pool: Address) -> Option<TradeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{b256, bytes, LogData};
+    use alloy::primitives::{b256, LogData};
 
     #[test]
     fn transfer_topic_is_correct() {
@@ -489,11 +489,9 @@ mod tests {
             buf[24..32].copy_from_slice(&1000u64.to_be_bytes());
             buf
         };
-        let mut data = LogData::new_empty();
-        data.topics.push(TRANSFER_TOPIC);
-        data.topics.push(from_addr);
-        data.topics.push(to_addr);
-        data.data = alloy::primitives::Bytes::from(value_bytes.to_vec());
+        let mut topics_vec = vec![TRANSFER_TOPIC, from_addr, to_addr];
+        let data_bytes = alloy::primitives::Bytes::from(value_bytes.to_vec());
+        let data = LogData::new_unchecked(topics_vec, data_bytes);
 
         let log = Log {
             inner: alloy::primitives::Log { address: Address::ZERO, data },
@@ -515,8 +513,7 @@ mod tests {
 
     #[test]
     fn wrong_topic_returns_none() {
-        let mut data = LogData::new_empty();
-        data.topics.push(b256!("0000000000000000000000000000000000000000000000000000000000000001"));
+        let data = LogData::new_unchecked(vec![b256!("0000000000000000000000000000000000000000000000000000000000000001")], alloy::primitives::Bytes::new());
 
         let log = Log {
             inner: alloy::primitives::Log { address: Address::ZERO, data },

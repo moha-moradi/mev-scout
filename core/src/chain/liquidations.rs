@@ -55,12 +55,12 @@ fn decode_liquidation_log(log: &Log) -> Option<LiquidationEvent> {
             Address::ZERO
         };
         let collateral_amount = if data.len() >= 52 {
-            U256::from_be_slice(&data[20..52].try_into().ok()?)
+            U256::from_be_slice(&data[20..52])
         } else {
             U256::ZERO
         };
         let debt_to_cover = if data.len() >= 84 {
-            U256::from_be_slice(&data[52..84].try_into().ok()?)
+            U256::from_be_slice(&data[52..84])
         } else {
             U256::ZERO
         };

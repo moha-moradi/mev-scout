@@ -206,6 +206,8 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
         gas_limit: 30_000_000,
         gas_used: 100_000 * tx_count as u64,
         coinbase: Address::ZERO,
+        difficulty: U256::ZERO,
+        mix_hash: B256::ZERO,
     };
     cache.put_block(block_num, &block).unwrap();
 

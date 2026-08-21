@@ -773,7 +773,7 @@ impl BacktestRunner {
                         all_modes.push(mode);
                     }
                     Err(e) => {
-                        self.pool_manager = checkpoint;
+                        self.pool_manager = checkpoint.clone();
                         tracing::warn!(
                             "Block {} full-replay failed ({}), falling back to log-only: {:?}",
                             block_num, block_num, e,
@@ -789,7 +789,7 @@ impl BacktestRunner {
                                 all_modes.push(BlockMode::LogOnly);
                             }
                             Err(e2) => {
-                                self.pool_manager = checkpoint;
+                                self.pool_manager = checkpoint.clone();
                                 tracing::error!("Block {} log-only also failed: {:?}", block_num, e2);
                             }
                         }

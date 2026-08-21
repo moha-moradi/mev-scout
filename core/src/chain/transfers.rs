@@ -54,6 +54,7 @@ pub async fn scan_whale_transfers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::B256;
 
     #[test]
     fn transfer_topic_matches_erc20() {
