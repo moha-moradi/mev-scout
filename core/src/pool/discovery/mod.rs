@@ -71,6 +71,12 @@ pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"NewMarket(address,address,uint256)")
 });
 
+// Algebra (QuickSwap V3) Pool creation event — `Pool(address,address,address)` with two indexed tokens.
+// Unlike canonical Uniswap V3 `PoolCreated(address,address,uint24,int24,address)`.
+pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"Pool(address,address,address)")
+});
+
 /// readState(address) selector for Pendle Finance markets
 static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"readState(address)");
@@ -566,6 +572,13 @@ mod camelot;
 mod trader_joe;
 mod pendle;
 mod v4;
+pub mod remote;
+
+// Algebra (QuickSwap V3) factory Pool event — differs from canonical V3 PoolCreated.
+// Emitted as `Pool(address indexed token0, address indexed token1, address pool)`
+pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"Pool(address,address,address)")
+});
 
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).
