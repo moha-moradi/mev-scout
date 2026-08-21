@@ -70,7 +70,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 9;
+    const SCHEMA_VERSION: u64 = 10;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -285,6 +285,10 @@ impl SqliteStore {
             // v9: difficulty and mix_hash for accurate EVM replay
             "ALTER TABLE blocks ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE blocks ADD COLUMN mix_hash BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'",
+            // v10: remote-source enrichment metrics (nullable; backfilled by --enrich)
+            "ALTER TABLE pool_info ADD COLUMN tvl_usd REAL",
+            "ALTER TABLE pool_info ADD COLUMN volume_usd_24h REAL",
+            "ALTER TABLE pool_info ADD COLUMN volume_usd_30d REAL",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {
@@ -398,6 +402,9 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
     let dex_name = row.get::<_, Option<String>>(15).ok().flatten();
     let token0_symbol = row.get::<_, Option<String>>(16).ok().flatten();
     let token1_symbol = row.get::<_, Option<String>>(17).ok().flatten();
+    let tvl_usd = row.get::<_, Option<f64>>(18).ok().flatten();
+    let volume_usd_24h = row.get::<_, Option<f64>>(19).ok().flatten();
+    let volume_usd_30d = row.get::<_, Option<f64>>(20).ok().flatten();
     let token0 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
     let token1 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
     let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
@@ -426,6 +433,9 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         dex_name: dex_name.map(Arc::from),
         token0_symbol: token0_symbol.map(Arc::from),
         token1_symbol: token1_symbol.map(Arc::from),
+        tvl_usd,
+        volume_usd_24h,
+        volume_usd_30d,
     })
 }
 

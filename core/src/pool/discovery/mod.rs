@@ -148,6 +148,15 @@ pub struct DiscoveredPool {
     /// Token1 symbol (e.g. "WETH", "USDC").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token1_symbol: Option<String>,
+    /// USD TVL from remote sources (subgraph / aggregator). `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tvl_usd: Option<f64>,
+    /// Rolling 24h USD volume from remote sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_usd_24h: Option<f64>,
+    /// Rolling 30d USD volume from remote sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_usd_30d: Option<f64>,
 }
 
 macro_rules! merge_option {
@@ -166,6 +175,7 @@ impl DiscoveredPool {
             balancer_pool_type: None, hook_address: None, bin_step: None,
             maturity_timestamp: None, underlying_tokens: None, dex_name: None,
             token0_symbol: None, token1_symbol: None,
+            tvl_usd: None, volume_usd_24h: None, volume_usd_30d: None,
         }
     }
 
@@ -181,6 +191,9 @@ impl DiscoveredPool {
     pub fn with_dex_name(mut self, v: Option<String>) -> Self { self.dex_name = v; self }
     pub fn with_token0_symbol(mut self, v: Option<String>) -> Self { self.token0_symbol = v; self }
     pub fn with_token1_symbol(mut self, v: Option<String>) -> Self { self.token1_symbol = v; self }
+    pub fn with_tvl_usd(mut self, v: Option<f64>) -> Self { self.tvl_usd = v; self }
+    pub fn with_volume_usd_24h(mut self, v: Option<f64>) -> Self { self.volume_usd_24h = v; self }
+    pub fn with_volume_usd_30d(mut self, v: Option<f64>) -> Self { self.volume_usd_30d = v; self }
 
     /// Merge metadata from `other` into `self`, filling only `None` fields.
     ///
@@ -206,6 +219,9 @@ impl DiscoveredPool {
         merge_option!(self, other, dex_name);
         merge_option!(self, other, token0_symbol);
         merge_option!(self, other, token1_symbol);
+        merge_option!(self, other, tvl_usd);
+        merge_option!(self, other, volume_usd_24h);
+        merge_option!(self, other, volume_usd_30d);
     }
 }
 
@@ -235,6 +251,9 @@ impl From<DiscoveredPool> for PoolInfo {
             dex_name: d.dex_name.map(Arc::from),
             token0_symbol: d.token0_symbol.map(Arc::from),
             token1_symbol: d.token1_symbol.map(Arc::from),
+            tvl_usd: d.tvl_usd,
+            volume_usd_24h: d.volume_usd_24h,
+            volume_usd_30d: d.volume_usd_30d,
         }
     }
 }

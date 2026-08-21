@@ -179,6 +179,15 @@ pub struct PoolInfo {
     /// Token1 symbol (e.g. "WETH", "USDC").
     #[serde(default, skip_serializing_if = "Option::is_none", with = "arc_str_opt")]
     pub token1_symbol: Option<Arc<str>>,
+    /// USD TVL from remote sources (subgraph / aggregator). `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tvl_usd: Option<f64>,
+    /// Rolling 24h USD volume from remote sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_usd_24h: Option<f64>,
+    /// Rolling 30d USD volume from remote sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_usd_30d: Option<f64>,
 }
 
 impl Default for PoolInfo {
@@ -205,6 +214,9 @@ impl Default for PoolInfo {
             dex_name: None,
             token0_symbol: None,
             token1_symbol: None,
+            tvl_usd: None,
+            volume_usd_24h: None,
+            volume_usd_30d: None,
         }
     }
 }

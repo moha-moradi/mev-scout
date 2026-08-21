@@ -20,8 +20,8 @@ impl super::SqliteStore {
         let token0_symbol = pool.token0_symbol.as_deref();
         let token1_symbol = pool.token1_symbol.as_deref();
         conn.execute(
-            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT OR REPLACE INTO pool_info (address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             rusqlite::params![
                 super::SqliteStore::addr_to_blob(&pool.address),
                 super::SqliteStore::addr_to_blob(&pool.token0),
@@ -41,6 +41,9 @@ impl super::SqliteStore {
                 dex_name,
                 token0_symbol,
                 token1_symbol,
+                pool.tvl_usd,
+                pool.volume_usd_24h,
+                pool.volume_usd_30d,
             ],
         )?;
         Ok(())
@@ -49,7 +52,7 @@ impl super::SqliteStore {
     pub fn get_discovered_pool(&self, address: &Address) -> anyhow::Result<Option<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
              FROM pool_info WHERE address = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![super::SqliteStore::addr_to_blob(address)])?;
@@ -62,7 +65,7 @@ impl super::SqliteStore {
     pub fn list_discovered_pools(&self) -> anyhow::Result<Vec<PoolInfo>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
              FROM pool_info",
         )?;
         let mut rows = stmt.query([])?;
