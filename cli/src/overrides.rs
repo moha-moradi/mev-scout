@@ -62,6 +62,9 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
         Command::Tokens(args) => {
             apply_chain_args(&mut o, &args.chain_args);
         }
+        Command::ValidatePools(args) => {
+            apply_chain_args(&mut o, &args.chain_args);
+        }
         Command::Scan(args) => {
             apply_block_range(&mut o, &args.block_range);
             apply_chain_args(&mut o, &args.chain_args);

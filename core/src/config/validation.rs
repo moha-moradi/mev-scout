@@ -250,7 +250,7 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
         });
     }
 
-    if config.rpc.rps_limit > 0.0 && config.rpc.rps_limit > 10_000.0 {
+    if config.rpc.rps_limit > 10_000.0 {
         return Err(ConfigError::InvalidValue {
             field: "rps_limit".into(),
             message: format!("must be between 0 and 10,000, got {}", config.rpc.rps_limit),

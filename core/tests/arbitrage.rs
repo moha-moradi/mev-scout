@@ -188,6 +188,9 @@ fn test_two_hop_v3_reserves_update_accuracy() {
             dex_name: None,
             token0_symbol: None,
             token1_symbol: None,
+            tvl_usd: None,
+            volume_usd_24h: None,
+            volume_usd_30d: None,
         },
         sqrt_price_x96: U256::from(79228162514264337593543950336u128), // price = 1.0
         tick: 0,

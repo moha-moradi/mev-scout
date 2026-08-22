@@ -120,6 +120,9 @@ fn test_discover_v3_pipeline() {
         dex_name: None,
         token0_symbol: None,
         token1_symbol: None,
+        tvl_usd: None,
+        volume_usd_24h: None,
+        volume_usd_30d: None,
     };
 
     let info: PoolInfo = dp.into();

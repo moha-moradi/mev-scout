@@ -1,5 +1,3 @@
-dune_api_key = "FMXc0XSRcHFuDyv6jNWmLGmouIObVO5p"
-
 chain = "arbitrum"
 rpc_urls = [
   "https://arb-mainnet.g.alchemy.com/v2/booRpg6FM7gc9g8GC0SdN", # dantemoradi

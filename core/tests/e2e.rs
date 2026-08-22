@@ -69,6 +69,9 @@ fn pool_info(addr: Address, token0: Address, token1: Address, name: &str) -> Poo
         dex_name: None,
         token0_symbol: None,
         token1_symbol: None,
+        tvl_usd: None,
+        volume_usd_24h: None,
+        volume_usd_30d: None,
     }
 }
 
@@ -95,6 +98,9 @@ fn pool_info_v3(addr: Address, token0: Address, token1: Address, fee: u32, name:
         dex_name: None,
         token0_symbol: None,
         token1_symbol: None,
+        tvl_usd: None,
+        volume_usd_24h: None,
+        volume_usd_30d: None,
     }
 }
 
@@ -573,6 +579,9 @@ fn test_e2e_cache_isolation() {
         dex_name: None,
         token0_symbol: None,
         token1_symbol: None,
+        tvl_usd: None,
+        volume_usd_24h: None,
+        volume_usd_30d: None,
     };
 
     poly.put_discovered_pool(&pool).unwrap();
@@ -581,4 +590,37 @@ fn test_e2e_cache_isolation() {
 
     let eth_pools = _eth.list_discovered_pools().unwrap();
     assert_eq!(eth_pools.len(), 0, "Ethereum cache should be empty");
+}
+
+/// Test N: remote subgraph discovery end-to-end (network-gated).
+///
+/// Requires `GRAPH_API_KEY` for gateway URLs (hosted fallbacks are tried but
+/// may be dead). Run explicitly: `cargo test --test e2e e2e_subgraph_discovery -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn e2e_subgraph_discovery() {
+    if std::env::var("GRAPH_API_KEY").unwrap_or_default().is_empty() {
+        eprintln!("SKIP: GRAPH_API_KEY not set");
+        return;
+    }
+
+    let subgraphs = ChainName::Polygon.default_subgraphs();
+    assert!(!subgraphs.is_empty(), "Polygon must have default subgraphs");
+
+    let pools = mev_scout_core::pool::discovery::remote::discover_via_remote(
+        &subgraphs, Some(100), None,
+    ).await;
+
+    assert!(
+        pools.len() >= 10,
+        "expected ≥10 pools from Polygon subgraphs, got {}",
+        pools.len()
+    );
+    for p in pools.iter().take(10) {
+        assert!(!p.token0.is_zero(), "token0 must not be ZERO for {}", p.address);
+        assert!(!p.token1.is_zero(), "token1 must not be ZERO for {}", p.address);
+    }
+    // Symbols should come straight from the subgraph without extra eth_call.
+    let with_symbols = pools.iter().filter(|p| p.token0_symbol.is_some()).count();
+    assert!(with_symbols > 0, "subgraph pools should carry token symbols");
 }

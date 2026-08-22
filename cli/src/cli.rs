@@ -39,10 +39,15 @@ pub enum Command {
     /// Replay a specific block for debugging
     Replay(ReplayArgs),
 
-    /// Discover pools from on-chain factory events.
+    /// Discover pools from on-chain factory events and/or remote subgraphs.
     /// Factory addresses are resolved from the chain config.
     /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
+
+    /// Validate pool-discovery accuracy against off-chain references
+    /// (subgraphs, GeckoTerminal, DefiLlama). Reports recall per DEX,
+    /// false positives, field mismatches, and TVL/volume deltas.
+    ValidatePools(ValidatePoolsArgs),
 
     /// Discover and cache token metadata.
     /// Uses the bundled known-token list plus lazily resolved on-chain
@@ -305,6 +310,66 @@ pub struct DiscoverArgs {
     /// Overrides v2_fee_override for Solidly/Velodrome/Aerodrome pools.
     #[arg(long = "solidly-fee-bps", value_name = "BPS")]
     pub solidly_fee_bps: Option<u32>,
+
+    /// Pool source: onchain (RPC events only), remote (subgraphs/aggregators
+    /// only), or hybrid (union of both, deduped by address).
+    /// Default onchain — zero behavior change.
+    #[arg(long, default_value = "onchain", value_name = "SOURCE")]
+    pub source: DiscoverySource,
+
+    /// Attach tvl_usd / volume_usd_24h / volume_usd_30d to discovered pools
+    /// from the best available remote source (subgraph preferred, aggregator
+    /// fallback). Implies at least one remote fetch.
+    #[arg(long)]
+    pub enrich: bool,
+
+    /// Minimum USD TVL for remote-sourced pools (default 0 = full parity with
+    /// on-chain discovery; opt-in to mimic explorer dust suppression).
+    #[arg(long = "min-tvl", default_value = "0", value_name = "USD")]
+    pub min_tvl: f64,
+
+    /// Per-source pagination cap for remote discovery (default 1000).
+    #[arg(long = "max-pools", default_value = "1000", value_name = "N")]
+    pub max_pools: usize,
+}
+
+/// Pool discovery source selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum DiscoverySource {
+    Onchain,
+    Remote,
+    Hybrid,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ValidatePoolsArgs {
+    #[command(flatten)]
+    pub chain_args: ChainArgs,
+
+    /// Look-back window in days for the on-chain discovery leg (default 7).
+    #[arg(long, default_value = "7", value_name = "N")]
+    pub days: u64,
+
+    /// Reference sources to compare against: all, subgraph, gecko, llama.
+    #[arg(long, default_value = "all", value_name = "SOURCE")]
+    pub source: ValidationSource,
+
+    /// Output as machine-readable JSON instead of a table.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Also write a markdown report to this path.
+    #[arg(long = "markdown-out", value_name = "PATH")]
+    pub markdown_out: Option<String>,
+}
+
+/// Reference source selection for validate-pools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ValidationSource {
+    All,
+    Subgraph,
+    Gecko,
+    Llama,
 }
 
 #[derive(Args, Debug, Clone)]
