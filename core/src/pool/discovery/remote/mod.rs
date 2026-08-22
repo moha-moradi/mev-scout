@@ -176,7 +176,7 @@ pub async fn discover_via_remote_cb(
             let dex = cfg.dex_name.clone();
             move |n: usize| f(&dex, n)
         });
-        let pools = match client.fetch_pools_cb(max_pools, min_tvl, page_cb.as_ref().map(|f| f as &(dyn Fn(usize)))).await {
+        let pools = match client.fetch_pools_cb(max_pools, min_tvl, page_cb.as_ref().map(|f| f as &dyn Fn(usize))).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
