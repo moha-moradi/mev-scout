@@ -40,6 +40,17 @@ impl GraphClient {
     /// until a page returns <1000 results or `max_pools` is reached. If a URL
     /// fails after retries, the next URL is tried.
     pub async fn fetch_pools(&self, max_pools: Option<usize>, min_tvl: Option<f64>) -> anyhow::Result<Vec<RemotePool>> {
+        self.fetch_pools_cb(max_pools, min_tvl, None).await
+    }
+
+    /// Same as [`fetch_pools`], invoking `on_page(fetched_so_far)` after every
+    /// paginated page (for progress reporting).
+    pub async fn fetch_pools_cb(
+        &self,
+        max_pools: Option<usize>,
+        min_tvl: Option<f64>,
+        on_page: Option<&dyn Fn(usize)>,
+    ) -> anyhow::Result<Vec<RemotePool>> {
         let limit = max_pools.unwrap_or(usize::MAX);
         if self.urls.is_empty() {
             anyhow::bail!("no URLs configured for {}", self.dex_name);
@@ -49,7 +60,7 @@ impl GraphClient {
 
         for url in &self.urls {
             tracing::debug!("GraphClient: trying {} for {}", url, self.dex_name);
-            match self.fetch_via_url(url, limit, min_tvl).await {
+            match self.fetch_via_url(url, limit, min_tvl, on_page).await {
                 Ok(pools) => {
                     if pools.is_empty() {
                         tracing::debug!("GraphClient: {} returned 0 pools at {}", self.dex_name, url);
@@ -75,7 +86,13 @@ impl GraphClient {
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("all URLs failed for {}", self.dex_name)))
     }
 
-    async fn fetch_via_url(&self, url: &str, limit: usize, min_tvl: Option<f64>) -> anyhow::Result<Vec<RemotePool>> {
+    async fn fetch_via_url(
+        &self,
+        url: &str,
+        limit: usize,
+        min_tvl: Option<f64>,
+        on_page: Option<&dyn Fn(usize)>,
+    ) -> anyhow::Result<Vec<RemotePool>> {
         let mut all: Vec<RemotePool> = Vec::new();
         let mut skip = 0usize;
         let page_size = 1000usize;
@@ -110,6 +127,10 @@ impl GraphClient {
 
             let count = pools.len();
             all.extend(pools);
+
+            if let Some(cb) = on_page {
+                cb(all.len());
+            }
 
             if count < first {
                 break;

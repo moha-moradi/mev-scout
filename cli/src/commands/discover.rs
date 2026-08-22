@@ -28,29 +28,70 @@ pub(crate) fn resolve_subgraphs(chain_name: &ChainName, chain_config: &ChainConf
 
 /// Fetch remote pools with graceful degradation:
 /// subgraphs → aggregators (GeckoTerminal, DefiLlama) → empty vec (caller falls back to RPC).
+/// When `show_progress` is set, renders a paginated-progress bar on stderr.
 pub(crate) async fn fetch_remote(
     chain_name: &ChainName,
     subgraphs: &[SubgraphConfig],
     max_pools: Option<usize>,
     min_tvl: Option<f64>,
+    show_progress: bool,
 ) -> Vec<DiscoveredPool> {
+    let bar = if show_progress {
+        let pb = ProgressBar::new_spinner();
+        let style = ProgressStyle::default_bar()
+            .template("  {spinner:.cyan} {msg} ({pos} pools)")
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=> ");
+        pb.set_style(style);
+        pb.enable_steady_tick(std::time::Duration::from_millis(120));
+        Some(pb)
+    } else {
+        None
+    };
+
     let mut remote = if subgraphs.is_empty() {
         Vec::new()
+    } else if let Some(ref pb) = bar {
+        pb.set_message("subgraphs");
+        remote_src::discover_via_remote_cb(subgraphs, max_pools, min_tvl, Some(&|dex: &str, n: usize| {
+            pb.set_message(format!("subgraph {dex}"));
+            pb.set_position(n as u64);
+        }))
+        .await
     } else {
         remote_src::discover_via_remote(subgraphs, max_pools, min_tvl).await
     };
     if !remote.is_empty() {
+        if let Some(ref pb) = bar {
+            pb.finish_with_message(format!("{} pools via subgraphs", remote.len()));
+        }
         return remote;
     }
     tracing::warn!("All subgraph sources failed/empty — falling back to free aggregators");
     let slug = &chain_name.to_string();
+    if let Some(ref pb) = bar {
+        pb.set_position(0);
+        pb.set_message("GeckoTerminal fallback");
+    }
     remote = remote_src::discover_via_geckoterminal(slug, max_pools, min_tvl).await;
     if !remote.is_empty() {
+        if let Some(ref pb) = bar {
+            pb.finish_with_message(format!("{} pools via GeckoTerminal", remote.len()));
+        }
         return remote;
+    }
+    if let Some(ref pb) = bar {
+        pb.set_position(0);
+        pb.set_message("DefiLlama fallback");
     }
     remote = remote_src::discover_via_defillama(slug, max_pools, min_tvl).await;
     if remote.is_empty() {
         tracing::warn!("All remote sources failed — no off-chain pools available");
+        if let Some(ref pb) = bar {
+            pb.abandon_with_message("all remote sources failed");
+        }
+    } else if let Some(ref pb) = bar {
+        pb.finish_with_message(format!("{} pools via DefiLlama", remote.len()));
     }
     remote
 }
@@ -324,7 +365,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     // ── Phase 2: Remote sourcing (subgraphs + aggregator fallback ladder) ──
     let mut remote_pools: Vec<DiscoveredPool> = Vec::new();
     if should_fetch_remote {
-        remote_pools = fetch_remote(&chain_name, &subgraphs, max_pools_opt, min_tvl_opt).await;
+        remote_pools = fetch_remote(&chain_name, &subgraphs, max_pools_opt, min_tvl_opt, !args.json).await;
         if remote_pools.is_empty() && (is_remote_only || is_hybrid) {
             if !args.json {
                 eprintln!("  Warning: all remote sources returned 0 pools — falling back to RPC-only results");

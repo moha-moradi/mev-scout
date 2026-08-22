@@ -541,5 +541,5 @@ pub struct LiveArgs {
 
     /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
     #[arg(long = "min-profit-wei", default_value = "0", value_name = "WEI", help_heading = "Strategies")]
-    pub min_profit_wei: u128,
+    pub min_profit_wei: u64,
 }

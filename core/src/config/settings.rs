@@ -77,7 +77,7 @@ pub struct BacktestConfig {
     pub token_prices: Option<String>,
     /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
     #[serde(default)]
-    pub min_profit_wei: u128,
+    pub min_profit_wei: u64,
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     #[serde(default)]
     pub max_candidates_per_tx: usize,
@@ -479,7 +479,7 @@ pub struct BacktestOverrides {
     pub capture_pending: Option<bool>,
     pub price_oracle_mode: Option<String>,
     pub token_prices: Option<String>,
-    pub min_profit_wei: Option<u128>,
+    pub min_profit_wei: Option<u64>,
     pub max_candidates_per_tx: Option<usize>,
 }
 

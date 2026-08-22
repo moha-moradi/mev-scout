@@ -40,7 +40,7 @@ pub struct BacktestRunner {
     aave_reserve_cache: AaveReserveCache,
     capture_pending: bool,
     /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
-    min_profit_wei: u128,
+    min_profit_wei: u64,
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     max_candidates_per_tx: usize,
     pub last_processed_block: u64,
@@ -100,7 +100,7 @@ impl BacktestRunner {
 
     /// Set minimum profit threshold (in wei) below which opportunities are filtered.
     /// Set to 0 to disable dust filtering (default).
-    pub fn with_min_profit_wei(mut self, min_profit: u128) -> Self {
+    pub fn with_min_profit_wei(mut self, min_profit: u64) -> Self {
         self.min_profit_wei = min_profit;
         self
     }

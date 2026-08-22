@@ -180,7 +180,7 @@ pub struct TransferEvent {
 /// Decode an ERC-20 Transfer event log.
 pub fn decode_transfer(log: &Log) -> Option<TransferEvent> {
     let topics = log.topics();
-    if topics.len() < 4 || topics[0] != TRANSFER_TOPIC {
+    if topics.len() < 3 || topics[0] != TRANSFER_TOPIC {
         return None;
     }
     let from = Address::from_slice(&topics[1][12..]);

@@ -130,6 +130,17 @@ pub async fn discover_via_remote(
     max_pools: Option<usize>,
     min_tvl: Option<f64>,
 ) -> Vec<DiscoveredPool> {
+    discover_via_remote_cb(subgraphs, max_pools, min_tvl, None).await
+}
+
+/// Same as [`discover_via_remote`], invoking `on_progress(dex_name, fetched_so_far)`
+/// after each paginated page (for progress reporting).
+pub async fn discover_via_remote_cb(
+    subgraphs: &[SubgraphConfig],
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+    on_progress: Option<&dyn Fn(&str, usize)>,
+) -> Vec<DiscoveredPool> {
     if subgraphs.is_empty() {
         tracing::info!("Remote discovery: no subgraphs configured, skipping");
         return Vec::new();
@@ -161,7 +172,11 @@ pub async fn discover_via_remote(
             cfg.dex_name.clone(),
         );
 
-        let pools = match client.fetch_pools(max_pools, min_tvl).await {
+        let page_cb = on_progress.map(|f| {
+            let dex = cfg.dex_name.clone();
+            move |n: usize| f(&dex, n)
+        });
+        let pools = match client.fetch_pools_cb(max_pools, min_tvl, page_cb.as_ref().map(|f| f as &(dyn Fn(usize)))).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -235,8 +250,13 @@ pub fn merge_pools(mut base: Vec<DiscoveredPool>, extra: Vec<DiscoveredPool>) ->
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate the process-global GRAPH_API_KEY env var;
+    /// Rust runs unit tests on parallel threads, and env vars are global state.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_expand_urls_without_key_skips_gateway() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Ensure no env var set for this test — save and restore
         let saved = std::env::var("GRAPH_API_KEY").ok();
         std::env::remove_var("GRAPH_API_KEY");
@@ -254,6 +274,7 @@ mod tests {
 
     #[test]
     fn test_expand_urls_with_key_expands() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let saved = std::env::var("GRAPH_API_KEY").ok();
         std::env::set_var("GRAPH_API_KEY", "test123");
 

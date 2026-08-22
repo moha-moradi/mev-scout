@@ -73,7 +73,7 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
     let want = |s: ValidationSource| args.source == ValidationSource::All || args.source == s;
 
     if want(ValidationSource::Subgraph) {
-        let pools = fetch_remote(&chain_name, &subgraphs, Some(1000), None).await;
+        let pools = fetch_remote(&chain_name, &subgraphs, Some(1000), None, !args.json).await;
         if pools.is_empty() {
             eprintln!("  Warning: subgraph reference set is empty (endpoints failed or no GRAPH_API_KEY)");
         } else {

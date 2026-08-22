@@ -226,3 +226,42 @@ raise Polygon recall on its own.
 4. **Fallback hosts:** config allows multiple URLs per DEX, tried in order (Graph gateway → hosted →
    Goldsky → aggregators → RPC).
 5. **Audit scope:** default last ~2M blocks for speed; full-range audit opt-in flag.
+
+## 7. Performance note: `eth_getLogs` call reduction
+
+Sourcing pool candidates remotely removes the dominant RPC cost of discovery — scanning the full
+creation range with per-factory `eth_getLogs` batches:
+
+- **On-chain (before):** a Polygon scan from `pool_discovery_start_block` (~49M) to tip at
+  `batch_size=2000` costs ~`49M / 2000 ≈ 24,500` calls *per factory/topic combo*. With ~6 combos
+  (V2 factory, V3 factory, Algebra factory, Balancer V2 variants, Curve registry events, activity
+  scans) that is ~150K requests — hours on public RPC and effectively archive-tier only.
+- **Remote (after):** `--source remote --max-pools N` issues `ceil(N / 1000)` paginated GraphQL
+  pages *per subgraph* plus one health-check/state-init batch per pool actually used. Seeding
+  1000 pools across 5 Polygon subgraphs = ~5 HTTP requests total.
+- **Hybrid:** on-chain legs shrink to recent windows (incremental mode), remote covers history.
+
+Expected reduction: **10–50× fewer RPC calls** in hybrid mode and ~4 orders of magnitude in
+remote-only mode. `live` mode still uses RPC logs directly (subgraph lag 5–15 min), so the floor
+for latency-critical paths is unchanged.
+
+## Appendix A — Generalization checklist for remaining chains
+
+Polygon is the wired pilot (`ChainName::default_subgraphs()`); the other six chains
+(Avalanche, BSC, Arbitrum, Base, Ethereum, Optimism) rely on `chains.toml` overrides.
+Per chain:
+
+1. **Probe endpoints** (Phase 0 pattern): gateway deployment IDs + hosted-service fallbacks +
+   official DEX subgraphs (PancakeSwap, TraderJoe, Aerodrome, Camelot, Velodrome). Record working
+   URLs + auth needs in `chains.toml` comments.
+2. **Add `[chains.<name>.subgraphs]`** entries with correct `schema`
+   (`uniswap_v2`/`uniswap_v3`/`algebra`/`balancer`/`curve`) and ordered URL failover lists; or add
+   hardcoded defaults to `default_subgraphs()` once verified.
+3. **Verify fork quirks**: TraderJoe LB (Avalanche), Camelot slots (Arbitrum), Aerodrome/Velodrome
+   slots [6,12] (Base/Optimism) already handled by `v2_storage_slots_for_factory`; confirm Algebra
+   variants per chain.
+4. **Set `pool_discovery_start_block`** per chain config so on-chain fallback has a bounded range.
+5. **Smoke test**: `discover --chain <name> --source remote --max-pools 100 --json` → ≥100 pools,
+   symbols populated; then `discover --chain <name> --source hybrid --health-check`.
+6. **Accuracy run**: `validate-pools --chain <name>` before promoting the chain to production use;
+   note per-DEX recall gaps (niche forks stay RPC-only).

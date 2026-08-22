@@ -624,3 +624,66 @@ async fn e2e_subgraph_discovery() {
     let with_symbols = pools.iter().filter(|p| p.token0_symbol.is_some()).count();
     assert!(with_symbols > 0, "subgraph pools should carry token symbols");
 }
+
+/// Hybrid union must cover strictly more pools than an on-chain-only scan of
+/// the same small window (network-gated; needs GRAPH_API_KEY + RPC).
+/// Run explicitly: `cargo test --test e2e e2e_hybrid_beats_onchain_window -- --ignored`
+#[tokio::test]
+#[ignore]
+async fn e2e_hybrid_beats_onchain_window() {
+    if std::env::var("GRAPH_API_KEY").unwrap_or_default().is_empty() {
+        eprintln!("SKIP: GRAPH_API_KEY not set");
+        return;
+    }
+    let (rpc, tip) = match try_rpc().await {
+        Some(v) => v,
+        None => { eprintln!("SKIP: no RPC available"); return; }
+    };
+
+    // On-chain leg: small recent window, QuickSwap V2 factory only.
+    let start = tip.saturating_sub(5000);
+    let v2_factories = vec![quick_v2_factory()];
+    let disc_config = DiscoveryConfig {
+        batch_size: 2000,
+        v2_fee_override: None,
+        balancer_vault: None,
+        v2_factories: Some(&v2_factories),
+        v3_factories: None,
+        curve_registry: None,
+        solidly_factories: None,
+        camelot_factories: None,
+        solidly_fee_bps: None,
+        rpc_concurrency: 64,
+        v4_pool_manager: None,
+        trader_joe_factory: None,
+        pendle_factory: None,
+        token_cache: None,
+        pool_cache: None,
+    };
+    let onchain = match discover_pools(&rpc, start, tip, &disc_config, None).await {
+        Ok((p, _)) => p,
+        Err(e) => {
+            eprintln!("SKIP: on-chain discovery failed (archive RPC likely required): {e}");
+            return;
+        }
+    };
+    eprintln!("  On-chain window [{start}..{tip}]: {} pools", onchain.len());
+
+    let subgraphs = ChainName::Polygon.default_subgraphs();
+    let remote = mev_scout_core::pool::discovery::remote::discover_via_remote(
+        &subgraphs, Some(100), None,
+    ).await;
+    assert!(!remote.is_empty(), "remote sources returned 0 pools");
+    eprintln!("  Remote: {} pools", remote.len());
+
+    let n_onchain = onchain.len();
+    let merged = mev_scout_core::pool::discovery::remote::merge_pools(onchain, remote);
+    eprintln!("  Merged hybrid: {} pools", merged.len());
+    assert!(merged.len() >= n_onchain, "hybrid lost on-chain pools");
+    assert!(
+        merged.len() > n_onchain,
+        "hybrid union ({}) must strictly exceed on-chain-only window ({})",
+        merged.len(),
+        n_onchain
+    );
+}
