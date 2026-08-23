@@ -3,7 +3,7 @@ pub mod factory;
 pub mod manager;
 pub mod pool_types;
 pub use factory::PoolInitResult;
-pub use manager::{PoolManager, check_dedup_key};
+pub use manager::{PoolManager, ScanScope, check_dedup_key};
 pub use pool_types::{
     BalancerPoolState, BalancerPoolVariant, CurvePoolState, CurvePoolVariant, PendlePoolState,
     PoolInfo, PoolState, TraderJoeLBPoolState, UniswapV2PoolState, UniswapV3PoolState,

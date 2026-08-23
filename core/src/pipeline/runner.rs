@@ -13,7 +13,7 @@ use crate::mev::detectors::JitArbDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use alloy::primitives::{Address, U256};
-use crate::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
 use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::resolver::ResolvedRange;
@@ -290,6 +290,11 @@ impl BacktestRunner {
         let dex_tx_count: RefCell<usize> = RefCell::new(0);
         // Collect effective gas prices for gas price distribution (H10)
         let gas_prices: RefCell<Vec<u128>> = RefCell::new(Vec::new());
+        // Dirty pools updated by earlier transactions of this block. The first
+        // detection pass scans everything; subsequent passes only re-check
+        // pairs containing a dirty pool (untouched states yield no new ops).
+        let dirty_pools: RefCell<Option<std::collections::HashSet<Address>>> =
+            RefCell::new(None);
 
         self.replayer.replay_each_filtered(
             block_num,
@@ -315,12 +320,18 @@ impl BacktestRunner {
                 // rather than only the residual post-tx leftovers.
                 // H2: Detectors maintain a per-block seen set so the same persistent
                 // arb gap is not re-reported across multiple transactions.
+                let dirty_guard = dirty_pools.borrow();
+                let scope = match dirty_guard.as_ref() {
+                    Some(set) => ScanScope::Dirty(set),
+                    None => ScanScope::Full,
+                };
                 let opps = two_hop_detector.detect(
                     &pm,
                     i,
                     timestamp,
                     base_fee_per_gas,
                     self.gas_config,
+                    &scope,
                 );
                 if !opps.is_empty() {
                     tracing::info!(
@@ -338,6 +349,7 @@ impl BacktestRunner {
                     timestamp,
                     base_fee_per_gas,
                     self.gas_config,
+                    &scope,
                 );
                 if !multi_opps.is_empty() {
                     tracing::info!(
@@ -409,6 +421,15 @@ impl BacktestRunner {
 
                 // Apply this tx's log updates to pool state AFTER detection
                 pm.update_from_logs(&tx.logs);
+
+                // Accumulate dirtied pools for the next incremental scan
+                let newly_dirty = pm.take_dirty_pools();
+                if !newly_dirty.is_empty() {
+                    dirty_pools
+                        .borrow_mut()
+                        .get_or_insert_with(Default::default)
+                        .extend(newly_dirty);
+                }
 
                 Ok(())
             },
@@ -489,6 +510,8 @@ impl BacktestRunner {
         let mut two_hop_detector = TwoHopArbDetector::new(block_num);
         let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
         let mut dex_tx_count = 0usize;
+        // Dirty pools touched by earlier transactions (incremental scanning)
+        let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
 
         for (i, tx) in txs.iter().enumerate() {
             let logs: Vec<ExecutedLog> = receipts
@@ -515,6 +538,11 @@ impl BacktestRunner {
                 dex_tx_count += 1;
             }
 
+            let scope = match dirty_pools.as_ref() {
+                Some(set) => ScanScope::Dirty(set),
+                None => ScanScope::Full,
+            };
+
             // Detect against pre-tx pool state, THEN apply log updates
             // (mirrors run_block's detect-before-apply ordering).
             let opps = two_hop_detector.detect(
@@ -523,6 +551,7 @@ impl BacktestRunner {
                 timestamp,
                 base_fee_per_gas,
                 self.gas_config,
+                &scope,
             );
             all_opportunities.extend(opps);
 
@@ -532,10 +561,15 @@ impl BacktestRunner {
                 timestamp,
                 base_fee_per_gas,
                 self.gas_config,
+                &scope,
             );
             all_opportunities.extend(multi_opps);
 
             self.pool_manager.update_from_logs(&logs);
+            let newly_dirty = self.pool_manager.take_dirty_pools();
+            if !newly_dirty.is_empty() {
+                dirty_pools.get_or_insert_with(Default::default).extend(newly_dirty);
+            }
         }
 
         // Filter: drop opportunities where expected profit doesn't cover gas

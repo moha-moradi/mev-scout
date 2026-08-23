@@ -3,7 +3,7 @@
 use alloy::primitives::{Address, U256};
 use crate::types::MevOpportunity;
 use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic, quote_exact_in};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, PoolManager, PoolState};
+use crate::pool::state::{calldata_gas_estimate, check_dedup_key, PoolManager, PoolState, ScanScope};
 use crate::pool::math::v3::max_v3_tradeable_amount;
 use crate::types::{GasConfig, Strategy};
 
@@ -30,6 +30,10 @@ impl MultiHopArbDetector {
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once per block *unless* pool reserves change by >0.1%, in which case the
     /// dedup is cleared and the opportunity is re-evaluated (H2).
+    ///
+    /// `scope` restricts the seed pairs: pass [`ScanScope::Full`] for the first
+    /// detection pass of a block, then [`ScanScope::Dirty`] with the set of pools
+    /// touched by earlier transactions.
     pub fn detect(
         &mut self,
         pool_manager: &PoolManager,
@@ -37,11 +41,12 @@ impl MultiHopArbDetector {
         timestamp: u64,
         base_fee_per_gas: u128,
         gas_config: GasConfig,
+        scope: &ScanScope,
     ) -> Vec<MevOpportunity> {
         let max_depth = 4usize;
         let mut opportunities = Vec::new();
 
-        let paths = Self::find_paths(pool_manager, max_depth);
+        let paths = Self::find_paths_scoped(pool_manager, max_depth, scope);
 
         for path in &paths {
             if let Some(opp) = Self::check_path(
@@ -64,10 +69,21 @@ impl MultiHopArbDetector {
     /// BFS-limited enumeration of pool paths through the token graph.
     /// Each path is [buy_pool, ..., sell_pool] where adjacent pools share a token.
     pub fn find_paths(pm: &PoolManager, max_depth: usize) -> Vec<Vec<Address>> {
+        Self::find_paths_scoped(pm, max_depth, &ScanScope::Full)
+    }
+
+    /// Scope-aware variant of [`Self::find_paths`]: when `scope` is
+    /// [`ScanScope::Dirty`], only seed pairs containing at least one dirty
+    /// pool are enumerated — untouched pairs cannot produce new opportunities.
+    pub fn find_paths_scoped(pm: &PoolManager, max_depth: usize, scope: &ScanScope) -> Vec<Vec<Address>> {
         let mut all_paths = Vec::new();
 
         // Seed 2-pool paths from existing arbitrage pairs (both directions)
-        for &(pool_a, pool_b, _shared) in &pm.arbitrage_pairs() {
+        let pairs = pm.arbitrage_pairs();
+        for &(pool_a, pool_b, _shared) in pairs.iter() {
+            if !scope.contains_pair(&pool_a, &pool_b) {
+                continue;
+            }
             let seed = vec![pool_a, pool_b];
             all_paths.push(seed.clone());
             Self::extend_path(pm, seed, &mut all_paths, max_depth);

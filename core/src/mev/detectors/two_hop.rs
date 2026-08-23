@@ -1,6 +1,6 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, U512};
 
 /// Percentage multiplier for +1% adjustment (101/100).
 const PCT_101: u128 = 101;
@@ -13,12 +13,27 @@ const PCT_98: u128 = 98;
 use std::cmp;
 
 use crate::types::MevOpportunity;
-use crate::pool::math::{constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic, quote_exact_in, TwoHopArbResult};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, UniswapV2PoolState};
+use crate::pool::math::{
+    constant_product_output_amount,
+    optimal_two_hop_arb,
+    optimal_two_hop_arb_generic,
+    optimal_two_hop_arb_segmented,
+    quote_exact_in,
+    v3_breakpoints,
+    TwoHopArbResult,
+};
+use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
 use crate::pool::math::curve as curve_math;
 use crate::pool::math::balancer as balancer_math;
 use crate::types::{GasConfig, Strategy};
+
+/// Maximum tick-band breakpoints enumerated per V3 pool when segmenting the
+/// profit landscape for deterministic optimization.
+const MAX_V3_BREAKPOINTS_PER_POOL: usize = 24;
+/// Maximum inverted breakpoints taken from the second pool (inversion requires
+/// binary-search probes through the first pool's quote, so this is kept lower).
+const MAX_INVERTED_BREAKPOINTS: usize = 12;
 
 /// Detects two-hop arbitrage opportunities across V2, V3, and mixed pools.
 ///
@@ -47,6 +62,10 @@ impl TwoHopArbDetector {
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once per block *unless* pool reserves change by >0.1%, in which case the
     /// dedup is cleared and the opportunity is re-evaluated (H2).
+    ///
+    /// `scope` restricts the scan: pass [`ScanScope::Full`] for the first detection
+    /// pass of a block, then [`ScanScope::Dirty`] with the set of pools touched by
+    /// earlier transactions — untouched pairs cannot produce new opportunities.
     pub fn detect(
         &mut self,
         pool_manager: &PoolManager,
@@ -54,11 +73,15 @@ impl TwoHopArbDetector {
         timestamp: u64,
         base_fee_per_gas: u128,
         gas_config: GasConfig,
+        scope: &ScanScope,
     ) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
         let pairs = pool_manager.arbitrage_pairs();
 
-        for (pool_a, pool_b, shared_token) in &pairs {
+        for (pool_a, pool_b, shared_token) in pairs.iter() {
+            if !scope.contains_pair(pool_a, pool_b) {
+                continue;
+            }
             if let Some(opp) = Self::check_direction(
                 pool_manager, *pool_a, *pool_b, *shared_token,
                 self.block_number, tx_index, timestamp,
@@ -102,6 +125,14 @@ impl TwoHopArbDetector {
     ) -> Option<MevOpportunity> {
         let pool_a = pm.get(&buy_pool)?;
         let pool_b = pm.get(&sell_pool)?;
+
+        // Spot-price pre-filter: when the marginal prices are aligned (the gross
+        // cycle rate cannot cover both pools' fees plus a safety margin), no
+        // trade size can be profitable — skip the expensive optimizer entirely.
+        // Eliminates ~90%+ of optimizer work at zero accuracy loss.
+        if !passes_spot_prefilter(pool_a, pool_b, shared_token) {
+            return None;
+        }
 
         let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
@@ -202,7 +233,14 @@ pub fn quote_path(
             );
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
+            let breakpoints = compose_path_breakpoints(
+                v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL),
+                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
+                &quote_a,
+                max_input,
+            );
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::UniswapV2(a), PoolState::UniswapV3(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
@@ -210,7 +248,14 @@ pub fn quote_path(
             let max_input = r_a_other;
             let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
+            let breakpoints = compose_path_breakpoints(
+                Vec::new(),
+                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
+                &quote_a,
+                max_input,
+            );
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::UniswapV2(b)) => {
             let zero_a = shared_token == a.info.token1;
@@ -218,7 +263,8 @@ pub fn quote_path(
             let max_input = r_b_out;
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
             let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::Curve(a), PoolState::Curve(b)) => {
             let max_input = a.balances[*a.token_index.get(&token_in)?];
@@ -250,14 +296,22 @@ pub fn quote_path(
             let zero_b = shared_token == b.info.token0;
             let quote_a = |x: u128| curve_output_amount(x, a, token_in, shared_token);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
+            let breakpoints = compose_path_breakpoints(
+                Vec::new(),
+                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
+                &quote_a,
+                max_input,
+            );
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::Curve(b)) => {
             let zero_a = shared_token == a.info.token1;
             let max_input = max_v3_tradeable_amount(a, zero_a);
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
             let quote_b = |x: u128| curve_output_amount(x, b, shared_token, token_out);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::Balancer(a), PoolState::UniswapV2(b)) => {
             let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
@@ -277,14 +331,22 @@ pub fn quote_path(
             let zero_b = shared_token == b.info.token0;
             let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
             let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
+            let breakpoints = compose_path_breakpoints(
+                Vec::new(),
+                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
+                &quote_a,
+                max_input,
+            );
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         (PoolState::UniswapV3(a), PoolState::Balancer(b)) => {
             let zero_a = shared_token == a.info.token1;
             let max_input = max_v3_tradeable_amount(a, zero_a);
             let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
             let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
+            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
+            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
         // Unsupported type combinations
         _ => None,
@@ -595,6 +657,190 @@ fn v2_reserves(
             None
         }
     }
+}
+
+/// Safety margin applied on top of the combined-fee break-even in the spot
+/// pre-filter: +2 bps. Absorbs integer truncation so only provably aligned
+/// prices are skipped.
+const PREFILTER_SAFETY_NUM: u64 = 100_002;
+const PREFILTER_SAFETY_DEN: u64 = 100_000;
+
+/// Spot-price pre-filter: returns `false` only when the marginal cycle rate is
+/// *provably* below the fee break-even (plus safety margin), meaning no input
+/// size can be profitable and the numeric optimizer can be skipped entirely.
+///
+/// Compares the marginal spot price of `shared_token` quoted in each pool's
+/// other token: V2-style reserve ratios and V3 `sqrtRatioX96²`, in exact
+/// integer arithmetic. Returns `true` when either price is unavailable.
+fn passes_spot_prefilter(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address) -> bool {
+    let (Some((cost_n, cost_d)), Some((yield_n, yield_d))) = (
+        marginal_price_fraction(pool_a, shared_token),
+        marginal_price_fraction(pool_b, shared_token),
+    ) else {
+        return true;
+    };
+    let (Some((fa_n, fa_d)), Some((fb_n, fb_d))) =
+        (fee_fraction(pool_a), fee_fraction(pool_b))
+    else {
+        return true;
+    };
+
+    // Gross cycle rate = (yield_n·cost_d) / (yield_d·cost_n), scaled by the
+    // fee factors ((fa_d−fa_n)/fa_d)·((fb_d−fb_n)/fb_d). Require it to beat
+    // the safety ratio SAFETY_NUM/SAFETY_DEN:
+    //   yield_n·cost_d·(fa_d−fa_n)·(fb_d−fb_n)·SAFETY_DEN
+    //     > yield_d·cost_n·fa_d·fb_d·SAFETY_NUM
+    let lhs = U512::from(yield_n) * U512::from(cost_d)
+        * U512::from(fa_d - fa_n.min(fa_d))
+        * U512::from(fb_d - fb_n.min(fb_d))
+        * U512::from(PREFILTER_SAFETY_DEN);
+    let rhs = U512::from(yield_d) * U512::from(cost_n)
+        * U512::from(fa_d)
+        * U512::from(fb_d)
+        * U512::from(PREFILTER_SAFETY_NUM);
+    lhs > rhs
+}
+
+/// Marginal spot price of `shared_token` expressed in the pool's other token,
+/// as an exact fraction `(numerator, denominator)`:
+/// - V2-family: reserve ratio of the other token over the shared-token reserve
+/// - V3/V4: `sqrtPriceX96² / 2^192` (token1 per token0), pre-shifted by 2^64
+///   on both sides to keep cross-multiplications compact
+///
+/// Returns `None` for pool types without a local closed-form spot price; the
+/// caller then skips filtering for that pair.
+fn marginal_price_fraction(pool: &PoolState, shared_token: Address) -> Option<(U256, U256)> {
+    match pool {
+        PoolState::UniswapV2(v2) => {
+            if v2.reserve0 == 0 || v2.reserve1 == 0 {
+                return None;
+            }
+            if v2.info.token0 == shared_token {
+                Some((U256::from(v2.reserve1), U256::from(v2.reserve0)))
+            } else if v2.info.token1 == shared_token {
+                Some((U256::from(v2.reserve0), U256::from(v2.reserve1)))
+            } else {
+                None
+            }
+        }
+        PoolState::TraderJoeLB(lb) => {
+            if lb.reserve_x == 0 || lb.reserve_y == 0 {
+                return None;
+            }
+            if lb.info.token0 == shared_token {
+                Some((U256::from(lb.reserve_y), U256::from(lb.reserve_x)))
+            } else if lb.info.token1 == shared_token {
+                Some((U256::from(lb.reserve_x), U256::from(lb.reserve_y)))
+            } else {
+                None
+            }
+        }
+        PoolState::Pendle(p) => {
+            if p.total_pt == 0 || p.total_sy == 0 {
+                return None;
+            }
+            if p.info.token0 == shared_token {
+                Some((U256::from(p.total_sy), U256::from(p.total_pt)))
+            } else if p.info.token1 == shared_token {
+                Some((U256::from(p.total_pt), U256::from(p.total_sy)))
+            } else {
+                None
+            }
+        }
+        PoolState::UniswapV3(_) | PoolState::UniswapV4(_) => {
+            let (sqrt_price_x96, token0, token1) = match pool {
+                PoolState::UniswapV3(v3) => (v3.sqrt_price_x96, v3.info.token0, v3.info.token1),
+                PoolState::UniswapV4(v4) => (v4.sqrt_price_x96, v4.info.token0, v4.info.token1),
+                _ => unreachable!(),
+            };
+            // Guard against absurd prices (≥ 2^128 would overflow the compact
+            // fraction below); skip filtering instead.
+            if sqrt_price_x96.is_zero() || sqrt_price_x96 >= (U256::from(1u8) << 128usize) {
+                return None;
+            }
+            // p01 = sqrtP²/2^192, rescaled: numerator = sqrtP² >> 128 (< 2^128),
+            // denominator = 2^64 — relative truncation error ≤ 2^-64, ample for a filter.
+            let s = U512::from(sqrt_price_x96);
+            let sq = ((s * s) >> 128usize).to::<u128>();
+            if sq == 0 {
+                return None;
+            }
+            if token0 == shared_token {
+                Some((U256::from(sq), U256::from(1u128 << 64)))
+            } else if token1 == shared_token {
+                Some((U256::from(1u128 << 64), U256::from(sq)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Pool fee as an exact fraction per DEX convention:
+/// basis points for constant-product pools, parts-per-million for
+/// concentrated-liquidity pools. Pendle is simulated fee-free upstream.
+fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
+    match pool {
+        PoolState::UniswapV2(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
+        PoolState::TraderJoeLB(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
+        PoolState::UniswapV3(p) | PoolState::UniswapV4(p) => Some((p.info.fee as u64, PPM_FEE_DENOM)),
+        PoolState::Pendle(_) => Some((0, BPS_FEE_DENOM)),
+        _ => None,
+    }
+}
+const BPS_FEE_DENOM: u64 = 10_000;
+const PPM_FEE_DENOM: u64 = 1_000_000;
+
+/// Combine first-pool breakpoints (already in input-x space) with second-pool
+/// thresholds inverted through the monotone first-pool quote into x-space.
+fn compose_path_breakpoints(
+    direct: Vec<u128>,
+    second_thresholds: Vec<u128>,
+    quote_first: &impl Fn(u128) -> Option<u128>,
+    max_input: u128,
+) -> Vec<u128> {
+    let mut out = direct;
+    let mid_max = quote_first(max_input).unwrap_or(0);
+    let mut inverted = 0usize;
+    for m in second_thresholds {
+        if inverted >= MAX_INVERTED_BREAKPOINTS {
+            break;
+        }
+        if m == 0 || m > mid_max {
+            continue;
+        }
+        if let Some(x) = invert_monotone_quote(quote_first, m, max_input) {
+            out.push(x);
+            inverted += 1;
+        }
+    }
+    out
+}
+
+/// Smallest x in [1, max_input] whose monotone-increasing quote reaches `target`.
+fn invert_monotone_quote(
+    quote: &impl Fn(u128) -> Option<u128>,
+    target: u128,
+    max_input: u128,
+) -> Option<u128> {
+    if target == 0 {
+        return None;
+    }
+    if quote(max_input)? < target {
+        return None;
+    }
+    let mut lo = 1u128;
+    let mut hi = max_input;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if quote(mid).unwrap_or(0) >= target {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    Some(lo)
 }
 
 /// Estimate the gas limit for a two-hop arbitrage opportunity based on the

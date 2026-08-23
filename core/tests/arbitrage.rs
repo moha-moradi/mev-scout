@@ -53,10 +53,15 @@ fn test_gas_cost_min_profit_filter() {
 
     let opps = two_hop_detect(&pm, 1, 100);
 
-    // Check that gas_cost_wei is computed correctly
+    // The closed-form V2↔V2 optimizer must find this small imbalance
+    // (the old ternary search missed it entirely due to integer rounding).
+    assert!(!opps.is_empty(), "Should detect the small arb");
+
+    // Check that gas_cost_wei is computed correctly:
+    // base 40k + calldata(2 pools) 26.6k + 2×V2 swap 160k + flash-loan overhead 150k
     for opp in &opps {
         assert!(opp.gas_cost_wei > 0);
-        let expected_gas = 200_000u128 * 50_000_000_000;
+        let expected_gas = 376_600u128 * 50_000_000_000;
         let diff = opp.gas_cost_wei.abs_diff(expected_gas);
         assert!(diff < 1000, "Gas cost mismatch: {} vs {}", opp.gas_cost_wei, expected_gas);
     }
@@ -162,8 +167,7 @@ fn test_two_hop_same_token_different_reserves() {
 
 #[test]
 fn test_two_hop_v3_reserves_update_accuracy() {
-    use mev_scout_core::pool::state::UniswapV3PoolState;
-    // V3 pool with concentrated liquidity
+    use mev_scout_core::pool::state::UniswapV3PoolState;    // V3 pool with concentrated liquidity
     let v3_addr = address!("3333333333333333333333333333333333333333");
     let v3_pool = PoolState::UniswapV3(UniswapV3PoolState {
         info: PoolInfo {
@@ -370,5 +374,131 @@ async fn test_real_detection_all_sushi_wmatic_pools() {
         let path = opp.path.as_ref().unwrap();
         assert!(path.len() >= 2);
     }
+}
+
+#[test]
+fn test_spot_prefilter_skips_aligned_prices() {
+    use mev_scout_core::mev::detectors::two_hop::quote_path;
+
+    // Aligned prices: gross cycle rate below fee break-even → quote_path is None
+    let aligned_a = make_pool(address!("1111111111111111111111111111111111111111"), usdc(), wmatic(), 1_000_000, 1_000_000);
+    let aligned_b = make_pool(address!("2222222222222222222222222222222222222222"), usdt(), wmatic(), 1_000_000, 1_000_000);
+    assert!(quote_path(&aligned_a, &aligned_b, wmatic()).is_none());
+
+    // Imbalanced: profitable direction passes the pre-filter and finds the arb
+    let cheap = make_pool(matic_usdc_pool(), usdc(), wmatic(), 1_000_000, 2_000_000);
+    let dear = make_pool(matic_usdt_pool(), usdt(), wmatic(), 2_000_000, 500_000);
+    let fwd = quote_path(&cheap, &dear, wmatic());
+    assert!(fwd.is_some(), "profitable direction must pass pre-filter");
+    assert!(fwd.unwrap().profit > 0);
+
+    // Reverse direction: provably below break-even → skipped without optimizing
+    assert!(quote_path(&dear, &cheap, wmatic()).is_none());
+}
+
+#[test]
+fn test_dirty_scope_restricts_detection() {
+    use mev_scout_core::pool::state::ScanScope;
+    use std::collections::HashSet;
+
+    let mut pm = PoolManager::new();
+    pm.add_pool(make_pool(matic_usdc_pool(), usdc(), wmatic(), 1_000_000, 2_000_000));
+    pm.add_pool(make_pool(matic_usdt_pool(), usdt(), wmatic(), 2_000_000, 500_000));
+
+    // Full scan finds the arb
+    let full_opps = two_hop_detect(&pm, 0, 100);
+    assert!(!full_opps.is_empty());
+
+    // Empty dirty set → nothing scanned
+    let empty: HashSet<_> = HashSet::new();
+    let mut d = TwoHopArbDetectorForTest::new(1);
+    let opps = d.detect(&pm, 0, 100, 50_000_000_000, default_gas_config(), &ScanScope::Dirty(&empty));
+    assert!(opps.is_empty(), "dirty scope with no dirty pools must scan nothing");
+
+    // Only pool B dirty → pair containing it is scanned
+    let mut only_b: HashSet<_> = HashSet::new();
+    only_b.insert(matic_usdt_pool());
+    let mut d = TwoHopArbDetectorForTest::new(2);
+    let opps = d.detect(&pm, 0, 100, 50_000_000_000, default_gas_config(), &ScanScope::Dirty(&only_b));
+    assert!(!opps.is_empty(), "pair containing a dirty pool must be scanned");
+}
+
+/// Minimal wrapper so tests can construct the detector directly.
+use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector as TwoHopArbDetectorForTest;
+
+#[test]
+fn test_dirty_pools_tracked_via_mark_and_take() {
+    let mut pm = PoolManager::new();
+    assert_eq!(pm.dirty_pool_count(), 0);
+
+    pm.mark_dirty_pool(matic_usdc_pool());
+    pm.mark_dirty_pool(matic_usdt_pool());
+    pm.mark_dirty_pool(matic_usdc_pool()); // idempotent
+    assert_eq!(pm.dirty_pool_count(), 2);
+
+    let drained = pm.take_dirty_pools();
+    assert_eq!(drained.len(), 2);
+    assert_eq!(pm.dirty_pool_count(), 0);
+}
+
+#[test]
+fn test_v3_two_hop_segmented_finds_profitable_arb() {
+    use mev_scout_core::pool::state::UniswapV3PoolState;
+    use mev_scout_core::dex_type::DexType;
+    use alloy::primitives::Address;
+    use std::collections::BTreeMap;
+
+    // V3 pool A: WMATIC/USDC priced at tick 0 (1.0), liquidity concentrated
+    let mk_v3 = |addr: Address, token0: Address, token1: Address,
+                 sqrt_tick: i32, ticks: Vec<(i32, i128)>| {
+        PoolState::UniswapV3(UniswapV3PoolState {
+            info: PoolInfo {
+                address: addr,
+                token0,
+                token1,
+                fee: 3000,
+                name: None,
+                dex_type: DexType::UniswapV3,
+                tick_spacing: Some(60),
+                creation_block: 0,
+                pool_id: None,
+                factory: None,
+                is_stable: None,
+                is_fot: None,
+                is_rebase: None,
+                underlying_tokens: None,
+                balancer_pool_type: None,
+                hook_address: None,
+                bin_step: None,
+                maturity_timestamp: None,
+                dex_name: None,
+                token0_symbol: None,
+                token1_symbol: None,
+                tvl_usd: None,
+                volume_usd_24h: None,
+                volume_usd_30d: None,
+            },
+            sqrt_price_x96: mev_scout_core::pool::math::get_sqrt_ratio_at_tick(sqrt_tick),
+            tick: sqrt_tick,
+            liquidity: 5_000_000_000_000u128,
+            ticks: ticks.into_iter().collect::<BTreeMap<_, _>>(),
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
+        })
+    };
+
+    // Pool A at tick 0; pool B at tick +200 (price differs → arb across bands)
+    let v3_a = address!("3333333333333333333333333333333333333333");
+    let v3_b = address!("4444444444444444444444444444444444444444");
+    let mut pm = PoolManager::new();
+    pm.add_pool(mk_v3(v3_a, wmatic(), usdc(), 0, vec![(-120, 1_000_000_000_000), (120, 2_000_000_000_000)]));
+    pm.add_pool(mk_v3(v3_b, usdc(), wmatic(), 200, vec![(260, 1_000_000_000_000), (380, 1_000_000_000_000)]));
+
+    let opps = two_hop_detect(&pm, 1, 100);
+    for opp in &opps {
+        assert!(opp.expected_profit > U256::ZERO);
+    }
+    // Detection must not panic and must respect dedup bounds
+    assert!(opps.len() <= 2);
 }
 

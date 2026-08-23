@@ -161,7 +161,7 @@ async fn test_runner_run_block_synthetic() {
     assert!(!pm.arbitrage_pairs().is_empty(), "PoolManager should have arbitrage pairs");
 
     // Direct detection should find arb
-    let opps_direct = TwoHopArbDetector::new(1).detect(&pm, 0, 12345678, 50_000_000_000, GasConfig::default());
+    let opps_direct = TwoHopArbDetector::new(1).detect(&pm, 0, 12345678, 50_000_000_000, GasConfig::default(), &ScanScope::Full);
     eprintln!("Direct detection: {} opps", opps_direct.len());
     assert!(!opps_direct.is_empty(), "Direct detection should find arb");
 

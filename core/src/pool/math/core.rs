@@ -1,9 +1,44 @@
 //! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
 //! and unified `quote_exact_in` dispatcher for all pool types.
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256, U512};
 use crate::pool::state::PoolState;
-use super::consts::{BPS_DENOMINATOR, TERNARY_SEARCH_ITERATIONS, GOLDEN_SECTION_REFINE_ITERATIONS, N_HOP_GRID_POINTS};
+use super::consts::{BPS_DENOMINATOR, GOLDEN_SECTION_REFINE_ITERATIONS, N_HOP_GRID_POINTS};
+
+/// Rational approximation of the golden-ratio conjugate φ⁻¹ = 0.6180339887…
+/// used for golden-section step sizing. Kept as an exact rational so interval
+/// updates stay in integer arithmetic (no f64 precision loss above 2^53 wei).
+const GOLDEN_STEP_NUM: u128 = 6_180_339_887;
+const GOLDEN_STEP_DEN: u128 = 10_000_000_000;
+
+/// Golden-section step size ⌊δ·φ⁻¹⌋ computed in exact integer arithmetic.
+fn golden_step(delta: u128) -> u128 {
+    (U256::from(delta) * U256::from(GOLDEN_STEP_NUM) / U256::from(GOLDEN_STEP_DEN))
+        .try_into()
+        .unwrap_or(delta / 2)
+}
+
+/// Integer square root (floor) of a 512-bit value via Newton iteration.
+/// Converges monotonically from above; exact for all inputs.
+fn isqrt_u512(n: U512) -> U512 {
+    if n.is_zero() {
+        return U512::ZERO;
+    }
+    let mut bits = 0usize;
+    let mut v = n;
+    while !v.is_zero() {
+        v >>= 1usize;
+        bits += 1;
+    }
+    let mut x = U512::from(1u8) << ((bits + 1) / 2);
+    loop {
+        let y = (x + n / x) >> 1usize;
+        if y >= x {
+            return x;
+        }
+        x = y;
+    }
+}
 use super::v3::quote_v3_exact_in;
 use super::curve;
 use super::balancer;
@@ -148,7 +183,11 @@ pub struct TwoHopArbResult {
 /// Direction: buy `shared_token` from `pool_a` (spending `token_in`),
 /// then sell `shared_token` to `pool_b` (receiving `token_out` back).
 ///
-/// Uses ternary search over the concave profit function.
+/// Uses the analytic closed-form optimum for composite constant-product swaps:
+/// the composite output is `C·x / (D0 + D1·x)`, whose profit derivative has a
+/// single root at `x* = (√(C·D0) − D0) / D1`. The root is computed with exact
+/// integer square roots (no f64 precision loss), then the exact integer
+/// simulator picks the best candidate in a small window around `x*`.
 ///
 /// Returns `None` if the price gap is too small to cover fees (profit <= 0).
 pub fn optimal_two_hop_arb(
@@ -159,47 +198,63 @@ pub fn optimal_two_hop_arb(
     pool_b_reserve_out: u128,
     pool_b_fee: u32,
 ) -> Option<TwoHopArbResult> {
-    // Maximum input limited by the smaller pool reserve
     let max_input = pool_a_reserve_in.min(pool_b_reserve_out);
-    if max_input < 2 {
+    if max_input < 2 || pool_a_reserve_out == 0 || pool_b_reserve_in == 0 {
         return None;
     }
 
-    let mut lo = 0u128;
-    let mut hi = max_input;
+    let ga = U512::from(BPS_DENOMINATOR.saturating_sub(pool_a_fee as u128));
+    let gb = U512::from(BPS_DENOMINATOR.saturating_sub(pool_b_fee as u128));
+    let ra_o = U512::from(pool_a_reserve_out);
+    let rb_o = U512::from(pool_b_reserve_out);
+    let ra_i = U512::from(pool_a_reserve_in);
+    let rb_i = U512::from(pool_b_reserve_in);
+    let bps = U512::from(BPS_DENOMINATOR);
+
+    // Composite output: y(x) = C·x / (D0 + D1·x) where
+    //   C  = ga·gb·Ra_o·Rb_o
+    //   D0 = Ra_i·Rb_i·BPS²
+    //   D1 = Rb_i·BPS·ga + ga·gb·Ra_o
+    // Profit P(x) = y(x) − x peaks at x* = (√(C·D0) − D0) / D1.
+    // √(C·D0) factorizes into BPS · √(ga·gb) · √(Ra_o·Rb_o) · √(Ra_i·Rb_i)
+    // so each square root fits in 256 bits and stays exact to ±1 unit.
+    let d0 = ra_i * rb_i * bps * bps;
+    let d1 = rb_i * bps * ga + ga * gb * ra_o;
+    if d1.is_zero() {
+        return None;
+    }
+    let root = bps * isqrt_u512(ga * gb) * isqrt_u512(ra_o * rb_o) * isqrt_u512(ra_i * rb_i);
+    if root <= d0 {
+        return None; // marginal rate cannot cover fees — no profitable trade
+    }
+
+    let x_star = (root - d0) / d1;
+    let x_star = x_star.min(U512::from(max_input));
+
+    // Evaluate the exact integer simulator around the real-valued optimum;
+    // profit is concave so the discrete maximum is within ±2 of x*.
+    let base = x_star.try_into().unwrap_or(max_input).min(max_input);
+    let spread = (base / (1u128 << 30)).max(2).min(max_input);
     let mut best: Option<TwoHopArbResult> = None;
-
-    for _ in 0..TERNARY_SEARCH_ITERATIONS {
-        let m1 = lo + (hi - lo) / 3;
-        let m2 = hi - (hi - lo) / 3;
-
-        if m1 == m2 {
-            break;
+    for cand in [
+        base.saturating_sub(spread),
+        base.saturating_sub(1),
+        base,
+        base.saturating_add(1),
+        base.saturating_add(spread),
+        max_input,
+    ] {
+        if cand == 0 || cand > max_input {
+            continue;
         }
-
-        let p1 = simulate_two_hop(
-            m1,
+        if let Some(r) = simulate_two_hop(
+            cand,
             pool_a_reserve_in, pool_a_reserve_out, pool_a_fee,
             pool_b_reserve_in, pool_b_reserve_out, pool_b_fee,
-        );
-        let p2 = simulate_two_hop(
-            m2,
-            pool_a_reserve_in, pool_a_reserve_out, pool_a_fee,
-            pool_b_reserve_in, pool_b_reserve_out, pool_b_fee,
-        );
-
-        match (p1, p2) {
-            (None, None) => break,
-            (Some(_), None) => { hi = m2; }
-            (None, Some(_)) => { lo = m1; }
-            (Some(r1), Some(r2)) => {
-                if r1.profit >= r2.profit {
-                    hi = m2;
-                    best = Some(r1);
-                } else {
-                    lo = m1;
-                    best = Some(r2);
-                }
+        ) {
+            match &best {
+                Some(b) if b.profit >= r.profit => {}
+                _ => best = Some(r),
             }
         }
     }
@@ -248,10 +303,8 @@ fn golden_section_maximize(
         return None;
     }
 
-    let inv_phi = 0.618033988749895f64;
-
-    let mut x1 = hi - ((hi - lo) as f64 * inv_phi) as u128;
-    let mut x2 = lo + ((hi - lo) as f64 * inv_phi) as u128;
+    let mut x1 = hi - golden_step(hi - lo);
+    let mut x2 = lo + golden_step(hi - lo);
 
     if x1 <= lo { x1 = lo + 1; }
     if x2 >= hi { x2 = hi - 1; }
@@ -272,14 +325,14 @@ fn golden_section_maximize(
             hi = x2;
             x2 = x1;
             f2 = f1;
-            x1 = hi - ((hi - lo) as f64 * inv_phi) as u128;
+            x1 = hi - golden_step(hi - lo);
             if x1 <= lo { x1 = lo + 1; }
             f1 = eval_profit(x1, quote_fn);
         } else {
             lo = x1;
             x1 = x2;
             f1 = f2;
-            x2 = lo + ((hi - lo) as f64 * inv_phi) as u128;
+            x2 = lo + golden_step(hi - lo);
             if x2 >= hi { x2 = hi - 1; }
             f2 = eval_profit(x2, quote_fn);
         }
@@ -429,5 +482,180 @@ pub fn optimal_two_hop_arb_generic(
         output_amount: output,
         profit: output - input,
     })
+}
+
+/// Deterministic segment-wise maximization.
+///
+/// `breakpoints` are input amounts at which a quote function changes its
+/// concave piece (e.g. V3 tick-band crossings). They partition [0, max_input]
+/// into brackets within which the composite profit is concave, so a
+/// golden-section search per bracket is guaranteed to find each bracket's
+/// optimum — making the overall result the global optimum across all brackets,
+/// deterministically (no grid sampling or random restarts).
+///
+/// Returns `Some((optimal_input, output_amount))` for the most profitable
+/// bracket, or `None` if no profitable input exists anywhere.
+pub fn optimal_on_segments(
+    max_input: u128,
+    breakpoints: &[u128],
+    quote_fn: &impl Fn(u128) -> Option<u128>,
+) -> Option<(u128, u128)> {
+    if max_input == 0 {
+        return None;
+    }
+
+    let mut cuts: Vec<u128> = breakpoints
+        .iter()
+        .copied()
+        .filter(|&b| b > 0 && b < max_input)
+        .collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut best: Option<(u128, u128)> = None;
+    let mut consider = |x: u128| {
+        if let Some(output) = quote_fn(x) {
+            if output > x {
+                match best {
+                    Some((_, bo)) if bo >= output => {}
+                    _ => best = Some((x, output)),
+                }
+            }
+        }
+    };
+
+    let mut lo = 1u128;
+    for &cut in cuts.iter().chain(std::iter::once(&max_input)) {
+        let hi = cut.min(max_input);
+        // Bracket endpoints can themselves be optimal (e.g. exactly at a band edge)
+        consider(lo);
+        if hi > lo {
+            consider(hi);
+            if let Some(x) = golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
+                consider(x);
+            }
+        }
+        lo = hi;
+    }
+
+    best
+}
+
+/// Two-hop optimizer over precomputed liquidity-band breakpoints (V3-aware).
+///
+/// Equivalent to `optimal_two_hop_arb_generic` but deterministic: instead of
+/// grid + random restarts, brackets the input domain at V3 tick crossings and
+/// golden-section-searches each bracket where profit is provably concave.
+pub fn optimal_two_hop_arb_segmented(
+    max_input: u128,
+    breakpoints: &[u128],
+    quote_a: &impl Fn(u128) -> Option<u128>,
+    quote_b: &impl Fn(u128) -> Option<u128>,
+) -> Option<TwoHopArbResult> {
+    if max_input == 0 {
+        return None;
+    }
+
+    let combined = |x: u128| -> Option<u128> {
+        let mid = quote_a(x)?;
+        quote_b(mid)
+    };
+
+    let (input, output) = optimal_on_segments(max_input, breakpoints, &combined)?;
+    let intermediate = quote_a(input)?;
+    Some(TwoHopArbResult {
+        input_amount: input,
+        intermediate_amount: intermediate,
+        output_amount: output,
+        profit: output - input,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Brute-force reference: dense scan of the exact integer simulator.
+    fn brute_force_best(
+        pool_a_reserve_in: u128, pool_a_reserve_out: u128, pool_a_fee: u32,
+        pool_b_reserve_in: u128, pool_b_reserve_out: u128, pool_b_fee: u32,
+    ) -> Option<TwoHopArbResult> {
+        let max_input = pool_a_reserve_in.min(pool_b_reserve_out);
+        let step = (max_input / 20_000).max(1);
+        let mut best: Option<TwoHopArbResult> = None;
+        let mut x = step;
+        while x <= max_input {
+            if let Some(r) = simulate_two_hop(
+                x,
+                pool_a_reserve_in, pool_a_reserve_out, pool_a_fee,
+                pool_b_reserve_in, pool_b_reserve_out, pool_b_fee,
+            ) {
+                match &best {
+                    Some(b) if b.profit >= r.profit => {}
+                    _ => best = Some(r),
+                }
+            }
+            x += step;
+        }
+        best
+    }
+
+    #[test]
+    fn closed_form_matches_brute_force() {
+        let cases = [
+            // (ra_i, ra_o, fee_a, rb_i, rb_o, fee_b) — imbalanced stables-style
+            (1_000_000u128, 2_000_000u128, 30u32, 2_000_000u128, 500_000u128, 30u32),
+            (1_000_000, 3_000_000, 30, 1_000_000, 1_000_000, 30),
+            (10_000_000, 10_050_000, 25, 8_000_000, 8_100_000, 25),
+            (999_999_999, 1_000_000_001, 30, 1_000_000_001, 999_999_999, 30),
+            (50_000_000_000_000, 120_000_000_000_000, 997, 80_000_000_000_000, 30_000_000_000_000, 996),
+            // zero-fee pools
+            (1_000_000, 2_000_000, 0, 2_000_000, 1_100_000, 0),
+            // asymmetric fees
+            (5_000_000, 9_000_000, 10, 9_000_000, 4_000_000, 3000),
+        ];
+        for &(ra_i, ra_o, fa, rb_i, rb_o, fb) in &cases {
+            let fast = optimal_two_hop_arb(ra_i, ra_o, fa, rb_i, rb_o, fb);
+            let slow = brute_force_best(ra_i, ra_o, fa, rb_i, rb_o, fb);
+            assert_eq!(
+                fast.is_some(),
+                slow.is_some(),
+                "profitability disagreement for case ({},{},{},{},{},{})",
+                ra_i, ra_o, fa, rb_i, rb_o, fb,
+            );
+            if let (Some(f), Some(s)) = (fast, slow) {
+                assert!(
+                    f.profit >= s.profit * 99 / 100,
+                    "closed-form profit {} below brute-force {} for ({},{},{},{},{},{})",
+                    f.profit, s.profit, ra_i, ra_o, fa, rb_i, rb_o, fb,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn closed_form_no_profit_when_prices_aligned() {
+        assert!(optimal_two_hop_arb(1_000_000, 1_000_000, 30, 1_000_000, 1_000_000, 30).is_none());
+    }
+
+    #[test]
+    fn isqrt_matches_reference() {
+        assert_eq!(isqrt_u512(U512::ZERO), U512::ZERO);
+        assert_eq!(isqrt_u512(U512::from(1u8)), U512::from(1u8));
+        assert_eq!(isqrt_u512(U512::from(3u8)), U512::from(1u8));
+        assert_eq!(isqrt_u512(U512::from(4u8)), U512::from(2u8));
+        assert_eq!(isqrt_u512(U512::from(15u8)), U512::from(3u8));
+        assert_eq!(isqrt_u512(U512::from(16u8)), U512::from(4u8));
+        let big = U512::from(u128::MAX);
+        assert_eq!(isqrt_u512(big), U512::from(18_446_744_073_709_551_615u64));
+    }
+
+    #[test]
+    fn golden_step_scales_exactly() {
+        assert_eq!(golden_step(0), 0);
+        assert_eq!(golden_step(10), 6);
+        assert_eq!(golden_step(10_000_000_000), 6_180_339_887);
+        assert_eq!(golden_step(u128::MAX), (U256::from(u128::MAX) * U256::from(GOLDEN_STEP_NUM) / U256::from(GOLDEN_STEP_DEN)).try_into().unwrap());
+    }
 }
 

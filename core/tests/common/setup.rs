@@ -8,7 +8,8 @@ use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{
-    BalancerPoolVariant, PendlePoolState, PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+    BalancerPoolVariant, PendlePoolState, PoolInfo, PoolManager, PoolState, ScanScope,
+    UniswapV2PoolState, UniswapV3PoolState,
 };
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::rpc::RpcClient;
@@ -153,12 +154,14 @@ pub fn default_gas_config() -> GasConfig {
 
 pub fn two_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::types::MevOpportunity> {
     let mut d = TwoHopArbDetector::new(block);
-    d.detect(pm, 0, ts, 50_000_000_000, default_gas_config())
+    let full = ScanScope::Full;
+    d.detect(pm, 0, ts, 50_000_000_000, default_gas_config(), &full)
 }
 
 pub fn multi_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::types::MevOpportunity> {
     let mut d = MultiHopArbDetector::new(block);
-    d.detect(pm, 0, ts, 50_000_000_000, GasConfig::default())
+    let full = ScanScope::Full;
+    d.detect(pm, 0, ts, 50_000_000_000, GasConfig::default(), &full)
 }
 
 pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128) -> PoolState {

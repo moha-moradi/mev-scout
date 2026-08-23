@@ -122,6 +122,10 @@ impl PoolManager {
 
     /// Process a list of executed logs from a single transaction, updating pool state
     /// for any Swap or Sync events emitted by tracked pools.
+    ///
+    /// Every tracked pool referenced by a log is marked dirty so incremental
+    /// detection ([`ScanScope::Dirty`]) can restrict subsequent scans to the
+    /// affected arbitrage pairs.
     pub fn update_from_logs(&mut self, logs: &[ExecutedLog]) {
         for log in logs {
             if log.topics.is_empty() {
@@ -130,6 +134,9 @@ impl PoolManager {
             if !self.known_set.contains(&log.address) {
                 continue;
             }
+            // Any event on a tracked pool (swap, sync, mint, burn, …) may change
+            // its pricing state — mark dirty before decoding.
+            self.dirty_pools.insert(log.address);
             let topic0 = log.topics[0];
 
             // V2 Swap

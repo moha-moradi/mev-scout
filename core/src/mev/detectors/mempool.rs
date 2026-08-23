@@ -5,7 +5,7 @@ use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use crate::types::MevOpportunity;
 use crate::pool::math::constant_product_output_amount;
-use crate::pool::state::{PoolManager, PoolState};
+use crate::pool::state::{PoolManager, PoolState, ScanScope};
 use crate::rpc::{BlockRef, RpcClient};
 use crate::types::GasConfig;
 use crate::utils::{abi_decode_address, abi_decode_u128, abi_decode_u256};
@@ -65,23 +65,25 @@ pub fn detect_pending_opportunities(
 
     let mut results = Vec::new();
 
-    // Run two-hop detection on current pool state
+    // Run two-hop detection on current pool state (full scan — single pass)
     let two_hop_opps = two_hop.detect(
         pool_manager,
         0,
         timestamp,
         base_fee_per_gas,
         gas_config,
+        &ScanScope::Full,
     );
     results.extend(two_hop_opps);
 
-    // Run multi-hop detection on current pool state
+    // Run multi-hop detection on current pool state (full scan — single pass)
     let multi_hop_opps = multi_hop.detect(
         pool_manager,
         0,
         timestamp,
         base_fee_per_gas,
         gas_config,
+        &ScanScope::Full,
     );
     results.extend(multi_hop_opps);
 

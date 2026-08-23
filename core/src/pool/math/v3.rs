@@ -506,6 +506,74 @@ pub fn max_v3_tradeable_amount(
     }
 }
 
+/// Cumulative input amounts at which an exact-in swap crosses into the next
+/// initialized-tick liquidity band, up to `max_input`.
+///
+/// These thresholds partition the input domain into brackets inside which the
+/// pool's quote is smooth and concave (single liquidity band), enabling
+/// deterministic global optimization via per-bracket golden-section search.
+///
+/// Returns at most `max_points` thresholds, ascending.
+pub fn v3_breakpoints(
+    pool: &UniswapV3PoolState,
+    zero_for_one: bool,
+    max_input: u128,
+    max_points: usize,
+) -> Vec<u128> {
+    let mut res = Vec::new();
+    if max_input == 0 || pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
+        return res;
+    }
+
+    let mut sqrt_price = pool.sqrt_price_x96;
+    let mut current_tick = pool.tick;
+    let mut liquidity = pool.liquidity;
+    let mut cumulative = 0u128;
+
+    while res.len() < max_points {
+        let (target_sqrt_price, has_real_tick) = get_swap_target_for_tick(
+            &pool.ticks,
+            pool.info.tick_spacing,
+            current_tick,
+            sqrt_price,
+            zero_for_one,
+        );
+        if target_sqrt_price == sqrt_price {
+            break;
+        }
+
+        // Input (including fee) required to move price exactly onto the band edge
+        let (_, amount_in_step, _, fee_step) = compute_swap_step(
+            sqrt_price,
+            target_sqrt_price,
+            liquidity,
+            U256::MAX,
+            pool.info.fee,
+        );
+        let consumed = match amount_in_step.checked_add(fee_step) {
+            Some(v) => v.min(U256::from(u128::MAX)).to::<u128>(),
+            None => break,
+        };
+        let next_cumulative = cumulative.saturating_add(consumed);
+        if next_cumulative >= max_input || next_cumulative == cumulative {
+            break;
+        }
+        cumulative = next_cumulative;
+        res.push(cumulative);
+
+        if !has_real_tick {
+            break; // synthetic full-range target — no further known bands
+        }
+        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+        if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next_tick, zero_for_one) {
+            break; // liquidity exhausted beyond this band
+        }
+        sqrt_price = target_sqrt_price;
+    }
+
+    res
+}
+
 /// Quote a Uniswap V3 exact-input swap.
 ///
 /// Simulates stepping through the pool's initialized ticks, crossing each one
@@ -725,5 +793,86 @@ pub fn quote_v3_exact_out(
         return None;
     }
     Some(limbs[0] as u128)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dex_type::DexType;
+    use crate::pool::state::PoolInfo;
+
+    fn test_pool(ticks: BTreeMap<i32, i128>) -> UniswapV3PoolState {
+        UniswapV3PoolState {
+            info: PoolInfo {
+                address: alloy::primitives::address!("1111111111111111111111111111111111111111"),
+                token0: alloy::primitives::address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                token1: alloy::primitives::address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                fee: 3000,
+                name: None,
+                dex_type: DexType::UniswapV3,
+                tick_spacing: Some(60),
+                creation_block: 0,
+                pool_id: None,
+                factory: None,
+                is_stable: None,
+                is_fot: None,
+                is_rebase: None,
+                underlying_tokens: None,
+                balancer_pool_type: None,
+                hook_address: None,
+                bin_step: None,
+                maturity_timestamp: None,
+                dex_name: None,
+                token0_symbol: None,
+                token1_symbol: None,
+                tvl_usd: None,
+                volume_usd_24h: None,
+                volume_usd_30d: None,
+            },
+            sqrt_price_x96: get_sqrt_ratio_at_tick(0),
+            tick: 0,
+            liquidity: 1_000_000_000_000u128,
+            ticks,
+            fee_growth_global_0_x128: U256::ZERO,
+            fee_growth_global_1_x128: U256::ZERO,
+        }
+    }
+
+    #[test]
+    fn v3_breakpoints_ascending_and_within_budget() {
+        let mut ticks = BTreeMap::new();
+        ticks.insert(120i32, 500_000_000_000i128);
+        ticks.insert(240, 500_000_000_000);
+        ticks.insert(360, 500_000_000_000);
+        let pool = test_pool(ticks);
+
+        // Budget large enough to cross all three bands (~6e9 + ~9e9 + ~12e9 input)
+        let budget = 50_000_000_000u128;
+        let bps = v3_breakpoints(&pool, false, budget, 10);
+        assert_eq!(bps.len(), 3, "three initialized bands above tick 0");
+        assert!(bps.windows(2).all(|w| w[0] < w[1]), "must be strictly ascending");
+        assert!(bps.iter().all(|&b| b > 0 && b < budget));
+    }
+
+    #[test]
+    fn v3_breakpoints_respects_max_input_and_points() {
+        let mut ticks = BTreeMap::new();
+        for t in [60, 120, 180, 240, 300, 360] {
+            ticks.insert(t, 500_000_000_000i128);
+        }
+        let pool = test_pool(ticks);
+
+        // Budget stops enumeration mid-way (first crossing alone needs ~3e9)
+        let bps = v3_breakpoints(&pool, false, 20_000_000_000, 10);
+        assert!(!bps.is_empty());
+        assert!(bps.iter().all(|&b| b < 20_000_000_000));
+
+        // Point cap limits the result
+        let capped = v3_breakpoints(&pool, false, 50_000_000_000, 2);
+        assert_eq!(capped.len(), 2);
+
+        // No ticks → no breakpoints
+        assert!(v3_breakpoints(&test_pool(BTreeMap::new()), true, 1_000_000_000, 8).is_empty());
+    }
 }
 

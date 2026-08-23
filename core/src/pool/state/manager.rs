@@ -1,9 +1,31 @@
 use std::cmp;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use alloy::primitives::{Address, U256};
 use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
 use crate::pool::state::pool_types::{PoolState, UniswapV2PoolState, UniswapV3PoolState};
+
+/// Detection scan scope for incremental arbitrage scanning.
+///
+/// Pool states untouched since the last detection pass cannot produce *new*
+/// opportunities, so after the first full scan of a block only pairs containing
+/// at least one dirty (recently-updated) pool need to be re-checked.
+pub enum ScanScope<'a> {
+    /// Scan every arbitrage pair (first detection pass of a block).
+    Full,
+    /// Restrict to pairs containing at least one pool in the given dirty set.
+    Dirty(&'a HashSet<Address>),
+}
+
+impl<'a> ScanScope<'a> {
+    /// Whether the pair (a, b) is in scope for this scan.
+    pub fn contains_pair(&self, a: &Address, b: &Address) -> bool {
+        match self {
+            ScanScope::Full => true,
+            ScanScope::Dirty(dirty) => dirty.contains(a) || dirty.contains(b),
+        }
+    }
+}
 
 /// Manages runtime pool state for all tracked pools during block replay.
 ///
@@ -19,8 +41,12 @@ pub struct PoolManager {
     pub(crate) pools: HashMap<Address, PoolState>,
     /// token address -> list of pool addresses that trade this token
     pub(crate) token_index: HashMap<Address, Vec<Address>>,
-    /// Cached arbitrage pairs (invalidated on add_pool)
-    pub(crate) pairs_cache: Mutex<Option<Vec<(Address, Address, Address)>>>,
+    /// Cached arbitrage pairs (invalidated on add_pool). Shared via `Arc` so
+    /// per-block detection can clone the handle instead of the whole Vec.
+    pub(crate) pairs_cache: Mutex<Option<Arc<Vec<(Address, Address, Address)>>>>,
+    /// Pools whose state changed since the last `take_dirty_pools()` call.
+    /// Used to restrict per-transaction detection to affected pairs only.
+    pub(crate) dirty_pools: HashSet<Address>,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
     pub(crate) wrapped_native: Option<Address>,
     /// Address of the Balancer V2 vault for flash loans and pool state queries.
@@ -51,6 +77,7 @@ impl PoolManager {
             pools: HashMap::new(),
             token_index: HashMap::new(),
             pairs_cache: Mutex::new(None),
+            dirty_pools: HashSet::new(),
             wrapped_native: None,
             balancer_vault: None,
             known_set: HashSet::new(),
@@ -67,6 +94,7 @@ impl PoolManager {
             pools: HashMap::with_capacity(capacity),
             token_index: HashMap::with_capacity(capacity),
             pairs_cache: Mutex::new(None),
+            dirty_pools: HashSet::with_capacity(capacity),
             wrapped_native: None,
             balancer_vault: None,
             known_set: HashSet::with_capacity(capacity),
@@ -212,10 +240,11 @@ impl PoolManager {
     /// Each pair is returned once (pool_a < pool_b by address), with the shared token.
     /// Pools are sorted by liquidity estimate (descending) before truncation to
     /// `max_pairs_per_token`, so high-volume pairs are preferred over low-volume ones.
-    /// Result is cached and invalidated on add_pool.
-    pub fn arbitrage_pairs(&self) -> Vec<(Address, Address, Address)> {
+    /// Result is cached behind an `Arc` and invalidated on add_pool; callers clone
+    /// the handle (cheap) rather than the whole pair list.
+    pub fn arbitrage_pairs(&self) -> Arc<Vec<(Address, Address, Address)>> {
         if let Some(cached) = &*self.pairs_cache.lock().expect("pairs_cache mutex poisoned") {
-            return cached.clone();
+            return Arc::clone(cached);
         }
         let mut pairs = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -243,8 +272,25 @@ impl PoolManager {
             }
         }
 
-        *self.pairs_cache.lock().expect("pairs_cache mutex poisoned") = Some(pairs.clone());
-        pairs
+        let cached = Arc::new(pairs);
+        *self.pairs_cache.lock().expect("pairs_cache mutex poisoned") = Some(Arc::clone(&cached));
+        cached
+    }
+
+    /// Mark a pool as dirty (state changed). Dirty pools restrict subsequent
+    /// incremental detection passes via [`ScanScope::Dirty`].
+    pub fn mark_dirty_pool(&mut self, address: Address) {
+        self.dirty_pools.insert(address);
+    }
+
+    /// Drain the current dirty-pool set, returning it and resetting tracking.
+    pub fn take_dirty_pools(&mut self) -> HashSet<Address> {
+        std::mem::take(&mut self.dirty_pools)
+    }
+
+    /// Number of pools currently marked dirty.
+    pub fn dirty_pool_count(&self) -> usize {
+        self.dirty_pools.len()
     }
 
     /// Count pools that have non-zero reserves (i.e., initialized).
@@ -493,6 +539,7 @@ impl Clone for PoolManager {
             pools: self.pools.clone(),
             token_index: self.token_index.clone(),
             pairs_cache: Mutex::new(cache),
+            dirty_pools: self.dirty_pools.clone(),
             wrapped_native: self.wrapped_native,
             balancer_vault: self.balancer_vault,
             known_set: self.known_set.clone(),
