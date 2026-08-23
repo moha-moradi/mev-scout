@@ -1,15 +1,17 @@
-use alloy::primitives::{b256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::pool::decoders;
 use crate::pool::math::consts::{PPM_DENOMINATOR, Q128_SHIFT};
 use crate::pool::state::manager::PoolManager;
 use crate::pool::state::pool_types::PoolState;
 use crate::utils::u128_from_be_bytes;
+use alloy::primitives::{b256, Address, B256, U256};
 
 /// Event signature for Uniswap V2 Swap event
-pub(crate) const SWAP_TOPIC: B256 = b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
+pub(crate) const SWAP_TOPIC: B256 =
+    b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 /// Event signature for Uniswap V2 Sync event
-pub(crate) const SYNC_TOPIC: B256 = b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
+pub(crate) const SYNC_TOPIC: B256 =
+    b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
 
 impl PoolManager {
     /// Update a V2 pool's reserves using amounts from a Swap event.
@@ -22,8 +24,14 @@ impl PoolManager {
         amount1_out: u128,
     ) {
         if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(address) {
-            state.reserve0 = state.reserve0.wrapping_add(amount0_in).wrapping_sub(amount0_out);
-            state.reserve1 = state.reserve1.wrapping_add(amount1_in).wrapping_sub(amount1_out);
+            state.reserve0 = state
+                .reserve0
+                .wrapping_add(amount0_in)
+                .wrapping_sub(amount0_out);
+            state.reserve1 = state
+                .reserve1
+                .wrapping_add(amount1_in)
+                .wrapping_sub(amount1_out);
         }
         // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events
         self.try_apply_v2_to_curve(address, |b| {
@@ -68,7 +76,8 @@ impl PoolManager {
                     let fee = input.saturating_mul(fee_tier) / PPM_DENOMINATOR;
                     if fee > 0 && liquidity > 0 {
                         let inc = (U256::from(fee) << Q128_SHIFT) / U256::from(liquidity);
-                        state.fee_growth_global_0_x128 = state.fee_growth_global_0_x128.saturating_add(inc);
+                        state.fee_growth_global_0_x128 =
+                            state.fee_growth_global_0_x128.saturating_add(inc);
                     }
                 }
                 if amount1 < 0 {
@@ -76,7 +85,8 @@ impl PoolManager {
                     let fee = input.saturating_mul(fee_tier) / PPM_DENOMINATOR;
                     if fee > 0 && liquidity > 0 {
                         let inc = (U256::from(fee) << Q128_SHIFT) / U256::from(liquidity);
-                        state.fee_growth_global_1_x128 = state.fee_growth_global_1_x128.saturating_add(inc);
+                        state.fee_growth_global_1_x128 =
+                            state.fee_growth_global_1_x128.saturating_add(inc);
                     }
                 }
             }
@@ -108,11 +118,7 @@ impl PoolManager {
 
     // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events.
     // Duplicated match arms are consolidated into this shared helper.
-    fn try_apply_v2_to_curve(
-        &mut self,
-        address: &Address,
-        update: impl FnOnce(&mut [u128]),
-    ) {
+    fn try_apply_v2_to_curve(&mut self, address: &Address, update: impl FnOnce(&mut [u128])) {
         if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
             if state.balances.len() >= 2 {
                 update(&mut state.balances);

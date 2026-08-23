@@ -5,8 +5,8 @@ use std::sync::Mutex;
 
 use alloy::primitives::{U256, U512};
 
-use crate::pool::state::UniswapV3PoolState;
 use super::consts::{LIQUIDITY_FRACTION_DENOM, PPM_DENOMINATOR, SQRT_RATIO_CACHE_CAPACITY};
+use crate::pool::state::UniswapV3PoolState;
 
 const MIN_TICK: i32 = -887272;
 const MAX_TICK: i32 = 887272;
@@ -62,7 +62,11 @@ fn mul_div_round_up(a: U256, b: U256, d: U256) -> Option<U256> {
 }
 
 pub fn get_sqrt_ratio_at_tick(tick: i32) -> U256 {
-    if let Some(cached) = SQRT_RATIO_CACHE.lock().ok().and_then(|c| c.get(&tick).copied()) {
+    if let Some(cached) = SQRT_RATIO_CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(&tick).copied())
+    {
         return cached;
     }
     let result = compute_sqrt_ratio_at_tick(tick);
@@ -223,9 +227,8 @@ fn compute_swap_step(
     }
     .unwrap_or(U256::ZERO);
 
-    let fee_on_max =
-        mul_div_round_up(max_in, U256::from(fee as u64), U256::from(1_000_000u64))
-            .unwrap_or(U256::ZERO);
+    let fee_on_max = mul_div_round_up(max_in, U256::from(fee as u64), U256::from(1_000_000u64))
+        .unwrap_or(U256::ZERO);
     let total_max_cost = max_in + fee_on_max;
 
     if amount_remaining >= total_max_cost {
@@ -249,12 +252,9 @@ fn compute_swap_step(
         (sqrt_ratio_target_x96, max_in, amount_out, fee_on_max)
     } else {
         let remaining = amount_remaining;
-        let fee_amount = mul_div_round_up(
-            remaining,
-            U256::from(fee as u64),
-            U256::from(1_000_000u64),
-        )
-        .unwrap_or(U256::ZERO);
+        let fee_amount =
+            mul_div_round_up(remaining, U256::from(fee as u64), U256::from(1_000_000u64))
+                .unwrap_or(U256::ZERO);
         let amount_after_fee = remaining - fee_amount.min(remaining);
 
         let next_sqrt = get_next_sqrt_price_from_input(
@@ -312,22 +312,43 @@ fn compute_swap_step_exact_out(
     let zero_for_one = sqrt_ratio_target_x96 < sqrt_ratio_current_x96;
 
     let max_out = if zero_for_one {
-        get_amount_1_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, false)
+        get_amount_1_delta(
+            sqrt_ratio_target_x96,
+            sqrt_ratio_current_x96,
+            liquidity,
+            false,
+        )
     } else {
-        get_amount_0_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, false)
+        get_amount_0_delta(
+            sqrt_ratio_current_x96,
+            sqrt_ratio_target_x96,
+            liquidity,
+            false,
+        )
     }
     .unwrap_or(U256::ZERO);
 
     if amount_remaining >= max_out {
         let amount_in = if zero_for_one {
-            get_amount_0_delta(sqrt_ratio_target_x96, sqrt_ratio_current_x96, liquidity, true)
+            get_amount_0_delta(
+                sqrt_ratio_target_x96,
+                sqrt_ratio_current_x96,
+                liquidity,
+                true,
+            )
         } else {
-            get_amount_1_delta(sqrt_ratio_current_x96, sqrt_ratio_target_x96, liquidity, true)
+            get_amount_1_delta(
+                sqrt_ratio_current_x96,
+                sqrt_ratio_target_x96,
+                liquidity,
+                true,
+            )
         }
         .unwrap_or(U256::ZERO);
 
-        let fee_amount = mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
-            .unwrap_or(U256::ZERO);
+        let fee_amount =
+            mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
+                .unwrap_or(U256::ZERO);
 
         (sqrt_ratio_target_x96, amount_in, max_out, fee_amount)
     } else {
@@ -346,8 +367,9 @@ fn compute_swap_step_exact_out(
         }
         .unwrap_or(U256::ZERO);
 
-        let fee_amount = mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
-            .unwrap_or(U256::ZERO);
+        let fee_amount =
+            mul_div_round_up(amount_in, U256::from(fee as u64), U256::from(1_000_000u64))
+                .unwrap_or(U256::ZERO);
 
         (next_sqrt, amount_in, amount_remaining, fee_amount)
     }
@@ -395,10 +417,7 @@ fn find_next_initialized_tick(
 ///
 /// When only a synthetic boundary is available, the swap uses the full pool liquidity
 /// and the quoting loop will not attempt to cross it (no phantom liquidity beyond).
-fn get_swap_target(
-    pool: &UniswapV3PoolState,
-    zero_for_one: bool,
-) -> (U256, bool) {
+fn get_swap_target(pool: &UniswapV3PoolState, zero_for_one: bool) -> (U256, bool) {
     let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, zero_for_one);
     match next_tick {
         Some(t) => {
@@ -445,9 +464,15 @@ pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u6
     // and the end of the tick map in the swap direction. This gives an upper
     // bound on crossings for a full-range swap in that direction.
     let crossings = if zero_for_one {
-        pool.ticks.range(..pool.tick).filter(|(_, &liq)| liq != 0).count()
+        pool.ticks
+            .range(..pool.tick)
+            .filter(|(_, &liq)| liq != 0)
+            .count()
     } else {
-        pool.ticks.range(pool.tick + 1..).filter(|(_, &liq)| liq != 0).count()
+        pool.ticks
+            .range(pool.tick + 1..)
+            .filter(|(_, &liq)| liq != 0)
+            .count()
     };
 
     BASE_SWAP_GAS + PER_TICK_CROSSING_GAS * (crossings as u64).min(MAX_CROSSINGS)
@@ -458,10 +483,7 @@ pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u6
 ///
 /// Returns the amount that would move the price exactly to the nearest
 /// initialized tick boundary (or tick_spacing boundary if no ticks known).
-pub fn max_v3_tradeable_amount(
-    pool: &UniswapV3PoolState,
-    zero_for_one: bool,
-) -> u128 {
+pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, zero_for_one: bool) -> u128 {
     if pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
         return 0;
     }
@@ -473,19 +495,9 @@ pub fn max_v3_tradeable_amount(
     }
 
     let max_in = if zero_for_one {
-        get_amount_0_delta(
-            target_sqrt,
-            pool.sqrt_price_x96,
-            pool.liquidity,
-            true,
-        )
+        get_amount_0_delta(target_sqrt, pool.sqrt_price_x96, pool.liquidity, true)
     } else {
-        get_amount_1_delta(
-            pool.sqrt_price_x96,
-            target_sqrt,
-            pool.liquidity,
-            true,
-        )
+        get_amount_1_delta(pool.sqrt_price_x96, target_sqrt, pool.liquidity, true)
     }
     .unwrap_or(U256::ZERO);
 
@@ -565,7 +577,13 @@ pub fn v3_breakpoints(
             break; // synthetic full-range target — no further known bands
         }
         let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
-        if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next_tick, zero_for_one) {
+        if cross_tick(
+            &pool.ticks,
+            &mut current_tick,
+            &mut liquidity,
+            next_tick,
+            zero_for_one,
+        ) {
             break; // liquidity exhausted beyond this band
         }
         sqrt_price = target_sqrt_price;
@@ -665,7 +683,13 @@ pub fn quote_v3_exact_in(
 
         if next_sqrt_price == target_sqrt_price && has_real_tick {
             let next = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
-            if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next, zero_for_one) {
+            if cross_tick(
+                &pool.ticks,
+                &mut current_tick,
+                &mut liquidity,
+                next,
+                zero_for_one,
+            ) {
                 break;
             }
         } else if next_sqrt_price == target_sqrt_price {
@@ -757,13 +781,14 @@ pub fn quote_v3_exact_out(
             break;
         }
 
-        let (next_sqrt_price, amount_in_step, amount_out_step, fee_step) = compute_swap_step_exact_out(
-            sqrt_price,
-            target_sqrt_price,
-            liquidity,
-            amount_remaining,
-            pool.info.fee,
-        );
+        let (next_sqrt_price, amount_in_step, amount_out_step, fee_step) =
+            compute_swap_step_exact_out(
+                sqrt_price,
+                target_sqrt_price,
+                liquidity,
+                amount_remaining,
+                pool.info.fee,
+            );
 
         total_amount_in += amount_in_step + fee_step;
 
@@ -775,7 +800,13 @@ pub fn quote_v3_exact_out(
 
         if next_sqrt_price == target_sqrt_price && has_real_tick {
             let next = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
-            if cross_tick(&pool.ticks, &mut current_tick, &mut liquidity, next, zero_for_one) {
+            if cross_tick(
+                &pool.ticks,
+                &mut current_tick,
+                &mut liquidity,
+                next,
+                zero_for_one,
+            ) {
                 break;
             }
         } else if next_sqrt_price == target_sqrt_price {
@@ -850,7 +881,10 @@ mod tests {
         let budget = 50_000_000_000u128;
         let bps = v3_breakpoints(&pool, false, budget, 10);
         assert_eq!(bps.len(), 3, "three initialized bands above tick 0");
-        assert!(bps.windows(2).all(|w| w[0] < w[1]), "must be strictly ascending");
+        assert!(
+            bps.windows(2).all(|w| w[0] < w[1]),
+            "must be strictly ascending"
+        );
         assert!(bps.iter().all(|&b| b > 0 && b < budget));
     }
 
@@ -875,4 +909,3 @@ mod tests {
         assert!(v3_breakpoints(&test_pool(BTreeMap::new()), true, 1_000_000_000, 8).is_empty());
     }
 }
-

@@ -12,20 +12,18 @@ const PCT_102: u128 = 102;
 const PCT_98: u128 = 98;
 use std::cmp;
 
-use crate::types::MevOpportunity;
-use crate::pool::math::{
-    constant_product_output_amount,
-    optimal_two_hop_arb,
-    optimal_two_hop_arb_generic,
-    optimal_two_hop_arb_segmented,
-    quote_exact_in,
-    v3_breakpoints,
-    TwoHopArbResult,
-};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
-use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in, max_v3_tradeable_amount};
-use crate::pool::math::curve as curve_math;
 use crate::pool::math::balancer as balancer_math;
+use crate::pool::math::curve as curve_math;
+use crate::pool::math::v3::{estimate_v3_swap_gas, max_v3_tradeable_amount, quote_v3_exact_in};
+use crate::pool::math::{
+    constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic,
+    optimal_two_hop_arb_segmented, quote_exact_in, v3_breakpoints, TwoHopArbResult,
+};
+use crate::pool::state::{
+    calldata_gas_estimate, check_dedup_key, is_fee_on_transfer_token, BalancerPoolState,
+    CurvePoolState, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
+};
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
 
 /// Maximum tick-band breakpoints enumerated per V3 pool when segmenting the
@@ -83,26 +81,34 @@ impl TwoHopArbDetector {
                 continue;
             }
             if let Some(opp) = Self::check_direction(
-                pool_manager, *pool_a, *pool_b, *shared_token,
-                self.block_number, tx_index, timestamp,
-                base_fee_per_gas, gas_config,
+                pool_manager,
+                *pool_a,
+                *pool_b,
+                *shared_token,
+                self.block_number,
+                tx_index,
+                timestamp,
+                base_fee_per_gas,
+                gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(
-                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
-                ) {
+                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
                     opportunities.push(opp);
                 }
             }
             if let Some(opp) = Self::check_direction(
-                pool_manager, *pool_b, *pool_a, *shared_token,
-                self.block_number, tx_index, timestamp,
-                base_fee_per_gas, gas_config,
+                pool_manager,
+                *pool_b,
+                *pool_a,
+                *shared_token,
+                self.block_number,
+                tx_index,
+                timestamp,
+                base_fee_per_gas,
+                gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(
-                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
-                ) {
+                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
                     opportunities.push(opp);
                 }
             }
@@ -136,13 +142,25 @@ impl TwoHopArbDetector {
 
         let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
+        // Fee-on-transfer filter (#9): the simulation assumes the full quote is
+        // received, but sell-tax tokens take a cut on transfer — producing
+        // phantom opportunities. Exclude known FOT tokens entirely.
+        if is_fee_on_transfer_token(&token_in) || is_fee_on_transfer_token(&token_out) {
+            return None;
+        }
+
         let result = quote_path(pool_a, pool_b, shared_token)?;
 
         if result.profit == 0 {
             return None;
         }
 
-        let gas_limit = estimate_gas_for_two_hop(pool_a, pool_b, shared_token, gas_config.flash_loan_provider.gas_overhead());
+        let gas_limit = estimate_gas_for_two_hop(
+            pool_a,
+            pool_b,
+            shared_token,
+            gas_config.flash_loan_provider.gas_overhead(),
+        );
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         // Subtract flash loan fee from gross profit
@@ -157,7 +175,8 @@ impl TwoHopArbDetector {
             // Convert output token profit to native using pool reserves.
             // Falls back to: total_output_native - total_input_native when
             // direct profit normalization is unavailable (C5).
-            let native_profit = pm.normalize_to_native(token_out, profit_after_fl)
+            let native_profit = pm
+                .normalize_to_native(token_out, profit_after_fl)
                 .or_else(|| {
                     let total_input = result.input_amount;
                     let total_output = total_input.saturating_add(profit_after_fl);
@@ -363,11 +382,9 @@ fn compute_slippage_profits(
     if optimal_input == 0 {
         return (None, None, None, None);
     }
-    let eval = |input: u128| {
-        match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
-            Some(p) if p > 0 => Some(U256::from(p)),
-            _ => None,
-        }
+    let eval = |input: u128| match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
+        Some(p) if p > 0 => Some(U256::from(p)),
+        _ => None,
     };
     (
         eval(optimal_input.saturating_mul(PCT_101) / 100),
@@ -400,12 +417,8 @@ fn two_hop_profit_at(
             let zero_a = shared_token == a.info.token1;
             quote_v3_exact_in(a, input_amount, zero_a)?
         }
-        PoolState::Curve(a) => {
-            curve_output_amount(input_amount, a, token_in, shared_token)?
-        }
-        PoolState::Balancer(a) => {
-            balancer_quote_exact_in(input_amount, a, token_in, shared_token)?
-        }
+        PoolState::Curve(a) => curve_output_amount(input_amount, a, token_in, shared_token)?,
+        PoolState::Balancer(a) => balancer_quote_exact_in(input_amount, a, token_in, shared_token)?,
         PoolState::TraderJoeLB(a) => {
             let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
                 (a.reserve_y, a.reserve_x)
@@ -441,9 +454,7 @@ fn two_hop_profit_at(
             let zero_b = shared_token == b.info.token0;
             quote_v3_exact_in(b, intermediate, zero_b)?
         }
-        PoolState::Curve(b) => {
-            curve_output_amount(intermediate, b, shared_token, token_out)?
-        }
+        PoolState::Curve(b) => curve_output_amount(intermediate, b, shared_token, token_out)?,
         PoolState::Balancer(b) => {
             balancer_quote_exact_in(intermediate, b, shared_token, token_out)?
         }
@@ -510,11 +521,15 @@ fn arb_tokens(
 
     // Multi-token path: gather all candidate non-shared tokens from each pool
     let candidates_a: Vec<Address> = match pool_a {
-        PoolState::Curve(c) => c.token_index.keys()
+        PoolState::Curve(c) => c
+            .token_index
+            .keys()
             .filter(|k| **k != shared_token && !k.is_zero())
             .copied()
             .collect(),
-        PoolState::Balancer(b) => b.token_index.keys()
+        PoolState::Balancer(b) => b
+            .token_index
+            .keys()
             .filter(|k| **k != shared_token && !k.is_zero())
             .copied()
             .collect(),
@@ -522,11 +537,15 @@ fn arb_tokens(
     };
 
     let candidates_b: Vec<Address> = match pool_b {
-        PoolState::Curve(c) => c.token_index.keys()
+        PoolState::Curve(c) => c
+            .token_index
+            .keys()
             .filter(|k| **k != shared_token && !k.is_zero())
             .copied()
             .collect(),
-        PoolState::Balancer(b) => b.token_index.keys()
+        PoolState::Balancer(b) => b
+            .token_index
+            .keys()
             .filter(|k| **k != shared_token && !k.is_zero())
             .copied()
             .collect(),
@@ -574,17 +593,27 @@ fn estimate_arb_pair_profit(
         PoolState::Curve(c) => c.balances[*c.token_index.get(&token_in)?],
         PoolState::Balancer(b) => b.balances[*b.token_index.get(&token_in)?],
         PoolState::UniswapV2(v2) => {
-            if v2.info.token0 == token_in { v2.reserve0 } else { v2.reserve1 }
+            if v2.info.token0 == token_in {
+                v2.reserve0
+            } else {
+                v2.reserve1
+            }
         }
         PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
-        PoolState::UniswapV4(v4) => {
-            max_v3_tradeable_amount(v4, v4.info.token0 == token_in)
-        }
+        PoolState::UniswapV4(v4) => max_v3_tradeable_amount(v4, v4.info.token0 == token_in),
         PoolState::TraderJoeLB(lb) => {
-            if lb.info.token0 == token_in { lb.reserve_x } else { lb.reserve_y }
+            if lb.info.token0 == token_in {
+                lb.reserve_x
+            } else {
+                lb.reserve_y
+            }
         }
         PoolState::Pendle(p) => {
-            if p.info.token0 == token_in { p.total_pt } else { p.total_sy }
+            if p.info.token0 == token_in {
+                p.total_pt
+            } else {
+                p.total_sy
+            }
         }
     };
     let test_input = (max_input / 1000).max(1);
@@ -614,7 +643,14 @@ pub fn balancer_output_amount(
     weight_out: u128,
     fee: u32,
 ) -> Option<u128> {
-    balancer_math::balancer_output_amount(amount_in, reserve_in, reserve_out, weight_in, weight_out, fee)
+    balancer_math::balancer_output_amount(
+        amount_in,
+        reserve_in,
+        reserve_out,
+        weight_in,
+        weight_out,
+        fee,
+    )
 }
 
 /// Balancer quote dispatcher — forwards to `balancer_math::balancer_quote_exact_in`.
@@ -679,8 +715,7 @@ fn passes_spot_prefilter(pool_a: &PoolState, pool_b: &PoolState, shared_token: A
     ) else {
         return true;
     };
-    let (Some((fa_n, fa_d)), Some((fb_n, fb_d))) =
-        (fee_fraction(pool_a), fee_fraction(pool_b))
+    let (Some((fa_n, fa_d)), Some((fb_n, fb_d))) = (fee_fraction(pool_a), fee_fraction(pool_b))
     else {
         return true;
     };
@@ -690,11 +725,13 @@ fn passes_spot_prefilter(pool_a: &PoolState, pool_b: &PoolState, shared_token: A
     // the safety ratio SAFETY_NUM/SAFETY_DEN:
     //   yield_n·cost_d·(fa_d−fa_n)·(fb_d−fb_n)·SAFETY_DEN
     //     > yield_d·cost_n·fa_d·fb_d·SAFETY_NUM
-    let lhs = U512::from(yield_n) * U512::from(cost_d)
+    let lhs = U512::from(yield_n)
+        * U512::from(cost_d)
         * U512::from(fa_d - fa_n.min(fa_d))
         * U512::from(fb_d - fb_n.min(fb_d))
         * U512::from(PREFILTER_SAFETY_DEN);
-    let rhs = U512::from(yield_d) * U512::from(cost_n)
+    let rhs = U512::from(yield_d)
+        * U512::from(cost_n)
         * U512::from(fa_d)
         * U512::from(fb_d)
         * U512::from(PREFILTER_SAFETY_NUM);
@@ -784,7 +821,9 @@ fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
     match pool {
         PoolState::UniswapV2(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
         PoolState::TraderJoeLB(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
-        PoolState::UniswapV3(p) | PoolState::UniswapV4(p) => Some((p.info.fee as u64, PPM_FEE_DENOM)),
+        PoolState::UniswapV3(p) | PoolState::UniswapV4(p) => {
+            Some((p.info.fee as u64, PPM_FEE_DENOM))
+        }
         PoolState::Pendle(_) => Some((0, BPS_FEE_DENOM)),
         _ => None,
     }
@@ -848,7 +887,12 @@ fn invert_monotone_quote(
 ///
 /// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
 /// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
-fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address, flash_loan_gas: u64) -> u64 {
+fn estimate_gas_for_two_hop(
+    pool_a: &PoolState,
+    pool_b: &PoolState,
+    shared_token: Address,
+    flash_loan_gas: u64,
+) -> u64 {
     let base_overhead = 40_000u64;
     let calldata = calldata_gas_estimate(2);
 
@@ -869,4 +913,3 @@ fn estimate_gas_for_two_hop(pool_a: &PoolState, pool_b: &PoolState, shared_token
 
     base_overhead + calldata + a_gas + b_gas + flash_loan_gas
 }
-

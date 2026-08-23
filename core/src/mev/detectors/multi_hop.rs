@@ -1,11 +1,14 @@
 //! Multi-hop arbitrage detection — finds profitable swap paths across connected pools (BFS, depth ≤ 4).
 
-use alloy::primitives::{Address, U256};
-use crate::types::MevOpportunity;
-use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic, quote_exact_in};
-use crate::pool::state::{calldata_gas_estimate, check_dedup_key, PoolManager, PoolState, ScanScope};
 use crate::pool::math::v3::max_v3_tradeable_amount;
+use crate::pool::math::{constant_product_output_amount, optimal_n_hop_generic, quote_exact_in};
+use crate::pool::state::{
+    calldata_gas_estimate, check_dedup_key, is_fee_on_transfer_token, PoolManager, PoolState,
+    ScanScope,
+};
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
+use alloy::primitives::{Address, U256};
 
 /// Detects multi-hop arbitrage opportunities across connected pool paths.
 ///
@@ -50,14 +53,16 @@ impl MultiHopArbDetector {
 
         for path in &paths {
             if let Some(opp) = Self::check_path(
-                pool_manager, path,
-                self.block_number, tx_index, timestamp,
-                base_fee_per_gas, gas_config,
+                pool_manager,
+                path,
+                self.block_number,
+                tx_index,
+                timestamp,
+                base_fee_per_gas,
+                gas_config,
             ) {
                 let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(
-                    &mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b,
-                ) {
+                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
                     opportunities.push(opp);
                 }
             }
@@ -75,7 +80,11 @@ impl MultiHopArbDetector {
     /// Scope-aware variant of [`Self::find_paths`]: when `scope` is
     /// [`ScanScope::Dirty`], only seed pairs containing at least one dirty
     /// pool are enumerated — untouched pairs cannot produce new opportunities.
-    pub fn find_paths_scoped(pm: &PoolManager, max_depth: usize, scope: &ScanScope) -> Vec<Vec<Address>> {
+    pub fn find_paths_scoped(
+        pm: &PoolManager,
+        max_depth: usize,
+        scope: &ScanScope,
+    ) -> Vec<Vec<Address>> {
         let mut all_paths = Vec::new();
 
         // Seed 2-pool paths from existing arbitrage pairs (both directions)
@@ -95,7 +104,12 @@ impl MultiHopArbDetector {
         all_paths
     }
 
-    fn extend_path(pm: &PoolManager, path: Vec<Address>, all_paths: &mut Vec<Vec<Address>>, max_depth: usize) {
+    fn extend_path(
+        pm: &PoolManager,
+        path: Vec<Address>,
+        all_paths: &mut Vec<Vec<Address>>,
+        max_depth: usize,
+    ) {
         if path.len() >= max_depth {
             return;
         }
@@ -155,7 +169,8 @@ impl MultiHopArbDetector {
         let next = pm.get(&path[1])?;
         let info_a = pool_a.info();
         let info_next = next.info();
-        let first_shared = if info_a.token0 == info_next.token0 || info_a.token0 == info_next.token1 {
+        let first_shared = if info_a.token0 == info_next.token0 || info_a.token0 == info_next.token1
+        {
             info_a.token0
         } else {
             info_a.token1
@@ -169,16 +184,23 @@ impl MultiHopArbDetector {
         // token_out = non-shared side of last pool
         let prev = pm.get(&path[path.len() - 2])?;
         let info_b = pool_b.info();
-        let last_shared = if info_b.token0 == prev.info().token0 || info_b.token0 == prev.info().token1 {
-            info_b.token0
-        } else {
-            info_b.token1
-        };
+        let last_shared =
+            if info_b.token0 == prev.info().token0 || info_b.token0 == prev.info().token1 {
+                info_b.token0
+            } else {
+                info_b.token1
+            };
         let token_out = if info_b.token0 == last_shared {
             info_b.token1
         } else {
             info_b.token0
         };
+
+        // Fee-on-transfer filter (#9): quotes assume full output received; sell-tax
+        // tokens produce phantom opportunities. Exclude known FOT tokens.
+        if is_fee_on_transfer_token(&token_in) || is_fee_on_transfer_token(&token_out) {
+            return None;
+        }
 
         let max_input = Self::pool_max_input(pool_a);
 
@@ -189,7 +211,11 @@ impl MultiHopArbDetector {
                 let pool = pm.get(&addr)?;
                 current = Self::quote_single_pool(pool, current_token, current)?;
                 let info = pool.info();
-                current_token = if info.token0 == current_token { info.token1 } else { info.token0 };
+                current_token = if info.token0 == current_token {
+                    info.token1
+                } else {
+                    info.token0
+                };
             }
             Some(current)
         };
@@ -200,7 +226,8 @@ impl MultiHopArbDetector {
             return None;
         }
 
-        let gas_limit = estimate_gas_for_multi_hop(path, pm, gas_config.flash_loan_provider.gas_overhead());
+        let gas_limit =
+            estimate_gas_for_multi_hop(path, pm, gas_config.flash_loan_provider.gas_overhead());
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
         let gross_profit = output_amount.saturating_sub(input_amount);
@@ -214,7 +241,8 @@ impl MultiHopArbDetector {
             (U256::from(net_profit), None)
         } else {
             let raw = U256::from(net_profit);
-            let native_profit = pm.normalize_to_native(token_out, net_profit)
+            let native_profit = pm
+                .normalize_to_native(token_out, net_profit)
                 .or_else(|| {
                     let total_input = input_amount;
                     let total_output = total_input.saturating_add(net_profit);
@@ -234,7 +262,11 @@ impl MultiHopArbDetector {
                 let pool = pm.get(&addr)?;
                 cur = Self::quote_single_pool(pool, cur_token, cur)?;
                 let info = pool.info();
-                cur_token = if info.token0 == cur_token { info.token1 } else { info.token0 };
+                cur_token = if info.token0 == cur_token {
+                    info.token1
+                } else {
+                    info.token0
+                };
             }
             (cur > x).then(|| cur - x)
         };
@@ -251,10 +283,26 @@ impl MultiHopArbDetector {
                     .map(U256::from)
             }
         };
-        let p1 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(101) / 100).and_then(normalize_slippage) } else { None };
-        let m1 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(99) / 100).and_then(normalize_slippage) } else { None };
-        let p2 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(102) / 100).and_then(normalize_slippage) } else { None };
-        let m2 = if input_amount > 0 { eval_raw(input_amount.saturating_mul(98) / 100).and_then(normalize_slippage) } else { None };
+        let p1 = if input_amount > 0 {
+            eval_raw(input_amount.saturating_mul(101) / 100).and_then(normalize_slippage)
+        } else {
+            None
+        };
+        let m1 = if input_amount > 0 {
+            eval_raw(input_amount.saturating_mul(99) / 100).and_then(normalize_slippage)
+        } else {
+            None
+        };
+        let p2 = if input_amount > 0 {
+            eval_raw(input_amount.saturating_mul(102) / 100).and_then(normalize_slippage)
+        } else {
+            None
+        };
+        let m2 = if input_amount > 0 {
+            eval_raw(input_amount.saturating_mul(98) / 100).and_then(normalize_slippage)
+        } else {
+            None
+        };
 
         Some(MevOpportunity {
             canonical_id: None,
@@ -288,18 +336,14 @@ impl MultiHopArbDetector {
     fn pool_max_input(pool: &PoolState) -> u128 {
         match pool {
             PoolState::UniswapV2(v2) => std::cmp::min(v2.reserve0, v2.reserve1),
-            PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, true)
-                .max(max_v3_tradeable_amount(v3, false)),
+            PoolState::UniswapV3(v3) => {
+                max_v3_tradeable_amount(v3, true).max(max_v3_tradeable_amount(v3, false))
+            }
             PoolState::UniswapV4(v4) => {
-                max_v3_tradeable_amount(v4, true)
-                    .max(max_v3_tradeable_amount(v4, false))
+                max_v3_tradeable_amount(v4, true).max(max_v3_tradeable_amount(v4, false))
             }
-            PoolState::Curve(c) => {
-                c.balances.iter().fold(0u128, |a, &b| a.max(b))
-            }
-            PoolState::Balancer(b) => {
-                b.balances.iter().fold(0u128, |a, &b| a.max(b))
-            }
+            PoolState::Curve(c) => c.balances.iter().fold(0u128, |a, &b| a.max(b)),
+            PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
             PoolState::Pendle(p) => std::cmp::min(p.total_pt, p.total_sy),
         }
@@ -318,15 +362,11 @@ impl MultiHopArbDetector {
                 constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
             }
             PoolState::Curve(curve) => {
-                let token_out = curve.token_index.keys()
-                    .filter(|k| **k != token_in)
-                    .min()?;
+                let token_out = curve.token_index.keys().filter(|k| **k != token_in).min()?;
                 quote_exact_in(pool, token_in, *token_out, amount_in)
             }
             PoolState::Balancer(bal) => {
-                let token_out = *bal.token_index.keys()
-                    .filter(|k| **k != token_in)
-                    .min()?;
+                let token_out = *bal.token_index.keys().filter(|k| **k != token_in).min()?;
                 quote_exact_in(pool, token_in, token_out, amount_in)
             }
             _ => {
@@ -357,4 +397,3 @@ fn estimate_gas_for_multi_hop(path: &[Address], pm: &PoolManager, flash_loan_gas
     }
     total
 }
-

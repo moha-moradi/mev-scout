@@ -1,9 +1,9 @@
+use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
+use crate::pool::state::pool_types::{PoolState, UniswapV2PoolState, UniswapV3PoolState};
+use alloy::primitives::{Address, U256};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use alloy::primitives::{Address, U256};
-use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
-use crate::pool::state::pool_types::{PoolState, UniswapV2PoolState, UniswapV3PoolState};
 
 /// Detection scan scope for incremental arbitrage scanning.
 ///
@@ -118,7 +118,10 @@ impl PoolManager {
 
     /// Get the effective max_pairs for a given token, accounting for per-token overrides.
     fn effective_max_pairs(&self, token: &Address) -> usize {
-        self.token_max_pairs.get(token).copied().unwrap_or(self.max_pairs_per_token)
+        self.token_max_pairs
+            .get(token)
+            .copied()
+            .unwrap_or(self.max_pairs_per_token)
     }
 
     /// Set the maximum number of concurrent RPC calls during pool initialization.
@@ -149,16 +152,10 @@ impl PoolManager {
         self.known_set.insert(addr);
         self.pools.insert(addr, state);
         if !info.token0.is_zero() {
-            self.token_index
-                .entry(info.token0)
-                .or_default()
-                .push(addr);
+            self.token_index.entry(info.token0).or_default().push(addr);
         }
         if !info.token1.is_zero() {
-            self.token_index
-                .entry(info.token1)
-                .or_default()
-                .push(addr);
+            self.token_index.entry(info.token1).or_default().push(addr);
         }
         *self.pairs_cache.lock().expect("pairs_cache mutex poisoned") = None;
     }
@@ -259,7 +256,11 @@ impl PoolManager {
             });
             // Use per-token-tier max_pairs if configured, else global default (H3)
             let token_limit = self.effective_max_pairs(_token);
-            let limit = if token_limit == 0 { sorted.len() } else { token_limit.min(sorted.len()) };
+            let limit = if token_limit == 0 {
+                sorted.len()
+            } else {
+                token_limit.min(sorted.len())
+            };
             for i in 0..limit {
                 for j in (i + 1)..limit {
                     let a = sorted[i];
@@ -295,16 +296,18 @@ impl PoolManager {
 
     /// Count pools that have non-zero reserves (i.e., initialized).
     pub fn initialized_count(&self) -> usize {
-        self.pools.values().filter(|p| match p {
-            PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
-            PoolState::UniswapV3(s) => s.liquidity > 0,
-            PoolState::UniswapV4(s) => s.liquidity > 0,
-            PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
-            PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
-            PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
-            PoolState::Pendle(s) => s.total_pt > 0 && s.total_sy > 0,
-        })
-        .count()
+        self.pools
+            .values()
+            .filter(|p| match p {
+                PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
+                PoolState::UniswapV3(s) => s.liquidity > 0,
+                PoolState::UniswapV4(s) => s.liquidity > 0,
+                PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
+                PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
+                PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
+                PoolState::Pendle(s) => s.total_pt > 0 && s.total_sy > 0,
+            })
+            .count()
     }
 
     /// Check if the given address is the wrapped native token (e.g., WMATIC, WETH).
@@ -350,7 +353,12 @@ impl PoolManager {
     /// 2-hop normalization fallback: token -> intermediate -> native.
     /// Iterates through pools trading `token` to find an intermediate token
     /// that itself has a pool pairing with `native`.
-    fn normalize_to_native_multi_hop(&self, token: Address, amount: u128, native: Address) -> Option<u128> {
+    fn normalize_to_native_multi_hop(
+        &self,
+        token: Address,
+        amount: u128,
+        native: Address,
+    ) -> Option<u128> {
         let token_pools = self.pools_for_token(&token)?;
         // Limit search to avoid excessive iteration
         for &pool_addr in token_pools.iter().take(10) {
@@ -375,8 +383,12 @@ impl PoolManager {
                     } else {
                         (v2.reserve1, v2.reserve0)
                     };
-                    if reserve_token == 0 { continue; }
-                    amount.saturating_mul(reserve_intermediate).saturating_div(reserve_token)
+                    if reserve_token == 0 {
+                        continue;
+                    }
+                    amount
+                        .saturating_mul(reserve_intermediate)
+                        .saturating_div(reserve_token)
                 }
                 other => crate::pool::math::quote_exact_in(other, token, intermediate, amount)?,
             };
@@ -393,14 +405,22 @@ impl PoolManager {
     /// Get V2 pool state by address (returns None if not a V2 pool or not found).
     pub fn get_v2_state(&self, address: &Address) -> Option<&UniswapV2PoolState> {
         self.pools.get(address).and_then(|p| {
-            if let PoolState::UniswapV2(state) = p { Some(state) } else { None }
+            if let PoolState::UniswapV2(state) = p {
+                Some(state)
+            } else {
+                None
+            }
         })
     }
 
     /// Get V3 pool state by address (returns None if not a V3 pool or not found).
     pub fn get_v3_state(&self, address: &Address) -> Option<&UniswapV3PoolState> {
         self.pools.get(address).and_then(|p| {
-            if let PoolState::UniswapV3(state) = p { Some(state) } else { None }
+            if let PoolState::UniswapV3(state) = p {
+                Some(state)
+            } else {
+                None
+            }
         })
     }
 
@@ -412,25 +432,35 @@ impl PoolManager {
         sqrt_price_x96: U256,
         liquidity: u128,
     ) -> Option<(u128, u128)> {
-        if liquidity == 0 { return None; }
+        if liquidity == 0 {
+            return None;
+        }
         let tvl = liquidity;
         // Use sqrt price for direction: if native is token0,
         // price = (sqrtPriceX96 / 2^96)^2 token1 per token0
         let price = if *token0 == *native {
             let sqrt = sqrt_price_x96;
-            if sqrt.is_zero() { return None; }
+            if sqrt.is_zero() {
+                return None;
+            }
             let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
             let p = p_u256.saturating_to::<u128>();
-            if p == 0 { return None; }
+            if p == 0 {
+                return None;
+            }
             p
         } else {
             let sqrt = sqrt_price_x96;
-            if sqrt.is_zero() { return None; }
+            if sqrt.is_zero() {
+                return None;
+            }
             let one: U256 = U256::from(1u128) << 192;
             let inv: U256 = one / sqrt;
             let p_u256: U256 = inv.saturating_mul(inv) >> 192;
             let p = p_u256.saturating_to::<u128>();
-            if p == 0 { return None; }
+            if p == 0 {
+                return None;
+            }
             p
         };
         Some((tvl, tvl.saturating_mul(price)))
@@ -534,7 +564,11 @@ impl PoolManager {
 
 impl Clone for PoolManager {
     fn clone(&self) -> Self {
-        let cache = self.pairs_cache.lock().expect("pairs_cache mutex poisoned").clone();
+        let cache = self
+            .pairs_cache
+            .lock()
+            .expect("pairs_cache mutex poisoned")
+            .clone();
         PoolManager {
             pools: self.pools.clone(),
             token_index: self.token_index.clone(),

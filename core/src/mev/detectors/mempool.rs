@@ -3,11 +3,11 @@ use alloy::primitives::Address;
 use crate::data::TxData;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
-use crate::types::MevOpportunity;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{PoolManager, PoolState, ScanScope};
 use crate::rpc::{BlockRef, RpcClient};
 use crate::types::GasConfig;
+use crate::types::MevOpportunity;
 use crate::utils::{abi_decode_address, abi_decode_u128, abi_decode_u256};
 
 /// Result of capturing the pending block from the mempool.
@@ -245,7 +245,8 @@ fn estimate_v2_hop_output(
             } else {
                 (v2.reserve1, v2.reserve0)
             };
-            let output = constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)?;
+            let output =
+                constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)?;
             Some((output, pool_addr))
         }
         _ => {
@@ -294,7 +295,13 @@ fn estimate_v2_exact_in(data: &[u8], pool_manager: &PoolManager) -> Vec<PendingP
         let token_out = window[1];
         match estimate_v2_hop_output(pool_manager, token_in, token_out, current_amount) {
             Some((output, pool_addr)) => {
-                effects.extend(v2_swap_effects(pool_addr, token_in, token_out, current_amount, output));
+                effects.extend(v2_swap_effects(
+                    pool_addr,
+                    token_in,
+                    token_out,
+                    current_amount,
+                    output,
+                ));
                 current_amount = output;
             }
             None => break,
@@ -321,7 +328,12 @@ fn estimate_v2_hop_input(
             } else {
                 (v2.reserve1, v2.reserve0)
             };
-            let input = crate::pool::math::constant_product_input_amount(amount_out, reserve_in, reserve_out, v2.info.fee)?;
+            let input = crate::pool::math::constant_product_input_amount(
+                amount_out,
+                reserve_in,
+                reserve_out,
+                v2.info.fee,
+            )?;
             Some((input, pool_addr))
         }
         _ => None,
@@ -346,7 +358,13 @@ fn estimate_v2_exact_out(data: &[u8], pool_manager: &PoolManager) -> Vec<Pending
         let token_out = window[1];
         match estimate_v2_hop_input(pool_manager, token_in, token_out, remaining_out) {
             Some((input, pool_addr)) => {
-                hop_effects.push(v2_swap_effects(pool_addr, token_in, token_out, input, remaining_out));
+                hop_effects.push(v2_swap_effects(
+                    pool_addr,
+                    token_in,
+                    token_out,
+                    input,
+                    remaining_out,
+                ));
                 remaining_out = input;
             }
             None => return Vec::new(),
@@ -381,10 +399,19 @@ fn parse_v3_path(path_bytes: &[u8]) -> Vec<V3Hop> {
     let mut offset = 0;
     while offset + 43 <= path_bytes.len() {
         let token_in = Address::from_slice(&path_bytes[offset..offset + 20]);
-        let fee_bytes: [u8; 4] = [0, path_bytes[offset + 20], path_bytes[offset + 21], path_bytes[offset + 22]];
+        let fee_bytes: [u8; 4] = [
+            0,
+            path_bytes[offset + 20],
+            path_bytes[offset + 21],
+            path_bytes[offset + 22],
+        ];
         let fee = u32::from_be_bytes(fee_bytes);
         let token_out = Address::from_slice(&path_bytes[offset + 23..offset + 43]);
-        hops.push(V3Hop { token_in, token_out, fee });
+        hops.push(V3Hop {
+            token_in,
+            token_out,
+            fee,
+        });
         // For the next hop: the current token_out becomes the next token_in
         offset += 23;
     }
@@ -454,13 +481,21 @@ fn estimate_v3_exact_in(data: &[u8], pool_manager: &PoolManager) -> Vec<PendingP
                 let zero_for_one = v3.info.token0 == hop.token_in;
                 crate::pool::math::v3::quote_v3_exact_in(v3, current_amount, zero_for_one)
             }
-            pool => crate::pool::math::quote_exact_in(pool, hop.token_in, hop.token_out, current_amount),
+            pool => {
+                crate::pool::math::quote_exact_in(pool, hop.token_in, hop.token_out, current_amount)
+            }
         });
         let output = match output {
             Some(o) => o,
             None => break,
         };
-        effects.extend(v2_swap_effects(pool_addr, hop.token_in, hop.token_out, current_amount, output));
+        effects.extend(v2_swap_effects(
+            pool_addr,
+            hop.token_in,
+            hop.token_out,
+            current_amount,
+            output,
+        ));
         current_amount = output;
     }
     effects

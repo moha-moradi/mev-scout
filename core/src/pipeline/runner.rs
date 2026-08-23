@@ -4,22 +4,22 @@ use std::cell::RefCell;
 
 use crate::cache::SqliteStore;
 use crate::data::ExecutedLog;
-use crate::types::MevOpportunity;
-use crate::mev::detectors::{mempool, detect_pending_opportunities};
-use crate::mev::detectors::JitDetector;
-use crate::mev::detectors::{AaveReserveCache, LiquidationDetector};
-use crate::mev::detectors::SandwichDetector;
+use crate::error;
 use crate::mev::detectors::JitArbDetector;
+use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
+use crate::mev::detectors::SandwichDetector;
 use crate::mev::detectors::TwoHopArbDetector;
-use alloy::primitives::{Address, U256};
+use crate::mev::detectors::{detect_pending_opportunities, mempool};
+use crate::mev::detectors::{AaveReserveCache, LiquidationDetector};
+use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
-use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
-use crate::error;
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, GasModel};
+use alloy::primitives::{Address, U256};
 
 /// Orchestrates MEV backtest execution by replaying blocks through revm and
 /// running detection strategies against updated pool state.
@@ -52,11 +52,7 @@ impl BacktestRunner {
     ///
     /// This is typically called after pool initialization is complete and the
     /// block replayer has been constructed with the cache and RPC client.
-    pub fn new(
-        replayer: BlockReplayer,
-        pool_manager: PoolManager,
-        gas_config: GasConfig,
-    ) -> Self {
+    pub fn new(replayer: BlockReplayer, pool_manager: PoolManager, gas_config: GasConfig) -> Self {
         if gas_config.priority_fee_gwei == 0.0 {
             tracing::warn!(
                 "priority_fee_gwei is 0 — profit estimates will overestimate \
@@ -122,11 +118,7 @@ impl BacktestRunner {
     /// real per-asset liquidation thresholds and bonuses during replay.
     ///
     /// Should be called once before `run_block()` / `run_range()`.
-    pub async fn prefetch_aave_reserves(
-        &mut self,
-        aave_pool: Address,
-        block: u64,
-    ) {
+    pub async fn prefetch_aave_reserves(&mut self, aave_pool: Address, block: u64) {
         let tokens: Vec<Address> = self.pool_manager.token_addresses();
         if tokens.is_empty() {
             tracing::warn!("No tokens in pool manager, skipping Aave reserve pre-fetch");
@@ -137,12 +129,9 @@ impl BacktestRunner {
             tokens.len(),
             block,
         );
-        self.aave_reserve_cache.prefetch(
-            self.replayer.rpc(),
-            aave_pool,
-            &tokens,
-            block,
-        ).await;
+        self.aave_reserve_cache
+            .prefetch(self.replayer.rpc(), aave_pool, &tokens, block)
+            .await;
         tracing::info!(
             "Aave reserve cache: {}/{} tokens resolved",
             self.aave_reserve_cache.len(),
@@ -253,11 +242,24 @@ impl BacktestRunner {
     /// 3. JIT liquidity (Mint→Swap→Burn pattern)
     /// 4. Sandwich attacks (frontrun/victim/backrun triple)
     /// 5. JIT+Arb hybrid (Mint + cross-pool swap by same sender)
-    pub fn run_block(&mut self, block_num: u64) -> error::Result<(Vec<MevOpportunity>, BlockReplayStats, Vec<u128>)> {
+    pub fn run_block(
+        &mut self,
+        block_num: u64,
+    ) -> error::Result<(Vec<MevOpportunity>, BlockReplayStats, Vec<u128>)> {
         let (block_data, txs) = self.replayer.load_block_data(block_num)?;
         let total_tx_count = txs.len();
         if txs.is_empty() {
-            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0, pending_tx_count: 0, mempool_opp_count: 0 }, Vec::new()));
+            return Ok((
+                Vec::new(),
+                BlockReplayStats {
+                    block_number: block_num,
+                    total_tx_count: 0,
+                    dex_tx_count: 0,
+                    pending_tx_count: 0,
+                    mempool_opp_count: 0,
+                },
+                Vec::new(),
+            ));
         }
 
         let timestamp = block_data.timestamp;
@@ -276,33 +278,32 @@ impl BacktestRunner {
         let mut jit_detector = JitDetector::new(block_num);
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
         let mut sandwich_detector = SandwichDetector::new(block_num);
-        let mut jit_arb_detector = JitArbDetector::new(block_num).with_proximity_window(self.proximity_window);
-        let mut liquidation_detector = LiquidationDetector::new(block_num)
-            .with_reserve_cache(self.aave_reserve_cache.clone());
+        let mut jit_arb_detector =
+            JitArbDetector::new(block_num).with_proximity_window(self.proximity_window);
+        let mut liquidation_detector =
+            LiquidationDetector::new(block_num).with_reserve_cache(self.aave_reserve_cache.clone());
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let pool_manager = std::mem::take(&mut self.pool_manager);
         let pool_manager = RefCell::new(pool_manager);
 
         // Shared cell bridging TxData.from from filter closure to on_tx closure
-        let current_tx_from: RefCell<Option<Address>> =
-            RefCell::new(None);
+        let current_tx_from: RefCell<Option<Address>> = RefCell::new(None);
         let dex_tx_count: RefCell<usize> = RefCell::new(0);
         // Collect effective gas prices for gas price distribution (H10)
         let gas_prices: RefCell<Vec<u128>> = RefCell::new(Vec::new());
         // Dirty pools updated by earlier transactions of this block. The first
         // detection pass scans everything; subsequent passes only re-check
         // pairs containing a dirty pool (untouched states yield no new ops).
-        let dirty_pools: RefCell<Option<std::collections::HashSet<Address>>> =
-            RefCell::new(None);
+        let dirty_pools: RefCell<Option<std::collections::HashSet<Address>>> = RefCell::new(None);
 
         self.replayer.replay_each_filtered(
             block_num,
             |tx, receipt_logs| {
                 *current_tx_from.borrow_mut() = Some(tx.from);
-                let matched = tx.to.is_some_and(|to| {
-                    pool_addrs.contains(&to) || token_addrs.contains(&to)
-                })
+                let matched = tx
+                    .to
+                    .is_some_and(|to| pool_addrs.contains(&to) || token_addrs.contains(&to))
                     || receipt_logs.iter().any(|l| {
                         pool_addrs.contains(&l.address) || token_addrs.contains(&l.address)
                     });
@@ -364,7 +365,8 @@ impl BacktestRunner {
                 // JIT detector
                 let sender = *current_tx_from.borrow();
                 jit_detector.process_tx(i, &tx.logs, sender, &pm);
-                let jit_opps = jit_detector.detect(timestamp, base_fee_per_gas, &self.gas_config, &pm);
+                let jit_opps =
+                    jit_detector.detect(timestamp, base_fee_per_gas, &self.gas_config, &pm);
                 if !jit_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JIT opportunities",
@@ -377,7 +379,8 @@ impl BacktestRunner {
 
                 // Sandwich detector
                 sandwich_detector.process_tx(i, &tx.logs, sender, &pm);
-                let sandwich_opps = sandwich_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
+                let sandwich_opps =
+                    sandwich_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
                 if !sandwich_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} sandwich opportunities",
@@ -390,7 +393,8 @@ impl BacktestRunner {
 
                 // JitArb detector — use &pm (auto-derefs to &PoolManager)
                 jit_arb_detector.process_tx(i, &tx.logs, sender, &pm);
-                let jit_arb_opps = jit_arb_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
+                let jit_arb_opps =
+                    jit_arb_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
                 if !jit_arb_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JitArb opportunities",
@@ -403,9 +407,8 @@ impl BacktestRunner {
 
                 // Liquidation detector — catches Aave V3 LiquidationCall events
                 liquidation_detector.process_tx(i, &tx.logs);
-                let liq_opps = liquidation_detector.detect(
-                    &pm, timestamp, base_fee_per_gas, self.gas_config,
-                );
+                let liq_opps =
+                    liquidation_detector.detect(&pm, timestamp, base_fee_per_gas, self.gas_config);
                 if !liq_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} liquidation opportunities",
@@ -466,13 +469,17 @@ impl BacktestRunner {
         self.pool_manager = pool_manager.into_inner();
         self.last_processed_block = block_num;
 
-        Ok((all_opportunities, BlockReplayStats {
-            block_number: block_num,
-            total_tx_count,
-            dex_tx_count: dex_tx_count.into_inner(),
-            pending_tx_count: 0, // populated at range level by run_range_with_pga
-            mempool_opp_count: 0, // populated at range level by run_range_with_pga
-        }, gas_prices.into_inner()))
+        Ok((
+            all_opportunities,
+            BlockReplayStats {
+                block_number: block_num,
+                total_tx_count,
+                dex_tx_count: dex_tx_count.into_inner(),
+                pending_tx_count: 0, // populated at range level by run_range_with_pga
+                mempool_opp_count: 0, // populated at range level by run_range_with_pga
+            },
+            gas_prices.into_inner(),
+        ))
     }
 
     /// Lightweight, archive-free pool-state sync used by live mode.
@@ -495,7 +502,17 @@ impl BacktestRunner {
         let receipts = self.replayer.load_receipts(block_num)?;
         let total_tx_count = txs.len();
         if txs.is_empty() {
-            return Ok((Vec::new(), BlockReplayStats { block_number: block_num, total_tx_count: 0, dex_tx_count: 0, pending_tx_count: 0, mempool_opp_count: 0 }, Vec::new()));
+            return Ok((
+                Vec::new(),
+                BlockReplayStats {
+                    block_number: block_num,
+                    total_tx_count: 0,
+                    dex_tx_count: 0,
+                    pending_tx_count: 0,
+                    mempool_opp_count: 0,
+                },
+                Vec::new(),
+            ));
         }
 
         let timestamp = block_data.timestamp;
@@ -528,12 +545,12 @@ impl BacktestRunner {
                 })
                 .unwrap_or_default();
 
-            let matched = tx.to.is_some_and(|to| {
-                pool_addrs.contains(&to) || token_addrs.contains(&to)
-            })
-                || logs.iter().any(|l| {
-                    pool_addrs.contains(&l.address) || token_addrs.contains(&l.address)
-                });
+            let matched = tx
+                .to
+                .is_some_and(|to| pool_addrs.contains(&to) || token_addrs.contains(&to))
+                || logs
+                    .iter()
+                    .any(|l| pool_addrs.contains(&l.address) || token_addrs.contains(&l.address));
             if matched {
                 dex_tx_count += 1;
             }
@@ -568,7 +585,9 @@ impl BacktestRunner {
             self.pool_manager.update_from_logs(&logs);
             let newly_dirty = self.pool_manager.take_dirty_pools();
             if !newly_dirty.is_empty() {
-                dirty_pools.get_or_insert_with(Default::default).extend(newly_dirty);
+                dirty_pools
+                    .get_or_insert_with(Default::default)
+                    .extend(newly_dirty);
             }
         }
 
@@ -601,13 +620,17 @@ impl BacktestRunner {
 
         self.last_processed_block = block_num;
 
-        Ok((all_opportunities, BlockReplayStats {
-            block_number: block_num,
-            total_tx_count,
-            dex_tx_count,
-            pending_tx_count: 0,
-            mempool_opp_count: 0,
-        }, Vec::new()))
+        Ok((
+            all_opportunities,
+            BlockReplayStats {
+                block_number: block_num,
+                total_tx_count,
+                dex_tx_count,
+                pending_tx_count: 0,
+                mempool_opp_count: 0,
+            },
+            Vec::new(),
+        ))
     }
 
     /// Run backtest over a resolved block range, collecting all detected
@@ -748,7 +771,8 @@ impl BacktestRunner {
         let mut all_modes = Vec::new();
         let mut gas_dist = GasPriceDistribution::new(50);
 
-        let log_only_count = resolved.start_block..resolved.end_block.min(state_horizon.saturating_sub(1));
+        let log_only_count =
+            resolved.start_block..resolved.end_block.min(state_horizon.saturating_sub(1));
         let full_count = state_horizon.max(resolved.start_block)..=resolved.end_block;
         let log_only_n = if log_only_count.start <= log_only_count.end {
             log_only_count.end - log_only_count.start + 1
@@ -763,13 +787,21 @@ impl BacktestRunner {
 
         tracing::info!(
             "Hybrid range: blocks {}–{} ({} blocks) — {} log-only, {} full-replay (horizon={})",
-            resolved.start_block, resolved.end_block, resolved.block_count,
-            log_only_n, full_n, state_horizon,
+            resolved.start_block,
+            resolved.end_block,
+            resolved.block_count,
+            log_only_n,
+            full_n,
+            state_horizon,
         );
 
         for block_num in resolved.start_block..=resolved.end_block {
             let use_full = block_num >= state_horizon;
-            let mode = if use_full { BlockMode::FullReplay } else { BlockMode::LogOnly };
+            let mode = if use_full {
+                BlockMode::FullReplay
+            } else {
+                BlockMode::LogOnly
+            };
 
             let percentile = match self.gas_config.gas_model.target_percentile() {
                 Some(p) => Some(p),
@@ -787,7 +819,9 @@ impl BacktestRunner {
                     Ok((opps, stats, block_prices)) => {
                         tracing::info!(
                             "Block {} done (full-replay): {} opportunities ({} txs)",
-                            block_num, opps.len(), block_prices.len(),
+                            block_num,
+                            opps.len(),
+                            block_prices.len(),
                         );
                         for price in &block_prices {
                             gas_dist.add_tx_gas_price(*price);
@@ -810,13 +844,16 @@ impl BacktestRunner {
                         self.pool_manager = checkpoint.clone();
                         tracing::warn!(
                             "Block {} full-replay failed ({}), falling back to log-only: {:?}",
-                            block_num, block_num, e,
+                            block_num,
+                            block_num,
+                            e,
                         );
                         match self.sync_block_from_logs(block_num) {
                             Ok((opps, stats, _)) => {
                                 tracing::info!(
                                     "Block {} done (log-only fallback): {} opportunities",
-                                    block_num, opps.len(),
+                                    block_num,
+                                    opps.len(),
                                 );
                                 all.extend(opps);
                                 all_stats.push(stats);
@@ -824,7 +861,11 @@ impl BacktestRunner {
                             }
                             Err(e2) => {
                                 self.pool_manager = checkpoint.clone();
-                                tracing::error!("Block {} log-only also failed: {:?}", block_num, e2);
+                                tracing::error!(
+                                    "Block {} log-only also failed: {:?}",
+                                    block_num,
+                                    e2
+                                );
                             }
                         }
                     }
@@ -834,7 +875,8 @@ impl BacktestRunner {
                     Ok((opps, stats, _)) => {
                         tracing::info!(
                             "Block {} done (log-only): {} opportunities",
-                            block_num, opps.len(),
+                            block_num,
+                            opps.len(),
                         );
                         all.extend(opps);
                         all_stats.push(stats);
@@ -855,7 +897,8 @@ impl BacktestRunner {
             }) {
                 tracing::info!(
                     "Pending block captured: {} transactions in mempool (block #{})",
-                    capture.tx_count, capture.block_number,
+                    capture.tx_count,
+                    capture.block_number,
                 );
                 if let Some(last) = all_stats.last_mut() {
                     last.pending_tx_count = capture.tx_count;
@@ -870,7 +913,8 @@ impl BacktestRunner {
                 if !pending_opps.is_empty() {
                     tracing::info!(
                         "Mempool detection: {} opportunities visible in mempool (block #{})",
-                        pending_opps.len(), capture.block_number,
+                        pending_opps.len(),
+                        capture.block_number,
                     );
                     if let Some(last) = all_stats.last_mut() {
                         last.mempool_opp_count = pending_opps.len();
@@ -927,20 +971,18 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
             }));
         }
         crate::dex_type::DexType::Balancer => {
-            pool_manager.add_pool(PoolState::Balancer(
-                crate::pool::state::BalancerPoolState {
-                    info,
-                    balances: vec![],
-                    token_index: std::collections::HashMap::new(),
-                    pool_id: None,
-                    weights: vec![],
-                    pool_variant: crate::pool::state::BalancerPoolVariant::Weighted,
-                    amplification: None,
-                    scaling_factors: vec![],
-                    bpt_index: None,
-                    rate_providers: vec![],
-                },
-            ));
+            pool_manager.add_pool(PoolState::Balancer(crate::pool::state::BalancerPoolState {
+                info,
+                balances: vec![],
+                token_index: std::collections::HashMap::new(),
+                pool_id: None,
+                weights: vec![],
+                pool_variant: crate::pool::state::BalancerPoolVariant::Weighted,
+                amplification: None,
+                scaling_factors: vec![],
+                bpt_index: None,
+                rate_providers: vec![],
+            }));
         }
         crate::dex_type::DexType::TraderJoeLB => {
             let bin_step = info.bin_step.unwrap_or(0);
@@ -956,7 +998,11 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
         crate::dex_type::DexType::Solidly | crate::dex_type::DexType::Camelot => {
             if info.is_stable == Some(true) {
                 // Solidly/Camelot stable pools use StableSwap invariant (A=200 for Solidly)
-                let a_coeff = if info.dex_type == crate::dex_type::DexType::Solidly { 200 } else { 100 };
+                let a_coeff = if info.dex_type == crate::dex_type::DexType::Solidly {
+                    200
+                } else {
+                    100
+                };
                 pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
                     info: info.clone(),
                     balances: vec![0, 0],

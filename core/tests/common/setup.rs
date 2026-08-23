@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use alloy::primitives::{address, Address, B256, Bytes, U256};
+use alloy::primitives::{address, Address, Bytes, B256, U256};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::data::{BlockData, ReceiptData, TxData};
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::mev::detectors::multi_hop::MultiHopArbDetector;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::BacktestRunner;
-use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, PendlePoolState, PoolInfo, PoolManager, PoolState, ScanScope,
     UniswapV2PoolState, UniswapV3PoolState,
@@ -59,7 +59,9 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve1: 0,
         }),
         DexType::UniswapV3 => PoolState::UniswapV3(UniswapV3PoolState::new(info)),
-        DexType::UniswapV4 => PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info)),
+        DexType::UniswapV4 => {
+            PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info))
+        }
         DexType::Curve => PoolState::Curve(mev_scout_core::pool::state::CurvePoolState {
             info,
             balances: vec![],
@@ -92,9 +94,9 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve0: 0,
             reserve1: 0,
         }),
-        DexType::TraderJoeLB => {
-            PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
-        }
+        DexType::TraderJoeLB => PoolState::TraderJoeLB(
+            mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0),
+        ),
         DexType::Pendle => PoolState::Pendle(PendlePoolState::new(info)),
     }
 }
@@ -152,13 +154,21 @@ pub fn default_gas_config() -> GasConfig {
     GasConfig::default()
 }
 
-pub fn two_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::types::MevOpportunity> {
+pub fn two_hop_detect(
+    pm: &PoolManager,
+    block: u64,
+    ts: u64,
+) -> Vec<mev_scout_core::types::MevOpportunity> {
     let mut d = TwoHopArbDetector::new(block);
     let full = ScanScope::Full;
     d.detect(pm, 0, ts, 50_000_000_000, default_gas_config(), &full)
 }
 
-pub fn multi_hop_detect(pm: &PoolManager, block: u64, ts: u64) -> Vec<mev_scout_core::types::MevOpportunity> {
+pub fn multi_hop_detect(
+    pm: &PoolManager,
+    block: u64,
+    ts: u64,
+) -> Vec<mev_scout_core::types::MevOpportunity> {
     let mut d = MultiHopArbDetector::new(block);
     let full = ScanScope::Full;
     d.detect(pm, 0, ts, 50_000_000_000, GasConfig::default(), &full)

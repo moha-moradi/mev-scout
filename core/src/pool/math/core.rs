@@ -1,9 +1,9 @@
 //! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
 //! and unified `quote_exact_in` dispatcher for all pool types.
 
-use alloy::primitives::{Address, U256, U512};
-use crate::pool::state::PoolState;
 use super::consts::{BPS_DENOMINATOR, GOLDEN_SECTION_REFINE_ITERATIONS, N_HOP_GRID_POINTS};
+use crate::pool::state::PoolState;
+use alloy::primitives::{Address, U256, U512};
 
 /// Rational approximation of the golden-ratio conjugate φ⁻¹ = 0.6180339887…
 /// used for golden-section step sizing. Kept as an exact rational so interval
@@ -39,11 +39,11 @@ fn isqrt_u512(n: U512) -> U512 {
         x = y;
     }
 }
-use super::v3::quote_v3_exact_in;
-use super::curve;
 use super::balancer;
+use super::curve;
 use super::lb;
 use super::pendle;
+use super::v3::quote_v3_exact_in;
 
 /// Unified single-pool quoting dispatch.
 ///
@@ -85,13 +85,16 @@ pub fn quote_exact_in(
             quote_v3_exact_in(v4, amount_in, zero_for_one)
         }
         PoolState::Curve(curve) => {
-            if !curve.token_index.contains_key(&token_in) || !curve.token_index.contains_key(&token_out) {
+            if !curve.token_index.contains_key(&token_in)
+                || !curve.token_index.contains_key(&token_out)
+            {
                 return None;
             }
             curve::curve_output_amount(amount_in, curve, token_in, token_out)
         }
         PoolState::Balancer(bal) => {
-            if !bal.token_index.contains_key(&token_in) || !bal.token_index.contains_key(&token_out) {
+            if !bal.token_index.contains_key(&token_in) || !bal.token_index.contains_key(&token_out)
+            {
                 return None;
             }
             balancer::balancer_quote_exact_in(amount_in, bal, token_in, token_out)
@@ -137,7 +140,9 @@ pub fn constant_product_output_amount(
     let fee_factor = BPS_DENOMINATOR - fee as u128;
     let amount_in_with_fee = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_with_fee.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_mul(BPS_DENOMINATOR)?.checked_add(amount_in_with_fee)?;
+    let denominator = reserve_in
+        .checked_mul(BPS_DENOMINATOR)?
+        .checked_add(amount_in_with_fee)?;
     let output = numerator / denominator;
     if output == 0 {
         return None;
@@ -159,7 +164,9 @@ pub fn constant_product_input_amount(
         return None;
     }
     let fee_factor = BPS_DENOMINATOR - fee as u128;
-    let numerator = reserve_in.checked_mul(amount_out)?.checked_mul(BPS_DENOMINATOR)?;
+    let numerator = reserve_in
+        .checked_mul(amount_out)?
+        .checked_mul(BPS_DENOMINATOR)?;
     let denominator = (reserve_out.checked_sub(amount_out)?).checked_mul(fee_factor)?;
     let input = numerator / denominator;
     if input == 0 {
@@ -249,8 +256,12 @@ pub fn optimal_two_hop_arb(
         }
         if let Some(r) = simulate_two_hop(
             cand,
-            pool_a_reserve_in, pool_a_reserve_out, pool_a_fee,
-            pool_b_reserve_in, pool_b_reserve_out, pool_b_fee,
+            pool_a_reserve_in,
+            pool_a_reserve_out,
+            pool_a_fee,
+            pool_b_reserve_in,
+            pool_b_reserve_out,
+            pool_b_fee,
         ) {
             match &best {
                 Some(b) if b.profit >= r.profit => {}
@@ -264,8 +275,12 @@ pub fn optimal_two_hop_arb(
 
 fn simulate_two_hop(
     input_amount: u128,
-    r_a_in: u128, r_a_out: u128, fee_a: u32,
-    r_b_in: u128, r_b_out: u128, fee_b: u32,
+    r_a_in: u128,
+    r_a_out: u128,
+    fee_a: u32,
+    r_b_in: u128,
+    r_b_out: u128,
+    fee_b: u32,
 ) -> Option<TwoHopArbResult> {
     // Swap 1: buy intermediate token from pool A
     let intermediate = constant_product_output_amount(input_amount, r_a_in, r_a_out, fee_a)?;
@@ -306,8 +321,12 @@ fn golden_section_maximize(
     let mut x1 = hi - golden_step(hi - lo);
     let mut x2 = lo + golden_step(hi - lo);
 
-    if x1 <= lo { x1 = lo + 1; }
-    if x2 >= hi { x2 = hi - 1; }
+    if x1 <= lo {
+        x1 = lo + 1;
+    }
+    if x2 >= hi {
+        x2 = hi - 1;
+    }
     if x1 >= x2 {
         let p = eval_profit(lo.max(1), quote_fn);
         return (p > 0).then(|| lo.max(1));
@@ -326,21 +345,29 @@ fn golden_section_maximize(
             x2 = x1;
             f2 = f1;
             x1 = hi - golden_step(hi - lo);
-            if x1 <= lo { x1 = lo + 1; }
+            if x1 <= lo {
+                x1 = lo + 1;
+            }
             f1 = eval_profit(x1, quote_fn);
         } else {
             lo = x1;
             x1 = x2;
             f1 = f2;
             x2 = lo + golden_step(hi - lo);
-            if x2 >= hi { x2 = hi - 1; }
+            if x2 >= hi {
+                x2 = hi - 1;
+            }
             f2 = eval_profit(x2, quote_fn);
         }
     }
 
-    if f1 >= f2 && f1 > 0 { Some(x1) }
-    else if f2 > 0 { Some(x2) }
-    else { None }
+    if f1 >= f2 && f1 > 0 {
+        Some(x1)
+    } else if f2 > 0 {
+        Some(x2)
+    } else {
+        None
+    }
 }
 
 /// Coarse grid scan followed by golden-section refinement and random restarts.
@@ -394,7 +421,9 @@ fn grid_plus_refine(
     let lo = best_input.saturating_sub(radius);
     let hi = (best_input + radius).min(max_input);
 
-    if let Some(refined) = golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
+    if let Some(refined) =
+        golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS)
+    {
         if let Some(output) = quote_fn(refined) {
             if output > refined && output - refined > best_profit {
                 best_profit = output - refined;
@@ -422,7 +451,9 @@ fn grid_plus_refine(
         if r_lo >= r_hi {
             continue;
         }
-        if let Some(x) = golden_section_maximize(r_lo, r_hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
+        if let Some(x) =
+            golden_section_maximize(r_lo, r_hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS)
+        {
             if let Some(output) = quote_fn(x) {
                 if output > x {
                     let profit = output - x;
@@ -531,7 +562,9 @@ pub fn optimal_on_segments(
         consider(lo);
         if hi > lo {
             consider(hi);
-            if let Some(x) = golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS) {
+            if let Some(x) =
+                golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS)
+            {
                 consider(x);
             }
         }
@@ -577,8 +610,12 @@ mod tests {
 
     /// Brute-force reference: dense scan of the exact integer simulator.
     fn brute_force_best(
-        pool_a_reserve_in: u128, pool_a_reserve_out: u128, pool_a_fee: u32,
-        pool_b_reserve_in: u128, pool_b_reserve_out: u128, pool_b_fee: u32,
+        pool_a_reserve_in: u128,
+        pool_a_reserve_out: u128,
+        pool_a_fee: u32,
+        pool_b_reserve_in: u128,
+        pool_b_reserve_out: u128,
+        pool_b_fee: u32,
     ) -> Option<TwoHopArbResult> {
         let max_input = pool_a_reserve_in.min(pool_b_reserve_out);
         let step = (max_input / 20_000).max(1);
@@ -587,8 +624,12 @@ mod tests {
         while x <= max_input {
             if let Some(r) = simulate_two_hop(
                 x,
-                pool_a_reserve_in, pool_a_reserve_out, pool_a_fee,
-                pool_b_reserve_in, pool_b_reserve_out, pool_b_fee,
+                pool_a_reserve_in,
+                pool_a_reserve_out,
+                pool_a_fee,
+                pool_b_reserve_in,
+                pool_b_reserve_out,
+                pool_b_fee,
             ) {
                 match &best {
                     Some(b) if b.profit >= r.profit => {}
@@ -604,11 +645,32 @@ mod tests {
     fn closed_form_matches_brute_force() {
         let cases = [
             // (ra_i, ra_o, fee_a, rb_i, rb_o, fee_b) — imbalanced stables-style
-            (1_000_000u128, 2_000_000u128, 30u32, 2_000_000u128, 500_000u128, 30u32),
+            (
+                1_000_000u128,
+                2_000_000u128,
+                30u32,
+                2_000_000u128,
+                500_000u128,
+                30u32,
+            ),
             (1_000_000, 3_000_000, 30, 1_000_000, 1_000_000, 30),
             (10_000_000, 10_050_000, 25, 8_000_000, 8_100_000, 25),
-            (999_999_999, 1_000_000_001, 30, 1_000_000_001, 999_999_999, 30),
-            (50_000_000_000_000, 120_000_000_000_000, 997, 80_000_000_000_000, 30_000_000_000_000, 996),
+            (
+                999_999_999,
+                1_000_000_001,
+                30,
+                1_000_000_001,
+                999_999_999,
+                30,
+            ),
+            (
+                50_000_000_000_000,
+                120_000_000_000_000,
+                997,
+                80_000_000_000_000,
+                30_000_000_000_000,
+                996,
+            ),
             // zero-fee pools
             (1_000_000, 2_000_000, 0, 2_000_000, 1_100_000, 0),
             // asymmetric fees
@@ -621,13 +683,25 @@ mod tests {
                 fast.is_some(),
                 slow.is_some(),
                 "profitability disagreement for case ({},{},{},{},{},{})",
-                ra_i, ra_o, fa, rb_i, rb_o, fb,
+                ra_i,
+                ra_o,
+                fa,
+                rb_i,
+                rb_o,
+                fb,
             );
             if let (Some(f), Some(s)) = (fast, slow) {
                 assert!(
                     f.profit >= s.profit * 99 / 100,
                     "closed-form profit {} below brute-force {} for ({},{},{},{},{},{})",
-                    f.profit, s.profit, ra_i, ra_o, fa, rb_i, rb_o, fb,
+                    f.profit,
+                    s.profit,
+                    ra_i,
+                    ra_o,
+                    fa,
+                    rb_i,
+                    rb_o,
+                    fb,
                 );
             }
         }
@@ -655,7 +729,11 @@ mod tests {
         assert_eq!(golden_step(0), 0);
         assert_eq!(golden_step(10), 6);
         assert_eq!(golden_step(10_000_000_000), 6_180_339_887);
-        assert_eq!(golden_step(u128::MAX), (U256::from(u128::MAX) * U256::from(GOLDEN_STEP_NUM) / U256::from(GOLDEN_STEP_DEN)).try_into().unwrap());
+        assert_eq!(
+            golden_step(u128::MAX),
+            (U256::from(u128::MAX) * U256::from(GOLDEN_STEP_NUM) / U256::from(GOLDEN_STEP_DEN))
+                .try_into()
+                .unwrap()
+        );
     }
 }
-
