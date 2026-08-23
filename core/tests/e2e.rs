@@ -10,8 +10,8 @@ use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
 use mev_scout_core::pool::state::{
-    BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, UniswapV2PoolState,
-    UniswapV3PoolState,
+    BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, ScanScope,
+    UniswapV2PoolState, UniswapV3PoolState,
 };
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
