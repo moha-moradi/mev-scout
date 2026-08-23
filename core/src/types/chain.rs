@@ -2,48 +2,6 @@
 
 use alloy::primitives::Address;
 
-/// Schema kind for a remote subgraph — determines GraphQL query shape.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SubgraphSchema {
-    #[serde(rename = "uniswap_v2")]
-    UniswapV2,
-    #[serde(rename = "uniswap_v3")]
-    UniswapV3,
-    #[serde(rename = "algebra")]
-    Algebra,
-    #[serde(rename = "balancer_v2")]
-    BalancerV2,
-    #[serde(rename = "curve")]
-    Curve,
-}
-
-impl Default for SubgraphSchema {
-    fn default() -> Self { Self::UniswapV3 }
-}
-
-/// Remote subgraph endpoint configuration for a single DEX on a chain.
-///
-/// `urls` are tried in order (gateway → hosted → Goldsky...). Any URL
-/// containing `${GRAPH_API_KEY}` is expanded from the `GRAPH_API_KEY` env
-/// var; if the var is unset that URL is skipped. `schema` determines the
-/// GraphQL query and response parsing.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SubgraphConfig {
-    /// Human-readable DEX name (e.g. "Uniswap V3", "QuickSwap Algebra").
-    #[serde(default)]
-    pub dex_name: String,
-    /// DexType string (e.g. "uniswap_v3", "balancer"). Falls back to schema default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dex_type: Option<String>,
-    /// Schema kind that drives query generation.
-    #[serde(default)]
-    pub schema: SubgraphSchema,
-    /// Ordered list of GraphQL endpoint URLs. Supports `${GRAPH_API_KEY}` expansion.
-    #[serde(default)]
-    pub urls: Vec<String>,
-}
-
 /// A known public RPC endpoint with metadata for rate-limit-aware load distribution.
 #[derive(Debug, Clone)]
 pub struct ProviderEndpoint {
@@ -211,65 +169,6 @@ impl ChainName {
             _ => vec![],
         }
     }
-
-    /// Default subgraph configurations for this chain (hardcoded fallbacks).
-    ///
-    /// These are overridden by `chains.toml` if that file defines `[[chains.<name>.subgraphs]]`
-    /// entries. Gateway URLs with `${GRAPH_API_KEY}` are skipped when the env var is unset.
-    pub fn default_subgraphs(&self) -> Vec<SubgraphConfig> {
-        match self {
-            ChainName::Polygon => vec![
-                SubgraphConfig {
-                    dex_name: "Uniswap V3".to_string(),
-                    dex_type: Some("uniswap_v3".to_string()),
-                    schema: SubgraphSchema::UniswapV3,
-                    urls: vec![
-                        "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/BvYimJ6vCLkk63oWZy7WB5cVDTVVMugUAF35RAUZpQXE".to_string(),
-                        "https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon".to_string(),
-                    ],
-                },
-                SubgraphConfig {
-                    dex_name: "QuickSwap Algebra".to_string(),
-                    dex_type: Some("uniswap_v3".to_string()),
-                    schema: SubgraphSchema::Algebra,
-                    urls: vec![
-                        "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgmgHg".to_string(),
-                        "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap-v3".to_string(),
-                    ],
-                },
-                SubgraphConfig {
-                    dex_name: "QuickSwap V2".to_string(),
-                    dex_type: Some("uniswap_v2".to_string()),
-                    schema: SubgraphSchema::UniswapV2,
-                    urls: vec![
-                        "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/GJ4C5aV2q4d3z2yE1a1b2C3d4e5F6g7H8i9J0k1L2m3N4o5".to_string(),
-                        "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap-2".to_string(),
-                    ],
-                },
-                SubgraphConfig {
-                    dex_name: "Balancer V2".to_string(),
-                    dex_type: Some("balancer".to_string()),
-                    schema: SubgraphSchema::BalancerV2,
-                    urls: vec![
-                        "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/C4ayEZP2yTXRAB8RvW5BpLDx6S3cBxwn2h6oD4NUW6ym".to_string(),
-                        "https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2".to_string(),
-                    ],
-                },
-                SubgraphConfig {
-                    dex_name: "Curve".to_string(),
-                    dex_type: Some("curve".to_string()),
-                    schema: SubgraphSchema::Curve,
-                    urls: vec![
-                        "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/8CaeY8roJ2Xs4r5Y6z7A8s9D0f1G2h3J4k5L6m7N8o9P0q1".to_string(),
-                        "https://api.thegraph.com/subgraphs/name/convex-community/curve-polygon".to_string(),
-                    ],
-                },
-            ],
-            // Other chains: rely on chains.toml overrides; no hardcoded defaults yet.
-            _ => vec![],
-        }
-    }
-
 }
 
 /// Return the storage slot(s) to try for a V2 pool created by the given factory.

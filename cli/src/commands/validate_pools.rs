@@ -1,7 +1,7 @@
 //! validate-pools — quantified discovery accuracy vs off-chain references.
 //!
 //! Runs on-chain discovery over a recent window → set **A**, fetches reference
-//! sets → set **B** per source (subgraphs / GeckoTerminal / DefiLlama), then reports:
+//! sets → set **B** per source (GeckoTerminal), then reports:
 //! - recall `|A∩B|/|B|` overall and per-DEX (vs explorer-top-N semantics)
 //! - reference pools missing from A (the recall gap, top-TV examples)
 //! - field mismatches (`fee`, token sides) on the overlap
@@ -15,7 +15,6 @@ use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 
 use crate::cli::{ValidatePoolsArgs, ValidationSource};
-use crate::commands::discover::{fetch_remote, resolve_subgraphs};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::{validation, Config};
@@ -68,19 +67,9 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
 
     // ── Set B: reference sets first (no RPC needed; fail fast if all dead) ──
     let mut references: Vec<(String, Vec<DiscoveredPool>)> = Vec::new();
-    let subgraphs = resolve_subgraphs(&chain_name, &chain_config);
 
     let want = |s: ValidationSource| args.source == ValidationSource::All || args.source == s;
 
-    if want(ValidationSource::Subgraph) {
-        let pools = fetch_remote(&chain_name, &subgraphs, Some(1000), None, !args.json).await;
-        if pools.is_empty() {
-            eprintln!("  Warning: subgraph reference set is empty (endpoints failed or no GRAPH_API_KEY)");
-        } else {
-            println!("  Reference [subgraph]: {} pools", pools.len());
-            references.push(("subgraph".into(), pools));
-        }
-    }
     if want(ValidationSource::Gecko) {
         let slug = chain_name.to_string();
         let pools =
@@ -88,15 +77,6 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
         if !pools.is_empty() {
             println!("  Reference [gecko]:    {} pools", pools.len());
             references.push(("gecko".into(), pools));
-        }
-    }
-    if want(ValidationSource::Llama) {
-        let slug = chain_name.to_string();
-        let pools =
-            remote::discover_via_defillama(&slug, Some(1000), None).await;
-        if !pools.is_empty() {
-            println!("  Reference [llama]:    {} pools", pools.len());
-            references.push(("llama".into(), pools));
         }
     }
 
@@ -253,7 +233,7 @@ fn compare_source(
     }
 }
 
-/// Per-DEX recall against the subgraph reference (explorer-top-N semantics).
+/// Per-DEX recall against a reference set (explorer-top-N semantics).
 fn dex_recall(reference: &[DiscoveredPool], a_by_addr: &HashMap<Address, &DiscoveredPool>) -> Vec<DexRecallRow> {
     let mut by_dex: HashMap<String, (usize, usize)> = HashMap::new(); // dex → (ref, matched)
     for r in reference {
@@ -357,4 +337,60 @@ fn write_markdown(
 
     std::fs::write(path, out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    fn pool(addr: &str, dex: &str, tvl: Option<f64>) -> DiscoveredPool {
+        DiscoveredPool::new(
+            addr.parse().unwrap(),
+            address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            3000,
+            mev_scout_core::dex_type::DexType::UniswapV3,
+            0,
+        )
+        .with_dex_name(Some(dex.into()))
+        .with_tvl_usd(tvl)
+    }
+
+    #[test]
+    fn test_dex_recall_counts_and_ordering() {
+        let reference = vec![
+            pool("0x1111111111111111111111111111111111111111", "quickswap", Some(10.0)),
+            pool("0x2222222222222222222222222222222222222222", "quickswap", Some(9.0)),
+            pool("0x3333333333333333333333333333333333333333", "uniswap-v3", Some(8.0)),
+        ];
+        // Only the first quickswap pool was discovered on-chain.
+        let a_by_addr: HashMap<Address, &DiscoveredPool> = reference
+            .iter()
+            .take(1)
+            .map(|p| (p.address, p))
+            .collect();
+
+        let rows = dex_recall(&reference, &a_by_addr);
+        assert_eq!(rows.len(), 2);
+        // Sorted by reference count desc: quickswap (2) before uniswap-v3 (1).
+        assert_eq!(rows[0].dex, "quickswap");
+        assert_eq!(rows[0].reference_pools, 2);
+        assert_eq!(rows[0].matched, 1);
+        assert!((rows[0].recall_pct - 50.0).abs() < f64::EPSILON);
+        assert_eq!(rows[1].dex, "uniswap-v3");
+        assert_eq!(rows[1].matched, 0);
+    }
+
+    #[test]
+    fn test_pick_factories_prefers_configured() {
+        let configured = vec![Address::ZERO];
+        let defaults = ["0x4444444444444444444444444444444444444444"];
+        assert_eq!(pick_factories(configured.clone(), &defaults), configured);
+        // Empty config → parse defaults.
+        let got = pick_factories(Vec::new(), &defaults);
+        assert_eq!(got.len(), 1);
+        // Unparseable defaults are dropped.
+        assert!(pick_factories(Vec::new(), &["nothex"]).is_empty());
+    }
 }

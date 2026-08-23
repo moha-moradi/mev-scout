@@ -17,53 +17,6 @@ pool_discovery_start_block = 49100000
 wrapped_native_token = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
 v4_pool_manager = "0x67366782805870060151383f4bbff9dab53e5cd6"
 
-# Off-chain subgraph sources — tried in order per DEX. Gateway URLs require GRAPH_API_KEY env var;
-# hosted/Goldsky fallbacks work without a key. See docs/pool-discovery-accuracy-and-subgraph-plan.md §2.1
-[[polygon.subgraphs]]
-dex_name = "Uniswap V3"
-dex_type = "uniswap_v3"
-schema = "uniswap_v3"
-urls = [
-  "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/BvYimJ6vCLkk63oWZy7WB5cVDTVVMugUAF35RAUZpQXE",
-  "https://api.thegraph.com/subgraphs/name/ianlapham/uniswap-v3-polygon",
-]
-
-[[polygon.subgraphs]]
-dex_name = "QuickSwap Algebra"
-dex_type = "uniswap_v3"
-schema = "algebra"
-urls = [
-  "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgmgHg",
-  "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap-v3",
-]
-
-[[polygon.subgraphs]]
-dex_name = "QuickSwap V2"
-dex_type = "uniswap_v2"
-schema = "uniswap_v2"
-urls = [
-  "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/GJ4C5aV2q4d3z2yE1a1b2C3d4e5F6g7H8i9J0k1L2m3N4o5",
-  "https://api.thegraph.com/subgraphs/name/sameepsi/quickswap-2",
-]
-
-[[polygon.subgraphs]]
-dex_name = "Balancer V2"
-dex_type = "balancer"
-schema = "balancer_v2"
-urls = [
-  "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/C4ayEZP2yTXRAB8RvW5BpLDx6S3cBxwn2h6oD4NUW6ym",
-  "https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2",
-]
-
-[[polygon.subgraphs]]
-dex_name = "Curve"
-dex_type = "curve"
-schema = "curve"
-urls = [
-  "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/8CaeY8roJ2Xs4r5Y6z7A8s9D0f1G2h3J4k5L6m7N8o9P0q1",
-  "https://api.thegraph.com/subgraphs/name/convex-community/curve-polygon",
-]
-
 [avalanche]
 chain_id = 43114
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"

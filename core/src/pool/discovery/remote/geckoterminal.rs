@@ -1,8 +1,13 @@
 //! GeckoTerminal REST client — free aggregator fallback.
 //!
 //! `GET https://api.geckoterminal.com/api/v2/networks/{network}/pools`
-//! Paginated, sorted by `h_tvl` or `h24_volume`. No auth, ~30 req/min.
-//! Each pool entry carries dex label, TVL, volume, and token addresses.
+//! Paginated. No auth, ~30 req/min. Each pool entry carries dex label,
+//! TVL, volume, and token addresses.
+//!
+//! Note: the API only accepts `sort=h24_volume_usd_desc` / `h24_tx_count_desc`
+//! (the old `h_tvl` option was removed and now returns HTTP 400 — probed
+//! 2026-08-23). We paginate by 24h volume and re-sort by TVL client-side to
+//! approximate the explorer "top pools by TVL" ordering.
 
 use std::time::Duration;
 
@@ -61,7 +66,7 @@ impl GeckoTerminalClient {
 
         loop {
             let url = format!(
-                "{}/api/v2/networks/{}/pools?page={}&sort=h_tvl",
+                "{}/api/v2/networks/{}/pools?page={}&sort=h24_volume_usd_desc",
                 self.base_url, network, page
             );
 
@@ -92,6 +97,9 @@ impl GeckoTerminalClient {
 
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+
+        // Restore top-pools-by-TVL semantics client-side (API sorts by volume only).
+        pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
 
         Ok(pools)
     }
@@ -364,6 +372,52 @@ mod tests {
             }],
             "included": []
         });
+        // Regression guard: the API rejects `sort=h_tvl` with HTTP 400 since ~2026-08;
+        // ensure we always send one of the allowed sort options.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::query_param("sort", "h24_volume_usd_desc"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+            .mount(&mock_server)
+            .await;
+        // Any request NOT carrying the new sort param fails the test.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(400).set_body_string(
+                r#"{"errors":[{"status":"400","title":"Invalid sort option"}]}"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let client = GeckoTerminalClient::with_base(mock_server.uri());
+        let pools = client.fetch_top_pools("polygon", Some(10), None).await.unwrap();
+        assert_eq!(pools.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_geckoterminal_sorts_by_tvl_desc() {
+        let mock_server = wiremock::MockServer::start().await;
+        let mk_pool = |addr: &str, tvl: i64, vol: i64| {
+            serde_json::json!({
+                "id": format!("polygon_pos_{addr}"),
+                "attributes": {
+                    "address": addr,
+                    "reserve_in_usd": tvl.to_string(),
+                    "volume_usd": {"h24": vol.to_string()}
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": format!("polygon_pos_0x{addr}")}},
+                    "quote_token": {"data": {"id": "polygon_pos_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+                }
+            })
+        };
+        // Deliberately returned in ascending TVL order (API sorts by volume, not TVL).
+        let body = serde_json::json!({
+            "data": [
+                mk_pool("0x1111111111111111111111111111111111111111", 100, 999999),
+                mk_pool("0x2222222222222222222222222222222222222222", 500_000, 50),
+                mk_pool("0x3333333333333333333333333333333333333333", 5_000, 10),
+            ],
+            "included": []
+        });
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
             .mount(&mock_server)
@@ -371,6 +425,9 @@ mod tests {
 
         let client = GeckoTerminalClient::with_base(mock_server.uri());
         let pools = client.fetch_top_pools("polygon", Some(10), None).await.unwrap();
-        assert_eq!(pools.len(), 1);
+        assert_eq!(pools.len(), 3);
+        assert_eq!(pools[0].tvl_usd, Some(500_000.0));
+        assert_eq!(pools[1].tvl_usd, Some(5_000.0));
+        assert_eq!(pools[2].tvl_usd, Some(100.0));
     }
 }

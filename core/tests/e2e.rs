@@ -592,98 +592,30 @@ fn test_e2e_cache_isolation() {
     assert_eq!(eth_pools.len(), 0, "Ethereum cache should be empty");
 }
 
-/// Test N: remote subgraph discovery end-to-end (network-gated).
+/// Test N: remote aggregator discovery end-to-end (network-gated, no API key).
 ///
-/// Requires `GRAPH_API_KEY` for gateway URLs (hosted fallbacks are tried but
-/// may be dead). Run explicitly: `cargo test --test e2e e2e_subgraph_discovery -- --ignored`
+/// GeckoTerminal is a free public API — run explicitly:
+/// `cargo test --test e2e e2e_geckoterminal_discovery -- --ignored`
 #[tokio::test]
 #[ignore]
-async fn e2e_subgraph_discovery() {
-    if std::env::var("GRAPH_API_KEY").unwrap_or_default().is_empty() {
-        eprintln!("SKIP: GRAPH_API_KEY not set");
-        return;
-    }
-
-    let subgraphs = ChainName::Polygon.default_subgraphs();
-    assert!(!subgraphs.is_empty(), "Polygon must have default subgraphs");
-
-    let pools = mev_scout_core::pool::discovery::remote::discover_via_remote(
-        &subgraphs, Some(100), None,
-    ).await;
+async fn e2e_geckoterminal_discovery() {
+    let pools = mev_scout_core::pool::discovery::remote::discover_via_geckoterminal(
+        "polygon",
+        Some(100),
+        None,
+    )
+    .await;
 
     assert!(
         pools.len() >= 10,
-        "expected ≥10 pools from Polygon subgraphs, got {}",
+        "expected >=10 pools from GeckoTerminal Polygon, got {}",
         pools.len()
     );
     for p in pools.iter().take(10) {
         assert!(!p.token0.is_zero(), "token0 must not be ZERO for {}", p.address);
         assert!(!p.token1.is_zero(), "token1 must not be ZERO for {}", p.address);
     }
-    // Symbols should come straight from the subgraph without extra eth_call.
+    // Aggregators carry token symbols without extra eth_call.
     let with_symbols = pools.iter().filter(|p| p.token0_symbol.is_some()).count();
-    assert!(with_symbols > 0, "subgraph pools should carry token symbols");
-}
-
-/// Hybrid union must cover strictly more pools than an on-chain-only scan of
-/// the same small window (network-gated; needs GRAPH_API_KEY + RPC).
-/// Run explicitly: `cargo test --test e2e e2e_hybrid_beats_onchain_window -- --ignored`
-#[tokio::test]
-#[ignore]
-async fn e2e_hybrid_beats_onchain_window() {
-    if std::env::var("GRAPH_API_KEY").unwrap_or_default().is_empty() {
-        eprintln!("SKIP: GRAPH_API_KEY not set");
-        return;
-    }
-    let (rpc, tip) = match try_rpc().await {
-        Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
-    };
-
-    // On-chain leg: small recent window, QuickSwap V2 factory only.
-    let start = tip.saturating_sub(5000);
-    let v2_factories = vec![quick_v2_factory()];
-    let disc_config = DiscoveryConfig {
-        batch_size: 2000,
-        v2_fee_override: None,
-        balancer_vault: None,
-        v2_factories: Some(&v2_factories),
-        v3_factories: None,
-        curve_registry: None,
-        solidly_factories: None,
-        camelot_factories: None,
-        solidly_fee_bps: None,
-        rpc_concurrency: 64,
-        v4_pool_manager: None,
-        trader_joe_factory: None,
-        pendle_factory: None,
-        token_cache: None,
-        pool_cache: None,
-    };
-    let onchain = match discover_pools(&rpc, start, tip, &disc_config, None).await {
-        Ok((p, _)) => p,
-        Err(e) => {
-            eprintln!("SKIP: on-chain discovery failed (archive RPC likely required): {e}");
-            return;
-        }
-    };
-    eprintln!("  On-chain window [{start}..{tip}]: {} pools", onchain.len());
-
-    let subgraphs = ChainName::Polygon.default_subgraphs();
-    let remote = mev_scout_core::pool::discovery::remote::discover_via_remote(
-        &subgraphs, Some(100), None,
-    ).await;
-    assert!(!remote.is_empty(), "remote sources returned 0 pools");
-    eprintln!("  Remote: {} pools", remote.len());
-
-    let n_onchain = onchain.len();
-    let merged = mev_scout_core::pool::discovery::remote::merge_pools(onchain, remote);
-    eprintln!("  Merged hybrid: {} pools", merged.len());
-    assert!(merged.len() >= n_onchain, "hybrid lost on-chain pools");
-    assert!(
-        merged.len() > n_onchain,
-        "hybrid union ({}) must strictly exceed on-chain-only window ({})",
-        merged.len(),
-        n_onchain
-    );
+    assert!(with_symbols > 0, "aggregator pools should carry token symbols");
 }

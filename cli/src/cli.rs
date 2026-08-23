@@ -39,13 +39,13 @@ pub enum Command {
     /// Replay a specific block for debugging
     Replay(ReplayArgs),
 
-    /// Discover pools from on-chain factory events and/or remote subgraphs.
+    /// Discover pools from on-chain factory events and/or remote aggregators.
     /// Factory addresses are resolved from the chain config.
     /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
 
     /// Validate pool-discovery accuracy against off-chain references
-    /// (subgraphs, GeckoTerminal, DefiLlama). Reports recall per DEX,
+    /// (GeckoTerminal). Reports recall per DEX,
     /// false positives, field mismatches, and TVL/volume deltas.
     ValidatePools(ValidatePoolsArgs),
 
@@ -311,15 +311,14 @@ pub struct DiscoverArgs {
     #[arg(long = "solidly-fee-bps", value_name = "BPS")]
     pub solidly_fee_bps: Option<u32>,
 
-    /// Pool source: onchain (RPC events only), remote (subgraphs/aggregators
-    /// only), or hybrid (union of both, deduped by address).
+    /// Pool source: onchain (RPC events only), remote (GeckoTerminal
+    /// aggregator only), or hybrid (union of both, deduped by address).
     /// Default onchain — zero behavior change.
     #[arg(long, default_value = "onchain", value_name = "SOURCE")]
     pub source: DiscoverySource,
 
     /// Attach tvl_usd / volume_usd_24h / volume_usd_30d to discovered pools
-    /// from the best available remote source (subgraph preferred, aggregator
-    /// fallback). Implies at least one remote fetch.
+    /// from the free GeckoTerminal aggregator. Implies one remote fetch.
     #[arg(long)]
     pub enrich: bool,
 
@@ -350,7 +349,7 @@ pub struct ValidatePoolsArgs {
     #[arg(long, default_value = "7", value_name = "N")]
     pub days: u64,
 
-    /// Reference sources to compare against: all, subgraph, gecko, llama.
+    /// Reference sources to compare against: all, gecko.
     #[arg(long, default_value = "all", value_name = "SOURCE")]
     pub source: ValidationSource,
 
@@ -367,9 +366,7 @@ pub struct ValidatePoolsArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ValidationSource {
     All,
-    Subgraph,
     Gecko,
-    Llama,
 }
 
 #[derive(Args, Debug, Clone)]

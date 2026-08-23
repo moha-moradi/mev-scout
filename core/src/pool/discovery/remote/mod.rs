@@ -1,29 +1,25 @@
-//! Remote pool sourcing — off-chain subgraph + aggregator clients.
+//! Remote pool sourcing — free aggregator client (no API key required).
 //!
-//! Primary sources are The Graph subgraphs (one per DEX, config-driven via
-//! `chains.toml [[<chain>.subgraphs]]`). Fallback tier is free aggregators
-//! (GeckoTerminal, DefiLlama). Every `RemotePool` is converted into a
-//! `DiscoveredPool` via `From<RemotePool>` and then deduped by address with
-//! on-chain results using `DiscoveredPool::merge_from`.
+//! GeckoTerminal provides chain-wide top-pool listings with TVL and volume
+//! metadata. Every `RemotePool` is converted into a `DiscoveredPool` via
+//! `From<RemotePool>` and then deduped by address with on-chain results
+//! using `DiscoveredPool::merge_from`.
 //!
 //! All remote fetching is best-effort: a failing source logs a warning and
-//! is skipped. Discovery never hard-fails because a remote source is down.
-//! If every remote source fails, the caller falls back to pure RPC.
+//! is skipped. Discovery never hard-fails because the remote source is down.
+//!
+//! Note: DefiLlama's yields API was evaluated and removed — it identifies
+//! pools by UUID without on-chain contract addresses, so its entries cannot
+//! become usable `DiscoveredPool`s.
 
-pub mod defillama;
 pub mod geckoterminal;
-pub mod graphql;
-pub mod schemas;
-
-use std::collections::HashSet;
 
 use alloy::primitives::Address;
 
 use crate::dex_type::DexType;
 use crate::pool::discovery::DiscoveredPool;
-use crate::types::{SubgraphConfig, SubgraphSchema};
 
-/// Pool metadata returned by a remote source (subgraph or aggregator).
+/// Pool metadata returned by a remote source.
 ///
 /// Mirrors the fields of `DiscoveredPool` but is decoupled so that remote
 /// parsing does not depend on storage details.
@@ -43,7 +39,7 @@ pub struct RemotePool {
     pub volume_usd_30d: Option<f64>,
     /// Full token list for multi-token pools (Curve 3+, Balancer 2-8).
     pub underlying_tokens: Option<Vec<Address>>,
-    /// Creation block if the subgraph exposes it, else 0 (incremental mode stays RPC-only).
+    /// Aggregators do not expose creation blocks; always 0 (incremental mode stays RPC-only).
     pub creation_block: u64,
 }
 
@@ -61,148 +57,7 @@ impl From<RemotePool> for DiscoveredPool {
     }
 }
 
-/// Expand `${GRAPH_API_KEY}` templates and filter gateway URLs when the env var is absent.
-///
-/// Returns the list of URLs that are actually tryable. If `GRAPH_API_KEY` is
-/// set via env var it overrides any TOML value; if unset, any URL containing
-/// the template is skipped (hosted/Goldsky URLs still tried).
-pub fn expand_urls(urls: &[String]) -> Vec<String> {
-    let key = std::env::var("GRAPH_API_KEY").ok();
-    let mut out = Vec::new();
-    for raw in urls {
-        if raw.contains("${GRAPH_API_KEY}") || raw.contains("$GRAPH_API_KEY") {
-            if let Some(ref k) = key {
-                if k.is_empty() {
-                    continue;
-                }
-                let expanded = raw
-                    .replace("${GRAPH_API_KEY}", k)
-                    .replace("$GRAPH_API_KEY", k);
-                out.push(expanded);
-            } else {
-                tracing::debug!("Skipping gateway URL (GRAPH_API_KEY not set): {}", raw);
-            }
-        } else {
-            out.push(raw.clone());
-        }
-    }
-    out
-}
-
-/// Resolve DexType from a `SubgraphConfig`.
-///
-/// Priority: explicit `dex_type` string → schema default.
-pub fn dex_type_for_config(cfg: &SubgraphConfig) -> DexType {
-    if let Some(ref s) = cfg.dex_type {
-        if let Ok(dt) = s.parse::<DexType>() {
-            return dt;
-        }
-        // Map common aliases that strum doesn't cover
-        match s.to_ascii_lowercase().as_str() {
-            "uniswap_v3" | "uniswapv3" | "v3" => return DexType::UniswapV3,
-            "uniswap_v2" | "uniswapv2" | "v2" => return DexType::UniswapV2,
-            "balancer" | "balancer_v2" => return DexType::Balancer,
-            "curve" => return DexType::Curve,
-            "solidly" => return DexType::Solidly,
-            "camelot" => return DexType::Camelot,
-            _ => {}
-        }
-    }
-    match cfg.schema {
-        SubgraphSchema::UniswapV2 => DexType::UniswapV2,
-        SubgraphSchema::UniswapV3 | SubgraphSchema::Algebra => DexType::UniswapV3,
-        SubgraphSchema::BalancerV2 => DexType::Balancer,
-        SubgraphSchema::Curve => DexType::Curve,
-    }
-}
-
-/// Orchestrator: fetch pools from all configured subgraphs, converting to `DiscoveredPool`.
-///
-/// * `subgraphs` — ordered list from `chains.toml` or `ChainName::default_subgraphs()`.
-/// * `max_pools` — per-subgraph pagination cap (None = unbounded, typically 1000).
-/// * `min_tvl` — optional TVL floor (pools below are filtered client-side and via query).
-///
-/// Failures per subgraph are logged and skipped; the overall result is the union
-/// of all successful sources. Returns empty vec if nothing succeeded (caller should
-/// fall back to RPC).
-pub async fn discover_via_remote(
-    subgraphs: &[SubgraphConfig],
-    max_pools: Option<usize>,
-    min_tvl: Option<f64>,
-) -> Vec<DiscoveredPool> {
-    discover_via_remote_cb(subgraphs, max_pools, min_tvl, None).await
-}
-
-/// Same as [`discover_via_remote`], invoking `on_progress(dex_name, fetched_so_far)`
-/// after each paginated page (for progress reporting).
-pub async fn discover_via_remote_cb(
-    subgraphs: &[SubgraphConfig],
-    max_pools: Option<usize>,
-    min_tvl: Option<f64>,
-    on_progress: Option<&dyn Fn(&str, usize)>,
-) -> Vec<DiscoveredPool> {
-    if subgraphs.is_empty() {
-        tracing::info!("Remote discovery: no subgraphs configured, skipping");
-        return Vec::new();
-    }
-
-    let mut all: Vec<DiscoveredPool> = Vec::new();
-    let mut seen: HashSet<Address> = HashSet::new();
-
-    for cfg in subgraphs {
-        let dex_type = dex_type_for_config(cfg);
-        let urls = expand_urls(&cfg.urls);
-        if urls.is_empty() {
-            tracing::warn!(
-                "Remote discovery: no tryable URLs for {} (schema {:?}) — skipping",
-                cfg.dex_name, cfg.schema
-            );
-            continue;
-        }
-
-        tracing::info!(
-            "Remote discovery: querying {} (schema {:?}, {} URLs, dex_type={})",
-            cfg.dex_name, cfg.schema, urls.len(), dex_type
-        );
-
-        let client = graphql::GraphClient::new(
-            urls.clone(),
-            cfg.schema.clone(),
-            dex_type,
-            cfg.dex_name.clone(),
-        );
-
-        let page_cb = on_progress.map(|f| {
-            let dex = cfg.dex_name.clone();
-            move |n: usize| f(&dex, n)
-        });
-        let pools = match client.fetch_pools_cb(max_pools, min_tvl, page_cb.as_ref().map(|f| f as &dyn Fn(usize))).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "Remote discovery: {} failed (tried {} URLs): {:#}",
-                    cfg.dex_name,
-                    urls.len(),
-                    e
-                );
-                continue;
-            }
-        };
-
-        tracing::info!("Remote discovery: {} returned {} pools", cfg.dex_name, pools.len());
-
-        for rp in pools {
-            if seen.insert(rp.address) {
-                all.push(rp.into());
-            }
-        }
-    }
-
-    tracing::info!("Remote discovery: total {} unique pools from {} subgraphs", all.len(), subgraphs.len());
-    all
-}
-
-/// Fetch pools from GeckoTerminal fallback (free, no key).
+/// Fetch pools from GeckoTerminal (free, no key).
 pub async fn discover_via_geckoterminal(
     chain: &str,
     max_pools: Option<usize>,
@@ -213,22 +68,6 @@ pub async fn discover_via_geckoterminal(
         Ok(pools) => pools.into_iter().map(|r| r.into()).collect(),
         Err(e) => {
             tracing::warn!("GeckoTerminal fetch failed: {:#}", e);
-            Vec::new()
-        }
-    }
-}
-
-/// Fetch pools from DefiLlama fallback (free, no key).
-pub async fn discover_via_defillama(
-    chain: &str,
-    max_pools: Option<usize>,
-    min_tvl: Option<f64>,
-) -> Vec<DiscoveredPool> {
-    let client = defillama::DefiLlamaClient::new();
-    match client.fetch_pools(chain, max_pools, min_tvl).await {
-        Ok(pools) => pools.into_iter().map(|r| r.into()).collect(),
-        Err(e) => {
-            tracing::warn!("DefiLlama fetch failed: {:#}", e);
             Vec::new()
         }
     }
@@ -249,68 +88,6 @@ pub fn merge_pools(mut base: Vec<DiscoveredPool>, extra: Vec<DiscoveredPool>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Serializes tests that mutate the process-global GRAPH_API_KEY env var;
-    /// Rust runs unit tests on parallel threads, and env vars are global state.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn test_expand_urls_without_key_skips_gateway() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        // Ensure no env var set for this test — save and restore
-        let saved = std::env::var("GRAPH_API_KEY").ok();
-        std::env::remove_var("GRAPH_API_KEY");
-
-        let urls = vec![
-            "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/abc".to_string(),
-            "https://api.thegraph.com/subgraphs/name/foo/bar".to_string(),
-        ];
-        let expanded = expand_urls(&urls);
-        assert_eq!(expanded.len(), 1);
-        assert!(expanded[0].contains("api.thegraph.com"));
-
-        if let Some(v) = saved { std::env::set_var("GRAPH_API_KEY", v); }
-    }
-
-    #[test]
-    fn test_expand_urls_with_key_expands() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let saved = std::env::var("GRAPH_API_KEY").ok();
-        std::env::set_var("GRAPH_API_KEY", "test123");
-
-        let urls = vec![
-            "https://gateway.thegraph.com/api/${GRAPH_API_KEY}/subgraphs/id/abc".to_string(),
-            "https://api.thegraph.com/subgraphs/name/foo/bar".to_string(),
-        ];
-        let expanded = expand_urls(&urls);
-        assert_eq!(expanded.len(), 2);
-        assert!(expanded[0].contains("test123"));
-        assert!(!expanded[0].contains("${GRAPH_API_KEY}"));
-
-        if let Some(v) = saved { std::env::set_var("GRAPH_API_KEY", v); } else { std::env::remove_var("GRAPH_API_KEY"); }
-    }
-
-    #[test]
-    fn test_dex_type_for_config_explicit() {
-        let cfg = SubgraphConfig {
-            dex_name: "Bal".into(),
-            dex_type: Some("balancer".into()),
-            schema: SubgraphSchema::UniswapV3,
-            urls: vec![],
-        };
-        assert_eq!(dex_type_for_config(&cfg), DexType::Balancer);
-    }
-
-    #[test]
-    fn test_dex_type_for_config_schema_fallback() {
-        let cfg = SubgraphConfig {
-            dex_name: "Curve".into(),
-            dex_type: None,
-            schema: SubgraphSchema::Curve,
-            urls: vec![],
-        };
-        assert_eq!(dex_type_for_config(&cfg), DexType::Curve);
-    }
 
     #[test]
     fn test_merge_pools_dedup() {

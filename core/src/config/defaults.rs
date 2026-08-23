@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::types::{SubgraphConfig, SubgraphSchema};
-
 /// Per-chain runtime parameters loaded from the configuration file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChainConfig {
@@ -39,14 +37,25 @@ pub struct ChainConfig {
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pendle_factory: Option<String>,
-    /// Off-chain subgraph sources for this chain (preferred over on-chain scan).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subgraphs: Vec<SubgraphConfig>,
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
     toml::from_str(include_str!("../../data/chains.toml"))
         .expect("invalid chains.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `chains.toml` must stay parseable — discovery silently degrades
+    /// to defaults when chain entries fail to deserialize.
+    #[test]
+    fn test_default_chains_parse() {
+        let chains = default_chains();
+        assert!(chains.contains_key("polygon"));
+        assert!(chains.contains_key("ethereum"));
+    }
 }
 
 
