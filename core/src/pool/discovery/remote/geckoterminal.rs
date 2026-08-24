@@ -19,16 +19,19 @@ use crate::dex_type::DexType;
 use super::RemotePool;
 
 /// Map chain name (our internal) → GeckoTerminal network slug.
-fn network_slug(chain: &str) -> &str {
+///
+/// Returns `None` for unknown chains: querying the wrong network would yield
+/// silently wrong pool data, so callers must fail loudly instead.
+fn network_slug(chain: &str) -> Option<&'static str> {
     match chain.to_ascii_lowercase().as_str() {
-        "polygon" => "polygon_pos",
-        "ethereum" | "eth" => "eth",
-        "bsc" => "bsc",
-        "arbitrum" => "arbitrum",
-        "base" => "base",
-        "avalanche" => "avax",
-        "optimism" => "optimism",
-        _ => "polygon_pos",
+        "polygon" => Some("polygon_pos"),
+        "ethereum" | "eth" => Some("eth"),
+        "bsc" => Some("bsc"),
+        "arbitrum" => Some("arbitrum"),
+        "base" => Some("base"),
+        "avalanche" => Some("avax"),
+        "optimism" => Some("optimism"),
+        _ => None,
     }
 }
 
@@ -59,7 +62,12 @@ impl GeckoTerminalClient {
         max_pools: Option<usize>,
         min_tvl: Option<f64>,
     ) -> anyhow::Result<Vec<RemotePool>> {
-        let network = network_slug(chain);
+        let network = network_slug(chain).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown chain '{chain}' — no GeckoTerminal network mapping \
+                 (supported: polygon, ethereum, bsc, arbitrum, base, avalanche, optimism)"
+            )
+        })?;
         let limit = max_pools.unwrap_or(1000);
         let mut pools = Vec::new();
         let mut page = 1usize;
@@ -196,13 +204,18 @@ fn parse_geckoterminal_response(json: &Value, min_tvl: Option<f64>) -> anyhow::R
             _ => continue, // need both tokens
         };
 
+        // GeckoTerminal exposes base/quote market order, but on-chain pools are
+        // keyed by canonical sorted order (token0 < token1). Persisting the
+        // market order would silently invert prices downstream.
+        let (token0, token1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+
         // Fee heuristic: geckoterminal doesn't expose fee; default to 0
         let dex_type = infer_dex_type(dex_name.as_deref());
 
         out.push(RemotePool {
             address,
-            token0: t0,
-            token1: t1,
+            token0,
+            token1,
             fee: 0,
             tick_spacing: None,
             dex_type,
@@ -349,9 +362,36 @@ mod tests {
 
     #[test]
     fn test_network_slug() {
-        assert_eq!(network_slug("polygon"), "polygon_pos");
-        assert_eq!(network_slug("ethereum"), "eth");
-        assert_eq!(network_slug("bsc"), "bsc");
+        assert_eq!(network_slug("polygon"), Some("polygon_pos"));
+        assert_eq!(network_slug("ethereum"), Some("eth"));
+        assert_eq!(network_slug("bsc"), Some("bsc"));
+        // Unknown chains must fail loudly, not silently query polygon.
+        assert_eq!(network_slug("fantom"), None);
+        assert_eq!(network_slug(""), None);
+    }
+
+    #[test]
+    fn test_parse_canonicalizes_token_order() {
+        // base token address > quote token address: output must still be sorted.
+        let json = json!({
+            "data": [{
+                "id": "eth_0x1234567890123456789012345678901234567890",
+                "attributes": {
+                    "address": "0x1234567890123456789012345678901234567890",
+                    "reserve_in_usd": "1000000"
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": "eth_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+                    "quote_token": {"data": {"id": "eth_0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+                }
+            }],
+            "included": []
+        });
+        let pools = parse_geckoterminal_response(&json, None).unwrap();
+        assert_eq!(pools.len(), 1);
+        let t0 = pools[0].token0;
+        let t1 = pools[0].token1;
+        assert!(t0 < t1, "tokens must be canonicalized to sorted order");
     }
 
     #[tokio::test]

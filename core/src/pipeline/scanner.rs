@@ -35,13 +35,23 @@ pub mod topics {
     pub static BALANCER_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
 
-    /// Uniswap V4 Swap event (same structure as V3: sender, recipient, amount0, amount1, sqrtPriceX96, liquidity, tick)
-    pub static V4_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)"));
+    /// Uniswap V4 Swap event from the singleton PoolManager
+    /// (`id` in topics[1]; NOT the same as the V3 Swap signature).
+    pub static V4_SWAP: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
+    });
 
-    /// Trader Joe V2 LB Swap event
+    /// Trader Joe V2.1 LB Pair Swap event (sender, recipient, id indexed).
     pub static TRADER_JOE_LB_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,uint256,uint256,address,address)"));
+        LazyLock::new(|| keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)"));
+
+    /// Trader Joe V2.0 legacy LB Pair Swap event (uint24 id, no swapForY).
+    pub static TRADER_JOE_LB_SWAP_LEGACY: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Swap(address,address,uint24,uint256,uint256,uint256,uint256,uint256)"));
+
+    /// Pendle V2 market Swap event (caller, receiver indexed).
+    pub static PENDLE_MARKET_SWAP: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
 
     // Curve TokenExchangeUnderlying events (exchange_underlying path)
     pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
@@ -66,6 +76,8 @@ pub mod topics {
             *BALANCER_SWAP,
             *V4_SWAP,
             *TRADER_JOE_LB_SWAP,
+            *TRADER_JOE_LB_SWAP_LEGACY,
+            *PENDLE_MARKET_SWAP,
         ]
     }
 }

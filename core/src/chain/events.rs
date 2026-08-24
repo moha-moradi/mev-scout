@@ -107,16 +107,25 @@ pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> =
 
 // ── Trader Joe LB ───────────────────────────────────────────────────
 
+/// Trader Joe V2.1 LB Pair Swap event (sender, recipient, id indexed).
 pub static TRADER_JOE_LB_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Swap(address,uint256,uint256,address,address)"));
+    LazyLock::new(|| keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)"));
 
-pub static TRADER_JOE_LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("LBPairCreated(address,address,address,uint256,address[])"));
+/// Trader Joe V2.0 legacy LB Pair Swap event (uint24 id, no swapForY).
+pub static TRADER_JOE_LB_SWAP_LEGACY_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(address,address,uint24,uint256,uint256,uint256,uint256,uint256)"));
 
 // ── Pendle Finance ──────────────────────────────────────────────────
 
 pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("NewMarket(address,address,uint256)"));
+
+/// Pendle V2 market Swap event (caller, receiver indexed).
+pub static PENDLE_MARKET_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
+
+pub static TRADER_JOE_LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LBPairCreated(address,address,address,uint256,address[])"));
 
 // ── Decoded event structs ───────────────────────────────────────────
 
@@ -448,6 +457,56 @@ pub fn decode_curve_exchange(log: &Log, pool: Address) -> Option<TradeEvent> {
         amount_in,
         amount_out,
         dex_type: "curve".to_string(),
+    })
+}
+
+/// Decode a Trader Joe LB Pair Swap event log.
+///
+/// Modern (V2.1): data = swapForY(bool), amountIn, amountOut, volatilityAccumulated, fees.
+/// Legacy (V2.0): data = amountXIn, amountYIn, amountXOut, amountYOut, volatilityAccumulated, feesX, feesY.
+pub fn decode_trader_joe_lb_swap(log: &Log, pool: Address, legacy: bool) -> Option<TradeEvent> {
+    let data = &log.data().data;
+    if data.len() < 96 {
+        return None;
+    }
+    let (amount_in, amount_out) = if legacy {
+        (U256::from_be_slice(&data[0..32]), U256::from_be_slice(&data[64..96]))
+    } else {
+        (U256::from_be_slice(&data[32..64]), U256::from_be_slice(&data[64..96]))
+    };
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool,
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in,
+        amount_out,
+        dex_type: "trader_joe_lb".to_string(),
+    })
+}
+
+/// Decode a Pendle market Swap event log.
+///
+/// Data: netPtOut(int256), netSyOut(int256), netSyFee, netSyToReserve.
+pub fn decode_pendle_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
+    let data = &log.data().data;
+    if data.len() < 64 {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool,
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in: U256::from_be_slice(&data[0..32]),
+        amount_out: U256::from_be_slice(&data[32..64]),
+        dex_type: "pendle".to_string(),
     })
 }
 

@@ -129,6 +129,59 @@ static PENDLE_SY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
+// ── Metadata-repair selectors (remote-sourced pools) ─────────────────
+
+static TOKEN0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"token0()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+static TOKEN1_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"token1()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// fee() — shared by Uniswap V3/V4 pools (same selector as Curve's fee())
+static FEE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"fee()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+static TICK_SPACING_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"tickSpacing()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+/// readTokens() selector for Pendle markets — returns (SY, PT, YT)
+static PENDLE_READ_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"readTokens()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
+fn pool_info_ref(ps: &PoolState) -> &PoolInfo {
+    match ps {
+        PoolState::UniswapV2(s) => &s.info,
+        PoolState::UniswapV3(s) => &s.info,
+        PoolState::UniswapV4(s) => &s.info,
+        PoolState::Curve(s) => &s.info,
+        PoolState::Balancer(s) => &s.info,
+        PoolState::TraderJoeLB(s) => &s.info,
+        PoolState::Pendle(s) => &s.info,
+    }
+}
+
+fn pool_info_mut(ps: &mut PoolState) -> &mut PoolInfo {
+    match ps {
+        PoolState::UniswapV2(s) => &mut s.info,
+        PoolState::UniswapV3(s) => &mut s.info,
+        PoolState::UniswapV4(s) => &mut s.info,
+        PoolState::Curve(s) => &mut s.info,
+        PoolState::Balancer(s) => &mut s.info,
+        PoolState::TraderJoeLB(s) => &mut s.info,
+        PoolState::Pendle(s) => &mut s.info,
+    }
+}
+
 trait ConcentratedPoolState {
     fn set_concentrated_state(&mut self, sqrt: U256, tick: i32, liq: u128, ticks: std::collections::BTreeMap<i32, i128>);
 }
@@ -154,6 +207,14 @@ impl PoolManager {
         } else {
             BlockRef::Number(block_num)
         };
+
+        // ── Phase 0: Metadata repair ──
+        // Remote-sourced pools (GeckoTerminal / DexScreener) carry fee=0,
+        // tick_spacing=None and sometimes zero token addresses. Quoting with
+        // such metadata silently produces wrong prices, so repair from chain
+        // first and drop pools that stay unresolved.
+        self.repair_pool_metadata(rpc, br).await;
+
         let pool_addrs: Vec<Address> = self.pools.keys().copied().collect();
         let max_concurrent = self.concurrency_limit as usize;
         let cap = pool_addrs.len().clamp(1, max_concurrent);
@@ -406,6 +467,143 @@ impl PoolManager {
 
         if removed_count > 0 {
             tracing::info!("Removed {} unhealthy pools during init ({} remaining)", removed_count, self.pools.len());
+        }
+    }
+
+    /// Repair missing pool metadata (tokens / fee / tickSpacing / binStep) via eth_call.
+    ///
+    /// Remote-sourced pools (aggregators) often carry `fee = 0`,
+    /// `tick_spacing = None`, or zero token addresses. Quoting with such
+    /// metadata silently produces wrong prices (e.g. fee-free V3 swaps), so
+    /// this phase fills the gaps from chain state before the per-DEX init
+    /// runs. Pools whose token pair remains unresolved afterwards are dropped
+    /// rather than quoted incorrectly.
+    async fn repair_pool_metadata(&mut self, rpc: &RpcClient, br: BlockRef) {
+        struct RepairJob {
+            addr: Address,
+            dex_type: DexType,
+            pendle_tokens: bool,
+            tokens: bool,
+            fee: bool,
+            tick_spacing: bool,
+            bin_step: bool,
+        }
+
+        let mut jobs: Vec<RepairJob> = Vec::new();
+        for (addr, ps) in &self.pools {
+            let info = pool_info_ref(ps);
+            let dt = info.dex_type;
+            // Curve/Balancer resolve their own tokens + fees during init.
+            if matches!(ps, PoolState::Balancer(_))
+                || (matches!(ps, PoolState::Curve(_)) && dt == DexType::Curve)
+            {
+                continue;
+            }
+            let pendle_tokens =
+                dt == DexType::Pendle && (info.token0.is_zero() || info.token1.is_zero());
+            let tokens =
+                dt != DexType::Pendle && (info.token0.is_zero() || info.token1.is_zero());
+            let fee = matches!(dt, DexType::UniswapV3 | DexType::UniswapV4) && info.fee == 0;
+            let tick_spacing = matches!(dt, DexType::UniswapV3 | DexType::UniswapV4)
+                && info.tick_spacing.is_none();
+            let bin_step = dt == DexType::TraderJoeLB && info.bin_step.is_none();
+            if pendle_tokens || tokens || fee || tick_spacing || bin_step {
+                jobs.push(RepairJob { addr: *addr, dex_type: dt, pendle_tokens, tokens, fee, tick_spacing, bin_step });
+            }
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        tracing::info!(
+            "Metadata repair: {} pool(s) missing tokens/fee/tickSpacing — fetching from chain",
+            jobs.len()
+        );
+
+        let semaphore = Arc::new(Semaphore::new(self.concurrency_limit as usize));
+        let tasks = jobs.into_iter().map(|job| {
+            let rpc = rpc.clone();
+            let sem = Arc::clone(&semaphore);
+            async move {
+                let _permit = sem.acquire_owned().await.ok();
+                let mut t0 = None;
+                let mut t1 = None;
+                let mut fee = None;
+                let mut ts = None;
+                let mut bin_step = None;
+                if job.pendle_tokens {
+                    // readTokens() returns (SY, PT, YT); convention here: token0=PT, token1=SY
+                    if let Ok(res) = Self::call_once(&rpc, job.addr, PENDLE_READ_TOKENS_SELECTOR.clone(), br).await {
+                        if res.len() >= 96 {
+                            t1 = Some(Address::from_slice(&res[12..32]));
+                            t0 = Some(Address::from_slice(&res[44..64]));
+                        }
+                    }
+                } else if job.tokens {
+                    t0 = Self::call_once(&rpc, job.addr, TOKEN0_SELECTOR.clone(), br).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                    t1 = Self::call_once(&rpc, job.addr, TOKEN1_SELECTOR.clone(), br).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                }
+                if job.fee {
+                    fee = Self::call_once(&rpc, job.addr, FEE_SELECTOR.clone(), br).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]])));
+                }
+                if job.tick_spacing {
+                    ts = Self::call_once(&rpc, job.addr, TICK_SPACING_SELECTOR.clone(), br).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| i32::from_be_bytes([b[28], b[29], b[30], b[31]])));
+                }
+                if job.bin_step {
+                    bin_step = Self::call_once(&rpc, job.addr, LB_GET_BIN_STEP_SELECTOR.clone(), br).await.ok()
+                        .and_then(|b| (b.len() >= 32).then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]])));
+                }
+                (job.addr, job.dex_type, t0, t1, fee, ts, bin_step)
+            }
+        });
+        let results = join_all(tasks).await;
+
+        // Apply repairs; drop pools that stay unquotable.
+        let mut repaired = 0usize;
+        let mut dropped: Vec<Address> = Vec::new();
+        for (addr, dt, t0, t1, fee, ts, bin_step) in results {
+            let Some(ps) = self.pools.get_mut(&addr) else { continue };
+            let info = pool_info_mut(ps);
+            let mut changed = false;
+            if let Some(v) = t0 {
+                if info.token0.is_zero() { info.token0 = v; changed = true; }
+            }
+            if let Some(v) = t1 {
+                if info.token1.is_zero() { info.token1 = v; changed = true; }
+            }
+            if let Some(v) = fee {
+                if info.fee == 0 { info.fee = v; changed = true; }
+            }
+            if let Some(v) = ts {
+                if info.tick_spacing.is_none() { info.tick_spacing = Some(v as u32); changed = true; }
+            }
+            if let Some(v) = bin_step {
+                if info.bin_step.is_none() { info.bin_step = Some(v); changed = true; }
+            }
+            let still_unresolved = dt != DexType::Curve
+                && dt != DexType::Balancer
+                && (info.token0.is_zero() || info.token1.is_zero());
+            if changed {
+                repaired += 1;
+            }
+            if still_unresolved {
+                dropped.push(addr);
+            }
+        }
+        for addr in &dropped {
+            self.pools.remove(addr);
+        }
+        if repaired > 0 {
+            tracing::info!("Metadata repair: patched {} pool(s)", repaired);
+        }
+        if !dropped.is_empty() {
+            tracing::warn!(
+                "Metadata repair: dropped {} pool(s) with unresolvable token pairs",
+                dropped.len()
+            );
         }
     }
 

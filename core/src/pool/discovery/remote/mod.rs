@@ -12,6 +12,7 @@
 //! pools by UUID without on-chain contract addresses, so its entries cannot
 //! become usable `DiscoveredPool`s.
 
+pub mod dexscreener;
 pub mod geckoterminal;
 
 use alloy::primitives::Address;
@@ -71,6 +72,48 @@ pub async fn discover_via_geckoterminal(
             Vec::new()
         }
     }
+}
+
+/// Fetch pools from DexScreener (free, no key) — redundancy source.
+pub async fn discover_via_dexscreener(
+    chain: &str,
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+) -> Vec<DiscoveredPool> {
+    let client = dexscreener::DexScreenerClient::new();
+    match client.fetch_pools(chain, max_pools, min_tvl).await {
+        Ok(pools) => pools.into_iter().map(|r| r.into()).collect(),
+        Err(e) => {
+            tracing::warn!("DexScreener fetch failed: {:#}", e);
+            Vec::new()
+        }
+    }
+}
+
+/// Fetch pools from all free remote sources, unioned by address.
+///
+/// GeckoTerminal results take precedence per-field (`merge_from` fills only
+/// missing fields); DexScreener adds unique addresses and backfills gaps, so a
+/// single source going down degrades coverage instead of zeroing it out.
+pub async fn discover_via_remote(
+    chain: &str,
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+) -> Vec<DiscoveredPool> {
+    let mut pools = discover_via_geckoterminal(chain, max_pools, min_tvl).await;
+    let extra = discover_via_dexscreener(chain, max_pools, min_tvl).await;
+    if !extra.is_empty() {
+        pools = merge_pools(pools, extra);
+        pools.sort_by(|a, b| {
+            b.tvl_usd
+                .partial_cmp(&a.tvl_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    if pools.is_empty() {
+        tracing::warn!("All remote pool sources returned 0 pools for chain '{chain}'");
+    }
+    pools
 }
 
 /// Union helper: merge multiple `DiscoveredPool` vecs by address using `merge_from`.

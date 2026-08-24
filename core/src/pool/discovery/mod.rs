@@ -223,8 +223,15 @@ impl DiscoveredPool {
         merge_option!(self, other, maturity_timestamp);
         merge_option!(self, other, underlying_tokens);
         merge_option!(self, other, dex_name);
-        merge_option!(self, other, token0_symbol);
-        merge_option!(self, other, token1_symbol);
+        // Symbols are positional (token0/token1): only merge when `other` refers
+        // to the same token addresses. Remote aggregators may use base/quote
+        // ordering that differs from the canonical sorted order.
+        if self.token0_symbol.is_none() && other.token0 == self.token0 && !self.token0.is_zero() {
+            self.token0_symbol = other.token0_symbol.clone();
+        }
+        if self.token1_symbol.is_none() && other.token1 == self.token1 && !self.token1.is_zero() {
+            self.token1_symbol = other.token1_symbol.clone();
+        }
         merge_option!(self, other, tvl_usd);
         merge_option!(self, other, volume_usd_24h);
         merge_option!(self, other, volume_usd_30d);
@@ -273,8 +280,10 @@ fn process_discovery_log(
     if let Some(bn) = log.block_number {
         active_blocks.insert(bn);
     }
-    let addr = log.address();
-    if let Some((dex_type, pool_id, tokens)) = classify_dex_event(log) {
+    if let Some((dex_type, pool_id, tokens, addr_override)) = classify_dex_event(log) {
+        // Singleton architectures (e.g. Balancer Vault) emit from a router
+        // contract; the real pool address is recovered from event data/topics.
+        let addr = addr_override.unwrap_or_else(|| log.address());
         let block_num = log.block_number.unwrap_or(0);
         let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
         if block_num > 0 && block_num < entry.3 {
@@ -472,37 +481,52 @@ async fn get_logs_split_recursive(
 
 // ── Helper: classify a DEX event log ──
 
-/// Returns `(dex_type, pool_id, tokens)` for a recognized DEX event log.
+/// Returns `(dex_type, pool_id, tokens, addr_override)` for a recognized DEX event log.
+///
+/// `addr_override` is set when the emitting contract is not the pool itself
+/// (e.g. the Balancer Vault singleton): the pool address is derived from the
+/// event (Balancer poolIds encode the pool address in their top 20 bytes).
 fn classify_dex_event(
     log: &alloy::rpc::types::Log,
-) -> Option<(DexType, Option<[u8; 32]>, Option<(Address, Address)>)> {
+) -> Option<(DexType, Option<[u8; 32]>, Option<(Address, Address)>, Option<Address>)> {
     let topic0 = log.topics()[0];
     if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
-        return Some((DexType::UniswapV2, None, None));
+        return Some((DexType::UniswapV2, None, None, None));
     }
     if topic0 == topics::V3_SWAP
         || topic0 == *topics::V3_MINT
         || topic0 == topics::V3_BURN
     {
-        return Some((DexType::UniswapV3, None, None));
+        return Some((DexType::UniswapV3, None, None, None));
+    }
+    if topic0 == *topics::TRADER_JOE_LB_SWAP
+        || topic0 == *topics::TRADER_JOE_LB_SWAP_LEGACY
+    {
+        // LBPair contracts are per-pool and emit their own Swap events.
+        return Some((DexType::TraderJoeLB, None, None, None));
+    }
+    if topic0 == *topics::PENDLE_MARKET_SWAP {
+        // Pendle markets are per-market contracts emitting their own Swap events.
+        return Some((DexType::Pendle, None, None, None));
     }
     if topic0 == *topics::CURVE_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
         || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING
     {
-        return Some((DexType::Curve, None, None));
+        return Some((DexType::Curve, None, None, None));
     }
     if topic0 == *topics::BALANCER_SWAP {
         let topics = log.topics();
         if topics.len() >= 4 {
             let mut pool_id = [0u8; 32];
             pool_id.copy_from_slice(topics[1].as_slice());
+            let pool_addr = Address::from_slice(&pool_id[..20]);
             let token_in = Address::from_slice(&topics[2][12..]);
             let token_out = Address::from_slice(&topics[3][12..]);
-            return Some((DexType::Balancer, Some(pool_id), Some((token_in, token_out))));
+            return Some((DexType::Balancer, Some(pool_id), Some((token_in, token_out)), Some(pool_addr)));
         }
-        return Some((DexType::Balancer, None, None));
+        return Some((DexType::Balancer, None, None, None));
     }
     None
 }
@@ -713,15 +737,15 @@ async fn discover_pools_shard(
     > = HashMap::new();
     let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();
 
-    // Pre-build DEX activity topic lists
-    let fast_topics: Vec<B256> = vec![
-        topics::V2_SWAP,
-        topics::V2_SYNC,
-        topics::V3_SWAP,
-        *topics::V3_MINT,
-        topics::V3_BURN,
-    ];
-    let all_dex_topics: Vec<B256> = vec![
+    // Pre-build the DEX activity topic list.
+    //
+    // Single unified filter across all pool-level event types. Previously this
+    // was split into a "fast" V2/V3-only path with Curve/Balancer topics only
+    // queried on failure — which meant Curve/Balancer/LB/Pendle *activity*
+    // discovery almost never ran. V4 swaps are intentionally excluded: the
+    // PoolManager is a singleton and a Swap log alone cannot recover the
+    // underlying token pair (V4 pools are found via Initialize events instead).
+    let dex_activity_topics: Vec<B256> = vec![
         topics::V2_SWAP,
         topics::V2_SYNC,
         topics::V3_SWAP,
@@ -732,6 +756,9 @@ async fn discover_pools_shard(
         *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
         *topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
         *topics::BALANCER_SWAP,
+        *topics::TRADER_JOE_LB_SWAP,
+        *topics::TRADER_JOE_LB_SWAP_LEGACY,
+        *topics::PENDLE_MARKET_SWAP,
     ];
 
     let mut current = from_block;
@@ -747,14 +774,13 @@ async fn discover_pools_shard(
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
-        // ── DEX activity scan (fast path: skip Curve/Balancer topics) ──
-        let fast_filter = Filter::new()
-            .event_signature(fast_topics.clone())
+        // ── DEX activity scan ──
+        let activity_filter = Filter::new()
+            .event_signature(dex_activity_topics.clone())
             .from_block(current)
             .to_block(batch_end);
 
-        let fast_result = get_logs_pinned!(rpc, &fast_filter, provider_idx);
-        match fast_result {
+        match get_logs_pinned!(rpc, &activity_filter, provider_idx) {
             Ok(logs) => {
                 for log in &logs {
                     process_discovery_log(log, &mut active_blocks, &mut pool_hits);
@@ -762,14 +788,10 @@ async fn discover_pools_shard(
             }
             Err(e) => {
                 tracing::warn!(
-                    "Swap scan fast path failed for blocks {current}..{batch_end}: {e:#}. \
-                     Trying full topic set."
+                    "DEX activity scan failed for blocks {current}..{batch_end}: {e:#}. \
+                     Splitting batch..."
                 );
-                let full_filter = Filter::new()
-                    .event_signature(all_dex_topics.clone())
-                    .from_block(current)
-                    .to_block(batch_end);
-                match get_logs_pinned!(rpc, &full_filter, provider_idx) {
+                match get_logs_split_recursive(rpc, &activity_filter, current, batch_end).await {
                     Ok(logs) => {
                         for log in &logs {
                             process_discovery_log(log, &mut active_blocks, &mut pool_hits);
@@ -777,7 +799,7 @@ async fn discover_pools_shard(
                     }
                     Err(e2) => {
                         tracing::warn!(
-                            "Swap scan full topic set also failed for blocks {current}..{batch_end}: {e2:#}. \
+                            "Activity scan split also failed for blocks {current}..{batch_end}: {e2:#}. \
                              Skipping batch."
                         );
                     }
@@ -1399,8 +1421,13 @@ pub async fn health_check_pools(
     // Pre-extract dex types so closures don't need to borrow `pools`
     let dex_types: Vec<DexType> = pools.iter().map(|p| p.dex_type).collect();
 
-    // Run health checks with bounded concurrency
-    let check_results: Vec<(usize, bool)> = stream::iter(tasks)
+    /// Outcome of a single pool health probe.
+    enum PoolHealth { Alive, Dead, Unknown }
+
+    // Run health checks with bounded concurrency.
+    // RPC errors are treated as *unknown* and the pool is kept: a flaky public
+    // RPC must not silently delete healthy pools from the index.
+    let check_results: Vec<(usize, PoolHealth)> = stream::iter(tasks)
         .map(|(idx, to, data)| {
             let rpc = rpc.clone();
             let is_v3 = dex_types[idx] == DexType::UniswapV3 || dex_types[idx] == DexType::UniswapV4;
@@ -1409,9 +1436,9 @@ pub async fn health_check_pools(
             let is_curve = dex_types[idx] == DexType::Curve;
             let is_balancer = dex_types[idx] == DexType::Balancer;
             async move {
-                let valid = match rpc.call(to, data, block).await {
+                let health = match rpc.call(to, data, block).await {
                     Ok(bytes) => {
-                        if is_v3 {
+                        let responsive = if is_v3 {
                             // slot0: sqrtPriceX96 is first 32 bytes — non-zero means active
                             bytes.len() >= 32 && !bytes.iter().take(32).all(|b| *b == 0)
                         } else if is_lb {
@@ -1455,28 +1482,38 @@ pub async fn health_check_pools(
                             bytes.len() >= 64
                                 && (!bytes.iter().take(32).all(|b| *b == 0)
                                     || !bytes[32..64].iter().all(|b| *b == 0))
-                        }
+                        };
+                        if responsive { PoolHealth::Alive } else { PoolHealth::Dead }
                     }
                     Err(e) => {
-                        tracing::debug!("Health check failed for {}: {:#}", to, e);
-                        false
+                        tracing::debug!(
+                            "Health check failed for {}: {:#} — unverifiable, keeping pool",
+                            to,
+                            e
+                        );
+                        PoolHealth::Unknown
                     }
                 };
-                (idx, valid)
+                (idx, health)
             }
         })
         .buffer_unordered(rpc_concurrency)
         .collect()
         .await;
 
-    // Collect valid pools — only filter pools that were actually checked.
-    // Pools not in the tasks list (Balancer w/o pool_id) are kept.
+    // Collect results — only pools that were probed AND confirmed drained/paused
+    // are removed. Unverified pools (RPC errors) stay in the index.
     let mut checked_set: HashSet<usize> = HashSet::new();
-    let mut valid_set: HashSet<usize> = HashSet::new();
-    for (idx, valid) in check_results {
+    let mut dead_set: HashSet<usize> = HashSet::new();
+    let mut unknown_count = 0usize;
+    for (idx, health) in check_results {
         checked_set.insert(idx);
-        if valid {
-            valid_set.insert(idx);
+        match health {
+            PoolHealth::Alive => {}
+            PoolHealth::Dead => {
+                dead_set.insert(idx);
+            }
+            PoolHealth::Unknown => unknown_count += 1,
         }
     }
 
@@ -1484,7 +1521,7 @@ pub async fn health_check_pools(
     let filtered: Vec<DiscoveredPool> = pools
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| !checked_set.contains(i) || valid_set.contains(i))
+        .filter(|(i, _)| !checked_set.contains(i) || !dead_set.contains(i))
         .map(|(_, p)| p)
         .collect();
     let removed = original_count - filtered.len();
@@ -1492,6 +1529,12 @@ pub async fn health_check_pools(
         tracing::info!("Health check: removed {} drained/paused pools ({} remaining)", removed, filtered.len());
     } else {
         tracing::info!("Health check: all {} pools healthy", filtered.len());
+    }
+    if unknown_count > 0 {
+        tracing::warn!(
+            "Health check: {} pool(s) unverifiable due to RPC errors — kept as-is",
+            unknown_count
+        );
     }
 
     (filtered, removed)

@@ -16,7 +16,7 @@ use mev_scout_core::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::recommended_get_logs_batch;
 
-/// Fetch remote pools from GeckoTerminal (free, no API key required).
+/// Fetch remote pools from free aggregators (GeckoTerminal + DexScreener).
 /// Empty vec on failure (caller falls back to RPC).
 /// When `show_progress` is set, renders a progress bar on stderr.
 pub(crate) async fn fetch_remote(
@@ -41,16 +41,16 @@ pub(crate) async fn fetch_remote(
     let slug = &chain_name.to_string();
 
     if let Some(ref pb) = bar {
-        pb.set_message("GeckoTerminal");
+        pb.set_message("remote aggregators");
     }
-    let remote = remote_src::discover_via_geckoterminal(slug, max_pools, min_tvl).await;
+    let remote = remote_src::discover_via_remote(slug, max_pools, min_tvl).await;
     if remote.is_empty() {
-        tracing::warn!("GeckoTerminal returned 0 pools — no off-chain pool source available");
+        tracing::warn!("Remote aggregators returned 0 pools — no off-chain pool source available");
         if let Some(ref pb) = bar {
-            pb.abandon_with_message("GeckoTerminal returned 0 pools");
+            pb.abandon_with_message("remote aggregators returned 0 pools");
         }
     } else if let Some(ref pb) = bar {
-        pb.finish_with_message(format!("{} pools via GeckoTerminal", remote.len()));
+        pb.finish_with_message(format!("{} pools via remote aggregators", remote.len()));
     }
     remote
 }
@@ -200,20 +200,20 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         println!("  Pool Discovery");
         println!("  Chain:       {}", chain_name);
         if is_remote_only {
-            println!("  Sources:     remote aggregator: GeckoTerminal (on-chain scan skipped)");
+            println!("  Sources:     remote aggregators: GeckoTerminal + DexScreener (on-chain scan skipped)");
         } else if is_hybrid {
             println!("  Block range: {}–{}", from, to);
-            println!("  Sources:     hybrid (on-chain + GeckoTerminal union)");
+            println!("  Sources:     hybrid (on-chain + remote aggregator union)");
         } else if args.enrich {
             println!("  Block range: {}–{}", from, to);
-            println!("  Sources:     on-chain + GeckoTerminal enrichment");
+            println!("  Sources:     on-chain + remote enrichment");
         } else {
             println!("  Block range: {}–{}", from, to);
             println!("  Sources:     on-chain events (factory logs)");
         }
         if should_fetch_remote {
             let tvl_note = min_tvl_opt.map(|v| format!(" min-tvl ${v:.0}")).unwrap_or_default();
-            println!("  Remote:      GeckoTerminal, cap {}{}", args.max_pools, tvl_note);
+            println!("  Remote:      GeckoTerminal + DexScreener, cap {}{}", args.max_pools, tvl_note);
         }
         println!();
     }
@@ -328,7 +328,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             if !args.json {
                 eprintln!("  Warning: all remote sources returned 0 pools — falling back to RPC-only results");
             }
-            tracing::warn!("GeckoTerminal returned 0 pools — falling back to RPC-only results");
+            tracing::warn!("Remote sources returned 0 pools — falling back to RPC-only results");
         }
     }
 
