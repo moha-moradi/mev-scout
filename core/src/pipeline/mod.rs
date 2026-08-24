@@ -2,7 +2,11 @@ pub mod aggregate;
 pub mod gas;
 pub mod runner;
 pub mod scanner;
-pub use aggregate::{aggregate, aggregate_with_prices, AggregationResult, DexMeta, DexMetrics, StrategyMetrics, SummaryMetrics};
+pub use crate::types::gas::{GasCalibration, GasCalibrationSnapshot};
+pub use aggregate::{
+    aggregate, aggregate_with_prices, AggregationResult, DexMeta, DexMetrics, StrategyMetrics,
+    SummaryMetrics,
+};
 pub use gas::GasPriceDistribution;
 pub use runner::{add_pool_to_manager, BacktestRunner};
 pub use scanner::{topics, ActivityScanner};

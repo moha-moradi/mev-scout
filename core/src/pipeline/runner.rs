@@ -1,9 +1,11 @@
 //! Backtest orchestration — replays blocks through revm and runs all MEV detection strategies.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::cache::SqliteStore;
 use crate::data::ExecutedLog;
+use crate::dex_type::DexType;
 use crate::error;
 use crate::mev::detectors::JitArbDetector;
 use crate::mev::detectors::JitDetector;
@@ -17,9 +19,28 @@ use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2P
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
+use crate::types::gas::GasCalibration;
 use crate::types::MevOpportunity;
-use crate::types::{GasConfig, GasModel};
+use crate::types::{GasConfig, GasModel, Strategy};
 use alloy::primitives::{Address, U256};
+
+/// Grace window after which a persistence entry is pruned when its
+/// opportunity stops appearing.
+const PERSISTENCE_GRACE_BLOCKS: u64 = 5;
+/// Confidence floor for long-persisting opportunities (#10).
+const PERSISTENCE_MIN_CONFIDENCE: f64 = 0.05;
+/// Per-step decay applied to confidence for each consecutive block an
+/// opportunity persists (#10): fresh gaps score 1.0, stale gaps decay.
+const PERSISTENCE_DECAY: f64 = 0.75;
+
+/// Map key tracking one opportunity's cross-block persistence (#10).
+type PersistenceKey = (Strategy, Address, Address, Address, Address);
+
+#[derive(Debug, Clone, Copy)]
+struct PersistInfo {
+    last_block: u64,
+    blocks_seen: u32,
+}
 
 /// Orchestrates MEV backtest execution by replaying blocks through revm and
 /// running detection strategies against updated pool state.
@@ -43,6 +64,14 @@ pub struct BacktestRunner {
     min_profit_wei: u64,
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     max_candidates_per_tx: usize,
+    /// Cross-block opportunity persistence used as a competitiveness proxy (#10):
+    /// opportunities persisting many consecutive blocks get decaying confidence.
+    opp_persistence: HashMap<PersistenceKey, PersistInfo>,
+    /// Whether persistence-based confidence scoring is applied (#10).
+    persistence_scoring: bool,
+    /// Observed-gasUsed calibration buckets (#7), recorded during replay and
+    /// snapshotted into `gas_config.calibration` before each block.
+    gas_calibration: GasCalibration,
     pub last_processed_block: u64,
 }
 
@@ -69,6 +98,9 @@ impl BacktestRunner {
             capture_pending: false,
             min_profit_wei: 0,
             max_candidates_per_tx: 0,
+            opp_persistence: HashMap::new(),
+            persistence_scoring: true,
+            gas_calibration: GasCalibration::default(),
             last_processed_block: 0,
         }
     }
@@ -105,6 +137,14 @@ impl BacktestRunner {
     /// Set to 0 for unlimited (default).
     pub fn with_max_candidates_per_tx(mut self, max: usize) -> Self {
         self.max_candidates_per_tx = max;
+        self
+    }
+
+    /// Enable or disable persistence-based confidence scoring (#10).
+    /// Enabled by default: opportunities persisting across consecutive blocks
+    /// receive decaying `confidence` values as a competitiveness proxy.
+    pub fn with_persistence_scoring(mut self, enabled: bool) -> Self {
+        self.persistence_scoring = enabled;
         self
     }
 
@@ -296,6 +336,10 @@ impl BacktestRunner {
         // detection pass scans everything; subsequent passes only re-check
         // pairs containing a dirty pool (untouched states yield no new ops).
         let dirty_pools: RefCell<Option<std::collections::HashSet<Address>>> = RefCell::new(None);
+        // #7: refresh the detector-visible calibration snapshot and collect this
+        // block's observations through a cell (the on_tx closure needs access).
+        self.gas_config.calibration = self.gas_calibration.snapshot();
+        let gas_calibration = RefCell::new(std::mem::take(&mut self.gas_calibration));
 
         self.replayer.replay_each_filtered(
             block_num,
@@ -422,6 +466,27 @@ impl BacktestRunner {
                 // Collect effective gas price for H10 distribution modeling
                 gas_prices.borrow_mut().push(tx.gas_effective);
 
+                // #7: observe actual tx gas per (dex type, pools touched) bucket
+                if tx.status {
+                    let mut per_dex: HashMap<DexType, std::collections::HashSet<Address>> =
+                        HashMap::new();
+                    for log in &tx.logs {
+                        if pool_addrs.contains(&log.address) {
+                            if let Some(p) = pm.get(&log.address) {
+                                per_dex
+                                    .entry(p.info().dex_type)
+                                    .or_default()
+                                    .insert(log.address);
+                            }
+                        }
+                    }
+                    for (dex, pools) in per_dex {
+                        gas_calibration
+                            .borrow_mut()
+                            .record(dex, pools.len(), tx.gas_used);
+                    }
+                }
+
                 // Apply this tx's log updates to pool state AFTER detection
                 pm.update_from_logs(&tx.logs);
 
@@ -467,7 +532,13 @@ impl BacktestRunner {
         }
 
         self.pool_manager = pool_manager.into_inner();
+        self.gas_calibration = gas_calibration.into_inner();
         self.last_processed_block = block_num;
+
+        // #10: persistence-based confidence scoring across blocks
+        if self.persistence_scoring {
+            Self::update_persistence(&mut self.opp_persistence, &mut all_opportunities, block_num);
+        }
 
         Ok((
             all_opportunities,
@@ -529,6 +600,8 @@ impl BacktestRunner {
         let mut dex_tx_count = 0usize;
         // Dirty pools touched by earlier transactions (incremental scanning)
         let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
+        // #7: refresh detector-visible calibration before scanning the block
+        self.gas_config.calibration = self.gas_calibration.snapshot();
 
         for (i, tx) in txs.iter().enumerate() {
             let logs: Vec<ExecutedLog> = receipts
@@ -554,6 +627,10 @@ impl BacktestRunner {
             if matched {
                 dex_tx_count += 1;
             }
+            let (tx_status, tx_gas_used) = match receipts.get(i) {
+                Some(r) => (r.status, r.gas_used),
+                None => (false, 0),
+            };
 
             let scope = match dirty_pools.as_ref() {
                 Some(set) => ScanScope::Dirty(set),
@@ -589,6 +666,25 @@ impl BacktestRunner {
                     .get_or_insert_with(Default::default)
                     .extend(newly_dirty);
             }
+
+            // #7: observe actual tx gas per (dex type, pools touched) bucket
+            if tx_status && tx_gas_used > 0 {
+                let mut per_dex: HashMap<DexType, std::collections::HashSet<Address>> =
+                    HashMap::new();
+                for log in &logs {
+                    if pool_addrs.contains(&log.address) {
+                        if let Some(p) = self.pool_manager.get(&log.address) {
+                            per_dex
+                                .entry(p.info().dex_type)
+                                .or_default()
+                                .insert(log.address);
+                        }
+                    }
+                }
+                for (dex, pools) in per_dex {
+                    self.gas_calibration.record(dex, pools.len(), tx_gas_used);
+                }
+            }
         }
 
         // Filter: drop opportunities where expected profit doesn't cover gas
@@ -618,6 +714,11 @@ impl BacktestRunner {
             ));
         }
 
+        // #10: persistence-based confidence scoring across blocks
+        if self.persistence_scoring {
+            Self::update_persistence(&mut self.opp_persistence, &mut all_opportunities, block_num);
+        }
+
         self.last_processed_block = block_num;
 
         Ok((
@@ -631,6 +732,55 @@ impl BacktestRunner {
             },
             Vec::new(),
         ))
+    }
+
+    /// Update cross-block persistence state and stamp confidence scores (#10).
+    ///
+    /// An opportunity seen in the immediately preceding block extends its
+    /// streak; anything else starts a fresh one. Confidence decays geometrically
+    /// with the streak length: a gap persisting for many blocks is either
+    /// phantom or uncontested, and either way less actionable than a fresh one
+    /// (the `tx_index` exclusive-insertion assumption only holds briefly).
+    fn update_persistence(
+        map: &mut HashMap<PersistenceKey, PersistInfo>,
+        opps: &mut [MevOpportunity],
+        block_num: u64,
+    ) {
+        // Prune entries that have not been refreshed within the grace window.
+        map.retain(|_, info| block_num <= info.last_block + PERSISTENCE_GRACE_BLOCKS);
+
+        for opp in opps.iter_mut() {
+            let key = (
+                opp.strategy,
+                opp.pool_a,
+                opp.pool_b,
+                opp.token_in,
+                opp.token_out,
+            );
+            let blocks_seen = match map.get_mut(&key) {
+                Some(info) if info.last_block == block_num => {
+                    // Same-block duplicate (e.g. both scan directions): keep streak.
+                    info.blocks_seen
+                }
+                Some(info) if info.last_block + 1 == block_num => {
+                    info.last_block = block_num;
+                    info.blocks_seen += 1;
+                    info.blocks_seen
+                }
+                _ => {
+                    map.insert(
+                        key,
+                        PersistInfo {
+                            last_block: block_num,
+                            blocks_seen: 1,
+                        },
+                    );
+                    1
+                }
+            };
+            let decayed = PERSISTENCE_DECAY.powi((blocks_seen - 1) as i32);
+            opp.confidence = Some(decayed.max(PERSISTENCE_MIN_CONFIDENCE));
+        }
     }
 
     /// Run backtest over a resolved block range, collecting all detected
@@ -1026,5 +1176,87 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 }));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use alloy::primitives::address;
+
+    fn opp(block: u64) -> MevOpportunity {
+        let mut o = MevOpportunity::new(
+            block,
+            0,
+            Strategy::TwoHopArb,
+            address!("1111111111111111111111111111111111111111"),
+            0,
+        );
+        o.pool_b = address!("2222222222222222222222222222222222222222");
+        o.token_in = address!("3333333333333333333333333333333333333333");
+        o.token_out = address!("4444444444444444444444444444444444444444");
+        o
+    }
+
+    #[test]
+    fn fresh_opportunity_full_confidence() {
+        let mut map = HashMap::new();
+        let mut opps = vec![opp(100)];
+        BacktestRunner::update_persistence(&mut map, &mut opps, 100);
+        assert_eq!(opps[0].confidence, Some(1.0));
+    }
+
+    #[test]
+    fn streak_decays_confidence() {
+        let mut map = HashMap::new();
+        for block in 100..=103u64 {
+            let mut opps = vec![opp(block)];
+            BacktestRunner::update_persistence(&mut map, &mut opps, block);
+            let expected = PERSISTENCE_DECAY.powi((block - 100) as i32);
+            assert_eq!(opps[0].confidence, Some(expected), "block {block}");
+        }
+    }
+
+    #[test]
+    fn gap_resets_streak() {
+        let mut map = HashMap::new();
+        let mut first = vec![opp(100)];
+        BacktestRunner::update_persistence(&mut map, &mut first, 100);
+        // Skip blocks 101-102 (within grace): next sight starts a new streak.
+        let mut later = vec![opp(103)];
+        BacktestRunner::update_persistence(&mut map, &mut later, 103);
+        assert_eq!(later[0].confidence, Some(1.0));
+    }
+
+    #[test]
+    fn stale_entries_pruned_beyond_grace() {
+        let mut map = HashMap::new();
+        let mut first = vec![opp(100)];
+        BacktestRunner::update_persistence(&mut map, &mut first, 100);
+        assert_eq!(map.len(), 1);
+
+        let mut other = opp(100 + PERSISTENCE_GRACE_BLOCKS + 1);
+        other.token_in = address!("5555555555555555555555555555555555555555");
+        let mut others = vec![other];
+        BacktestRunner::update_persistence(
+            &mut map,
+            &mut others,
+            100 + PERSISTENCE_GRACE_BLOCKS + 1,
+        );
+        // Old entry pruned; only the new one remains.
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn same_block_duplicates_do_not_extend_streak() {
+        let mut map = HashMap::new();
+        let mut first = vec![opp(100)];
+        BacktestRunner::update_persistence(&mut map, &mut first, 100);
+        let mut duplicate = vec![opp(100)];
+        duplicate[0].pool_b = address!("6666666666666666666666666666666666666666");
+        BacktestRunner::update_persistence(&mut map, &mut duplicate, 100);
+        assert!(map
+            .values()
+            .all(|i| i.last_block == 100 && i.blocks_seen == 1));
     }
 }

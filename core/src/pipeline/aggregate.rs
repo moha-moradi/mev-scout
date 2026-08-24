@@ -117,18 +117,21 @@ pub fn aggregate_with_prices(
                 total_gas_cost_wei: 0,
             },
             by_strategy: std::collections::HashMap::new(),
-            by_dex: dexes.iter().map(|d| DexMetrics {
-                dex: d.name.clone(),
-                fork: d.fork.clone(),
-                tx_count: d.tx_count,
-                opportunities: 0,
-                profitable: 0,
-                revenue: 0.0,
-                avg_profit: 0.0,
-                gross_revenue_wei: 0,
-                net_profit_wei: 0,
-                total_gas_cost_wei: 0,
-            }).collect(),
+            by_dex: dexes
+                .iter()
+                .map(|d| DexMetrics {
+                    dex: d.name.clone(),
+                    fork: d.fork.clone(),
+                    tx_count: d.tx_count,
+                    opportunities: 0,
+                    profitable: 0,
+                    revenue: 0.0,
+                    avg_profit: 0.0,
+                    gross_revenue_wei: 0,
+                    net_profit_wei: 0,
+                    total_gas_cost_wei: 0,
+                })
+                .collect(),
         };
     }
 
@@ -163,8 +166,7 @@ pub fn aggregate_with_prices(
         } else {
             format!(
                 "{:?}|{}|{:#x}|{:#x}|{:#x}|{:#x}",
-                opp.strategy, opp.block_number, opp.pool_a, opp.pool_b,
-                opp.token_in, opp.token_out,
+                opp.strategy, opp.block_number, opp.pool_a, opp.pool_b, opp.token_in, opp.token_out,
             )
         };
         dedup_seen.insert(key)
@@ -185,7 +187,8 @@ pub fn aggregate_with_prices(
             best_single_opp = profit_eth;
         }
         // Per-token USD: use token_out price if available, else native fallback (L3)
-        let token_price = token_prices.get(&opp.token_out)
+        let token_price = token_prices
+            .get(&opp.token_out)
             .or_else(|| token_prices.get(&Address::ZERO))
             .copied()
             .unwrap_or(0.0);
@@ -241,7 +244,8 @@ pub fn aggregate_with_prices(
                 best_opp = pe;
             }
             // Per-token USD: use token_out price if available, else native fallback (L3)
-            let token_price = token_prices.get(&opp.token_out)
+            let token_price = token_prices
+                .get(&opp.token_out)
                 .or_else(|| token_prices.get(&Address::ZERO))
                 .copied()
                 .unwrap_or(0.0);
@@ -255,7 +259,11 @@ pub fn aggregate_with_prices(
         } else {
             0.0
         };
-        let avg = if count > 0 { strat_gross / count as f64 } else { 0.0 };
+        let avg = if count > 0 {
+            strat_gross / count as f64
+        } else {
+            0.0
+        };
 
         if strat_net > best_strat_net {
             best_strat_net = strat_net;
@@ -305,7 +313,11 @@ pub fn aggregate_with_prices(
                 }
             }
 
-            let avg_profit = if count > 0 { revenue / count as f64 } else { 0.0 };
+            let avg_profit = if count > 0 {
+                revenue / count as f64
+            } else {
+                0.0
+            };
             let net_wei = (gross_wei as i128) - (gas_wei as i128);
             DexMetrics {
                 dex: dex_meta.name.clone(),
@@ -321,7 +333,11 @@ pub fn aggregate_with_prices(
             }
         })
         .collect();
-    dex_metrics.sort_by(|a, b| b.revenue.partial_cmp(&a.revenue).unwrap_or(std::cmp::Ordering::Equal));
+    dex_metrics.sort_by(|a, b| {
+        b.revenue
+            .partial_cmp(&a.revenue)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     AggregationResult {
         summary: SummaryMetrics {
@@ -341,4 +357,3 @@ pub fn aggregate_with_prices(
         by_dex: dex_metrics,
     }
 }
-

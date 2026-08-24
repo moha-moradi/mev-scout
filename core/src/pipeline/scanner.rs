@@ -23,17 +23,15 @@ pub mod topics {
 
     pub const V3_SWAP: B256 =
         b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
-    pub static V3_MINT: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)")
-    });
+    pub static V3_MINT: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)"));
     pub const V3_BURN: B256 =
         b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
 
     pub static CURVE_TOKEN_EXCHANGE: LazyLock<B256> =
         LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256)"));
-    pub static CURVE_V2_TOKEN_EXCHANGE: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)")
-    });
+    pub static CURVE_V2_TOKEN_EXCHANGE: LazyLock<B256> =
+        LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
     pub static BALANCER_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
 
@@ -46,10 +44,12 @@ pub mod topics {
         LazyLock::new(|| keccak256("Swap(address,uint256,uint256,address,address)"));
 
     // Curve TokenExchangeUnderlying events (exchange_underlying path)
-    pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)"));
-    pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)"));
+    pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
+    });
+    pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
+    });
 
     /// All DEX event topic hashes for activity scanning.
     pub fn all_topics() -> Vec<B256> {

@@ -106,4 +106,3 @@ impl GasPriceDistribution {
         self.base_fees.clear();
     }
 }
-

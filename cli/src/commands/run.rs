@@ -149,6 +149,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         flash_loan_provider: validation_result.flash_loan_provider,
         winning_bid_premium: 0.0,
         percentile_gas_price: None,
+        calibration: Default::default(),
     };
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.backtest.proximity_window)

@@ -1,7 +1,17 @@
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum FlashLoanProvider {
     #[strum(serialize = "auto")]
@@ -27,7 +37,7 @@ impl FlashLoanProvider {
             FlashLoanProvider::Auto => 0,
             FlashLoanProvider::Balancer => 0,
             FlashLoanProvider::Aave => 9,     // 0.09%
-            FlashLoanProvider::Uniswap => 10,  // 0.10% (varies by pool)
+            FlashLoanProvider::Uniswap => 10, // 0.10% (varies by pool)
         }
     }
 
@@ -37,10 +47,10 @@ impl FlashLoanProvider {
     /// Measured from on-chain flash loan arb transactions.
     pub fn gas_overhead(self) -> u64 {
         match self {
-            FlashLoanProvider::Auto => 150_000,      // assumes Balancer (cheapest)
-            FlashLoanProvider::Balancer => 150_000,   // V2 Vault flash loan
-            FlashLoanProvider::Aave => 250_000,       // V3 Pool has heavier accounting
-            FlashLoanProvider::Uniswap => 200_000,    // V3 flash swap
+            FlashLoanProvider::Auto => 150_000, // assumes Balancer (cheapest)
+            FlashLoanProvider::Balancer => 150_000, // V2 Vault flash loan
+            FlashLoanProvider::Aave => 250_000, // V3 Pool has heavier accounting
+            FlashLoanProvider::Uniswap => 200_000, // V3 flash swap
         }
     }
 
@@ -57,7 +67,18 @@ impl FlashLoanProvider {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum Strategy {
     #[strum(serialize = "two_hop_arb")]
@@ -196,7 +217,11 @@ impl GasModel {
     /// Return the target percentile for this gas model.
     /// For `Distribution(p)` returns p. For `HistoricalExact` and `Fixed` returns `None`.
     pub fn target_percentile(&self) -> Option<u8> {
-        if let GasModel::Distribution(p) = self { Some(*p) } else { None }
+        if let GasModel::Distribution(p) = self {
+            Some(*p)
+        } else {
+            None
+        }
     }
 }
 
@@ -213,6 +238,11 @@ pub struct GasConfig {
     /// `base_fee * 150%` multiplier. Set by `BacktestRunner` before each
     /// block based on recent blocks' effective gas prices.
     pub percentile_gas_price: Option<u128>,
+    /// Observed-gasUsed calibration (#7): rolling per-`(dex_type, hop_count)`
+    /// averages of actual transaction gas, refreshed by `BacktestRunner`
+    /// before each block. Detectors blend these into their per-opportunity
+    /// gas estimates; empty by default (purely analytic estimates).
+    pub calibration: super::gas::GasCalibrationSnapshot,
 }
 
 impl GasConfig {
@@ -236,11 +266,7 @@ impl GasConfig {
     /// For `GasModel::HistoricalExact`, when a block's base fee is missing
     /// (`0`), the same percentile fallback is applied so gas is never
     /// treated as free.
-    pub fn compute_gas_cost_with_limit(
-        &self,
-        gas_limit: u64,
-        base_fee_per_gas: u128,
-    ) -> u128 {
+    pub fn compute_gas_cost_with_limit(&self, gas_limit: u64, base_fee_per_gas: u128) -> u128 {
         let pf_wei = self.effective_priority_fee_wei();
         // Historical-exact fallback when a block's base fee is missing
         // (e.g. pre-EIP-1559 chains, failed fetches): use the pre-computed
@@ -260,9 +286,7 @@ impl GasConfig {
                 // Use histogram-derived percentile when available (H10),
                 // fall back to the crude 150% multiplier while collecting data.
                 self.percentile_gas_price
-                    .unwrap_or_else(|| {
-                        base_fee_per_gas.saturating_mul(150).saturating_div(100)
-                    })
+                    .unwrap_or_else(|| base_fee_per_gas.saturating_mul(150).saturating_div(100))
                     .saturating_add(pf_wei)
             }
             GasModel::Live => base_fee_per_gas.saturating_add(pf_wei),
@@ -274,10 +298,11 @@ impl GasConfig {
     /// fee = input_amount * fee_rate_bps / 10000
     pub fn flash_loan_fee(&self, input_amount: u128) -> u128 {
         let bps = self.flash_loan_provider.fee_rate_bps();
-        if bps == 0 { return 0; }
+        if bps == 0 {
+            return 0;
+        }
         input_amount.saturating_mul(bps).saturating_div(10_000)
     }
-
 }
 
 impl Default for GasConfig {
@@ -289,6 +314,7 @@ impl Default for GasConfig {
             flash_loan_provider: FlashLoanProvider::Auto,
             winning_bid_premium: 0.0,
             percentile_gas_price: None,
+            calibration: super::gas::GasCalibrationSnapshot::default(),
         }
     }
 }
@@ -305,7 +331,18 @@ pub enum PriceSource {
 }
 
 /// Controls how native token USD price is sourced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum PriceOracleMode {
     /// Use CoinGecko API only (default, backward compat).
@@ -320,7 +357,17 @@ pub enum PriceOracleMode {
     Hybrid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum OutputFormat {
     #[serde(rename = "table")]
@@ -334,7 +381,18 @@ pub enum OutputFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum ExecutorType {
     #[strum(serialize = "flash_loan_arbitrage")]
@@ -357,4 +415,3 @@ impl ExecutorType {
         }
     }
 }
-

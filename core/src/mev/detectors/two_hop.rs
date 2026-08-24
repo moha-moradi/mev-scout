@@ -160,6 +160,7 @@ impl TwoHopArbDetector {
             pool_b,
             shared_token,
             gas_config.flash_loan_provider.gas_overhead(),
+            &gas_config.calibration,
         );
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
@@ -887,11 +888,15 @@ fn invert_monotone_quote(
 ///
 /// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
 /// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
+///
+/// When the observed-gas calibration (#7) has enough samples for this shape,
+/// the structural estimate is replaced by the calibrated observation (clamped).
 fn estimate_gas_for_two_hop(
     pool_a: &PoolState,
     pool_b: &PoolState,
     shared_token: Address,
     flash_loan_gas: u64,
+    calibration: &crate::types::gas::GasCalibrationSnapshot,
 ) -> u64 {
     let base_overhead = 40_000u64;
     let calldata = calldata_gas_estimate(2);
@@ -911,5 +916,18 @@ fn estimate_gas_for_two_hop(
         other => other.gas_estimate(),
     };
 
-    base_overhead + calldata + a_gas + b_gas + flash_loan_gas
+    let analytic = base_overhead + calldata + a_gas + b_gas + flash_loan_gas;
+
+    // #7: dominant DEX type buckets the observation; hop count is always 2 here.
+    let mut counts: std::collections::HashMap<crate::dex_type::DexType, usize> =
+        std::collections::HashMap::new();
+    *counts.entry(pool_a.info().dex_type).or_default() += 1;
+    *counts.entry(pool_b.info().dex_type).or_default() += 1;
+    let dominant = counts
+        .iter()
+        .max_by_key(|(_, &c)| c)
+        .map(|(&d, _)| d)
+        .unwrap_or(pool_a.info().dex_type);
+
+    calibration.blended_gas_limit(dominant, 2, analytic)
 }

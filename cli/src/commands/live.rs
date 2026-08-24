@@ -39,6 +39,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         flash_loan_provider: validation.flash_loan_provider,
         winning_bid_premium: 0.0,
         percentile_gas_price: None,
+        calibration: Default::default(),
     };
 
     let mode_label = if args.r#loop { "continuous" } else { "one-shot" };

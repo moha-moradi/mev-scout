@@ -15,12 +15,32 @@ pub struct ProviderEndpoint {
 }
 
 impl ProviderEndpoint {
-    pub const fn new(url: &'static str, default_rps: f64, label: &'static str, archive: bool) -> Self {
-        Self { url, default_rps, label, archive }
+    pub const fn new(
+        url: &'static str,
+        default_rps: f64,
+        label: &'static str,
+        archive: bool,
+    ) -> Self {
+        Self {
+            url,
+            default_rps,
+            label,
+            archive,
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum ChainName {
     #[strum(serialize = "polygon")]
@@ -62,30 +82,63 @@ impl ChainName {
                 ProviderEndpoint::new("https://polygon.lava.build", 0.9, "lava", true),
                 ProviderEndpoint::new("https://rpc.sentio.xyz/matic", 0.6, "sentio", true),
                 ProviderEndpoint::new("https://matic.rpc.sentio.xyz", 0.8, "sentio-alt", true),
-                ProviderEndpoint::new("https://polygon-bor-rpc.publicnode.com", 1.0, "publicnode", true),
-                ProviderEndpoint::new("https://polygon.api.onfinality.io/public", 0.5, "onfinality", true),
-                ProviderEndpoint::new("https://rpc.satelink.network/rpc/polygon", 0.9, "satelink", true),
+                ProviderEndpoint::new(
+                    "https://polygon-bor-rpc.publicnode.com",
+                    1.0,
+                    "publicnode",
+                    true,
+                ),
+                ProviderEndpoint::new(
+                    "https://polygon.api.onfinality.io/public",
+                    0.5,
+                    "onfinality",
+                    true,
+                ),
+                ProviderEndpoint::new(
+                    "https://rpc.satelink.network/rpc/polygon",
+                    0.9,
+                    "satelink",
+                    true,
+                ),
                 ProviderEndpoint::new("https://api.zan.top/polygon-mainnet", 0.5, "zan", false),
                 ProviderEndpoint::new("https://poly.api.pocket.network", 0.5, "pocket", false),
             ],
-            ChainName::Avalanche => vec![
-                ProviderEndpoint::new("https://avalanche-c-chain.publicnode.com", 1.0, "publicnode", true),
-            ],
-            ChainName::Bsc => vec![
-                ProviderEndpoint::new("https://bsc.publicnode.com", 1.0, "publicnode", true),
-            ],
-            ChainName::Arbitrum => vec![
-                ProviderEndpoint::new("https://arbitrum-one.publicnode.com", 1.0, "publicnode", true),
-            ],
-            ChainName::Base => vec![
-                ProviderEndpoint::new("https://base.publicnode.com", 1.0, "publicnode", true),
-            ],
-            ChainName::Ethereum => vec![
-                ProviderEndpoint::new("https://ethereum-rpc.publicnode.com", 1.0, "publicnode", true),
-            ],
-            ChainName::Optimism => vec![
-                ProviderEndpoint::new("https://optimism-rpc.publicnode.com", 1.0, "publicnode", true),
-            ],
+            ChainName::Avalanche => vec![ProviderEndpoint::new(
+                "https://avalanche-c-chain.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
+            ChainName::Bsc => vec![ProviderEndpoint::new(
+                "https://bsc.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
+            ChainName::Arbitrum => vec![ProviderEndpoint::new(
+                "https://arbitrum-one.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
+            ChainName::Base => vec![ProviderEndpoint::new(
+                "https://base.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
+            ChainName::Ethereum => vec![ProviderEndpoint::new(
+                "https://ethereum-rpc.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
+            ChainName::Optimism => vec![ProviderEndpoint::new(
+                "https://optimism-rpc.publicnode.com",
+                1.0,
+                "publicnode",
+                true,
+            )],
         }
     }
 
@@ -110,19 +163,19 @@ impl ChainName {
                 "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d", // Meshswap
             ],
             ChainName::Avalanche => &[
-                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",  // SushiSwap
                 "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe V1
             ],
             ChainName::Bsc => &[
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
-                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",  // SushiSwap
             ],
             ChainName::Arbitrum => &[], // Camelot handled via default_camelot_factories
             ChainName::Base => &[],     // Aerodrome handled via default_solidly_factories
             ChainName::Ethereum => &[
                 "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // Uniswap V2
                 "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", // SushiSwap
-                "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9", // ShibaSwap
+                "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9",  // ShibaSwap
             ],
             ChainName::Optimism => &[
                 "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
@@ -225,6 +278,3 @@ pub fn v2_router_for_factory(factory: Address) -> Option<Address> {
     }
     None
 }
-
-
-
