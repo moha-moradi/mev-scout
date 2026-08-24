@@ -21,7 +21,6 @@ pub const TERNARY_SEARCH_ITERATIONS: i32 = 80;
 pub const GOLDEN_SECTION_REFINE_ITERATIONS: usize = 40;
 pub const NEWTON_INVARIANT_ITERATIONS: i32 = 128;
 pub const NEWTON_OUTPUT_ITERATIONS: i32 = 64;
-pub const N_HOP_GRID_POINTS: usize = 50;
 
 // Pool math thresholds
 pub const MAX_V2_RESERVE_RATIO: u128 = 100;

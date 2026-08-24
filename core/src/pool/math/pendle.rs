@@ -13,7 +13,7 @@
 //! large swaps more), so we catch opportunities that may have smaller
 //! actual profit. This is safer than underestimating.
 
-use super::consts::{PERMILLE_DENOMINATOR, MIN_DAMPING_PERMILLE, MAX_EXTRACTION_NUMERATOR};
+use super::consts::{MAX_EXTRACTION_NUMERATOR, MIN_DAMPING_PERMILLE, PERMILLE_DENOMINATOR};
 
 /// Quote an output amount for a Pendle AMM swap using the logistic UAMM model.
 ///
@@ -28,11 +28,7 @@ use super::consts::{PERMILLE_DENOMINATOR, MIN_DAMPING_PERMILLE, MAX_EXTRACTION_N
 ///
 /// # Returns
 /// Estimated output amount, or `None` if the swap is invalid.
-pub fn pendle_output_amount(
-    amount_in: u128,
-    total_in: u128,
-    total_out: u128,
-) -> Option<u128> {
+pub fn pendle_output_amount(amount_in: u128, total_in: u128, total_out: u128) -> Option<u128> {
     if amount_in == 0 || total_in == 0 || total_out == 0 {
         return None;
     }
@@ -64,7 +60,9 @@ pub fn pendle_output_amount(
     // At 20%: 800/1000 = 80%
     // At 50%: 500/1000 = 50%
     // At 100%: 200/1000 = 20%
-    let damping_permille = PERMILLE_DENOMINATOR.saturating_sub(swap_ratio_1000).max(MIN_DAMPING_PERMILLE);
+    let damping_permille = PERMILLE_DENOMINATOR
+        .saturating_sub(swap_ratio_1000)
+        .max(MIN_DAMPING_PERMILLE);
 
     let damped_output = cp_output.checked_mul(damping_permille)? / PERMILLE_DENOMINATOR;
 

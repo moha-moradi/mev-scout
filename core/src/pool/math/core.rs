@@ -1,7 +1,7 @@
 //! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
 //! and unified `quote_exact_in` dispatcher for all pool types.
 
-use super::consts::{BPS_DENOMINATOR, GOLDEN_SECTION_REFINE_ITERATIONS, N_HOP_GRID_POINTS};
+use super::consts::{BPS_DENOMINATOR, GOLDEN_SECTION_REFINE_ITERATIONS};
 use crate::pool::state::PoolState;
 use alloy::primitives::{Address, U256, U512};
 
@@ -370,117 +370,24 @@ fn golden_section_maximize(
     }
 }
 
-/// Coarse grid scan followed by golden-section refinement and random restarts.
-///
-/// Samples `grid_points` evenly-spaced points in [0, max_input], picks the
-/// best one, then refines with golden-section search around that region.
-/// Finally, runs multiple random-restart golden-section searches to escape
-/// local optima in non-convex profit landscapes (V3 step-function liquidity).
-///
-/// This handles non-convex profit functions (e.g. V3 with tick boundaries)
-/// much better than pure ternary/golden-section search.
-fn grid_plus_refine(
-    max_input: u128,
-    quote_fn: &impl Fn(u128) -> Option<u128>,
-    grid_points: usize,
-) -> Option<(u128, u128)> {
-    if max_input == 0 {
-        return None;
-    }
-
-    let gp = grid_points.max(3);
-    let step = max_input / gp as u128;
-    let mut best_input = 0u128;
-    let mut best_output = 0u128;
-    let mut best_profit = 0u128;
-
-    // Phase 1: coarse grid
-    for i in 0..=gp {
-        let input = (i as u128).saturating_mul(step).min(max_input);
-        if input == 0 {
-            continue;
-        }
-        if let Some(output) = quote_fn(input) {
-            if output > input {
-                let profit = output - input;
-                if profit > best_profit {
-                    best_profit = profit;
-                    best_input = input;
-                    best_output = output;
-                }
-            }
-        }
-    }
-
-    if best_profit == 0 {
-        return None;
-    }
-
-    // Phase 2: golden-section refinement around best region
-    let radius = (step / 2).max(1);
-    let lo = best_input.saturating_sub(radius);
-    let hi = (best_input + radius).min(max_input);
-
-    if let Some(refined) =
-        golden_section_maximize(lo, hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS)
-    {
-        if let Some(output) = quote_fn(refined) {
-            if output > refined && output - refined > best_profit {
-                best_profit = output - refined;
-                best_input = refined;
-                best_output = output;
-            }
-        }
-    }
-
-    // Phase 3: random restarts to find additional local optima (H1 fix).
-    // V3 step-function liquidity creates multiple local maxima across the
-    // input range; a single grid + refine can miss peaks between grid points.
-    // Multiple golden-section searches from random start points provide
-    // stochastic coverage of the full search space.
-    let num_restarts = 5u32;
-    for i in 0..num_restarts {
-        let ratio = ((i as f64 + 1.0) * 0.618033988749895).fract();
-        let start = ((max_input as f64) * ratio) as u128;
-        if start == 0 || start >= max_input {
-            continue;
-        }
-        let r_radius = max_input / 8u128;
-        let r_lo = start.saturating_sub(r_radius).max(1);
-        let r_hi = (start + r_radius).min(max_input);
-        if r_lo >= r_hi {
-            continue;
-        }
-        if let Some(x) =
-            golden_section_maximize(r_lo, r_hi, quote_fn, GOLDEN_SECTION_REFINE_ITERATIONS)
-        {
-            if let Some(output) = quote_fn(x) {
-                if output > x {
-                    let profit = output - x;
-                    if profit > best_profit {
-                        best_profit = profit;
-                        best_input = x;
-                        best_output = output;
-                    }
-                }
-            }
-        }
-    }
-
-    Some((best_input, best_output))
-}
-
-/// General N-hop optimizer using grid + golden-section refinement.
+/// General N-hop optimizer.
 ///
 /// `quote_fn(x)` returns the output amount for input `x` through the entire pool chain.
 /// Returns `Some((optimal_input, output_amount))` or `None` if no profitable path found.
 ///
 /// `output_amount` is guaranteed to be strictly greater than `optimal_input` when `Some`.
+///
+/// Deterministic: every AMM output function (constant-product, stableswap,
+/// weighted) is concave and non-decreasing; composing concave non-decreasing
+/// functions preserves concavity, so `profit(x) = quote_fn(x) − x` is concave
+/// and a single golden-section pass finds its global optimum. No grid sampling
+/// or stochastic restarts are needed (V3-family chains use explicit breakpoint
+/// segmentation via [`optimal_on_segments`] instead).
 pub fn optimal_n_hop_generic(
     max_input: u128,
     quote_fn: &impl Fn(u128) -> Option<u128>,
 ) -> Option<(u128, u128)> {
-    grid_plus_refine(max_input, quote_fn, N_HOP_GRID_POINTS)
+    optimal_on_segments(max_input, &[], quote_fn)
 }
 
 /// Version of `optimal_two_hop_arb` that accepts generic quoting functions.
@@ -488,9 +395,11 @@ pub fn optimal_n_hop_generic(
 /// `quote_a(x)` returns the amount of bridge token received from pool A when spending `x` of token_in.
 /// `quote_b(x)` returns the amount of `token_out` received from pool B when spending `x` of the bridge token.
 ///
-/// Uses grid search + golden-section refinement on the profit function:
-/// `profit(x) = quote_b(quote_a(x)) - x`.
-/// Returns `None` when no profitable input exists (profit <= 0 for all inputs).
+/// Maximizes `profit(x) = quote_b(quote_a(x)) - x`. Deterministic: both pool
+/// outputs are concave and non-decreasing, so their composition minus the linear
+/// input term stays concave and one golden-section search over `[1, max_input]`
+/// is globally optimal. Returns `None` when no profitable input exists
+/// (profit <= 0 for all inputs).
 pub fn optimal_two_hop_arb_generic(
     max_input: u128,
     quote_a: &impl Fn(u128) -> Option<u128>,
@@ -505,7 +414,7 @@ pub fn optimal_two_hop_arb_generic(
         quote_b(mid)
     };
 
-    let (input, output) = grid_plus_refine(max_input, &combined, 50)?;
+    let (input, output) = optimal_on_segments(max_input, &[], &combined)?;
     let intermediate = quote_a(input)?;
     Some(TwoHopArbResult {
         input_amount: input,
@@ -735,5 +644,85 @@ mod tests {
                 .try_into()
                 .unwrap()
         );
+    }
+
+    /// Dense-scan reference for arbitrary composite quote functions.
+    fn brute_force_best_generic(
+        max_input: u128,
+        combined: &impl Fn(u128) -> Option<u128>,
+    ) -> Option<(u128, u128)> {
+        let step = (max_input / 20_000).max(1);
+        let mut best: Option<(u128, u128)> = None;
+        let mut x = step;
+        while x <= max_input {
+            if let Some(output) = combined(x) {
+                if output > x {
+                    match best {
+                        Some((_, bo)) if bo >= output => {}
+                        _ => best = Some((x, output)),
+                    }
+                }
+            }
+            x += step;
+        }
+        best
+    }
+
+    #[test]
+    fn generic_matches_brute_force_constant_product() {
+        // Two constant-product pools with divergent prices.
+        let ra_i = 1_000_000u128;
+        let ra_o = 2_000_000u128;
+        let rb_i = 2_000_000u128;
+        let rb_o = 500_000u128;
+        let fee = 30u32;
+        let quote_a = |x: u128| constant_product_output_amount(x, ra_i, ra_o, fee);
+        let quote_b = |x: u128| constant_product_output_amount(x, rb_i, rb_o, fee);
+        let combined = |x: u128| -> Option<u128> { quote_b(quote_a(x)?) };
+
+        let max_input = ra_i.min(rb_o);
+        let fast = optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b);
+        let slow = brute_force_best_generic(max_input, &combined);
+        assert_eq!(fast.is_some(), slow.is_some());
+        if let (Some(f), Some((_, s_out))) = (fast, slow) {
+            assert!(
+                f.profit >= s_out.saturating_sub(f.input_amount) * 99 / 100,
+                "deterministic profit {} below brute-force reference {}",
+                f.profit,
+                s_out.saturating_sub(f.input_amount)
+            );
+        }
+    }
+
+    #[test]
+    fn generic_matches_brute_force_power_curve() {
+        // Balancer-weighted-shaped output: S * (1 - (1 - x/S)^w), concave for
+        // w in (0,1). Composed with a constant-product second hop.
+        let scale = 10_000_000u128; // S
+        let w_num = 8u64; // weight ratio 0.8
+        let quote_a = |x: u128| -> Option<u128> {
+            if x == 0 || x > scale {
+                return None;
+            }
+            // (1 - x/S)^0.8 approximated via powf on f64; filter-only precision.
+            let base = 1.0 - x as f64 / scale as f64;
+            let out = (scale as f64 * (1.0 - base.powf(w_num as f64 / 10.0))) as u128;
+            (out > 0).then_some(out)
+        };
+        let quote_b = |x: u128| constant_product_output_amount(x, 3_000_000, 1_500_000, 30);
+        let combined = |x: u128| -> Option<u128> { quote_b(quote_a(x)?) };
+
+        let max_input = 9_000_000u128;
+        let fast = optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b);
+        let slow = brute_force_best_generic(max_input, &combined);
+        assert_eq!(fast.is_some(), slow.is_some());
+        if let (Some(f), Some((_, s_out))) = (fast, slow) {
+            assert!(
+                f.profit >= s_out.saturating_sub(f.input_amount) * 99 / 100,
+                "deterministic profit {} below brute-force reference {}",
+                f.profit,
+                s_out.saturating_sub(f.input_amount)
+            );
+        }
     }
 }

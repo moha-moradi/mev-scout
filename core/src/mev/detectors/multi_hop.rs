@@ -14,8 +14,7 @@ use crate::dex_type::DexType;
 use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints};
 use crate::pool::math::{constant_product_output_amount, optimal_on_segments, quote_exact_in};
 use crate::pool::state::{
-    calldata_gas_estimate, check_dedup_key, is_fee_on_transfer_token, PoolManager, PoolState,
-    ScanScope, UniswapV2PoolState,
+    calldata_gas_estimate, check_dedup_key, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
 };
 use crate::types::gas::GasCalibrationSnapshot;
 use crate::types::MevOpportunity;
@@ -299,8 +298,9 @@ impl MultiHopArbDetector {
         };
 
         // Fee-on-transfer filter (#9): quotes assume full output received; sell-tax
-        // tokens produce phantom opportunities. Exclude known FOT tokens.
-        if is_fee_on_transfer_token(&token_in) || is_fee_on_transfer_token(&token_out) {
+        // tokens produce phantom opportunities. Exclude known and dynamically
+        // learned FOT tokens.
+        if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
             return None;
         }
 

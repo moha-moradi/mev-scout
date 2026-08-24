@@ -20,8 +20,8 @@ use crate::pool::math::{
     optimal_two_hop_arb_segmented, quote_exact_in, v3_breakpoints, TwoHopArbResult,
 };
 use crate::pool::state::{
-    calldata_gas_estimate, check_dedup_key, is_fee_on_transfer_token, BalancerPoolState,
-    CurvePoolState, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
+    calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager,
+    PoolState, ScanScope, UniswapV2PoolState,
 };
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
@@ -144,8 +144,8 @@ impl TwoHopArbDetector {
 
         // Fee-on-transfer filter (#9): the simulation assumes the full quote is
         // received, but sell-tax tokens take a cut on transfer — producing
-        // phantom opportunities. Exclude known FOT tokens entirely.
-        if is_fee_on_transfer_token(&token_in) || is_fee_on_transfer_token(&token_out) {
+        // phantom opportunities. Exclude known and dynamically-learned FOT tokens.
+        if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
             return None;
         }
 

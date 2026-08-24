@@ -11,8 +11,8 @@
 //!   - `lb_output_amount`: quote a swap within the active bin
 //!   - `lb_max_output`: maximum output draining the active bin
 
-use alloy::primitives::U256;
 use super::consts::BPS_DENOMINATOR;
+use alloy::primitives::U256;
 
 /// Compute the price of bin `active_id` relative to bin 0.
 ///
@@ -66,7 +66,9 @@ pub fn lb_output_amount(
     let fee_factor = BPS_DENOMINATOR - fee as u128;
     let amount_in_eff = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_eff.checked_mul(reserve_out)?;
-    let denominator = reserve_in.checked_mul(BPS_DENOMINATOR)?.checked_add(amount_in_eff)?;
+    let denominator = reserve_in
+        .checked_mul(BPS_DENOMINATOR)?
+        .checked_add(amount_in_eff)?;
     let output = numerator / denominator;
     if output == 0 {
         return None;

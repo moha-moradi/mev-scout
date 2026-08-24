@@ -487,7 +487,9 @@ impl BacktestRunner {
                     }
                 }
 
-                // Apply this tx's log updates to pool state AFTER detection
+                // Learn taxed tokens from this tx (#9), then apply its log
+                // updates to pool state — both AFTER detection.
+                pm.learn_taxes_from_tx(&tx.logs);
                 pm.update_from_logs(&tx.logs);
 
                 // Accumulate dirtied pools for the next incremental scan
@@ -659,6 +661,8 @@ impl BacktestRunner {
             );
             all_opportunities.extend(multi_opps);
 
+            // #9: learn taxed tokens, then apply state updates
+            self.pool_manager.learn_taxes_from_tx(&logs);
             self.pool_manager.update_from_logs(&logs);
             let newly_dirty = self.pool_manager.take_dirty_pools();
             if !newly_dirty.is_empty() {

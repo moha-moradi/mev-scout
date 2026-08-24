@@ -27,10 +27,17 @@ pub fn newton_stableswap_invariant(
         let d_n = d.powf(nf);
         let f = d_np1 / denom + c * d - target;
         let deriv = np1 * d_n / denom + c;
-        if deriv.abs() < 1e-30 { break; }
+        if deriv.abs() < 1e-30 {
+            break;
+        }
         let d_next = d - f / deriv;
-        if (d_next - d).abs() <= 1.0 { d = d_next; break; }
-        if d_next <= 0.0 { break; }
+        if (d_next - d).abs() <= 1.0 {
+            d = d_next;
+            break;
+        }
+        if d_next <= 0.0 {
+            break;
+        }
         d = d_next;
     }
     (d > 0.0).then_some(d)
@@ -68,10 +75,17 @@ pub fn newton_stableswap_output(
         let k_over_x = k / x;
         let f = ann * x + b - k_over_x;
         let deriv = ann + k_over_x / x;
-        if deriv.abs() < 1e-30 { break; }
+        if deriv.abs() < 1e-30 {
+            break;
+        }
         let x_next = x - f / deriv;
-        if (x_next - x).abs() <= 0.5 { x = x_next; break; }
-        if x_next <= 0.0 { break; }
+        if (x_next - x).abs() <= 0.5 {
+            x = x_next;
+            break;
+        }
+        if x_next <= 0.0 {
+            break;
+        }
         x = x_next;
     }
 

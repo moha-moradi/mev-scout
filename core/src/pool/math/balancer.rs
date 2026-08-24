@@ -1,8 +1,8 @@
 //! Balancer V2 AMM math: weighted product, StableSwap, and variant dispatch.
 
-use alloy::primitives::{Address, U256};
-use crate::pool::state::{BalancerPoolState, BalancerPoolVariant};
 use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER};
+use crate::pool::state::{BalancerPoolState, BalancerPoolVariant};
+use alloy::primitives::{Address, U256};
 
 /// Dispatch to the correct Balancer quoting formula based on pool variant.
 /// Weighted pools use the weighted product formula; Stable pools use StableSwap.
@@ -44,21 +44,33 @@ pub fn balancer_output_amount(
 
     let r_in = U256::from(reserve_in);
     let r_out = U256::from(reserve_out);
-    let w_in = U256::from(if weight_in == 0 { WEI_PER_ETHER } else { weight_in });
-    let w_out = U256::from(if weight_out == 0 { WEI_PER_ETHER } else { weight_out });
+    let w_in = U256::from(if weight_in == 0 {
+        WEI_PER_ETHER
+    } else {
+        weight_in
+    });
+    let w_out = U256::from(if weight_out == 0 {
+        WEI_PER_ETHER
+    } else {
+        weight_out
+    });
     let amount = U256::from(amount_after_fee);
 
     let numerator = r_in;
     let denominator = r_in + amount;
 
-    if denominator.is_zero() { return None; }
+    if denominator.is_zero() {
+        return None;
+    }
 
     let ratio_f64 = numerator.as_limbs()[0] as f64 / denominator.as_limbs()[0] as f64;
     let exp = w_in.as_limbs()[0] as f64 / w_out.as_limbs()[0] as f64;
     let reduction = ratio_f64.powf(exp);
 
     let output_f64 = r_out.as_limbs()[0] as f64 * (1.0 - reduction);
-    if output_f64 <= 0.0 { return None; }
+    if output_f64 <= 0.0 {
+        return None;
+    }
 
     Some(output_f64 as u128)
 }
@@ -86,7 +98,10 @@ pub fn balancer_stable_output_amount(
     let has_scaling = pool.scaling_factors.len() == n && !pool.scaling_factors.is_empty();
     let bpt_idx = pool.bpt_index;
 
-    let scaled_balances: Vec<f64> = pool.balances.iter().enumerate()
+    let scaled_balances: Vec<f64> = pool
+        .balances
+        .iter()
+        .enumerate()
         .filter(|(i, _)| bpt_idx.map_or(true, |b| *i != b))
         .map(|(i, &b)| {
             let raw = b as f64;
@@ -138,19 +153,26 @@ pub fn balancer_stable_output_amount(
     let x_in_new = scaled_balances[si] + amount_in as f64 * fee_factor;
 
     // Phase 3: Solve for x_out'
-    let sum_others: f64 = scaled_balances.iter().enumerate()
+    let sum_others: f64 = scaled_balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != so)
         .map(|(_, &v)| v)
-        .sum::<f64>() + (x_in_new - scaled_balances[si]);
-    let prod_others: f64 = scaled_balances.iter().enumerate()
+        .sum::<f64>()
+        + (x_in_new - scaled_balances[si]);
+    let prod_others: f64 = scaled_balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != so && i != si)
         .map(|(_, &v)| v)
-        .product::<f64>() * x_in_new;
+        .product::<f64>()
+        * x_in_new;
     if prod_others <= 0.0 {
         return None;
     }
 
-    let x_out_new = super::stable_swap::newton_stableswap_output(n_scaled, ann, d, sum_others, prod_others)?;
+    let x_out_new =
+        super::stable_swap::newton_stableswap_output(n_scaled, ann, d, sum_others, prod_others)?;
     let output = scaled_balances[so] - x_out_new;
     (output > 0.0).then(|| output as u128)
 }
@@ -158,12 +180,19 @@ pub fn balancer_stable_output_amount(
 /// Extract Balancer weights for a specific token pair (token_in → token_out).
 /// Returns (weight_in, weight_out). Falls back to equal weights (1e18 each)
 /// if the weights vector is empty or doesn't match the token count.
-fn balancer_weights(pool: &BalancerPoolState, token_in: Address, token_out: Address) -> (u128, u128) {
+fn balancer_weights(
+    pool: &BalancerPoolState,
+    token_in: Address,
+    token_out: Address,
+) -> (u128, u128) {
     let default_w = WEI_PER_ETHER;
     if pool.weights.len() != pool.balances.len() || pool.weights.is_empty() {
         return (default_w, default_w);
     }
-    match (pool.token_index.get(&token_in), pool.token_index.get(&token_out)) {
+    match (
+        pool.token_index.get(&token_in),
+        pool.token_index.get(&token_out),
+    ) {
         (Some(&i), Some(&o)) => (pool.weights[i], pool.weights[o]),
         _ => (default_w, default_w),
     }

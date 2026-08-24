@@ -1,9 +1,31 @@
+use crate::data::ExecutedLog;
+use crate::pool::decoders;
 use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
-use crate::pool::state::pool_types::{PoolState, UniswapV2PoolState, UniswapV3PoolState};
-use alloy::primitives::{Address, U256};
+use crate::pool::state::apply::SWAP_TOPIC;
+use crate::pool::state::pool_types::{
+    is_fee_on_transfer_token, is_rebase_token, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+};
+use crate::utils::u128_from_be_bytes;
+use alloy::primitives::{b256, Address, B256, U256};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+
+/// ERC20 `Transfer(address,address,uint256)` topic0.
+const ERC20_TRANSFER_TOPIC: B256 =
+    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+/// Relative shortfall between a swap's declared amount and what the token
+/// contract actually transferred beyond which the token is flagged taxed (#9).
+/// Well above any modeled DEX fee, so only off-invariant shortfalls trip it.
+const TAX_SHORTFALL_MARGIN: f64 = 0.05;
+/// Declared amounts below this are ignored when checking tax shortfalls
+/// (dust rounding noise).
+const MIN_TAX_CHECK_AMOUNT: u128 = 1_000;
+
+/// Actual ERC20 transfer totals per (pool, token), split by direction.
+type TransferTotals = HashMap<(Address, Address), u128>;
+/// One swap's declared amounts: (pool, token_in, amount_in, token_out, amount_out).
+type SwapDeclaration = (Address, Option<Address>, u128, Option<Address>, u128);
 
 /// Detection scan scope for incremental arbitrage scanning.
 ///
@@ -47,6 +69,9 @@ pub struct PoolManager {
     /// Pools whose state changed since the last `take_dirty_pools()` call.
     /// Used to restrict per-transaction detection to affected pairs only.
     pub(crate) dirty_pools: HashSet<Address>,
+    /// Tokens learned to be transfer-taxed at runtime (#9): declared swap
+    /// amounts exceeded what the ERC20 contract actually moved. Session-only.
+    pub(crate) dynamic_fot: HashSet<Address>,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
     pub(crate) wrapped_native: Option<Address>,
     /// Address of the Balancer V2 vault for flash loans and pool state queries.
@@ -78,6 +103,7 @@ impl PoolManager {
             token_index: HashMap::new(),
             pairs_cache: Mutex::new(None),
             dirty_pools: HashSet::new(),
+            dynamic_fot: HashSet::new(),
             wrapped_native: None,
             balancer_vault: None,
             known_set: HashSet::new(),
@@ -95,6 +121,7 @@ impl PoolManager {
             token_index: HashMap::with_capacity(capacity),
             pairs_cache: Mutex::new(None),
             dirty_pools: HashSet::with_capacity(capacity),
+            dynamic_fot: HashSet::with_capacity(capacity),
             wrapped_native: None,
             balancer_vault: None,
             known_set: HashSet::with_capacity(capacity),
@@ -294,6 +321,383 @@ impl PoolManager {
         self.dirty_pools.len()
     }
 
+    // ------------------------------------------------------------------
+    // #9: runtime transfer-tax learning
+    // ------------------------------------------------------------------
+
+    /// Whether `token` is known to be transfer-taxed: listed in the static FOT
+    /// registry or dynamically learned from replayed swaps this session.
+    pub fn is_taxed_token(&self, token: &Address) -> bool {
+        is_fee_on_transfer_token(token) || self.dynamic_fot.contains(token)
+    }
+
+    /// Mark a token as transfer-taxed for the remainder of the run.
+    pub fn flag_taxed_token(&mut self, token: Address) {
+        self.dynamic_fot.insert(token);
+    }
+
+    /// Learn taxed tokens from one transaction's logs (#9).
+    ///
+    /// Correlates each swap event's *declared* amounts with what the involved
+    /// ERC20 contracts actually transferred to/from the pool in the same
+    /// transaction. A persistent shortfall beyond [`TAX_SHORTFALL_MARGIN`]
+    /// means value vanished inside a token transfer (sell/buy tax), so the
+    /// token is flagged and excluded by the arb detectors via
+    /// [`Self::is_taxed_token`]. Rebase tokens are skipped — their supply
+    /// mechanics mimic taxes without being one.
+    pub fn learn_taxes_from_tx(&mut self, logs: &[ExecutedLog]) {
+        // Pass 1: actual ERC20 movements touching tracked pools, per (pool, token).
+        let mut incoming: TransferTotals = HashMap::new();
+        let mut outgoing: TransferTotals = HashMap::new();
+        for log in logs {
+            if log.topics.len() < 3 || log.data.len() < 32 || log.topics[0] != ERC20_TRANSFER_TOPIC
+            {
+                continue;
+            }
+            let value = u128_from_be_bytes(&log.data[..32]);
+            if value == 0 {
+                continue;
+            }
+            let from = Address::from_word(log.topics[1]);
+            let to = Address::from_word(log.topics[2]);
+            // The Transfer emitter is the token contract (`log.address`);
+            // pools are identified by their role as sender / recipient.
+            if self.known_set.contains(&to) {
+                *incoming.entry((to, log.address)).or_default() += value;
+            }
+            if self.known_set.contains(&from) {
+                *outgoing.entry((from, log.address)).or_default() += value;
+            }
+        }
+        // No early exit when both maps are empty: a declared swap output with
+        // no corresponding transfer at all is itself a total-shortfall signal.
+
+        // Pass 2: gather declared swap amounts (immutable borrows), then flag.
+        let mut declarations: Vec<SwapDeclaration> = Vec::new();
+        for log in logs {
+            if log.topics.is_empty() || !self.pools.contains_key(&log.address) {
+                continue;
+            }
+            let topic0 = log.topics[0];
+            if topic0 == SWAP_TOPIC {
+                // V2-family Swap (also Solidly/Camelot stable pools): tokens
+                // come from pool info, declared amounts from event data.
+                let Some(info) = self.pools.get(&log.address).map(|p| p.info().clone()) else {
+                    continue;
+                };
+                if log.data.len() < 128 {
+                    continue;
+                }
+                let amt0_in = u128_from_be_bytes(&log.data[..32]);
+                let amt1_in = u128_from_be_bytes(&log.data[32..64]);
+                let amt0_out = u128_from_be_bytes(&log.data[64..96]);
+                let amt1_out = u128_from_be_bytes(&log.data[96..128]);
+                // One row per token: its own input and output declarations.
+                declarations.push((
+                    log.address,
+                    Some(info.token0),
+                    amt0_in,
+                    Some(info.token0),
+                    amt0_out,
+                ));
+                declarations.push((
+                    log.address,
+                    Some(info.token1),
+                    amt1_in,
+                    Some(info.token1),
+                    amt1_out,
+                ));
+                continue;
+            }
+            if topic0 == decoders::V3_SWAP_TOPIC {
+                let Some(d) = decoders::decode_v3_swap(log) else {
+                    continue;
+                };
+                let Some(info) = self.pools.get(&log.address).map(|p| p.info().clone()) else {
+                    continue;
+                };
+                // Positive amount = pool received (input); negative = paid out.
+                let (tin, din) = if d.amount0 > 0 {
+                    (Some(info.token0), d.amount0.unsigned_abs())
+                } else {
+                    (Some(info.token1), 0)
+                };
+                let (tout, dout) = if d.amount1 < 0 {
+                    (Some(info.token1), d.amount1.unsigned_abs())
+                } else {
+                    (Some(info.token0), 0)
+                };
+                declarations.push((log.address, tin, din, tout, dout));
+                continue;
+            }
+            if topic0 == decoders::CURVE_TOKEN_EXCHANGE_TOPIC
+                || topic0 == decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC
+            {
+                let Some(d) = decoders::decode_curve_swap(log) else {
+                    continue;
+                };
+                let Some(PoolState::Curve(state)) = self.pools.get(&log.address) else {
+                    continue;
+                };
+                let token_at = |idx: u128| -> Option<Address> {
+                    state
+                        .token_index
+                        .iter()
+                        .find(|(_, &i)| i as u128 == idx)
+                        .map(|(t, _)| *t)
+                };
+                declarations.push((
+                    log.address,
+                    token_at(d.coin_sold),
+                    d.amount_sold,
+                    token_at(d.coin_bought),
+                    d.amount_bought,
+                ));
+                continue;
+            }
+            if topic0 == decoders::BALANCER_SWAP_TOPIC {
+                let Some(d) = decoders::decode_balancer_swap(log) else {
+                    continue;
+                };
+                declarations.push((
+                    log.address,
+                    Some(d.token_in),
+                    d.amount_in,
+                    Some(d.token_out),
+                    d.amount_out,
+                ));
+                continue;
+            }
+            if topic0 == decoders::LB_SWAP_TOPIC {
+                let Some(d) = decoders::decode_lb_swap(log) else {
+                    continue;
+                };
+                declarations.push((
+                    log.address,
+                    Some(d.token_in),
+                    d.amount_in,
+                    Some(d.token_out),
+                    d.amount_out,
+                ));
+                continue;
+            }
+            if topic0 == decoders::PENDLE_SWAP_TOPIC {
+                let Some(d) = decoders::decode_pendle_swap(log) else {
+                    continue;
+                };
+                let Some(PoolState::Pendle(state)) = self.pools.get(&log.address) else {
+                    continue;
+                };
+                let (pt, sy) = (state.pt_address, state.sy_address);
+                // Net PT out: SY paid in, PT received out (and vice versa).
+                let (tin, tout) = if d.is_net_pt_out { (sy, pt) } else { (pt, sy) };
+                declarations.push((
+                    log.address,
+                    Some(tin),
+                    d.amount_in,
+                    Some(tout),
+                    d.amount_out,
+                ));
+            }
+        }
+
+        for (pool, tin, din, tout, dout) in declarations {
+            if din >= MIN_TAX_CHECK_AMOUNT {
+                if let Some(t) = tin {
+                    let actual = incoming.get(&(pool, t)).copied().unwrap_or(0);
+                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, din);
+                }
+            }
+            if dout >= MIN_TAX_CHECK_AMOUNT {
+                if let Some(t) = tout {
+                    let actual = outgoing.get(&(pool, t)).copied().unwrap_or(0);
+                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, dout);
+                }
+            }
+        }
+    }
+
+    fn flag_if_shortfall(set: &mut HashSet<Address>, token: Address, actual: u128, declared: u128) {
+        if is_rebase_token(&token) {
+            return; // elastic supply mimics taxes without being one
+        }
+        let limit = declared as f64 * (1.0 - TAX_SHORTFALL_MARGIN);
+        if (actual as f64) < limit {
+            set.insert(token);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tax_learning_tests {
+    use super::*;
+    use crate::data::ExecutedLog;
+    use alloy::primitives::{address, Bytes};
+
+    const POOL: Address = address!("aa00000000000000000000000000000000000001");
+    const T_IN: Address = address!("bb00000000000000000000000000000000000001");
+    const T_OUT: Address = address!("bb00000000000000000000000000000000000002");
+
+    fn fixture() -> PoolManager {
+        let mut pm = PoolManager::new();
+        pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+            info: crate::pool::state::PoolInfo {
+                address: POOL,
+                token0: T_IN,
+                token1: T_OUT,
+                fee: 30,
+                dex_type: crate::dex_type::DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: 1_000_000,
+            reserve1: 1_000_000,
+        }));
+        pm
+    }
+
+    fn word(addr: Address) -> B256 {
+        addr.into_word()
+    }
+
+    fn amount_word(v: u128) -> Bytes {
+        let mut b = vec![0u8; 32];
+        b[16..].copy_from_slice(&v.to_be_bytes());
+        Bytes::from(b)
+    }
+
+    fn transfer(token: Address, from: Address, to: Address, value: u128) -> ExecutedLog {
+        ExecutedLog {
+            address: token,
+            topics: vec![ERC20_TRANSFER_TOPIC, word(from), word(to)],
+            data: amount_word(value),
+        }
+    }
+
+    /// V2 Swap on POOL: spends `amt_in` of T_IN (token0), receives `amt_out`
+    /// of T_OUT (token1). Data layout: (amt0_in, amt1_in, amt0_out, amt1_out).
+    fn swap(amt_in: u128, amt_out: u128) -> ExecutedLog {
+        ExecutedLog {
+            address: POOL,
+            topics: vec![SWAP_TOPIC, B256::ZERO, B256::ZERO],
+            data: Bytes::from(
+                [
+                    amount_word(amt_in).to_vec(),  // amt0_in  = T_IN paid in
+                    amount_word(0).to_vec(),       // amt1_in
+                    amount_word(0).to_vec(),       // amt0_out
+                    amount_word(amt_out).to_vec(), // amt1_out = T_OUT paid out
+                ]
+                .concat(),
+            ),
+        }
+    }
+
+    #[test]
+    fn sell_tax_shortfall_flags_token() {
+        let mut pm = fixture();
+        let logs = vec![
+            swap(50_000, 10_000),
+            transfer(
+                T_IN,
+                address!("cc00000000000000000000000000000000000001"),
+                POOL,
+                50_000,
+            ),
+            transfer(
+                T_OUT,
+                POOL,
+                address!("dd00000000000000000000000000000000000001"),
+                7_500,
+            ), // 25% short
+        ];
+        pm.learn_taxes_from_tx(&logs);
+        assert!(pm.is_taxed_token(&T_OUT), "output token must be flagged");
+        assert!(
+            !pm.is_taxed_token(&T_IN),
+            "fully-delivered input must not be flagged"
+        );
+    }
+
+    #[test]
+    fn exact_delivery_flags_nothing() {
+        let mut pm = fixture();
+        let logs = vec![
+            swap(50_000, 10_000),
+            transfer(
+                T_IN,
+                address!("cc00000000000000000000000000000000000001"),
+                POOL,
+                50_000,
+            ),
+            transfer(
+                T_OUT,
+                POOL,
+                address!("dd00000000000000000000000000000000000001"),
+                10_000,
+            ),
+        ];
+        pm.learn_taxes_from_tx(&logs);
+        assert!(!pm.is_taxed_token(&T_OUT));
+        assert!(!pm.is_taxed_token(&T_IN));
+    }
+
+    #[test]
+    fn rebase_tokens_are_never_flagged() {
+        let Some(rb) = crate::pool::state::pool_types::test_rebase_token() else {
+            return; // empty registry in this build
+        };
+        let mut pm = PoolManager::new();
+        pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+            info: crate::pool::state::PoolInfo {
+                address: POOL,
+                token0: T_IN,
+                token1: rb,
+                fee: 30,
+                dex_type: crate::dex_type::DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: 1_000_000,
+            reserve1: 1_000_000,
+        }));
+        let logs = vec![
+            ExecutedLog {
+                address: POOL,
+                topics: vec![SWAP_TOPIC, B256::ZERO, B256::ZERO],
+                data: Bytes::from(
+                    [
+                        amount_word(0).to_vec(),
+                        amount_word(0).to_vec(),
+                        amount_word(0).to_vec(),
+                        amount_word(10_000).to_vec(), // token1 (=rb) declared out
+                        amount_word(0).to_vec(),
+                    ]
+                    .concat(),
+                ),
+            },
+            transfer(
+                rb,
+                POOL,
+                address!("ee00000000000000000000000000000000000001"),
+                100,
+            ),
+        ];
+        pm.learn_taxes_from_tx(&logs);
+        assert!(
+            !pm.dynamic_fot.contains(&rb),
+            "rebase tokens must be exempt from dynamic tax flagging"
+        );
+    }
+
+    #[test]
+    fn missing_transfer_counts_as_total_shortfall() {
+        let mut pm = fixture();
+        // Swap declares output but no Transfer for T_OUT exists at all.
+        let logs = vec![swap(50_000, 10_000)];
+        pm.learn_taxes_from_tx(&logs);
+        assert!(pm.is_taxed_token(&T_OUT));
+    }
+}
+
+impl PoolManager {
     /// Count pools that have non-zero reserves (i.e., initialized).
     pub fn initialized_count(&self) -> usize {
         self.pools
@@ -574,6 +978,7 @@ impl Clone for PoolManager {
             token_index: self.token_index.clone(),
             pairs_cache: Mutex::new(cache),
             dirty_pools: self.dirty_pools.clone(),
+            dynamic_fot: self.dynamic_fot.clone(),
             wrapped_native: self.wrapped_native,
             balancer_vault: self.balancer_vault,
             known_set: self.known_set.clone(),

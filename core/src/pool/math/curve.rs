@@ -1,8 +1,10 @@
 //! Curve AMM math: StableSwap (V1) and CryptoSwap (V2) quoting functions.
 
-use alloy::primitives::Address;
+use super::consts::{
+    NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS, PPM_DENOMINATOR, WEI_PER_ETHER,
+};
 use crate::pool::state::{CurvePoolState, CurvePoolVariant};
-use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER, NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS};
+use alloy::primitives::Address;
 
 /// Dispatch to the correct Curve quoting formula based on pool variant.
 pub fn curve_output_amount(
@@ -70,19 +72,26 @@ pub fn curve_stableswap_output_amount(
     let x_in_new = balances[idx_in] + amount_in as f64 * fee_factor;
 
     // Phase 3: Solve for x_out' (Newton)
-    let sum_others: f64 = balances.iter().enumerate()
+    let sum_others: f64 = balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != idx_out)
         .map(|(_, &v)| v)
-        .sum::<f64>() + (x_in_new - balances[idx_in]);
-    let prod_others: f64 = balances.iter().enumerate()
+        .sum::<f64>()
+        + (x_in_new - balances[idx_in]);
+    let prod_others: f64 = balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != idx_out && i != idx_in)
         .map(|(_, &v)| v)
-        .product::<f64>() * x_in_new;
+        .product::<f64>()
+        * x_in_new;
     if prod_others <= 0.0 {
         return None;
     }
 
-    let x_out_new = super::stable_swap::newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
+    let x_out_new =
+        super::stable_swap::newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
 
     let output = balances[idx_out] - x_out_new;
     (output > 0.0).then(|| output as u128)
@@ -159,27 +168,36 @@ pub fn curve_cryptoswap_output_amount(
     };
 
     // Adjust balances by price scales
-    let adj_balances: Vec<f64> = balances.iter().enumerate()
+    let adj_balances: Vec<f64> = balances
+        .iter()
+        .enumerate()
         .map(|(i, &b)| b * price_scales[i])
         .collect();
 
     let x_in_adj = adj_balances[idx_in] + amount_in as f64 * fee_factor * price_scales[idx_in];
 
-    let sum_adj_others: f64 = adj_balances.iter().enumerate()
+    let sum_adj_others: f64 = adj_balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != idx_out)
         .map(|(_, &v)| v)
-        .sum::<f64>() + (x_in_adj - adj_balances[idx_in]);
+        .sum::<f64>()
+        + (x_in_adj - adj_balances[idx_in]);
 
-    let prod_adj_others: f64 = adj_balances.iter().enumerate()
+    let prod_adj_others: f64 = adj_balances
+        .iter()
+        .enumerate()
         .filter(|&(i, _)| i != idx_out && i != idx_in)
         .map(|(_, &v)| v)
-        .product::<f64>() * x_in_adj;
+        .product::<f64>()
+        * x_in_adj;
 
     if prod_adj_others <= 0.0 {
         return None;
     }
 
-    let x_out_new_adj = newton_cryptoswap_output(n, ann, gamma, d, sum_adj_others, prod_adj_others)?;
+    let x_out_new_adj =
+        newton_cryptoswap_output(n, ann, gamma, d, sum_adj_others, prod_adj_others)?;
 
     // Convert back from adjusted to actual balance
     let x_out_new = x_out_new_adj / price_scales[idx_out];
@@ -209,16 +227,27 @@ fn newton_cryptoswap_invariant(
     for _ in 0..NEWTON_INVARIANT_ITERATIONS {
         let d_n = d.powf(nf);
         let k0 = prod * nn / d_n;
-        if k0 <= 0.0 { break; }
+        if k0 <= 0.0 {
+            break;
+        }
         let k = k0 * gamma2 / ((gamma + 1.0 - k0) * (gamma + 1.0 - k0));
-        if k.is_nan() || k.is_infinite() { break; }
+        if k.is_nan() || k.is_infinite() {
+            break;
+        }
 
         let f = k * d * d + ann * gamma * d - ann * gamma * sum;
         let deriv = 2.0 * k * d + ann * gamma;
-        if deriv.abs() < 1e-30 { break; }
+        if deriv.abs() < 1e-30 {
+            break;
+        }
         let d_next = d - f / deriv;
-        if (d_next - d).abs() <= 1.0 { d = d_next; break; }
-        if d_next <= 0.0 { break; }
+        if (d_next - d).abs() <= 1.0 {
+            d = d_next;
+            break;
+        }
+        if d_next <= 0.0 {
+            break;
+        }
         d = d_next;
     }
     (d > 0.0).then_some(d)
@@ -263,10 +292,17 @@ fn newton_cryptoswap_output(
     for _ in 0..NEWTON_OUTPUT_ITERATIONS {
         let f = k * x * x + k * b * x + c_term;
         let deriv = 2.0 * k * x + k * b;
-        if deriv.abs() < 1e-30 { break; }
+        if deriv.abs() < 1e-30 {
+            break;
+        }
         let x_next = x - f / deriv;
-        if (x_next - x).abs() <= 0.5 { x = x_next; break; }
-        if x_next <= 0.0 { break; }
+        if (x_next - x).abs() <= 0.5 {
+            x = x_next;
+            break;
+        }
+        if x_next <= 0.0 {
+            break;
+        }
         x = x_next;
     }
 

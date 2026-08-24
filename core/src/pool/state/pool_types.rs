@@ -1,16 +1,16 @@
+use crate::dex_type::DexType;
+use alloy::primitives::{Address, U256};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use alloy::primitives::{Address, U256};
-use serde::{Deserialize, Serialize};
-use crate::dex_type::DexType;
 
 /// Serde helpers for `Option<Arc<str>>` fields.
 pub mod arc_str_opt {
-    use std::sync::Arc;
     use serde::de::Deserializer;
     use serde::ser::Serializer;
+    use std::sync::Arc;
 
     pub fn serialize<S: Serializer>(v: &Option<Arc<str>>, s: S) -> Result<S::Ok, S::Error> {
         <Option<&str> as serde::Serialize>::serialize(&v.as_deref(), s)
@@ -33,16 +33,34 @@ static TOKEN_LISTS: LazyLock<TokenLists> = LazyLock::new(|| {
 });
 
 static FOT_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
-    TOKEN_LISTS.fee_on_transfer.iter().filter_map(|s| s.parse::<Address>().ok()).collect()
+    TOKEN_LISTS
+        .fee_on_transfer
+        .iter()
+        .filter_map(|s| s.parse::<Address>().ok())
+        .collect()
 });
 
 static REBASE_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
-    TOKEN_LISTS.rebase.iter().filter_map(|s| s.parse::<Address>().ok()).collect()
+    TOKEN_LISTS
+        .rebase
+        .iter()
+        .filter_map(|s| s.parse::<Address>().ok())
+        .collect()
 });
 
 /// Returns true if the given token is a known fee-on-transfer token.
 pub fn is_fee_on_transfer_token(token: &Address) -> bool {
     FOT_TOKENS.contains(token)
+}
+
+/// First address from the static rebase registry, for tests only.
+#[cfg(test)]
+pub(crate) fn test_rebase_token() -> Option<Address> {
+    TOKEN_LISTS
+        .rebase
+        .iter()
+        .filter_map(|s| s.parse::<Address>().ok())
+        .next()
 }
 
 /// Returns true if the given token is a known rebase token.
@@ -117,8 +135,10 @@ impl V4HookFlags {
 
     /// Returns true if this hook modifies liquidity operations.
     pub fn modifies_liquidity(&self) -> bool {
-        self.before_add_liquidity || self.after_add_liquidity
-            || self.before_remove_liquidity || self.after_remove_liquidity
+        self.before_add_liquidity
+            || self.after_add_liquidity
+            || self.before_remove_liquidity
+            || self.after_remove_liquidity
     }
 }
 
@@ -486,4 +506,3 @@ impl PoolState {
 pub fn calldata_gas_estimate(pool_count: usize) -> u64 {
     21_000 + (pool_count as u64) * 2_800
 }
-
