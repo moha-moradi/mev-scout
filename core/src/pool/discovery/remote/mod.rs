@@ -136,8 +136,6 @@ async fn supplement_via_per_dex(
     pools.truncate(cap);
     Ok(pools)
 }
-    }
-}
 
 /// Fetch pools from DexScreener (free, no key) — redundancy source.
 pub async fn discover_via_dexscreener(
@@ -181,13 +179,19 @@ pub async fn discover_via_remote(
     pools
 }
 
-/// Union helper: merge multiple `DiscoveredPool` vecs by address using `merge_from`.
+/// Union helper: merge multiple `DiscoveredPool` vecs by address using
+/// `merge_from`. HashMap-indexed — O(n) instead of the previous O(n²) scan.
 pub fn merge_pools(mut base: Vec<DiscoveredPool>, extra: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
+    use std::collections::HashMap;
+    let mut index: HashMap<Address, usize> =
+        base.iter().enumerate().map(|(i, p)| (p.address, i)).collect();
     for p in extra {
-        if let Some(existing) = base.iter_mut().find(|e| e.address == p.address) {
-            existing.merge_from(&p);
-        } else {
-            base.push(p);
+        match index.get(&p.address) {
+            Some(&i) => base[i].merge_from(&p),
+            None => {
+                index.insert(p.address, base.len());
+                base.push(p);
+            }
         }
     }
     base

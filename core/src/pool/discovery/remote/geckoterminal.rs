@@ -602,4 +602,98 @@ mod tests {
         assert_eq!(pools[1].tvl_usd, Some(5_000.0));
         assert_eq!(pools[2].tvl_usd, Some(100.0));
     }
+
+    #[test]
+    fn min_tvl_filter_keeps_unknown_tvl() {
+        // tvl=None must survive the filter — only known-and-below-min drops.
+        let json = json!({
+            "data": [{
+                "id": "x",
+                "attributes": {
+                    "address": "0x1234567890123456789012345678901234567890"
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": "polygon_pos_0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+                    "quote_token": {"data": {"id": "polygon_pos_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}
+                }
+            }]
+        });
+        let pools = parse_geckoterminal_response(&json, Some(1000.0)).unwrap();
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].tvl_usd, None);
+    }
+
+    #[test]
+    fn infer_dex_type_specific_labels_win_over_v2_fallback() {
+        assert_eq!(infer_dex_type(Some("quickswap-algebra")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("algebra-integral")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("quickswap")), DexType::UniswapV2);
+        assert_eq!(infer_dex_type(Some("uniswap-v3")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("uniswap-v4")), DexType::UniswapV4);
+        assert_eq!(infer_dex_type(Some("pancakeswap-v3")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("trader-joe")), DexType::TraderJoeLB);
+        assert_eq!(infer_dex_type(Some("pendle")), DexType::Pendle);
+        assert_eq!(infer_dex_type(Some("curve-dex")), DexType::Curve);
+        assert_eq!(infer_dex_type(Some("unknown-amm")), DexType::UniswapV2);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_pools_for_dex_classifies_by_construction() {
+        let mock_server = wiremock::MockServer::start().await;
+        let body = serde_json::json!({
+            "data": [{
+                "id": "polygon_pos_0x4444444444444444444444444444444444444444",
+                "attributes": {
+                    "address": "0x4444444444444444444444444444444444444444",
+                    "reserve_in_usd": "900000",
+                    // Relationship label deliberately contradicts the queried DEX:
+                    // the per-DEX override must win (classification by construction).
+                    "dex_id": "sushiwap"
+                },
+                "relationships": {
+                    "base_token": {"data": {"id": "polygon_pos_0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+                    "quote_token": {"data": {"id": "polygon_pos_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+                    "dex": {"data": {"id": "quickswap-algebra"}}
+                }
+            }],
+            "included": []
+        });
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v2/networks/polygon_pos/dexes/quickswap-algebra/pools",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+            .mount(&mock_server)
+            .await;
+
+        let client = GeckoTerminalClient::with_base(mock_server.uri());
+        let pools = client
+            .fetch_pools_for_dex("polygon", "quickswap-algebra", Some(10), None)
+            .await
+            .unwrap();
+        assert_eq!(pools.len(), 1);
+        assert_eq!(pools[0].dex_type, DexType::UniswapV3);
+        assert_eq!(pools[0].tvl_usd, Some(900_000.0));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_network_dexes_enumerates_ids() {
+        let mock_server = wiremock::MockServer::start().await;
+        let body = serde_json::json!({
+            "data": [
+                {"id": "polygon_pos_quickswap", "type": "dex", "attributes": {"name": "QuickSwap"}},
+                {"id": "polygon_pos_uniswap-v3", "type": "dex", "attributes": {"name": "Uniswap V3"}}
+            ]
+        });
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/v2/networks/polygon_pos/dexes"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
+            .mount(&mock_server)
+            .await;
+
+        let client = GeckoTerminalClient::with_base(mock_server.uri());
+        let dexes = client.fetch_network_dexes("polygon").await.unwrap();
+        assert_eq!(dexes.len(), 2);
+        assert!(dexes.contains(&"polygon_pos_quickswap".to_string()));
+    }
 }

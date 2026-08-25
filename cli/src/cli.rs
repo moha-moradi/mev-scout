@@ -330,6 +330,13 @@ pub struct DiscoverArgs {
     /// Per-source pagination cap for remote discovery (default 1000).
     #[arg(long = "max-pools", default_value = "1000", value_name = "N")]
     pub max_pools: usize,
+
+    /// Resolve missing fee/tickSpacing/token metadata for remote-sourced
+    /// concentrated-liquidity pools via a Multicall3 batch (one eth_call per
+    /// ~25 pools). Off by default so offline/remote-only workflows stay RPC-free.
+    /// Results are persisted to the SQLite cache and never re-fetched.
+    #[arg(long = "resolve-remote-metadata")]
+    pub resolve_remote_metadata: bool,
 }
 
 /// Pool discovery source selection.

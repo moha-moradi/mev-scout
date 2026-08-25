@@ -1,5 +1,5 @@
 use anyhow::Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -11,6 +11,7 @@ use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::pool::discovery::remote as remote_src;
+use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::types::ChainName;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::resolver::RangeResolver;
@@ -71,6 +72,74 @@ fn enrich_from_remote(pools: &mut [DiscoveredPool], remote: &[DiscoveredPool]) {
         }
     }
     tracing::info!("Enrichment: {enriched} pool(s) received TVL/volume metrics from remote sources");
+}
+
+/// Dedup pools by address with field-level merge — HashMap-indexed, O(n)
+/// instead of the previous O(n²) linear scan per entry.
+fn dedup_by_address(pools: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
+    let mut index: HashMap<Address, usize> = HashMap::with_capacity(pools.len());
+    let mut out: Vec<DiscoveredPool> = Vec::with_capacity(pools.len());
+    for p in pools {
+        match index.get(&p.address) {
+            Some(&i) => out[i].merge_from(&p),
+            None => {
+                index.insert(p.address, out.len());
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Reconstruct a `DiscoveredPool` from a cached `PoolInfo` row.
+#[allow(clippy::field_reassign_with_default)]
+fn cached_to_discovered(existing: PoolInfo) -> DiscoveredPool {
+    DiscoveredPool::new(
+        existing.address,
+        existing.token0,
+        existing.token1,
+        existing.fee,
+        existing.dex_type,
+        existing.creation_block,
+    )
+    .with_tick_spacing(existing.tick_spacing.map(|ts| ts as i32))
+    .with_pool_id(existing.pool_id)
+    .with_factory(existing.factory)
+    .with_is_stable(existing.is_stable)
+    .with_balancer_pool_type(existing.balancer_pool_type)
+    .with_hook_address(existing.hook_address)
+    .with_bin_step(existing.bin_step)
+    .with_maturity_timestamp(existing.maturity_timestamp)
+    .with_underlying_tokens(existing.underlying_tokens)
+    .with_dex_name(existing.dex_name.as_deref().map(String::from))
+    .with_token0_symbol(existing.token0_symbol.as_deref().map(String::from))
+    .with_token1_symbol(existing.token1_symbol.as_deref().map(String::from))
+    .with_tvl_usd(existing.tvl_usd)
+    .with_volume_usd_24h(existing.volume_usd_24h)
+    .with_volume_usd_30d(existing.volume_usd_30d)
+}
+
+/// Persist the merged pool universe so remote/hybrid unions survive across
+/// runs. Zero-token entries are skipped (unusable downstream). Each write is a
+/// cache-first merge: richer data already stored by a previous run (on-chain
+/// metadata, symbols) is never clobbered by a sparser remote entry.
+fn persist_universe(cache: &SqliteStore, pools: &[DiscoveredPool]) -> usize {
+    let mut persisted = 0usize;
+    for p in pools {
+        if p.token0.is_zero() || p.token1.is_zero() {
+            continue;
+        }
+        let mut merged = p.clone();
+        if let Ok(Some(existing)) = cache.get_discovered_pool(&p.address) {
+            merged.merge_from(&cached_to_discovered(existing));
+        }
+        let info: PoolInfo = merged.into();
+        match cache.put_discovered_pool(&info) {
+            Ok(()) => persisted += 1,
+            Err(e) => tracing::warn!("Failed to cache pool {}: {e:#}", p.address),
+        }
+    }
+    persisted
 }
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
@@ -333,31 +402,91 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     // ── Phase 3: Dedup by address with field-level merge ──
-    let mut pools: Vec<DiscoveredPool> = Vec::with_capacity(all_pools.len() + remote_pools.len());
-    for p in all_pools {
-        match pools.iter_mut().find(|e| e.address == p.address) {
-            Some(existing) => existing.merge_from(&p),
-            None => pools.push(p),
-        }
-    }
+    let mut pools: Vec<DiscoveredPool> = dedup_by_address(all_pools);
 
     // Merge remote according to --source semantics
     if is_remote_only {
         // Remote-only: replace (or extend if we had no on-chain). Deduplicate remote internally.
-        let mut remote_dedup: Vec<DiscoveredPool> = Vec::with_capacity(remote_pools.len());
-        for p in remote_pools {
-            match remote_dedup.iter_mut().find(|e| e.address == p.address) {
-                Some(existing) => existing.merge_from(&p),
-                None => remote_dedup.push(p),
-            }
-        }
-        pools = remote_dedup;
+        pools = dedup_by_address(remote_pools);
     } else if is_hybrid {
         // Hybrid: union with dedup
         pools = remote_src::merge_pools(pools, remote_pools);
     } else if args.enrich && !remote_pools.is_empty() {
         // Onchain+enrich: attach tvl/volume/symbols where missing, do not add new addresses
         enrich_from_remote(&mut pools, &remote_pools);
+    }
+
+    // ── Phase 3.5: Resolve missing metadata on remote-sourced CL pools (opt-in) ──
+    //
+    // Remote aggregators don't expose fee/tickSpacing, which breaks quote math
+    // for concentrated-liquidity pools. One Multicall3 eth_call resolves ~25
+    // pools; results are persisted below and never re-fetched. Gated behind
+    // --resolve-remote-metadata so offline/remote-only workflows stay RPC-free.
+    if args.resolve_remote_metadata && !pools.is_empty() {
+        let targets: Vec<Address> = pools
+            .iter()
+            .filter(|p| {
+                p.dex_type == DexType::UniswapV3
+                    && !p.address.is_zero()
+                    && (p.fee == 0 || p.tick_spacing.is_none())
+            })
+            .map(|p| p.address)
+            .collect();
+        if targets.is_empty() {
+            tracing::info!("Remote metadata resolution: 0 candidate pools need RPC");
+        } else {
+            match mev_scout_core::rpc::multicall::resolve_pool_metadata(
+                &rpc,
+                &targets,
+                args.rpc_concurrency,
+            )
+            .await
+            {
+                Ok(resolved) => {
+                    let mut filled = 0usize;
+                    for p in pools.iter_mut() {
+                        let Some(m) = resolved.get(&p.address) else { continue };
+                        let before = (p.token0, p.token1, p.fee, p.tick_spacing);
+                        if p.token0.is_zero() {
+                            if let Some(t) = m.token0 {
+                                p.token0 = t;
+                            }
+                        }
+                        if p.token1.is_zero() {
+                            if let Some(t) = m.token1 {
+                                p.token1 = t;
+                            }
+                        }
+                        if p.fee == 0 {
+                            if let Some(f) = m.fee {
+                                p.fee = f;
+                            }
+                        }
+                        if p.tick_spacing.is_none() {
+                            p.tick_spacing = m.tick_spacing;
+                        }
+                        if (p.token0, p.token1, p.fee, p.tick_spacing) != before {
+                            filled += 1;
+                        }
+                    }
+                    tracing::info!(
+                        "Remote metadata resolution: updated {} of {} candidate pool(s)",
+                        filled,
+                        targets.len()
+                    );
+                    if !args.json {
+                        println!(
+                            "  Metadata resolution: updated {} of {} CL pool(s) via Multicall3",
+                            filled,
+                            targets.len()
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Remote metadata resolution failed: {e:#}");
+                }
+            }
+        }
     }
 
     // ── Phase 5.2: Pool health check (applies to all sources — remote TVL can be stale) ──
@@ -372,6 +501,25 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         pools = checked;
         if removed > 0 && !args.json {
             println!("  Health check: removed {} drained/paused pools ({} remaining)", removed, before - removed);
+        }
+    }
+
+    // ── Phase 5.3: Persist the merged universe ──
+    //
+    // Remote/hybrid unions previously vanished between runs because only the
+    // core `discover_and_cache` path wrote to SQLite. Persisting here (after
+    // health check, cache-first merge per entry) makes incremental mode and
+    // downstream scans see the full universe.
+    let persisted = persist_universe(&cache, &pools);
+    if persisted > 0 {
+        if args.json {
+            tracing::info!("Persisted {persisted} pool(s) to {}", cache_path.display());
+        } else {
+            println!(
+                "  Cached {} pool(s) to {}",
+                persisted,
+                cache_path.display()
+            );
         }
     }
 
