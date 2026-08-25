@@ -41,13 +41,20 @@ pub mod topics {
         keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
     });
 
-    /// Trader Joe V2.1 LB Pair Swap event (sender, recipient, id indexed).
+    /// Trader Joe Liquidity Book 2.0 Pair Swap event
+    /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
+    /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
+    /// The same canonical signature is emitted by LB 2.2 pairs (per-side amounts).
     pub static TRADER_JOE_LB_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)"));
 
-    /// Trader Joe V2.0 legacy LB Pair Swap event (uint24 id, no swapForY).
-    pub static TRADER_JOE_LB_SWAP_LEGACY: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,uint24,uint256,uint256,uint256,uint256,uint256)"));
+    /// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event
+    /// (`sender, to, uint24 id, bytes32 amountsIn, bytes32 amountsOut,
+    /// uint24 volatilityAccumulator, bytes32 totalFees, bytes32 protocolFees`
+    /// — verified against lfj-gg/joe-v2 branches main/v2.1/v2.2).
+    pub static TRADER_JOE_LB_SWAP_LEGACY: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
+    });
 
     /// Pendle V2 market Swap event (caller, receiver indexed).
     pub static PENDLE_MARKET_SWAP: LazyLock<B256> =
@@ -172,5 +179,54 @@ impl ActivityScanner {
         }
 
         Ok(active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::topics;
+    use alloy::primitives::b256;
+
+    /// Regression guard: the V4 Swap topic must NOT collapse onto the V3 topic.
+    /// The original bug used the V3 signature string
+    /// `Swap(address,address,int256,int256,uint160,uint128,int24)`, which
+    /// keccak-hashes to exactly V3_SWAP, silently disabling V4 detection.
+    #[test]
+    fn v4_swap_topic_differs_from_v3() {
+        assert_ne!(topics::V4_SWAP, topics::V3_SWAP);
+        // Verified against v4-core PoolManager._swap:
+        // emit Swap(id, msg.sender, delta.amount0(), delta.amount1(),
+        //           result.sqrtPriceX96, result.liquidity, result.tick, swapFee)
+        assert_eq!(
+            *topics::V4_SWAP,
+            b256!("40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f")
+        );
+    }
+
+    /// Trader Joe LB topics: the 2.0 form (uint256 id + swapForY) and the
+    /// 2.1/2.2 packed-bytes32 form must both be present and distinct.
+    #[test]
+    fn trader_joe_lb_topics_are_distinct_and_verified() {
+        assert_ne!(*topics::TRADER_JOE_LB_SWAP, topics::V3_SWAP);
+        assert_ne!(*topics::TRADER_JOE_LB_SWAP_LEGACY, topics::V3_SWAP);
+        assert_ne!(*topics::TRADER_JOE_LB_SWAP, *topics::TRADER_JOE_LB_SWAP_LEGACY);
+        assert_eq!(
+            *topics::TRADER_JOE_LB_SWAP,
+            b256!("c528cda9e500228b16ce84fadae290d9a49aecb17483110004c5af0a07f6fd73")
+        );
+        assert_eq!(
+            *topics::TRADER_JOE_LB_SWAP_LEGACY,
+            b256!("ad7d6f97abf51ce18e17a38f4d70e975be9c0708474987bb3e26ad21bd93ca70")
+        );
+    }
+
+    /// Pendle market Swap (verified against pendle-core-v2 PendleMarketV7):
+    /// emit Swap(caller, receiver, netPtToAccount i256, netSyToAccount i256,
+    ///           netSyFee u256, netSyToReserve u256)
+    #[test]
+    fn pendle_swap_topic_is_verified() {
+        let expected = alloy::primitives::keccak256("Swap(address,address,int256,int256,uint256,uint256)");
+        assert_eq!(*topics::PENDLE_MARKET_SWAP, expected);
+        assert_ne!(*topics::PENDLE_MARKET_SWAP, topics::V3_SWAP);
     }
 }

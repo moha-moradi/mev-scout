@@ -112,6 +112,100 @@ impl GeckoTerminalClient {
         Ok(pools)
     }
 
+    /// Fetch top pools for a single DEX on a chain.
+    ///
+    /// Endpoint: `networks/{network}/dexes/{dex}/pools`. Used as the fallback
+    /// ladder rung when the chain-wide query under-delivers, and as the
+    /// classification source: the queried DEX id maps to the correct `DexType`
+    /// by construction (see [`infer_dex_type`]).
+    pub async fn fetch_pools_for_dex(
+        &self,
+        chain: &str,
+        dex: &str,
+        max_pools: Option<usize>,
+        min_tvl: Option<f64>,
+    ) -> anyhow::Result<Vec<RemotePool>> {
+        let network = network_slug(chain).ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown chain '{chain}' — no GeckoTerminal network mapping \
+                 (supported: polygon, ethereum, bsc, arbitrum, base, avalanche, optimism)"
+            )
+        })?;
+        let limit = max_pools.unwrap_or(200);
+        let mut pools = Vec::new();
+        let mut page = 1usize;
+
+        loop {
+            let url = format!(
+                "{}/api/v2/networks/{}/dexes/{}/pools?page={}&sort=h24_volume_usd_desc",
+                self.base_url, network, dex, page
+            );
+
+            let resp = self.get_with_retry(&url).await?;
+            let batch = parse_gecko_response_inner(&resp, min_tvl, Some(dex))?;
+
+            let empty = batch.is_empty();
+            pools.extend(batch);
+            if pools.len() >= limit {
+                pools.truncate(limit);
+                break;
+            }
+            if empty {
+                break;
+            }
+
+            if let Some(data) = resp.get("data").and_then(|v| v.as_array()) {
+                if data.len() < 20 {
+                    break;
+                }
+            }
+
+            page += 1;
+            if page > 25 {
+                break; // safety cap: 500 pools max per DEX via pagination
+            }
+
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
+
+        Ok(pools)
+    }
+
+    /// Enumerate the DEX ids available on a network (`networks/{n}/dexes`).
+    ///
+    /// Used by the per-DEX fallback ladder to discover which DEXes exist on a
+    /// chain without hardcoding slugs. Capped at a few pages — only chains with
+    /// more than 60 listed DEXes are truncated, which is acceptable for a
+    /// best-effort fallback.
+    pub async fn fetch_network_dexes(&self, chain: &str) -> anyhow::Result<Vec<String>> {
+        let network = network_slug(chain).ok_or_else(|| {
+            anyhow::anyhow!("unknown chain '{chain}' — no GeckoTerminal network mapping")
+        })?;
+        let mut dexes = Vec::new();
+        for page in 1..=3usize {
+            let url = format!("{}/api/v2/networks/{network}/dexes?page={page}", self.base_url);
+            let resp = self.get_with_retry(&url).await?;
+            let batch: Vec<String> = resp
+                .get("data")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|d| d.get("id").and_then(|v| v.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let empty = batch.is_empty();
+            dexes.extend(batch);
+            if empty || dexes.len() > 60 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Ok(dexes)
+    }
+
     async fn get_with_retry(&self, url: &str) -> anyhow::Result<Value> {
         const MAX_RETRIES: u32 = 3;
         const BASE_DELAY_MS: u64 = 600;
@@ -162,6 +256,19 @@ impl Default for GeckoTerminalClient {
 }
 
 fn parse_geckoterminal_response(json: &Value, min_tvl: Option<f64>) -> anyhow::Result<Vec<RemotePool>> {
+    parse_gecko_response_inner(json, min_tvl, None)
+}
+
+/// Inner parser with an optional per-DEX classification override.
+///
+/// When pools are fetched from a per-DEX endpoint (`dex_override`), the queried
+/// DEX id is the authoritative label — classification is correct by
+/// construction rather than inferred from relationship fields.
+fn parse_gecko_response_inner(
+    json: &Value,
+    min_tvl: Option<f64>,
+    dex_override: Option<&str>,
+) -> anyhow::Result<Vec<RemotePool>> {
     let data = json.get("data").and_then(|v| v.as_array())
         .ok_or_else(|| anyhow::anyhow!("missing data array"))?;
 
@@ -180,7 +287,14 @@ fn parse_geckoterminal_response(json: &Value, min_tvl: Option<f64>) -> anyhow::R
             .or_else(|| attrs.get("reserve_in_usd").and_then(|v| v.as_f64()));
 
         if let Some(min) = min_tvl {
-            if tvl.unwrap_or(0.0) < min { continue; }
+            // Keep pools with unknown TVL: only drop when TVL is known and
+            // below the threshold. `tvl=None` usually means a brand-new or
+            // untracked pool — dropping them silently shrinks the universe.
+            if let Some(v) = tvl {
+                if v < min {
+                    continue;
+                }
+            }
         }
 
         let vol_24h = attrs.get("volume_usd")
@@ -210,7 +324,10 @@ fn parse_geckoterminal_response(json: &Value, min_tvl: Option<f64>) -> anyhow::R
         let (token0, token1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
 
         // Fee heuristic: geckoterminal doesn't expose fee; default to 0
-        let dex_type = infer_dex_type(dex_name.as_deref());
+        let dex_type = match dex_override {
+            Some(d) => infer_dex_type(Some(d)),
+            None => infer_dex_type(dex_name.as_deref()),
+        };
 
         out.push(RemotePool {
             address,
@@ -298,14 +415,29 @@ fn parse_addr(s: &str) -> Option<Address> {
     Some(Address::from_slice(&bytes))
 }
 
-fn infer_dex_type(dex: Option<&str>) -> DexType {
-    match dex.unwrap_or("").to_ascii_lowercase().as_str() {
-        s if s.contains("uniswap") && s.contains("v3") => DexType::UniswapV3,
-        s if s.contains("algebra") => DexType::UniswapV3,
-        s if s.contains("quickswap") => DexType::UniswapV2, // fallback, will be merged
-        s if s.contains("balancer") => DexType::Balancer,
-        s if s.contains("curve") => DexType::Curve,
-        s if s.contains("sushi") => DexType::UniswapV2,
+/// Map a GeckoTerminal dex id/label to a `DexType`.
+///
+/// Ordering matters: specific labels (Algebra, PancakeSwap V3, ...) must be
+/// checked before generic substrings so e.g. `quickswap-algebra` resolves to
+/// concentrated-liquidity V3 instead of the blind QuickSwap→V2 fallback that
+/// used to poison remote CL pools.
+pub fn infer_dex_type(dex: Option<&str>) -> DexType {
+    let s = dex.unwrap_or("").to_ascii_lowercase();
+    match s.as_str() {
+        _ if s.contains("algebra") => DexType::UniswapV3,
+        _ if s.contains("uniswap") && s.contains("v4") => DexType::UniswapV4,
+        _ if s.contains("uniswap") && s.contains("v3") => DexType::UniswapV3,
+        _ if s.contains("pancakeswap") && s.contains("v3") => DexType::UniswapV3,
+        _ if s.contains("pendle") => DexType::Pendle,
+        _ if s.contains("trader-joe") || s.contains("traderjoe") || s.contains("liquidity-book") => {
+            DexType::TraderJoeLB
+        }
+        _ if s.contains("balancer") => DexType::Balancer,
+        _ if s.contains("curve") => DexType::Curve,
+        // Classic AMMs: plain QuickSwap / SushiSwap / PancakeSwap V2 pairs.
+        _ if s == "quickswap" || s.starts_with("quickswap-") => DexType::UniswapV2,
+        _ if s.contains("sushi") => DexType::UniswapV2,
+        _ if s.contains("pancakeswap") => DexType::UniswapV2,
         _ => DexType::UniswapV2,
     }
 }

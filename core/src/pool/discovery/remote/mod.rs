@@ -59,6 +59,11 @@ impl From<RemotePool> for DiscoveredPool {
 }
 
 /// Fetch pools from GeckoTerminal (free, no key).
+///
+/// When the chain-wide top-pools query under-delivers (fewer pools than the
+/// requested cap), the GeckoTerminal per-DEX ladder rung tops up the result:
+/// each DEX endpoint on the network is queried and its label classifies the
+/// pools by construction.
 pub async fn discover_via_geckoterminal(
     chain: &str,
     max_pools: Option<usize>,
@@ -66,11 +71,71 @@ pub async fn discover_via_geckoterminal(
 ) -> Vec<DiscoveredPool> {
     let client = geckoterminal::GeckoTerminalClient::new();
     match client.fetch_top_pools(chain, max_pools, min_tvl).await {
+        Ok(pools) if (max_pools.is_none() || pools.len() < max_pools.unwrap_or(0)) => {
+            let cap = max_pools.unwrap_or(pools.len());
+            tracing::info!(
+                "GeckoTerminal chain-wide query returned {}/{} pools — trying per-DEX fallback",
+                pools.len(),
+                cap
+            );
+            match supplement_via_per_dex(&client, chain, pools, max_pools, min_tvl).await {
+                Ok(p) => p.into_iter().map(|r| r.into()).collect(),
+                Err(e) => {
+                    tracing::warn!("GeckoTerminal per-DEX fallback failed: {:#}", e);
+                    Vec::new()
+                }
+            }
+        }
         Ok(pools) => pools.into_iter().map(|r| r.into()).collect(),
         Err(e) => {
             tracing::warn!("GeckoTerminal fetch failed: {:#}", e);
             Vec::new()
         }
+    }
+}
+
+/// Per-DEX ladder rung: enumerate the network's DEXes and query each one's
+/// pool list until `max_pools` is reached. Best-effort — a failing DEX is skipped.
+async fn supplement_via_per_dex(
+    client: &geckoterminal::GeckoTerminalClient,
+    chain: &str,
+    mut pools: Vec<geckoterminal::RemotePool>,
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+) -> anyhow::Result<Vec<geckoterminal::RemotePool>> {
+    let cap = max_pools.unwrap_or(1000);
+    if pools.len() >= cap {
+        return Ok(pools);
+    }
+    let dexes = client.fetch_network_dexes(chain).await?;
+    let seen: std::collections::HashSet<Address> = pools.iter().map(|p| p.address).collect();
+    for dex in &dexes {
+        if pools.len() >= cap {
+            break;
+        }
+        let per_dex_cap = (cap - pools.len()).min(200);
+        match client.fetch_pools_for_dex(chain, dex, Some(per_dex_cap), min_tvl).await {
+            Ok(extra) => {
+                let added = extra.len();
+                for p in extra {
+                    if !seen.contains(&p.address) {
+                        pools.push(p);
+                    }
+                }
+                if added > 0 {
+                    tracing::debug!("Per-DEX '{dex}': +{added} pool(s)");
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Per-DEX '{dex}' fetch failed, skipping: {e:#}");
+            }
+        }
+    }
+    // Re-sort by TVL so the merged set keeps the explorer-like ordering.
+    pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
+    pools.truncate(cap);
+    Ok(pools)
+}
     }
 }
 

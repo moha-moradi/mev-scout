@@ -207,6 +207,29 @@ impl DiscoveredPool {
     pub fn merge_from(&mut self, other: &DiscoveredPool) {
         debug_assert_eq!(self.address, other.address, "merge_from called with different addresses");
 
+        // dex_type reconciliation: `UniswapV2` doubles as the remote-source
+        // fallback label (`infer_dex_type`), so it must not survive a conflict
+        // with a more specific classification, and a specific on-chain-derived
+        // type must never be overwritten by a remote guess. A V2 label on a
+        // pool with no fee set is treated as the fallback (on-chain V2 pools
+        // always carry their explicit default fee); a V2 label with a fee is
+        // a confirmed on-chain classification and wins.
+        if other.dex_type != self.dex_type {
+            match (self.dex_type, other.dex_type) {
+                (DexType::UniswapV2, specific) if self.fee == 0 => {
+                    self.dex_type = specific;
+                }
+                (_, DexType::UniswapV2) => {
+                    // Keep the existing (specific or confirmed) type.
+                }
+                (kept, conflicting) => {
+                    tracing::debug!(
+                        "merge_from: conflicting dex_type for {}: keeping {kept} over {conflicting}",
+                        self.address
+                    );
+                }
+            }
+        }
         if self.fee == 0 && other.fee != 0 {
             self.fee = other.fee;
         }
@@ -509,6 +532,22 @@ fn classify_dex_event(
         // Pendle markets are per-market contracts emitting their own Swap events.
         return Some((DexType::Pendle, None, None, None));
     }
+    if topic0 == *topics::V4_SWAP {
+        // V4 swaps emit from the singleton PoolManager; topics[1] carries the
+        // bytes32 poolId. The synthetic pool key is derived from the poolId
+        // exactly like the Initialize-event scan (v4.rs) so activity hits join
+        // against factory/cache-resolved pools. Tokens are unknown here — they
+        // come from Initialize logs or the SQLite cache, never from per-pool
+        // token0()/token1() calls (those addresses have no contract code).
+        let topics = log.topics();
+        if topics.len() >= 2 {
+            let mut pool_id = [0u8; 32];
+            pool_id.copy_from_slice(topics[1].as_slice());
+            let pool_key = Address::from_slice(&pool_id[12..32]);
+            return Some((DexType::UniswapV4, Some(pool_id), None, Some(pool_key)));
+        }
+        return Some((DexType::UniswapV4, None, None, None));
+    }
     if topic0 == *topics::CURVE_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
@@ -742,9 +781,10 @@ async fn discover_pools_shard(
     // Single unified filter across all pool-level event types. Previously this
     // was split into a "fast" V2/V3-only path with Curve/Balancer topics only
     // queried on failure — which meant Curve/Balancer/LB/Pendle *activity*
-    // discovery almost never ran. V4 swaps are intentionally excluded: the
-    // PoolManager is a singleton and a Swap log alone cannot recover the
-    // underlying token pair (V4 pools are found via Initialize events instead).
+    // discovery almost never ran. V4 Swap logs are included but carry only a
+    // bytes32 poolId (singleton PoolManager): hits are matched against the
+    // Initialize-event scan / SQLite cache and are never resolved through
+    // per-pool metadata calls.
     let dex_activity_topics: Vec<B256> = vec![
         topics::V2_SWAP,
         topics::V2_SYNC,
@@ -759,6 +799,7 @@ async fn discover_pools_shard(
         *topics::TRADER_JOE_LB_SWAP,
         *topics::TRADER_JOE_LB_SWAP_LEGACY,
         *topics::PENDLE_MARKET_SWAP,
+        *topics::V4_SWAP,
     ];
 
     let mut current = from_block;
@@ -982,6 +1023,7 @@ async fn discover_pools_shard(
 
     let mut fetch_tasks: Vec<FetchTask> = Vec::new();
     let mut cache_hits: usize = 0;
+    let mut unmatched_v4_hits: usize = 0;
 
     // Collect pool_hits data to avoid borrowing pool_hits across async boundaries
     let pool_hits_vec: Vec<_> = pool_hits.iter().map(|(addr, (dt, pid, tokens, fsb))| {
@@ -1076,41 +1118,13 @@ async fn discover_pools_shard(
                 }));
             }
             DexType::UniswapV4 => {
-                // V4 pools from activity events: use slot0() + liquidity() like V3
-                let rpc = rpc.clone();
-                let addr = *addr;
-                let sel0 = token0_selector.clone();
-                let sel1 = token1_selector.clone();
-                let sel_fee = fee_selector.clone();
-                let sel_ts = tick_spacing_selector.clone();
-                let fsb = *first_seen_block;
-                fetch_tasks.push(Box::pin(async move {
-                    let (token0, token1, fee, tick_spacing) = futures::future::join4(
-                        async {
-                            rpc.call_latest(addr, sel0).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
-                        },
-                        async {
-                            rpc.call_latest(addr, sel1).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
-                        },
-                        async {
-                            rpc.call_latest(addr, sel_fee).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| {
-                                    u32::from_be_bytes([b[28], b[29], b[30], b[31]])
-                                }))
-                        },
-                        async {
-                            rpc.call_latest(addr, sel_ts).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| {
-                                    let mut ts = [0u8; 4];
-                                    ts.copy_from_slice(&b[28..32]);
-                                    i32::from_be_bytes(ts) as u32
-                                }))
-                        },
-                    ).await;
-                    (addr, DexType::UniswapV4, token0, token1, fee, tick_spacing, fsb)
-                }));
+                // Singleton PoolManager — per-pool token0()/token1() calls would
+                // burn RPC on guaranteed reverts (the synthetic pool key is not
+                // a contract address). Activity hits that were not resolved by
+                // the Initialize-event scan or the SQLite cache above stay out
+                // of the index; a later run that observes the pool's Initialize
+                // event (or a cache hit) makes them resolvable.
+                unmatched_v4_hits += 1;
             }
             DexType::Curve | DexType::Balancer => {
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
@@ -1151,6 +1165,13 @@ async fn discover_pools_shard(
         tracing::info!(
             "Pool cache: {} of {} pools served from cache ({} RPC tasks remaining)",
             cache_hits, pool_hits_vec.len(), rpc_tasks,
+        );
+    }
+    if unmatched_v4_hits > 0 {
+        // V4 activity whose Initialize event predates the scan window and that
+        // is absent from the SQLite cache — no metadata source, skipped.
+        tracing::info!(
+            "V4 activity: {unmatched_v4_hits} poolId hit(s) without Initialize/cache match — skipped (no RPC spent)"
         );
     }
 
@@ -1333,14 +1354,23 @@ pub async fn discover_and_cache(
     }
 
     let pool_count = pools.len();
+    let mut persisted = 0usize;
     for pool in &pools {
+        // Zero-token entries (e.g. V4 activity hits without an Initialize/cache
+        // match, or Curve/Balancer hits whose tokens could not be resolved)
+        // would poison the pool universe downstream — never persist them.
+        if pool.token0.is_zero() || pool.token1.is_zero() {
+            continue;
+        }
         let info: PoolInfo = pool.clone().into();
         if let Err(e) = cache.put_discovered_pool(&info) {
             tracing::warn!("Failed to cache pool {}: {}", pool.address, e);
+        } else {
+            persisted += 1;
         }
     }
-    if pool_count > 0 {
-        tracing::info!("Cached {} pools from discovery", pool_count);
+    if persisted > 0 {
+        tracing::info!("Cached {persisted}/{pool_count} pools from discovery");
     }
 
     Ok((pools, active_blocks))
@@ -1538,4 +1568,89 @@ pub async fn health_check_pools(
     }
 
     (filtered, removed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{address, LogData};
+
+    fn make_log(address: Address, topics_vec: Vec<B256>, data: Vec<u8>) -> alloy::rpc::types::Log {
+        let log_data = LogData::new_unchecked(topics_vec, Bytes::from(data));
+        alloy::rpc::types::Log {
+            inner: alloy::primitives::Log { address, data: log_data },
+            block_number: Some(1000),
+            block_hash: None,
+            block_timestamp: None,
+            transaction_hash: Some(B256::LEFT_PAD_ONE),
+            transaction_index: Some(0),
+            log_index: Some(0),
+            removed: false,
+        }
+    }
+
+    /// V4 Swap logs must classify as UniswapV4 with the poolId recovered from
+    /// topics[1] and a synthetic pool key matching the v4.rs Initialize scan.
+    #[test]
+    fn classify_v4_swap_recovers_pool_id() {
+        let pool_manager = address!("000000000000004444c5dc73dcbabcdd12345678");
+        let pool_id = B256::from([
+            0x12, 0x34, 0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0xaa, 0xbb,
+            0xcc, 0xdd, 0xee, 0xff, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
+            0xbb, 0xcc, 0xdd, 0xee,
+        ]);
+        let log = make_log(
+            pool_manager,
+            vec![*topics::V4_SWAP, pool_id],
+            vec![0u8; 224],
+        );
+
+        let (dex_type, pid, tokens, addr_override) =
+            classify_dex_event(&log).expect("V4 swap must classify");
+        assert_eq!(dex_type, DexType::UniswapV4);
+        assert_eq!(pid, Some(pool_id.0));
+        assert!(tokens.is_none());
+        // Synthetic key = last 20 bytes of poolId (consistent with v4.rs)
+        assert_eq!(addr_override, Some(Address::from_slice(&pool_id[12..32])));
+    }
+
+    #[test]
+    fn merge_from_dex_type_conflict_rules() {
+        let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        // Remote V2-fallback (fee unset) yields to a specific on-chain type.
+        let mut fallback = DiscoveredPool::new(
+            Address::ZERO, t0, t1, 0, DexType::UniswapV2, 0,
+        );
+        let onchain_v3 = DiscoveredPool::new(
+            Address::ZERO, t0, t1, 500, DexType::UniswapV3, 100,
+        );
+        fallback.merge_from(&onchain_v3);
+        assert_eq!(fallback.dex_type, DexType::UniswapV3);
+        assert_eq!(fallback.fee, 500);
+
+        // A specific type never yields to a bare V2 label.
+        let mut v3 = DiscoveredPool::new(Address::ZERO, t0, t1, 3000, DexType::UniswapV3, 0);
+        let remote_v2 = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::UniswapV2, 0);
+        v3.merge_from(&remote_v2);
+        assert_eq!(v3.dex_type, DexType::UniswapV3);
+
+        // A confirmed on-chain V2 pool (explicit fee) is not flipped by a
+        // conflicting remote label.
+        let mut confirmed_v2 = DiscoveredPool::new(
+            Address::ZERO, t0, t1, 30, DexType::UniswapV2, 0,
+        );
+        let mislabeled_v3 = DiscoveredPool::new(
+            Address::ZERO, t0, t1, 0, DexType::UniswapV3, 0,
+        );
+        confirmed_v2.merge_from(&mislabeled_v3);
+        assert_eq!(confirmed_v2.dex_type, DexType::UniswapV2);
+
+        // Two conflicting specific types: first-seen wins.
+        let mut curve = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::Curve, 0);
+        let balancer = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::Balancer, 0);
+        curve.merge_from(&balancer);
+        assert_eq!(curve.dex_type, DexType::Curve);
+    }
 }

@@ -8,9 +8,10 @@ use alloy::rpc::types::Log;
 
 use super::events::{
     decode_curve_exchange, decode_pendle_swap, decode_trader_joe_lb_swap, decode_uniswap_v2_swap,
-    decode_uniswap_v3_swap, TradeEvent, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-    PENDLE_MARKET_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-    TRADER_JOE_LB_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    decode_uniswap_v3_swap, decode_uniswap_v4_swap, TradeEvent, CURVE_TOKEN_EXCHANGE_TOPIC,
+    CURVE_V2_TOKEN_EXCHANGE_TOPIC, PENDLE_MARKET_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
+    TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRADER_JOE_LB_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
+    V4_SWAP_TOPIC,
 };
 use super::scanner::LogScanner;
 use crate::rpc::RpcClient;
@@ -69,8 +70,13 @@ fn decode_trade_log(log: &Log) -> Option<TradeEvent> {
     if **topic == *PENDLE_MARKET_SWAP_TOPIC {
         return decode_pendle_swap(log, pool);
     }
-    if **topic == V3_SWAP_TOPIC || **topic == *V4_SWAP_TOPIC || **topic == *SOLIDLY_SWAP_TOPIC {
+    if **topic == V3_SWAP_TOPIC || **topic == *SOLIDLY_SWAP_TOPIC {
         return decode_uniswap_v3_swap(log, pool);
+    }
+    // V4 swaps emit from the singleton PoolManager; the decoder recovers the
+    // synthetic pool key from the bytes32 poolId in topics[1].
+    if **topic == *V4_SWAP_TOPIC {
+        return decode_uniswap_v4_swap(log);
     }
     if **topic == *CURVE_TOKEN_EXCHANGE_TOPIC || **topic == *CURVE_V2_TOKEN_EXCHANGE_TOPIC {
         return decode_curve_exchange(log, pool);
