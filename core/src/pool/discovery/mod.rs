@@ -545,6 +545,22 @@ fn classify_dex_event(
         // Pendle markets are per-market contracts emitting their own Swap events.
         return Some((DexType::Pendle, None, None, None));
     }
+    if topic0 == *topics::PENDLE_SWAP_PT_AND_SY
+        || topic0 == *topics::PENDLE_SWAP_YT_AND_SY
+        || topic0 == *topics::PENDLE_SWAP_PT_AND_TOKEN
+        || topic0 == *topics::PENDLE_SWAP_YT_AND_TOKEN
+    {
+        // Router-level PT/YT swaps: the emitter is the singleton router, the
+        // MARKET address is indexed as topics[2] (verified against
+        // IPActionSwapPTV3Events / IPActionSwapYTV3Events) — override so the
+        // hit registers under the market, not the router.
+        let t = log.topics();
+        if t.len() >= 3 {
+            let market = Address::from_slice(&t[2].as_slice()[12..32]);
+            return Some((DexType::Pendle, None, None, Some(market)));
+        }
+        return Some((DexType::Pendle, None, None, None));
+    }
     if topic0 == *topics::V4_SWAP {
         // V4 swaps emit from the singleton PoolManager; topics[1] carries the
         // bytes32 poolId. The synthetic pool key is derived from the poolId
@@ -812,6 +828,10 @@ async fn discover_pools_shard(
         *topics::TRADER_JOE_LB_SWAP,
         *topics::TRADER_JOE_LB_SWAP_LEGACY,
         *topics::PENDLE_MARKET_SWAP,
+        *topics::PENDLE_SWAP_PT_AND_SY,
+        *topics::PENDLE_SWAP_YT_AND_SY,
+        *topics::PENDLE_SWAP_PT_AND_TOKEN,
+        *topics::PENDLE_SWAP_YT_AND_TOKEN,
         *topics::V4_SWAP,
     ];
 
@@ -1669,6 +1689,33 @@ mod tests {
         // Sanity: they must differ from the standard pair selectors.
         let token0 = keccak256(b"token0()");
         assert_ne!(*TRADER_JOE_TOKEN_X_SELECTOR, Bytes::copy_from_slice(&token0[..4]));
+    }
+
+    /// Pendle router PT/YT swap logs must classify as Pendle with the hit
+    /// address overridden by the market recovered from topics[2] — the emitter
+    /// is the singleton router, never a pool.
+    #[test]
+    fn classify_pendle_router_swaps_override_with_market() {
+        let market = address!("cccccccccccccccccccccccccccccccccccccccc");
+        let caller = address!("1111111111111111111111111111111111111111");
+        let receiver = address!("2222222222222222222222222222222222222222");
+
+        for topic in [
+            *topics::PENDLE_SWAP_PT_AND_SY,
+            *topics::PENDLE_SWAP_YT_AND_SY,
+        ] {
+            let log = make_log(
+                address!("d0019e86edB35E1fedaaB03aED5c3c60f115d28b"), // router-ish emitter
+                vec![topic, caller.into_word(), market.into_word(), receiver.into_word()],
+                vec![0u8; 64],
+            );
+            let (dex_type, pid, tokens, addr_override) =
+                classify_dex_event(&log).expect("pendle router swap must classify");
+            assert_eq!(dex_type, DexType::Pendle);
+            assert!(pid.is_none());
+            assert!(tokens.is_none());
+            assert_eq!(addr_override, Some(market));
+        }
     }
 
     #[test]

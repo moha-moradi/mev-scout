@@ -60,6 +60,21 @@ pub mod topics {
     pub static PENDLE_MARKET_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
 
+    /// Pendle V2 router PT/YT swap events — verified against pendle-core-v2
+    /// `IPActionSwapPTV3Events` / `IPActionSwapYTV3Events`. Emitted by the
+    /// singleton router with the MARKET address in topics[2], so discovery
+    /// must override the hit address instead of using the emitter.
+    pub static PENDLE_SWAP_PT_AND_SY: LazyLock<B256> =
+        LazyLock::new(|| keccak256("SwapPtAndSy(address,address,address,int256,int256)"));
+    pub static PENDLE_SWAP_YT_AND_SY: LazyLock<B256> =
+        LazyLock::new(|| keccak256("SwapYtAndSy(address,address,address,int256,int256)"));
+    pub static PENDLE_SWAP_PT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("SwapPtAndToken(address,address,address,address,int256,int256,uint256)")
+    });
+    pub static PENDLE_SWAP_YT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("SwapYtAndToken(address,address,address,address,int256,int256,uint256)")
+    });
+
     // Curve TokenExchangeUnderlying events (exchange_underlying path)
     pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
         keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
@@ -85,6 +100,10 @@ pub mod topics {
             *TRADER_JOE_LB_SWAP,
             *TRADER_JOE_LB_SWAP_LEGACY,
             *PENDLE_MARKET_SWAP,
+            *PENDLE_SWAP_PT_AND_SY,
+            *PENDLE_SWAP_YT_AND_SY,
+            *PENDLE_SWAP_PT_AND_TOKEN,
+            *PENDLE_SWAP_YT_AND_TOKEN,
         ]
     }
 }
@@ -228,5 +247,40 @@ mod tests {
         let expected = alloy::primitives::keccak256("Swap(address,address,int256,int256,uint256,uint256)");
         assert_eq!(*topics::PENDLE_MARKET_SWAP, expected);
         assert_ne!(*topics::PENDLE_MARKET_SWAP, topics::V3_SWAP);
+    }
+
+    /// Pendle router PT/YT swap topics: hashes pinned from the official
+    /// pendle-core-v2 interface so accidental signature edits fail CI.
+    #[test]
+    fn pendle_router_pt_yt_topics_are_distinct_and_verified() {
+        assert_eq!(
+            *topics::PENDLE_SWAP_PT_AND_SY,
+            b256!("3f5e2944826baeaed8eb77f0f74e6088a154a0fc1317f062fd984585607b4739")
+        );
+        assert_eq!(
+            *topics::PENDLE_SWAP_YT_AND_SY,
+            b256!("05499aba408f669fb848399c146fad5bd604d50b15566bdc19e81c40922fab8d")
+        );
+        assert_eq!(
+            *topics::PENDLE_SWAP_PT_AND_TOKEN,
+            b256!("d3c1d9b397236779b29ee5b5b150c1110fc8221b6b6ec0be49c9f4860ceb2036")
+        );
+        assert_eq!(
+            *topics::PENDLE_SWAP_YT_AND_TOKEN,
+            b256!("a3a2846538c60e47775faa60c6ae79b67dee6d97bb70e386ebbaf4c3a38e8b81")
+        );
+        // All four must differ from each other AND from the market-level Swap.
+        let all = [
+            *topics::PENDLE_MARKET_SWAP,
+            *topics::PENDLE_SWAP_PT_AND_SY,
+            *topics::PENDLE_SWAP_YT_AND_SY,
+            *topics::PENDLE_SWAP_PT_AND_TOKEN,
+            *topics::PENDLE_SWAP_YT_AND_TOKEN,
+        ];
+        for i in 0..all.len() {
+            for j in (i + 1)..all.len() {
+                assert_ne!(all[i], all[j], "pendle topics {i} and {j} collide");
+            }
+        }
     }
 }
