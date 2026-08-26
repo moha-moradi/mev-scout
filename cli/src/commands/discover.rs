@@ -513,13 +513,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let persisted = persist_universe(&cache, &pools);
     if persisted > 0 {
         if args.json {
-            tracing::info!("Persisted {persisted} pool(s) to {}", cache_path.display());
+            tracing::info!("Persisted {persisted} pool(s) to {cache_path}");
         } else {
-            println!(
-                "  Cached {} pool(s) to {}",
-                persisted,
-                cache_path.display()
-            );
+            println!("  Cached {persisted} pool(s) to {cache_path}");
         }
     }
 

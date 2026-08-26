@@ -83,6 +83,19 @@ static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
+/// Trader Joe LBPair token getters: `tokenX()` / `tokenY()`.
+/// The standard `token0()` / `token1()` selectors REVERT on an LBPair, so
+/// Phase-2 metadata fetch must use these instead (keccak256 prefixes
+/// `16dc165b…` / `b7d19fc4…`, verified against lfj-gg/joe-v2 LBPair ABI).
+static TRADER_JOE_TOKEN_X_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"tokenX()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+static TRADER_JOE_TOKEN_Y_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"tokenY()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 /// Selector for Balancer V2 Vault.getPool(address) → (bytes32 poolId, address[] tokens)
 static BALANCER_GET_POOL_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"getPool(address)");
@@ -1060,7 +1073,7 @@ async fn discover_pools_shard(
             }
         }
         match dex_type {
-            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot | DexType::TraderJoeLB => {
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
                 let rpc = rpc.clone();
                 let addr = *addr;
                 let sel0 = token0_selector.clone();
@@ -1075,6 +1088,30 @@ async fn discover_pools_shard(
                         },
                         async {
                             rpc.call_latest(addr, sel1).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                    ).await;
+                    (addr, dex_type, r0, r1, None, None, fsb)
+                }));
+            }
+            DexType::TraderJoeLB => {
+                // Per-pair contracts, so direct calls work — but an LBPair
+                // exposes `tokenX()`/`tokenY()`, NOT `token0()`/`token1()`;
+                // the standard selectors revert and leave tokens unresolved.
+                let rpc = rpc.clone();
+                let addr = *addr;
+                let sel_x = TRADER_JOE_TOKEN_X_SELECTOR.clone();
+                let sel_y = TRADER_JOE_TOKEN_Y_SELECTOR.clone();
+                let fsb = *first_seen_block;
+                let dex_type = *dex_type;
+                fetch_tasks.push(Box::pin(async move {
+                    let (r0, r1) = futures::future::join(
+                        async {
+                            rpc.call_latest(addr, sel_x).await.ok()
+                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        },
+                        async {
+                            rpc.call_latest(addr, sel_y).await.ok()
                                 .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
                         },
                     ).await;
@@ -1573,7 +1610,7 @@ pub async fn health_check_pools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, LogData};
+    use alloy::primitives::{address, b256, LogData};
 
     fn make_log(address: Address, topics_vec: Vec<B256>, data: Vec<u8>) -> alloy::rpc::types::Log {
         let log_data = LogData::new_unchecked(topics_vec, Bytes::from(data));
@@ -1582,7 +1619,9 @@ mod tests {
             block_number: Some(1000),
             block_hash: None,
             block_timestamp: None,
-            transaction_hash: Some(B256::LEFT_PAD_ONE),
+            transaction_hash: Some(b256!(
+                "0000000000000000000000000000000000000000000000000000000000000001"
+            )),
             transaction_index: Some(0),
             log_index: Some(0),
             removed: false,
@@ -1614,10 +1653,28 @@ mod tests {
         assert_eq!(addr_override, Some(Address::from_slice(&pool_id[12..32])));
     }
 
+    /// Trader Joe LBPair metadata getters are `tokenX()`/`tokenY()`; calling
+    /// the standard `token0()`/`token1()` selectors on an LBPair reverts and
+    /// would leave every activity-discovered LB pool without tokens.
+    #[test]
+    fn trader_joe_metadata_selectors_match_lbpair_abi() {
+        assert_eq!(
+            *TRADER_JOE_TOKEN_X_SELECTOR,
+            Bytes::from_static(&[0x16, 0xdc, 0x16, 0x5b])
+        );
+        assert_eq!(
+            *TRADER_JOE_TOKEN_Y_SELECTOR,
+            Bytes::from_static(&[0xb7, 0xd1, 0x9f, 0xc4])
+        );
+        // Sanity: they must differ from the standard pair selectors.
+        let token0 = keccak256(b"token0()");
+        assert_ne!(*TRADER_JOE_TOKEN_X_SELECTOR, Bytes::copy_from_slice(&token0[..4]));
+    }
+
     #[test]
     fn merge_from_dex_type_conflict_rules() {
         let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
         // Remote V2-fallback (fee unset) yields to a specific on-chain type.
         let mut fallback = DiscoveredPool::new(

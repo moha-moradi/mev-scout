@@ -445,8 +445,8 @@ pub fn decode_uniswap_v4_swap(log: &Log) -> Option<TradeEvent> {
     }
     // amount0/amount1 are int128 (sign-extended into their 32-byte words);
     // one leg is typically negative — report magnitudes, larger as amount_in.
-    let a0 = I256::from_be_slice(&data[0..32]).wrapping_abs();
-    let a1 = I256::from_be_slice(&data[32..64]).wrapping_abs();
+    let a0 = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
     let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
     let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
     let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
@@ -562,8 +562,8 @@ pub fn decode_pendle_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     if data.len() < 64 {
         return None;
     }
-    let pt = I256::from_be_slice(&data[0..32]).wrapping_abs();
-    let sy = I256::from_be_slice(&data[32..64]).wrapping_abs();
+    let pt = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
+    let sy = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
     Some(TradeEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -651,8 +651,10 @@ mod tests {
     #[test]
     fn decode_uniswap_v4_swap_uses_pool_id_topic() {
         let pool_id = b256!("1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
-        let mut amount0 = [0u8; 32];
-        amount0[16..32].copy_from_slice(&(-5_000i128).to_be_bytes()); // sign-extended int128
+        // int128 legs are sign-extended across the FULL 256-bit word: the
+        // upper half must be 0xff for negatives, mirroring real PoolManager logs.
+        let mut amount0 = [0xffu8; 32];
+        amount0[16..32].copy_from_slice(&(-5_000i128).to_be_bytes());
         let mut amount1 = [0u8; 32];
         amount1[16..32].copy_from_slice(&2_500i128.to_be_bytes());
 

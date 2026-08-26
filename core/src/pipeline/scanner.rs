@@ -193,7 +193,7 @@ mod tests {
     /// keccak-hashes to exactly V3_SWAP, silently disabling V4 detection.
     #[test]
     fn v4_swap_topic_differs_from_v3() {
-        assert_ne!(topics::V4_SWAP, topics::V3_SWAP);
+        assert_ne!(*topics::V4_SWAP, *topics::V3_SWAP);
         // Verified against v4-core PoolManager._swap:
         // emit Swap(id, msg.sender, delta.amount0(), delta.amount1(),
         //           result.sqrtPriceX96, result.liquidity, result.tick, swapFee)

@@ -163,22 +163,25 @@ impl ChainName {
                 "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d", // Meshswap
             ],
             ChainName::Avalanche => &[
-                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",  // SushiSwap
+                "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
                 "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe V1
             ],
             ChainName::Bsc => &[
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
-                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",  // SushiSwap
+                "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
+                "0x858E3312ed3A876947EA49d572A7C42DE08af7EE", // BiSwap
             ],
             ChainName::Arbitrum => &[], // Camelot handled via default_camelot_factories
-            ChainName::Base => &[],     // Aerodrome handled via default_solidly_factories
+            ChainName::Base => &[
+                "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6", // Uniswap V2
+            ], // Aerodrome handled via default_solidly_factories
             ChainName::Ethereum => &[
                 "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", // Uniswap V2
                 "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", // SushiSwap
-                "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9",  // ShibaSwap
+                "0x115934131916C8b277DD010Ee02de363c09d037c", // ShibaSwap
             ],
             ChainName::Optimism => &[
-                "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b", // SushiSwap
+                "0xFbc12984689e5f15626Bad03Ad60160Fe98B303C", // SushiSwap
             ],
         }
     }
@@ -192,7 +195,11 @@ impl ChainName {
             ],
             ChainName::Avalanche => &["0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"],
             ChainName::Bsc => &["0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"],
-            ChainName::Arbitrum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+            ChainName::Arbitrum => &[
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
+                "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3
+                "0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b", // Ramses V3 (CL)
+            ],
             ChainName::Base => &["0x33128a8fC17869897dcE68Ed026d694621f6FDfD"],
             ChainName::Ethereum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
             ChainName::Optimism => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
@@ -277,4 +284,63 @@ pub fn v2_router_for_factory(factory: Address) -> Option<Address> {
         return Some(address!("60aE616a2155Ee3d9A68541Ba4544862310933d4"));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every built-in factory literal must parse as a valid 20-byte address —
+    /// guards against checksum/typo regressions in the tables above.
+    #[test]
+    fn all_default_factories_parse_as_addresses() {
+        for (chain, label) in [
+            (ChainName::Polygon, "polygon"),
+            (ChainName::Avalanche, "avalanche"),
+            (ChainName::Bsc, "bsc"),
+            (ChainName::Arbitrum, "arbitrum"),
+            (ChainName::Base, "base"),
+            (ChainName::Ethereum, "ethereum"),
+            (ChainName::Optimism, "optimism"),
+        ] {
+            for f in chain.default_uniswap_v2_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} v2 factory {f}: {e}"));
+            }
+            for f in chain.default_uniswap_v3_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} v3 factory {f}: {e}"));
+            }
+            for f in chain.default_solidly_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} solidly factory {f}: {e}"));
+            }
+            for f in chain.default_camelot_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} camelot factory {f}: {e}"));
+            }
+        }
+    }
+
+    /// Phase D universe-breadth factories (plan 2026-08-25), pinned so silent
+    /// removals surface in CI.
+    #[test]
+    fn phase_d_factories_present() {
+        // PancakeSwap V3 (Arbitrum) — deterministic cross-chain deployment.
+        assert!(ChainName::Arbitrum
+            .default_uniswap_v3_factories()
+            .contains(&"0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"));
+        // Ramses V3 CL factory (Arbitrum) — docs.ramses.exchange contract list.
+        assert!(ChainName::Arbitrum
+            .default_uniswap_v3_factories()
+            .contains(&"0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b"));
+        // BiSwap (BSC) — live UniV2-style fork (allPairsLength verified on-chain).
+        assert!(ChainName::Bsc
+            .default_uniswap_v2_factories()
+            .contains(&"0x858E3312ed3A876947EA49d572A7C42DE08af7EE"));
+        // Uniswap V2 (Base) — official v2 deployments table.
+        assert!(ChainName::Base
+            .default_uniswap_v2_factories()
+            .contains(&"0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6"));
+    }
 }

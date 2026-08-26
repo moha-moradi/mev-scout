@@ -265,8 +265,9 @@ mod tests {
 
     #[test]
     fn aggregate3_encoding_layout() {
+        let left_pad_one = address!("0000000000000000000000000000000000000001");
         let calls = vec![
-            SubCall { target: Address::LEFT_PAD_ONE, data: Bytes::from_static(&[0xaa, 0xbb]) },
+            SubCall { target: left_pad_one, data: Bytes::from_static(&[0xaa, 0xbb]) },
             SubCall { target: Address::ZERO, data: Bytes::from_static(&[0xcc; 32]) },
         ];
         let enc = encode_aggregate3(&calls);
@@ -279,7 +280,7 @@ mod tests {
         let data_start = 68usize; // selector(4) + 2 head words
         // Element 0 head: target | allowFailure | tailOffset
         let e0 = &enc[data_start..data_start + 96];
-        assert_eq!(&e0[12..32], Address::LEFT_PAD_ONE.as_slice());
+        assert_eq!(&e0[12..32], left_pad_one.as_slice());
         assert_eq!(e0[63], 1);
         assert_eq!(word_to_u64(&e0[64..96]), Some(192)); // two heads × 96
 
@@ -313,14 +314,17 @@ mod tests {
         ret.extend_from_slice(&[0u8; 31]); ret.push(0x40); // array offset
         ret.extend_from_slice(&[0u8; 31]); ret.push(2); // 2 elements
 
-        let data_area = 96usize; // after success word, offset word, len word
-        let e0_tail = data_area + 64; // skip both element-offset words
+        // Solidity nested-dynamic layout: element offsets are relative to the
+        // array data area, whose FIRST slot holds the length word (byte 64,
+        // pointed to by the outer 0x40 offset) — not the first offset word.
+        let arr_data_start = 64usize;
+        let e0_tail = 96 + 64; // after success, offset, len words + both offset words
         let e1_tail = e0_tail + 32 + 32; // elem0 len word + padded data
 
         ret.extend_from_slice(&[0u8; 24]);
-        ret.extend_from_slice(&((e0_tail - data_area) as u64).to_be_bytes());
+        ret.extend_from_slice(&((e0_tail - arr_data_start) as u64).to_be_bytes());
         ret.extend_from_slice(&[0u8; 24]);
-        ret.extend_from_slice(&((e1_tail - data_area) as u64).to_be_bytes());
+        ret.extend_from_slice(&((e1_tail - arr_data_start) as u64).to_be_bytes());
 
         // Element 0: len 1, data [0xab]
         ret.extend_from_slice(&[0u8; 24]);

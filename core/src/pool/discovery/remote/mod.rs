@@ -99,10 +99,10 @@ pub async fn discover_via_geckoterminal(
 async fn supplement_via_per_dex(
     client: &geckoterminal::GeckoTerminalClient,
     chain: &str,
-    mut pools: Vec<geckoterminal::RemotePool>,
+    mut pools: Vec<RemotePool>,
     max_pools: Option<usize>,
     min_tvl: Option<f64>,
-) -> anyhow::Result<Vec<geckoterminal::RemotePool>> {
+) -> anyhow::Result<Vec<RemotePool>> {
     let cap = max_pools.unwrap_or(1000);
     if pools.len() >= cap {
         return Ok(pools);

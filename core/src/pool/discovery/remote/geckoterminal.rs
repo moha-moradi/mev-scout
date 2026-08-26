@@ -197,8 +197,9 @@ impl GeckoTerminalClient {
                 })
                 .unwrap_or_default();
             let empty = batch.is_empty();
+            let partial_page = batch.len() < 20; // GT paginates 20/page — a short page is the last one
             dexes.extend(batch);
-            if empty || dexes.len() > 60 {
+            if empty || partial_page || dexes.len() > 60 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
