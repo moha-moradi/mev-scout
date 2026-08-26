@@ -499,6 +499,11 @@ pub struct LiveArgs {
     #[arg(long, help_heading = "Live")]
     pub r#loop: bool,
 
+    /// Stop continuous polling after this duration (requires --loop).
+    /// Accepts humantime suffixes: 90s, 15m, 1h, 1h 30m.
+    #[arg(long = "duration", value_name = "DURATION", help_heading = "Live")]
+    pub duration: Option<String>,
+
     /// Polling interval in milliseconds (default: 2000)
     #[arg(long = "poll-interval", default_value = "2000", value_name = "MS", help_heading = "Live")]
     pub poll_interval_ms: u64,

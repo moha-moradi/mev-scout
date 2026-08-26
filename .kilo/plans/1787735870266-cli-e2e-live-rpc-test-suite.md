@@ -19,12 +19,13 @@
 | Remote-API commands | Strict assertions on-chain; **tolerant** (skip w/ warning) for GeckoTerminal/DexScreener paths |
 | Block ranges | Per `CLI_EXECUTION_PLAN.md`: fetch ≤100 (tests use 5–10), scan ≤100, run ≤10, replay single, discover onchain bounded in tests |
 | Profit safeguards | `--priority-fee 30` on run/live invocations; `--min-profit-wei 0` on live |
+| **RPC source** | **The 9 providers in `mev-scout.toml`** (user-confirmed). No `RPC_URL` env var. Networked tests run with cwd = temp workspace and `-f <repo>/mev-scout.toml`; artifacts isolated via `--db-path`/`--export-path` into the temp ws. |
 
 ## Conventions
 
-- Gate (all networked tests): `MEV_SCOUT_E2E=1` **and** `RPC_URL` set, else print `SKIP:` and return (matches existing `cli_e2e.rs`). Tests additionally self-skip if the RPC is unreachable at start.
+- Gate (all networked tests): `MEV_SCOUT_E2E=1`, else print `SKIP:` and return. Tests additionally self-skip if RPCs from `mev-scout.toml` are unreachable at start (cheap probe via a 1-block scan).
 - Every spawned command gets a deadline; on timeout kill child + fail. Defaults: 180 s general, 600 s for `run`/`live`, 300 s for `discover`.
-- Each test works in a unique temp workspace (`%TEMP%/mev_scout_e2e_<test>_<pid>`): own `db-path`, own `export-path`; tests `current_dir()` there (no repo `mev-scout.toml` auto-load; pass `--rpc $RPC_URL` explicitly).
+- Each test works in a unique temp workspace (`%TEMP%/mev_scout_e2e_<test>_<pid>`): own `db-path`, own `export-path`; commands run with `current_dir()` = temp ws and explicit `-f <repo-root>/mev-scout.toml` so the committed provider list is used while cache/exports stay out of the repo.
 - Heavy networked tests inside a binary serialize on a shared `std::sync::Mutex` to bound concurrent RPC load (up to 3 networked binaries may overlap — fine vs ~100 RPS aggregate providers).
 - Assertions are structural (exit codes, stdout lines, exported JSON schemas) — no golden-path opportunity detection against live chain data (non-deterministic).
 - Flaky-tip handling mirrors `core/tests/e2e.rs`: freshly-mined tip blocks may be unserved even after auto-refetch → treat as environment limitation, skip with message, not failure.
@@ -153,8 +154,8 @@ Assertions:
 cargo build -p mev-scout-cli --release
 cargo test                                    # ungated cli_args + P0 unit tests green, networked SKIP
 cargo test -p mev-scout-cli --test cli_args
-$env:MEV_SCOUT_E2E="1"; $env:RPC_URL="<polygon rpc>"
-cargo test -p mev-scout-cli                   # full gated suite green
+$env:MEV_SCOUT_E2E="1"                        # RPCs come from mev-scout.toml — no RPC_URL needed
+cargo test -p mev-scout-cli                   # full gated suite green against the 9 committed providers
 cargo test -p mev-scout-cli --test cli_live_mode -- --nocapture
 ```
 
