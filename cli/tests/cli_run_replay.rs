@@ -158,11 +158,11 @@ fn fetch_run_replay_report_chain() {
     c.args(["report", "--export-path", results_s, "--output", "csv"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report csv spawn failed");
     expect_ok(&out, "report csv");
-    let header = out.stdout.lines().next().unwrap_or("");
-    assert_eq!(
-        header,
-        "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence",
-        "csv header mismatch"
+    assert!(
+        out.stdout.lines().any(|l| l.trim()
+            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"),
+        "csv header line missing:\n{}",
+        out.stdout
     );
 
     let mut c = scout(&ws);

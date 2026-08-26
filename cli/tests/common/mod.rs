@@ -33,6 +33,16 @@ pub fn repo_config() -> PathBuf {
         .join("mev-scout.toml")
 }
 
+pub fn first_rpc_url() -> Option<String> {
+    let text = fs::read_to_string(repo_config()).ok()?;
+    let start = text.find("https://")?;
+    let end = text[start..]
+        .find(|c: char| c.is_whitespace() || c == '"' || c == ',' || c == ']')
+        .map(|i| start + i)
+        .unwrap_or(text.len());
+    Some(text[start..end].to_string())
+}
+
 pub fn temp_ws(tag: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("mev_scout_e2e_{tag}_{}", std::process::id()));
     let _ = fs::remove_dir_all(&p);
