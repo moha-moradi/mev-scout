@@ -10,21 +10,18 @@ use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::resolver::RangeResolver;
-use mev_scout_core::types::ChainName;
 
 pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> {
-    let chain_name: ChainName = match args.chain_args.chain.parse() {
-        Ok(c) => c,
-        Err(e) => anyhow::bail!("{e}"),
-    };
+    let (chain_name, _chain_config) = validation::resolve_chain(config)
+        .context("failed to resolve chain")?;
 
-    let setup = init_rpc(config, chain_name.clone(), true).await
+    let setup = init_rpc(config, chain_name, true).await
         .context("failed to initialize RPC client")?;
     let provider_configs = setup.provider_configs;
     let rpc = setup.rpc;
     tracing::info!("{}", rpc.provider_summary().await);
 
-    let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
+    let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
 
     let range_mode = match validation::resolve_block_range(
         args.block_range.days,

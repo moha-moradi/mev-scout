@@ -17,9 +17,9 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
         Err(e) => anyhow::bail!("{}", e),
     };
 
-    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
-    let cache = SqliteStore::open(&config.effective_db_path(&chain_name))?;
+    let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
 
     let block_num = args.block;
     let tx_index = args.tx_index.unwrap_or(usize::MAX);

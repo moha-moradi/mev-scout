@@ -1,7 +1,8 @@
 mod common;
 
 use common::{
-    expect_fail, expect_ok, repo_config, run_timed, scout, temp_ws, TEST_TIMEOUT, TimedOutput,
+    expect_fail, expect_ok, repo_config, run_timed, scout, temp_config, temp_ws, TEST_TIMEOUT,
+    TimedOutput,
 };
 use std::path::Path;
 use std::time::Duration;
@@ -123,10 +124,8 @@ fn live_duration_without_loop_rejected_offline() {
 fn report_error_paths_fail_cleanly() {
     let ws = temp_ws("args_report_err");
     let missing = ws.join("nope");
-    let out = run(
-        &ws,
-        &["report", "--export-path", missing.to_str().unwrap()],
-    );
+    let missing_cfg = temp_config(&ws, &[("export_path", missing.to_str().unwrap())]);
+    let out = run(&ws, &["-f", missing_cfg.to_str().unwrap(), "report"]);
     expect_fail(&out, "report on missing export dir");
     assert!(
         out.stderr.contains("does not exist"),
@@ -136,7 +135,8 @@ fn report_error_paths_fail_cleanly() {
 
     let empty = ws.join("empty");
     std::fs::create_dir_all(&empty).unwrap();
-    let out = run(&ws, &["report", "--export-path", empty.to_str().unwrap()]);
+    let empty_cfg = temp_config(&ws, &[("export_path", empty.to_str().unwrap())]);
+    let out = run(&ws, &["-f", empty_cfg.to_str().unwrap(), "report"]);
     expect_fail(&out, "report on empty export dir");
     assert!(
         out.stderr.contains("no results files"),
@@ -144,18 +144,11 @@ fn report_error_paths_fail_cleanly() {
         out.stderr
     );
 
+    let rid_cfg = temp_config(&ws, &[("export_path", empty.to_str().unwrap())]);
     let out = run(
         &ws,
-        &[
-            "-f",
-            &cfg(),
-            "report",
-            "--run-id",
-            "missing_run_id",
-            "--export-path",
-            empty.to_str().unwrap(),
-        ],
-        );
+        &["-f", rid_cfg.to_str().unwrap(), "report", "--run-id", "missing_run_id"],
+    );
     expect_fail(&out, "report on nonexistent run id");
     assert!(
         out.stderr.contains("results file not found"),

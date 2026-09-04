@@ -2,12 +2,16 @@ mod common;
 
 use common::{
     ensure_gate_and_rpc, expect_ok, extract_json_array, repo_config, rpc_ready, run_timed, scout,
-    temp_ws, HEAVY_TIMEOUT, NETWORK_TIMEOUT, RPC_MUTEX,
+    temp_config, temp_ws, HEAVY_TIMEOUT, NETWORK_TIMEOUT, RPC_MUTEX,
 };
 use std::time::Duration;
 
 fn cfg() -> String {
     repo_config().to_str().unwrap().to_string()
+}
+
+fn make_cfg(ws: &std::path::Path, extras: &[(&str, &str)]) -> String {
+    temp_config(ws, extras).to_str().unwrap().to_string()
 }
 
 #[test]
@@ -19,22 +23,18 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
+    let discover_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args([
         "-f",
-        &cfg(),
+        &discover_cfg,
         "discover",
         "--source",
         "onchain",
         "--blocks",
         "5",
         "--json",
-        "--db-path",
-        db_s,
     ]);
-    if let Some(rpc) = common::first_rpc_url() {
-        c.args(["--rpc", &rpc]);
-    }
     let out = match run_timed(&mut c, HEAVY_TIMEOUT) {
         Ok(o) => o,
         Err(e) => {
@@ -73,8 +73,9 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         out.stdout
     );
 
+    let json_cfg = make_cfg(&ws, &[("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &cfg(), "tokens", "--output", "json"]);
+    c.args(["-f", &json_cfg, "tokens"]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("tokens json spawn failed");
     expect_ok(&out, "tokens --output json");
     let toks = extract_json_array(&out.stdout).expect("tokens --output json should print array");
@@ -89,8 +90,9 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         assert!(t.get("decimals").is_some(), "token missing decimals");
     }
 
+    let csv_cfg = make_cfg(&ws, &[("output", "\"csv\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &cfg(), "tokens", "--output", "csv"]);
+    c.args(["-f", &csv_cfg, "tokens"]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("tokens csv spawn failed");
     expect_ok(&out, "tokens --output csv");
     assert!(
@@ -101,17 +103,9 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         out.stdout
     );
 
+    let fetch_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &cfg(),
-        "fetch",
-        "--blocks",
-        "5",
-        "--no-sig-resolve",
-        "--db-path",
-        db_s,
-    ]);
+    c.args(["-f", &fetch_cfg, "fetch", "--blocks", "5", "--no-sig-resolve"]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("fetch spawn failed");
     expect_ok(&out, "fetch 5 blocks");
     assert!(
@@ -126,10 +120,11 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
     );
     assert!(db.exists(), "sqlite db should exist after fetch");
 
+    let scan_cfg = make_cfg(&ws, &[("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args([
         "-f",
-        &cfg(),
+        &scan_cfg,
         "scan",
         "--kind",
         "trades",
@@ -137,8 +132,6 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         "5",
         "--limit",
         "20",
-        "--output",
-        "json",
     ]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("scan spawn failed");
     expect_ok(&out, "scan trades 5 blocks json");
@@ -164,10 +157,11 @@ fn discover_remote_tolerant_to_service_failures() {
         return;
     }
 
+    let rem_cfg = make_cfg(&ws, &[("db_path", ws.join("cache.db").to_str().unwrap())]);
     let mut c = scout(&ws);
     c.args([
         "-f",
-        &cfg(),
+        &rem_cfg,
         "discover",
         "--source",
         "remote",
@@ -175,8 +169,6 @@ fn discover_remote_tolerant_to_service_failures() {
         "--max-pools",
         "50",
         "--json",
-        "--db-path",
-        ws.join("cache.db").to_str().unwrap(),
     ]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,

@@ -1,4 +1,5 @@
 chain = "polygon"
+priority_fee_gwei = 30
 rpc_urls = [
   "https://polygon-mainnet.g.alchemy.com/v2/alch_ktxuA5esYPZRKY7iY8uVG", #mo.moradi68
   "https://polygon-mainnet.g.alchemy.com/v2/alch_dxSHvBLUTU0Ux84OJBGyV", # moradi.mohammad028
@@ -18,3 +19,13 @@ rpc_rps = [10, 10, 10, 10, 10, 15, 15, 15, 15]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 2
+
+# Default strategy set (comma-separated or "all")
+strategies = "all"
+
+# Backtest gas price model: historical_exact | p90 | fixed | live
+gas_model = "historical_exact"
+
+# Default output format: table | csv | json
+output = "table"
+

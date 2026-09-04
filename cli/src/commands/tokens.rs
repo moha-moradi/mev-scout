@@ -11,13 +11,6 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
         .context("failed to resolve chain")?;
     let chain_id = chain_name.chain_id();
 
-    if args.filter.to_lowercase().as_str() != "all" {
-        anyhow::bail!(
-            "filter '{}' is not supported in on-chain mode (use: all)",
-            args.filter
-        );
-    }
-
     // ── Load token cache (SQLite + pre-populated known tokens) ──
     let cache_path = config.effective_db_path(&chain_name);
     let cache = SqliteStore::open(&cache_path)?;
@@ -42,20 +35,17 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
         entries.retain(|(_, _, d)| *d == Some(dec as i32));
     }
 
-    match args.sort.as_str() {
-        "symbol" => entries.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase())),
-        "name" | _ => entries.sort_by(|a, b| a.0.cmp(&b.0)),
-    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     entries.truncate(args.limit);
 
     if args.cache_only {
-        println!("  Token cache: {} tokens (filter=all)", entries.len());
+        println!("  Token cache: {} tokens", entries.len());
         return Ok(());
     }
 
     // ── Display results ──
-    match args.output.as_str() {
+    match config.output.output.as_str() {
         "json" => {
             let out: Vec<serde_json::Value> = entries.iter().map(|(addr, symbol, dec)| {
                 serde_json::json!({

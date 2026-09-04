@@ -25,7 +25,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let setup = init_rpc(config, validation_result.chain_name, true).await?;
     let provider_configs = setup.provider_configs;
     let rpc = setup.rpc;
-    let cache = SqliteStore::open(&config.effective_db_path(&validation_result.chain_name))?;
+    let cache = SqliteStore::open(config.effective_db_path(&validation_result.chain_name))?;
 
     let resolver = RangeResolver::new(rpc.clone());
     let resolved = match resolver.resolve(&validation_result.range_mode).await {

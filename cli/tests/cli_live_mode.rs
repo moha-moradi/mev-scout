@@ -1,14 +1,28 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_fail, expect_ok, repo_config, run_timed, scout, temp_ws,
-    HEAVY_TIMEOUT, RPC_MUTEX,
+    ensure_gate_and_rpc, expect_fail, expect_ok, repo_config, run_timed, scout, temp_config,
+    temp_ws, HEAVY_TIMEOUT, RPC_MUTEX,
 };
 use serde_json::Value;
 use std::time::Duration;
 
 fn cfg() -> String {
     repo_config().to_str().unwrap().to_string()
+}
+
+fn live_cfg(ws: &std::path::Path) -> String {
+    temp_config(
+        ws,
+        &[
+            ("priority_fee_gwei", "30"),
+            ("min_profit_wei", "0"),
+            ("output", "\"json\""),
+        ],
+    )
+    .to_str()
+    .unwrap()
+    .to_string()
 }
 
 fn newest_live_json(dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -36,17 +50,12 @@ fn live_one_shot_smoke() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
+    let cfg = live_cfg(&ws);
     let mut c = scout(&ws);
     c.args([
         "-f",
-        &cfg(),
+        &cfg,
         "live",
-        "--priority-fee",
-        "30",
-        "--min-profit-wei",
-        "0",
-        "--output",
-        "json",
         "--export-path",
         results_s,
         "--db-path",
@@ -85,22 +94,17 @@ fn live_loop_duration_graceful_exit() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
+    let pipeline = live_cfg(&ws);
     let mut c = scout(&ws);
     c.args([
         "-f",
-        &cfg(),
+        &pipeline,
         "live",
         "--loop",
         "--duration",
         "30s",
-        "--poll-interval-ms",
+        "--poll-interval",
         "1000",
-        "--priority-fee",
-        "30",
-        "--min-profit-wei",
-        "0",
-        "--output",
-        "json",
         "--export-path",
         results_s,
         "--db-path",

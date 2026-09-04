@@ -13,7 +13,7 @@ use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;
-use mev_scout_core::types::{GasConfig, GasModel, RangeMode, ResultsFile};
+use mev_scout_core::types::{GasConfig, RangeMode, ResultsFile};
 use mev_scout_core::utils::epoch_secs;
 
 pub fn parse_duration_str(s: &str) -> anyhow::Result<Duration> {
@@ -45,13 +45,13 @@ pub fn deadline_from(
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let deadline = deadline_from(args.r#loop, args.duration.as_deref(), Instant::now())?;
-    let validation = validation::validate_and_resolve(config)
+    let validation = validation::validate_live(config)
         .context("invalid configuration")?;
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
     let provider_configs = setup.provider_configs;
     let rpc = setup.rpc;
-    let cache = SqliteStore::open(&config.effective_db_path(&validation.chain_name))?;
+    let cache = SqliteStore::open(config.effective_db_path(&validation.chain_name))?;
 
     let pool_addresses: Vec<Address> = cache
         .list_discovered_pools()
@@ -61,9 +61,9 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         .collect();
 
     let gas_config = GasConfig {
-        gas_limit: args.gas_limit,
-        gas_model: args.gas_model.parse().unwrap_or(GasModel::Live),
-        priority_fee_gwei: args.priority_fee,
+        gas_limit: config.gas.gas_limit,
+        gas_model: validation.gas_model,
+        priority_fee_gwei: config.gas.priority_fee_gwei,
         flash_loan_provider: validation.flash_loan_provider,
         winning_bid_premium: 0.0,
         percentile_gas_price: None,
@@ -74,9 +74,9 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     println!("Live mode ({}) — polling every {}ms", mode_label, args.poll_interval_ms);
 
     if args.r#loop {
-        run_loop(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, &args, gas_config, deadline).await
+        run_loop(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, args, gas_config, deadline).await
     } else {
-        run_once(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, &args, gas_config).await
+        run_once(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, args, gas_config).await
     }
 }
 
@@ -87,7 +87,7 @@ async fn run_once(
     provider_configs: &[(String, Option<f64>, bool)],
     cache: &SqliteStore,
     pool_addresses: &[Address],
-    args: &LiveArgs,
+    _args: &LiveArgs,
     gas_config: GasConfig,
 ) -> anyhow::Result<()> {
     let tip = rpc.get_block_number().await.context("failed to get chain tip")?;
@@ -120,8 +120,8 @@ async fn run_once(
         validation.chain_config.chain_id,
     );
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(args.proximity_window)
-        .with_min_profit_wei(args.min_profit_wei);
+        .with_proximity_window(config.backtest.proximity_window)
+        .with_min_profit_wei(config.backtest.min_profit_wei);
 
     let prev_block = tip.saturating_sub(1);
     if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
@@ -219,8 +219,8 @@ async fn run_loop(
         validation.chain_config.chain_id,
     );
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(args.proximity_window)
-        .with_min_profit_wei(args.min_profit_wei);
+        .with_proximity_window(config.backtest.proximity_window)
+        .with_min_profit_wei(config.backtest.min_profit_wei);
 
     let prev_block = tip.saturating_sub(1);
     if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {

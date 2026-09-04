@@ -4,8 +4,8 @@ use crate::display::render_results_table;
 use mev_scout_core::config::Config;
 use mev_scout_core::types::{OutputFormat, ResultsFile};
 
-pub async fn cmd_report(_config: &Config, args: &ReportArgs) -> anyhow::Result<()> {
-    let export_path = args.export_path.as_str();
+pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()> {
+    let export_path = config.output.export_path.as_str();
     let dir = std::path::Path::new(export_path);
 
     let run_id = match &args.run_id {
@@ -45,7 +45,7 @@ pub async fn cmd_report(_config: &Config, args: &ReportArgs) -> anyhow::Result<(
     let results_file: ResultsFile = serde_json::from_str(&json_str)
         .with_context(|| format!("Failed to parse '{}'", path.display()))?;
 
-    let output_format: OutputFormat = args.output.parse().unwrap_or(OutputFormat::Table);
+    let output_format: OutputFormat = config.output.output.parse().unwrap_or(OutputFormat::Table);
 
     match output_format {
         OutputFormat::Table => {

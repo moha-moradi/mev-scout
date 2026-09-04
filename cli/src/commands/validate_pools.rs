@@ -81,7 +81,7 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
     }
 
     // ── Set A: on-chain discovery over the window + health check ──
-    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
 
     let resolver = RangeResolver::new(rpc.clone());

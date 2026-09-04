@@ -51,6 +51,57 @@ pub fn temp_ws(tag: &str) -> PathBuf {
     p
 }
 
+/// Clone the repo `mev-scout.toml` into `ws`, replacing or appending the given
+/// flat `key = value` lines. Handles the multi-line `rpc_urls` array replacement.
+/// Values are auto-formatted: quoted strings keep their quotes (backslashes
+/// escaped), bare strings get quoted with backslashes escaped, numbers/bools/
+/// arrays pass through verbatim.
+pub fn temp_config(ws: &Path, extras: &[(&str, &str)]) -> PathBuf {
+    let src = fs::read_to_string(repo_config()).unwrap_or_default();
+    let mut lines: Vec<String> = src.lines().map(String::from).collect();
+    for (key, value) in extras {
+        let needle = format!("{key} =");
+        let value = fmt_toml_value(value);
+        let mut replaced = false;
+        for i in 0..lines.len() {
+            if lines[i].trim_start().starts_with(&needle) {
+                lines[i] = format!("{key} = {value}");
+                if lines[i].contains('[') && !lines[i].contains(']') {
+                    let mut j = i + 1;
+                    while j < lines.len() && !lines[j].contains(']') {
+                        j += 1;
+                    }
+                    if j < lines.len() {
+                        lines.drain(i + 1..=j);
+                    }
+                }
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            lines.push(format!("{key} = {value}"));
+        }
+    }
+    let out = ws.join("mev-scout.toml");
+    fs::write(&out, lines.join("\n")).unwrap();
+    out
+}
+
+fn fmt_toml_value(value: &str) -> String {
+    if value.starts_with('"') && value.ends_with('"') {
+        value.replace('\\', "\\\\")
+    } else if value.starts_with('[')
+        || value.parse::<f64>().is_ok()
+        || value == "true"
+        || value == "false"
+    {
+        value.to_string()
+    } else {
+        format!("\"{}\"", value.replace('\\', "\\\\"))
+    }
+}
+
 pub fn scout(cwd: &Path) -> Command {
     let mut c = Command::new(BIN);
     c.current_dir(cwd);
@@ -144,8 +195,6 @@ pub fn rpc_ready(ws: &Path) -> bool {
         "1",
         "--limit",
         "1",
-        "--output",
-        "json",
     ]);
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }
@@ -169,7 +218,7 @@ fn strip_ansi(s: &str) -> String {
     while let Some(c) = chars.next() {
         if c == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
-            while let Some(n) = chars.next() {
+            for n in chars.by_ref() {
                 if n.is_ascii_alphabetic() {
                     break;
                 }

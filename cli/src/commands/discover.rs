@@ -168,7 +168,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     // RPC is required for on-chain legs and for health_check (even in remote-only mode).
     // init_rpc will use public fallbacks if no URL is configured, so it never
     // hard-fails just because user didn't set --rpc in remote mode.
-    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
 
     // ── Block range — not needed for pure remote mode ──

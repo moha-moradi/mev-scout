@@ -274,4 +274,40 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     })
 }
 
+/// Validate config for the `live` subcommand.
+///
+/// Like [`validate_and_resolve`] but skips the block-range check —
+/// live mode auto-detects the chain tip at runtime.
+pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
+    let (chain_name, chain_config) = resolve_chain(config)?;
+
+    let provider: FlashLoanProvider = config.backtest.flash_loan_provider.parse().map_err(|e| {
+        ConfigError::Validation(format!("{e}"))
+    })?;
+
+    let strategies: Vec<Strategy> =
+        Strategy::from_comma_list(&config.backtest.strategies)
+            .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+
+    if let Some(url) = &config.rpc.rpc_url {
+        validate_rpc_url(url)?;
+    }
+    if !config.rpc.rpc_urls.is_empty() {
+        validate_rpc_urls(&config.rpc.rpc_urls)?;
+    }
+
+    let gas_model: GasModel = config.gas.gas_model.parse().map_err(|e| {
+        ConfigError::Validation(format!("{e}"))
+    })?;
+
+    Ok(ValidationResult {
+        chain_name,
+        chain_config,
+        range_mode: RangeMode::Single(0),
+        strategies,
+        flash_loan_provider: provider,
+        gas_model,
+    })
+}
+
 

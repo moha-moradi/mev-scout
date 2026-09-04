@@ -3,10 +3,13 @@
 //! Exercises the full CLI path against a live Polygon RPC:
 //! RPC init → range resolution → fetch → pool init → backtest → JSON export.
 //!
-//! Skipped unless BOTH are set:
-//!   - `MEV_SCOUT_E2E=1`  (opt-in flag; keeps the default test run offline)
-//!   - `RPC_URL`          (Polygon RPC endpoint)
+//! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL is read from the
+//! `rpc_urls[0]` entry of `mev-scout.toml` at the workspace root (no env var
+//! required; override with `RPC_URL` if you want a different endpoint).
 
+mod common;
+
+use common::{first_rpc_url, temp_config, temp_ws};
 use std::process::{Command, Stdio};
 
 const BIN: &str = env!("CARGO_BIN_EXE_mev-scout");
@@ -24,33 +27,33 @@ fn cli_real_run_smoke() {
 
     let rpc = match std::env::var("RPC_URL") {
         Ok(url) => url,
-        Err(_) => {
-            skip("RPC_URL must be set when MEV_SCOUT_E2E=1");
-            return;
-        }
+        Err(_) => match first_rpc_url() {
+            Some(url) => url,
+            None => {
+                skip("could not read first RPC URL from mev-scout.toml; set RPC_URL to override");
+                return;
+            }
+        },
     };
 
-    let export = std::env::temp_dir().join(format!("mev_scout_cli_e2e_{}", std::process::id()));
+    let export = temp_ws("cli_e2e").join("export");
     let db = export.join("cache.db");
     std::fs::create_dir_all(&export).unwrap();
 
+    let ws = temp_ws("cli_e2e");
+    let cfg_path = temp_config(
+        &ws,
+        &[
+            ("rpc_urls", &format!("[\"{rpc}\"]")),
+            ("strategies", "\"two_hop_arb\""),
+            ("output", "\"json\""),
+            ("export_path", export.to_str().unwrap()),
+            ("db_path", db.to_str().unwrap()),
+        ],
+    );
+
     let mut cmd = Command::new(BIN);
-    cmd.args([
-        "--quiet",
-        "run",
-        "--blocks",
-        "1",
-        "--strategies",
-        "two_hop_arb",
-        "--output",
-        "json",
-        "--export-path",
-        export.to_str().unwrap(),
-        "--db-path",
-        db.to_str().unwrap(),
-        "--rpc",
-        &rpc,
-    ]);
+    cmd.args(["--quiet", "-f", cfg_path.to_str().unwrap(), "run", "--blocks", "1"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 

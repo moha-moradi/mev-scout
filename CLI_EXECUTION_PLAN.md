@@ -24,7 +24,7 @@
   `scan`, `replay`, `run`, `live`, `report`.
 - `mev-scout.toml` at repo root is auto-loaded by `main.rs`; contains 9 RPC
   providers (3× Alchemy, 2× drpc, 4× GetBlock), per-provider RPS 10–15
-  (~100 RPS aggregate). All commands run without `--rpc` from repo root.
+  (~100 RPS aggregate). All commands are config-driven; no RPC flags exist.
 - `live` currently supports only one-shot or infinite `--loop` (Ctrl+C).
   **There is NO duration limit → must be added (Phase 4).**
 - **Opportunity-loss bug** in `run_loop`
@@ -41,8 +41,8 @@
 - **Duration format:** humantime suffixes (`90s`, `15m`, `1h`).
 - **Discovery scope:** remote+enrich first (GeckoTerminal/DexScreener union,
   top ~1000 pools), then incremental on-chain pass since last cached block.
-- **Priority fee:** verify with a realistic `--priority-fee 30` (not the 1
-  gwei default that overstates profit).
+- **Priority fee:** `priority_fee_gwei = 30` baked into `mev-scout.toml`
+  (config-first; the 1 gwei CLI default that overstated profit is removed).
 - **Security note (out of scope but flagged):** API keys are committed in
   `mev-scout.toml`; consider env vars / gitignored local file later.
 
@@ -52,15 +52,14 @@ Not missing opportunities:
 1. Broad hybrid discovery + `validate-pools` recall check before trusting
    downstream results (bigger pool universe = log-first fetch covers more).
 2. Fix live-loop skip-on-failure bug so no block is silently dropped.
-3. Keep `--min-profit-wei 0` during verification so nothing is filtered;
-   calibrate threshold afterwards from observed dust distribution.
+3. Keep `min_profit_wei = 0` in the config during verification so nothing is
+   filtered; calibrate threshold afterwards from observed dust distribution.
 
 Profit not overstated:
 1. `historical_exact` gas model for backtests (default), `live` gas model for
    live mode (default).
-2. Realistic `--priority-fee 30` for all Polygon verification runs.
-3. Always attach `--fact-check --evm-fact-check` on `run`.
-4. Treat every reported profit as an upper bound (winning-bid premium = 0);
+2. Realistic `priority_fee_gwei = 30` set in `mev-scout.toml` (config-first, no flag needed).
+3. Treat every reported profit as an upper bound (winning-bid premium = 0);
    optionally use core's gas-calibration system later.
 
 ---
@@ -76,7 +75,7 @@ target\release\mev-scout.exe config        # verify resolved RPCs, chain=polygon
 ## Phase 1 — Data foundation (discovery unbounded)
 
 ```powershell
-mev-scout tokens --filter tvl --top 50 --cache-only
+mev-scout tokens --cache-only
 mev-scout discover --source remote --enrich --max-pools 1000
 mev-scout discover --source hybrid --enrich --incremental
 mev-scout validate-pools --json          # record recall before proceeding
@@ -93,10 +92,13 @@ mev-scout replay --block <active-recent-block> --analyze   # single block
 ## Phase 3 — RUN verification (heart #1, ≤10 blocks)
 
 ```powershell
-mev-scout run --blocks 10 --strategies all `
-  --priority-fee 30 --fact-check --evm-fact-check `
-  --output json --export-path results\polygon
+mev-scout run -f configs/backtest.toml --blocks 10
 ```
+
+Profile `configs/backtest.toml` = repo `mev-scout.toml` plus
+`output = "json"` and `export_path = "results/polygon"`.
+No chain/RPC/gas flags exist — everything is config-driven; use `-f` to
+switch profiles.
 
 Verification steps:
 - `run_*.json` produced with `chain=polygon` and valid numeric block range
@@ -120,10 +122,15 @@ Verification steps:
 ## Phase 5 — LIVE verification (heart #2, timed soak)
 
 ```powershell
-mev-scout live --loop --duration 15m --min-profit-wei 0 --priority-fee 30
+mev-scout live -f configs/live.toml --loop --duration 15m
 # optional extended soak:
-mev-scout live --loop --duration 1h --min-profit-wei 0 --priority-fee 30
+mev-scout live -f configs/live.toml --loop --duration 1h
 ```
+
+Profile `configs/live.toml` = repo `mev-scout.toml` plus
+`gas_model = "live"` (config-only; backtests keep `historical_exact`),
+`priority_fee_gwei = 30`, `min_profit_wei = 0`, `output = "json"`.
+No chain/RPC/gas flags exist — everything is config-driven.
 
 Pass criteria:
 - Blocks processed contiguously (no "Fetch failed" skips in output).
@@ -131,7 +138,7 @@ Pass criteria:
 - JSON results accumulate under export path (`live_*.json`).
 - Any live-found opportunity is reproducible via
   `replay --block <same-block>` (live path ↔ replay path consistency).
-- Afterwards: `mev-scout report --output json` to inspect saved runs.
+- Afterwards: `mev-scout report -f configs/live.toml` to inspect saved runs.
 
 ---
 

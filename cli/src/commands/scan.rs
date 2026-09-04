@@ -10,7 +10,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
     let (chain_name, _chain_config) = validation::resolve_chain(config)
         .context("failed to resolve chain")?;
 
-    let setup = init_rpc(config, chain_name.clone(), true).await?;
+    let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
 
     let resolver = mev_scout_core::resolver::RangeResolver::new(rpc.clone());
@@ -49,7 +49,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
             )
             .await
             .context("trade scan failed")?;
-            print_trades(&trades, args);
+            print_trades(&trades, args, config.output.output.as_str());
         }
         ScanKind::Transfers => {
             let min_value = args
@@ -79,7 +79,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
                 .await
                 .context("transfer scan failed")?
             };
-            print_transfers(&transfers, args);
+            print_transfers(&transfers, args, config.output.output.as_str());
         }
         ScanKind::Flashloans => {
             let loans = mev_scout_core::chain::flashloans::scan_flash_loans(
@@ -91,7 +91,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
             )
             .await
             .context("flash loan scan failed")?;
-            print_flash_loans(&loans, args);
+            print_flash_loans(&loans, args, config.output.output.as_str());
         }
         ScanKind::Liquidations => {
             let liqs = mev_scout_core::chain::liquidations::scan_liquidations(
@@ -103,7 +103,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
             )
             .await
             .context("liquidation scan failed")?;
-            print_liquidations(&liqs, args);
+            print_liquidations(&liqs, args, config.output.output.as_str());
         }
         ScanKind::Labels => {
             let db = mev_scout_core::chain::labels::LabelDb::load();
@@ -123,14 +123,14 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &ScanArgs) {
+fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &ScanArgs, out: &str) {
     let items: Vec<_> = if args.limit > 0 {
         trades.iter().take(args.limit).collect()
     } else {
         trades.iter().collect()
     };
 
-    match args.output.as_str() {
+    match out {
         "json" => {
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
@@ -163,14 +163,14 @@ fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &Sca
     }
 }
 
-fn print_transfers(transfers: &[mev_scout_core::chain::events::TransferEvent], args: &ScanArgs) {
+fn print_transfers(transfers: &[mev_scout_core::chain::events::TransferEvent], args: &ScanArgs, out: &str) {
     let items: Vec<_> = if args.limit > 0 {
         transfers.iter().take(args.limit).collect()
     } else {
         transfers.iter().collect()
     };
 
-    match args.output.as_str() {
+    match out {
         "json" => {
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
@@ -203,14 +203,14 @@ fn print_transfers(transfers: &[mev_scout_core::chain::events::TransferEvent], a
     }
 }
 
-fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], args: &ScanArgs) {
+fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], args: &ScanArgs, out: &str) {
     let items: Vec<_> = if args.limit > 0 {
         loans.iter().take(args.limit).collect()
     } else {
         loans.iter().collect()
     };
 
-    match args.output.as_str() {
+    match out {
         "json" => {
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
@@ -248,14 +248,14 @@ fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], ar
     }
 }
 
-fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], args: &ScanArgs) {
+fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], args: &ScanArgs, out: &str) {
     let items: Vec<_> = if args.limit > 0 {
         liqs.iter().take(args.limit).collect()
     } else {
         liqs.iter().collect()
     };
 
-    match args.output.as_str() {
+    match out {
         "json" => {
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
