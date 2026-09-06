@@ -488,10 +488,12 @@ CREATE INDEX swaps_pool ON swaps(pool, block_number);
 -- (a.k.a. mev_events in the earlier classifier-oriented plan; mev_ops is canonical here.)
 CREATE TABLE mev_ops(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  block_number INTEGER NOT NULL, tx_hash TEXT NOT NULL, ts INTEGER NOT NULL,
+  block_number INTEGER NOT NULL, tx_index INTEGER, tx_hash TEXT NOT NULL, ts INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK(kind IN ('arb_atomic','sandwich','liquidation','jit','jit_arb','unknown')),
   eoa TEXT NOT NULL, contract TEXT,                 -- searcher clustering target
   confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
+  canonical_id TEXT,                                -- explorer-side canonical form (§11.1.1 item 0);
+                                                    -- enables T1 join to opportunity.canonical_id
   profit_token TEXT, profit_amount TEXT, profit_usd REAL,
   gas_cost_usd REAL, net_profit_usd REAL,
   route_json TEXT,                                  -- [{pool,dex,token_in,token_out,amount_in,amount_out}]
@@ -501,6 +503,7 @@ CREATE TABLE mev_ops(
 CREATE INDEX mev_ops_block ON mev_ops(block_number);
 CREATE INDEX mev_ops_sender ON mev_ops(eoa, block_number);
 CREATE INDEX mev_ops_kind_ts ON mev_ops(kind, ts);
+CREATE INDEX mev_ops_canonical ON mev_ops(canonical_id);
 
 CREATE TABLE labels(
   address TEXT PRIMARY KEY, kind TEXT, name TEXT, entity TEXT,
@@ -523,7 +526,8 @@ CREATE TABLE blocks_classified(
 
 Sandwich representation: one `mev_ops` row per bundle with victim hashes + legs in
 `victim_hashes`/`details_json` (MevBundle), or per-leg rows sharing a bundle id — decided at
-implementation time.
+implementation time. When bundling: `tx_index` = front-run tx index (bundle anchor); full leg
+indices live in `details_json`.
 
 Aggregate views (daily counts, per-kind profit, sender leaderboards, most profitable token) are SQL
 views in the store, queried by the reporting commands. Token metadata (decimals/symbol) reuses
@@ -545,7 +549,9 @@ CREATE TABLE opportunities(
   gas_cost_wei TEXT, path TEXT,
   timestamp INTEGER, mempool_only INTEGER, confidence TEXT,
   sender TEXT,
-  canonical_id TEXT                                 -- L9 dedup key (compute_canonical_id)
+  tx_hash TEXT,                                   -- actual extractor tx, when known (§11.1.1)
+  detection_path TEXT,                            -- replay | log_only | pending (see note below)
+  canonical_id TEXT                               -- L9 dedup key (compute_canonical_id)
 );
 CREATE INDEX opportunities_block ON opportunities(chain, block_number);
 CREATE INDEX opportunities_canonical ON opportunities(canonical_id);
@@ -554,8 +560,50 @@ CREATE INDEX opportunities_canonical ON opportunities(canonical_id);
 - Insert from `ResultsFile`; the shared save path of `run`/`live` writes here too (keep the existing
   JSON export as-is).
 - Query by range / sender / token / window.
+- **`sender` and `tx_hash` require a struct change.** Neither field exists on `MevOpportunity`
+  today (opportunity.rs:16-86) — `sender` is dropped at every detector construction site and there
+  is no `tx_hash` at all. Sender-based joins and tx-granularity matching are **impossible without
+  adding these fields** and threading them through the runner stamping (§4.3). Phase 0 must scope
+  this struct change as a prerequisite of §11, not an optional nicety.
+- **`detection_path` exists because `run` and `live` are not equivalent.** `live`'s log-only
+  synthesis path (runner.rs:566-662) produces **only** TwoHop/MultiHop arb — sandwich/JIT/JitArb/
+  liquidation are skipped. Recording `replay | log_only | pending` per opportunity makes a
+  `run`-vs-`live` gap attributable to *algorithmic path coverage*, not to M7 scanner-ran-never
+  coverage. `validate` must not assume the two are interchangeable.
 
-### 9.3 Storage discipline & retention
+### 9.3 Rejection capture (`rejected_candidates` table)
+
+Cross-validation of false negatives ("explorer saw a realized op; scanner reported nothing") is
+only explainable if the scanner's **negative space** is observable. Today `run`/`live` discard
+candidates that fail quoting/gas/threshold filters, so a true coverage gap is indistinguishable
+from a filtered candidate. Opt-in debug recording closes this:
+
+```sql
+CREATE TABLE rejected_candidates(
+  run_id TEXT, chain TEXT,
+  block_number INTEGER NOT NULL, tx_index INTEGER,
+  strategy TEXT NOT NULL,
+  pool_a TEXT, pool_b TEXT, path TEXT,
+  token_in TEXT, token_out TEXT,
+  input_amount TEXT, expected_profit TEXT,
+  expected_profit_usd REAL, gas_cost_wei TEXT,
+  reject_reason TEXT NOT NULL,        -- no_pool | no_path | quote_nonpositive | below_min_profit |
+                                      -- gas_dominates | state_stale | sim_failed | other
+  detail TEXT,                        -- free-form context (e.g. computed profit vs threshold)
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX rejected_block ON rejected_candidates(chain, block_number);
+CREATE INDEX rejected_reason ON rejected_candidates(reject_reason);
+```
+
+- Populated by `run --record-rejections` / `live --record-rejections` (debug flag, default off to
+  bound write volume; recommended ON for any window later fed to `explorer validate`).
+- `explorer validate` degrades gracefully to block-level recall only when rejections are absent
+  for the window (§11.1.2).
+- Retention: mirrors the `opportunities` policy; prune or aggregate rows older than the
+  validation horizon.
+
+### 9.4 Storage discipline & retention
 
 - The backfill classifies in-stream and persists **only** extracted facts (`mev_ops`, `swaps`,
   checkpoints) — **not** raw receipts/logs. Raw-receipt caching of 1.3M Polygon blocks would bloat
@@ -618,11 +666,28 @@ mev-scout explorer show <TX_HASH> [--trace]
     --trace: on-demand debug_traceTransaction (prestateTracer diffMode) → exact profit
     recompute → stores verified=true + corrected numbers on the event.
 
+mev-scout explorer explain <TX_HASH>
+    Per-miss drill-down (false-negative triage): shows the realized op next to the scanner's
+    closest recorded candidates (`rejected_candidates`) for the same block, the inferred miss
+    cause (§11.1.2), and a deep-verification path via `explorer show <TX> --trace`.
+
 mev-scout explorer validate [--since 7d] [--strategy all] [--run <id>] [--live <id>] […]
+                            [--match-window N] [--tier-2] [--threshold-sweep] [--rerun-misses]
+                            [--emit-missing-pools]
     Cross-validation: join on-chain extracted ops (ground truth) vs `run`/`live` opportunity
-    detections cached in results/ + the opportunities table → recall, missed-value USD,
-    false-positive rate, profit calibration, time-to-extraction by competitors. Output feeds
-    the weekly report (`report` command) as a new section. (Methodology: §11.)
+    detections cached in results/ + the opportunities table → recall (count- and USD-weighted),
+    missed-value USD, false-positive disambiguation, profit calibration, time-to-extraction by
+    competitors, missing-pool report. Output feeds the weekly report (`report` command) as a new
+    section. (Methodology: §11.)
+    --match-window N   match opportunities to realized ops within ±N blocks (default 0 for `run`
+                       backtests; 1 recommended for `live`, whose pending-block opportunities may
+                       land in the next block — §11.1.1).
+    --tier-2           include pool-overlap+profit-token matches in headline recall (§11.1.1).
+    --threshold-sweep  report recall (count + USD) as a function of the min-profit threshold.
+    --rerun-misses     re-execute the scanner (debug, rejections recorded) over the top-N missed
+                       blocks by USD to attach per-miss causes (§11.1.2).
+    --emit-missing-pools  write pools seen in realized ops but absent from `PoolManager`
+                       (config/coverage gap → feeds chains.toml / pool discovery).
 
 mev-scout explorer export --format json|csv --since … [--kinds …] [--out FILE]
     Bulk export for external analysis (Dune-style notebooks).
@@ -663,6 +728,98 @@ Report dimensions:
 
 Discrepancies must be explainable: each >1% miss gets a categorized cause in the weekly report
 (new section produced by `report`).
+
+### 11.1.1 Matching rules (anti-blindness for recall)
+
+Recall is only as trustworthy as the join. The blindness modes below must be handled explicitly:
+
+0. **The join key is not yet defined on the explorer side — T1 is aspirational until it is.**
+   `canonical_id` (opportunity.rs:90-114) is a *block-agnostic, sender-agnostic* dedup string built
+   from simulated pools/route; it is **not** a handshake key two pipelines can compare unless both
+   compute it from the **same canonical route facts**. Phase 0 must pin an **explorer-side canonical
+   form** — a function `MevEvent(route, pools, tokens, kind) → canonical_id` mirroring
+   `compute_canonical_id` over *realized* flows (first/last pool + endpoint tokens; for sandwich the
+   victim/backrun block-tx indices; for JIT the tick range; for liquidation the borrower+liquidator
+   pair rather than asset pair). Until that function exists and is shown to overlap `run`/`live`
+   IDs, T1 is empty and only T2/T3 are meaningful. This is the linchpin Phase 0 must confirm, and
+   it cannot be confirmed until the explorer classifier emits its own canonical string (§8.1/§8.2).
+1. **Identity joins undercount.** `canonical_id` is computed from opportunity simulation
+   (pools/route), while explorer ops are reconstructed from realized flows — routes rarely match
+   exactly (searchers use different hops/routers). Report recall at **three tiers**, never merge
+   them:
+   - **T1 exact**: same canonical_id (+ block).
+   - **T2 overlap**: pool overlap ≥1 + same profit token + block within match window.
+   - **T3 block-level**: any op of the same kind in the same block (upper bound; always reported,
+     since unattributed multi-hop arbs can mask identity).
+   Headline recall = T1∪T2 (per-type); T3 shown as the ceiling with the T2→T3 gap attributed to
+   route-attribution limits (§15.2.1), not scanner blindness.
+
+2. **Latency skew for `live`.** `live` detects opportunities on the *pending* block; execution
+   lands in block N+1..N+k. Default match window for `live`-based recall: ±1 block
+   (`--match-window`), and pending-only opportunities (`mempool_only=1`) must not be counted as
+   misses for realized ops the scanner never had state for.
+3. **One-to-many and many-to-one.** A scanner opportunity may be realized as several explorer ops
+   (multiple bots race the same edge) and vice versa (bundled multi-strategy tx). Join on
+   (block, kind, pool-set) with explicit 1:N/N:1 marking in the report; never dedupe silently —
+   races *are* the signal for time-to-extraction.
+4. **Match on native units; convert to USD only at the report layer.** The scanner's
+   `expected_profit` is **gross, pre-gas, normalized to a native/token unit** (opportunity.rs:39)
+   with **estimated** gas; the explorer's is a **net USD** figure from receipt-observed
+   `gas_used × effectiveGasPrice` (plan §8.2.5-6). These are not directly comparable. The join and
+   profit calibration (magnitude comparison, §11.1) must be done in **token/native units** on
+   matched (block, kind, pool-set, profit-token); USD conversion applies only at the aggregation
+   and USD-weighted-recall (§11.1.3) layers. A **gas-model calibration** column (`expected
+   gas_cost_wei` vs realized `gas_cost_usd`) is required, since gas is the single largest noise
+   source between the two views — feed it to M4 and the `--threshold-sweep` operating point.
+
+### 11.1.2 False-negative (miss) taxonomy — the core diagnostic
+
+The question "backtest said no opportunity, explorer says one happened" decomposes into a
+**disjoint, exhaustive cause set**; every missed realized op gets exactly one category, and the
+weekly report shows the distribution. This is what turns recall from a number into an
+improvement loop.
+
+| Cause | Definition | Detection signal | Fix owner |
+|---|---|---|---|
+| **M1 pool-gap** | A pool in the realized route is absent from `PoolManager` (not in chains.toml / discovery). Scanner never saw the edge. | `--emit-missing-pools` report: realized-op pools ∩ ¬PoolManager | config / pool discovery |
+| **M2 fee-tier / venue-gap** | Pool known but wrong fee tier, or venue class not supported (Curve/Balancer/LB on non-ETH chains). | missing-pool report filtered to venue class | config / decoders |
+| **M3 pricing/threshold** | Opportunity was detectable but estimated profit fell below `min_profit_usd`, or USD pricing error (long-tail token) pushed it under. | rejected_candidates with reason `below_min_profit` / `quote_nonpositive` matching the realized op's pool+block; threshold sweep curve | config / pricing |
+| **M4 gas-model error** | Estimated gas cost exceeded true cost (or vice versa) → candidate killed by `gas_dominates`. | rejected reason `gas_dominates` vs realized gas_cost_usd delta | gas model |
+| **M5 quote/AMM-math error** | Quote engine's expected output diverges from realized amounts on the same pools (state drift, wrong fee, tick math). | rejected `quote_nonpositive` where realized op shows positive profit on same pool set; calibration curve tail | pool math |
+| **M6 competition / latency** | Opportunity existed and was even detected by us, but a racer extracted it first within the same block — a *detection success, execution miss*. | matched T1/T2 opportunity with competitor's realized op in same block; time-to-extraction metric | execution layer (out of explorer scope; reported) |
+| **M7 scanner coverage** | Scanner never ran over the block (gaps in `opportunities`/results coverage for the window). | blocks_classified ∩ ¬opportunities-coverage; gap report | pipeline / ops |
+| **M8 false-ground-truth** | Explorer itself mis-attributed (e.g. `unknown`-bucket noise, wrap noise) — the "miss" is explorer error. | sampled audit of misses; `show --trace` verification on top-USD misses | classifier |
+
+Rules:
+
+- **Disjointness:** classification order M1→M8 (first match wins); documented so counts sum to the
+  miss total.
+- **No rejections recorded ⇒ cause `unknown-coverage`**, reported separately — never silently
+  bucketed into M3/M5 (§9.3).
+- **Sampling discipline:** manual audit required for the top-N misses by USD per week (≥20 or 10%,
+  whichever smaller) — keeps M8 honest.
+- Every M-category maps to a concrete owner in the roadmap (§14 Phase 5 acceptance extends to:
+  "each >1% miss has a cause **and** the M-distribution is printed").
+
+**Ground-truth trust bound:** M8 implies recall computed here is a *lower bound* only if explorer
+false negatives are bounded too. Add a reciprocal audit: sample blocks the scanner flagged as
+profitable where the explorer found nothing (precision-signal set, §11.1) and hand-check a few —
+if the explorer missed them, both directions undercount and the headline numbers must carry that
+caveat.
+
+### 11.1.3 Recall that matters: USD-weighted, threshold-swept, over time
+
+- **Count-recall flatters trivial ops.** Primary metric: **USD-weighted recall**
+  (realized profit USD captured by matched opportunities ÷ total realized profit USD). A scanner
+  catching 90% of ops but 30% of value is worse than the inverse — report both.
+- **Threshold sweep:** recall(count) and recall(USD) as a function of `min_profit_usd`
+  (`--threshold-sweep`), so the operator picks the operating point on the curve instead of
+  guessing. Expected shape: recall(USD) ≫ recall(count) at high thresholds.
+- **Recall over time:** bucket recall by week — a degrading trend is the earliest signal of pool
+  drift (new venues appearing) before USD numbers make it obvious.
+- **Asymmetry note:** realized MEV has survivorship bias (only *profitable* extractions land);
+  the scanner sees unprofitable candidates too. Never compare scanner opportunity counts to
+  explorer op counts directly — always via the M-taxonomy and matched sets.
 
 ### 11.2 External ground truth (Avalanche)
 
@@ -843,7 +1000,11 @@ classifier code from Phase 1 onward is chain-agnostic; re-targeting a chain is c
 - Prerequisite confirmations: which fields are populated in `MevOpportunity` per strategy (profit,
   path, sender availability); receipt data (tx `from`) present in the SQLite store for leaderboard
   sender resolution; `canonical_id` stability across `run` vs `live` vs `explorer` for the same
-  block (linchpin of `validate`); assess whether per-chain EVM spec mapping is needed for the
+  block (linchpin of `validate`); **scope the `MevOpportunity` struct change to add `sender` +
+  `tx_hash` + `detection_path`** (absent today, required for tx-granularity join and sender-based
+  metrics, §9.2); **whether `run`/`live` can emit rejected candidates with a
+  reason enum today (reject-side instrumentation for miss attribution, §9.3/§11.1.2 — if not,
+  scope the hook as part of Phase 1)**; assess whether per-chain EVM spec mapping is needed for the
   historical windows of interest (baseline with recent blocks first).
 - (If Avalanche-first, §16 D2) Baseline Avalanche `stats`/`top` snapshot against explorer.mev.zone
   public stats to calibrate definitions (profit units, sender = tx `from`, period bucketing).
@@ -854,8 +1015,16 @@ classifier code from Phase 1 onward is chain-agnostic; re-targeting a chain is c
 - `explorer::ingest` + `explorer::store` (schema §9), reorg handling, resume, checkpointing.
 - Decode: swaps + transfers + liquidation events for Polygon factories; decoder additions (raw
   ERC-20 Transfer + per-protocol liquidation registry, §8.4).
-- `opportunities` results table + migration in `core/src/cache/store/`; insert from `ResultsFile`;
-  update the shared save path so `run`/`live` results also land in the table.
+- `opportunities` results table + `rejected_candidates` table (§9.3, §9.4) + migration in
+  `core/src/cache/store/`; insert from `ResultsFile`; update the shared save path so `run`/`live`
+  results also land in the table, and `run`/`live --record-rejections` persists filtered
+  candidates (the negative space `validate` needs for miss attribution, §11.1.2).
+- **`MevOpportunity` struct change**: add `sender`, `tx_hash`, and `detection_path` (§9.2) and
+  thread them through the runner stamping — prerequisite for tx-granularity join / sender metrics
+  and for attributing `run`-vs-`live` coverage differences.
+- **`mev_ops` must carry `canonical_id`** (§9.1) computed by the explorer-side canonical form
+  (§11.1.1 item 0) so T1 matching is actually computable; register the canonical-form function here,
+  not deferred to Phase 5.
 - **Done when:** `explorer index --from -50000 --to -1000` completes idempotently on mainnet
   Polygon; `swaps` counts match a manual `eth_getLogs` sample within 0%; `run`/`live` results are
   persisted to the `opportunities` table.
@@ -888,14 +1057,19 @@ classifier code from Phase 1 onward is chain-agnostic; re-targeting a chain is c
 
 - `explorer validate`: canonical_id joins + realized-vs-opportunity recall/precision/calibration
   report (§11.1); weekly report section.
+- **Miss taxonomy implementation** (§11.1.2): M1–M8 attribution engine + `explorer explain <TX>`;
+  missing-pool report; USD-weighted + threshold-swept recall (§11.1.3).
+- Rejection capture live in `run`/`live` (`--record-rejections` → `rejected_candidates`, §9.3).
 - External ground-truth pass on Avalanche per §11.2 (moves earlier if Avalanche-first sequencing is
   chosen, §16 D2).
 - Documentation deliverable: `docs/explorer-design.md` — the classification methodology written out
   (pattern definitions, heuristics, confidence scoring, known blind spots, per-chain adaptation
   notes). Writing the rules down enforces the "understand how these systems work" goal.
 - **Done when:** the weekly report includes recall/missed-value/latency per strategy and
-  discrepancies are explainable (each >1% miss has a categorized cause); §11.2 agreement thresholds
-  met on the Avalanche sample (if executed); `validate` produces the §11 report for any existing run.
+  discrepancies are explainable (each >1% miss has a categorized M1–M8 cause and the cause
+  distribution is printed); §11.2 agreement thresholds met on the Avalanche sample (if executed);
+  `validate` produces the §11 report for any existing run; `explorer explain` reconstructs a cause
+  for ≥80% of the top-20 missed ops by USD on a sampled Polygon window.
 
 ### Phase 6 — Chain rollout + verification (config-only per chain)
 
@@ -954,6 +1128,11 @@ classifier code from Phase 1 onward is chain-agnostic; re-targeting a chain is c
    features would undercount on Ethereum/BSC relative to Polygon/Avalanche.
 6. **Labeled-bot dependence for pretty output.** Unlabeled searchers still classify fine (addresses
    are primary keys); labels are UX sugar, not load-bearing for the math.
+7. **Ground truth is one-sided.** The explorer sees only *landed, profitable* extractions
+   (survivorship bias): an opportunity our scanner found that nobody extracted is invisible to it,
+   and mis-attributed ops (M8, §11.1.2) can fake misses. Cross-validation numbers are therefore
+   bounded estimates, not exact — the reciprocal audit (§11.1.2) and `--trace` verification keep
+   both directions honest.
 
 ---
 
@@ -971,6 +1150,10 @@ classifier code from Phase 1 onward is chain-agnostic; re-targeting a chain is c
 | D8 | Scope of period stats: aggregate persisted results only, or also *run* backtests on demand over N days when no results exist? | Aggregate persisted results first; add on-demand backfill as an option |
 | D9 | Cross-validation input: restrict to `run` vs `live` `ResultsFile`s, or allow arbitrary N result files over a range? | Arbitrary N, defaulting to the two most recent `run` + `live` files |
 | D10 | `explorer live` mode: store-tail feed (realized ops from the indexer; v1 default) vs mempool pending-capture feed (mev.zone pre-inclusion flavor; density chain-dependent, sparse on Avalanche) | Store-tail in v1; mempool mode optional later |
+| D11 | Rejection recording (`--record-rejections`) default-off everywhere, or on-by-default for `live`? | Default-off; auto-enable for windows later passed to `validate` (documented convention); retention per §9.3 |
+| D12 | Default match window + tier policy for `validate` | `run`: window 0, T1∪T2 headline; `live`: window ±1; T3 always printed as ceiling; overrides via flags (§11.1.1) |
+| D13 | Miss-taxonomy depth: full M1–M8 attribution for every miss, or only top-N by USD? | Full M1–M8 for all misses (cheap: store joins); manual audit sampling restricted to top-N by USD (§11.1.2) |
+| D14 | `MevOpportunity` struct change (`sender` + `tx_hash` + `detection_path`) — cross-cutting, touches 9 detector construction sites + runner stamping | Do it in Phase 1: required for tx-granularity join, sender metrics, and run-vs-live coverage attribution (§9.2, §11.1.1). Backward-compatible (new optional fields, default `None`); backfill only populates where known |
 
 ---
 
