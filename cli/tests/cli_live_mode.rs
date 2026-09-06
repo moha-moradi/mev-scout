@@ -1,66 +1,42 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_fail, expect_ok, repo_config, run_timed, scout, temp_config,
-    temp_ws, HEAVY_TIMEOUT, RPC_MUTEX,
+    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, newest_json_file, repo_config_str,
+    run_timed, rpc_lock, scout, temp_ws, HEAVY_TIMEOUT,
 };
 use serde_json::Value;
 use std::time::Duration;
 
-fn cfg() -> String {
-    repo_config().to_str().unwrap().to_string()
-}
-
-fn live_cfg(ws: &std::path::Path) -> String {
-    temp_config(
-        ws,
-        &[
-            ("priority_fee_gwei", "30"),
-            ("min_profit_wei", "0"),
-            ("output", "\"json\""),
-        ],
-    )
-    .to_str()
-    .unwrap()
-    .to_string()
-}
-
-fn newest_live_json(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let mut best: Option<(std::time::SystemTime, std::path::PathBuf)> = None;
-    for e in std::fs::read_dir(dir).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("live_") && name.ends_with(".json") {
-            let mtime = e.metadata().ok()?.modified().ok()?;
-            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
-                best = Some((mtime, e.path()));
-            }
-        }
-    }
-    best.map(|(_, p)| p)
+fn live_cfg(ws: &std::path::Path, extras: &[(&str, &str)]) -> String {
+    let mut all: Vec<(&str, &str)> = vec![
+        ("priority_fee_gwei", "30"),
+        ("min_profit_wei", "0"),
+        ("output", "\"json\""),
+    ];
+    all.extend_from_slice(extras);
+    make_cfg(ws, &all)
 }
 
 #[test]
 fn live_one_shot_smoke() {
+    let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("live1") else {
         return;
     };
-    let _guard = RPC_MUTEX.lock().unwrap();
     let results = ws.join("results");
     let results_s = results.to_str().unwrap();
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let cfg = live_cfg(&ws);
+    let cfg = live_cfg(
+        &ws,
+        &[
+            ("export_path", results_s),
+            ("db_path", db_s),
+        ],
+    );
     let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &cfg,
-        "live",
-        "--export-path",
-        results_s,
-        "--db-path",
-        db_s,
-    ]);
+    c.args(["-f", &cfg, "live"]);
     let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("live one-shot spawn failed");
     expect_ok(&out, "live one-shot");
 
@@ -75,7 +51,7 @@ fn live_one_shot_smoke() {
         out.stdout
     );
 
-    let file = newest_live_json(&results).expect("live must export live_*.json");
+    let file = newest_json_file(&results, "live_").expect("live must export live_*.json");
     let parsed: Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).expect("live_*.json parses");
     assert_eq!(parsed["range_mode"].as_str(), Some("live"));
@@ -85,16 +61,22 @@ fn live_one_shot_smoke() {
 
 #[test]
 fn live_loop_duration_graceful_exit() {
+    let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("loop30") else {
         return;
     };
-    let _guard = RPC_MUTEX.lock().unwrap();
     let results = ws.join("results");
     let results_s = results.to_str().unwrap();
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let pipeline = live_cfg(&ws);
+    let pipeline = live_cfg(
+        &ws,
+        &[
+            ("export_path", results_s),
+            ("db_path", db_s),
+        ],
+    );
     let mut c = scout(&ws);
     c.args([
         "-f",
@@ -105,10 +87,6 @@ fn live_loop_duration_graceful_exit() {
         "30s",
         "--poll-interval",
         "1000",
-        "--export-path",
-        results_s,
-        "--db-path",
-        db_s,
     ]);
     let out = run_timed(&mut c, Duration::from_secs(300)).expect("live loop spawn failed");
     expect_ok(
@@ -159,7 +137,7 @@ fn live_loop_duration_graceful_exit() {
 fn live_duration_without_loop_rejected_offline() {
     let ws = temp_ws("live_gate_offline");
     let mut c = scout(&ws);
-    c.args(["-f", &cfg(), "live", "--duration", "15m"]);
+    c.args(["-f", &repo_config_str(), "live", "--duration", "15m"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("spawn failed");
     expect_fail(&out, "live --duration without --loop");
     assert!(out.stderr.contains("--duration requires --loop"));

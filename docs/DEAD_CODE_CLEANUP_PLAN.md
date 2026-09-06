@@ -1,12 +1,27 @@
 # Dead Code Cleanup Plan
 
-**Goal:** Remove confirmed dead code (~800–900 lines), deduplicate gas constants, shrink the
-public API surface, and add guardrails so dead code cannot silently accumulate again.
+**Goal:** Remove confirmed dead code (~1,050–1,100 lines), deduplicate gas constants and event
+topic tables, shrink the public API surface, and add guardrails so dead code cannot silently
+accumulate again. (Original estimate was ~800–900 lines; the review below found ~250 more.)
 
 **Method behind this plan:** Every item below was verified by cross-referencing the definition
 against *all* call sites in the workspace (core lib, CLI bin, `core/tests`, `cli/tests`,
 `core/examples`). "No callers" means: no `rg` match for the identifier outside its own
 definition, its re-export lines, and its own in-file unit tests.
+
+> **Review note (2026-09):** A reviewer re-verified this plan against the codebase and ran
+> `cargo clippy --workspace --all-targets -- -W dead_code -W unused` as a cross-check. Two
+> important findings shape the plan:
+> 1. **The compiler cannot catch dead `pub` items in a lib crate** — `mev-scout-core`'s 71 lib
+>    warnings are all style lints; zero dead-code warnings surfaced for public API items. So the
+>    `rg`-based method here is the *only* way to find this dead code; the items below were all
+>    individually re-confirmed.
+> 2. The clippy dead-code noise that *does* show up is all in shared test helpers
+>    (`core/tests/common/setup.rs`, `cli/tests/common/mod.rs`) — but those are per-test-binary
+>    warnings, not global dead code (each binary compiles the shared module separately). Do not
+>    mass-delete those during this cleanup.
+> All items added by the review are tagged `(review)` so they are distinguishable from the
+> original list.
 
 **Ground rules:**
 - Execute phase by phase. Build + test after **every phase** before moving on.
@@ -50,6 +65,11 @@ actually uses).
 
 - [ ] Delete `core/src/mev/gas.rs`
 
+> **(review)** File is only ~20 lines. Note: it imports `crate::pool::state::calldata_gas_estimate`
+> — that function is **used** (detectors/jit.rs:290, jit_arb.rs:231, liquidation.rs:473,
+> multi_hop.rs:968, two_hop.rs:902, sandwich.rs:467) and must NOT be removed; it is unrelated to
+> this orphaned file.
+
 ### 1.2 Deduplicate `LIQUIDATION_GAS_LIMIT` in `core/src/mev/detectors/liquidation.rs:36`
 
 The file re-declares a private `const LIQUIDATION_GAS_LIMIT: u64 = 180_000;` even though
@@ -82,14 +102,25 @@ integration was never wired into the pipeline. Dead plumbing attached to it:
 
 ⚠️ Removing config fields changes the TOML schema for users who have them set (serde with
 `#[serde(default)]` tolerates *unknown* fields only if `deny_unknown_fields` is NOT set —
-verify `Config` doesn't set it; if it doesn't, removal is non-breaking for old TOML files).
+verified: no `deny_unknown_fields` anywhere in `core/src/config`, so removal is non-breaking
+for old TOML files).
 Also note a latent bug if wiring up later: `resolve_onchain_price()` hardcodes Ethereum
-mainnet stable-token addresses regardless of the `chain` parameter.
+mainnet stable-token addresses regardless of the `chain` parameter (coingecko.rs:191-195).
 
 **Alternative (wire up):** only worth it if USD pricing becomes a near-term feature; otherwise
 delete — git history keeps it.
 
-- [ ] Decision recorded: delete / wire up
+⚠️ **DECISION context (review):** `docs/EXPLORER_PLAN.md` (line 169) *and*
+`docs/EXPLORER_EXECUTION_PLAN.md` (lines 75, 268) both name `core/src/coingecko.rs` as the
+explorer's USD-pricing source. This is the same "reserved for explorer" treatment the plan
+grants `pipeline/aggregate.rs` (Phase 2.2). If the explorer command is moving forward, mark
+coingecko.rs `KEEP` (reserved) instead of deleting — otherwise Phase 2.2 and this deletion
+are inconsistent. If deleting, everything inside coingecko.rs goes with it (including
+`PriceEntry`, `coingecko_asset_id`, `coingecko_platform`, `get_or_fetch`), and remove the
+`PriceOracleMode`/`PriceSource`/`ExecutorType` entries from the `types/mod.rs:9-10`
+re-export list.
+
+- [ ] Decision recorded: delete / wire up / keep-as-reserved
 - [ ] Executed per decision
 
 ### 2.2 `core/src/pipeline/aggregate.rs` (~360 lines) — KEEP for now (explorer plan)
@@ -109,8 +140,10 @@ Evidence: `put_pending_txs()`, `count_pending_txs()`, `total_pending_txs()` have
 The `pending_txs` table is created in `core/src/cache/store/mod.rs:212-227` but never written
 or read (mempool processing (`mempool.rs::capture_pending_block` + runner) is in-memory only).
 
-- **Delete:** remove `pending.rs`, remove the `CREATE TABLE IF NOT EXISTS pending_txs (...)`
-  block from `mod.rs`. Existing DBs keep the orphan table harmlessly (no migration needed).
+- **Delete:** remove `pending.rs`, remove `pub mod pending;` (`store/mod.rs:12`), remove the
+  `pending` entry from the re-export list in `cache/mod.rs:4`, and remove the
+  `CREATE TABLE IF NOT EXISTS pending_txs (...)` block from `mod.rs`. Existing DBs keep the
+  orphan table harmlessly (no migration needed).
 - **Keep:** only if persisting mempool captures is a near-term goal (live mode currently
   discards them on restart).
 
@@ -154,9 +187,46 @@ Remove in small groups and build after each group.
 | 3.26 | `TokenCache::missing()` | `core/src/cache/token_cache.rs:138` | only its own test uses it — remove test too |
 | 3.27 | `block_timestamp_secs()`, `estimate_latest_block()` | `core/src/chain/timing.rs:35,45` | in-file tests removed too; **keep `chain_timing()`** — used by `core/tests/backtest.rs:71` |
 
+### Group D — additional dead code found during review (all verified caller-free) `(review)`
+
+> **Why it's safe to delete the DEX-related entries (3.28/3.29) — verified during review:**
+> the DEX feature surface is **already complete and fully wired**; the dead constants are pure
+> duplication from an older architecture, not unfinished features:
+> - **Pool discovery for every supported DEX is wired** — `pool/discovery/{v2,v3,v4,balancer,curve,
+>   solidly,camelot,trader_joe,pendle}.rs` are all called from `discover_pools` (discovery/mod.rs),
+>   and `pool/discovery/mod.rs` owns the canonical *pair-creation* topics (incl. Algebra/QuickSwap
+>   V3, which `chain/events.rs` doesn't even have).
+> - **Swap/Mint/Burn decoding is wired** — `pool/decoders.rs` (V3 mint/burn, Balancer swap, Curve
+>   swap) is used by `jit.rs`, `jit_arb.rs`, `sandwich.rs`, `apply.rs`, `manager.rs`; the
+>   `chain/events.rs` swap decoders are used by `chain/{trades,flashloans,liquidations,transfers}.rs`
+>   → CLI `scan`.
+> - **DEX quote math is wired** — `math/lb.rs`, `math/pendle.rs`, `math/stable_swap.rs`,
+>   `math/curve.rs`, `math/balancer.rs` are all reachable via `quote_exact_in` (math/core.rs:110,120).
+>
+> Deleting the duplicated consts loses **zero** functionality. The genuinely-*unfinished* feature
+> areas (the real "wire up vs. delete" decisions) are the non-DEX ones already flagged as
+> `DECISION` in this plan: coingecko/USD pricing (2.1), `pending_txs` persistence (2.3),
+> `output.parquet_dir` (4.5), explorer aggregation (2.2). If anything DEX-related looks incomplete,
+> it's the *hexic duplication itself* — addressed by the Phase 7 topic-table consolidation, not by
+> wiring up the dead copies.
+
+| # | Item | Location | Notes |
+|---|---|---|---|
+| 3.28 | orphaned topic consts: `V2_SYNC_TOPIC`, `V2_PAIR_CREATED_TOPIC`, `V3_MINT_TOPIC`, `V3_BURN_TOPIC`, `V3_POOL_CREATED_TOPIC`, `V4_INITIALIZE_TOPIC`, `BALANCER_SWAP_TOPIC`, `BALANCER_POOL_REGISTERED_TOPIC`, `SOLIDLY_PAIR_CREATED_TOPIC`, `CAMELOT_PAIR_CREATED_TOPIC`, `CURVE_POOL_ADDED_TOPIC`, `PENDLE_NEW_MARKET_TOPIC`, `TRADER_JOE_LB_PAIR_CREATED_TOPIC` | `core/src/chain/events.rs:21-139` | canonical copies live in `pool/decoders.rs`, `pool/discovery/mod.rs`, and `pipeline/scanner.rs::topics` — the chain copies have zero referencers (even in-file tests don't touch them). Keep the swap/flash/transfer topics + all `decode_*` fns (used by `trades.rs`/`flashloans.rs`/`liquidations.rs`/`transfers.rs` + `cli scan`) |
+| 3.29 | `CURVE_TOKEN_EXCHANGE_UNDERLYING`, `CURVE_V2_TOKEN_EXCHANGE_UNDERLYING` | `core/src/pool/discovery/mod.rs:118,121` | the used copies are `pipeline::scanner::topics` (referenced at mod.rs:582-583,825-826) |
+| 3.30 | `RpcClient::reset()` | `core/src/rpc/client.rs:184` | no callers |
+| 3.31 | `ProviderState::{mark_failed, rate_limiter, url, reset}` | `core/src/rpc/middleware.rs:200,128,160,206` | the only caller chain is itself (`RpcClient::reset` → `ProviderState::reset`); the live paths use `record_rate_limited`/`set_rate_limiter`/`label` |
+| 3.32 | `CacheError`, `SqliteError`, `RpcError`, `ReplayError` enums + `Error::{Rpc, Replay, Cache}` variants + `#[from]` impls | `core/src/error/{cache,rpc,replay}.rs`; `error/mod.rs:6-9,20-24` | never constructed — no `?`/`return` path builds them. Delete all three files (keep `error/config.rs`, used by validation.rs), drop the `pub use` lines and the three `Error` variants. Safe: deleting variants also removes the `From` impls, which nothing relies on |
+| 3.33 | `SqliteStore::list_manifests()` | `core/src/cache/store/manifests.rs:36` | `put_manifest`/`get_manifest` are used by cli `run.rs`/`fetch.rs` |
+| 3.34 | `TokenCache::save_all_to_sqlite()` | `core/src/cache/token_cache.rs:172` | cli uses `save_batch`/`load`/`merge` instead |
+| 3.35 | `PoolManager::{with_capacity, set_token_max_pairs, with_use_latest, get_v2_state}` | `core/src/pool/state/manager.rs:118,142,167,810` | live knobs: `new`, `set_max_pairs_per_token`, `set_use_latest`, `get_v3_state` (jit.rs) |
+| 3.36 | `V4HookFlags` + `classify()`/`modifies_swap()`/`modifies_liquidity()` | `core/src/pool/state/pool_types.rs:79-143` | also remove `V4HookFlags` from the re-export at `state/mod.rs:10` |
+| 3.37 | `FlashLoanProvider::priority_list()` | `core/src/types/strategy.rs:57` | ⚠️ **`gas_overhead()` is NOT dead — keep it** (used by `two_hop.rs:162`, `multi_hop.rs:340`) |
+
 - [ ] Group A: 3.1–3.9 removed, build green
 - [ ] Group B: 3.10–3.14 removed, build green
 - [ ] Group C: 3.15–3.27 removed, build green
+- [ ] Group D: 3.28–3.37 removed, build green
 
 ---
 
@@ -189,6 +259,11 @@ removed config keys (grep `token_prices|price_oracle_mode|parquet_dir`).
       redundant Option wrap; use `ps.info()` directly.
 - [ ] **5.4** `core/src/pool/math/consts.rs:6` — confirm `SQRT_RATIO_CACHE_CAPACITY` and other
       consts are all still referenced after Phases 1–4 (clippy will tell).
+- [ ] **5.5** `(review)` `core/src/fetch/fetcher.rs:163,473` — `parallelism.min(30).max(1)` →
+      `self.parallelism.clamp(1, 30)` (two identical spots). Nice-to-have; not dead code.
+- [ ] **5.6** `(review)` `core/tests/backtest.rs:198,359` — `let mut fetcher` doesn't need `mut`;
+      `core/tests/backtest.rs:290` — `stats` is unused (`_stats`). Harmless lint noise, fold
+      into the Phase 6 rewrite of that file.
 
 ---
 
@@ -196,11 +271,25 @@ removed config keys (grep `token_prices|price_oracle_mode|parquet_dir`).
 
 `cli/tests` is well-gated (`MEV_SCOUT_E2E=1` + `rpc_ready()` probe), but core integration
 tests silently fall back to the repo's `mev-scout.toml` RPCs and do live network I/O by
-default. Make them consistent:
+default. Make them consistent.
+
+⚠️ **(review)** The `config_rpc_url()` fallback is **duplicated locally in each test file**, not
+just in `common/setup.rs`:
+- `core/tests/e2e.rs:169-190` — own `rpc_url()` + `config_rpc_url()` (+ `public_rpc_url()` fallback, line 203)
+- `core/tests/backtest.rs:28-50` — own `rpc_url()` + `config_rpc_url()` (+ own `temp_test_dir`)
+- `core/tests/replay.rs`, `arbitrage.rs`, `sandwich.rs` — use `common::setup::rpc_url()` (which wraps `env_rpc_url()` + `config_rpc_url()`)
+
+So Phase 6 is bigger than one line: gate **e2e.rs and backtest.rs in-place**, then either
+convert `common/setup.rs::rpc_url()` to the gated form **or** delete the shared copies once no
+one uses them. Prefer: add `MEV_SCOUT_E2E=1`-style gating in each of the 4 entry points and
+delete the now-dead `config_rpc_url()`/`env_rpc_url()`/`rpc_url()` from `setup.rs` (and the
+duplicate local copies in e2e.rs/backtest.rs), keeping a single gated `rpc_url()` helper.
 
 - [ ] `core/tests/e2e.rs`, `core/tests/backtest.rs`, `core/tests/replay.rs` — require
       `RPC_URL` (or a `MEV_SCOUT_E2E=1` gate) instead of falling back to `config_rpc_url()`;
-      remove/repurpose `config_rpc_url()` in `core/tests/common/setup.rs:27` if unused after.
+      apply to `arbitrage.rs:408` and `sandwich.rs:211` too.
+- [ ] Remove/repurpose `config_rpc_url()` / `env_rpc_url()` / `rpc_url()` in
+      `core/tests/common/setup.rs:19-51` after the gating lands.
 - [ ] Document the gate at the top of each test file like `cli/tests/cli_e2e.rs` does.
 
 ---
@@ -209,8 +298,17 @@ default. Make them consistent:
 
 - [ ] Add a clippy job (script, CI, or pre-push hook) with:
       `cargo clippy --workspace --all-targets -- -W dead_code -D warnings`
+      ⚠️ **(review)** this only catches dead *private* items — `pub` items in a lib crate
+      never warn. The rg-based audit in Phase 7's next bullet is the real guardrail for
+      the public API.
 - [ ] Add `cargo machete` (or `cargo +nightly udeps`) to check unused deps
       (suspects to verify: `alloy` feature `signers` in core, `futures` breadth, `url`).
+- [ ] **Consolidate event-topic tables** `(review)` — there are now **four** near-identical
+      topic-hash tables: `core/src/chain/events.rs`, `core/src/pool/decoders.rs`,
+      `core/src/pool/discovery/mod.rs`, `core/src/pipeline/scanner.rs::topics`. After
+      deleting the dead copies (3.28/3.29), pick one home (suggest `pool/decoders.rs` or
+      `pipeline/scanner.rs::topics`) and re-export from there — this exact duplication is
+      how `chain/events.rs` rotted. Re-run `rg` for the removed names afterwards.
 - [ ] After all deletions, re-run `rg` for removed names to catch stale doc references
       (`docs/*.md` mention `aggregate.rs` intentionally — leave those).
 - [ ] Optional: reduce over-broad re-export lists (`pool/mod.rs`, `types/mod.rs`,
@@ -231,3 +329,31 @@ $env:MEV_SCOUT_E2E="1"; cargo test --workspace
 
 Suggested commit granularity: one commit per phase, message pattern
 `chore(cleanup): phase N — <summary>` (e.g. `phase 1 — drop orphaned mev/gas.rs, dedupe gas consts`).
+
+---
+
+## Review changelog (2026-09) `(review)`
+
+Summary of everything the review added/corrected:
+
+- **Line estimate** bumped from ~800–900 → ~1,050–1,100 (Group D adds ~250).
+- **Phase 2.1** — added the `EXPLORER_PLAN.md`/`EXPLORER_EXECUTION_PLAN.md` references that name
+  `coingecko.rs` as the explorer pricing source (DECISION context); added `types/mod.rs` re-export
+  cleanup; new decision option "keep-as-reserved".
+- **Phase 2.3** — added removal of `pub mod pending;` (`store/mod.rs:12`) and the `cache/mod.rs:4`
+  re-export.
+- **Phase 3** — added Group D (items 3.28–3.37): dead topic consts in `chain/events.rs`; dead
+  Curve topics in `discovery/mod.rs`; `RpcClient::reset` + `ProviderState` accessors; the four
+  never-constructed error enums + `Error` variants; `SqliteStore::list_manifests`;
+  `TokenCache::save_all_to_sqlite`; four dead `PoolManager` builder/getters; `V4HookFlags`;
+  `FlashLoanProvider::priority_list`.
+- **Phase 5** — added 5.5 (manual_clamp) and 5.6 (backtest.rs lint noise).
+- **Phase 6** — corrected: `config_rpc_url()` fallback is duplicated per-file (e2e.rs, backtest.rs)
+  *and* in `common/setup.rs`; gating must cover `arbitrage.rs` and `sandwich.rs` too.
+- **Phase 7** — noted clippy's blind spot for `pub` items; added topic-table consolidation
+  guardrail.
+
+Items verified **NOT dead** (do not delete): `calldata_gas_estimate`; `FlashLoanProvider::gas_overhead()`
+(two_hop.rs:162, multi_hop.rs:340); the setup helpers in `core/tests/common/setup.rs` /
+`cli/tests/common/mod.rs` (shared across test binaries — per-binary clippy warnings are noise);
+`chain/events.rs` decode functions and swap/flash/transfer topics.

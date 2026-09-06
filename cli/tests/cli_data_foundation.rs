@@ -1,22 +1,14 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, repo_config, rpc_ready, run_timed, scout,
-    temp_config, temp_ws, HEAVY_TIMEOUT, NETWORK_TIMEOUT, RPC_MUTEX,
+    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, repo_config_str, rpc_lock,
+    run_timed, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use std::time::Duration;
 
-fn cfg() -> String {
-    repo_config().to_str().unwrap().to_string()
-}
-
-fn make_cfg(ws: &std::path::Path, extras: &[(&str, &str)]) -> String {
-    temp_config(ws, extras).to_str().unwrap().to_string()
-}
-
 #[test]
 fn data_foundation_pipeline_discover_tokens_fetch_scan() {
-    let _guard = RPC_MUTEX.lock().unwrap();
+    let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("dataf") else {
         return;
     };
@@ -49,22 +41,21 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
             out.code, out.stdout, out.stderr
         )
     });
-    assert!(
-        pools.is_array(),
-        "expected array, got: {}",
-        out.stdout.chars().take(200).collect::<String>()
-    );
-    if let Some(entries) = pools.as_array() {
-        for p in entries {
-            assert!(p.get("address").is_some(), "pool missing address: {p}");
-            assert!(p.get("token0").is_some(), "pool missing token0: {p}");
-            assert!(p.get("token1").is_some(), "pool missing token1: {p}");
-            assert!(p.get("dex_type").is_some(), "pool missing dex_type: {p}");
-        }
+    let entries = pools
+        .as_array()
+        .expect("discover --json output must be an array");
+    for p in entries {
+        assert!(p.get("address").is_some(), "pool missing address: {p}");
+        assert!(p.get("token0").is_some(), "pool missing token0: {p}");
+        assert!(p.get("token1").is_some(), "pool missing token1: {p}");
+        assert!(p.get("dex_type").is_some(), "pool missing dex_type: {p}");
     }
 
+    // tokens on the SHARED pipeline db so the cache handoff between stages is
+    // real (scan uses no local db by design — it reads the chain live).
+    let tokens_base_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &cfg(), "tokens", "--cache-only"]);
+    c.args(["-f", &tokens_base_cfg, "tokens", "--cache-only"]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("tokens spawn failed");
     expect_ok(&out, "tokens --cache-only");
     assert!(
@@ -136,26 +127,21 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("scan spawn failed");
     expect_ok(&out, "scan trades 5 blocks json");
     let events = extract_json_array(&out.stdout).expect("scan --output json should print array");
-    if let Some(items) = events.as_array() {
-        for e in items {
-            assert!(e.get("block").is_some(), "trade event missing block: {e}");
-            assert!(e.get("tx_hash").is_some(), "trade event missing tx_hash: {e}");
-        }
+    let items = events
+        .as_array()
+        .expect("scan --output json must be an array");
+    for e in items {
+        assert!(e.get("block").is_some(), "trade event missing block: {e}");
+        assert!(e.get("tx_hash").is_some(), "trade event missing tx_hash: {e}");
     }
 }
 
 #[test]
 fn discover_remote_tolerant_to_service_failures() {
-    let _guard = RPC_MUTEX.lock().unwrap();
-    if std::env::var("MEV_SCOUT_E2E").as_deref() != Ok("1") {
-        eprintln!("SKIP: set MEV_SCOUT_E2E=1 to run live-Polygon E2E tests");
+    let _guard = rpc_lock();
+    let Some(ws) = ensure_gate_and_rpc("dataf_remote") else {
         return;
-    }
-    let ws = temp_ws("dataf_remote");
-    if !rpc_ready(&ws) {
-        eprintln!("SKIP: Polygon RPCs unreachable");
-        return;
-    }
+    };
 
     let rem_cfg = make_cfg(&ws, &[("db_path", ws.join("cache.db").to_str().unwrap())]);
     let mut c = scout(&ws);
@@ -193,19 +179,13 @@ fn discover_remote_tolerant_to_service_failures() {
 
 #[test]
 fn validate_pools_tolerant_to_reference_failures() {
-    let _guard = RPC_MUTEX.lock().unwrap();
-    if std::env::var("MEV_SCOUT_E2E").as_deref() != Ok("1") {
-        eprintln!("SKIP: set MEV_SCOUT_E2E=1 to run live-Polygon E2E tests");
+    let _guard = rpc_lock();
+    let Some(ws) = ensure_gate_and_rpc("dataf_vpools") else {
         return;
-    }
-    let ws = temp_ws("dataf_vpools");
-    if !rpc_ready(&ws) {
-        eprintln!("SKIP: Polygon RPCs unreachable");
-        return;
-    }
+    };
 
     let mut c = scout(&ws);
-    c.args(["-f", &cfg(), "validate-pools", "--days", "1", "--json"]);
+    c.args(["-f", &repo_config_str(), "validate-pools", "--days", "1", "--json"]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,
         Err(e) => {

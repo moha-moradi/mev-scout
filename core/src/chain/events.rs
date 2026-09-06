@@ -203,9 +203,15 @@ pub fn decode_transfer(log: &Log) -> Option<TransferEvent> {
     if topics.len() < 3 || topics[0] != TRANSFER_TOPIC {
         return None;
     }
+    // Malformed/rare logs can carry a data payload shorter than one word
+    // (e.g. some aggregators); treat them as undecodable instead of panicking.
+    let data = log.data().data.as_ref();
+    if data.len() < 32 {
+        return None;
+    }
     let from = Address::from_slice(&topics[1][12..]);
     let to = Address::from_slice(&topics[2][12..]);
-    let value = U256::from_be_slice(&log.data().data[0..32]);
+    let value = U256::from_be_slice(&data[0..32]);
     Some(TransferEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -406,6 +412,9 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
 /// Decode a Uniswap V3 (or V4) Swap event log.
 pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
+    if data.len() < 64 {
+        return None;
+    }
     let amount_in_raw = U256::from_be_slice(&data[0..32]);
     let amount_out_raw = U256::from_be_slice(&data[32..64]);
     if amount_in_raw.is_zero() && amount_out_raw.is_zero() {
@@ -470,6 +479,9 @@ pub fn decode_uniswap_v4_swap(log: &Log) -> Option<TradeEvent> {
 /// Decode a Uniswap V2 Swap event log.
 pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
+    if data.len() < 64 {
+        return None;
+    }
     let amount_in_raw = U256::from_be_slice(&data[0..32]);
     let amount_out_raw = U256::from_be_slice(&data[32..64]);
     Some(TradeEvent {
@@ -742,5 +754,31 @@ mod tests {
 
         assert!(decode_transfer(&log).is_none());
         assert!(decode_aave_v3_flash(&log).is_none());
+    }
+
+    /// Regression: malformed logs with a short/empty data payload must be
+    /// skipped, not panic (real-world Polygon providers returned such logs —
+    /// found live by the cli_network_coverage E2E tests).
+    #[test]
+    fn short_data_payloads_are_skipped_not_panicking() {
+        let transfer_like = |data_bytes: Vec<u8>| {
+            make_log(
+                Address::ZERO,
+                vec![
+                    TRANSFER_TOPIC,
+                    b256!("000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                    b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                ],
+                data_bytes,
+            )
+        };
+        assert!(decode_transfer(&transfer_like(vec![])).is_none());
+        assert!(decode_transfer(&transfer_like(vec![0u8; 31])).is_none());
+
+        let v3_like = make_log(Address::ZERO, vec![V3_SWAP_TOPIC], vec![0u8; 16]);
+        assert!(decode_uniswap_v3_swap(&v3_like, Address::ZERO).is_none());
+
+        let v2_like = make_log(Address::ZERO, vec![V2_SWAP_TOPIC], vec![0u8; 32]);
+        assert!(decode_uniswap_v2_swap(&v2_like, Address::ZERO).is_none());
     }
 }

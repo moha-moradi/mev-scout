@@ -9,8 +9,8 @@
 
 mod common;
 
-use common::{first_rpc_url, temp_config, temp_ws};
-use std::process::{Command, Stdio};
+use common::{first_rpc_url, run_timed, temp_config, temp_ws, HEAVY_TIMEOUT};
+use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mev-scout");
 
@@ -36,11 +36,11 @@ fn cli_real_run_smoke() {
         },
     };
 
-    let export = temp_ws("cli_e2e").join("export");
+    let ws = temp_ws("cli_e2e");
+    let export = ws.join("export");
     let db = export.join("cache.db");
     std::fs::create_dir_all(&export).unwrap();
 
-    let ws = temp_ws("cli_e2e");
     let cfg_path = temp_config(
         &ws,
         &[
@@ -54,21 +54,36 @@ fn cli_real_run_smoke() {
 
     let mut cmd = Command::new(BIN);
     cmd.args(["--quiet", "-f", cfg_path.to_str().unwrap(), "run", "--blocks", "1"]);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
 
     eprintln!("Running: {}", cmd.get_program().to_string_lossy());
-    let out = cmd.output().expect("failed to spawn mev-scout binary");
+    let out = match run_timed(&mut cmd, HEAVY_TIMEOUT) {
+        Ok(o) => o,
+        Err(e) => {
+            skip(&format!("cli run exceeded budget (public-RPC stall):\n{e}"));
+            return;
+        }
+    };
     eprintln!("--- stdout ---");
-    eprintln!("{}", String::from_utf8_lossy(&out.stdout));
+    eprintln!("{}", out.stdout);
     eprintln!("--- stderr ---");
-    eprintln!("{}", String::from_utf8_lossy(&out.stderr));
+    eprintln!("{}", out.stderr);
 
     assert!(
-        out.status.success(),
+        out.success,
         "mev-scout run exited with {:?}",
-        out.status
+        out.code
     );
+
+    // `--quiet` must suppress tracing lines (error-level filter); progress
+    // bars and the final summary still go to stdout.
+    for leaked in ["INFO", "DEBUG", "WARN "] {
+        assert!(
+            !out.stdout.contains(leaked) && !out.stderr.contains(leaked),
+            "--quiet must suppress tracing output (found '{leaked}')\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            out.stdout,
+            out.stderr
+        );
+    }
 
     // The CLI writes results to <export>/run_<epoch>.json.
     let results: Vec<_> = std::fs::read_dir(&export)

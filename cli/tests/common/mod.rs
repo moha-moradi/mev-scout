@@ -9,6 +9,12 @@ pub const BIN: &str = env!("CARGO_BIN_EXE_mev-scout");
 
 pub static RPC_MUTEX: Mutex<()> = Mutex::new(());
 
+/// Lock the RPC mutex, recovering from a poisoned lock (a panicking test
+/// while holding the lock must not kill every subsequent test).
+pub fn rpc_lock() -> std::sync::MutexGuard<'static, ()> {
+    RPC_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 pub const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
 pub const HEAVY_TIMEOUT: Duration = Duration::from_secs(600);
@@ -31,6 +37,40 @@ pub fn repo_config() -> PathBuf {
         .parent()
         .unwrap()
         .join("mev-scout.toml")
+}
+
+/// Path of the repo `mev-scout.toml` as a `String`, ready for `-f` args.
+pub fn repo_config_str() -> String {
+    repo_config().to_str().unwrap().to_string()
+}
+
+pub fn repo_config_text() -> String {
+    fs::read_to_string(repo_config()).unwrap_or_default()
+}
+
+/// Write a config derived from the repo `mev-scout.toml` into `ws` and return
+/// its path as a `String`, ready for `-f` args.
+pub fn make_cfg(ws: &Path, extras: &[(&str, &str)]) -> String {
+    temp_config(ws, extras).to_str().unwrap().to_string()
+}
+
+/// Return the newest `<prefix>*.json` file in `dir` by modification time.
+/// Entries whose metadata cannot be read are skipped instead of failing the
+/// whole lookup.
+pub fn newest_json_file(dir: &Path, prefix: &str) -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with(prefix) && name.ends_with(".json") {
+            let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+                best = Some((mtime, e.path()));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 pub fn first_rpc_url() -> Option<String> {
@@ -65,8 +105,12 @@ pub fn temp_config(ws: &Path, extras: &[(&str, &str)]) -> PathBuf {
         let mut replaced = false;
         for i in 0..lines.len() {
             if lines[i].trim_start().starts_with(&needle) {
+                // Detect a multi-line TOML array BEFORE replacing, so the
+                // continuation lines are drained regardless of whether the
+                // replacement value itself contains ']'.
+                let multiline_array = lines[i].contains('[') && !lines[i].contains(']');
                 lines[i] = format!("{key} = {value}");
-                if lines[i].contains('[') && !lines[i].contains(']') {
+                if multiline_array {
                     let mut j = i + 1;
                     while j < lines.len() && !lines[j].contains(']') {
                         j += 1;
