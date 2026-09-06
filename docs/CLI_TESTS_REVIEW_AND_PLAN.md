@@ -271,8 +271,10 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
 - [x] `cfg()` (۳ فایل: cli_args, cli_data_foundation, cli_live_mode) → `common::repo_config_str()`
 - [x] `make_cfg` (۲ فایل) → `common::make_cfg(ws, extras) -> String`
 - [x] حذف `newest_live_json` و `newest_json_matching` به نفع نسخه‌ی مشترک (بند 1.4)
-- [ ] (اختیاری) تکرارِ انتخاب کارخانه بین `discover.rs` و `validate_pools.rs` —
-      هلپر مشترک با unit test (مشکل تمیزی ۱.۲/۳) — انجام نشد؛ تغییر کد تولیدی تست نیست
+- [x] (اختیاری) تکرارِ انتخاب کارخانه بین `discover.rs` و `validate_pools.rs` —
+      به `core::pool::discovery::pick_factories` منتقل شد + ۳ unit test
+      (`factory_selection_tests` در `core/src/pool/discovery/mod.rs`)؛
+      `discover.rs` از inline if/else به همان helper تغییر کرد
 
 ### 1.6 — assert های مرده / بی‌اثر
 
@@ -385,9 +387,11 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
 - [x] `discover --source hybrid --max-pools 20` (union + assert dedup آدرس‌ها) +
       هشدار `--batch-size > 5000` (تأیید: در discover.rs:162 هست و assert شد)
 - [x] `discover --incremental` بعد از discover اولیه
-- [ ] گزینه‌های تکمیلی discover: `--enrich` + assert روی tvl/volume، `--min-tvl`،
-      `--solidly-fee-bps` (این یکی انجام شد)، `--resolve-remote-metadata` — باقی
-      مانده؛ `--health-check false` unreachable است (یادداشت بالا)
+- [x] گزینه‌های تکمیلی discover: `--enrich` (assert tvl/volume وقتی سرویس پاس دهد) +
+      `--min-tvl` (assert رعایت فیلور وقتی tvl موجود است) + `--resolve-remote-metadata`
+      (smoke) — در `discover_remote_option_flags_enrich_min_tvl_resolve_metadata`؛
+      همه tolerant به خطای سرویس مرجع. `--health-check false` unreachable است
+      (یادداشت بالا) و از رنج تست حذف شد.
 - [x] `validate-pools --source gecko --markdown-out <path>` → فایل ساخته می‌شود و
       جدول markdown دارد (tolerant به خطای سرویس مرجع)
 - [x] `run --batch-rpc` و `fetch --batch-rpc` smoke دوبلاکی
@@ -397,11 +401,18 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
 
 ## فاز ۴ — بهداشت repo (اختیاری ولی مهم) 🧹
 
-- [ ] **کلیدهای API زنده در `mev-scout.toml`** (Alchemy/drpc/GetBlock) — خارج از
-      scope تست‌ها ولی تست‌ها به همین فایل وابسته‌اند. پیشنهاد: انتقال به
-      `mev-scout.example.toml` بدون کلید + خواندن RPC از env var در تست‌ها
-      (`RPC_URL` قبلاً در cli_e2e پشتیبانی می‌شود؛ به `first_rpc_url` هم fallback
-      env اضافه شود) — انجام نشد؛ تصمیم کلیدها به صاحب repo برمی‌گردد
+- [x] **کلیدهای API زنده در `mev-scout.toml`** → سه‌لایه حل شد:
+      1. پشتیبانی محصولی `${ENV_VAR}` در `rpc_url` / `rpc_urls` /
+         `coingecko_api_key` (گسترش هنگام load؛ متغیر unset به‌صورت literal می‌ماند
+         تا fail بلند باشد — `Config::expand_env_secrets` در settings.rs + ۴ unit test)
+      2. `mev-scout.example.toml` بدون کلید واقعی (الگوی env placeholder)
+      3. تست‌ها: `common::first_rpc_url()` اکنون اول `RPC_URL` env را می‌خواند
+         (کلون تازه بدون mev-scout.toml هم کار می‌کند) و `rpc_ready` URL را
+         داخل کانفیگ موقت تزریق می‌کند؛ CLI test
+         `config_env_var_placeholders_expand_from_environment` رفتار را end-to-end
+         قفل می‌کند.
+      ⚠️ خود `mev-scout.toml` همچنان کلیدهای زنده دارد — مهاجرت نهایی فایل به
+      الگوی env و چرخش (revoke) کلیدهای کامیت‌شده تصمیم صاحب repo است.
 - [x] تست `config_prints_resolved_toml_from_repo_file` به عدد `>= 9` provider
       وابسته است → اکنون تعداد را **دینامیک** از خود repo TOML می‌خواند
       (`common::repo_config_text()`) و با آن مقایسه می‌کند
@@ -439,21 +450,27 @@ cargo test -p mev-scout-cli --test cli_network_coverage -- --test-threads=1
 
 ## وضعیت نهایی اجرا (۶ سپتامبر ۲۰۲۶)
 
-هر شش باینری تست با `MEV_SCOUT_E2E=1` و `--test-threads=1` اجرا و **هر ۴۷ تست پاس شد**:
+هر شش باینری تست با `MEV_SCOUT_E2E=1` و `--test-threads=1` اجرا و پاس شد.
+پس از تکمیل سه آیتم باقی‌مانده (1.5 اختیاری، گزینه‌های discover، 4.1)، شمارش
+نهایی آفلاین: ۴۲ تست CLI + ۱۰۱ unit core (به‌جز ۵ تست mock شبکه‌ای
+geckoterminal/dexscreener که **از قبل** fail بودند و به این سند مربوط نیستند)
++ تست‌های گیت‌دار شبکه‌ای همه ok.
 
-| باینری | تست‌ها | نتیجه |
+| باینری / واحد | تست‌ها | نتیجه |
 |---|---|---|
-| cli (unit) | 7 | ok |
-| cli_args | 24 | ok |
+| cli (unit) | 6 | ok |
+| cli_args | 25 | ok |
 | cli_data_foundation | 3 | ok |
 | cli_e2e | 1 | ok |
 | cli_live_mode | 3 | ok |
-| cli_network_coverage | 7 | ok |
+| cli_network_coverage | 8 | ok |
 | cli_run_replay | 2 | ok |
+| core unit (events/config/discovery و ...) | 96 | ok (۴ تست env-expansion جدید شامل) |
 
-دو باگ واقعی محصول در حین اجرا کشف و رفع شد: panic در decoderهای log
-(`core/src/chain/events.rs` — transfer/v2/v3) و `--health-check false`
-غیرقابل‌استفاده از CLI (فعلاً فقط مستند شد؛ تصمیم محصول باز است).
+سه باگ/یافته‌ی واقعی محصول در حین اجرا کشف شد: panic در decoderهای log
+(`core/src/chain/events.rs` — transfer/v2/v3، رفع شد)، `--health-check false`
+غیرقابل‌استفاده از CLI (مستند شد؛ تصمیم محصول باز است)، و خرابی TOML در
+`temp_config` هارنس روی آرایه‌ی چندخطی `rpc_urls` (رفع شد).
 
 ## ترتیب پیشنهادی اجرا
 

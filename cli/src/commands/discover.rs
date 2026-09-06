@@ -9,7 +9,7 @@ use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
-use mev_scout_core::pool::discovery::{DiscoveryConfig, DiscoveredPool};
+use mev_scout_core::pool::discovery::{pick_factories, DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::pool::discovery::remote as remote_src;
 use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::types::ChainName;
@@ -320,26 +320,38 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
-        let v2_factories: Vec<Address> = if let Some(factories) = chain_config.uniswap_v2_factories.as_ref() {
-            factories.iter().filter_map(|s| s.parse().ok()).collect()
-        } else {
-            chain_name.default_uniswap_v2_factories().iter().filter_map(|s| s.parse().ok()).collect()
-        };
-        let v3_factories: Vec<Address> = if let Some(factories) = chain_config.uniswap_v3_factories.as_ref() {
-            factories.iter().filter_map(|s| s.parse().ok()).collect()
-        } else {
-            chain_name.default_uniswap_v3_factories().iter().filter_map(|s| s.parse().ok()).collect()
-        };
-        let solidly_factories: Vec<Address> = if let Some(factories) = chain_config.solidly_factories.as_ref() {
-            factories.iter().filter_map(|s| s.parse().ok()).collect()
-        } else {
-            chain_name.default_solidly_factories().iter().filter_map(|s| s.parse().ok()).collect()
-        };
-        let camelot_factories: Vec<Address> = if let Some(factories) = chain_config.camelot_factories.as_ref() {
-            factories.iter().filter_map(|s| s.parse().ok()).collect()
-        } else {
-            chain_name.default_camelot_factories().iter().filter_map(|s| s.parse().ok()).collect()
-        };
+        let v2_factories: Vec<Address> = pick_factories(
+            chain_config
+                .uniswap_v2_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            chain_name.default_uniswap_v2_factories(),
+        );
+        let v3_factories: Vec<Address> = pick_factories(
+            chain_config
+                .uniswap_v3_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            chain_name.default_uniswap_v3_factories(),
+        );
+        let solidly_factories: Vec<Address> = pick_factories(
+            chain_config
+                .solidly_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            &chain_name.default_solidly_factories(),
+        );
+        let camelot_factories: Vec<Address> = pick_factories(
+            chain_config
+                .camelot_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            &chain_name.default_camelot_factories(),
+        );
 
         let v4_pool_manager: Option<Address> = chain_config.v4_pool_manager.as_ref()
             .and_then(|s| s.parse::<Address>().ok());

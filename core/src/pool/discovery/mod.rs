@@ -354,6 +354,44 @@ pub struct DiscoveryConfig<'a> {
     pub pool_cache: Option<&'a crate::cache::SqliteStore>,
 }
 
+/// Resolve factory addresses for a DEX kind: use the chain-config overrides
+/// when present, otherwise fall back to the bundled per-chain defaults.
+/// Unparseable default entries are silently dropped (they are compile-time
+/// constants; a parse failure is a data bug we don't want to crash discovery).
+///
+/// Shared by the `discover` and `validate-pools` CLI commands, which build
+/// their `DiscoveryConfig`s through this same selection.
+pub fn pick_factories(configured: Vec<Address>, defaults: &[&str]) -> Vec<Address> {
+    if !configured.is_empty() {
+        return configured;
+    }
+    defaults.iter().filter_map(|s| s.parse().ok()).collect()
+}
+
+#[cfg(test)]
+mod factory_selection_tests {
+    use super::{pick_factories, Address};
+
+    #[test]
+    fn prefers_configured_over_defaults() {
+        let configured = vec![Address::ZERO];
+        let defaults = ["0x4444444444444444444444444444444444444444"];
+        assert_eq!(pick_factories(configured.clone(), &defaults), configured);
+    }
+
+    #[test]
+    fn falls_back_to_parsed_defaults() {
+        let defaults = ["0x4444444444444444444444444444444444444444"];
+        let got = pick_factories(Vec::new(), &defaults);
+        assert_eq!(got.len(), 1);
+    }
+
+    #[test]
+    fn drops_unparseable_defaults() {
+        assert!(pick_factories(Vec::new(), &["nothex"]).is_empty());
+    }
+}
+
 // ── Helper: decode ABI-encoded string from eth_call response ──
 fn decode_abi_string(data: &[u8]) -> Option<String> {
     if data.len() < 32 {

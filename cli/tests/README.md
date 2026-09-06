@@ -49,3 +49,17 @@ run when the extras differ.
 - `extract_json_array(s)` — ANSI-tolerant JSON array extraction (tracing INFO
   lines share the process stdout, so JSON output is rarely "pure").
 - `parse_receipt_match_pct(line)` — parse the replay match percentage.
+
+## RPC URLs in tests (API-key hygiene)
+
+Tests never need live API keys. The gated suites resolve their endpoint via
+`common::first_rpc_url()`:
+
+1. `RPC_URL` env var (wins) — a fresh clone without `mev-scout.toml` runs with
+   `RPC_URL=https://...` alone.
+2. First `https://` URL in `mev-scout.toml` (the historical default).
+
+`mev-scout.toml` itself supports `${ENV_VAR}` placeholders inside `rpc_url`,
+`rpc_urls`, and `coingecko_api_key` (expanded at config load; unset vars stay
+verbatim so failures are loud). See `mev-scout.example.toml` for a keyless
+template — prefer it over committing live keys.

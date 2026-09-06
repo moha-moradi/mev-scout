@@ -18,7 +18,7 @@ use crate::cli::{ValidatePoolsArgs, ValidationSource};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::{validation, Config};
-use mev_scout_core::pool::discovery::{remote, DiscoveryConfig, DiscoveredPool};
+use mev_scout_core::pool::discovery::{pick_factories, remote, DiscoveryConfig, DiscoveredPool};
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::recommended_get_logs_batch;
 use mev_scout_core::types::{ChainName, RangeMode};
@@ -46,13 +46,6 @@ struct DexRecallRow {
     reference_pools: usize,
     matched: usize,
     recall_pct: f64,
-}
-
-fn pick_factories(configured: Vec<Address>, defaults: &[&str]) -> Vec<Address> {
-    if !configured.is_empty() {
-        return configured;
-    }
-    defaults.iter().filter_map(|s| s.parse().ok()).collect()
 }
 
 pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> anyhow::Result<()> {
@@ -380,17 +373,5 @@ mod tests {
         assert!((rows[0].recall_pct - 50.0).abs() < f64::EPSILON);
         assert_eq!(rows[1].dex, "uniswap-v3");
         assert_eq!(rows[1].matched, 0);
-    }
-
-    #[test]
-    fn test_pick_factories_prefers_configured() {
-        let configured = vec![Address::ZERO];
-        let defaults = ["0x4444444444444444444444444444444444444444"];
-        assert_eq!(pick_factories(configured.clone(), &defaults), configured);
-        // Empty config → parse defaults.
-        let got = pick_factories(Vec::new(), &defaults);
-        assert_eq!(got.len(), 1);
-        // Unparseable defaults are dropped.
-        assert!(pick_factories(Vec::new(), &["nothex"]).is_empty());
     }
 }

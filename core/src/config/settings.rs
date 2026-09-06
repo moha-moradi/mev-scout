@@ -246,8 +246,52 @@ impl Config {
             .map_err(|e| error::Error::Other(format!("Failed to read config file '{}': {}", path, e)))?;
         let mut cfg: Config = toml::from_str(&content)
             .map_err(|e| error::Error::Other(format!("Failed to parse config file '{}': {}", path, e)))?;
+        cfg.expand_env_secrets();
         cfg.config_path = Some(PathBuf::from(path));
         Ok(cfg)
+    }
+
+    /// Expand `${ENV_VAR}` references in secret-bearing string fields
+    /// (`rpc_url`, `rpc_urls`, `coingecko_api_key`) from the process
+    /// environment. Lets committed config files stay free of live API keys:
+    /// write `rpc_urls = ["https://.../v2/${ALCHEMY_API_KEY}"]` and export the
+    /// variable instead. Unset variables are left verbatim so a missing env
+    /// never silently corrupts a URL (the provider then fails loudly).
+    pub fn expand_env_secrets(&mut self) {
+        fn expand(s: &str) -> String {
+            let mut out = String::with_capacity(s.len());
+            let mut rest = s;
+            while let Some(start) = rest.find("${") {
+                out.push_str(&rest[..start]);
+                let after = &rest[start + 2..];
+                match after.find('}') {
+                    Some(end) => {
+                        let name = &after[..end];
+                        match std::env::var(name) {
+                            Ok(val) => out.push_str(&val),
+                            // Unset → keep the literal ${NAME} placeholder.
+                            Err(_) => out.push_str(&rest[start..start + 2 + end + 1]),
+                        }
+                        rest = &after[end + 1..];
+                    }
+                    None => {
+                        out.push_str(&rest[start..]);
+                        rest = "";
+                    }
+                }
+            }
+            out.push_str(rest);
+            out
+        }
+        if let Some(u) = &self.rpc.rpc_url {
+            self.rpc.rpc_url = Some(expand(u));
+        }
+        for u in &mut self.rpc.rpc_urls {
+            *u = expand(u);
+        }
+        if let Some(k) = &self.rpc.coingecko_api_key {
+            self.rpc.coingecko_api_key = Some(expand(k));
+        }
     }
 
     /// Load a config file, falling back to defaults if the file is missing or invalid.
@@ -258,6 +302,13 @@ impl Config {
         for (name, default_cfg) in defaults {
             cfg.chains.entry(name).or_insert(default_cfg);
         }
+        cfg
+    }
+
+    #[cfg(test)]
+    fn from_toml_str(s: &str) -> Self {
+        let mut cfg: Config = toml::from_str(s).unwrap();
+        cfg.expand_env_secrets();
         cfg
     }
 
@@ -646,5 +697,65 @@ impl Config {
             }
         }
         map
+    }
+}
+
+#[cfg(test)]
+mod env_expansion_tests {
+    use super::Config;
+
+    #[test]
+    fn expands_set_env_vars_in_rpc_urls() {
+        // SAFETY: single-threaded test binary execution for this module; the
+        // variable name is test-specific.
+        std::env::set_var("MS_CONFIG_TEST_RPC_KEY", "sekret123");
+        let cfg = Config::from_toml_str(
+            r#"
+rpc_urls = ["https://polygon-mainnet.g.alchemy.com/v2/${MS_CONFIG_TEST_RPC_KEY}"]
+"#,
+        );
+        assert_eq!(
+            cfg.rpc.rpc_urls[0],
+            "https://polygon-mainnet.g.alchemy.com/v2/sekret123"
+        );
+    }
+
+    #[test]
+    fn leaves_unset_vars_verbatim() {
+        std::env::remove_var("MS_CONFIG_TEST_MISSING_KEY");
+        let cfg = Config::from_toml_str(
+            r#"
+rpc_urls = ["https://rpc.example/v2/${MS_CONFIG_TEST_MISSING_KEY}"]
+"#,
+        );
+        assert_eq!(
+            cfg.rpc.rpc_urls[0],
+            "https://rpc.example/v2/${MS_CONFIG_TEST_MISSING_KEY}"
+        );
+    }
+
+    #[test]
+    fn expands_plain_urls_and_coingecko_key_unchanged() {
+        std::env::set_var("MS_CONFIG_TEST_CG_KEY", "CG-1");
+        let cfg = Config::from_toml_str(
+            r#"
+rpc_urls = ["https://plain.example/v3"]
+rpc_url = "https://single.example/${MS_CONFIG_TEST_CG_KEY}"
+coingecko_api_key = "CG-1"
+"#,
+        );
+        assert_eq!(cfg.rpc.rpc_urls[0], "https://plain.example/v3");
+        assert_eq!(cfg.rpc.rpc_url.as_deref(), Some("https://single.example/CG-1"));
+        assert_eq!(cfg.rpc.coingecko_api_key.as_deref(), Some("CG-1"));
+    }
+
+    #[test]
+    fn unterminated_placeholder_is_kept_verbatim() {
+        let cfg = Config::from_toml_str(
+            r#"
+rpc_urls = ["https://broken.example/${NO_CLOSING"]
+"#,
+        );
+        assert_eq!(cfg.rpc.rpc_urls[0], "https://broken.example/${NO_CLOSING");
     }
 }

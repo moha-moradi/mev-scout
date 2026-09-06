@@ -3,9 +3,9 @@
 //! Exercises the full CLI path against a live Polygon RPC:
 //! RPC init → range resolution → fetch → pool init → backtest → JSON export.
 //!
-//! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL is read from the
-//! `rpc_urls[0]` entry of `mev-scout.toml` at the workspace root (no env var
-//! required; override with `RPC_URL` if you want a different endpoint).
+//! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL comes from
+//! `common::first_rpc_url()` (`RPC_URL` env var first, then the first
+//! `https://` entry of `mev-scout.toml`).
 
 mod common;
 
@@ -25,15 +25,12 @@ fn cli_real_run_smoke() {
         return;
     }
 
-    let rpc = match std::env::var("RPC_URL") {
-        Ok(url) => url,
-        Err(_) => match first_rpc_url() {
-            Some(url) => url,
-            None => {
-                skip("could not read first RPC URL from mev-scout.toml; set RPC_URL to override");
-                return;
-            }
-        },
+    let rpc = match first_rpc_url() {
+        Some(url) => url,
+        None => {
+            skip("no RPC URL available (set RPC_URL or add one to mev-scout.toml)");
+            return;
+        }
     };
 
     let ws = temp_ws("cli_e2e");

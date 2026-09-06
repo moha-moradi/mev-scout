@@ -299,6 +299,118 @@ fn discover_hybrid_incremental_and_flags() {
 }
 
 #[test]
+fn discover_remote_option_flags_enrich_min_tvl_resolve_metadata() {
+    let _guard = rpc_lock();
+    let Some(ws) = ensure_gate_and_rpc("netcov_disc_opts") else {
+        return;
+    };
+    let db_s = ws.join("cache.db").to_str().unwrap().to_string();
+    let cfg = make_cfg(&ws, &[("db_path", &db_s)]);
+
+    // --enrich: attaches tvl_usd / volume_usd_24h / volume_usd_30d from
+    // GeckoTerminal; implies one remote fetch, so tolerant to service failures.
+    let mut c = scout(&ws);
+    c.args([
+        "-f",
+        &cfg,
+        "discover",
+        "--source",
+        "remote",
+        "--enrich",
+        "--max-pools",
+        "20",
+        "--json",
+    ]);
+    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover --enrich") {
+        Some(out) if out.success => {
+            let pools = extract_json_array(&out.stdout)
+                .expect("enriched discover success must print a JSON array");
+            if let Some(entries) = pools.as_array() {
+                eprintln!("enriched remote discovery returned {} pools", entries.len());
+                for p in entries {
+                    // Enrichment contract: the fields must exist (null when the
+                    // aggregator had no data for that pool).
+                    assert!(
+                        p.get("tvl_usd").is_some() && p.get("volume_usd_24h").is_some(),
+                        "enriched pool must carry tvl/volume fields: {p}"
+                    );
+                }
+            }
+        }
+        Some(out) => eprintln!(
+            "WARN (tolerant): --enrich discover failed (aggregator side?)\n{}",
+            out.combined()
+        ),
+        None => {}
+    }
+
+    // --min-tvl: dust-suppression filter on remote-sourced pools. Smoke only —
+    // every returned pool must respect the floor when tvl is present.
+    let mut c = scout(&ws);
+    c.args([
+        "-f",
+        &cfg,
+        "discover",
+        "--source",
+        "remote",
+        "--min-tvl",
+        "100000",
+        "--max-pools",
+        "20",
+        "--json",
+    ]);
+    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover --min-tvl") {
+        Some(out) if out.success => {
+            let pools = extract_json_array(&out.stdout)
+                .expect("min-tvl discover success must print a JSON array");
+            if let Some(entries) = pools.as_array() {
+                for p in entries {
+                    if let Some(tvl) = p.get("tvl_usd").and_then(|v| v.as_f64()) {
+                        assert!(
+                            tvl >= 100_000.0,
+                            "--min-tvl 100000 must filter pools below the floor, got {tvl}"
+                        );
+                    }
+                }
+            }
+        }
+        Some(out) => eprintln!(
+            "WARN (tolerant): --min-tvl discover failed (aggregator side?)\n{}",
+            out.combined()
+        ),
+        None => {}
+    }
+
+    // --resolve-remote-metadata: Multicall3 batch filling fee/tickSpacing/token
+    // metadata for remote CL pools; results persist to the SQLite cache.
+    let mut c = scout(&ws);
+    c.args([
+        "-f",
+        &cfg,
+        "discover",
+        "--source",
+        "remote",
+        "--enrich",
+        "--resolve-remote-metadata",
+        "--max-pools",
+        "10",
+        "--json",
+    ]);
+    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover --resolve-remote-metadata") {
+        Some(out) if out.success => {
+            let pools = extract_json_array(&out.stdout)
+                .expect("resolve-remote-metadata discover success must print a JSON array");
+            assert!(pools.as_array().is_some(), "output must be an array");
+        }
+        Some(out) => eprintln!(
+            "WARN (tolerant): --resolve-remote-metadata discover failed (aggregator side?)\n{}",
+            out.combined()
+        ),
+        None => {}
+    }
+}
+
+#[test]
 fn validate_pools_gecko_markdown_out() {
     let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("netcov_vpools") else {

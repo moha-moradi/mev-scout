@@ -310,6 +310,41 @@ fn broken_toml_config_file_falls_back_to_default() {
     );
 }
 
+#[test]
+fn config_env_var_placeholders_expand_from_environment() {
+    let ws = temp_ws("args_cfg_env_expand");
+    let cfg_path = make_cfg(
+        &ws,
+        &[("rpc_urls", "[\"https://rpc.example/v2/${MS_E2E_TEST_KEY}\"]")],
+    );
+
+    // Without the variable set the placeholder stays verbatim (visible in the
+    // resolved config) — a missing key never silently corrupts the URL.
+    let out = run(&ws, &["-f", &cfg_path, "config"]);
+    expect_ok(&out, "config without env var set");
+    assert!(
+        out.stdout.contains("${MS_E2E_TEST_KEY}"),
+        "unset placeholder must stay verbatim in resolved config, got:\n{}",
+        out.stdout
+    );
+
+    // With the variable exported the URL is expanded at load time.
+    std::env::set_var("MS_E2E_TEST_KEY", "live-key-42");
+    let out = run(&ws, &["-f", &cfg_path, "config"]);
+    expect_ok(&out, "config with env var exported");
+    assert!(
+        out.stdout.contains("https://rpc.example/v2/live-key-42"),
+        "placeholder must expand from the environment, got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("${MS_E2E_TEST_KEY}"),
+        "expanded placeholder must not remain in resolved config, got:\n{}",
+        out.stdout
+    );
+    std::env::remove_var("MS_E2E_TEST_KEY");
+}
+
 // ── Global flags & misc offline behaviors ────────────────────────────────────
 
 #[test]
@@ -352,7 +387,7 @@ fn quiet_and_verbose_flags_parse_ok_offline() {
 fn tokens_filters_work_offline() {
     let ws = temp_ws("args_tokens");
     let db = ws.join("tokens.db");
-    let db_s = db.to_str().unwrap();
+    let db_s: &str = db.to_str().unwrap();
 
     let base = make_cfg(&ws, &[("db_path", db_s)]);
 

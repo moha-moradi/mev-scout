@@ -1,0 +1,36 @@
+# mev-scout example configuration
+#
+# Copy this file to `mev-scout.toml` and fill in your own endpoints.
+# Do NOT commit live API keys: reference them via `${ENV_VAR}` placeholders
+# (expanded at config load from the process environment) and export the
+# variables instead, e.g. in PowerShell:
+#   $env:ALCHEMY_API_KEY = "..."
+#   $env:DRPC_KEY        = "..."
+#   $env:GETBLOCK_KEY    = "..."
+#
+# Unset variables are kept verbatim, so a missing key fails loudly at the
+# provider instead of silently corrupting the URL.
+
+chain = "polygon"
+priority_fee_gwei = 30
+
+rpc_urls = [
+  "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
+  "https://lb.drpc.live/polygon/${DRPC_KEY}",
+  "https://shared.ap-southeast-1.getblock.io/${GETBLOCK_KEY}",
+]
+
+# Per-provider RPS limits (matches rpc_urls order).
+rpc_rps = [10, 10, 15]
+
+# Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
+rps_limit = 2
+
+# Default strategy set (comma-separated or "all")
+strategies = "all"
+
+# Backtest gas price model: historical_exact | p90 | fixed | live
+gas_model = "historical_exact"
+
+# Default output format: table | csv | json
+output = "table"

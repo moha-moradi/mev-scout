@@ -73,7 +73,15 @@ pub fn newest_json_file(dir: &Path, prefix: &str) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// Resolve the RPC URL used by E2E tests: the `RPC_URL` env var wins (lets a
+/// fresh clone without a committed `mev-scout.toml` still run the gated
+/// suites), otherwise the first `https://` URL in the repo config file.
 pub fn first_rpc_url() -> Option<String> {
+    if let Ok(url) = std::env::var("RPC_URL") {
+        if !url.trim().is_empty() {
+            return Some(url);
+        }
+    }
     let text = fs::read_to_string(repo_config()).ok()?;
     let start = text.find("https://")?;
     let end = text[start..]
@@ -229,17 +237,34 @@ pub fn expect_fail(out: &TimedOutput, ctx: &str) {
 
 pub fn rpc_ready(ws: &Path) -> bool {
     let mut c = scout(ws);
-    c.args([
-        "-f",
-        repo_config().to_str().unwrap(),
-        "scan",
-        "--kind",
-        "trades",
-        "--blocks",
-        "1",
-        "--limit",
-        "1",
-    ]);
+    if let Some(url) = first_rpc_url() {
+        // Inject the resolved URL (env var or repo config) so the probe also
+        // works when the local config has no usable endpoints.
+        let cfg = temp_config(ws, &[("rpc_urls", &format!("[\"{url}\"]"))]);
+        c.args([
+            "-f",
+            cfg.to_str().unwrap(),
+            "scan",
+            "--kind",
+            "trades",
+            "--blocks",
+            "1",
+            "--limit",
+            "1",
+        ]);
+    } else {
+        c.args([
+            "-f",
+            &repo_config_str(),
+            "scan",
+            "--kind",
+            "trades",
+            "--blocks",
+            "1",
+            "--limit",
+            "1",
+        ]);
+    }
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }
 
