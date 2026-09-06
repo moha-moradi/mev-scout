@@ -1,8 +1,9 @@
 # Dead Code Cleanup Plan
 
-**Goal:** Remove confirmed dead code (~1,050–1,100 lines), deduplicate gas constants and event
+**Goal:** Remove confirmed dead code (~1,230–1,340 lines), deduplicate gas constants and event
 topic tables, shrink the public API surface, and add guardrails so dead code cannot silently
-accumulate again. (Original estimate was ~800–900 lines; the review below found ~250 more.)
+accumulate again. (Original estimate was ~800–900 lines; the review found ~250 more; a second
+pass found ~180 more — mainly the mempool `PendingPoolEffect` subsystem.)
 
 **Method behind this plan:** Every item below was verified by cross-referencing the definition
 against *all* call sites in the workspace (core lib, CLI bin, `core/tests`, `cli/tests`,
@@ -223,6 +224,23 @@ Remove in small groups and build after each group.
 | 3.36 | `V4HookFlags` + `classify()`/`modifies_swap()`/`modifies_liquidity()` | `core/src/pool/state/pool_types.rs:79-143` | also remove `V4HookFlags` from the re-export at `state/mod.rs:10` |
 | 3.37 | `FlashLoanProvider::priority_list()` | `core/src/types/strategy.rs:57` | ⚠️ **`gas_overhead()` is NOT dead — keep it** (used by `two_hop.rs:162`, `multi_hop.rs:340`) |
 
+### Group E — additional dead code found in second pass `(second-pass)`
+
+> Most of these are methods/helpers that became orphaned once the mempool subsystem stopped
+> being wired in, plus a few overlooked getters.
+
+| # | Item | Location | Notes |
+|---|---|---|---|
+| 3.38 | `PendingPoolEffect` struct + `simulate_pending_tx_pool_impact()` + `estimate_pending_tx_pool_impact()` + ~15 private helpers (V2ExactInParams, V3Hop, parse_v2_swap_*, estimate_v2_hop_*, v2_swap_effects, estimate_v2_exact_in/out, parse_v3_path, parse_v3_exact_input, estimate_v3_exact_in/out) | `core/src/mev/detectors/mempool.rs:100–546` | ~150–200 lines. The *live* mempool fns (`capture_pending_block` L31, `detect_pending_opportunities` L56, `PendingBlockCapture`) are **used** — keep them. Only the pending-pool-effect simulation subsystem is dead |
+| 3.39 | `balancer_output_amount()` | `core/src/mev/detectors/two_hop.rs:639` | zero callers; two_hop uses `curve_output_amount` + `balancer_quote_exact_in` internally |
+| 3.40 | `AaveReserveCache::is_empty()` | `core/src/mev/detectors/liquidation.rs:96` | `get()` and `len()` are used — keep those |
+| 3.41 | `CachedRpcDb::block_number()` / `set_block_number()` | `core/src/replay/replayer.rs:126,130` | no callers |
+| 3.42 | `PoolInfo::is_concentrated_liquidity()` | `core/src/pool/state/pool_types.rs:245` | `DexType`'s own method is used instead |
+| 3.43 | `LabelDb::merge()` / `is_empty()` | `core/src/chain/labels.rs:51,63` | `load()`/`get()`/`len()` are used — keep those |
+| 3.44 | `constant_product_input_amount()` | `core/src/pool/math/core.rs:157` | only reachable from the dead mempool effect subsystem (3.38); also remove from re-export in `pool/math/mod.rs` and `pool/mod.rs` |
+
+- [ ] Group E: 3.38–3.44 removed, build green
+
 - [ ] Group A: 3.1–3.9 removed, build green
 - [ ] Group B: 3.10–3.14 removed, build green
 - [ ] Group C: 3.15–3.27 removed, build green
@@ -357,3 +375,18 @@ Items verified **NOT dead** (do not delete): `calldata_gas_estimate`; `FlashLoan
 (two_hop.rs:162, multi_hop.rs:340); the setup helpers in `core/tests/common/setup.rs` /
 `cli/tests/common/mod.rs` (shared across test binaries — per-binary clippy warnings are noise);
 `chain/events.rs` decode functions and swap/flash/transfer topics.
+
+## Second-pass changelog (2026-09) `(second-pass)`
+
+Summary of items found in the second audit pass:
+
+- **Line estimate** bumped from ~1,050–1,100 → ~1,230–1,340 (Group E adds ~180).
+- **Phase 3** — added Group E (items 3.38–3.44): the entire `PendingPoolEffect` simulation
+  subsystem in `mempool.rs` (~150–200 lines, never wired in); `balancer_output_amount` in
+  `two_hop.rs`; `AaveReserveCache::is_empty`; `CachedRpcDb::block_number/set_block_number`;
+  `PoolInfo::is_concentrated_liquidity`; `LabelDb::merge/is_empty`; `constant_product_input_amount`
+  (only reachable from the dead mempool subsystem).
+
+Items verified **NOT dead** (do not delete): `capture_pending_block`, `detect_pending_opportunities`,
+`PendingBlockCapture` (mempool.rs live paths); `AaveReserveCache::get/len`; `LabelDb::load/get/len`;
+`CachedRpcDb` other methods; all `decode_*` functions in `chain/events.rs`.
