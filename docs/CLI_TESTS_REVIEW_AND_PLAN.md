@@ -403,6 +403,21 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
       جدول markdown دارد (tolerant به خطای سرویس مرجع)
 - [x] `run --batch-rpc` و `fetch --batch-rpc` smoke دوبلاکی
 - [x] `fetch` دوباره روی همان رنج → `Cached:` (tolerant — اگر خط Cached نبود فقط WARN)
+      > **🐛 بازبینی false-ok (۷ سپتامبر ۲۰۲۶) — ۴ رفع در `cli_network_coverage.rs`:**
+      > 1. `fetch_idempotency_cached_on_refetch` false-ok قطعی بود: fetch همیشه
+      >    `Cached: N` چاپ می‌کند پس `contains("Cached:")` همیشه true بود (شاخه WARN
+      >    مرده)، و هر pass با `--blocks 3` tip تازه می‌گرفت پس رنج‌ها یکی نبودند.
+      >    رفع: پارس `Resolved range: blocks X–Y` از pass اول + پین‌کردن pass دوم با
+      >    `--from-block/--to-block` + پارس عددی `Cached:` با assert `> 0` و WARN اگر
+      >    `< total`. تأیید زنده: ok با cached == 3/3.
+      > 2. `scan_address_filter...`: assert affinity فقط با رویداد غیرخالی اجرا می‌شد
+      >    و JSON پارس‌نشده هم بی‌صدا رد می‌شد → `expect` روی پارس + WARN برای خالی.
+      > 3. `validate_pools --markdown-out`: `contains('|')` همیشه true بود (هدر جدول
+      >    همیشه نوشته می‌شود) → assert `contains("| Source |")`.
+      > 4. ctx گمراه‌کننده‌ی «--health-check false» در expect_ok حذف شد.
+      > الگوهای tolerant عمدی (discover remote/gecko، enrich/min-tvl، WARN-only های
+      > report) مستندند و تغییر نکردند. ⚠️ حین اجرا: هر ۹ provider کامیت‌شده با
+      > HTTP 402 «Out of CU» جواب دادند (کلیدها تمام شده) — یادآور بند ۴.۱ (چرخش کلید).
 
 ---
 
