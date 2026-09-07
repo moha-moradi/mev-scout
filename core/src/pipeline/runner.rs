@@ -511,8 +511,16 @@ impl BacktestRunner {
                 opp.victim_tx_index,
                 opp.backrun_tx_index,
             ));
+            opp.detection_path = Some("replay".to_string());
+            if opp.sender.is_none() {
+                opp.sender = txs
+                    .get(opp.tx_index)
+                    .map(|t| t.from);
+            }
+            if opp.tx_hash.is_none() {
+                opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
+            }
         }
-
         self.pool_manager = pool_manager.into_inner();
         self.gas_calibration = gas_calibration.into_inner();
         self.last_processed_block = block_num;
@@ -696,6 +704,13 @@ impl BacktestRunner {
                 opp.victim_tx_index,
                 opp.backrun_tx_index,
             ));
+            opp.detection_path = Some("log_only".to_string());
+            if opp.sender.is_none() {
+                opp.sender = txs.get(opp.tx_index).map(|t| t.from);
+            }
+            if opp.tx_hash.is_none() {
+                opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
+            }
         }
 
         // #10: persistence-based confidence scoring across blocks

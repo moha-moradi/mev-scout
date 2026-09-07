@@ -4,7 +4,7 @@
 //! the CLI output layer, and the API serialization layer.
 
 use crate::types::strategy::Strategy;
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
 /// A detected MEV opportunity from backtesting.
@@ -83,6 +83,20 @@ pub struct MevOpportunity {
     /// None = standard on-chain detected opportunity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+    /// Transaction sender (EOA `from`) when known. Populated by the runner
+    /// stamping pass; enables sender-based joins and explorer sender metrics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<Address>,
+    /// On-chain transaction hash when the opportunity is anchored to a
+    /// specific transaction (replay path). Enables tx-granularity matching
+    /// against realized explorer ops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<B256>,
+    /// How this opportunity was detected: "replay" (full EVM replay in `run`),
+    /// "log_only" (log-based synthesis in `live`), or "pending" (mempool).
+    /// Makes run-vs-live coverage gaps attributable to detection path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detection_path: Option<String>,
 }
 
 /// Build a canonical dedup string from the opportunity's key fields (L9).
@@ -149,6 +163,9 @@ impl MevOpportunity {
             backrun_tx_index: None,
             mempool_only: false,
             confidence: None,
+            sender: None,
+            tx_hash: None,
+            detection_path: None,
         }
     }
 }
