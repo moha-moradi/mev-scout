@@ -193,7 +193,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         return Some((Amm::Pendle, fact));
     }
 
-    if topic0 == SOLIDLY_SWAP_TOPIC {
+    if topic0 == *SOLIDLY_SWAP_TOPIC {
         // Solidly/Velodrome pool Swap(uint256,uint256,address,address):
         // data carries (amount0In, amount1In, amount0Out, amount1Out) packed
         // as two uint256 pairs in stable/volatile variants; treat like V2
@@ -225,7 +225,7 @@ pub const TOKEN1_SENTINEL: Address = Address::new([0xE1u8; 20]);
 /// registry is intentionally not one hardcoded topic (plan §8.4).
 pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
     let topic0 = *log.topics.first()?;
-    if topic0 == AAVE_V3_LIQUIDATION_CALL_TOPIC {
+    if topic0 == *AAVE_V3_LIQUIDATION_CALL_TOPIC {
         // topics: [sig, collateralAsset, debtAsset, user]
         // data: liquidator, debtToCover, liquidatedCollateralAmount, receiveAToken
         if log.topics.len() < 4 || log.data.len() < 64 {
@@ -243,7 +243,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_to_cover: U256::from_be_slice(&log.data[20..52]),
         });
     }
-    if topic0 == COMPOUND_V3_ABSORB_TOPIC {
+    if topic0 == *COMPOUND_V3_ABSORB_TOPIC {
         // topics: [sig, absorber]; data: (borrower[], basePaid[], basePaidTotal)
         if log.topics.len() < 2 || log.data.len() < 84 {
             return None;

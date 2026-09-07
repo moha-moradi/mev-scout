@@ -273,6 +273,9 @@ impl JitArbDetector {
             backrun_tx_index: None,
             mempool_only: false,
             confidence: None,
+            sender: None,
+            tx_hash: None,
+            detection_path: Some("replay".to_string()),
         }
     }
 }

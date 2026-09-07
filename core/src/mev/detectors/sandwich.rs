@@ -518,6 +518,9 @@ impl SandwichDetector {
                     backrun_tx_index: Some(back.tx_index),
                     mempool_only: false,
                     confidence: None,
+                    sender: None,
+                    tx_hash: None,
+                    detection_path: Some("replay".to_string()),
                 });
             }
         }

@@ -297,7 +297,7 @@ struct SandwichState {
 
 /// Find third-party (non-attacker) swaps on pools the attacker already opened.
 fn victim_swaps_between(
-    txs: &[TxInput],
+    _txs: &[TxInput],
     current: &TxInput,
     state: &HashMap<(Address, Address), SandwichState>,
 ) -> Vec<(Address, Address, U256)> {
@@ -400,7 +400,7 @@ fn fold_sandwiches(
 /// JIT pairing: same pool, same owner, same tick range, Mint before Burn,
 /// same block (plan §8.1 pass 5).
 fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
-    let mints: Vec<&JitFact> = input
+    let mints: Vec<JitFact> = input
         .txs
         .iter()
         .flat_map(|t| t.jit.iter().map(move |j| {
