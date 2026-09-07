@@ -47,21 +47,9 @@ impl LabelDb {
         self.labels.get(&addr.to_lowercase()).map(|s| s.as_str())
     }
 
-    /// Merge additional labels into the database.
-    pub fn merge(&mut self, other: Self) {
-        for (addr, label) in other.labels {
-            self.labels.entry(addr).or_insert(label);
-        }
-    }
-
     /// Return total label count.
     pub fn len(&self) -> usize {
         self.labels.len()
-    }
-
-    /// Check if empty.
-    pub fn is_empty(&self) -> bool {
-        self.labels.is_empty()
     }
 }
 

@@ -7,5 +7,5 @@ pub use manager::{check_dedup_key, PoolManager, ScanScope};
 pub use pool_types::{
     calldata_gas_estimate, is_fee_on_transfer_token, is_rebase_token, BalancerPoolState,
     BalancerPoolVariant, CurvePoolState, CurvePoolVariant, PendlePoolState, PoolInfo, PoolState,
-    TraderJoeLBPoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, V4HookFlags,
+    TraderJoeLBPoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };

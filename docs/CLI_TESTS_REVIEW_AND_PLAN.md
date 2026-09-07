@@ -384,6 +384,13 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
 - [x] `scan --address <آدرس pool کشف‌شده>` (فیلتر روی subset با assert عدم افینتی) +
       خروجی CSV (هدر `block,tx_hash,token,from,to,value`)
 - [x] `replay --tx-index 0` روی بلاک fetchشده (بلاک از `run_*.json` استخراج می‌شود)
+      > **🐛 کشف بازبینی بعدی (۷ سپتامبر ۲۰۲۶):** نسخه‌ی اول این تست به `run` فلگ
+      > `--export-path` می‌داد که در `RunArgs` وجود ندارد → clap با exit 2 رد می‌کرد،
+      > نتیجه با `let _ =` دور ریخته می‌شد و فایل هرگز ساخته نمی‌شد → تست همیشه از
+      > مسیر SKIP خارج می‌شد (مسیر مرده، همان الگوی ۰.۴). رفع: `export_path` از
+      > کانفیگ (`temp_config` extras، الگوی ۰.۵) داده شد + نتیجه‌ی `run` با
+      > `expect_ok` چک شد. تأیید تجربی: `run_*.json` با `start_block` واقعی ساخته
+      > و `replay --tx-index 0` واقعاً اجرا شد.
 - [x] `discover --source hybrid --max-pools 20` (union + assert dedup آدرس‌ها) +
       هشدار `--batch-size > 5000` (تأیید: در discover.rs:162 هست و assert شد)
 - [x] `discover --incremental` بعد از discover اولیه
@@ -402,8 +409,8 @@ let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else { continue; };
 ## فاز ۴ — بهداشت repo (اختیاری ولی مهم) 🧹
 
 - [x] **کلیدهای API زنده در `mev-scout.toml`** → سه‌لایه حل شد:
-      1. پشتیبانی محصولی `${ENV_VAR}` در `rpc_url` / `rpc_urls` /
-         `coingecko_api_key` (گسترش هنگام load؛ متغیر unset به‌صورت literal می‌ماند
+      1. پشتیبانی محصولی `${ENV_VAR}` در `rpc_url` / `rpc_urls`
+         (گسترش هنگام load؛ متغیر unset به‌صورت literal می‌ماند
          تا fail بلند باشد — `Config::expand_env_secrets` در settings.rs + ۴ unit test)
       2. `mev-scout.example.toml` بدون کلید واقعی (الگوی env placeholder)
       3. تست‌ها: `common::first_rpc_url()` اکنون اول `RPC_URL` env را می‌خواند

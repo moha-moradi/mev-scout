@@ -49,21 +49,19 @@ pub fn save_results_json(
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {
     pm.get(addr)
         .map(|ps| {
-            let info = Some(ps.info());
-            if let Some(info) = info {
-                if let Some(ref tokens) = info.underlying_tokens {
-                    if tokens.len() > 2 {
-                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
-                        return format!("{} ({})", info.address, syms.join("/"));
-                    }
+            let info = ps.info();
+            if let Some(ref tokens) = info.underlying_tokens {
+                if tokens.len() > 2 {
+                    let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                    return format!("{} ({})", info.address, syms.join("/"));
                 }
-                if let Some(ref name) = info.name {
-                    return name.to_string();
-                }
-                if let (Some(t0), Some(t1)) = (&info.token0_symbol, &info.token1_symbol) {
-                    let dex = info.dex_name.as_deref().map(String::from).unwrap_or(info.dex_type.to_string());
-                    return format!("{dex} {}/{}", t0, t1);
-                }
+            }
+            if let Some(ref name) = info.name {
+                return name.to_string();
+            }
+            if let (Some(t0), Some(t1)) = (&info.token0_symbol, &info.token1_symbol) {
+                let dex = info.dex_name.as_deref().map(String::from).unwrap_or(info.dex_type.to_string());
+                return format!("{dex} {}/{}", t0, t1);
             }
             format!("{}", addr)
         })

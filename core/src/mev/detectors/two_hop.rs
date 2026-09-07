@@ -635,25 +635,6 @@ pub fn curve_output_amount(
     curve_math::curve_output_amount(amount_in, pool, token_in, token_out)
 }
 
-/// Balancer weighted pool output — forwards to `balancer_math::balancer_output_amount`.
-pub fn balancer_output_amount(
-    amount_in: u128,
-    reserve_in: u128,
-    reserve_out: u128,
-    weight_in: u128,
-    weight_out: u128,
-    fee: u32,
-) -> Option<u128> {
-    balancer_math::balancer_output_amount(
-        amount_in,
-        reserve_in,
-        reserve_out,
-        weight_in,
-        weight_out,
-        fee,
-    )
-}
-
 /// Balancer quote dispatcher — forwards to `balancer_math::balancer_quote_exact_in`.
 pub fn balancer_quote_exact_in(
     amount_in: u128,

@@ -151,64 +151,6 @@ impl MevOpportunity {
             confidence: None,
         }
     }
-
-    /// Compute and store the canonical dedup ID (L9) based on strategy type
-    /// and key identifying fields. Returns self for builder chaining.
-    pub fn with_canonical_id(mut self) -> Self {
-        self.canonical_id = Some(compute_canonical_id(
-            self.strategy,
-            self.block_number,
-            self.pool_a,
-            self.pool_b,
-            self.token_in,
-            self.token_out,
-            self.victim_tx_index,
-            self.backrun_tx_index,
-        ));
-        self
-    }
-
-    /// Set JIT-specific fields: tick range and liquidity amount.
-    /// Returns Err if strategy is not JIT or JitArb.
-    pub fn with_jit_fields(
-        mut self,
-        tick_lower: i32,
-        tick_upper: i32,
-        liquidity: u128,
-    ) -> Result<Self, &'static str> {
-        if self.strategy != Strategy::Jit && self.strategy != Strategy::JitArb {
-            return Err("JIT fields only valid for Jit/JitArb strategies");
-        }
-        self.tick_lower = Some(tick_lower);
-        self.tick_upper = Some(tick_upper);
-        self.liquidity_amount = Some(liquidity);
-        Ok(self)
-    }
-
-    /// Set sandwich-specific fields: victim and backrun tx indices.
-    /// Returns Err if strategy is not Sandwich.
-    pub fn with_sandwich_fields(
-        mut self,
-        victim_tx_index: usize,
-        backrun_tx_index: usize,
-    ) -> Result<Self, &'static str> {
-        if self.strategy != Strategy::Sandwich {
-            return Err("Sandwich fields only valid for Sandwich strategy");
-        }
-        self.victim_tx_index = Some(victim_tx_index);
-        self.backrun_tx_index = Some(backrun_tx_index);
-        Ok(self)
-    }
-
-    /// Set multi-hop path.
-    /// Returns Err if strategy is not MultiHopArb.
-    pub fn with_path(mut self, path: Vec<Address>) -> Result<Self, &'static str> {
-        if self.strategy != Strategy::MultiHopArb {
-            return Err("Path only valid for MultiHopArb strategy");
-        }
-        self.path = Some(path);
-        Ok(self)
-    }
 }
 
 /// Saved results file wrapping opportunities with run metadata.

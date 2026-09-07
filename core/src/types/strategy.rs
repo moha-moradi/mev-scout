@@ -53,18 +53,6 @@ impl FlashLoanProvider {
             FlashLoanProvider::Uniswap => 200_000, // V3 flash swap
         }
     }
-
-    pub fn priority_list(auto_mode: bool) -> &'static [FlashLoanProvider] {
-        if auto_mode {
-            &[
-                FlashLoanProvider::Balancer,
-                FlashLoanProvider::Aave,
-                FlashLoanProvider::Uniswap,
-            ]
-        } else {
-            &[]
-        }
-    }
 }
 
 #[derive(
@@ -319,44 +307,6 @@ impl Default for GasConfig {
     }
 }
 
-/// Describes where token USD prices come from.
-#[derive(Debug, Clone)]
-pub enum PriceSource {
-    /// Fetch prices dynamically from CoinGecko API.
-    CoinGecko,
-    /// Pre-fetched prices from CoinGecko (token address → USD).
-    FromCoinGecko(std::collections::HashMap<alloy::primitives::Address, f64>),
-    /// Prices provided via CLI --token-price flag.
-    FromCli(std::collections::HashMap<alloy::primitives::Address, f64>),
-}
-
-/// Controls how native token USD price is sourced.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::Display,
-    strum::EnumString,
-)]
-#[strum(ascii_case_insensitive)]
-pub enum PriceOracleMode {
-    /// Use CoinGecko API only (default, backward compat).
-    #[default]
-    #[strum(serialize = "coingecko", serialize = "coingecko_only")]
-    CoinGeckoOnly,
-    /// Derive native token price from the highest-TVL on-chain pool.
-    #[strum(serialize = "onchain", serialize = "on_chain")]
-    OnChain,
-    /// Fetch both CoinGecko and on-chain; warn if divergence >5%.
-    #[strum(serialize = "hybrid")]
-    Hybrid,
-}
-
 #[derive(
     Debug,
     Clone,
@@ -379,39 +329,4 @@ pub enum OutputFormat {
     #[serde(rename = "json")]
     #[strum(serialize = "json")]
     Json,
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::Display,
-    strum::EnumString,
-)]
-#[strum(ascii_case_insensitive)]
-pub enum ExecutorType {
-    #[strum(serialize = "flash_loan_arbitrage")]
-    FlashLoanArbitrage,
-    #[strum(serialize = "sandwich")]
-    Sandwich,
-    #[strum(serialize = "liquidation")]
-    Liquidation,
-    #[strum(serialize = "jit_liquidity")]
-    JitLiquidity,
-}
-
-impl ExecutorType {
-    pub fn from_strategy(strategy: Strategy) -> Option<Self> {
-        match strategy {
-            Strategy::TwoHopArb | Strategy::MultiHopArb => Some(ExecutorType::FlashLoanArbitrage),
-            Strategy::Sandwich => Some(ExecutorType::Sandwich),
-            Strategy::Liquidation => Some(ExecutorType::Liquidation),
-            Strategy::Jit | Strategy::JitArb => Some(ExecutorType::JitLiquidity),
-        }
-    }
 }

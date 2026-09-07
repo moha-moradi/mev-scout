@@ -84,7 +84,6 @@ pub struct ProviderState {
     consecutive_failures: u64,
     latency_ms: f64,
     label: String,
-    url: String,
     /// Whether this provider supports archive queries (`eth_getProof`, historical `eth_call`, etc.).
     /// Set during `validate_all`: `true` if the `eth_getProof` probe succeeds, `false` otherwise.
     /// Non-archive providers are still alive for block/log/fetch workloads.
@@ -100,7 +99,7 @@ pub struct ProviderState {
 }
 
 impl ProviderState {
-    pub fn new(provider: RootProvider, rps: Option<f64>, label: String, url: String) -> Self {
+    pub fn new(provider: RootProvider, rps: Option<f64>, label: String) -> Self {
         let r = rps.unwrap_or(1.0).max(0.1);
         let rate_limiter = rps.map(|_| Arc::new(RateLimiter::new(r, r)));
         Self {
@@ -113,7 +112,6 @@ impl ProviderState {
             consecutive_failures: 0,
             latency_ms: 0.0,
             label,
-            url,
             archive: true,
             state_capable: true,
         }
@@ -123,10 +121,6 @@ impl ProviderState {
 
     pub fn provider(&self) -> &RootProvider {
         &self.provider
-    }
-
-    pub fn rate_limiter(&self) -> Option<&Arc<RateLimiter>> {
-        self.rate_limiter.as_ref()
     }
 
     pub fn weight(&self) -> f64 {
@@ -155,10 +149,6 @@ impl ProviderState {
 
     pub fn label(&self) -> &str {
         &self.label
-    }
-
-    pub fn url(&self) -> &str {
-        &self.url
     }
 
     pub fn archive(&self) -> bool {
@@ -192,21 +182,6 @@ impl ProviderState {
 
     pub fn set_rate_limiter(&mut self, rl: Option<Arc<RateLimiter>>) {
         self.rate_limiter = rl;
-    }
-
-    /// Mark provider as failed (not dead). Sets `is_alive = false` without
-    /// changing cooldown or weight. Use when a provider should be excluded
-    /// but without the exponential-backoff penalty of `record_failure`.
-    pub fn mark_failed(&mut self) {
-        self.is_alive = false;
-    }
-
-    /// Reset provider to a healthy state: alive, no cooldown, no failures.
-    /// Does not change weight, latency, or rate-limiter configuration.
-    pub fn reset(&mut self) {
-        self.is_alive = true;
-        self.cooldown_until = None;
-        self.consecutive_failures = 0;
     }
 
     /// Mark provider as completely dead with an explicit cooldown. Used when

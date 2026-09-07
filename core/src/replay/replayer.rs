@@ -8,7 +8,6 @@
 //! - [`BlockReplayer`] — high-level replay interface used by `BacktestRunner`
 //! - [`CachedRpcDb`] — lazy-fetch database bridging SQLite cache and RPC for
 //!   revm's `Database` trait
-//! - [`StateSnapshot`] — forkable state wrapper for snapshot/rollback patterns
 //!
 //! ## Polygon special handling
 //! Chain 137 (Polygon) requires BLS12-377 precompile registration and state
@@ -197,8 +196,6 @@ pub fn register_polygon_precompiles(
 ///
 /// ## Replay modes
 /// - `replay_to()` — replay up to a specific tx index (used by CLI `replay`)
-/// - `replay_block()` — replay entire block
-/// - `replay_each()` — replay with an `on_tx` callback after each tx
 /// - `replay_each_filtered()` — replay with a filter to skip non-pool txs
 ///
 /// The filtered mode is the critical performance optimization: most
@@ -581,56 +578,6 @@ impl BlockReplayer {
         Ok((cache_db, results))
     }
 
-    /// Replay an entire block (all txs).
-    pub fn replay_block(
-        &self,
-        block_num: u64,
-    ) -> anyhow::Result<(CacheDB<CachedRpcDb>, Vec<ExecutedTx>)> {
-        let txs = self
-            .cache
-            .get_txs(block_num)?
-            .ok_or_else(|| anyhow::anyhow!("Txs for block {} not found in cache", block_num))?;
-        let tx_count = txs.len();
-        self.replay_to(block_num, tx_count.saturating_sub(1))
-    }
-
-    /// Replay a block tx-by-tx, invoking `on_tx` after each transaction.
-    /// Maintains a single EVM context across all txs — efficient for MEV detection.
-    ///
-    /// The callback receives (tx_index, &ExecutedTx, &CacheDB<CachedRpcDb>).
-    pub fn replay_each(
-        &self,
-        block_num: u64,
-        mut on_tx: impl FnMut(usize, &ExecutedTx, &CacheDB<CachedRpcDb>) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        let (block, txs) = self.load_block_data(block_num)?;
-        let receipts = self.load_receipts(block_num)?;
-
-        let mut evm = build_mainnet_evm!(self, block_num, &block);
-
-        for (i, tx) in txs.iter().enumerate() {
-            let tx_env = self.tx_data_to_tx_env(tx);
-            let mut executed = match Self::exec_or_revert(
-                block_num,
-                i,
-                tx.hash,
-                tx.gas_limit,
-                evm.transact_commit(tx_env),
-            ) {
-                ExecOutcome::Executed(exec_result) => {
-                    Self::build_executed_tx(tx, &exec_result, receipts.get(i), block_num)
-                }
-                ExecOutcome::StateLoadFailed(err_msg) => {
-                    Self::synthesize_tx(tx, receipts.get(i), &err_msg)
-                }
-            };
-            executed.index = i as u64;
-            on_tx(i, &executed, &evm.ctx.journaled_state.database)?;
-        }
-
-        Ok(())
-    }
-
     /// Replay a block, skipping EVM execution for transactions that don't
     /// interact with tracked pools or tokens.
     ///
@@ -735,33 +682,6 @@ impl BlockReplayer {
                 .unwrap_or_default(),
             output: Bytes::new(),
             error: Some(error_msg.to_string()),
-        }
-    }
-}
-
-/// A forkable state snapshot wrapping CacheDB.
-pub struct StateSnapshot {
-    db: CacheDB<CachedRpcDb>,
-}
-
-impl StateSnapshot {
-    pub fn new(db: CacheDB<CachedRpcDb>) -> Self {
-        StateSnapshot { db }
-    }
-
-    pub fn db(&self) -> &CacheDB<CachedRpcDb> {
-        &self.db
-    }
-
-    pub fn db_mut(&mut self) -> &mut CacheDB<CachedRpcDb> {
-        &mut self.db
-    }
-
-    /// Create an independent fork of this state.
-    /// Writes to the fork do not affect the original.
-    pub fn fork(&self) -> Self {
-        StateSnapshot {
-            db: self.db.clone(),
         }
     }
 }

@@ -59,7 +59,7 @@ Tests never need live API keys. The gated suites resolve their endpoint via
    `RPC_URL=https://...` alone.
 2. First `https://` URL in `mev-scout.toml` (the historical default).
 
-`mev-scout.toml` itself supports `${ENV_VAR}` placeholders inside `rpc_url`,
-`rpc_urls`, and `coingecko_api_key` (expanded at config load; unset vars stay
+`mev-scout.toml` itself supports `${ENV_VAR}` placeholders inside `rpc_url`
+and `rpc_urls` (expanded at config load; unset vars stay
 verbatim so failures are loud). See `mev-scout.example.toml` for a keyless
 template — prefer it over committing live keys.

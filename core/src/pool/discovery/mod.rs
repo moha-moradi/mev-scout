@@ -114,14 +114,6 @@ static BALANCER_GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     Bytes::copy_from_slice(&hash[..4])
 });
 
-// Curve exchange_underlying emits separate event variants
-pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
-});
-pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
-});
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPool {
     pub address: Address,

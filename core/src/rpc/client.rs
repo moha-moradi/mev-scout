@@ -157,7 +157,7 @@ impl RpcClient {
                 let u: Url = url.parse().map_err(|e| anyhow::anyhow!("invalid RPC URL '{url}': {e}"))?;
                 let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
                 let provider = RootProvider::new(rpc_client);
-                Ok(ProviderState::new(provider, None, format!("provider-{i}"), url.to_string()))
+                Ok(ProviderState::new(provider, None, format!("provider-{i}")))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(RpcClient {
@@ -178,15 +178,6 @@ impl RpcClient {
             .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
-    }
-
-    /// Reset all providers to healthy state.
-    pub async fn reset(&self) {
-        let mut provs = self.providers.lock().await;
-        for p in provs.iter_mut() {
-            p.reset();
-        }
-        self.current.store(0, Ordering::Relaxed);
     }
 
     /// Returns the chain ID this client is configured for.

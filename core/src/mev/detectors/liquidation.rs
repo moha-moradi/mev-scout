@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{keccak256, Address, B256, U256};
 use crate::data::ExecutedLog;
 use crate::types::MevOpportunity;
-use crate::pool::math::consts::{BPS_DENOMINATOR, PERCENT_DENOMINATOR, PPM_DENOMINATOR};
+use crate::pool::math::consts::{BPS_DENOMINATOR, LIQUIDATION_GAS_LIMIT, PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::state::{calldata_gas_estimate, PoolManager};
 use crate::rpc::RpcClient;
 use crate::types::{GasConfig, Strategy};
@@ -33,7 +33,6 @@ const FALLBACK_LIQUIDATION_BONUS_BPS: u16 = 500; // 5.00%
 
 const MAX_CLOSE_FACTOR_NUM: u128 = 50; // 50%
 const MAX_CLOSE_FACTOR_DEN: u128 = 100;
-const LIQUIDATION_GAS_LIMIT: u64 = 180_000;
 
 /// Per-asset reserve parameters fetched from the Aave V3 Pool contract.
 /// Used to replace hardcoded constants with real protocol data during proactive detection.
@@ -91,10 +90,6 @@ impl AaveReserveCache {
 
     pub fn insert(&mut self, token: Address, data: AaveReserveData) {
         self.reserves.insert(token, data);
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.reserves.is_empty()
     }
 
     pub fn len(&self) -> usize {

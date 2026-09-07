@@ -1,4 +1,4 @@
-use alloy::primitives::{B256, U256};
+use alloy::primitives::U256;
 use rusqlite::Connection;
 
 use crate::data::types::{BlockData, ReceiptData, TxData};
@@ -310,54 +310,6 @@ impl super::SqliteStore {
             });
         }
         Ok(Some(receipts))
-    }
-
-    pub fn get_logs_for_block(&self, block_num: u64) -> anyhow::Result<Vec<crate::data::NormalizedLog>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig
-             FROM logs WHERE block_number = ?1 ORDER BY log_index",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
-        let mut logs = Vec::new();
-        while let Some(row) = rows.next()? {
-            logs.push(super::row_to_normalized_log(&row)?);
-        }
-        Ok(logs)
-    }
-
-    pub fn get_logs_for_tx(&self, tx_hash: &B256) -> anyhow::Result<Vec<crate::data::NormalizedLog>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT l.block_number, l.tx_index, l.log_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data, l.erc20_amount, l.event_sig
-             FROM logs l
-             INNER JOIN transactions t ON t.block_number = l.block_number AND t.tx_index = l.tx_index
-             WHERE t.hash = ?1
-             ORDER BY l.log_index",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![super::SqliteStore::b256_to_blob(tx_hash)])?;
-        let mut logs = Vec::new();
-        while let Some(row) = rows.next()? {
-            logs.push(super::row_to_normalized_log(&row)?);
-        }
-        Ok(logs)
-    }
-
-    pub fn get_cached_blocks_in_range(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT number FROM blocks
-             INNER JOIN block_meta USING(number)
-             WHERE number BETWEEN ?1 AND ?2 AND txs_fetched = 1
-             ORDER BY number",
-        )?;
-        let blocks = stmt
-            .query_map(rusqlite::params![start as i64, end as i64], |row| {
-                row.get::<_, i64>(0).map(|v| v as u64)
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(blocks)
     }
 
     pub fn missing_blocks_in_range(&self, start: u64, end: u64) -> anyhow::Result<Vec<u64>> {

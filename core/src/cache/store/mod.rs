@@ -9,14 +9,13 @@ pub mod accounts;
 pub mod blocks;
 pub mod integrity;
 pub mod manifests;
-pub mod pending;
 pub mod pools;
 pub mod ticks;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use alloy::primitives::{b256, Address, B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +35,7 @@ pub struct RunManifest {
 }
 
 /// Transfer(address,address,uint256) event topic hash
-pub const TRANSFER_EVENT_TOPIC: B256 =
-    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
+pub use crate::chain::events::TRANSFER_TOPIC as TRANSFER_EVENT_TOPIC;
 
 /// SQLite-backed persistent cache for block data, EVM state, and run metadata.
 ///
@@ -175,11 +173,6 @@ impl SqliteStore {
                 PRIMARY KEY (address, center_word)
             );
 
-            CREATE TABLE IF NOT EXISTS discovery_cursors (
-                factory    BLOB PRIMARY KEY,
-                block_number INTEGER NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS run_manifests (
                 run_id     TEXT PRIMARY KEY,
                 chain      TEXT NOT NULL,
@@ -208,23 +201,6 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_logs_address ON logs(address);
             CREATE INDEX IF NOT EXISTS idx_logs_topic0 ON logs(topic0);
-
-            CREATE TABLE IF NOT EXISTS pending_txs (
-                block_number INTEGER NOT NULL,
-                tx_index     INTEGER NOT NULL,
-                hash         BLOB NOT NULL,
-                from_addr    BLOB NOT NULL,
-                to_addr      BLOB,
-                input        BLOB NOT NULL,
-                value        BLOB NOT NULL,
-                gas_limit    INTEGER NOT NULL,
-                max_fee_per_gas INTEGER NOT NULL,
-                max_priority_fee_per_gas INTEGER,
-                nonce        INTEGER NOT NULL,
-                access_list  BLOB,
-                captured_at  INTEGER NOT NULL,
-                PRIMARY KEY (block_number, tx_index)
-            );
 
             CREATE TABLE IF NOT EXISTS token_symbols (
                 address    BLOB PRIMARY KEY,
@@ -436,22 +412,6 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         tvl_usd,
         volume_usd_24h,
         volume_usd_30d,
-    })
-}
-
-fn row_to_normalized_log(row: &rusqlite::Row) -> anyhow::Result<crate::data::NormalizedLog> {
-    Ok(crate::data::NormalizedLog {
-        block_number: row.get::<_, i64>(0)? as u64,
-        tx_index: row.get::<_, i64>(1)? as u64,
-        log_index: row.get::<_, i64>(2)? as u64,
-        address: SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(3)?),
-        topic0: row.get::<_, Option<Vec<u8>>>(4)?.map(|b| SqliteStore::blob_to_b256(&b)),
-        topic1: row.get::<_, Option<Vec<u8>>>(5)?.map(|b| SqliteStore::blob_to_b256(&b)),
-        topic2: row.get::<_, Option<Vec<u8>>>(6)?.map(|b| SqliteStore::blob_to_b256(&b)),
-        topic3: row.get::<_, Option<Vec<u8>>>(7)?.map(|b| SqliteStore::blob_to_b256(&b)),
-        data: row.get::<_, Vec<u8>>(8)?.into(),
-        erc20_amount: row.get::<_, Option<Vec<u8>>>(9)?.map(|b| SqliteStore::blob_to_u256(&b)),
-        event_sig: row.get::<_, Option<String>>(10)?,
     })
 }
 

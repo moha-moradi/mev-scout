@@ -7,8 +7,7 @@ use crate::utils::u128_from_be_bytes;
 use alloy::primitives::{b256, Address, B256, U256};
 
 /// Event signature for Uniswap V2 Swap event
-pub(crate) const SWAP_TOPIC: B256 =
-    b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
+pub(crate) use crate::chain::events::V2_SWAP_TOPIC as SWAP_TOPIC;
 /// Event signature for Uniswap V2 Sync event
 pub(crate) const SYNC_TOPIC: B256 =
     b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");

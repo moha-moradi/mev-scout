@@ -1,3 +1,8 @@
+//! Live-RPC end-to-end pipeline tests.
+//!
+//! All tests here hit a real RPC endpoint, so they are gated like the CLI
+//! E2E suite: set `MEV_SCOUT_E2E=1` (plus `RPC_URL`, or fall back to the
+//! public Polygon endpoint) to enable them; otherwise every test skips.
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -166,54 +171,28 @@ fn temp_cache(name: &str) -> (SqliteStore, String) {
     (store, dir)
 }
 
-fn rpc_url() -> Option<String> {
-    std::env::var("RPC_URL").ok().filter(|s| !s.is_empty()).or_else(config_rpc_url)
-}
-
-/// First configured RPC URL from the repo's `mev-scout.toml`, if reachable.
-fn config_rpc_url() -> Option<String> {
-    let candidates = ["mev-scout.toml", "../mev-scout.toml", "core/mev-scout.toml", "../../mev-scout.toml"];
-    for path in candidates {
-        if !std::path::Path::new(path).exists() {
-            continue;
-        }
-        let cfg = mev_scout_core::config::Config::load(path).ok()?;
-        if let Some(url) = cfg.rpc.rpc_urls.into_iter().next() {
-            if !url.is_empty() {
-                return Some(url);
-            }
-        }
-    }
-    None
-}
-
 async fn try_rpc() -> Option<(RpcClient, u64)> {
-    if let Some(url) = rpc_url() {
-        match RpcClient::new(&url, POLYGON_CHAIN_ID) {
-            Ok(rpc) => {
-                if let Ok(block) = rpc.get_block_number().await {
-                    let host = url.split('/').nth(2).unwrap_or(&url);
-                    eprintln!("  Using configured RPC: {host}");
-                    return Some((rpc, block));
-                }
-            }
-            Err(e) => eprintln!("  RPC_URL client creation failed: {e}"),
-        }
+    if std::env::var("MEV_SCOUT_E2E").as_deref() != Ok("1") {
+        return None;
     }
-    let public_url = ChainName::Polygon.public_rpc_url();
-    match RpcClient::new(public_url, POLYGON_CHAIN_ID) {
+    let url = std::env::var("RPC_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ChainName::Polygon.public_rpc_url().to_string());
+    match RpcClient::new(&url, POLYGON_CHAIN_ID) {
         Ok(rpc) => match rpc.get_block_number().await {
             Ok(block) => {
-                eprintln!("  Using public RPC: {public_url}");
+                let host = url.split('/').nth(2).unwrap_or(&url);
+                eprintln!("  Using RPC: {host}");
                 Some((rpc, block))
             }
             Err(e) => {
-                eprintln!("  Public RPC connection failed: {e}");
+                eprintln!("  RPC connection failed: {e}");
                 None
             }
         },
         Err(e) => {
-            eprintln!("  Public RPC client creation failed: {e}");
+            eprintln!("  RPC client creation failed: {e}");
             None
         }
     }

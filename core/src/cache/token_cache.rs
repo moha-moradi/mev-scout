@@ -105,12 +105,6 @@ impl TokenCache {
         self.inner.get(addr).map(|(s, _)| s.as_str())
     }
 
-    /// Look up cached (symbol, decimals) for a token address.
-    #[inline]
-    pub fn get_full(&self, addr: &Address) -> Option<(&str, Option<i32>)> {
-        self.inner.get(addr).map(|(s, d)| (s.as_str(), *d))
-    }
-
     /// Insert a new token symbol into the in-memory cache.
     pub fn insert(&mut self, addr: Address, symbol: String, decimals: Option<i32>) {
         self.inner.insert(addr, (symbol, decimals));
@@ -132,14 +126,6 @@ impl TokenCache {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
-    }
-
-    /// Return token addresses that are NOT in the cache (need RPC resolution).
-    pub fn missing(&self, addrs: &[Address]) -> Vec<Address> {
-        addrs.iter()
-            .filter(|a| !self.inner.contains_key(*a))
-            .copied()
-            .collect()
     }
 
     /// Bulk-save newly resolved tokens to SQLite.
@@ -168,42 +154,6 @@ impl TokenCache {
         Ok(saved)
     }
 
-    /// Persist every token in the in-memory cache to SQLite (no skip).
-    pub fn save_all_to_sqlite(&self, store: &SqliteStore) -> anyhow::Result<u64> {
-        let conn = store.conn();
-        let mut saved = 0u64;
-        for (addr, (symbol, decimals)) in &self.inner {
-            let addr_bytes: &[u8] = addr.0.as_slice();
-            conn.execute(
-                "INSERT OR REPLACE INTO token_symbols (address, symbol, decimals) VALUES (?1, ?2, ?3)",
-                rusqlite::params![addr_bytes, symbol, decimals],
-            )?;
-            saved += 1;
-        }
-        if saved > 0 {
-            tracing::info!("Token cache: persisted {} tokens to SQLite", saved);
-        }
-        Ok(saved)
-    }
-
-    /// Save a single token to both in-memory cache and SQLite.
-    pub fn save_one(
-        &mut self,
-        store: &SqliteStore,
-        addr: Address,
-        symbol: &str,
-        decimals: Option<i32>,
-    ) -> anyhow::Result<()> {
-        let conn = store.conn();
-        let addr_bytes: &[u8] = addr.0.as_slice();
-        conn.execute(
-            "INSERT OR REPLACE INTO token_symbols (address, symbol, decimals) VALUES (?1, ?2, ?3)",
-            rusqlite::params![addr_bytes, symbol, decimals],
-        )?;
-        self.inner.insert(addr, (symbol.to_string(), decimals));
-        Ok(())
-    }
-
     /// Merge another cache into this one.
     pub fn merge(&mut self, other: TokenCache) {
         for (addr, (symbol, decimals)) in other.inner {
@@ -214,24 +164,5 @@ impl TokenCache {
     /// Return all cached entries (for serialization or inspection).
     pub fn entries(&self) -> &HashMap<Address, (String, Option<i32>)> {
         &self.inner
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_missing_filter() {
-        let mut cache = TokenCache::default();
-        let addr1 = "0x0000000000000000000000000000000000000001".parse().unwrap();
-        let addr2 = "0x0000000000000000000000000000000000000002".parse().unwrap();
-        let addr3 = "0x0000000000000000000000000000000000000003".parse().unwrap();
-
-        cache.insert(addr1, "USDC".to_string(), Some(6));
-        cache.insert(addr3, "WETH".to_string(), Some(18));
-
-        let missing = cache.missing(&[addr1, addr2, addr3]);
-        assert_eq!(missing, vec![addr2]);
     }
 }

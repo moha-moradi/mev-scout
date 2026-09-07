@@ -18,25 +18,10 @@ pub const TRANSFER_TOPIC: B256 =
 pub const V2_SWAP_TOPIC: B256 =
     b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
-pub const V2_SYNC_TOPIC: B256 =
-    b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
-
-pub const V2_PAIR_CREATED_TOPIC: B256 =
-    b256!("0d3648bd0f6ba80134a33ba9275ac585d9d315b0ad63f114424ee8c719964e50");
-
 // ── Uniswap V3 ──────────────────────────────────────────────────────
 
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
-
-pub static V3_MINT_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)"));
-
-pub const V3_BURN_TOPIC: B256 =
-    b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
-
-pub static V3_POOL_CREATED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("PoolCreated(address,address,uint24,int24,address)"));
 
 pub static V3_FLASH_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Flash(address,address,uint256,uint256,bytes)")
@@ -54,20 +39,10 @@ pub static V4_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
 });
 
-pub static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("Initialize(bytes32 indexed id,Address indexed currency0,Address indexed currency1,uint24 fee,int24 tickSpacing,Address hooks)")
-});
-
 // ── Balancer V2 ─────────────────────────────────────────────────────
 
 pub static BALANCER_FLASH_LOAN_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("FlashLoan(address,address,address,uint256,bytes)"));
-
-pub static BALANCER_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
-
-pub static BALANCER_POOL_REGISTERED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("PoolRegistered(bytes32,address,uint8)"));
 
 // ── Aave V2 ─────────────────────────────────────────────────────────
 
@@ -90,16 +65,8 @@ pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
 
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 
-pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("PairCreated(address,address,bool,address)"));
-
 pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Swap(uint256,uint256,address,address)"));
-
-// ── Camelot ─────────────────────────────────────────────────────────
-
-pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("PairCreated(address,address,address,uint256,bool)"));
 
 // ── Curve ───────────────────────────────────────────────────────────
 
@@ -108,9 +75,6 @@ pub static CURVE_TOKEN_EXCHANGE_TOPIC: LazyLock<B256> =
 
 pub static CURVE_V2_TOKEN_EXCHANGE_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
-
-pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("PoolAdded(address,uint256)"));
 
 // ── Trader Joe LB ───────────────────────────────────────────────────
 
@@ -128,15 +92,9 @@ pub static TRADER_JOE_LB_SWAP_LEGACY_TOPIC: LazyLock<B256> = LazyLock::new(|| {
 
 // ── Pendle Finance ──────────────────────────────────────────────────
 
-pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("NewMarket(address,address,uint256)"));
-
 /// Pendle V2 market Swap event (caller, receiver indexed).
 pub static PENDLE_MARKET_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
-
-pub static TRADER_JOE_LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("LBPairCreated(address,address,address,uint256,address[])"));
 
 // ── Decoded event structs ───────────────────────────────────────────
 

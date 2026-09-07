@@ -75,34 +75,4 @@ impl GasPriceDistribution {
         let idx = ((self.prices.len() - 1).saturating_mul(p)) / 100;
         self.prices.get(idx).copied()
     }
-
-    /// Estimate the next block's base fee using EIP-1559 dynamics.
-    ///
-    /// When `gas_used > gas_limit / 2`, base fee increases by up to 12.5%.
-    /// When `gas_used < gas_limit / 2`, base fee decreases by up to 12.5%.
-    /// The adjustment scales linearly with how far usage is from the target.
-    pub fn forecast_base_fee(&self, current_base_fee: u128) -> u128 {
-        let (_, last_ratio) = match self.base_fees.last() {
-            Some(v) => *v,
-            None => return current_base_fee,
-        };
-        let target = 0.5;
-        if last_ratio > target {
-            let excess = ((last_ratio - target) / target).min(1.0);
-            let bump = (current_base_fee as f64 * excess * 0.125) as u128;
-            current_base_fee.saturating_add(bump.max(1))
-        } else if last_ratio < target {
-            let deficit = ((target - last_ratio) / target).min(1.0);
-            let drop = (current_base_fee as f64 * deficit * 0.125) as u128;
-            current_base_fee.saturating_sub(drop)
-        } else {
-            current_base_fee
-        }
-    }
-
-    /// Clear all tracked data.
-    pub fn clear(&mut self) {
-        self.prices.clear();
-        self.base_fees.clear();
-    }
 }

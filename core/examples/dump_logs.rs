@@ -3,8 +3,11 @@ use rusqlite::Connection;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    let block: u64 = env::args().nth(1).unwrap_or_else(|| "92045880".into()).parse()?;
-    let conn = Connection::open(r"D:\gitlab.dte.repo\mev-scout\cache\polygon-mev-scout.sqlite")?;
+    let db: String = env::args().nth(1).unwrap_or_else(
+        || r"D:\gitlab.dte.repo\mev-scout\cache\polygon-mev-scout.sqlite".into(),
+    );
+    let block: u64 = env::args().nth(2).unwrap_or_else(|| "92045880".into()).parse()?;
+    let conn = Connection::open(db)?;
     let mut stmt = conn.prepare(
         "SELECT r.tx_index, r.logs
          FROM receipts r INNER JOIN transactions t ON t.hash = r.tx_hash

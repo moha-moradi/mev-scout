@@ -41,10 +41,6 @@ impl RangeResolver {
         RangeResolver { rpc }
     }
 
-    pub fn rpc_client(&self) -> &RpcClient {
-        &self.rpc
-    }
-
     pub async fn resolve(&self, mode: &RangeMode) -> error::Result<ResolvedRange> {
         match mode {
             RangeMode::Days(n) => self.resolve_days(*n).await,

@@ -8,9 +8,6 @@ use mev_scout_core::pool::discovery::DiscoveredPool;
 use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::types::{MevOpportunity, ResultsFile, Strategy};
 
-mod common;
-use common::*;
-
 /// ── Test 6: ResultsFile JSON roundtrip ──────────────────────────────────────
 #[test]
 fn test_results_file_roundtrip() {

@@ -4,10 +4,8 @@
 //! then runs the full MEV Scout pipeline (fetch, pool init, backtest)
 //! against those blocks and asserts detection results.
 //!
-//! Requires environment variables:
-//!   - `RPC_URL` — Polygon (or other chain) RPC endpoint
-//!
-//! The variable is optional — the test skips gracefully when absent.
+//! Gated like the CLI E2E suite: requires `MEV_SCOUT_E2E=1` and `RPC_URL`
+//! (a Polygon endpoint). The suite skips gracefully when the gate is off.
 
 use alloy::primitives::{Address, U256};
 use mev_scout_core::cache::SqliteStore;
@@ -26,27 +24,10 @@ const CHAIN_ID: u64 = 137; // Polygon
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn rpc_url() -> Option<String> {
-    std::env::var("RPC_URL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(config_rpc_url)
-}
-
-/// First configured RPC URL from the repo's `mev-scout.toml`, if reachable.
-fn config_rpc_url() -> Option<String> {
-    let candidates = ["mev-scout.toml", "../mev-scout.toml", "core/mev-scout.toml", "../../mev-scout.toml"];
-    for path in candidates {
-        if !std::path::Path::new(path).exists() {
-            continue;
-        }
-        let cfg = mev_scout_core::config::Config::load(path).ok()?;
-        if let Some(url) = cfg.rpc.rpc_urls.into_iter().next() {
-            if !url.is_empty() {
-                return Some(url);
-            }
-        }
+    if std::env::var("MEV_SCOUT_E2E").as_deref() != Ok("1") {
+        return None;
     }
-    None
+    std::env::var("RPC_URL").ok().filter(|s| !s.is_empty())
 }
 
 fn temp_test_dir(name: &str) -> String {
@@ -195,7 +176,7 @@ async fn test_rpc_guided_backtest() {
         )
         .unwrap_or_else(|e| panic!("Failed to open cache for block {block}: {e}"));
 
-        let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
+        let fetcher = Fetcher::new(rpc.clone(), cache.clone());
         let resolved_fetch = ResolvedRange {
             start_block: block,
             end_block: block,
@@ -287,7 +268,7 @@ async fn test_rpc_guided_backtest() {
             BacktestRunner::new(replayer, pm, GasConfig::default()).with_proximity_window(5);
 
         // Run backtest
-        let (opps, stats) = match runner.run_block(block) {
+        let (opps, _stats) = match runner.run_block(block) {
             Ok((opps, stats, _gas)) => (opps, vec![stats]),
             Err(e) => {
                 eprintln!("  Backtest failed for block {block}: {e}");
@@ -356,8 +337,8 @@ async fn test_synthetic_backtest_on_real_block() {
         std::path::Path::new(&dir).join("cache.db"),
     )
     .unwrap();
-    let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
-    let resolved = ResolvedRange {
+let fetcher = Fetcher::new(rpc.clone(), cache.clone());
+        let resolved = ResolvedRange {
         start_block: block,
         end_block: block,
         block_count: 1,

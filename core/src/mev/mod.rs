@@ -3,9 +3,9 @@
 
 pub mod detectors;
 pub use detectors::{
-    balancer_output_amount, balancer_quote_exact_in, capture_pending_block, compute_health_factor,
-    curve_output_amount, detect_pending_opportunities, estimate_pending_tx_pool_impact,
-    quote_path, simulate_pending_tx_pool_impact, AaveReserveCache, AaveReserveData,
+    balancer_quote_exact_in, capture_pending_block, compute_health_factor,
+    curve_output_amount, detect_pending_opportunities,
+    quote_path, AaveReserveCache, AaveReserveData,
     JitArbDetector, JitDetector, LiquidationDetector, MultiHopArbDetector,
-    PendingBlockCapture, PendingPoolEffect, SandwichDetector, TwoHopArbDetector,
+    PendingBlockCapture, SandwichDetector, TwoHopArbDetector,
 };

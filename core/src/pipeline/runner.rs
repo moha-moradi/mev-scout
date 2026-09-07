@@ -111,13 +111,6 @@ impl BacktestRunner {
         self
     }
 
-    /// Attach pre-fetched Aave V3 reserve data for per-asset liquidation parameters.
-    /// When set, `LiquidationDetector` uses real on-chain thresholds and bonuses.
-    pub fn with_aave_reserve_cache(mut self, cache: AaveReserveCache) -> Self {
-        self.aave_reserve_cache = cache;
-        self
-    }
-
     /// Enable or disable pending transaction capture from the mempool.
     /// When enabled, the runner fetches the pending block after processing
     /// each block range and logs the pending tx count into per-block stats.
@@ -138,19 +131,6 @@ impl BacktestRunner {
     pub fn with_max_candidates_per_tx(mut self, max: usize) -> Self {
         self.max_candidates_per_tx = max;
         self
-    }
-
-    /// Enable or disable persistence-based confidence scoring (#10).
-    /// Enabled by default: opportunities persisting across consecutive blocks
-    /// receive decaying `confidence` values as a competitiveness proxy.
-    pub fn with_persistence_scoring(mut self, enabled: bool) -> Self {
-        self.persistence_scoring = enabled;
-        self
-    }
-
-    /// Expose a reference to the Aave reserve cache for inspection.
-    pub fn aave_reserve_cache(&self) -> &AaveReserveCache {
-        &self.aave_reserve_cache
     }
 
     /// Pre-fetch Aave V3 reserve data for all known token addresses.

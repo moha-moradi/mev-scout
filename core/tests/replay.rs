@@ -1,3 +1,8 @@
+//! Replayer and activity-scanner integration tests.
+//!
+//! The activity-scanner tests hit a live RPC endpoint and are gated like the
+//! CLI E2E suite: they need `MEV_SCOUT_E2E=1` and `RPC_URL`, otherwise they
+//! skip gracefully (no fallback to the repo `mev-scout.toml`).
 use alloy::primitives::{address, Address, B256, Bytes, U256};
 use mev_scout_core::data::ExecutedLog;
 use mev_scout_core::mev::detectors::jit_arb::JitArbDetector;

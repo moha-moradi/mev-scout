@@ -4,7 +4,6 @@ pub mod cache;
 pub mod chain;
 pub mod dex_type;
 pub mod error;
-pub mod coingecko;
 pub mod config;
 pub mod data;
 pub mod fetch;

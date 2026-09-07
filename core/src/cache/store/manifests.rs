@@ -32,20 +32,4 @@ impl super::SqliteStore {
             None => Ok(None),
         }
     }
-
-    pub fn list_manifests(&self) -> anyhow::Result<Vec<(String, RunManifest)>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider
-             FROM run_manifests ORDER BY resolved_at DESC",
-        )?;
-        let mut rows = stmt.query([])?;
-        let mut results = Vec::new();
-        while let Some(row) = rows.next()? {
-            let run_id: String = row.get(0)?;
-            let manifest = super::row_to_manifest(&row)?;
-            results.push((run_id, manifest));
-        }
-        Ok(results)
-    }
 }

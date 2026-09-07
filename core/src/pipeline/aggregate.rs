@@ -1,3 +1,8 @@
+// Reserved for the `explorer` command (docs/EXPLORER_UNIFIED_PLAN.md §4.1/§11).
+// No caller exists today; kept intentionally so cross-run aggregation can be
+// wired up without re-adding the module.
+#![allow(dead_code)]
+
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
 use alloy::primitives::Address;

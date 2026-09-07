@@ -1,7 +1,7 @@
 //! Sandwich attack detection — identifies buy-sell pairs that sandwich a victim transaction.
 
 use std::collections::{HashMap, HashSet};
-use alloy::primitives::{b256, Address, B256, U256};
+use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
 use crate::types::MevOpportunity;
 use crate::pool::decoders::{
@@ -9,6 +9,7 @@ use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
     V3_SWAP_TOPIC,
 };
+use crate::chain::events::V2_SWAP_TOPIC;
 use crate::pool::math::quote_exact_in;
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
@@ -16,10 +17,6 @@ use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in};
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
-
-/// Uniswap V2 Swap event topic
-const V2_SWAP_TOPIC: B256 =
-    b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SwapDirection {

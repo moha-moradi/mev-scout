@@ -36,9 +36,3 @@ pub enum DexType {
     #[strum(serialize = "Pendle")]
     Pendle = 9,
 }
-
-impl DexType {
-    pub fn is_concentrated_liquidity(self) -> bool {
-        matches!(self, DexType::UniswapV3 | DexType::UniswapV4)
-    }
-}

@@ -42,7 +42,7 @@ impl DBErrorMarker for DbError {
     }
 }
 
-/// In-memory caches for a single block replay. Cleared on block transitions.
+/// In-memory caches for a single block replay.
 #[derive(Clone)]
 struct CacheState {
     accounts: HashMap<Address, AccountInfo>,
@@ -60,13 +60,6 @@ impl CacheState {
             code_hash_to_address: HashMap::new(),
         }
     }
-
-    fn clear(&mut self) {
-        self.accounts.clear();
-        self.codes.clear();
-        self.storage.clear();
-        self.code_hash_to_address.clear();
-    }
 }
 
 /// Lazy-fetch database wrapping SQLite cache and RPC.
@@ -81,8 +74,7 @@ impl CacheState {
 /// state for addresses that are actually touched during execution.
 ///
 /// The database operates at a specific `block_number` (the historical block
-/// being replayed), but can be updated via `set_block_number()` during
-/// cross-block operations.
+/// being replayed).
 pub struct CachedRpcDb {
     handle: tokio::runtime::Handle,
     cache: SqliteStore,
@@ -121,15 +113,6 @@ impl CachedRpcDb {
             block_number,
             cache_state: CacheState::new(),
         }
-    }
-
-    pub fn block_number(&self) -> u64 {
-        self.block_number
-    }
-
-    pub fn set_block_number(&mut self, n: u64) {
-        self.block_number = n;
-        self.cache_state.clear();
     }
 
     pub fn rpc(&self) -> &RpcClient {

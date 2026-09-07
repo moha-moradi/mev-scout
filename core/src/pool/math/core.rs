@@ -150,31 +150,6 @@ pub fn constant_product_output_amount(
     Some(output)
 }
 
-/// Compute required input amount for a desired output amount.
-///
-/// Uses the same constant-product formula as `constant_product_output_amount`
-/// but solves for the input. Always rounds up to avoid undershooting.
-pub fn constant_product_input_amount(
-    amount_out: u128,
-    reserve_in: u128,
-    reserve_out: u128,
-    fee: u32,
-) -> Option<u128> {
-    if amount_out == 0 || reserve_in == 0 || reserve_out == 0 || amount_out >= reserve_out {
-        return None;
-    }
-    let fee_factor = BPS_DENOMINATOR - fee as u128;
-    let numerator = reserve_in
-        .checked_mul(amount_out)?
-        .checked_mul(BPS_DENOMINATOR)?;
-    let denominator = (reserve_out.checked_sub(amount_out)?).checked_mul(fee_factor)?;
-    let input = numerator / denominator;
-    if input == 0 {
-        return None;
-    }
-    Some(input + 1) // round up
-}
-
 /// Result of an optimal two-hop arbitrage calculation.
 #[derive(Debug, Clone, Copy)]
 pub struct TwoHopArbResult {
@@ -377,19 +352,6 @@ fn golden_section_maximize(
 ///
 /// `output_amount` is guaranteed to be strictly greater than `optimal_input` when `Some`.
 ///
-/// Deterministic: every AMM output function (constant-product, stableswap,
-/// weighted) is concave and non-decreasing; composing concave non-decreasing
-/// functions preserves concavity, so `profit(x) = quote_fn(x) − x` is concave
-/// and a single golden-section pass finds its global optimum. No grid sampling
-/// or stochastic restarts are needed (V3-family chains use explicit breakpoint
-/// segmentation via [`optimal_on_segments`] instead).
-pub fn optimal_n_hop_generic(
-    max_input: u128,
-    quote_fn: &impl Fn(u128) -> Option<u128>,
-) -> Option<(u128, u128)> {
-    optimal_on_segments(max_input, &[], quote_fn)
-}
-
 /// Version of `optimal_two_hop_arb` that accepts generic quoting functions.
 ///
 /// `quote_a(x)` returns the amount of bridge token received from pool A when spending `x` of token_in.

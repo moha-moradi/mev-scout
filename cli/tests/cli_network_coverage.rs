@@ -164,14 +164,22 @@ fn scan_address_filter_and_silent_invalid_filter() {
     ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan trades --address") {
         expect_ok(&out, "scan trades with pool address filter");
-        if let Some(events) = extract_json_array(&out.stdout).and_then(|v| v.as_array().cloned()) {
-            for e in &events {
-                let pool = e.get("pool").and_then(|p| p.as_str()).unwrap_or("");
-                assert!(
-                    pool.eq_ignore_ascii_case(&pool_addr),
-                    "filtered scan returned foreign pool {pool} (expected {pool_addr})"
-                );
-            }
+        let events = extract_json_array(&out.stdout)
+            .expect("scan --address --output json should print a JSON array");
+        let items = events
+            .as_array()
+            .expect("scan --output json must be an array");
+        if items.is_empty() {
+            eprintln!(
+                "WARN: filtered scan returned 0 events — affinity check vacuous for this window"
+            );
+        }
+        for e in items {
+            let pool = e.get("pool").and_then(|p| p.as_str()).unwrap_or("");
+            assert!(
+                pool.eq_ignore_ascii_case(&pool_addr),
+                "filtered scan returned foreign pool {pool} (expected {pool_addr})"
+            );
         }
     }
 
@@ -250,7 +258,7 @@ fn discover_hybrid_incremental_and_flags() {
         "--json",
     ]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover baseline") {
-        expect_ok(&out, "discover --health-check false --solidly-fee-bps 30");
+        expect_ok(&out, "discover onchain with --solidly-fee-bps 30");
 
         let mut c = scout(&ws);
         c.args(["-f", &base_cfg, "discover", "--incremental", "--blocks", "2", "--json"]);
@@ -448,10 +456,24 @@ fn validate_pools_gecko_markdown_out() {
     );
     let content = std::fs::read_to_string(&md).unwrap();
     assert!(
-        content.contains('|'),
-        "markdown report should contain a markdown table:\n{}",
+        content.contains("| Source |"),
+        "markdown report should contain the source table header:\n{}",
         content
     );
+}
+
+/// Parse `Resolved range: blocks X–Y (N blocks)` (en dash) into (X, Y).
+fn parse_resolved_range(stdout: &str) -> Option<(String, String)> {
+    let line = stdout.lines().find(|l| l.contains("Resolved range: blocks "))?;
+    let range = line.split("blocks ").nth(1)?.split(' ').next()?;
+    let (a, b) = range.split_once('–')?;
+    Some((a.trim().to_string(), b.trim().to_string()))
+}
+
+/// Parse the `Cached:       N` summary line into N.
+fn parse_cached_count(stdout: &str) -> Option<u64> {
+    let line = stdout.lines().find(|l| l.trim_start().starts_with("Cached:"))?;
+    line.split(':').nth(1)?.trim().parse().ok()
 }
 
 #[test]
@@ -463,13 +485,13 @@ fn fetch_idempotency_cached_on_refetch() {
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
     let cfg = make_cfg(&ws, &[("db_path", &db_s)]);
 
-    // Resolve a fixed 3-block range once so both fetches hit the same blocks.
+    // Warm the RPC (fetch --blocks would resolve a fresh tip on every pass,
+    // so the idempotency proof below pins the exact range instead).
     let mut c = scout(&ws);
     c.args(["-f", &cfg, "scan", "--kind", "trades", "--blocks", "3", "--limit", "1"]);
-    let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "tip probe") else {
-        return;
-    };
-    let _ = out; // only needed to prove RPC is warm; fetch resolves its own tip
+    if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "tip probe") {
+        expect_ok(&out, "tip probe scan");
+    }
 
     let mut c = scout(&ws);
     c.args(["-f", &cfg, "fetch", "--blocks", "3", "--no-sig-resolve"]);
@@ -478,17 +500,26 @@ fn fetch_idempotency_cached_on_refetch() {
     };
     expect_ok(&out, "fetch 3 blocks first pass");
     assert!(out.stdout.contains("Fetch complete:"));
+    let (from, to) = parse_resolved_range(&out.stdout)
+        .expect("fetch must print 'Resolved range: blocks X–Y (N blocks)'");
 
-    // Second pass over the same tip-derived window may have a moving tip; the
-    // idempotency proof is that the cache path reports Cached: > 0.
+    // Second pass over the SAME pinned range must come entirely from cache.
     let mut c = scout(&ws);
-    c.args(["-f", &cfg, "fetch", "--blocks", "3", "--no-sig-resolve"]);
+    c.args([
+        "-f", &cfg, "fetch", "--from-block", &from, "--to-block", &to, "--no-sig-resolve",
+    ]);
     let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "fetch second pass") else {
         return;
     };
-    expect_ok(&out, "fetch 3 blocks second pass");
-    if !out.stdout.contains("Cached:") {
-        eprintln!("WARN: second fetch printed no Cached: line — cache hit expected\n{}", out.stdout);
+    expect_ok(&out, "fetch pinned range second pass");
+    let cached = parse_cached_count(&out.stdout).expect("fetch summary must print 'Cached: N'");
+    assert!(
+        cached > 0,
+        "refetching the exact same range must hit the cache, got Cached: {cached}"
+    );
+    let total: u64 = to.parse::<u64>().unwrap() - from.parse::<u64>().unwrap() + 1;
+    if cached < total {
+        eprintln!("WARN: refetch cached {cached}/{total} blocks — pass 1 left gaps");
     }
 }
 
@@ -532,7 +563,15 @@ fn replay_tx_index_zero_smoke() {
         return;
     };
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
-    let cfg = make_cfg(&ws, &[("db_path", &db_s)]);
+    let out_dir = ws.join("tmp_out");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let cfg = make_cfg(
+        &ws,
+        &[
+            ("db_path", &db_s),
+            ("export_path", out_dir.to_str().unwrap()),
+        ],
+    );
 
     // replay reads from the cache — fetch a fixed single block first.
     let mut c = scout(&ws);
@@ -543,15 +582,15 @@ fn replay_tx_index_zero_smoke() {
     expect_ok(&out, "fetch 1 block for replay");
 
     let mut c = scout(&ws);
-    c.args(["-f", &cfg, "run", "--blocks", "1", "--export-path", ws.join("tmp_out").to_str().unwrap()]);
-    let _ = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "run for replay block"); // block number comes from fetch summary, so derive from cache: replay latest fetched via --block 0 is invalid; instead resolve tip-1 by scanning.
+    c.args(["-f", &cfg, "run", "--blocks", "1"]);
+    let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "run for replay block") else {
+        return;
+    };
+    expect_ok(&out, "run for replay block");
 
-    // Resolve the fetched block number from the run output is unreliable; use
-    // the same range: replay accepts a single --block, so pick tip-1 via a
-    // minimal scan-free trick: fetch summary line "start_block"? Not printed.
-    // Instead fetch into the same db then replay the range start reported by
-    // `run`: simplest robust source is the exported run file when available.
-    let exported = newest_json_file(&ws.join("tmp_out"), "run_");
+    // Resolve the fetched block number from the exported run file written to
+    // `export_path` by the `run` above.
+    let exported = newest_json_file(&out_dir, "run_");
     let block: Option<u64> = exported.as_deref().and_then(|p| {
         let content = std::fs::read_to_string(p).ok()?;
         let v: Value = serde_json::from_str(&content).ok()?;

@@ -31,9 +31,6 @@ pub struct RpcConfig {
     /// Block-level concurrency within each provider shard
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_concurrency: Option<usize>,
-    /// CoinGecko API key for USD price lookups
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub coingecko_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,12 +66,6 @@ pub struct BacktestConfig {
     /// Capture pending transactions from the mempool during backtest
     #[serde(default)]
     pub capture_pending: bool,
-    /// Price oracle mode: "coingecko", "onchain", or "hybrid"
-    #[serde(default)]
-    pub price_oracle_mode: String,
-    /// Per-token USD prices: comma-separated "ADDR=price" pairs
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_prices: Option<String>,
     /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
     #[serde(default)]
     pub min_profit_wei: u64,
@@ -94,9 +85,6 @@ pub struct OutputConfig {
     /// Directory for SQLite database file
     #[serde(default = "default_db_path")]
     pub db_path: String,
-    /// Directory for Parquet intermediate files (optional)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parquet_dir: Option<String>,
 }
 
 // ── Default helpers ─────────────────────────────────────────────────
@@ -124,7 +112,6 @@ impl Default for RpcConfig {
             rpc_rps: Vec::new(),
             rps_limit: default_rps_limit(),
             block_concurrency: None,
-            coingecko_api_key: None,
         }
     }
 }
@@ -148,8 +135,6 @@ impl Default for BacktestConfig {
             max_pairs_per_token: default_max_pairs_per_token(),
             proximity_window: default_proximity_window(),
             capture_pending: false,
-            price_oracle_mode: "coingecko".to_string(),
-            token_prices: None,
             min_profit_wei: 0,
             max_candidates_per_tx: 0,
         }
@@ -162,7 +147,6 @@ impl Default for OutputConfig {
             output: default_output_format(),
             export_path: default_export_path(),
             db_path: default_db_path(),
-            parquet_dir: None,
         }
     }
 }
@@ -252,7 +236,7 @@ impl Config {
     }
 
     /// Expand `${ENV_VAR}` references in secret-bearing string fields
-    /// (`rpc_url`, `rpc_urls`, `coingecko_api_key`) from the process
+    /// (`rpc_url`, `rpc_urls`) from the process
     /// environment. Lets committed config files stay free of live API keys:
     /// write `rpc_urls = ["https://.../v2/${ALCHEMY_API_KEY}"]` and export the
     /// variable instead. Unset variables are left verbatim so a missing env
@@ -288,9 +272,6 @@ impl Config {
         }
         for u in &mut self.rpc.rpc_urls {
             *u = expand(u);
-        }
-        if let Some(k) = &self.rpc.coingecko_api_key {
-            self.rpc.coingecko_api_key = Some(expand(k));
         }
     }
 
@@ -406,17 +387,6 @@ impl Config {
         bc
     }
 
-    /// Return only the user-specified RPC URLs (no public fallbacks).
-    pub fn user_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let urls = Self::merge_rpc_urls(&self.rpc.rpc_urls, &self.rpc.rpc_url);
-        if urls.is_empty() {
-            return Err(error::Error::Other(
-                "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
-            ));
-        }
-        Ok(urls)
-    }
-
     /// Merge `rpc_urls` (Vec) and `rpc_url` (legacy single) into a deduplicated list.
     fn merge_rpc_urls(base: &[String], extra: &Option<String>) -> Vec<String> {
         let mut urls = base.to_vec();
@@ -462,7 +432,6 @@ Strategies:          {}
 Flash loan:          {}
 Gas model:           {}
 DB path:             {}
-Parquet dir:         {}
 "#,
             chain_name,
             chain_cfg.chain_id,
@@ -473,7 +442,6 @@ Parquet dir:         {}
             provider_desc,
             self.gas.gas_model,
             self.effective_db_path(&chain_name),
-            self.output.parquet_dir.as_deref().unwrap_or("(none)"),
         )
     }
 }
@@ -511,7 +479,6 @@ pub struct RpcOverrides {
     pub rpc_rps: Option<Vec<f64>>,
     pub rps_limit: Option<f64>,
     pub block_concurrency: Option<usize>,
-    pub coingecko_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -528,8 +495,6 @@ pub struct BacktestOverrides {
     pub max_pairs_per_token: Option<usize>,
     pub proximity_window: Option<usize>,
     pub capture_pending: Option<bool>,
-    pub price_oracle_mode: Option<String>,
-    pub token_prices: Option<String>,
     pub min_profit_wei: Option<u64>,
     pub max_candidates_per_tx: Option<usize>,
 }
@@ -539,7 +504,6 @@ pub struct OutputOverrides {
     pub output: Option<String>,
     pub export_path: Option<String>,
     pub db_path: Option<String>,
-    pub parquet_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -574,50 +538,22 @@ macro_rules! merge_sub {
 ///
 /// # Example
 ///
-/// ```ignore
-/// use crate::config::{ConfigBuilder, RpcConfig};
+/// ```
+/// use crate::config::ConfigBuilder;
 ///
 /// let config = ConfigBuilder::default()
 ///     .with_chain("polygon")
-///     .with_rpc(RpcConfig {
-///         rpc_url: Some("https://my-rpc.example.com".into()),
-///         ..RpcConfig::default()
-///     })
 ///     .build();
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ConfigBuilder {
     chain: Option<String>,
-    days: Option<u64>,
-    blocks: Option<u64>,
-    block: Option<u64>,
-    from_block: Option<u64>,
-    to_block: Option<u64>,
-    rpc: Option<RpcConfig>,
-    gas: Option<GasConfig>,
-    backtest: Option<BacktestConfig>,
     output: Option<OutputConfig>,
 }
 
 impl ConfigBuilder {
     /// Set the chain name (e.g. "polygon", "ethereum").
     pub fn with_chain(mut self, chain: impl Into<String>) -> Self { self.chain = Some(chain.into()); self }
-    /// Set --days CLI equivalent.
-    pub fn with_days(mut self, days: u64) -> Self { self.days = Some(days); self }
-    /// Set --blocks CLI equivalent.
-    pub fn with_blocks(mut self, blocks: u64) -> Self { self.blocks = Some(blocks); self }
-    /// Set --block CLI equivalent.
-    pub fn with_block(mut self, block: u64) -> Self { self.block = Some(block); self }
-    /// Set --from-block CLI equivalent.
-    pub fn with_from_block(mut self, from: u64) -> Self { self.from_block = Some(from); self }
-    /// Set --to-block CLI equivalent.
-    pub fn with_to_block(mut self, to: u64) -> Self { self.to_block = Some(to); self }
-    /// Replace the RPC sub-config entirely.
-    pub fn with_rpc(mut self, rpc: RpcConfig) -> Self { self.rpc = Some(rpc); self }
-    /// Replace the gas sub-config entirely.
-    pub fn with_gas(mut self, gas: GasConfig) -> Self { self.gas = Some(gas); self }
-    /// Replace the backtest sub-config entirely.
-    pub fn with_backtest(mut self, backtest: BacktestConfig) -> Self { self.backtest = Some(backtest); self }
     /// Replace the output sub-config entirely.
     pub fn with_output(mut self, output: OutputConfig) -> Self { self.output = Some(output); self }
 
@@ -625,14 +561,6 @@ impl ConfigBuilder {
     pub fn build(self) -> Config {
         let mut cfg = Config::default();
         if let Some(v) = self.chain { cfg.chain = v; }
-        if let Some(v) = self.days { cfg.days = Some(v); }
-        if let Some(v) = self.blocks { cfg.blocks = Some(v); }
-        if let Some(v) = self.block { cfg.block = Some(v); }
-        if let Some(v) = self.from_block { cfg.from_block = Some(v); }
-        if let Some(v) = self.to_block { cfg.to_block = Some(v); }
-        if let Some(v) = self.rpc { cfg.rpc = v; }
-        if let Some(v) = self.gas { cfg.gas = v; }
-        if let Some(v) = self.backtest { cfg.backtest = v; }
         if let Some(v) = self.output { cfg.output = v; }
         cfg
     }
@@ -652,8 +580,7 @@ impl Config {
             (rpc_urls),
             (rpc_rps),
             (rps_limit, copy),
-            (block_concurrency, copy_some),
-            (coingecko_api_key, into_option)
+            (block_concurrency, copy_some)
         ]);
         merge_sub!(self, overrides, gas, [
             (gas_model),
@@ -666,37 +593,14 @@ impl Config {
             (max_pairs_per_token, copy),
             (proximity_window, copy),
             (capture_pending, copy),
-            (price_oracle_mode),
-            (token_prices, into_option),
             (min_profit_wei, copy),
             (max_candidates_per_tx, copy)
         ]);
         merge_sub!(self, overrides, output, [
             (output),
             (export_path),
-            (db_path),
-            (parquet_dir, into_option)
+            (db_path)
         ]);
-    }
-
-    /// Parse the `--token-price` value into a `HashMap<Address, f64>`.
-    pub fn parse_token_prices(&self) -> HashMap<alloy::primitives::Address, f64> {
-        let mut map = HashMap::new();
-        let Some(s) = &self.backtest.token_prices else { return map };
-        for pair in s.split(',') {
-            let pair = pair.trim();
-            if pair.is_empty() { continue; }
-            if let Some((addr_str, price_str)) = pair.split_once('=') {
-                match (addr_str.trim().parse::<alloy::primitives::Address>(), price_str.trim().parse::<f64>()) {
-                    (Ok(addr), Ok(price)) => { map.insert(addr, price); }
-                    (Ok(_), Err(_)) => tracing::warn!("unparseable token price '{}' in '{}'", price_str, pair),
-                    (Err(_), _) => tracing::warn!("unparseable token address '{}' in '{}'", addr_str, pair),
-                }
-            } else {
-                tracing::warn!("malformed token-price entry '{}' (expected address=price)", pair);
-            }
-        }
-        map
     }
 }
 
@@ -735,18 +639,16 @@ rpc_urls = ["https://rpc.example/v2/${MS_CONFIG_TEST_MISSING_KEY}"]
     }
 
     #[test]
-    fn expands_plain_urls_and_coingecko_key_unchanged() {
+    fn expands_plain_urls_and_env_reference() {
         std::env::set_var("MS_CONFIG_TEST_CG_KEY", "CG-1");
         let cfg = Config::from_toml_str(
             r#"
 rpc_urls = ["https://plain.example/v3"]
 rpc_url = "https://single.example/${MS_CONFIG_TEST_CG_KEY}"
-coingecko_api_key = "CG-1"
 "#,
         );
         assert_eq!(cfg.rpc.rpc_urls[0], "https://plain.example/v3");
         assert_eq!(cfg.rpc.rpc_url.as_deref(), Some("https://single.example/CG-1"));
-        assert_eq!(cfg.rpc.coingecko_api_key.as_deref(), Some("CG-1"));
     }
 
     #[test]

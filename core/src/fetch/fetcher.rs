@@ -96,7 +96,7 @@ impl Fetcher {
             block_concurrency: 1,
             timing: Arc::new(Mutex::new(FetchTiming::default())),
             write_buf: Arc::new(Mutex::new(Vec::new())),
-            batch_rpc: true,
+            batch_rpc: false,
         }
     }
 
@@ -118,10 +118,6 @@ impl Fetcher {
     pub fn with_sig_resolver(mut self, resolver: SignatureResolver) -> Self {
         self.sig_resolver = Some(Arc::new(resolver));
         self
-    }
-
-    pub fn rpc_client(&self) -> &RpcClient {
-        &self.rpc
     }
 
     pub fn cache_store(&self) -> &SqliteStore {
@@ -160,7 +156,7 @@ impl Fetcher {
         let shards = self.rpc.distribute_blocks(range.start_block, range.end_block).await;
         let phase_distribute_ms = t_distribute.elapsed().as_secs_f64() * 1000.0;
 
-        let cap = self.parallelism.min(30).max(1);
+        let cap = self.parallelism.clamp(1, 30);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {
@@ -470,7 +466,7 @@ impl Fetcher {
         sorted.sort_unstable();
         let ranges = crate::cache::SqliteStore::contiguous_ranges(&sorted);
 
-        let cap = self.parallelism.min(30).max(1);
+        let cap = self.parallelism.clamp(1, 30);
         let semaphore = Arc::new(Semaphore::new(cap));
 
         let summary = Arc::new(tokio::sync::Mutex::new(FetchSummary {

@@ -1,19 +1,17 @@
 use crate::data::ExecutedLog;
+use crate::chain::events::TRANSFER_TOPIC as ERC20_TRANSFER_TOPIC;
 use crate::pool::decoders;
 use crate::pool::math::consts::LIQUIDITY_CHANGE_THRESHOLD_DIVISOR;
 use crate::pool::state::apply::SWAP_TOPIC;
 use crate::pool::state::pool_types::{
-    is_fee_on_transfer_token, is_rebase_token, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+    is_fee_on_transfer_token, is_rebase_token, PoolState, UniswapV3PoolState,
 };
 use crate::utils::u128_from_be_bytes;
-use alloy::primitives::{b256, Address, B256, U256};
+use alloy::primitives::Address;
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// ERC20 `Transfer(address,address,uint256)` topic0.
-const ERC20_TRANSFER_TOPIC: B256 =
-    b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");
 /// Relative shortfall between a swap's declared amount and what the token
 /// contract actually transferred beyond which the token is flagged taxed (#9).
 /// Well above any modeled DEX fee, so only off-invariant shortfalls trip it.
@@ -114,33 +112,9 @@ impl PoolManager {
         }
     }
 
-    /// Create a pool manager pre-allocated for the given number of pools.
-    pub fn with_capacity(capacity: usize) -> Self {
-        PoolManager {
-            pools: HashMap::with_capacity(capacity),
-            token_index: HashMap::with_capacity(capacity),
-            pairs_cache: Mutex::new(None),
-            dirty_pools: HashSet::with_capacity(capacity),
-            dynamic_fot: HashSet::with_capacity(capacity),
-            wrapped_native: None,
-            balancer_vault: None,
-            known_set: HashSet::with_capacity(capacity),
-            max_pairs_per_token: 50,
-            token_max_pairs: HashMap::new(),
-            concurrency_limit: 1,
-            use_latest: false,
-        }
-    }
-
     /// Set the maximum number of pool pairs per token for arbitrage pair computation.
     pub fn set_max_pairs_per_token(&mut self, max: usize) {
         self.max_pairs_per_token = max;
-    }
-
-    /// Set per-token max pairs limit (H3). Tokens without an explicit override
-    /// use the global `max_pairs_per_token`. Set 0 for no limit.
-    pub fn set_token_max_pairs(&mut self, token: Address, max: usize) {
-        self.token_max_pairs.insert(token, max);
     }
 
     /// Get the effective max_pairs for a given token, accounting for per-token overrides.
@@ -161,12 +135,6 @@ impl PoolManager {
     /// a numeric block (archive-free, for live mode).
     pub fn set_use_latest(&mut self, use_latest: bool) {
         self.use_latest = use_latest;
-    }
-
-    /// Builder variant of [`Self::set_use_latest`].
-    pub fn with_use_latest(mut self, use_latest: bool) -> Self {
-        self.set_use_latest(use_latest);
-        self
     }
 
     /// Add a pool and update the token index.
@@ -532,7 +500,8 @@ impl PoolManager {
 mod tax_learning_tests {
     use super::*;
     use crate::data::ExecutedLog;
-    use alloy::primitives::{address, Bytes};
+    use crate::pool::state::pool_types::UniswapV2PoolState;
+    use alloy::primitives::{address, B256, Bytes};
 
     const POOL: Address = address!("aa00000000000000000000000000000000000001");
     const T_IN: Address = address!("bb00000000000000000000000000000000000001");
@@ -806,17 +775,6 @@ impl PoolManager {
         None
     }
 
-    /// Get V2 pool state by address (returns None if not a V2 pool or not found).
-    pub fn get_v2_state(&self, address: &Address) -> Option<&UniswapV2PoolState> {
-        self.pools.get(address).and_then(|p| {
-            if let PoolState::UniswapV2(state) = p {
-                Some(state)
-            } else {
-                None
-            }
-        })
-    }
-
     /// Get V3 pool state by address (returns None if not a V3 pool or not found).
     pub fn get_v3_state(&self, address: &Address) -> Option<&UniswapV3PoolState> {
         self.pools.get(address).and_then(|p| {
@@ -826,131 +784,6 @@ impl PoolManager {
                 None
             }
         })
-    }
-
-    /// Given V3/V4 sqrt price, liquidity, and token ordering, compute
-    /// (tvl, tvl * price) as a TVL proxy for on-chain price oracle weighting.
-    fn sqrt_price_reserves(
-        token0: &Address,
-        native: &Address,
-        sqrt_price_x96: U256,
-        liquidity: u128,
-    ) -> Option<(u128, u128)> {
-        if liquidity == 0 {
-            return None;
-        }
-        let tvl = liquidity;
-        // Use sqrt price for direction: if native is token0,
-        // price = (sqrtPriceX96 / 2^96)^2 token1 per token0
-        let price = if *token0 == *native {
-            let sqrt = sqrt_price_x96;
-            if sqrt.is_zero() {
-                return None;
-            }
-            let p_u256: U256 = sqrt.saturating_mul(sqrt) >> 192;
-            let p = p_u256.saturating_to::<u128>();
-            if p == 0 {
-                return None;
-            }
-            p
-        } else {
-            let sqrt = sqrt_price_x96;
-            if sqrt.is_zero() {
-                return None;
-            }
-            let one: U256 = U256::from(1u128) << 192;
-            let inv: U256 = one / sqrt;
-            let p_u256: U256 = inv.saturating_mul(inv) >> 192;
-            let p = p_u256.saturating_to::<u128>();
-            if p == 0 {
-                return None;
-            }
-            p
-        };
-        Some((tvl, tvl.saturating_mul(price)))
-    }
-
-    /// Derive native token USD price from the highest-TVL pool that pairs
-    /// wrapped native with a stablecoin (USDC, USDT, DAI).
-    /// Returns `None` if no suitable pool is found.
-    ///
-    /// Price = reserve_stable / reserve_native, adjusted for token decimals.
-    /// Used as an on-chain oracle fallback (L5).
-    pub fn onchain_native_price(&self, stable_tokens: &[Address]) -> Option<f64> {
-        let native = self.wrapped_native()?;
-        let mut best_price: Option<f64> = None;
-        let mut best_tvl: u128 = 0;
-        for &stable in stable_tokens {
-            let pool_addr = self.find_pair_pool(&native, &stable)?;
-            let pool = self.get(&pool_addr)?;
-            let (reserve_native, reserve_stable) = match pool {
-                PoolState::UniswapV2(v2) => {
-                    if v2.info.token0 == native {
-                        (v2.reserve0, v2.reserve1)
-                    } else {
-                        (v2.reserve1, v2.reserve0)
-                    }
-                }
-                PoolState::UniswapV3(v3) => {
-                    match Self::sqrt_price_reserves(
-                        &v3.info.token0,
-                        &native,
-                        v3.sqrt_price_x96,
-                        v3.liquidity,
-                    ) {
-                        Some(r) => r,
-                        None => continue,
-                    }
-                }
-                PoolState::UniswapV4(v4) => {
-                    match Self::sqrt_price_reserves(
-                        &v4.info.token0,
-                        &native,
-                        v4.sqrt_price_x96,
-                        v4.liquidity,
-                    ) {
-                        Some(r) => r,
-                        None => continue,
-                    }
-                }
-                PoolState::Curve(curve) => {
-                    let idx_native = curve.token_index.get(&native)?;
-                    let idx_stable = curve.token_index.get(&stable)?;
-                    let bal_native = curve.balances.get(*idx_native)?;
-                    let bal_stable = curve.balances.get(*idx_stable)?;
-                    (*bal_native, *bal_stable)
-                }
-                PoolState::Balancer(bal) => {
-                    let idx_native = bal.token_index.get(&native)?;
-                    let idx_stable = bal.token_index.get(&stable)?;
-                    let bal_native = bal.balances.get(*idx_native)?;
-                    let bal_stable = bal.balances.get(*idx_stable)?;
-                    (*bal_native, *bal_stable)
-                }
-                PoolState::TraderJoeLB(lb) => {
-                    if lb.info.token0 == native {
-                        (lb.reserve_x, lb.reserve_y)
-                    } else {
-                        (lb.reserve_y, lb.reserve_x)
-                    }
-                }
-                PoolState::Pendle(p) => {
-                    if p.info.token0 == native {
-                        (p.total_pt, p.total_sy)
-                    } else {
-                        (p.total_sy, p.total_pt)
-                    }
-                }
-            };
-            let tvl = reserve_native.saturating_mul(reserve_stable).max(1);
-            if tvl > best_tvl {
-                best_tvl = tvl;
-                if reserve_native > 0 && reserve_stable > 0 {
-                    best_price = Some(reserve_stable as f64 / reserve_native as f64);
-                }
-            }
-        }
-        best_price
     }
 
     /// Set the wrapped native token address.

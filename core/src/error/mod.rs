@@ -1,12 +1,6 @@
-pub mod cache;
 pub mod config;
-pub mod replay;
-pub mod rpc;
 
-pub use cache::{CacheError, SqliteError};
 pub use config::ConfigError;
-pub use replay::ReplayError;
-pub use rpc::RpcError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -16,12 +10,6 @@ use thiserror::Error;
 pub enum Error {
     #[error("{0}")]
     Config(#[from] ConfigError),
-    #[error("{0}")]
-    Rpc(#[from] RpcError),
-    #[error("{0}")]
-    Replay(#[from] ReplayError),
-    #[error("{0}")]
-    Cache(#[from] CacheError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
     #[error("{0}")]

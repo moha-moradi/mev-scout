@@ -90,33 +90,4 @@ impl super::SqliteStore {
             None => Ok(None),
         }
     }
-
-    pub fn count_discovered_pools(&self) -> anyhow::Result<usize> {
-        let conn = self.conn();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pool_info", [], |row| row.get(0),
-        )?;
-        Ok(count as usize)
-    }
-
-    pub fn put_discovery_cursor(&self, factory: &Address, block: u64) -> anyhow::Result<()> {
-        let conn = self.conn();
-        conn.execute(
-            "INSERT OR REPLACE INTO discovery_cursors (factory, block_number) VALUES (?1, ?2)",
-            rusqlite::params![super::SqliteStore::addr_to_blob(factory), block as i64],
-        )?;
-        Ok(())
-    }
-
-    pub fn get_discovery_cursor(&self, factory: &Address) -> anyhow::Result<Option<u64>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT block_number FROM discovery_cursors WHERE factory = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![super::SqliteStore::addr_to_blob(factory)])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(row.get::<_, i64>(0)? as u64)),
-            None => Ok(None),
-        }
-    }
 }

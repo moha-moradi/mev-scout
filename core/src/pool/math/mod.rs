@@ -19,14 +19,14 @@ pub use consts::{
     STABLE_SWAP_A_COEFF_SOLIDLY, TERNARY_SEARCH_ITERATIONS, V3_POOL_GAS, WEI_PER_ETHER,
 };
 pub use core::{
-    constant_product_input_amount, constant_product_output_amount, optimal_n_hop_generic,
-    optimal_on_segments, optimal_two_hop_arb, optimal_two_hop_arb_generic,
-    optimal_two_hop_arb_segmented, quote_exact_in, TwoHopArbResult,
+    constant_product_output_amount, optimal_on_segments,
+    optimal_two_hop_arb, optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented,
+    quote_exact_in, TwoHopArbResult,
 };
 pub use curve::{
     curve_cryptoswap_output_amount, curve_output_amount, curve_stableswap_output_amount,
 };
 pub use v3::{
     estimate_v3_swap_gas, get_sqrt_ratio_at_tick, max_v3_tradeable_amount, quote_v3_exact_in,
-    quote_v3_exact_out, v3_breakpoints,
+    v3_breakpoints,
 };

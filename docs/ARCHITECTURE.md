@@ -50,7 +50,7 @@ flowchart TB
             CFG["config<br/>TOML settings + validation"]
             TYPES["types<br/>MevOpportunity · Strategy · GasConfig · ResultsFile"]
             SIGS["sigs — 4byte signature resolver"]
-            MISC["coingecko · data · error · dex_type · utils"]
+            MISC["data · error · dex_type · utils"]
         end
     end
 
