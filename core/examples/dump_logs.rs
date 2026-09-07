@@ -3,9 +3,9 @@ use rusqlite::Connection;
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    let db: String = env::args().nth(1).unwrap_or_else(
-        || r"D:\gitlab.dte.repo\mev-scout\cache\polygon-mev-scout.sqlite".into(),
-    );
+    let db: String = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "./cache/polygon-mev-scout.sqlite".into());
     let block: u64 = env::args().nth(2).unwrap_or_else(|| "92045880".into()).parse()?;
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare(
