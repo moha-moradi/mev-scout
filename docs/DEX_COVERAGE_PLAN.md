@@ -72,8 +72,13 @@ Support column: ✅ covered · 🟡 engine type exists, factory address missing 
 | 6 | Metric | ~$35M | ❌ | Phase 3.4 |
 | 7 | Curve | ~$31M | ✅ | — |
 | 8 | Ekubo | ~$27M | ❌ | Phase 4 (low prio) |
-| 9 | Uniswap V2 | ~$20M | ✅ | — |
-| 10 | Balancer | ~$1.7M | ✅ | — |
+| 9 | Hashflow | ~$19M | ❌ | descope — RFQ order flow, no pool state (see guardrails) |
+| 10 | Native Swap | ~$16M | ❌ | descope (see guardrails class) |
+| 11 | Maverick V2 | ~$13.6M | ❌ | Phase 4 (low prio) — new engine type, AMM proper |
+| 12 | Pendle V2 | ~$11.1M | ✅ | already covered — `pendle_factory` set in `[ethereum]` |
+| 13 | PancakeSwap AMM V3 | ~$8.1M | 🟡 | **Phase 1.2b** — config-only, same deterministic factory as Base |
+| 14 | Uniswap V2 | ~$4.7M | ✅ | — (earlier ~$20M figure was stale) |
+| 15 | Balancer | ~$1.7M | ✅ | — |
 
 ### Base (~$26B 30d)
 | # | DEX | ~Vol 24h | Support | Gap action |
@@ -109,33 +114,43 @@ Support column: ✅ covered · 🟡 engine type exists, factory address missing 
 | 2 | Uniswap V4 | ~$19M | ✅ | — |
 | 3 | Metric V2 | ~$10M | ❌ | Phase 3.4 |
 | 4 | PancakeSwap V3 | ~$7M | ✅ | — |
-| 5 | Camelot | ~$6.8M | ✅ | — |
-| 6 | Fluid | ~$5.8M | ❌ | Phase 3.2 |
-| 7 | WOOFi / Curve / Sushi | ~$1–2.5M | ⚠️/❌ | Phase 3.1 classification |
-| 8 | GMX (spot) | ~$1.5M | ❌ | perp — out of scope |
-| 9 | Ramses V3 (CL) | minor | ✅ | — |
+| 5 | Fluid | ~$6.1M | ❌ | Phase 3.2 |
+| 6 | Camelot (V3 Nitro + V2) | ~$5.0M | ✅ | — |
+| 7 | WOOFi | ~$2.4M | ⚠️ | Phase 3.1 classification |
+| 8 | GMX V2 AMM (spot leg) | ~$1.5M | ❌ | perp-adjacent — out of scope |
+| 9 | Pendle V2 | ~$1.0M | ✅ | already covered — `pendle_factory` set in `[arbitrum]` |
+| 10 | Maverick V2 | ~$0.5M | ❌ | Phase 4 (low prio) |
+| 11 | LFJ V2.2 (Arbitrum) | ~$0.3M | 🟡 | covered by Phase 1.5 list field |
+| 12 | Ramses V3 (CL) | minor | ✅ | — |
 
 ### Polygon (~$4.5B 30d)
 | # | DEX | ~Vol 24h | Support | Gap action |
 |---|-----|----------|---------|------------|
-| 1 | Uniswap V4 | ~$25M | ✅ | — |
-| 2 | Metric V2 | ~$17M | ❌ | Phase 3.4 |
-| 3 | Uniswap V3 | ~$15M | ✅ | — |
-| 4 | RamsesX | ~$12M | 🟡 | Phase 1.3 |
-| 5 | QuickSwap (Algebra V3 + V2) | ~$12M | ✅ | — |
-| 6 | DODO | ~$6M | ❌ | Phase 4 (low prio) |
-| 7 | Uniswap V2 / Sushi / Balancer | ≤$1M each | ✅ | — |
-| 8 | Curve | minor | 🟡 | Phase 0 note |
+| 1 | Polymarket International | ~$55M | ❌ | **descope** — prediction-market CLOB, no trackable AMM pool state (guardrails class) |
+| 2 | Uniswap V4 | ~$26M | ✅ | — |
+| 3 | Metric V2 | ~$18M | ❌ | Phase 3.4 |
+| 4 | Uniswap V3 | ~$15M | ✅ | — |
+| 5 | RamsesX (CL V2) | ~$13.7M | 🟡 | Phase 1.3 |
+| 6 | QuickSwap (Dex + V3, + V4 leg) | ~$14.8M | ✅ | — |
+| 7 | DODO | ~$6.1M | ❌ | Phase 4 (low prio) |
+| 8 | Balancer V2 | ~$2.9M | ✅ | — |
+| 9 | Uniswap V2 / Sushi V3 | ≤$0.2M each | ✅ | effectively dead on Polygon |
+| 10 | Curve | absent from top-25 | 🟡 | Phase 0 note |
+
+> Polygon's top-25 is dominated by prediction markets and card products
+> (Polymarket, Courtyard, Betmoar, MetaMask/Gate Predictions, Azuro, Nexo/Kolo
+> cards) — all guardrails-class descopes, none decodeable as AMMs.
 
 ### Optimism (~$650M 30d)
 | # | DEX | ~Vol 24h | Support | Gap action |
 |---|-----|----------|---------|------------|
 | 1 | Velodrome V3 (CL, OP + Ink + Soneium) | ~$12M | 🟡⚠️ | Phase 1.1 + Phase 3.1 |
-| 2 | WOOFi | ~$1.4M | ⚠️ | Phase 3.1 classification |
-| 3 | Uniswap V3 | ~$1.2M | ✅ | — |
-| 4 | Uniswap V4 | ~$0.8M | ✅ | — |
-| 5 | Velodrome V2 | winding down | ✅ | — |
-| 6 | Curve | minor | 🟡 | Phase 0 note |
+| 2 | EtherFi Cash Liquid | ~$4.1M | ❌ | **descope** — card/liquid product, not a pool-state AMM (guardrails class) |
+| 3 | WOOFi | ~$1.4M | ⚠️ | Phase 3.1 classification |
+| 4 | Uniswap V3 | ~$1.3M | ✅ | — |
+| 5 | Uniswap V4 | ~$0.8M | ✅ | — |
+| 6 | Velodrome V2 | ~$0.6M | ✅ | — |
+| 7 | Curve / Solidly V3 / DODO | minor | 🟡/❌ | Phase 0 note |
 
 **Merger watch:** Aerodrome + Velodrome merged into **Aero** (announced Nov 2025,
 AERO token launch ~Jul 2026, 94.5/5.5 split). Contract migration may re-point
@@ -148,7 +163,7 @@ factories on Optimism + Base. → Phase 4.
 | 2 | **Pharaoh Exchange V3** (CL, UniV3 fee tiers 0.01/0.05/0.30/1%) | ~$67M | ~$896M | 🟡⚠️ | Phase 1.4 + Phase 3.1 |
 | 3 | Metric V2 | ~$12M | — | ❌ | Phase 3.4 |
 | 4 | Uniswap V3 | ~$5M | — | ✅ | — |
-| 5 | Blackhole CLMM | ~$5M | — | ❌ | Phase 4 (low prio) |
+| 5 | Blackhole (CLMM + AMM) | ~$5.0M | ❌ | **Phase 1.8 candidate** — if the CLMM is Algebra-family it is config-only; otherwise low prio |
 | 6 | LFJ V2.2 (Liquidity Book) | ~$0.9M | — | 🟡 | Phase 1.5 |
 | 7 | LFJ V2.1 / Pangolin V2 / Sushi | minor (V2-era) | — | 🟡 | Phase 1.5 (optional) |
 
@@ -205,11 +220,14 @@ is a pure config addition — fee/tick metadata is repaired later via `eth_call`
 | 1.1 | Velodrome Slipstream/V3 CL factory → `[optimism] uniswap_v3_factories` (Algebra family — verify exact factory addr on-chain before committing) | `core/data/chains.toml` | trivial |
 | 1.1b | **Aerodrome Slipstream factory → `[base] uniswap_v3_factories`** — the chain's #1 venue (~$484M/24h). **Verify first whether it emits the Algebra `Pool(address,address,address)` topic** or a bespoke event; Slipstream is the same ALM/CL family as Velodrome V3 so config addition is likely sufficient, but the topic check gates it | `core/data/chains.toml` | trivial + verification |
 | 1.2 | PancakeSwap V3 factory on Base → `[base] uniswap_v3_factories` (deterministic deploy `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` — same as Arbitrum entry; confirm via `getcode`). **Note:** PancakeSwap V3 routes swaps through a `PancakePair` with a **masterchef-style pool address** — verify the `PoolCreated` topic signature matches what `discovery/v3.rs:47` scans | `core/data/chains.toml` | trivial + verification |
+| 1.2b | **PancakeSwap V3 factory on Ethereum** → `[ethereum] uniswap_v3_factories` — same deterministic address `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` ($8.1M/24h currently invisible) | `core/data/chains.toml` | trivial |
 | 1.3 | RamsesX factory → `[polygon] uniswap_v3_factories` (Algebra fork; ~$406M/30d) | `core/data/chains.toml` | trivial |
 | 1.4 | Pharaoh V3 factory → `[avalanche] uniswap_v3_factories` — **first verify implementation family** (canonical UniV3 vs Algebra vs Pancake-v3-style); fee tiers match UniV3. If the pool address in the `PoolCreated` topic is a **proxy**, the topic-scanned address differs from the implementation — decode must handle this | `core/data/chains.toml` | trivial + verification |
 | 1.5 | LFJ: promote `trader_joe_factory: Option<String>` → `trader_joe_factories: Vec<String>` in `ChainConfig`, then add V2.2 Liquidity Book factory to Avalanche alongside V2.1 (`0xb43120...`). V2.1 and V2.2 are **both live** — removing V2.1 loses historical backtest coverage; keeping both requires the list field. Update all consumers (`pool/discovery/trader_joe.rs`, `config/validation.rs`) | `core/data/chains.toml`, `core/src/config/defaults.rs` + consumers | small |
 | 1.6 | *(optional)* Pangolin **V3** factory → `[avalanche] uniswap_v3_factories` — live data shows Pangolin V3 active ($1.3M/24h); the Pangolin **V2** factory referenced in the `chain.rs` fallback list is effectively dead | `core/data/chains.toml` | trivial |
 | 1.7 | *(optional)* Curve **direct factories** per non-Ethereum chain (see Phase 0) → new config field `curve_factories` + discovery support | `chains.toml`, `discovery/curve.rs` | small |
+| 1.8 | *(optional)* **Blackhole CLMM** (Avalanche, chain #4 at ~$5.0M/24h — bigger than Uniswap V3 there) — verify whether its CL pools are Algebra-family; if yes, factory → `[avalanche] uniswap_v3_factories` is config-only. Its Solidly-style "AMM" leg is negligible ($21K) | `core/data/chains.toml` | trivial + verification |
+| 1.9 | *(optional, needs schema change)* **QuickSwap V4 on Base** ($2.4M/24h) — V4-family, but `v4_pool_manager` is a single `Option<String>` per chain; supporting both Uniswap V4 and QuickSwap V4 on one chain requires promoting it to a list (same pattern as Phase 1.5) | `core/data/chains.toml`, `core/src/config/defaults.rs` | small |
 
 **Acceptance:** `mev-scout -f <cfg> discover --source onchain` per chain lists the new
 factories; `validate-pools` recall for those DEXes goes from 0 to ≥ target.
@@ -279,6 +297,14 @@ Native/DODO/Hashflow (small, idiosyncratic, or RFQ; revisit if volume share grow
 > - **Pharaoh DLMM** before Pharaoh V3: volume ratio ~2:1 in favor of DLMM.
 > - **Fluid** requires a feasibility study on log-only state reconstruction before
 >   any decoder work (Phase 3.2 is contingent on that study's outcome).
+> - **Non-AMM volume classes** — DefiLlama counts these under DEX volume, but they
+>   have no trackable AMM pool state and must always be descoped, never decoded:
+>   prediction markets (Polymarket, Predict.fun, OPINION, Overtime, Azuro,
+>   MetaMask/Gate Predictions), card/spend products (Nexo/Kolo/Karta/Exa, EtherFi
+>   Cash), memepads/launchpads (four.meme, Virtuals-style bonding curves), trading
+>   bots (GMGN), and RFQ order flow (Hashflow). Check this class before ranking any
+>   chain's "top DEX" — it inflates several chains in this plan (Polymarket is the
+>   #1 Polygon entry purely through this lens).
 
 ### Phase 4 — Merger watch: Aerodrome + Velodrome → Aero
 
