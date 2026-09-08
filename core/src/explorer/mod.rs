@@ -16,11 +16,14 @@ pub mod classify;
 pub mod canonical;
 pub mod decode;
 pub mod ingest;
-pub mod profit;
 pub mod pricing;
+pub mod profit;
+pub mod reject;
 pub mod store;
 pub mod types;
+pub mod validate;
 
 pub use canonical::explorer_canonical_id;
 pub use classify::classify_block;
+pub use reject::{RejectReason, RejectedCandidate};
 pub use types::{Confidence, MevBundle, MevEvent, MevKind};

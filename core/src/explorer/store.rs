@@ -939,6 +939,220 @@ impl ExplorerStore {
         }
         Ok(out)
     }
+
+    // ── rejection capture (§9.3) ────────────────────────────────────────
+
+    /// Insert one rejected-candidate row (run_id/chain stamped here).
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_rejected_candidate(
+        &self,
+        run_id: &str,
+        chain: &str,
+        r: &crate::explorer::RejectedCandidate,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "INSERT INTO rejected_candidates
+               (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b, path,
+                token_in, token_out, input_amount, expected_profit, expected_profit_usd,
+                gas_cost_wei, reject_reason, detail, created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+            rusqlite::params![
+                run_id,
+                chain,
+                r.block_number as i64,
+                r.tx_index.map(|v| v as i64),
+                r.strategy,
+                r.pool_a,
+                r.pool_b,
+                r.path,
+                r.token_in,
+                r.token_out,
+                r.input_amount,
+                r.expected_profit,
+                r.expected_profit_usd,
+                r.gas_cost_wei,
+                r.reject_reason,
+                r.detail,
+                r.created_at as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rejected candidates in a block window (`validate`/`explain`).
+    pub fn rejected_in_range(
+        &self,
+        chain: &str,
+        from_block: u64,
+        to_block: u64,
+    ) -> anyhow::Result<Vec<RejectedRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
+                    expected_profit, gas_cost_wei, reject_reason, detail
+             FROM rejected_candidates
+             WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
+             ORDER BY block_number, tx_index",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![chain, from_block as i64, to_block as i64],
+            |r| {
+                Ok(RejectedRow {
+                    block_number: r.get::<_, i64>(0)? as u64,
+                    tx_index: r.get::<_, Option<i64>>(1)?.map(|v| v as u64),
+                    strategy: r.get(2)?,
+                    pool_a: r.get(3)?,
+                    pool_b: r.get(4)?,
+                    token_in: r.get(5)?,
+                    token_out: r.get(6)?,
+                    expected_profit: r.get(7)?,
+                    gas_cost_wei: r.get(8)?,
+                    reject_reason: r.get(9)?,
+                    detail: r.get(10)?,
+                })
+            },
+        )?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// True when the window has any rejection rows (drives the
+    /// `unknown-coverage` degradation in `validate`, §9.3/§11.1.2).
+    pub fn has_rejections(&self, chain: &str, from_block: u64, to_block: u64) -> bool {
+        self.conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM rejected_candidates
+                 WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3)",
+                rusqlite::params![chain, from_block as i64, to_block as i64],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v != 0)
+            .unwrap_or(false)
+    }
+
+    // ── reporting additions (§10) ───────────────────────────────────────
+
+    /// Whole-window overview stats (`stats` header block).
+    pub fn stats_overview(&self, since_ts: u64) -> anyhow::Result<OverviewRow> {
+        let sql = format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(profit_usd), 0),
+                    COALESCE(SUM(net_profit_usd), 0),
+                    COALESCE(SUM(gas_cost_usd), 0),
+                    COALESCE(MAX(profit_usd), 0),
+                    COUNT(DISTINCT eoa)
+             FROM mev_ops WHERE ts >= {since_ts}"
+        );
+        let row = self.conn.query_row(&sql, [], |r| {
+            Ok(OverviewRow {
+                ops: r.get::<_, i64>(0)?,
+                gross_usd: r.get(1)?,
+                net_usd: r.get(2)?,
+                gas_usd: r.get(3)?,
+                highest_single_usd: r.get(4)?,
+                searchers: r.get::<_, i64>(5)?,
+            })
+        })?;
+        Ok(row)
+    }
+
+    /// All ops since a timestamp (`export`).
+    pub fn ops_since(&self, since_ts: u64) -> anyhow::Result<Vec<MevOpRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
+                    confidence, canonical_id, profit_token, profit_amount, profit_usd,
+                    gas_cost_usd, net_profit_usd, route_json, victim_hashes,
+                    details_json, detector, created_at
+             FROM mev_ops WHERE ts >= ?1 ORDER BY block_number, tx_index",
+        )?;
+        let rows = stmt.query_map([since_ts as i64], map_mev_op_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Distinct pools referenced by scanner opportunities in a window
+    /// (pool-coverage side of the M1 missing-pool report).
+    pub fn opportunity_pools(
+        &self,
+        chain: &str,
+        from_block: u64,
+        to_block: u64,
+    ) -> anyhow::Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pool_a, pool_b FROM opportunities
+             WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![chain, from_block as i64, to_block as i64],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )?;
+        let mut out = std::collections::HashSet::new();
+        for r in rows {
+            let (a, b) = r?;
+            if let Some(a) = a {
+                out.insert(a);
+            }
+            if let Some(b) = b {
+                out.insert(b);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store `show --trace` verification results on the op's details (§10).
+    pub fn mark_trace_verified(
+        &self,
+        tx_hash: &str,
+        trace_profit_usd: Option<f64>,
+        note: &str,
+    ) -> anyhow::Result<()> {
+        for op in self.ops_for_tx(tx_hash)? {
+            let mut details: serde_json::Value = op
+                .details_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::json!({}));
+            details["trace_verified"] = serde_json::json!(true);
+            if let Some(usd) = trace_profit_usd {
+                details["trace_profit_usd"] = serde_json::json!(usd);
+            }
+            details["trace_note"] = serde_json::json!(note);
+            self.conn.execute(
+                "UPDATE mev_ops SET details_json = ?1 WHERE id = ?2",
+                rusqlite::params![details.to_string(), op.id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Label a searcher automatically after a confirmed classifier hit
+    /// (growth loop, §8.3): address → label with `source = classifier`.
+    pub fn label_searcher_auto(&self, address: Address, block: u64) -> anyhow::Result<()> {
+        let addr = format!("{address:#x}");
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM labels WHERE address = ?1",
+                [&addr],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .unwrap_or(None);
+        if exists.is_none() {
+            self.upsert_label(address, "unclassified-searcher", "classifier", block)?;
+        }
+        Ok(())
+    }
 }
 
 /// A transaction row to persist alongside block facts.
@@ -992,6 +1206,33 @@ pub struct OpportunityRow {
     pub detection_path: Option<String>,
     pub canonical_id: Option<String>,
     pub tx_hash: Option<String>,
+}
+
+/// One rejected-candidate row (`rejected_candidates` table, §9.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RejectedRow {
+    pub block_number: u64,
+    pub tx_index: Option<u64>,
+    pub strategy: String,
+    pub pool_a: Option<String>,
+    pub pool_b: Option<String>,
+    pub token_in: Option<String>,
+    pub token_out: Option<String>,
+    pub expected_profit: Option<String>,
+    pub gas_cost_wei: Option<String>,
+    pub reject_reason: String,
+    pub detail: Option<String>,
+}
+
+/// Window-wide overview stats (`explorer stats` header).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverviewRow {
+    pub ops: i64,
+    pub gross_usd: f64,
+    pub net_usd: f64,
+    pub gas_usd: f64,
+    pub highest_single_usd: f64,
+    pub searchers: i64,
 }
 
 fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {

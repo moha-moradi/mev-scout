@@ -87,6 +87,28 @@ pub struct OutputConfig {
     pub db_path: String,
 }
 
+/// Explorer sub-config (plan §10): `[explorer]` TOML section.
+/// All fields optional — defaults keep existing config files valid.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplorerConfig {
+    /// Explorer SQLite database path (forensic layer). Empty = derived per chain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub db_path: String,
+    /// Confirmation lag before a block is indexed (§5.2: default 6 ≈ 12s on Polygon).
+    #[serde(default = "default_explorer_confirmations")]
+    pub confirmations: u64,
+    /// Live-mode polling interval in milliseconds.
+    #[serde(default = "default_explorer_poll_ms")]
+    pub poll_interval_ms: u64,
+    /// Blocks per sync_state checkpoint during backfill.
+    #[serde(default = "default_explorer_checkpoint_every")]
+    pub checkpoint_every: u64,
+}
+
+fn default_explorer_confirmations() -> u64 { 6 }
+fn default_explorer_poll_ms() -> u64 { 2000 }
+fn default_explorer_checkpoint_every() -> u64 { 500 }
+
 // ── Default helpers ─────────────────────────────────────────────────
 
 fn default_rps_limit() -> f64 { 0.0 }
@@ -151,6 +173,17 @@ impl Default for OutputConfig {
     }
 }
 
+impl Default for ExplorerConfig {
+    fn default() -> Self {
+        ExplorerConfig {
+            db_path: String::new(),
+            confirmations: default_explorer_confirmations(),
+            poll_interval_ms: default_explorer_poll_ms(),
+            checkpoint_every: default_explorer_checkpoint_every(),
+        }
+    }
+}
+
 // ── Top-level Config ────────────────────────────────────────────────
 
 /// Top-level runtime configuration for MEV backtest runs.
@@ -191,6 +224,10 @@ pub struct Config {
     pub backtest: BacktestConfig,
     #[serde(flatten)]
     pub output: OutputConfig,
+    /// Explorer sub-config — a named section so its keys never collide with
+    /// the flattened top-level fields above.
+    #[serde(default)]
+    pub explorer: ExplorerConfig,
 }
 
 impl Config {
@@ -219,6 +256,18 @@ impl Default for Config {
             gas: GasConfig::default(),
             backtest: BacktestConfig::default(),
             output: OutputConfig::default(),
+            explorer: ExplorerConfig::default(),
+        }
+    }
+}
+
+impl Config {
+    /// Effective explorer database path for the given chain.
+    pub fn effective_explorer_db_path(&self, chain: &ChainName) -> String {
+        if self.explorer.db_path.is_empty() {
+            format!("./cache/explorer-{}.sqlite", chain)
+        } else {
+            self.explorer.db_path.clone()
         }
     }
 }
@@ -507,6 +556,14 @@ pub struct OutputOverrides {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ExplorerOverrides {
+    pub db_path: Option<String>,
+    pub confirmations: Option<u64>,
+    pub poll_interval_ms: Option<u64>,
+    pub checkpoint_every: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct CliOverrides {
     pub days: Option<u64>,
     pub blocks: Option<u64>,
@@ -518,6 +575,7 @@ pub struct CliOverrides {
     pub gas: GasOverrides,
     pub backtest: BacktestOverrides,
     pub output: OutputOverrides,
+    pub explorer: ExplorerOverrides,
 }
 
 macro_rules! merge_sub {
@@ -600,6 +658,12 @@ impl Config {
             (output),
             (export_path),
             (db_path)
+        ]);
+        merge_sub!(self, overrides, explorer, [
+            (db_path),
+            (confirmations, copy),
+            (poll_interval_ms, copy),
+            (checkpoint_every, copy)
         ]);
     }
 }

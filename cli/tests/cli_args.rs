@@ -24,13 +24,49 @@ fn help_lists_all_ten_commands() {
     expect_ok(&out, "mev-scout --help");
     for cmd in [
         "run", "fetch", "report", "config", "replay", "discover",
-        "validate-pools", "tokens", "scan", "live",
+        "validate-pools", "tokens", "scan", "live", "explorer",
     ] {
         assert!(
             out.stdout.contains(cmd),
             "--help output missing subcommand '{cmd}'"
         );
     }
+}
+
+#[test]
+fn explorer_help_lists_subcommands() {
+    let ws = temp_ws("args_explorer_help");
+    let out = run(&ws, &["explorer", "--help"]);
+    expect_ok(&out, "explorer --help");
+    for sub in [
+        "doctor", "index", "live", "stats", "top", "show", "explain", "validate", "export",
+    ] {
+        assert!(
+            out.stdout.contains(sub),
+            "explorer --help missing subcommand '{sub}'"
+        );
+    }
+}
+
+#[test]
+fn explorer_validate_fails_without_store() {
+    // A workspace with no indexed explorer store must fail with a clear
+    // message (no panic), not silently print an empty report.
+    let ws = temp_ws("args_explorer_validate_empty");
+    let out = run(&ws, &["explorer", "validate"]);
+    expect_fail(&out, "explorer validate with empty store");
+    assert!(
+        out.combined().contains("explorer index") || out.combined().contains("no indexed ops"),
+        "expected missing-store error, got:\n{}",
+        out.combined()
+    );
+}
+
+#[test]
+fn explorer_top_rejects_bad_dimension() {
+    let ws = temp_ws("args_explorer_top_bad");
+    let out = run(&ws, &["explorer", "top", "--by", "nonsense"]);
+    expect_fail(&out, "explorer top with bad --by");
 }
 
 #[test]

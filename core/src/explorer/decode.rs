@@ -227,7 +227,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
     let topic0 = *log.topics.first()?;
     if topic0 == *AAVE_V3_LIQUIDATION_CALL_TOPIC {
         // topics: [sig, collateralAsset, debtAsset, user]
-        // data: liquidator, debtToCover, liquidatedCollateralAmount, receiveAToken
+        // data: debtToCover, liquidatedCollateralAmount, receiveAToken
         if log.topics.len() < 4 || log.data.len() < 64 {
             return None;
         }
@@ -236,11 +236,13 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "aave_v3",
             user: Address::from_slice(&log.topics[3][12..]),
-            liquidator: Address::from_slice(&log.data[12..32]),
+            // `LiquidationCall` does not carry the liquidator (msg.sender);
+            // attribution falls back to the tx sender at classify time.
+            liquidator: Address::ZERO,
             collateral_asset: Address::from_slice(&log.topics[1][12..]),
             debt_asset: Address::from_slice(&log.topics[2][12..]),
-            collateral_amount: U256::from_be_slice(&log.data[52..84]),
-            debt_to_cover: U256::from_be_slice(&log.data[20..52]),
+            collateral_amount: U256::from_be_slice(&log.data[32..64]),
+            debt_to_cover: U256::from_be_slice(&log.data[0..32]),
         });
     }
     if topic0 == *COMPOUND_V3_ABSORB_TOPIC {
@@ -319,17 +321,17 @@ pub fn attach_swap_tokens(swaps: &mut [SwapFact], transfers: &[TransferFact]) {
             if dist < 0 && t.to == s.pool {
                 // nearest before
                 match best_in {
-                    Some(d) if d >= dist.abs() as i64 => {}
+                    Some(d) if d >= dist.abs() => {}
                     _ => {
-                        best_in = Some(dist.abs() as i64);
+                        best_in = Some(dist.abs());
                         token_in = t.token;
                     }
                 }
             } else if dist > 0 && t.from == s.pool {
                 match best_out {
-                    Some(d) if d <= dist.abs() as i64 => {}
+                    Some(d) if d <= dist.abs() => {}
                     _ => {
-                        best_out = Some(dist.abs() as i64);
+                        best_out = Some(dist.abs());
                         token_out = t.token;
                     }
                 }
@@ -352,7 +354,11 @@ mod tests {
     use alloy::primitives::{address, b256};
 
     fn log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> LogData {
-        LogData::new_unchecked(topics, alloy::primitives::Bytes::from(data))
+        LogData {
+            address,
+            topics,
+            data: alloy::primitives::Bytes::from(data),
+        }
     }
 
     #[test]
@@ -380,11 +386,11 @@ mod tests {
         let pool = address!("1111111111111111111111111111111111111111");
         // amount0 = -100 (pool received), amount1 = +90 (pool paid out)
         let mut data = vec![0u8; 160];
-        for b in data[0..16].iter_mut() {
+        for b in data[0..24].iter_mut() {
             *b = 0xff;
         }
-        data[16..32].copy_from_slice(&(-100i64).to_be_bytes());
-        data[48..64].copy_from_slice(&90u64.to_be_bytes());
+        data[24..32].copy_from_slice(&(-100i64).to_be_bytes());
+        data[56..64].copy_from_slice(&90u64.to_be_bytes());
         let l = log(pool, vec![V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data);
         let (amm, s) = decode_swap(&l).unwrap();
         assert_eq!(amm, Amm::V3);
@@ -399,22 +405,24 @@ mod tests {
         let collateral = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let debt = b256!("000000000000000000000000cccccccccccccccccccccccccccccccccccccccc");
         let user = b256!("000000000000000000000000dddddddddddddddddddddddddddddddddddddddd");
-        let mut data = vec![0u8; 96];
-        data[12..32].copy_from_slice(&address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").as_slice()); // liquidator
-        data[52 - 20..84 - 20].copy_from_slice(&99u64.to_be_bytes()); // debtToCover at 20..52
+        let mut data = vec![0u8; 64];
+        data[24..32].copy_from_slice(&99u64.to_be_bytes()); // debtToCover
+        data[56..64].copy_from_slice(&500u64.to_be_bytes()); // liquidatedCollateralAmount
         let l = log(
             address!("794a61358d6845594f94dc1db02a252b5b4814ad"),
-            vec![AAVE_V3_LIQUIDATION_CALL_TOPIC, collateral, debt, user],
+            vec![*AAVE_V3_LIQUIDATION_CALL_TOPIC, collateral, debt, user],
             data,
         );
         let liq = decode_liquidation(&l).unwrap();
         assert_eq!(liq.protocol, "aave_v3");
         assert_eq!(liq.user, address!("dddddddddddddddddddddddddddddddddddddddd"));
+        // liquidator is not in the event — resolved to tx.from at classify time
         assert_eq!(
             liq.liquidator,
-            address!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+            address!("0000000000000000000000000000000000000000")
         );
         assert_eq!(liq.debt_to_cover, U256::from(99));
+        assert_eq!(liq.collateral_amount, U256::from(500));
     }
 
     #[test]

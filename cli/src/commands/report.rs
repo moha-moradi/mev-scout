@@ -47,6 +47,10 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
 
     let output_format: OutputFormat = config.output.output.parse().unwrap_or(OutputFormat::Table);
 
+    // Weekly-report explorer section (plan §11.1/Phase 5): when the explorer
+    // store has data overlapping this run, append recall/miss metrics.
+    let explorer_section = explorer_validation_section(config, &results_file);
+
     match output_format {
         OutputFormat::Table => {
             println!();
@@ -85,5 +89,41 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         }
     }
 
+    if let Some(section) = explorer_section {
+        println!("\n{section}");
+    }
+
     Ok(())
+}
+
+/// Explorer cross-validation section for the weekly report: computes the
+/// §11 report over the run's block window when the store has realized data.
+fn explorer_validation_section(
+    config: &Config,
+    results_file: &ResultsFile,
+) -> Option<String> {
+    use mev_scout_core::explorer::store::ExplorerStore;
+    use mev_scout_core::explorer::validate;
+    use mev_scout_core::types::ChainName;
+
+    let chain: ChainName = results_file.chain.parse().ok()?;
+    let store = ExplorerStore::open(config.effective_explorer_db_path(&chain)).ok()?;
+    let has_ops = store
+        .ops_in_range(results_file.start_block, results_file.end_block, &[])
+        .ok()?
+        .is_empty();
+    if has_ops {
+        return None; // no realized data in-window yet
+    }
+    let report = validate::compute_validation(
+        &store,
+        chain,
+        results_file.start_block,
+        results_file.end_block,
+        0,
+        Some(&[results_file.run_id.clone()]),
+        false,
+    )
+    .ok()?;
+    Some(validate::render_validation_report(&report))
 }

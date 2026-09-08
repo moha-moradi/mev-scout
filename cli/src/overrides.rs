@@ -32,6 +32,7 @@ pub fn build_overrides(cli: &Cli) -> CliOverrides {
             apply_block_range(&mut o, &args.block_range);
         }
         Command::Live(_) => {}
+        Command::Explorer(_) => {}
     }
     o
 }

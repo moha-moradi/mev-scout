@@ -72,6 +72,11 @@ pub struct BacktestRunner {
     /// Observed-gasUsed calibration buckets (#7), recorded during replay and
     /// snapshotted into `gas_config.calibration` before each block.
     gas_calibration: GasCalibration,
+    /// Whether rejected candidates are buffered for the explorer's
+    /// `rejected_candidates` table (§9.3). Opt-in via `with_record_rejections`.
+    record_rejections: bool,
+    /// Rejected-candidate buffer drained by the CLI via `take_rejections`.
+    pending_rejections: Vec<crate::explorer::RejectedCandidate>,
     pub last_processed_block: u64,
 }
 
@@ -101,6 +106,8 @@ impl BacktestRunner {
             opp_persistence: HashMap::new(),
             persistence_scoring: true,
             gas_calibration: GasCalibration::default(),
+            record_rejections: false,
+            pending_rejections: Vec::new(),
             last_processed_block: 0,
         }
     }
@@ -131,6 +138,98 @@ impl BacktestRunner {
     pub fn with_max_candidates_per_tx(mut self, max: usize) -> Self {
         self.max_candidates_per_tx = max;
         self
+    }
+
+    /// Buffer rejected candidates with their filter reason (§9.3). Opt-in —
+    /// off by default to bound write volume; recommended ON for windows later
+    /// fed to `explorer validate`.
+    pub fn with_record_rejections(mut self, enabled: bool) -> Self {
+        self.record_rejections = enabled;
+        self
+    }
+
+    /// Drain buffered rejected candidates (insert into the explorer store).
+    pub fn take_rejections(&mut self) -> Vec<crate::explorer::RejectedCandidate> {
+        std::mem::take(&mut self.pending_rejections)
+    }
+
+    /// Gas/min-profit filters with optional rejection recording (§9.3).
+    /// Replaces bare `retain` calls so the scanner's negative space is
+    /// observable — a true coverage gap (M7) stays distinguishable from a
+    /// filtered candidate (M3/M4/M5).
+    fn retain_with_rejections(&mut self, opps: &mut Vec<MevOpportunity>, block_num: u64) {
+        let mut kept = Vec::with_capacity(opps.len());
+        for opp in opps.drain(..) {
+            if opp.expected_profit.is_zero() {
+                self.record_rejection(&opp, block_num, crate::explorer::RejectReason::QuoteNonpositive, None);
+                continue;
+            }
+            if opp.expected_profit <= U256::from(opp.gas_cost_wei) {
+                self.record_rejection(
+                    &opp,
+                    block_num,
+                    crate::explorer::RejectReason::GasDominates,
+                    Some(format!("profit={} wei <= gas={} wei", opp.expected_profit, opp.gas_cost_wei)),
+                );
+                continue;
+            }
+            if self.min_profit_wei > 0 && opp.expected_profit <= U256::from(self.min_profit_wei) {
+                self.record_rejection(
+                    &opp,
+                    block_num,
+                    crate::explorer::RejectReason::BelowMinProfit,
+                    Some(format!("profit={} wei <= min_profit={} wei", opp.expected_profit, self.min_profit_wei)),
+                );
+                continue;
+            }
+            kept.push(opp);
+        }
+        *opps = kept;
+    }
+
+    fn record_rejections_batch(
+        &mut self,
+        opps: &[MevOpportunity],
+        block_num: u64,
+        reason: crate::explorer::RejectReason,
+        detail: &str,
+    ) {
+        for opp in opps {
+            self.record_rejection(opp, block_num, reason, Some(detail.to_string()));
+        }
+    }
+
+    fn record_rejection(
+        &mut self,
+        opp: &MevOpportunity,
+        block_num: u64,
+        reason: crate::explorer::RejectReason,
+        detail: Option<String>,
+    ) {
+        if !self.record_rejections {
+            return;
+        }
+        let path = opp
+            .path
+            .as_ref()
+            .map(|p| p.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(","));
+        self.pending_rejections.push(crate::explorer::RejectedCandidate {
+            block_number: block_num,
+            tx_index: Some(opp.tx_index as u64),
+            strategy: opp.strategy.to_string(),
+            pool_a: Some(format!("{:#x}", opp.pool_a)),
+            pool_b: (opp.pool_b != Address::ZERO).then(|| format!("{:#x}", opp.pool_b)),
+            path,
+            token_in: (!opp.token_in.is_zero()).then(|| format!("{:#x}", opp.token_in)),
+            token_out: (!opp.token_out.is_zero()).then(|| format!("{:#x}", opp.token_out)),
+            input_amount: Some(opp.input_amount.to_string()),
+            expected_profit: Some(opp.expected_profit.to_string()),
+            expected_profit_usd: None,
+            gas_cost_wei: Some(opp.gas_cost_wei.to_string()),
+            reject_reason: reason.as_str().to_string(),
+            detail,
+            created_at: crate::utils::epoch_secs(),
+        });
     }
 
     /// Pre-fetch Aave V3 reserve data for all known token addresses.
@@ -486,17 +585,13 @@ impl BacktestRunner {
         )?;
 
         // Filter: drop opportunities where expected profit doesn't cover gas
-        all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
-
-        // Filter: drop dust opportunities below minimum profit threshold
-        if self.min_profit_wei > 0 {
-            all_opportunities.retain(|opp| opp.expected_profit > U256::from(self.min_profit_wei));
-        }
+        self.retain_with_rejections(&mut all_opportunities, block_num);
 
         // Filter: cap candidates per transaction, keeping only top-profit ones
         if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
             all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
-            all_opportunities.truncate(self.max_candidates_per_tx);
+            let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
+            self.record_rejections_batch(&dropped, block_num, crate::explorer::RejectReason::MaxCandidates, "per-tx top-N cap");
         }
 
         // Assign canonical dedup IDs (L9) to all opportunities
@@ -680,17 +775,13 @@ impl BacktestRunner {
         }
 
         // Filter: drop opportunities where expected profit doesn't cover gas
-        all_opportunities.retain(|opp| opp.expected_profit > U256::from(opp.gas_cost_wei));
-
-        // Filter: drop dust opportunities below minimum profit threshold
-        if self.min_profit_wei > 0 {
-            all_opportunities.retain(|opp| opp.expected_profit > U256::from(self.min_profit_wei));
-        }
+        self.retain_with_rejections(&mut all_opportunities, block_num);
 
         // Filter: cap candidates per transaction, keeping only top-profit ones
         if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
             all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
-            all_opportunities.truncate(self.max_candidates_per_tx);
+            let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
+            self.record_rejections_batch(&dropped, block_num, crate::explorer::RejectReason::MaxCandidates, "per-tx top-N cap");
         }
 
         for opp in &mut all_opportunities {

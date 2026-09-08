@@ -63,6 +63,194 @@ pub enum Command {
     /// Processes new blocks via log-based pool state updates (arb strategies)
     /// with optional full EVM replay for complete detection.
     Live(LiveArgs),
+
+    /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
+    /// raw chain data (index, live feed, stats, leaderboards, op detail,
+    /// cross-validation against the opportunity scanner).
+    Explorer(ExplorerArgs),
+}
+
+/// Explorer subcommand group (plan §10).
+#[derive(Subcommand, Debug, Clone)]
+pub enum ExplorerCommand {
+    /// Probe every configured provider: latest block, bulk receipts, traces.
+    /// Prints the capability matrix; gates Phase 0.
+    Doctor,
+
+    /// Backfill and/or stream-index blocks into the explorer store.
+    /// Idempotent, resumable, reorg-aware; classify-in-stream.
+    Index(IndexArgs),
+
+    /// mev.zone-style live feed of realized ops (tail of the indexed store).
+    LiveFeed(LiveFeedArgs),
+
+    /// Overview: op counts per kind, profit totals, daily breakdown, top
+    /// searchers/pools. Pure SQL over the store.
+    Stats(StatsArgs),
+
+    /// Leaderboards (senders / tokens / pools).
+    Top(TopArgs),
+
+    /// Operation detail for a tx hash; --trace recomputes exact profit via
+    /// debug_traceTransaction (prestateTracer diffMode).
+    Show(ShowArgs),
+
+    /// Per-miss drill-down: realized op + the scanner's rejected candidates
+    /// + inferred M1–M8 miss cause.
+    Explain(ExplainArgs),
+
+    /// Cross-validation: realized ground truth vs run/live opportunities.
+    /// Reports tiered recall, USD-weighted recall, miss taxonomy, sweep.
+    Validate(ValidateArgs),
+
+    /// Bulk export of realized ops (json|csv).
+    Export(ExportArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplorerArgs {
+    #[command(subcommand)]
+    pub command: ExplorerCommand,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct IndexArgs {
+    /// Range start block (with --to)
+    #[arg(long, value_name = "N")]
+    pub from: Option<u64>,
+
+    /// Range end block (with --from)
+    #[arg(long, value_name = "N")]
+    pub to: Option<u64>,
+
+    /// Backfill the last N days of blocks (default 30 when no range given)
+    #[arg(long, value_name = "N")]
+    pub days: Option<u64>,
+
+    /// Follow head − confirmations and index new blocks continuously
+    #[arg(long)]
+    pub live: bool,
+
+    /// Stop live indexing after this duration (e.g. 90s, 15m, 1h)
+    #[arg(long, value_name = "DURATION")]
+    pub duration: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct LiveFeedArgs {
+    /// Comma-separated kind filter (arb_atomic,sandwich,liquidation,jit,jit_arb,unknown)
+    #[arg(long, value_name = "KINDS")]
+    pub kinds: Option<String>,
+
+    /// Hide ops below this realized profit (default 0)
+    #[arg(long = "min-profit-usd", default_value = "0", value_name = "USD")]
+    pub min_profit_usd: f64,
+
+    /// Poll interval in milliseconds (default from [explorer] config)
+    #[arg(long = "poll-interval-ms", value_name = "MS")]
+    pub poll_interval_ms: Option<u64>,
+
+    /// Stop after this duration (e.g. 90s, 15m, 1h)
+    #[arg(long, value_name = "DURATION")]
+    pub duration: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct StatsArgs {
+    /// Time window: 1d|7d|30d|all (default all)
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Period bucket hint: day|week|month|year
+    #[arg(long, value_name = "PERIOD")]
+    pub window: Option<String>,
+
+    /// Filter to one kind
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct TopArgs {
+    /// Leaderboard dimension: sender|token|pool
+    #[arg(long, default_value = "sender")]
+    pub by: String,
+
+    /// Ranking metric: profit|ops
+    #[arg(long, default_value = "profit")]
+    pub metric: String,
+
+    /// Time window: 1d|7d|30d|all
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Rows to show (default 20)
+    #[arg(long, default_value = "20")]
+    pub limit: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ShowArgs {
+    /// Transaction hash
+    #[arg(value_name = "TX_HASH")]
+    pub tx_hash: String,
+
+    /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
+    #[arg(long)]
+    pub trace: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplainArgs {
+    /// Transaction hash of the missed realized op
+    #[arg(value_name = "TX_HASH")]
+    pub tx_hash: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ValidateArgs {
+    /// Time window: 1d|7d|30d|all
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Match window in blocks (default 0 for run backtests; 1 recommended for live)
+    #[arg(long = "match-window", default_value = "0", value_name = "N")]
+    pub match_window: u64,
+
+    /// Restrict scanner side to these run ids (repeatable)
+    #[arg(long = "run", value_name = "RUN_ID")]
+    pub run: Vec<String>,
+
+    /// Report recall(count+USD) as a function of the min-profit threshold
+    #[arg(long = "threshold-sweep")]
+    pub threshold_sweep: bool,
+
+    /// Write realized-op pools missing from the scanner pool set to results/missing_pools.txt
+    #[arg(long = "emit-missing-pools")]
+    pub emit_missing_pools: bool,
+
+    /// Machine-readable JSON output
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExportArgs {
+    /// Output format: json|csv (default json)
+    #[arg(long, default_value = "json")]
+    pub format: String,
+
+    /// Time window: 1d|7d|30d|all
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Comma-separated kind filter
+    #[arg(long, value_name = "KINDS")]
+    pub kinds: Option<String>,
+
+    /// Output file path (default results/explorer_export_<epoch>.<ext>)
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -98,6 +286,11 @@ pub struct RunArgs {
     /// Disabled by default — separate parallel requests often achieve better throughput.
     #[arg(long = "batch-rpc", help_heading = "RPC")]
     pub batch_rpc: bool,
+
+    /// Record rejected candidates (§9.3) into the explorer store for
+    /// false-negative attribution in `explorer validate`. Off by default.
+    #[arg(long = "record-rejections")]
+    pub record_rejections: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -317,4 +510,9 @@ pub struct LiveArgs {
     /// Polling interval in milliseconds (default: 2000)
     #[arg(long = "poll-interval", default_value = "2000", value_name = "MS", help_heading = "Live")]
     pub poll_interval_ms: u64,
+
+    /// Record rejected candidates (§9.3) into the explorer store for
+    /// false-negative attribution in `explorer validate`. Off by default.
+    #[arg(long = "record-rejections")]
+    pub record_rejections: bool,
 }

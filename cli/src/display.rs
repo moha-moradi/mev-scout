@@ -1,5 +1,5 @@
 use comfy_table::Table;
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
@@ -44,6 +44,85 @@ pub fn save_results_json(
     std::fs::write(&path, json)?;
     println!("Results saved to {}", path.display());
     Ok(())
+}
+
+/// Persist run/live results into the explorer store's `opportunities` table
+/// (plan §9.2/Phase 1: the results layer feeds `explorer validate`). The JSON
+/// export above stays the primary artifact; failures here warn only.
+pub fn persist_opportunities_to_explorer(
+    config: &Config,
+    chain: mev_scout_core::types::ChainName,
+    run_id: &str,
+    results_file: &ResultsFile,
+) {
+    let store = match mev_scout_core::explorer::store::ExplorerStore::open(
+        config.effective_explorer_db_path(&chain),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("explorer store open failed (results layer skipped): {e}");
+            return;
+        }
+    };
+    for opp in &results_file.opportunities {
+        let path_str = opp
+            .path
+            .as_ref()
+            .map(|p| p.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(","));
+        let confidence_str = opp.confidence.map(|c| format!("{c:.2}"));
+        if let Err(e) = store.insert_opportunity(
+            run_id,
+            &results_file.chain,
+            opp.block_number,
+            Some(opp.tx_index as u64),
+            &opp.strategy.to_string(),
+            Some(opp.pool_a),
+            (opp.pool_b != Address::ZERO).then_some(opp.pool_b),
+            (!opp.token_in.is_zero()).then_some(opp.token_in),
+            (!opp.token_out.is_zero()).then_some(opp.token_out),
+            Some(opp.input_amount),
+            Some(opp.expected_profit),
+            Some(U256::from(opp.gas_cost_wei)),
+            opp.path.as_ref().and_then(|_| path_str.as_deref()),
+            Some(opp.timestamp),
+            opp.mempool_only,
+            confidence_str.as_deref(),
+            opp.sender,
+            opp.tx_hash,
+            opp.detection_path.as_deref(),
+            opp.canonical_id.as_deref(),
+        ) {
+            tracing::warn!("opportunities-table insert failed: {e}");
+        }
+    }
+}
+
+/// Persist drained runner rejections into the explorer store (§9.3).
+/// Only called when `--record-rejections` is enabled.
+pub fn persist_rejections_to_explorer(
+    config: &Config,
+    chain: mev_scout_core::types::ChainName,
+    run_id: &str,
+    rejections: &[mev_scout_core::explorer::RejectedCandidate],
+) {
+    if rejections.is_empty() {
+        return;
+    }
+    let store = match mev_scout_core::explorer::store::ExplorerStore::open(
+        config.effective_explorer_db_path(&chain),
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("explorer store open failed (rejections skipped): {e}");
+            return;
+        }
+    };
+    let chain_str = chain.to_string();
+    for r in rejections {
+        if let Err(e) = store.insert_rejected_candidate(run_id, &chain_str, r) {
+            tracing::warn!("rejected_candidates insert failed: {e}");
+        }
+    }
 }
 
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {

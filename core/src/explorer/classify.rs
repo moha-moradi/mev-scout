@@ -65,7 +65,9 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 tx_index: tx.tx_index,
                 tx_hash: tx.tx_hash,
                 kind: MevKind::Liquidation,
-                searcher: liq.liquidator,
+                // `LiquidationCall` carries no liquidator address; the tx
+                // sender is the attribution target (zero fallback covered).
+                searcher: if liq.liquidator.is_zero() { tx.from } else { liq.liquidator },
                 contract: tx.to,
                 pools: vec![],
                 profit_token: Some(liq.collateral_asset),

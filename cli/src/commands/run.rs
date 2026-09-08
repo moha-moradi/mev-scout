@@ -5,7 +5,10 @@ use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::RunArgs;
-use crate::display::{print_startup_plan, render_block_summary_table, render_results_table, save_results_json};
+use crate::display::{
+    persist_opportunities_to_explorer, persist_rejections_to_explorer, print_startup_plan,
+    render_block_summary_table, render_results_table, save_results_json,
+};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
@@ -155,7 +158,8 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         .with_proximity_window(config.backtest.proximity_window)
         .with_capture_pending(config.backtest.capture_pending)
         .with_min_profit_wei(config.backtest.min_profit_wei)
-        .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx);
+        .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
+        .with_record_rejections(args.record_rejections);
 
     if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
         if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
@@ -183,6 +187,12 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     if let Err(e) = save_results_json(&config.output.export_path, &run_id, &results_file) {
         tracing::warn!("Failed to save results: {}", e);
     }
+
+    // Results layer (§9.2): also persist into the explorer opportunities table.
+    persist_opportunities_to_explorer(config, validation_result.chain_name, &run_id, &results_file);
+    // Rejection capture (§9.3) when --record-rejections.
+    let rejections = runner.take_rejections();
+    persist_rejections_to_explorer(config, validation_result.chain_name, &run_id, &rejections);
 
     if all_opportunities.is_empty() {
         println!("No MEV opportunities detected in the specified range.");

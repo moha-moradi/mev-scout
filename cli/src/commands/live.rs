@@ -3,7 +3,10 @@ use alloy::primitives::Address;
 use std::time::{Duration, Instant};
 
 use crate::cli::LiveArgs;
-use crate::display::{render_results_table, save_results_json};
+use crate::display::{
+    persist_opportunities_to_explorer, persist_rejections_to_explorer, render_results_table,
+    save_results_json,
+};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::validation::{self, ValidationResult};
@@ -121,7 +124,8 @@ async fn run_once(
     );
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.backtest.proximity_window)
-        .with_min_profit_wei(config.backtest.min_profit_wei);
+        .with_min_profit_wei(config.backtest.min_profit_wei)
+        .with_record_rejections(_args.record_rejections);
 
     let prev_block = tip.saturating_sub(1);
     if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
@@ -161,6 +165,9 @@ async fn run_once(
         opportunities: opps.clone(),
     };
     let _ = save_results_json(&config.output.export_path, &run_id, &results_file);
+    persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
+    let rejections = runner.take_rejections();
+    persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
 
     println!("\nBlock {} — {} opportunity(ies) detected", tip, opps.len());
     if opps.is_empty() {
@@ -220,7 +227,8 @@ async fn run_loop(
     );
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.backtest.proximity_window)
-        .with_min_profit_wei(config.backtest.min_profit_wei);
+        .with_min_profit_wei(config.backtest.min_profit_wei)
+        .with_record_rejections(args.record_rejections);
 
     let prev_block = tip.saturating_sub(1);
     if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
@@ -347,6 +355,9 @@ async fn run_loop(
         if let Err(e) = save_results_json(&config.output.export_path, &run_id, &results_file) {
             tracing::warn!("Failed to save results: {}", e);
         }
+        persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
+        let rejections = runner.take_rejections();
+        persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
 
         runner.last_processed_block = current_tip;
         last_block = current_tip;
