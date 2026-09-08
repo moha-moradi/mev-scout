@@ -98,14 +98,15 @@ Support column: ✅ covered · 🟡 engine type exists, factory address missing 
 |---|-----|-------|---------|------------|
 | 1 | PancakeSwap V3 | ~$528M/24h ≈ 40% of chain — the "~85%" figure is stale | ✅ | — |
 | 2 | PancakeSwap Infinity | ~$342M/24h — chain #2 venue, not "growing" | ❌ | Phase 3.3 |
-| 3 | GMGN | ~$141M | ❌ | bot/aggregator-adjacent — apply the same Q3 classify-before-decode check as Metric |
+| 3 | GMGN | ~$141M | ❌ | **descope** — trading bot / aggregator-adjacent, no trackable pool state (guardrails class; applies without a Q3-style spike) |
 | 4 | Uniswap V4 | ~$115M/24h | ✅ | — |
 | 5 | PancakeSwap V2 | ~$114M/24h — still material, not just "declining" | ✅ | — |
 | 6 | Uniswap V3 | ~$60M/24h | ✅ | — |
 | 7 | Metric V2 | ~$56M/24h | ❌ | Phase 3.4 |
 | 8 | Lista DEX | ~$38M/24h | ❌ | Phase 3.7 |
-| 9 | Flap sh / Topaz CL | ~$31–35M each | ❌ | new venues — Phase 4 (low prio) |
-| 10 | Native Swap | ~$16M/24h | ❌ | Phase 4 (low prio) |
+| 9 | Topaz CL | ~$30M/24h | ❌ | new venue — Phase 4 (low prio) |
+| 10 | Flap sh | ~$35M/24h | ❌ | **descope** — launchpad, not a DEX (DeFiLlama category "Launchpad"; guardrails class, see Phase 3 descope guardrails) |
+| 11 | Native Swap | ~$16M/24h | ❌ | Phase 4 (low prio) |
 
 ### Arbitrum (~$4.9B 30d)
 | # | DEX | ~Vol 24h | Support | Gap action |
@@ -223,14 +224,20 @@ is a pure config addition — fee/tick metadata is repaired later via `eth_call`
 | 1.2b | **PancakeSwap V3 factory on Ethereum** → `[ethereum] uniswap_v3_factories` — same deterministic address `0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865` ($8.1M/24h currently invisible) | `core/data/chains.toml` | trivial |
 | 1.3 | RamsesX factory → `[polygon] uniswap_v3_factories` (Algebra fork; ~$406M/30d) | `core/data/chains.toml` | trivial |
 | 1.4 | Pharaoh V3 factory → `[avalanche] uniswap_v3_factories` — **first verify implementation family** (canonical UniV3 vs Algebra vs Pancake-v3-style); fee tiers match UniV3. If the pool address in the `PoolCreated` topic is a **proxy**, the topic-scanned address differs from the implementation — decode must handle this | `core/data/chains.toml` | trivial + verification |
-| 1.5 | LFJ: promote `trader_joe_factory: Option<String>` → `trader_joe_factories: Vec<String>` in `ChainConfig`, then add V2.2 Liquidity Book factory to Avalanche alongside V2.1 (`0xb43120...`). V2.1 and V2.2 are **both live** — removing V2.1 loses historical backtest coverage; keeping both requires the list field. Update all consumers (`pool/discovery/trader_joe.rs`, `config/validation.rs`) | `core/data/chains.toml`, `core/src/config/defaults.rs` + consumers | small |
+| 1.5 | LFJ: promote `trader_joe_factory: Option<String>` → `trader_joe_factories: Vec<String>` in `ChainConfig`, then add V2.2 Liquidity Book factory alongside V2.1 (`0xb43120...`) on **Avalanche, and also on Arbitrum** (LFJ V2.2 there ~$0.3M/24h — §2 Arbitrum row). V2.1 and V2.2 are **both live** — removing V2.1 loses historical backtest coverage; keeping both requires the list field. Update all consumers (`pool/discovery/trader_joe.rs`, `config/validation.rs`) | `core/data/chains.toml`, `core/src/config/defaults.rs` + consumers | small |
 | 1.6 | *(optional)* Pangolin **V3** factory → `[avalanche] uniswap_v3_factories` — live data shows Pangolin V3 active ($1.3M/24h); the Pangolin **V2** factory referenced in the `chain.rs` fallback list is effectively dead | `core/data/chains.toml` | trivial |
 | 1.7 | *(optional)* Curve **direct factories** per non-Ethereum chain (see Phase 0) → new config field `curve_factories` + discovery support | `chains.toml`, `discovery/curve.rs` | small |
 | 1.8 | *(optional)* **Blackhole CLMM** (Avalanche, chain #4 at ~$5.0M/24h — bigger than Uniswap V3 there) — verify whether its CL pools are Algebra-family; if yes, factory → `[avalanche] uniswap_v3_factories` is config-only. Its Solidly-style "AMM" leg is negligible ($21K) | `core/data/chains.toml` | trivial + verification |
-| 1.9 | *(optional, needs schema change)* **QuickSwap V4 on Base** ($2.4M/24h) — V4-family, but `v4_pool_manager` is a single `Option<String>` per chain; supporting both Uniswap V4 and QuickSwap V4 on one chain requires promoting it to a list (same pattern as Phase 1.5) | `core/data/chains.toml`, `core/src/config/defaults.rs` | small |
+| 1.9 | *(optional, needs schema change)* **QuickSwap V4 on Base** ($2.4M/24h) — V4-family, but `v4_pool_manager` is a single `Option<String>` per chain; supporting both Uniswap V4 and QuickSwap V4 on one chain requires promoting it to a list (same pattern as Phase 1.5). **Check whether QuickSwap V4 runs its own PoolManager on Polygon too** — if yes, the list promotion is needed there as well (Polygon's current `v4_pool_manager` is Uniswap V4's, so a second V4 manager is not representable today) | `core/data/chains.toml`, `core/src/config/defaults.rs` | small |
 
 **Acceptance:** `mev-scout -f <cfg> discover --source onchain` per chain lists the new
 factories; `validate-pools` recall for those DEXes goes from 0 to ≥ target.
+
+> **Config-only vs new-decoder paths.** Everything in Phase 1 reuses an existing
+> `DexType` (the engine already scans that factory's event family), so the Phase 3
+> checklist does **not** apply. The only code touchpoints are the `chains.toml` entry and
+> — where a field is promoted to a list (1.5, 1.9) — `config/defaults.rs`
+> `pick_factories()`, `config/validation.rs`, and the consuming discovery module.
 
 ### Phase 2 — Remote-discovery classification fixes (small code, ~0.5 day)
 
@@ -274,9 +281,42 @@ the first factory deployment** of a chain's main DEXes, those pools are never in
 
 ### Phase 3 — New decoders (ordered by volume impact)
 
-Each item: add `DexType` variant → discovery module → swap decoder → math →
-state application → `chain/trades.rs` scan topic → GeckoTerminal mapping. Follow the
-Camelot precedent (smallest existing custom decoder) as the template.
+Compiled touchpoint checklist for a new `DexType` (verified against the codebase on
+2026-09-08 — every one of these switches on `DexType`/`PoolState` and must be updated):
+
+1. `core/src/dex_type.rs` — enum variant + discriminant + `Display`/`FromStr`/`as_u8`/`from_u8`/`all()`/`chain_families()`.
+2. `core/src/pool/state/pool_types.rs` — new `PoolState` variant + state struct.
+3. `core/src/pool/state/factory.rs` — pool init + metadata-repair arm.
+4. `core/src/pool/state/apply.rs` — reserve-update arm (swap/sync/burn/mint/flash).
+5. `core/src/pool/discovery/<name>.rs` + `pool/discovery/mod.rs` — new module, and wire into the
+   `discover_pools()` dispatch **and** the `swap_topics()` list in `mod.rs:29-39` (this feeds the trades scanner; a missing entry means swaps are never seen).
+6. `core/src/chain/events.rs` — swap-topic constant + decoder function.
+7. `core/src/chain/trades.rs` — `trade_topics()` + decode dispatch in `scan_trades()`.
+8. `core/src/pool/math/<name>.rs` + **`pool/math/core.rs` `quote_exact_in()` (lines 53-123)**
+   — **gap vs. the old plan**: the "follow the Camelot precedent" template is misleading,
+   because Camelot is **not** in `quote_exact_in()` (nor Solidly). A new dex *must* get a
+   match arm there or quoting silently returns `None` for those pools.
+9. `core/src/types/gas.rs` — `DEX_SLOTS = 16` bucket count + `BlendedGasLimit::dex_slot()` match.
+10. **All detectors that dispatch on `DexType`** for per-hop gas: `mev/detectors/two_hop.rs`,
+    `sandwich.rs`, `multi_hop.rs` (`dominant_dex_type()` line ~991), `jit.rs`, `jit_arb.rs`,
+    `liquidation.rs`.
+11. `core/src/explorer/decode.rs` — `decode_receipt_facts()` arm.
+12. `core/src/explorer/types.rs` — **`Amm` enum (line 140)** — **gap vs. the old plan**:
+    decide whether the new dex reuses an existing `Amm` family (e.g. Pharaoh DLMM →
+    `Amm::Lb`, like Camelot → `Amm::Solidly`) or needs a new variant for classification.
+13. `core/src/pool/discovery/remote/geckoterminal.rs` + `dexscreener.rs` — `infer_dex_type()` mappings (see Phase 2.1).
+14. Config: new `ChainConfig` field if the dex reads a bespoke factory
+    (`config/defaults.rs` + `pick_factories()`) **and the `ChainName::default_*_factories()`
+    fallbacks in `core/src/types/chain.rs` (lines 151-219) — gap vs. the old plan**: zero-config
+    fallback lists duplicate `chains.toml` and must be kept in sync, or a config that omits
+    factories silently loses the new dex.
+15. `discovery/mod.rs` `swap_topics()` registry (also #5).
+
+Add `DexType` variant → discovery module → decoder → math → state application →
+`chain/trades.rs` scan topic → GeckoTerminal mapping. Use the Camelot decoder as a
+**contracts/events** template (it is the smallest custom decoder) — but note Camelot has
+**no math entry in `quote_exact_in()`** (its math is only a gas-calibration slot), so the
+math wiring in step 8 is still required for new dexes.
 
 | # | Item | Chains / Volume case | Notes | Effort |
 |---|---|---|---|---|
@@ -348,14 +388,17 @@ Resolved before committing the associated phase:
 ## 6. Priority order (volume-driven)
 
 1. **Phase 0** — wrong addresses cause silent zeros on strategies that already exist.
-2. **Phase 1.1–1.4 + 1.1b** — config lines unlock Velodrome V3, Aerodrome Slipstream,
-   Pancake V3 Base, RamsesX, Pharaoh V3: combined multi-$B/mo of currently invisible
-   volume. (Q1/Q2 gate 1.1b/1.2.)
+2. **Phase 1.1–1.4 + 1.1b + 1.2b** — config lines unlock Velodrome V3, Aerodrome
+   Slipstream, Pancake V3 Base **and Ethereum**, RamsesX, Pharaoh V3: combined
+   multi-$B/mo of currently invisible volume. (Q1/Q2 gate 1.1b/1.2.)
 3. **Phase 2.1** — stops active misclassification poisoning remote discovery.
 4. **Phase 2.5** — fixes never-exercised start blocks per non-Polygon chain.
-5. **Phase 1.5 + 3.5** — Avalanche is unusable as a target until Pharaoh DLMM +
-   LFJ V2.2 are covered (they are the top venues by volume).
-6. **Phase 3.3 → 3.2 → 3.4** — Infinity, Fluid*, Metric (descope Metric if Q3 = aggregator).
-   *Fluid only proceeds if Q5 feasibility study passes.
-7. **Phase 3.6** — 1inch Aqua, contingent on Q4 pilot results.
-8. **Phase 4/5** — ongoing.
+5. **Phase 1.5 + 3.5** — Avalanche and Arbitrum LFJ + Pharaoh DLMM (top venues by
+   volume); bundle **1.8 (Blackhole) and 1.9 (QuickSwap V4 Base)** into the same
+   traversal since they share the same chains.
+6. **Phase 1.6 + 1.7** — Pangolin V3 (Avalanche) and Curve direct factories
+   (low effort, mostly config).
+7. **Phase 3.3 → 3.2 → 3.4 → 3.7** — Infinity, Fluid*, Metric (descope if Q3 =
+   aggregator), Lista DEX. *Fluid only proceeds if Q5 feasibility study passes.
+8. **Phase 3.6** — 1inch Aqua, contingent on Q4 pilot results.
+9. **Phase 4/5** — ongoing.
