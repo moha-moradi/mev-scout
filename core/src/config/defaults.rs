@@ -28,12 +28,17 @@ pub struct ChainConfig {
     pub uniswap_v2_default_fee: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve_registry: Option<String>,
+    /// Curve stableswap factory contract addresses (CurveStableswapFactoryNG
+    /// deployments emitting `PoolDeployed(address)`; older factories emit
+    /// `PoolAdded(address,uint256)` — both are scanned).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve_factories: Option<Vec<String>>,
     /// Uniswap V4 singleton PoolManager contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v4_pool_manager: Option<String>,
-    /// Trader Joe V2 LB factory contract address.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trader_joe_factory: Option<String>,
+    /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "trader_joe_factory")]
+    pub trader_joe_factories: Option<Vec<String>>,
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pendle_factory: Option<String>,

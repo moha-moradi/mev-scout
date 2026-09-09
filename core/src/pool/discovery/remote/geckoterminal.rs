@@ -9,6 +9,7 @@
 //! 2026-08-23). We paginate by 24h volume and re-sort by TVL client-side to
 //! approximate the explorer "top pools by TVL" ordering.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use alloy::primitives::Address;
@@ -277,6 +278,8 @@ fn parse_gecko_response_inner(
     let included = json.get("included").and_then(|v| v.as_array());
 
     let mut out = Vec::new();
+    // De-duplicate the per-DEX "unsupported, skipping" warning.
+    let mut warned = HashSet::new();
     for item in data {
         let attrs = match item.get("attributes") { Some(a) => a, None => continue };
         let addr_str = attrs.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -324,11 +327,21 @@ fn parse_gecko_response_inner(
         // market order would silently invert prices downstream.
         let (token0, token1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
 
-        // Fee heuristic: geckoterminal doesn't expose fee; default to 0
-        let dex_type = match dex_override {
-            Some(d) => infer_dex_type(Some(d)),
-            None => infer_dex_type(dex_name.as_deref()),
-        };
+        // Fee heuristic: geckoterminal doesn't expose fee; default to 0.
+        // The per-DEX query's dex id is authoritative when present.
+        let dex_label = dex_override
+            .map(|s| s.to_string())
+            .or_else(|| dex_name.clone())
+            .unwrap_or_default();
+        if is_unsupported_dex(&dex_label.to_ascii_lowercase()) {
+            if warned.insert(dex_label.clone()) {
+                tracing::warn!(
+                    "Skipping GeckoTerminal pool(s) for unsupported DEX '{dex_label}' (no decoder yet)"
+                );
+            }
+            continue;
+        }
+        let dex_type = infer_dex_type(Some(&dex_label));
 
         out.push(RemotePool {
             address,
@@ -429,18 +442,42 @@ pub fn infer_dex_type(dex: Option<&str>) -> DexType {
         _ if s.contains("uniswap") && s.contains("v4") => DexType::UniswapV4,
         _ if s.contains("uniswap") && s.contains("v3") => DexType::UniswapV3,
         _ if s.contains("pancakeswap") && s.contains("v3") => DexType::UniswapV3,
+        _ if s.contains("pharaoh") && s.contains("v3") => DexType::UniswapV3,
+        // Velodrome V3 / Aerodrome Slipstream are concentrated-liquidity (V3);
+        // classic Velodrome/Aerodrome v1/v2 pairs are Solidly-style.
+        _ if s.contains("velodrome") || s.contains("aerodrome") || s.contains("slipstream") => {
+            if s.contains("v3") || s.contains("slipstream") {
+                DexType::UniswapV3
+            } else {
+                DexType::Solidly
+            }
+        }
+        _ if s.contains("solidly") => DexType::Solidly,
         _ if s.contains("pendle") => DexType::Pendle,
-        _ if s.contains("trader-joe") || s.contains("traderjoe") || s.contains("liquidity-book") => {
+        _ if s.contains("trader-joe") || s.contains("traderjoe") || s.contains("liquidity-book") || s.contains("lfj") => {
             DexType::TraderJoeLB
         }
         _ if s.contains("balancer") => DexType::Balancer,
         _ if s.contains("curve") => DexType::Curve,
+        _ if s.contains("camelot") => DexType::Camelot,
         // Classic AMMs: plain QuickSwap / SushiSwap / PancakeSwap V2 pairs.
         _ if s == "quickswap" || s.starts_with("quickswap-") => DexType::UniswapV2,
         _ if s.contains("sushi") => DexType::UniswapV2,
         _ if s.contains("pancakeswap") => DexType::UniswapV2,
         _ => DexType::UniswapV2,
     }
+}
+
+/// DEX labels with meaningful TVL but no decoder yet — importing them under a
+/// wrong `DexType` poisons pool state, so they are skipped (with a warning)
+/// until a decoder lands. Guarded before `infer_dex_type`.
+pub(crate) fn is_unsupported_dex(s: &str) -> bool {
+    const UNSUPPORTED: &[&str] = &[
+        "fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
+        "pancakeswap-infinity", "pharaoh-dlmm", "ekubo",
+    ];
+    UNSUPPORTED.iter().any(|n| s.contains(n))
+        || (s.contains("pharaoh") && !s.contains("v3"))
 }
 
 #[cfg(test)]
@@ -633,9 +670,28 @@ mod tests {
         assert_eq!(infer_dex_type(Some("uniswap-v4")), DexType::UniswapV4);
         assert_eq!(infer_dex_type(Some("pancakeswap-v3")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("trader-joe")), DexType::TraderJoeLB);
+        assert_eq!(infer_dex_type(Some("lfj")), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("pendle")), DexType::Pendle);
         assert_eq!(infer_dex_type(Some("curve-dex")), DexType::Curve);
         assert_eq!(infer_dex_type(Some("unknown-amm")), DexType::UniswapV2);
+        assert_eq!(infer_dex_type(Some("velodrome")), DexType::Solidly);
+        assert_eq!(infer_dex_type(Some("velodrome-v3")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("aerodrome")), DexType::Solidly);
+        assert_eq!(infer_dex_type(Some("aerodrome-slipstream")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("pharaoh-v3")), DexType::UniswapV3);
+    }
+
+    #[test]
+    fn test_unsupported_dex_flagged() {
+        for bad in ["fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
+                    "pancakeswap-infinity", "pharaoh-dlmm", "pharaoh-bins", "ekubo"] {
+            assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
+        }
+        // Supported siblings must NOT be flagged.
+        for good in ["pharaoh-v3", "aerodrome", "velodrome", "velodrome-v3",
+                     "aerodrome-slipstream", "uniswap", "pancakeswap"] {
+            assert!(!is_unsupported_dex(good), "{good} should stay supported");
+        }
     }
 
     #[tokio::test]

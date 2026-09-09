@@ -76,6 +76,29 @@ impl super::SqliteStore {
         Ok(pools)
     }
 
+    /// Earliest `creation_block` seen per pool factory — the "first-observed-block
+    /// cache" used by the panel-discovery start-block guard (DEX_COVERAGE_PLAN
+    /// Phase 2.5). Remote-sourced pools carry `creation_block == 0`, so those are
+    /// ignored; a factory with only remote rows never appears.
+    pub fn earliest_creation_block_by_factory(&self) -> anyhow::Result<Vec<(Address, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT factory, MIN(creation_block) FROM pool_info \
+             WHERE factory IS NOT NULL AND creation_block > 0 \
+             GROUP BY factory",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let factory: Vec<u8> = row.get(0)?;
+            let block: i64 = row.get(1)?;
+            if factory.len() == 20 {
+                out.push((Address::from_slice(&factory), block as u64));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn max_creation_block(&self) -> anyhow::Result<Option<u64>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -89,5 +112,80 @@ impl super::SqliteStore {
             }
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::SqliteStore;
+    use alloy::primitives::Address;
+
+    #[test]
+    fn earliest_creation_block_groups_by_factory() {
+        let store = SqliteStore::open(":memory:").unwrap();
+        {
+            let conn = store.conn();
+            for (i, block, factory) in [
+                (1u8, 5000i64, 4u8),
+                (2u8, 7000i64, 4u8),
+                (3u8, 6000i64, 5u8),
+            ] {
+                let mut addr = [0u8; 20];
+                addr[0] = i;
+                let mut t0 = [0u8; 20];
+                t0[0] = i + 10;
+                let mut t1 = [0u8; 20];
+                t1[0] = i + 20;
+                let mut fac = [0u8; 20];
+                fac[0] = factory;
+                conn.execute(
+                    "INSERT INTO pool_info (address, token0, token1, fee, dex_type, creation_block, factory)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        addr.to_vec(),
+                        t0.to_vec(),
+                        t1.to_vec(),
+                        3000i64,
+                        1i64,
+                        block,
+                        Some(fac.to_vec()),
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        let by_factory = store.earliest_creation_block_by_factory().unwrap();
+        assert_eq!(by_factory.len(), 2);
+        let mut f4 = [0u8; 20];
+        f4[0] = 4;
+        assert!(by_factory.contains(&(Address::from_slice(&f4), 5000)));
+        let mut f5 = [0u8; 20];
+        f5[0] = 5;
+        assert!(by_factory.contains(&(Address::from_slice(&f5), 6000)));
+    }
+
+    #[test]
+    fn earliest_creation_block_ignores_remote_rows() {
+        let store = SqliteStore::open(":memory:").unwrap();
+        {
+            let conn = store.conn();
+            let mut addr = [9u8; 20];
+            addr[0] = 1;
+            conn.execute(
+                "INSERT INTO pool_info (address, token0, token1, fee, dex_type, creation_block, factory)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    addr.to_vec(),
+                    vec![2u8; 20],
+                    vec![3u8; 20],
+                    3000i64,
+                    1i64,
+                    0i64,
+                    Some(vec![4u8; 20]), // creation_block 0 ⇒ remote-sourced ⇒ ignored
+                ],
+            )
+            .unwrap();
+        }
+        assert!(store.earliest_creation_block_by_factory().unwrap().is_empty());
     }
 }

@@ -165,6 +165,7 @@ impl ChainName {
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
                 "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
                 "0x858E3312ed3A876947EA49d572A7C42DE08af7EE", // BiSwap
+                "0x28F5E6C71C7541b1C6523351AE331CcAfC443626", // ListaV2 (UniV2 fork)
             ],
             ChainName::Arbitrum => &[], // Camelot handled via default_camelot_factories
             ChainName::Base => &[
@@ -187,17 +188,38 @@ impl ChainName {
             ChainName::Polygon => &[
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
                 "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09", // QuickSwap V3
+                "0x2Bef16A0081565E72100D73CBe19B1Bd2d802380", // RamsesX (Ramses Exchange CL V2)
             ],
-            ChainName::Avalanche => &["0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"],
-            ChainName::Bsc => &["0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"],
+            ChainName::Avalanche => &[
+                "0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD", // Uniswap V3
+                "0xAE6E5c62328ade73ceefD42228528b70c8157D0d", // Pharaoh Exchange V3 (RamsesV3Factory)
+                "0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256", // Pangolin V3 (UniV3-fork, dynamic fee)
+                "0x512eb749541B7cf294be882D636218c84a5e9E5F", // Blackhole CLMM (Algebra Integral)
+            ],
+            ChainName::Bsc => &[
+                "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", // PancakeSwap V3
+                "0xcb010ed373523942706F730b89792aA1C1597b20", // ListaV3 (UniV3 fork)
+            ],
             ChainName::Arbitrum => &[
                 "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
                 "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3
                 "0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b", // Ramses V3 (CL)
             ],
-            ChainName::Base => &["0x33128a8fC17869897dcE68Ed026d694621f6FDfD"],
-            ChainName::Ethereum => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
-            ChainName::Optimism => &["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+            ChainName::Base => &[
+                "0x33128a8fC17869897dcE68Ed026d694621f6FDfD", // Uniswap V3
+                "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3
+                "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A", // Aerodrome Slipstream CL
+                "0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a", // Aerodrome Slipstream CL (v2)
+            ],
+            ChainName::Ethereum => &[
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
+                "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3
+            ],
+            ChainName::Optimism => &[
+                "0x1F98431c8aD98523631AE4a59f267346ea31F984", // Uniswap V3
+                "0x548118C7E0B865C2CfA94D15EC86B666468ac758", // Velodrome V3 CL
+                "0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F", // Velodrome V3 CL (v2)
+            ],
         }
     }
 
@@ -212,6 +234,41 @@ impl ChainName {
                 "0x420DD381b31aEf6683db6B902084cB0FFECe40Da", // Velodrome V2
             ],
             _ => vec![],
+        }
+    }
+
+    /// Trader Joe / LFJ V2 LB factory addresses (raw + LB, V2.1 + V2.2 coexist).
+    pub fn default_trader_joe_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Avalanche => vec![
+                "0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c", // LFJ V2.2
+                "0x8e42f2F4101563bF679975178e880FD87d3eFd4e", // LFJ V2.1
+                "0xEb480050b016f6c6d45203D2346B68bDDDa23D4D", // Pharaoh DLMM (LB v2.1-compatible)
+            ],
+            ChainName::Arbitrum => vec![
+                "0xb43120c4745967fa9b93E79C149E66B0f2D6Fe0c", // LFJ V2.2
+                "0x8e42f2F4101563bF679975178e880FD87d3eFd4e", // LFJ V2.1
+            ],
+            ChainName::Bsc => vec![
+                "0x8e42f2F4101563bF679975178e880FD87d3eFd4e", // LFJ V2.1
+            ],
+            ChainName::Ethereum => vec![
+                "0xDC8d77b69155c7E68A95a4fb0f06a71FF90B943a", // LFJ V2.1
+            ],
+            _ => vec![],
+        }
+    }
+
+    /// Curve stableswap factory addresses (CurveStableswapFactoryNG deployments
+    /// emitting `PoolDeployed(address)`; older factories emit `PoolAdded(...)`).
+    pub fn default_curve_factories(&self) -> &'static [&'static str] {
+        match self {
+            ChainName::Polygon => &["0x1764ee18e8B3ccA4787249Ceb249356192594585"],
+            ChainName::Bsc => &["0xd7E72f3615aa65b92A4DBdC211E296a35512988B"],
+            ChainName::Arbitrum => &["0x9AF14D26075f142eb3F292D5065EB3faa646167b"],
+            ChainName::Ethereum => &["0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf"],
+            ChainName::Optimism => &["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"],
+            _ => &[],
         }
     }
 
@@ -280,6 +337,14 @@ mod tests {
                 f.parse::<Address>()
                     .unwrap_or_else(|e| panic!("{label} camelot factory {f}: {e}"));
             }
+            for f in chain.default_trader_joe_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} trader-joe factory {f}: {e}"));
+            }
+            for f in chain.default_curve_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} curve factory {f}: {e}"));
+            }
         }
     }
 
@@ -303,5 +368,40 @@ mod tests {
         assert!(ChainName::Base
             .default_uniswap_v2_factories()
             .contains(&"0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6"));
+    }
+
+    /// Phase 1.3 / 1.4 V3-family factories (DEX_COVERAGE_PLAN.md), pinned so a
+    /// silent removal from the effective default list surfaces in CI. Both are
+    /// verified RamsesV3Factory deployments (canonical UniV3 `PoolCreated`
+    /// topic); RamsesX on Polygon, Pharaoh V3 on Avalanche.
+    #[test]
+    fn coverage_plan_v3_factories_present() {
+        assert!(ChainName::Polygon
+            .default_uniswap_v3_factories()
+            .contains(&"0x2Bef16A0081565E72100D73CBe19B1Bd2d802380")); // RamsesX
+        assert!(ChainName::Avalanche
+            .default_uniswap_v3_factories()
+            .contains(&"0xAE6E5c62328ade73ceefD42228528b70c8157D0d")); // Pharaoh V3
+        assert!(ChainName::Avalanche
+            .default_uniswap_v3_factories()
+            .contains(&"0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256")); // Pangolin V3
+        assert!(ChainName::Avalanche
+            .default_uniswap_v3_factories()
+            .contains(&"0x512eb749541B7cf294be882D636218c84a5e9E5F")); // Blackhole CLMM (Algebra)
+    }
+
+    /// Coverage-plan LB and Curve factories (Phases 1.5/1.7/3.5), pinned so silent
+    /// removals from the effective default lists surface in CI.
+    #[test]
+    fn coverage_plan_lb_and_curve_factories_present() {
+        assert!(ChainName::Avalanche
+            .default_trader_joe_factories()
+            .contains(&"0xEb480050b016f6c6d45203D2346B68bDDDa23D4D")); // Pharaoh DLMM
+        assert!(ChainName::Bsc
+            .default_curve_factories()
+            .contains(&"0xd7E72f3615aa65b92A4DBdC211E296a35512988B"));
+        assert!(ChainName::Polygon
+            .default_curve_factories()
+            .contains(&"0x1764ee18e8B3ccA4787249Ceb249356192594585"));
     }
 }

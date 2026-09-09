@@ -1,0 +1,21 @@
+# Base-specific config — run with: mev-scout -f mev-scout.base.toml
+chain = "base"
+priority_fee_gwei = 30
+rpc_urls = [
+  "https://lb.drpc.live/base/AlEVHe8j40WBrJjdhDUkokAKhSn-rBQR8bjj0neqFxjy",
+]
+
+# Per-provider RPS limits (matches rpc_urls order).
+rpc_rps = [10]
+
+# Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
+rps_limit = 2
+
+# Default strategy set (comma-separated or "all")
+strategies = "all"
+
+# Backtest gas price model: historical_exact | p90 | fixed | live
+gas_model = "historical_exact"
+
+# Default output format: table | csv | json
+output = "table"

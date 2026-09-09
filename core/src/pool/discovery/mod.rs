@@ -46,6 +46,11 @@ pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PoolAdded(address,uint256)")
 });
 
+// CurveStableswapFactoryNG pool-creation event — `PoolDeployed(address pool)`.
+pub static CURVE_POOL_DEPLOYED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"PoolDeployed(address)")
+});
+
 // Solidly-style PairCreated (bool stable, address pair) — Velodrome, Aerodrome, Equalizer, Thena
 pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PairCreated(address,address,bool,address)")
@@ -75,6 +80,13 @@ pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> = LazyLock::new(|| {
 // Unlike canonical Uniswap V3 `PoolCreated(address,address,uint24,int24,address)`.
 pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"Pool(address,address,address)")
+});
+
+// Aerodrome Slipstream / Velodrome V3 CL pool creation event —
+// `PoolCreated(address,address,int24,address)` (token0, token1, tickSpacing indexed; pool in data).
+// Bespoke topic, not canonical Uniswap V3 nor Algebra.
+pub static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"PoolCreated(address,address,int24,address)")
 });
 
 /// readState(address) selector for Pendle Finance markets
@@ -328,14 +340,16 @@ pub struct DiscoveryConfig<'a> {
     pub v2_factories: Option<&'a [Address]>,
     pub v3_factories: Option<&'a [Address]>,
     pub curve_registry: Option<Address>,
+    /// Curve stableswap factory addresses (`PoolAdded`/`PoolDeployed` are both scanned).
+    pub curve_factories: Option<&'a [Address]>,
     pub solidly_factories: Option<&'a [Address]>,
     pub camelot_factories: Option<&'a [Address]>,
     /// Uniswap V4 singleton PoolManager contract address.
     pub v4_pool_manager: Option<Address>,
     /// Solidly-style pool fee in basis points (default: 30).
     pub solidly_fee_bps: Option<u32>,
-    /// Trader Joe V2 LB factory contract address.
-    pub trader_joe_factory: Option<Address>,
+    /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
+    pub trader_joe_factories: Option<&'a [Address]>,
     /// Pendle Finance factory contract address.
     pub pendle_factory: Option<Address>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).

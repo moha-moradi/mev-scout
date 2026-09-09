@@ -232,6 +232,29 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
     }
 
+    // ── Phase 2.5 start-block guard ──
+    // Warn whenever the configured pool_discovery_start_block is later than the
+    // earliest pool-creation block previously observed for a factory: pools
+    // deployed in between are silently never indexed by the forward scan.
+    if !is_remote_only {
+        match cache.earliest_creation_block_by_factory() {
+            Ok(by_factory) => {
+                for (factory, first_block) in by_factory {
+                    if let Some(cfg_start) = chain_config.pool_discovery_start_block {
+                        if cfg_start > first_block {
+                            tracing::warn!(
+                                "pool_discovery_start_block ({cfg_start}) is later than the first \
+                                 observed pool-creation block ({first_block}) for factory {factory} \
+                                 — pools deployed in between are never indexed"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::debug!("start-block guard query failed: {e:#}"),
+        }
+    }
+
     // ── Phase 5.1: Incremental mode — override from_block from cache (RPC-only) ──
     let (from, to) = if args.incremental && !is_remote_only {
         match cache.max_creation_block() {
@@ -319,6 +342,14 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             .curve_registry
             .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
+        let curve_factories: Vec<Address> = pick_factories(
+            chain_config
+                .curve_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            chain_name.default_curve_factories(),
+        );
 
         let v2_factories: Vec<Address> = pick_factories(
             chain_config
@@ -356,8 +387,14 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         let v4_pool_manager: Option<Address> = chain_config.v4_pool_manager.as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
-        let trader_joe_factory: Option<Address> = chain_config.trader_joe_factory.as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
+        let trader_joe_factories: Vec<Address> = pick_factories(
+            chain_config
+                .trader_joe_factories
+                .as_ref()
+                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+                .unwrap_or_default(),
+            &chain_name.default_trader_joe_factories(),
+        );
 
         let pendle_factory: Option<Address> = chain_config.pendle_factory.as_ref()
             .and_then(|s| s.parse::<Address>().ok());
@@ -377,11 +414,12 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
             v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
             curve_registry: registry,
+            curve_factories: if curve_factories.is_empty() { None } else { Some(curve_factories.as_slice()) },
             solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
             camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
             solidly_fee_bps: args.solidly_fee_bps,
             v4_pool_manager,
-            trader_joe_factory,
+            trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
             pendle_factory,
             rpc_concurrency: args.rpc_concurrency,
             token_cache: Some(&token_cache),

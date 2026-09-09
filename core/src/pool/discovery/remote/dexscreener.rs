@@ -9,7 +9,7 @@
 //! Fee/tick-spacing metadata is not exposed (`fee = 0`); the pool-init
 //! metadata-repair phase resolves those from chain before quoting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use alloy::primitives::Address;
@@ -72,6 +72,8 @@ impl DexScreenerClient {
 
         let limit = max_pools.unwrap_or(1000);
         let mut by_addr: HashMap<String, RemotePool> = HashMap::new();
+        // De-duplicate the per-DEX "unsupported, skipping" warning.
+        let mut warned = HashSet::new();
 
         for hub in hubs {
             if by_addr.len() >= limit {
@@ -84,7 +86,7 @@ impl DexScreenerClient {
             );
             match self.get_with_retry(&url).await {
                 Ok(resp) => {
-                    merge_pairs(&resp, chain_id, min_tvl, &mut by_addr);
+                    merge_pairs(&resp, chain_id, min_tvl, &mut by_addr, &mut warned);
                 }
                 Err(e) => {
                     tracing::warn!("DexScreener hub query '{hub}' failed: {e:#}");
@@ -173,6 +175,7 @@ fn merge_pairs(
     chain_id: &str,
     min_tvl: Option<f64>,
     out: &mut HashMap<String, RemotePool>,
+    warned: &mut HashSet<String>,
 ) {
     let Some(pairs) = json.get("pairs").and_then(|v| v.as_array()) else {
         return;
@@ -258,6 +261,16 @@ fn merge_pairs(
             })
             .unwrap_or_default();
         let dex_type = infer_dex_type(dex_name.as_deref(), &labels);
+        if let Some(ref name) = dex_name {
+            if is_unsupported_dex(&name.to_ascii_lowercase()) {
+                if warned.insert(name.clone()) {
+                    tracing::warn!(
+                        "Skipping DexScreener pool(s) for unsupported DEX '{name}' (no decoder yet)"
+                    );
+                }
+                continue;
+            }
+        }
 
         let key = address.to_string().to_lowercase();
         out.entry(key).or_insert_with(|| RemotePool {
@@ -317,10 +330,13 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
     if label_hit("v4") {
         return DexType::UniswapV4;
     }
-    if label_hit("v3") || label_hit("algebra") || label_hit("cl") {
+    if label_hit("v3") || label_hit("algebra") || label_hit("cl") || label_hit("slipstream") {
         return DexType::UniswapV3;
     }
     if id.contains("algebra") {
+        return DexType::UniswapV3;
+    }
+    if id.contains("slipstream") {
         return DexType::UniswapV3;
     }
     if id.contains("uniswap") || id.contains("quickswap") || id.contains("sushi") {
@@ -350,6 +366,18 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
         return DexType::Pendle;
     }
     DexType::UniswapV2
+}
+
+/// DEX ids with meaningful TVL but no decoder yet — importing them under a
+/// wrong `DexType` poisons pool state, so they are skipped (with a warning)
+/// until a decoder lands. Guarded before `infer_dex_type`.
+fn is_unsupported_dex(s: &str) -> bool {
+    const UNSUPPORTED: &[&str] = &[
+        "fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
+        "pancakeswap-infinity", "pharaoh-dlmm", "ekubo",
+    ];
+    UNSUPPORTED.iter().any(|n| s.contains(n))
+        || (s.contains("pharaoh") && !s.contains("v3"))
 }
 
 #[cfg(test)]
@@ -391,7 +419,8 @@ mod tests {
             ]
         });
         let mut out = HashMap::new();
-        merge_pairs(&json, "polygon", None, &mut out);
+        let mut warned = HashSet::new();
+        merge_pairs(&json, "polygon", None, &mut out, &mut warned);
         assert_eq!(out.len(), 1);
         let p = out.values().next().unwrap();
         assert!(p.token0 < p.token1, "tokens must be canonicalized");
@@ -407,8 +436,34 @@ mod tests {
         );
         assert_eq!(infer_dex_type(Some("camelot"), &[]), DexType::Camelot);
         assert_eq!(infer_dex_type(Some("aerodrome"), &[]), DexType::Solidly);
+        assert_eq!(infer_dex_type(Some("velodrome"), &[]), DexType::Solidly);
+        assert_eq!(
+            infer_dex_type(Some("aerodrome"), &["slipstream".to_string()]),
+            DexType::UniswapV3
+        );
+        assert_eq!(
+            infer_dex_type(Some("aerodrome-slipstream"), &[]),
+            DexType::UniswapV3
+        );
+        assert_eq!(
+            infer_dex_type(Some("velodrome"), &["v3".to_string()]),
+            DexType::UniswapV3
+        );
         assert_eq!(infer_dex_type(Some("lfj"), &[]), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("unknown-dex"), &[]), DexType::UniswapV2);
+    }
+
+    #[test]
+    fn test_unsupported_dex_flagged() {
+        for bad in ["fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
+                    "pancakeswap-infinity", "pharaoh-dlmm", "ekubo", "pharaoh-bins"] {
+            assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
+        }
+        // Supported siblings must NOT be flagged.
+        for good in ["pharaoh-v3", "aerodrome", "velodrome", "velodrome-v3",
+                     "aerodrome-slipstream", "uniswap", "pancakeswap"] {
+            assert!(!is_unsupported_dex(good), "{good} should stay supported");
+        }
     }
 
     #[tokio::test]

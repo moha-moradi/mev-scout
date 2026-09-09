@@ -96,6 +96,8 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
     let v3_factories = pick_factories(parse_all(&chain_config.uniswap_v3_factories), chain_name.default_uniswap_v3_factories());
     let solidly_factories = pick_factories(parse_all(&chain_config.solidly_factories), &chain_name.default_solidly_factories());
     let camelot_factories = pick_factories(parse_all(&chain_config.camelot_factories), &chain_name.default_camelot_factories());
+    let trader_joe_factories = pick_factories(parse_all(&chain_config.trader_joe_factories), &chain_name.default_trader_joe_factories());
+    let curve_factories = pick_factories(parse_all(&chain_config.curve_factories), chain_name.default_curve_factories());
 
     let disc_config = DiscoveryConfig {
         batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, 500),
@@ -104,11 +106,12 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
         v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
         v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
         curve_registry: registry,
+        curve_factories: if curve_factories.is_empty() { None } else { Some(curve_factories.as_slice()) },
         solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
         camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
         solidly_fee_bps: None,
         v4_pool_manager: chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok()),
-        trader_joe_factory: chain_config.trader_joe_factory.as_ref().and_then(|s| s.parse().ok()),
+        trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
         pendle_factory: chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()),
         rpc_concurrency: 8,
         token_cache: None,

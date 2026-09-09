@@ -233,6 +233,57 @@ is a pure config addition — fee/tick metadata is repaired later via `eth_call`
 **Acceptance:** `mev-scout -f <cfg> discover --source onchain` per chain lists the new
 factories; `validate-pools` recall for those DEXes goes from 0 to ≥ target.
 
+> **Status (2026-09-09)** — implemented in this working tree (uncommitted):
+> - **1.1 / 1.1b / 1.2 / 1.2b / 1.3 / 1.4** ✅ — Slipstream topic scan arm + factories on
+>   Base/Optimism, Pancake V3 (Base/Ethereum/Arbitrum), RamsesX (Polygon), Pharaoh V3
+>   (Avalanche) all live. Pin tests `phase_d_factories_present`,
+>   `coverage_plan_v3_factories_present` guard the lists.
+> - **1.5** ✅ `trader_joe_factories: Vec<String>` landed; LFJ V2.1+V2.2 on Avalanche/Arbitrum.
+> - **1.6 / 1.8** ✅ — Pangolin V3 `0x1128F23D...` and **Blackhole CLMM
+>   `0x512eb74954...`** (confirmed **Algebra Integral** from the official `BlackholeV3`
+>   docs.rs deployment table → `Pool(address,address,address)` topic) added to
+>   `[avalanche] uniswap_v3_factories` (chains.toml + `chain.rs` mirror + pin test).
+> - **1.7** ✅ — new `ChainConfig.curve_factories` + `DiscoveryConfig.curve_factories`;
+>   `scan_curve_batch` now scans all configured curve authorities over **both**
+>   `PoolAdded(address,uint256)` and `PoolDeployed(address)` topics (CurveStableswapFactoryNG
+>   emits the latter). Seeded from the official Curve deployments page: Polygon
+>   `0x1764ee18...`, BSC `0xd7E72f36...`, Arbitrum `0x9AF14D26...`, Ethereum
+>   `0x6A8cbed7...`, Optimism `0x5eeE3091...`. Mainnet registry still scanned alongside.
+> - **1.9** — **resolved by research, not code**: QuickSwap V4 is **Algebra Integral V4, not
+>   UniswapV4-family** (AlgebraPoolDeployer ABI on BaseScan, QuickSwap "Algebra Integral =
+>   their V4" docs, "Polygon POS V4 Algebra" section). A second canonical V4 PoolManager
+>   cannot exist on either chain, so the `v4_pool_manager` list promotion is **not needed**;
+>   when QuickSwap's V4 **Algebra factory** addresses are confirmed per chain they go into
+>   `uniswap_v3_factories` as config-only (same as QuickSwap V3). No schema change.
+> - **2.1** ✅ — `infer_dex_type()`/`is_unsupported_dex()` no longer poison unknown labels
+>   as `UniswapV2`.
+> - **3.5** 🟡 — Pharaoh DLMM is an **Liquidity-Book-family** deployment (docs.phar.gg
+>   `DLMMFactory 0xEb480050b016f6c6d45203D2346B68bDDDa23D4D`, Dune reuses the LB v2.1 macro).
+>   Factory wired into `[avalanche] trader_joe_factories` (reuses the `TraderJoeLB` arm).
+>   **Q6 in the open-questions table remains open**: the DLMM `LBPairCreated` indexed-layout
+>   matches `LB_PAIR_CREATED_TOPIC` on assumption only — on-chain log verification is deferred
+>   (no reliable RPC); if the signature differs, promote 3.5 to a bespoke decoder phase.
+> - **2.2** ✅ — curated per-chain GeckoTerminal slug ladder landed in
+>   `core/src/pool/discovery/remote/mod.rs` (`curated_dex_slugs()`), queried ahead of the
+>   network enumeration in `supplement_via_per_dex()` (no slug queried twice). Ordered by
+>   §2 volume ranks, e.g. base `aerodrome-slipstream → uniswap-v3-base → …`, avalanche
+>   `pharaoh-dlmm → pharaoh-exchange-v3 → …`. Pin test guards the leaders per chain.
+> - **2.5** ✅ — `SqliteStore::earliest_creation_block_by_factory()` (first-observed-block
+>   cache over `pool_info.factory` + `MIN(creation_block)`, no schema change) + a
+>   `discover.rs` guard that warns when `pool_discovery_start_block` is later than the
+>   earliest observed pool-creation block for a factory. Both cases unit-tested (incl.
+>   remote rows with `creation_block == 0` being ignored).
+> - **3.7** 🟡 — feasibility done: Lista is a **true AMM** with three engines (SmartSwap
+>   stableswap, ListaV3 = UniV3 fork, ListaV2 = UniV2 fork). BSC ListaV3/V2 factory
+>   addresses added **config-only** to `[bsc] uniswap_v3_factories` / `uniswap_v2_factories`
+>   (chains.toml + `chain.rs` mirror). Stableswap engine has no verified pool-creation
+>   event → not wired; topic compatibility still deferred (Q9).
+> - **3.2 / 3.3 / 3.4 / 3.6** — feasibility studies **complete**; all four are
+>   **new-decoder** phases (verdicts + contract addresses in the Phase 3 table). Not yet
+>   implemented.
+> - **Remaining:** 3.2 (Fluid), 3.3 (Pancake Infinity), 3.4 (Metric), 3.6 (Aqua) decoders,
+>   Phase 4 (Aero watch), Phase 5 (recall harness + weekly volume check).
+
 > **Config-only vs new-decoder paths.** Everything in Phase 1 reuses an existing
 > `DexType` (the engine already scans that factory's event family), so the Phase 3
 > checklist does **not** apply. The only code touchpoints are the `chains.toml` entry and
@@ -266,6 +317,12 @@ Update unit tests (`infer_dex_type_specific_labels_win_over_v2_fallback`) accord
 pulls top pools for the new venues per chain (`fetch_network_dexes` already enumerates;
 add a curated priority list per chain mirroring §2 volume ranks).
 
+> **Status (2026-09-09) ✅** — implemented: `curated_dex_slugs()` in
+> `core/src/pool/discovery/remote/mod.rs`, consumed as the head of the per-DEX ladder in
+> `supplement_via_per_dex()` (network enumeration becomes the best-effort tail, de-duped).
+> Slug inventory verified against `api.geckoterminal.com/api/v2/networks/{n}/dexes` the
+> same day; stale slugs 404 and skip (best-effort, degrades gracefully).
+
 ### Phase 2.5 — Pool-discovery start-block validation (~0.5 day)
 
 Silent-failure risk (same class as Phase 0): `pool_discovery_start_block` for every
@@ -278,6 +335,13 @@ the first factory deployment** of a chain's main DEXes, those pools are never in
   `discover --source onchain` with a sliding start-block probe and diff pool counts.
 - Add a config guard: warn if `pool_discovery_start_block` is later than the factory's
   known deployment block (needs a small hardcoded map or first-observed-block cache).
+
+> **Status (2026-09-09) ✅** — implemented via the **first-observed-block cache** (no schema
+> change): `SqliteStore::earliest_creation_block_by_factory()` derives
+> `MIN(creation_block) GROUP BY factory` from `pool_info`; `cli/src/commands/discover.rs`
+> warns when the configured start block is later than a factory's earliest observed pool
+> creation. A per-factory "blocks behind" backfill (compile-time nudge to re-run discovery)
+> is left as follow-up; the guard itself is live.
 
 ### Phase 3 — New decoders (ordered by volume impact)
 
@@ -334,19 +398,20 @@ dexes.
 
 | # | Item | Chains / Volume case | Notes | Effort |
 |---|---|---|---|---|
-| 3.5 | **Pharaoh DLMM** | Avalanche #1 (~$390M+/30d, now ~$147M/24h) | Bin-based (Liquidity Book family). `math/lb.rs` bin math reusable, but contracts/events differ from TraderJoeLB → new `DexType::PharaohDLMM`, own decoder. **Do this before Pharaoh V3 (Phase 1.4) is finalized** — DLMM carries ~2× the volume. Must land **before** Avalanche is treated as a first-class target | 1–2 wks |
-| 3.3 | **PancakeSwap Infinity** | BSC (chain #2 venue ~$341M/24h), Base | Hook-based AMM, V4-adjacent. Investigate first whether swap events are V4-compatible — if yes, extend `discovery/v4.rs` rather than new decoder. Verify the Infinity factory/pool addresses on Base too | 1–2 wks |
-| 3.2 | **Fluid** | Ethereum #4, Arbitrum, Base (~$2.5B/mo on ETH alone) | Lending-integrated, differential-liquidity architecture. **Feasibility study first**: can per-swap state be tracked from logs alone? If it needs off-chain subgraph data, descope. Note Fluid is also present on BSC via Lista DAO | 2–4 wks |
-| 3.4 | **Metric** | ETH/ARB/POL/BSC top-5 | AMM internals undocumented in this repo — spike first. **Scoping check:** Metric V2 may be a **DEX aggregator**, not a plain AMM — if it routes through other venues, tracking its pool state is low-yield for MEV and it should be **descoped** rather than decoded blind. **Verification step before spike:** inspect Metric contract ABI via `eth_getCode`; check if pool reserves are stored on-chain (slot0/balances pattern) vs off-chain (subgraph-only). If off-chain → immediate descope, no spike needed | 1–2 wks |
-| 3.6 | **1inch Aqua** | Ethereum #1 (~$312M/24h), possibly others | Intent-based AMM. **Not the same as the 1inch aggregator** — Aqua holds real pool reserves. Evaluate MEV-relevance (solver-style, quotes may be non-uniform vs AMM pricing) before committing decoder effort | spike first |
-| 3.7 | **Lista DEX** | Ethereum (~$45M/24h), BSC | New entrant, growing top-5. Spike before committing | spike first |
+| 3.5 | **Pharaoh DLMM** | Avalanche #1 (~$390M+/30d, now ~$147M/24h) | Bin-based (Liquidity Book family). ✅ **Status (2026-09-09):** confirmed LB v2.1-compatible (docs.phar.gg `DLMMFactory 0xEb480050b016f6c6d45203D2346B68bDDDa23D4D`; Dune reuses the LB macro). Factory wired **config-only** into `[avalanche] trader_joe_factories`. Q6 (indexed `LBPairCreated` layout) still deferred on-chain | 1-2 wks → done config-only |
+| 3.3 | **PancakeSwap Infinity** | BSC (chain #2 venue ~$341M/24h), Base | **Verdict (2026-09-09):** NOT canonical V4 — Pancake-owned contracts (BSC mainnet, `pancakeswap/infinity-core` bsc-mainnet.json): Vault `0x238a358808379702088667322f80aC48bAd5e6c4`, CLPoolManager `0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b`, BinPoolManager `0xC697d2898e0D09264376196696c51D7aBbbAA4a9`. `PoolId = keccak256(poolKey, 0xc0)`; bespoke `Initialize`/`Swap` signatures (Swap inlines fee+protocolFee). ⇒ **new decoder** (custom `DexType`, per-PoolManager discovery, no math reuse) | 1-2 wks |
+| 3.2 | **Fluid** | Ethereum #4, Arbitrum, Base (~$2.5B/mo on ETH alone) | **Verdict (2026-09-09):** true AMM (on-chain reserves) but reserves live in the unified **Liquidity layer**, not per-pool slots — **not log-only trackable**; needs `eth_call` (resolver + `centerPrice`). Hard-swap enforced at ±5% around `centerPrice`. ⇒ new decoder + state-read support; do **not** start without RPC budget for the resolver reads. Note: also on BSC via Lista DAO | 2-4 wks |
+| 3.4 | **Metric** | ETH/ARB/POL/BSC top-5 | **Verdict (2026-09-09):** **true AMM, not an aggregator** (DefiLlama sub-category AMM). Single V2 factory `0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C` on all 10 chains (live ~Feb 2026, ~$275M/24h). **Custom events** (not canonical): `PoolCreated(address indexed token0, address indexed token1, address indexed priceProvider, address pool, bytes32 poolId)` and tick/bin-based `Swap(address sender, address recipient, bool exactInput, int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)`. ⇒ **new decoder** (custom `DexType`; tick/bin math family); single factory per chain keeps config/distribution trivial | 1-2 wks |
+| 3.6 | **1inch Aqua** | Ethereum #1 (~$312M/24h), possibly others | **Verdict (2026-09-09):** intent-family but **no pooled custody** — makers' own wallets with ERC-20 allowances, virtual-balance accounting in the Aqua Router registry `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a` (AquaSwapVMRouter v1.0.2 `0x111111338c5091e8440b67b168bae16a668ac0de` executes SwapVM strategies: XYC, Decay, PeggedSwap). Pricing is **deterministic** (no off-chain solver) ⇒ MEV-relevant, but tracking requires an entirely different state model (registry virtual balances, not pools). New decoder + state model | spike first → 1-2 wks |
+| 3.7 | **Lista DEX** | Ethereum (~$45M/24h), BSC | **Verdict (2026-09-09):** true AMM, three engines: SmartSwap (Curve-like stableswap), ListaV3 = UniV3 fork (`0xcb010ed373523942706F730b89792aA1C1597b20` BSC), ListaV2 = UniV2 fork (`0x28F5E6C71C7541b1C6523351AE331CcAfC443626` BSC). Ethereum StableSwap factory `0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6` (pools: ETH/wstETH `0x23072d031d5Af614395C8E58B7f7e91F003b331a`, USDT/USDC `0x35c9a4DaE1ff05788f24B5B32721D89340CBB636`). 🟡 BSC V3/V2 factories added **config-only**; stableswap pool-creation event unverified → not wired. Topic compat deferred (Q9) | spike first → config-only done |
 
 Deliberately descoped: 1inch **aggregator routing** (distinct from 1inch Aqua, which
 holds reserves — Aqua stays candidate pending Q4), GMX/perp venues, FermiSwap/Ekubo/
 Native/DODO/Hashflow (small, idiosyncratic, or RFQ; revisit if volume share grows).
 
 > **Descope guardrails**
-> - **Metric** is likely an aggregator — verify before building; do not decode aggregates.
+> - **Metric** — verified a **true AMM** (not an aggregator); custom tick/bin events ⇒
+>   new decoder. Terminal check flipped from "aggregator?" to "decode-first".
 > - **1inch (aggregator)** ≠ 1inch Aqua (holds reserves). Only Aqua is a candidate.
 > - **Pharaoh DLMM** before Pharaoh V3: volume ratio ~2:1 in favor of DLMM.
 > - **Fluid** requires a feasibility study on log-only state reconstruction before
@@ -374,6 +439,10 @@ Native/DODO/Hashflow (small, idiosyncratic, or RFQ; revisit if volume share grow
   Validate factory addresses after Aero deployment before treating Phase 1.1/1.1b as
   permanently solved.
 
+> **Status (2026-09-09):** watch-list only — no code. No Aero deployment change observed
+> yet; re-check the factory set when the merger is live, and keep old Velodrome V2 and
+> Aerodrome V1 solidly factories in config for historical log replay.
+
 ### Phase 5 — Regression & validation harness
 
 - Extend `core/tests/` + `cli/tests/` config tests asserting the new factories parse
@@ -385,6 +454,15 @@ Native/DODO/Hashflow (small, idiosyncratic, or RFQ; revisit if volume share grow
   DefiLlama chain volume for covered DEXes (catches silent decoder breakage).
 - CI command: `cargo test --test config_validation` (or equivalent) should pass after
   every Phase 1/1.5/1.9 config change; add to CI pipeline if not already present.
+- **Add new-factory pin tests** for every Phase 1.6–3.7 config addition (pattern:
+  `coverage_plan_v3_factories_present`, `coverage_plan_lb_and_curve_factories_present`,
+  `all_default_factories_parse_as_addresses` in `core/src/types/chain.rs`).
+
+> **Status (2026-09-09):** item 1 partially landed — the pin-test pattern now covers the
+> Phase 1.6/1.7/1.8/3.5/3.7 config additions, and `all_default_factories_parse_as_addresses`
+> walks every default list (incl. `curve_factories` plus the new Lista BSC entries).
+> Remaining: per-DEX recall harness vs GeckoTerminal (≥80% top-5), weekly
+> trades-to-DefiLlama volume sanity check, and a CI entry for the config tests.
 
 ---
 
@@ -396,13 +474,14 @@ Resolved before committing the associated phase:
 |---|---|---|---|
 | Q1 | Does **Aerodrome Slipstream** (Base) emit the Algebra `Pool(address,address,address)` topic, or a bespoke event? If bespoke, Phase 1.1b needs a decoder shim, not just config | Phase 1.1b | `getLogs` on factory for existing pools; compare topic sig against §1 V3 list |
 | Q2 | Does **PancakeSwap V3** (Base) use the canonical `PoolCreated(address,address,uint24,int24,address)` topic and emit the real pool contract address? (Pancake V3 pools are standard V3-style contracts — masterchef is farming, unrelated to pool creation; the check is topic + factory only) | Phase 1.2 | `getLogs` on the factory; compare topic sig with §1; sanity-check one pool's `slot0` via `eth_call` |
-| Q3 | Is **Metric V2** a true AMM (trackable pool state) or an **aggregator/router**? Aggregator → descope Phase 3.4 | Phase 3.4 | inspect Metric contracts + subgraph; check whether pool reserves are on-chain |
-| Q4 | Is **1inch Aqua** MEV-relevant despite intent-based pricing? Solver-set pricing may not be arbitrageable like AMM quotes | Phase 3.6 | run a pilot `scan --kind arbitrage` on Ethereum Aqua pools |
-| Q5 | Can **Fluid** per-swap state be reconstructed from logs alone, or does it need subgraph data? | Phase 3.2 | feasibility study (contracts + log replay over a sample block range) |
-| Q6 | Is **Pharaoh DLMM**'s bin event signature compatible with `math/lb.rs`, or does it need its own decoder (different event fields)? | Phase 3.5 | compare TraderJoeLB vs PharaohSwap event ABI |
+| Q3 | Is **Metric V2** a true AMM (trackable pool state) or an **aggregator/router**? Aggregator → descope Phase 3.4 | Phase 3.4 | **Resolved: true AMM** (DefiLlama AMM sub-category; V2 factory `0xe22F9fc0...` live on all 10 chains). Custom tick/bin events (`Swap(... int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)`) → **new decoder**, not descope |
+| Q4 | Is **1inch Aqua** MEV-relevant despite intent-based pricing? Solver-set pricing may not be arbitrageable like AMM quotes | Phase 3.6 | **Resolved (feasibility):** pricing is **deterministic** — strategies are SwapVM opcodes (XYC/Decay/PeggedSwap) with no off-chain solver, so quotes are arbitrageable in principle. But Aqua has **no pooled custody** (maker-wallet allowances + virtual-balance registry) ⇒ new state model needed, not a pool decoder |
+| Q5 | Can **Fluid** per-swap state be reconstructed from logs alone, or does it need subgraph data? | Phase 3.2 | **Resolved: no.** Fluid is a true AMM but reserves live in the unified **Liquidity layer**, not per-pool storage slots ⇒ state needs `eth_call` (resolver + `centerPrice`); hard-swap is enforced at ±5% around `centerPrice`. Log-only descope; keep as new decoder + state reads (not zero effort) |
+| Q6 | Is **Pharaoh DLMM**'s bin event signature compatible with `math/lb.rs`, or does it need its own decoder (different event fields)? | Phase 3.5 | **Deferred — no reliable RPC.** Config-only wiring landed (factory → `trader_joe_factories`); verify `LBPairCreated` indexed layout on-chain before treating as permanent (see Status note, Phase 1/3.5) |
 | Q7 | What is the **Aero** factory address set at launch, and do old Velodrome V2/Aerodrome V1 factories keep emitting swaps? | Phase 4 | follow Aero docs while migration is live |
 | Q8 | Are per-chain **`aave_v3_pool`** addresses correct (esp. BSC) or does the same address string hide per-chain proxy differences? | Phase 0 | `eth_getCode` per chain + Aave deployment table |
-| Q9 | Is **Lista DEX** a true AMM (trackable pool state) or a wrapper/aggregator? New entrant with fast growth ($45M/24h ETH, $38M/24h BSC) — verify before committing decoder effort | Phase 3.7 | inspect Lista contracts; check if pool reserves are on-chain |
+| Q9 | Is **Lista DEX** a true AMM (trackable pool state) or a wrapper/aggregator? New entrant with fast growth ($45M/24h ETH, $38M/24h BSC) — verify before committing decoder effort | Phase 3.7 | **Resolved: true AMM** — three engines: SmartSwap (Curve-like stableswap), ListaV3 = UniV3 fork (`0xcb010ed3...` BSC), ListaV2 = UniV2 fork (`0x28F5E6C7...` BSC). BSC V3/V2 wired config-only; stableswap pool-creation event unverified → not wired |
+| Q10 | Do the **ListaV3/V2 fork factories** emit the canonical `PoolCreated`/`PairCreated` topics (so config-only scanning works), or bespoke ones that need a shim? | Phase 3.7 | **Deferred** — no reliable RPC for `getLogs`. Config-only entries assume canonical-fork events (degrades silently, harmless if wrong); verify with `getLogs` on the BSC factories when an RPC is available (same constraint as Q6) |
 
 ---
 
@@ -419,7 +498,9 @@ Resolved before committing the associated phase:
    traversal since they share the same chains.
 6. **Phase 1.6 + 1.7** — Pangolin V3 (Avalanche) and Curve direct factories
    (low effort, mostly config).
-7. **Phase 3.3 → 3.2 → 3.4 → 3.7** — Infinity, Fluid*, Metric (descope if Q3 =
-   aggregator), Lista DEX. *Fluid only proceeds if Q5 feasibility study passes.
-8. **Phase 3.6** — 1inch Aqua, contingent on Q4 pilot results.
+7. **Phase 3.3 → 3.4 → 3.2 → 3.7** — Infinity, Metric (true AMM — new decoder),
+   Fluid* (new decoder + `eth_call` state reads), Lista DEX (V3/V2 config-only landed).
+   *Fluid only proceeds with an RPC budget for resolver reads (Q5 verdict: not log-only).
+8. **Phase 3.6** — 1inch Aqua, contingent on Q4 pilot results; verdict keeps it viable
+   (deterministic SwapVM pricing) but it needs a registry-based state model, not pools.
 9. **Phase 4/5** — ongoing.

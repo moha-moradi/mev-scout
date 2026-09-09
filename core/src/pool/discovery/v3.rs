@@ -3,7 +3,7 @@ use alloy::primitives::Address;
 use crate::rpc::RpcClient;
 use crate::dex_type::DexType;
 use super::{DiscoveredPool, DiscoveryConfig};
-use super::{V3_POOL_CREATED_TOPIC, ALGEBRA_POOL_CREATED_TOPIC};
+use super::{V3_POOL_CREATED_TOPIC, ALGEBRA_POOL_CREATED_TOPIC, SLIPSTREAM_POOL_CREATED_TOPIC};
 use super::scan_factory_creation_events_pinned;
 
 pub(crate) async fn scan_v3_batch(
@@ -70,6 +70,41 @@ pub(crate) async fn scan_v3_batch(
                 Some((pool_addr, DiscoveredPool::new(pool_addr, token0, token1, 0, DexType::UniswapV3, creation_block)
                     .with_factory(Some(log.address()))
                     .with_dex_name(Some("QuickSwap Algebra".to_string()))))
+            },
+        ).await;
+
+        // Aerodrome Slipstream / Velodrome V3 CL pools use a bespoke
+        // `PoolCreated(address,address,int24,address)` (token0, token1, tickSpacing
+        // indexed; pool ABI-encoded in data). Canonical V3 + Algebra topics miss it.
+        scan_factory_creation_events_pinned(
+            rpc, factories, *SLIPSTREAM_POOL_CREATED_TOPIC, current, batch_end,
+            active_blocks, factory_pools, provider_idx,
+            |log| {
+                let log_data = log.data();
+                let topics = log.topics();
+                if log_data.data.len() < 32 || topics.len() < 4 {
+                    return None;
+                }
+                let token0 = Address::from_slice(&topics[1][12..]);
+                let token1 = Address::from_slice(&topics[2][12..]);
+                // int24 tickSpacing is right-aligned in the third topic's 32-byte word.
+                let tick_spacing = {
+                    let ts_bytes = [topics[3][29], topics[3][30], topics[3][31]];
+                    let sign = if ts_bytes[0] & 0x80 != 0 { 0xFF } else { 0 };
+                    i32::from_be_bytes([sign, ts_bytes[0], ts_bytes[1], ts_bytes[2]])
+                };
+                // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
+                let pool_addr = Address::from_slice(&log_data.data[12..32]);
+                if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
+                    return None;
+                }
+                let creation_block = log.block_number.unwrap_or(0);
+                // fee / liquidity not in event; CL pools expose slot0/liquidity so
+                // V3 state init applies, fee defaults to 0 (repaired via eth_call in Phase 2).
+                Some((pool_addr, DiscoveredPool::new(pool_addr, token0, token1, 0, DexType::UniswapV3, creation_block)
+                    .with_tick_spacing(Some(tick_spacing))
+                    .with_factory(Some(log.address()))
+                    .with_dex_name(Some("Slipstream CL".to_string()))))
             },
         ).await;
     }

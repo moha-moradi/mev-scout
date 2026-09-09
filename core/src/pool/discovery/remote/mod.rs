@@ -94,6 +94,89 @@ pub async fn discover_via_geckoterminal(
     }
 }
 
+/// Curated per-DEX slug priority list (DEX_COVERAGE_PLAN Phase 2.2), mirroring
+/// the §2 volume ranks per chain.
+///
+/// Slugs are GeckoTerminal dex ids (verified against
+/// `api.geckoterminal.com/api/v2/networks/{n}/dexes` on 2026-09-09). They gate
+/// the per-DEX fallback ladder: venues are queried in this order before the
+/// network-wide enumeration is drained, so the top venues by volume are pulled
+/// even when the enumeration is truncated. Unknown/renamed slugs 404 and are
+/// skipped (best-effort), so this list degrades gracefully.
+fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
+    match chain.to_ascii_lowercase().as_str() {
+        "ethereum" | "eth" => &[
+            "uniswap-v4-ethereum",   // #2
+            "uniswap_v3",            // #3
+            "fluid-ethereum",        // #4
+            "pancakeswap-v3-ethereum",
+            "curve",
+            "balancer_ethereum",
+            "uniswap_v2",
+        ],
+        "base" => &[
+            "aerodrome-slipstream",             // #1 CL
+            "uniswap-v3-base",
+            "pancakeswap-v3-base",
+            "uniswap-v4-base",
+            "aerodrome-base",
+            "pancakeswap-infinity-clmm-base",
+            "curve-base",
+            "fluid-base",
+            "uniswap-v2-base",
+        ],
+        "bsc" => &[
+            "pancakeswap-v3-bsc",   // #1
+            "pancakeswap_v2",       // #5
+            "uniswap-v2-bsc",
+            "traderjoe-v2-bsc",
+            "traderjoe-v2-1-bsc",
+        ],
+        "arbitrum" => &[
+            "uniswap_v3_arbitrum",  // #1
+            "uniswap-v4-arbitrum",
+            "camelot-v3",
+            "ramses-v3-arbitrum",
+            "fluid-arbitrum",
+            "curve_arbitrum",
+            "traderjoe-v2-2-arbitrum",
+            "pancakeswap-v3-arbitrum",
+            "balancer_arbitrum",
+        ],
+        "polygon" => &[
+            "uniswap_v3_polygon_pos",   // #4
+            "uniswap-v4-polygon",       // #2
+            "quickswap_v3",
+            "quickswap",
+            "ramses-v3-polygon",        // RamsesX
+            "fluid-polygon",
+            "curve_polygon_pos",
+            "uniswap-v2-polygon",
+        ],
+        "optimism" => &[
+            "velodrome-finance-slipstream", // #1 CL
+            "uniswap_v3_optimism",
+            "uniswap-v4-optimism",
+            "velodrome-finance-v2",
+            "velodrome",
+            "curve_optimism",
+        ],
+        "avalanche" => &[
+            "pharaoh-dlmm",             // #1
+            "pharaoh-exchange-v3",      // #2
+            "traderjoe-v2-2-avalanche",
+            "blackhole-v3",             // CLMM leg
+            "uniswap-v3-avalanche",
+            "uniswap-v4-avalanche",
+            "pangolin-v3",
+            "pharaoh-exchange",
+            "curve_avalanche",
+            "traderjoe-v2-1-avalanche",
+        ],
+        _ => &[],
+    }
+}
+
 /// Per-DEX ladder rung: enumerate the network's DEXes and query each one's
 /// pool list until `max_pools` is reached. Best-effort — a failing DEX is skipped.
 async fn supplement_via_per_dex(
@@ -108,8 +191,23 @@ async fn supplement_via_per_dex(
         return Ok(pools);
     }
     let dexes = client.fetch_network_dexes(chain).await?;
+    // Curated priority list first (volume-ranked venues), then the enumerated
+    // network DEXes as a best-effort tail — no slug queried twice.
+    let curated = curated_dex_slugs(chain);
+    let mut queued: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(curated.len());
+    let mut queue: Vec<&str> = Vec::with_capacity(curated.len() + dexes.len());
+    for slug in curated
+        .iter()
+        .copied()
+        .chain(dexes.iter().map(|s| s.as_str()))
+    {
+        if queued.insert(slug) {
+            queue.push(slug);
+        }
+    }
     let seen: std::collections::HashSet<Address> = pools.iter().map(|p| p.address).collect();
-    for dex in &dexes {
+    for dex in queue {
         if pools.len() >= cap {
             break;
         }
@@ -218,5 +316,27 @@ mod tests {
         let first = merged.iter().find(|p| p.address == a).unwrap();
         assert_eq!(first.tvl_usd, Some(100.0));
         assert_eq!(first.volume_usd_24h, Some(50.0));
+    }
+
+    #[test]
+    fn curated_slugs_rank_volume_leaders_per_chain() {
+        let cases: &[(&str, &str)] = &[
+            ("ethereum", "uniswap-v4-ethereum"),
+            ("base", "aerodrome-slipstream"),
+            ("bsc", "pancakeswap-v3-bsc"),
+            ("optimism", "velodrome-finance-slipstream"),
+            ("avalanche", "pharaoh-dlmm"),
+            ("polygon", "uniswap-v4-polygon"),
+            ("arbitrum", "camelot-v3"),
+        ];
+        for &(chain, leader) in cases {
+            assert!(
+                curated_dex_slugs(chain).contains(&leader),
+                "{chain}: '{leader}' missing from curated list"
+            );
+        }
+        // Matching is case-insensitive and unknown chains degrade to empty.
+        assert_eq!(curated_dex_slugs("ETH").first(), Some(&"uniswap-v4-ethereum"));
+        assert!(curated_dex_slugs("zksync").is_empty());
     }
 }
