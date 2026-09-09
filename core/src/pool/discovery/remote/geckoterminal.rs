@@ -442,6 +442,7 @@ pub fn infer_dex_type(dex: Option<&str>) -> DexType {
         _ if s.contains("uniswap") && s.contains("v4") => DexType::UniswapV4,
         _ if s.contains("uniswap") && s.contains("v3") => DexType::UniswapV3,
         _ if s.contains("pancakeswap") && s.contains("v3") => DexType::UniswapV3,
+        _ if s.contains("pancakeswap") && s.contains("infinity") => DexType::PancakeInfinity,
         _ if s.contains("pharaoh") && s.contains("v3") => DexType::UniswapV3,
         // Velodrome V3 / Aerodrome Slipstream are concentrated-liquidity (V3);
         // classic Velodrome/Aerodrome v1/v2 pairs are Solidly-style.
@@ -474,7 +475,7 @@ pub fn infer_dex_type(dex: Option<&str>) -> DexType {
 pub(crate) fn is_unsupported_dex(s: &str) -> bool {
     const UNSUPPORTED: &[&str] = &[
         "fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-        "pancakeswap-infinity", "pharaoh-dlmm", "ekubo",
+        "pharaoh-dlmm", "ekubo",
     ];
     UNSUPPORTED.iter().any(|n| s.contains(n))
         || (s.contains("pharaoh") && !s.contains("v3"))
@@ -669,6 +670,8 @@ mod tests {
         assert_eq!(infer_dex_type(Some("uniswap-v3")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("uniswap-v4")), DexType::UniswapV4);
         assert_eq!(infer_dex_type(Some("pancakeswap-v3")), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("pancakeswap-infinity")), DexType::PancakeInfinity);
+        assert_eq!(infer_dex_type(Some("pancakeswap-infinity-clmm-base")), DexType::PancakeInfinity);
         assert_eq!(infer_dex_type(Some("trader-joe")), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("lfj")), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("pendle")), DexType::Pendle);
@@ -684,12 +687,12 @@ mod tests {
     #[test]
     fn test_unsupported_dex_flagged() {
         for bad in ["fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-                    "pancakeswap-infinity", "pharaoh-dlmm", "pharaoh-bins", "ekubo"] {
+                    "pharaoh-dlmm", "pharaoh-bins", "ekubo"] {
             assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
         }
         // Supported siblings must NOT be flagged.
         for good in ["pharaoh-v3", "aerodrome", "velodrome", "velodrome-v3",
-                     "aerodrome-slipstream", "uniswap", "pancakeswap"] {
+                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity"] {
             assert!(!is_unsupported_dex(good), "{good} should stay supported");
         }
     }

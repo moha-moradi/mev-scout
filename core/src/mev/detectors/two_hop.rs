@@ -421,6 +421,10 @@ fn two_hop_profit_at(
             let zero_a = shared_token == a.info.token1;
             quote_v3_exact_in(a, input_amount, zero_a)?
         }
+        PoolState::PancakeInfinity(a) => {
+            let zero_a = shared_token == a.info.token1;
+            quote_v3_exact_in(a, input_amount, zero_a)?
+        }
         PoolState::Curve(a) => curve_output_amount(input_amount, a, token_in, shared_token)?,
         PoolState::Balancer(a) => balancer_quote_exact_in(input_amount, a, token_in, shared_token)?,
         PoolState::TraderJoeLB(a) => {
@@ -455,6 +459,10 @@ fn two_hop_profit_at(
             quote_v3_exact_in(b, intermediate, zero_b)?
         }
         PoolState::UniswapV4(b) => {
+            let zero_b = shared_token == b.info.token0;
+            quote_v3_exact_in(b, intermediate, zero_b)?
+        }
+        PoolState::PancakeInfinity(b) => {
             let zero_b = shared_token == b.info.token0;
             quote_v3_exact_in(b, intermediate, zero_b)?
         }
@@ -605,6 +613,7 @@ fn estimate_arb_pair_profit(
         }
         PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
         PoolState::UniswapV4(v4) => max_v3_tradeable_amount(v4, v4.info.token0 == token_in),
+        PoolState::PancakeInfinity(v4) => max_v3_tradeable_amount(v4, v4.info.token0 == token_in),
         PoolState::TraderJoeLB(lb) => {
             if lb.info.token0 == token_in {
                 lb.reserve_x

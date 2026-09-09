@@ -118,6 +118,9 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
         }),
         DexType::UniswapV3 => PoolState::UniswapV3(UniswapV3PoolState::new(info)),
         DexType::UniswapV4 => PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info)),
+        DexType::PancakeInfinity => PoolState::PancakeInfinity(
+            mev_scout_core::pool::state::PancakeInfinityPoolState::new(info),
+        ),
         DexType::Curve => PoolState::Curve(mev_scout_core::pool::state::CurvePoolState {
             info,
             balances: vec![],
@@ -323,6 +326,7 @@ async fn test_e2e_pool_discovery() {
         solidly_fee_bps: None,
         rpc_concurrency: 64,
         v4_pool_manager: None,
+        infinity_cl_pool_manager: None,
         trader_joe_factories: None,
         pendle_factory: None,
         token_cache: None,

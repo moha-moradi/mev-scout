@@ -215,6 +215,9 @@ impl UniswapV3PoolState {
 /// Uniswap V4 uses the same concentrated-liquidity state as V3.
 pub type UniswapV4PoolState = UniswapV3PoolState;
 
+/// Pancake Infinity CL pools share the same concentrated-liquidity state as V3/V4.
+pub type PancakeInfinityPoolState = UniswapV3PoolState;
+
 /// Runtime state for a Trader Joe V2 LB (Liquidity Book) pool.
 ///
 /// LB pools use discrete bins with a configurable bin step.
@@ -351,6 +354,9 @@ pub enum PoolState {
     UniswapV2(UniswapV2PoolState),
     UniswapV3(UniswapV3PoolState),
     UniswapV4(UniswapV4PoolState),
+    /// Pancake Infinity centralized-liquidity pools (singleton CLPoolManager on
+    /// BSC). Same concentrated-liquidity state model as V3/V4.
+    PancakeInfinity(PancakeInfinityPoolState),
     Curve(CurvePoolState),
     Balancer(BalancerPoolState),
     /// DODO pools (passive discovery only — no MEV detection support)
@@ -365,6 +371,7 @@ impl PoolState {
             PoolState::UniswapV2(s) => s.info.address,
             PoolState::UniswapV3(s) => s.info.address,
             PoolState::UniswapV4(s) => s.info.address,
+            PoolState::PancakeInfinity(s) => s.info.address,
             PoolState::Curve(s) => s.info.address,
             PoolState::Balancer(s) => s.info.address,
             PoolState::TraderJoeLB(s) => s.info.address,
@@ -377,6 +384,7 @@ impl PoolState {
             PoolState::UniswapV2(s) => &s.info,
             PoolState::UniswapV3(s) => &s.info,
             PoolState::UniswapV4(s) => &s.info,
+            PoolState::PancakeInfinity(s) => &s.info,
             PoolState::Curve(s) => &s.info,
             PoolState::Balancer(s) => &s.info,
             PoolState::TraderJoeLB(s) => &s.info,
@@ -389,6 +397,7 @@ impl PoolState {
             PoolState::UniswapV2(s) => &mut s.info,
             PoolState::UniswapV3(s) => &mut s.info,
             PoolState::UniswapV4(s) => &mut s.info,
+            PoolState::PancakeInfinity(s) => &mut s.info,
             PoolState::Curve(s) => &mut s.info,
             PoolState::Balancer(s) => &mut s.info,
             PoolState::TraderJoeLB(s) => &mut s.info,
@@ -412,6 +421,7 @@ impl PoolState {
             PoolState::UniswapV2(_) => DEFAULT_POOL_GAS,
             PoolState::UniswapV3(_) => V3_POOL_GAS,
             PoolState::UniswapV4(_) => V3_POOL_GAS,
+            PoolState::PancakeInfinity(_) => V3_POOL_GAS,
             PoolState::Curve(_) => STABLE_POOL_GAS,
             PoolState::Balancer(_) => STABLE_POOL_GAS,
             PoolState::TraderJoeLB(_) => STABLE_POOL_GAS,

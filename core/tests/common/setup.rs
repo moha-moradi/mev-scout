@@ -40,6 +40,11 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
         DexType::UniswapV4 => {
             PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info))
         }
+        DexType::PancakeInfinity => {
+            PoolState::PancakeInfinity(
+                mev_scout_core::pool::state::PancakeInfinityPoolState::new(info),
+            )
+        }
         DexType::Curve => PoolState::Curve(mev_scout_core::pool::state::CurvePoolState {
             info,
             balances: vec![],

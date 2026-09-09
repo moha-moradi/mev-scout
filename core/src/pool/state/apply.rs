@@ -64,7 +64,7 @@ impl PoolManager {
     ) {
         // V3 and V4 pools share the same swap logic
         match self.pools.get_mut(address) {
-            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) => {
+            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) | Some(PoolState::PancakeInfinity(state)) => {
                 state.sqrt_price_x96 = sqrt_price_x96;
                 state.tick = tick;
                 state.liquidity = liquidity;
@@ -102,7 +102,7 @@ impl PoolManager {
         amount: i128,
     ) {
         match self.pools.get_mut(address) {
-            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) => {
+            Some(PoolState::UniswapV3(state)) | Some(PoolState::UniswapV4(state)) | Some(PoolState::PancakeInfinity(state)) => {
                 *state.ticks.entry(tick_lower).or_insert(0) += amount;
                 *state.ticks.entry(tick_upper).or_insert(0) -= amount;
                 if amount > 0 {

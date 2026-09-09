@@ -95,6 +95,7 @@ async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Addr
         solidly_fee_bps: None,
         rpc_concurrency: 64,
         v4_pool_manager: None,
+        infinity_cl_pool_manager: None,
         trader_joe_factories: None,
         pendle_factory: None,
         token_cache: None,

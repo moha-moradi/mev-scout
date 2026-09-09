@@ -11,7 +11,7 @@ use crate::dex_type::DexType;
 use crate::rpc::{BlockRef, RpcClient};
 use crate::pool::state::manager::PoolManager;
 use crate::pool::math::consts::{BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO};
-use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
+use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, PancakeInfinityPoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
 pub enum PoolInitResult {
     V2Reserves { reserve0: u128, reserve1: u128 },
     V3State { sqrt_price_x96: U256, tick: i32, liquidity: u128, initialized_ticks: std::collections::BTreeMap<i32, i128> },
@@ -55,6 +55,16 @@ static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
 /// liquidity() selector for Uniswap V3
 static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"liquidity()");
+    Bytes::copy_from_slice(&hash[..4])
+});
+/// getSlot0(bytes32) selector for Pancake Infinity CL manager (poolId arg).
+static INF_CL_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getSlot0(bytes32)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+/// getLiquidity(bytes32) selector for Pancake Infinity CL manager (poolId arg).
+static INF_CL_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getLiquidity(bytes32)");
     Bytes::copy_from_slice(&hash[..4])
 });
 /// getPoolTokens(bytes32) selector for Balancer V2 vault
@@ -163,6 +173,7 @@ fn pool_info_ref(ps: &PoolState) -> &PoolInfo {
         PoolState::UniswapV2(s) => &s.info,
         PoolState::UniswapV3(s) => &s.info,
         PoolState::UniswapV4(s) => &s.info,
+        PoolState::PancakeInfinity(s) => &s.info,
         PoolState::Curve(s) => &s.info,
         PoolState::Balancer(s) => &s.info,
         PoolState::TraderJoeLB(s) => &s.info,
@@ -175,6 +186,7 @@ fn pool_info_mut(ps: &mut PoolState) -> &mut PoolInfo {
         PoolState::UniswapV2(s) => &mut s.info,
         PoolState::UniswapV3(s) => &mut s.info,
         PoolState::UniswapV4(s) => &mut s.info,
+        PoolState::PancakeInfinity(s) => &mut s.info,
         PoolState::Curve(s) => &mut s.info,
         PoolState::Balancer(s) => &mut s.info,
         PoolState::TraderJoeLB(s) => &mut s.info,
@@ -247,6 +259,15 @@ impl PoolManager {
                         true,
                         None,
                     ),
+                    Some(PoolState::PancakeInfinity(state)) => (
+                        *addr,
+                        DexType::PancakeInfinity,
+                        state.info.pool_id,
+                        state.info.tick_spacing.unwrap_or(60) as i32,
+                        state.info.factory,
+                        true,
+                        None,
+                    ),
                     Some(PoolState::Curve(s)) if s.info.dex_type == DexType::Solidly || s.info.dex_type == DexType::Camelot => {
                         (*addr, s.info.dex_type, None, 0, s.info.factory, true, None)
                     }
@@ -309,6 +330,8 @@ impl PoolManager {
                 Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks }) => {
                     if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(&addr) {
                         Self::process_concentrated_result(state, sqrt, tick, liq, initialized_ticks, "V4", addr);
+                    } else if let Some(PoolState::PancakeInfinity(state)) = self.pools.get_mut(&addr) {
+                        Self::process_concentrated_result(state, sqrt, tick, liq, initialized_ticks, "Infinity CL", addr);
                     }
                 }
                 Some(PoolInitResult::BalancerState { tokens, balances, weights, fee_bps, variant, amplification, scaling_factors, bpt_index, rate_providers }) => {
@@ -433,6 +456,7 @@ impl PoolManager {
                 PoolState::UniswapV2(s) => s.reserve0 == 0 && s.reserve1 == 0,
                 PoolState::UniswapV3(s) => s.sqrt_price_x96.is_zero(),
                 PoolState::UniswapV4(s) => s.sqrt_price_x96.is_zero(),
+                PoolState::PancakeInfinity(s) => s.sqrt_price_x96.is_zero(),
                 PoolState::Balancer(s) => s.balances.iter().all(|&b| b == 0),
                 PoolState::Curve(s) => s.balances.iter().all(|&b| b == 0),
                 PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
@@ -453,6 +477,7 @@ impl PoolManager {
                 PoolState::UniswapV2(s) => vec![s.info.token0, s.info.token1],
                 PoolState::UniswapV3(s) => vec![s.info.token0, s.info.token1],
                 PoolState::UniswapV4(s) => vec![s.info.token0, s.info.token1],
+                PoolState::PancakeInfinity(s) => vec![s.info.token0, s.info.token1],
                 PoolState::Balancer(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
                 PoolState::Curve(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
                 PoolState::TraderJoeLB(s) => vec![s.info.token0, s.info.token1],
@@ -690,6 +715,16 @@ impl PoolManager {
         Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: ticks })
     }
 
+    async fn init_infinity_cl_pool(
+        rpc: &RpcClient, _pool: Address, pool_id: Option<[u8; 32]>, manager: Option<Address>,
+        br: BlockRef,
+    ) -> Option<PoolInitResult> {
+        let manager = manager?;
+        let pool_id = pool_id?;
+        let (sqrt, tick, liq) = Self::fetch_infinity_cl_state(rpc, manager, pool_id, br).await?;
+        Some(PoolInitResult::V4State { sqrt_price_x96: sqrt, tick, liquidity: liq, initialized_ticks: std::collections::BTreeMap::new() })
+    }
+
     async fn init_balancer_pool(
         rpc: &RpcClient, vault: Address, pool: Address, pool_id: &[u8; 32],
         br: BlockRef, balancer_pool_type: Option<u8>, pre_fetched_tokens: Option<Vec<Address>>,
@@ -740,6 +775,7 @@ impl PoolManager {
             DexType::UniswapV2 => Self::init_v2_pool(rpc, pool, br, factory).await,
             DexType::UniswapV3 => Self::init_v3_pool(rpc, pool, br, tick_spacing, cache).await,
             DexType::UniswapV4 => Self::init_v4_pool(rpc, pool, br, tick_spacing, cache).await,
+            DexType::PancakeInfinity => Self::init_infinity_cl_pool(rpc, pool, pool_id, factory, br).await,
             DexType::Balancer => {
                 let vault = vault?;
                 let pool_id = pool_id?;
@@ -906,6 +942,40 @@ impl PoolManager {
         let (sqrt, tick, liq) = Self::fetch_v3_state_storage(rpc, pool, br).await?;
         let initialized_ticks = Self::fetch_v3_initialized_ticks(rpc, pool, tick, tick_spacing, br, cache).await;
         Some((sqrt, tick, liq, initialized_ticks))
+    }
+
+    /// Fetch Pancake Infinity CL pool state via eth_call on the singleton
+    /// manager: `getSlot0(bytes32 poolId)` -> (sqrtPriceX96, tick,
+    /// protocolFee, lpFee) and `getLiquidity(bytes32 poolId)` -> uint128.
+    /// There is no contract at the synthetic pool address, so state must be
+    /// read from the CLPoolManager with the full 32-byte PoolId.
+    async fn fetch_infinity_cl_state(
+        rpc: &RpcClient,
+        manager: Address,
+        pool_id: [u8; 32],
+        br: BlockRef,
+    ) -> Option<(U256, i32, u128)> {
+        let mut slot0_calldata = INF_CL_SLOT0_SELECTOR.to_vec();
+        slot0_calldata.extend_from_slice(&pool_id);
+        let slot0_result = Self::call_once(rpc, manager, Bytes::from(slot0_calldata), br).await.ok()?;
+        let mut liq_calldata = INF_CL_LIQUIDITY_SELECTOR.to_vec();
+        liq_calldata.extend_from_slice(&pool_id);
+        let liq_result = Self::call_once(rpc, manager, Bytes::from(liq_calldata), br).await.ok()?;
+        if slot0_result.len() < 64 || liq_result.len() < 32 {
+            tracing::trace!(
+                "eth_call getSlot0/getLiquidity returned short result for Infinity CL pool {manager}"
+            );
+            return None;
+        }
+        let sqrt_price_x96 = U256::from_be_slice(&slot0_result[12..32]);
+        let tick = i32::from_be_bytes([
+            slot0_result[60],
+            slot0_result[61],
+            slot0_result[62],
+            slot0_result[63],
+        ]);
+        let liquidity = u128::try_from(U256::from_be_slice(&liq_result[16..32])).ok()?;
+        Some((sqrt_price_x96, tick, liquidity))
     }
 
     /// Fetch initialized tick liquidity nets from a V3 pool contract.
@@ -1326,6 +1396,21 @@ impl PoolManager {
                     tick,
                     liquidity: liq,
                     ticks,
+                    fee_growth_global_0_x128: U256::ZERO,
+                    fee_growth_global_1_x128: U256::ZERO,
+                }))
+            }
+            PoolState::PancakeInfinity(inf) => {
+                let manager = inf.info.factory?;
+                let pool_id = inf.info.pool_id?;
+                let (sqrt, tick, liq) =
+                    Self::fetch_infinity_cl_state(rpc, manager, pool_id, BlockRef::Number(block)).await?;
+                Some(PoolState::PancakeInfinity(PancakeInfinityPoolState {
+                    info: inf.info.clone(),
+                    sqrt_price_x96: sqrt,
+                    tick,
+                    liquidity: liq,
+                    ticks: std::collections::BTreeMap::new(),
                     fee_growth_global_0_x128: U256::ZERO,
                     fee_growth_global_1_x128: U256::ZERO,
                 }))

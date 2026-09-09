@@ -220,6 +220,7 @@ impl PoolManager {
             }
             Some(PoolState::UniswapV3(v3)) => v3.liquidity,
             Some(PoolState::UniswapV4(v4)) => v4.liquidity,
+            Some(PoolState::PancakeInfinity(v4)) => v4.liquidity,
             Some(PoolState::Curve(c)) => c.balances.iter().sum(),
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
             Some(PoolState::TraderJoeLB(lb)) => lb.reserve_x.min(lb.reserve_y),
@@ -675,6 +676,7 @@ impl PoolManager {
                 PoolState::UniswapV2(s) => s.reserve0 > 0 && s.reserve1 > 0,
                 PoolState::UniswapV3(s) => s.liquidity > 0,
                 PoolState::UniswapV4(s) => s.liquidity > 0,
+                PoolState::PancakeInfinity(s) => s.liquidity > 0,
                 PoolState::Curve(s) => s.balances.iter().all(|b| *b > 0),
                 PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
                 PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,

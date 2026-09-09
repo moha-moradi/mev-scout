@@ -1,5 +1,5 @@
 //! DEX type enum (UniswapV2, UniswapV3, UniswapV4, Solidly, Camelot, Curve, Balancer,
-//! TraderJoeLB, Pendle) and associated metadata.
+//! TraderJoeLB, Pendle, PancakeInfinity) and associated metadata.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,4 +35,7 @@ pub enum DexType {
     #[serde(rename = "pendle")]
     #[strum(serialize = "Pendle")]
     Pendle = 9,
+    #[serde(rename = "pancake_infinity")]
+    #[strum(serialize = "PancakeInfinity")]
+    PancakeInfinity = 10,
 }

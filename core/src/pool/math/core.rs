@@ -84,6 +84,13 @@ pub fn quote_exact_in(
             }
             quote_v3_exact_in(v4, amount_in, zero_for_one)
         }
+        PoolState::PancakeInfinity(inf) => {
+            let zero_for_one = inf.info.token0 == token_in;
+            if !zero_for_one && inf.info.token1 != token_in {
+                return None;
+            }
+            quote_v3_exact_in(inf, amount_in, zero_for_one)
+        }
         PoolState::Curve(curve) => {
             if !curve.token_index.contains_key(&token_in)
                 || !curve.token_index.contains_key(&token_out)

@@ -41,6 +41,12 @@ pub mod topics {
         keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
     });
 
+    /// Pancake Infinity CL Swap event from the singleton CLPoolManager
+    /// (`id` in topics[1]; superset of the V4 signature with a `protocolFee` word).
+    pub static INF_CL_SWAP: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
+    });
+
     /// Trader Joe Liquidity Book 2.0 Pair Swap event
     /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
     /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
@@ -97,6 +103,7 @@ pub mod topics {
             *CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
             *BALANCER_SWAP,
             *V4_SWAP,
+            *INF_CL_SWAP,
             *TRADER_JOE_LB_SWAP,
             *TRADER_JOE_LB_SWAP_LEGACY,
             *PENDLE_MARKET_SWAP,
@@ -204,7 +211,7 @@ impl ActivityScanner {
 #[cfg(test)]
 mod tests {
     use super::topics;
-    use alloy::primitives::b256;
+    use alloy::primitives::{b256, keccak256};
 
     /// Regression guard: the V4 Swap topic must NOT collapse onto the V3 topic.
     /// The original bug used the V3 signature string
@@ -220,6 +227,20 @@ mod tests {
             *topics::V4_SWAP,
             b256!("40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f")
         );
+    }
+
+    /// Pancake Infinity CL Swap topic: superset of V4's signature (adds a
+    /// uint16 protocolFee word), so the two must hash to different topics and
+    /// the Infinity one must be present in the activity-topic list.
+    #[test]
+    fn infinity_cl_swap_topic_is_distinct_and_scanned() {
+        assert_ne!(*topics::INF_CL_SWAP, *topics::V4_SWAP);
+        assert_ne!(*topics::INF_CL_SWAP, *topics::V3_SWAP);
+        assert_eq!(
+            *topics::INF_CL_SWAP,
+            keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
+        );
+        assert!(topics::all_topics().iter().any(|t| *t == *topics::INF_CL_SWAP));
     }
 
     /// Trader Joe LB topics: the 2.0 form (uint256 id + swapForY) and the

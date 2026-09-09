@@ -387,6 +387,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         let v4_pool_manager: Option<Address> = chain_config.v4_pool_manager.as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
+        let infinity_cl_pool_manager: Option<Address> = chain_config.infinity_cl_pool_manager.as_ref()
+            .and_then(|s| s.parse::<Address>().ok());
+
         let trader_joe_factories: Vec<Address> = pick_factories(
             chain_config
                 .trader_joe_factories
@@ -419,6 +422,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
             solidly_fee_bps: args.solidly_fee_bps,
             v4_pool_manager,
+            infinity_cl_pool_manager,
             trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
             pendle_factory,
             rpc_concurrency: args.rpc_concurrency,
@@ -587,7 +591,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 DexType::UniswapV2 => {
                     println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
                 }
-                DexType::UniswapV3 | DexType::UniswapV4 => {
+                DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity => {
                     println!("  {dex}  {}  {}/{}  fee={}  tickSpacing={}{}",
                         p.address, t0, t1, p.fee, p.tick_spacing.unwrap_or(0), tvl_note);
                 }

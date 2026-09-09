@@ -14,13 +14,14 @@ detectors report zero opportunities for that venue.
 
 ## 1. Engine capability today
 
-`core/src/dex_type.rs` supports 9 DEX engine types:
+`core/src/dex_type.rs` supports 10 DEX engine types:
 
 | DexType | Discovery | Decoder | Math |
 |---|---|---|---|
 | UniswapV2 | ✅ `discovery/v2.rs` | ✅ | ✅ `math/core.rs` |
 | UniswapV3 (incl. **Algebra forks** via `Pool(address,address,address)` topic) | ✅ `discovery/v3.rs` | ✅ | ✅ `math/v3.rs` |
 | UniswapV4 | ✅ `discovery/v4.rs` | ✅ | ✅ |
+| PancakeSwap Infinity (CL) | ✅ `discovery/infinity.rs` | ✅ | ✅ (reuses CL/V3 math) |
 | Curve | ✅ `discovery/curve.rs` (registry: Ethereum only) | ✅ | ✅ `math/curve.rs` + `stable_swap.rs` |
 | Balancer | ✅ `discovery/balancer.rs` | ✅ | ✅ `math/balancer.rs` |
 | Solidly (Aerodrome/Velodrome V2) | ✅ `discovery/solidly.rs` | ✅ | ✅ |
@@ -91,13 +92,13 @@ Support column: ✅ covered · 🟡 engine type exists, factory address missing 
 | 6 | Tessera V | ~$27M | ❌ | Phase 4 (low prio) — verified live ($27.3M/24h) |
 | 7 | Aerodrome V1 (classic) | ~$22M | ✅ | — |
 | 8 | Hanji Protocol / ElfomoFi | ~$10–14M each | ❌ | new venues — Phase 4 (low prio) |
-| 9 | PancakeSwap Infinity | <$10M **on Base** — the ~$341M/24h figure is **BSC-only** | ❌ | Phase 3.3 (driven by BSC, not Base) |
+| 9 | PancakeSwap Infinity | <$10M **on Base** — the ~$341M/24h figure is **BSC-only** | ✅ (BSC) | Phase 3.3 landed (2026-09-09) — BSC wired; Base manager address unknown → not wired there |
 
 ### BSC (~$43B 30d)
 | # | DEX | Share | Support | Gap action |
 |---|-----|-------|---------|------------|
 | 1 | PancakeSwap V3 | ~$528M/24h ≈ 40% of chain — the "~85%" figure is stale | ✅ | — |
-| 2 | PancakeSwap Infinity | ~$342M/24h — chain #2 venue, not "growing" | ❌ | Phase 3.3 |
+| 2 | PancakeSwap Infinity | ~$342M/24h — chain #2 venue, not "growing" | ✅ | Phase 3.3 landed (2026-09-09) — see row below |
 | 3 | GMGN | ~$141M | ❌ | **descope** — trading bot / aggregator-adjacent, no trackable pool state (guardrails class; applies without a Q3-style spike) |
 | 4 | Uniswap V4 | ~$115M/24h | ✅ | — |
 | 5 | PancakeSwap V2 | ~$114M/24h — still material, not just "declining" | ✅ | — |
@@ -278,10 +279,12 @@ factories; `validate-pools` recall for those DEXes goes from 0 to ≥ target.
 >   addresses added **config-only** to `[bsc] uniswap_v3_factories` / `uniswap_v2_factories`
 >   (chains.toml + `chain.rs` mirror). Stableswap engine has no verified pool-creation
 >   event → not wired; topic compatibility still deferred (Q9).
-> - **3.2 / 3.3 / 3.4 / 3.6** — feasibility studies **complete**; all four are
+> - **3.2 / 3.4 / 3.6** — feasibility studies **complete**; all three are
 >   **new-decoder** phases (verdicts + contract addresses in the Phase 3 table). Not yet
 >   implemented.
-> - **Remaining:** 3.2 (Fluid), 3.3 (Pancake Infinity), 3.4 (Metric), 3.6 (Aqua) decoders,
+> - **3.3 (Pancake Infinity)** ✅ — implemented this working tree (uncommitted): discovery +
+>   decoder + CL-math reuse + toml-only `infinity_cl_pool_manager`; see the Phase 3.3 row.
+> - **Remaining:** 3.2 (Fluid), 3.4 (Metric), 3.6 (Aqua) decoders,
 >   Phase 4 (Aero watch), Phase 5 (recall harness + weekly volume check).
 
 > **Config-only vs new-decoder paths.** Everything in Phase 1 reuses an existing
@@ -304,7 +307,7 @@ Today every unknown GeckoTerminal dex id → `DexType::UniswapV2`. Concretely wr
 | `velodrome-v3` / `velodrome-slipstream` | UniswapV2 ❌ | UniswapV3 (Algebra) |
 | `pharaoh-v3` | UniswapV2 ❌ | UniswapV3 |
 | `pharaoh-dlmm` | UniswapV2 ❌ | new type (Phase 3.5) |
-| `pancakeswap-infinity` | UniswapV2 ❌ | new type (Phase 3.3) |
+| `pancakeswap-infinity` | (fixed) → `DexType::PancakeInfinity` ✅ | live — mapped in both remote sources, removed from UNSUPPORTED |
 | `fluid` / `metric` / `dodo` / `woofi` | UniswapV2 ❌ | skip + warn until decoded |
 
 Actions: extend the match list above the generic fallback; for not-yet-decoded
@@ -399,9 +402,9 @@ dexes.
 | # | Item | Chains / Volume case | Notes | Effort |
 |---|---|---|---|---|
 | 3.5 | **Pharaoh DLMM** | Avalanche #1 (~$390M+/30d, now ~$147M/24h) | Bin-based (Liquidity Book family). ✅ **Status (2026-09-09):** confirmed LB v2.1-compatible (docs.phar.gg `DLMMFactory 0xEb480050b016f6c6d45203D2346B68bDDDa23D4D`; Dune reuses the LB macro). Factory wired **config-only** into `[avalanche] trader_joe_factories`. Q6 (indexed `LBPairCreated` layout) still deferred on-chain | 1-2 wks → done config-only |
-| 3.3 | **PancakeSwap Infinity** | BSC (chain #2 venue ~$341M/24h), Base | **Verdict (2026-09-09):** NOT canonical V4 — Pancake-owned contracts (BSC mainnet, `pancakeswap/infinity-core` bsc-mainnet.json): Vault `0x238a358808379702088667322f80aC48bAd5e6c4`, CLPoolManager `0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b`, BinPoolManager `0xC697d2898e0D09264376196696c51D7aBbbAA4a9`. `PoolId = keccak256(poolKey, 0xc0)`; bespoke `Initialize`/`Swap` signatures (Swap inlines fee+protocolFee). ⇒ **new decoder** (custom `DexType`, per-PoolManager discovery, no math reuse) | 1-2 wks |
+| 3.3 | **PancakeSwap Infinity** | BSC (chain #2 venue ~$341M/24h), Base | **Implemented (2026-09-09, uncommitted):** custom `DexType::PancakeInfinity` (slot 10) + `discovery/infinity.rs` — Initialize-topic scan over the BSC `CLPoolManager 0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b` (same bytes32-PoolId / singleton-manager pattern as V4; synthetic pool key = `poolId[12..32]`) + `decode_infinity_cl_swap` (bespoke `Swap(bytes32,address,address,int128,int128,uint160,int24,uint16)`; first two data words are the signed net deltas, rest ignored) + **math is reuse, not bespoke** — `PancakeInfinityPoolState = UniswapV3PoolState`, `quote_v3_exact_in` (corrects the earlier "no math reuse" verdict) + init/refetch state via `eth_call getSlot0(bytes32)/getLiquidity(bytes32)` on the manager (no contract at the pseudo-address). `infinity_cl_pool_manager` config field wired toml-only (mirrors `v4_pool_manager`; no `chain.rs` mirror, pin test in `defaults.rs`). **Remaining:** topic digests are still assumption-only — on-chain verification deferred (no reliable RPC, same class as Q6/Q10); Base Infinity manager address unknown → BSC-only wiring | done (BSC) |
 | 3.2 | **Fluid** | Ethereum #4, Arbitrum, Base (~$2.5B/mo on ETH alone) | **Verdict (2026-09-09):** true AMM (on-chain reserves) but reserves live in the unified **Liquidity layer**, not per-pool slots — **not log-only trackable**; needs `eth_call` (resolver + `centerPrice`). Hard-swap enforced at ±5% around `centerPrice`. ⇒ new decoder + state-read support; do **not** start without RPC budget for the resolver reads. Note: also on BSC via Lista DAO | 2-4 wks |
-| 3.4 | **Metric** | ETH/ARB/POL/BSC top-5 | **Verdict (2026-09-09):** **true AMM, not an aggregator** (DefiLlama sub-category AMM). Single V2 factory `0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C` on all 10 chains (live ~Feb 2026, ~$275M/24h). **Custom events** (not canonical): `PoolCreated(address indexed token0, address indexed token1, address indexed priceProvider, address pool, bytes32 poolId)` and tick/bin-based `Swap(address sender, address recipient, bool exactInput, int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)`. ⇒ **new decoder** (custom `DexType`; tick/bin math family); single factory per chain keeps config/distribution trivial | 1-2 wks |
+| 3.4 | **Metric** | ETH/ARB/POL/BSC top-5 | **Verdict (2026-09-09):** **true AMM, not an aggregator** (DefiLlama sub-category AMM). Single V2 factory `0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C` on all 10 chains (live ~Feb 2026, ~$275M/24h). **Custom events** (not canonical): `PoolCreated(address indexed token0, address indexed token1, address indexed priceProvider, address pool, bytes32 poolId)` and tick/bin-based `Swap(address sender, address recipient, bool exactInput, int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)`. **Oracle anchor (not log-only):** each pool reads a mid-price from an `IPriceProvider` oracle (`MetricOmmPool`) into storesQ64.64 bins — bin bounds derive from the oracle mid-price, so price state needs per-pool `eth_call` reads, not just swap logs. ⇒ **new decoder** (custom `DexType`; tick/bin math family); single factory per chain keeps config/distribution trivial | 1-2 wks |
 | 3.6 | **1inch Aqua** | Ethereum #1 (~$312M/24h), possibly others | **Verdict (2026-09-09):** intent-family but **no pooled custody** — makers' own wallets with ERC-20 allowances, virtual-balance accounting in the Aqua Router registry `0x1111113ccf1426a8e30e2bff5e005d929bf6a90a` (AquaSwapVMRouter v1.0.2 `0x111111338c5091e8440b67b168bae16a668ac0de` executes SwapVM strategies: XYC, Decay, PeggedSwap). Pricing is **deterministic** (no off-chain solver) ⇒ MEV-relevant, but tracking requires an entirely different state model (registry virtual balances, not pools). New decoder + state model | spike first → 1-2 wks |
 | 3.7 | **Lista DEX** | Ethereum (~$45M/24h), BSC | **Verdict (2026-09-09):** true AMM, three engines: SmartSwap (Curve-like stableswap), ListaV3 = UniV3 fork (`0xcb010ed373523942706F730b89792aA1C1597b20` BSC), ListaV2 = UniV2 fork (`0x28F5E6C71C7541b1C6523351AE331CcAfC443626` BSC). Ethereum StableSwap factory `0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6` (pools: ETH/wstETH `0x23072d031d5Af614395C8E58B7f7e91F003b331a`, USDT/USDC `0x35c9a4DaE1ff05788f24B5B32721D89340CBB636`). 🟡 BSC V3/V2 factories added **config-only**; stableswap pool-creation event unverified → not wired. Topic compat deferred (Q9) | spike first → config-only done |
 
@@ -482,6 +485,7 @@ Resolved before committing the associated phase:
 | Q8 | Are per-chain **`aave_v3_pool`** addresses correct (esp. BSC) or does the same address string hide per-chain proxy differences? | Phase 0 | `eth_getCode` per chain + Aave deployment table |
 | Q9 | Is **Lista DEX** a true AMM (trackable pool state) or a wrapper/aggregator? New entrant with fast growth ($45M/24h ETH, $38M/24h BSC) — verify before committing decoder effort | Phase 3.7 | **Resolved: true AMM** — three engines: SmartSwap (Curve-like stableswap), ListaV3 = UniV3 fork (`0xcb010ed3...` BSC), ListaV2 = UniV2 fork (`0x28F5E6C7...` BSC). BSC V3/V2 wired config-only; stableswap pool-creation event unverified → not wired |
 | Q10 | Do the **ListaV3/V2 fork factories** emit the canonical `PoolCreated`/`PairCreated` topics (so config-only scanning works), or bespoke ones that need a shim? | Phase 3.7 | **Deferred** — no reliable RPC for `getLogs`. Config-only entries assume canonical-fork events (degrades silently, harmless if wrong); verify with `getLogs` on the BSC factories when an RPC is available (same constraint as Q6) |
+| Q11 | Are the **Pancake Infinity CL** `Initialize`/`Swap` topic digests and the `Swap` data-word layout decoded from the `pancakeswap/infinity-core` source correct on-chain? (`PoolId = keccak256(poolKey, 0xc0)`; `getSlot0/getLiquidity` on the manager return the pool's state) | Phase 3.3 | **Deferred** — no reliable BSC RPC for `getLogs` on the live `CLPoolManager 0xa0FfB9c1...` / `Vault 0x238a3588...`. Discovery/decoder are unit-tested against hand-built logs; flip the assumption-only digest tests to pinned digests when one verified log is available (same deferral class as Q6/Q10) |
 
 ---
 
@@ -498,9 +502,11 @@ Resolved before committing the associated phase:
    traversal since they share the same chains.
 6. **Phase 1.6 + 1.7** — Pangolin V3 (Avalanche) and Curve direct factories
    (low effort, mostly config).
-7. **Phase 3.3 → 3.4 → 3.2 → 3.7** — Infinity, Metric (true AMM — new decoder),
-   Fluid* (new decoder + `eth_call` state reads), Lista DEX (V3/V2 config-only landed).
-   *Fluid only proceeds with an RPC budget for resolver reads (Q5 verdict: not log-only).
+7. **Phase 3.3 → 3.4 → 3.2 → 3.7** — Infinity ✅ **done** (uncommitted, BSC; topic
+   verification still deferred), Metric (true AMM + oracle-anchored bins — new decoder
+   with per-pool `IPriceProvider` reads), Fluid* (new decoder + `eth_call` state reads),
+   Lista DEX (V3/V2 config-only landed). *Fluid only proceeds with an RPC budget for
+   resolver reads (Q5 verdict: not log-only).
 8. **Phase 3.6** — 1inch Aqua, contingent on Q4 pilot results; verdict keeps it viable
    (deterministic SwapVM pricing) but it needs a registry-based state model, not pools.
 9. **Phase 4/5** — ongoing.

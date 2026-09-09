@@ -66,6 +66,18 @@ pub static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"Initialize(bytes32 indexed id,Address indexed currency0,Address indexed currency1,uint24 fee,int24 tickSpacing,Address hooks)")
 });
 
+// Pancake Infinity CL Initialize event from singleton CLPoolManager:
+// `Initialize(bytes32 indexed id,address indexed currency0,address indexed currency1,address hooks,uint24 fee,bytes32 parameters,uint160 sqrtPriceX96,int24 tick)`
+pub static INF_CL_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"Initialize(bytes32,address,address,address,uint24,bytes32,uint160,int24)")
+});
+
+/// getSlot0(bytes32) selector for the Pancake Infinity CLPoolManager (poolId arg).
+pub static INF_CL_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
+    let hash = keccak256(b"getSlot0(bytes32)");
+    Bytes::copy_from_slice(&hash[..4])
+});
+
 // Trader Joe V2 LB PairCreated event
 pub static LB_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"LBPairCreated(address,address,address,uint256,address[])")
@@ -346,6 +358,8 @@ pub struct DiscoveryConfig<'a> {
     pub camelot_factories: Option<&'a [Address]>,
     /// Uniswap V4 singleton PoolManager contract address.
     pub v4_pool_manager: Option<Address>,
+    /// Pancake Infinity singleton CLPoolManager contract address (BSC).
+    pub infinity_cl_pool_manager: Option<Address>,
     /// Solidly-style pool fee in basis points (default: 30).
     pub solidly_fee_bps: Option<u32>,
     /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
@@ -621,6 +635,18 @@ fn classify_dex_event(
         }
         return Some((DexType::UniswapV4, None, None, None));
     }
+    if topic0 == *topics::INF_CL_SWAP {
+        // Pancake Infinity CL swaps also emit from a singleton CLPoolManager
+        // with the same bytes32 poolId scheme — identical handling to V4.
+        let topics = log.topics();
+        if topics.len() >= 2 {
+            let mut pool_id = [0u8; 32];
+            pool_id.copy_from_slice(topics[1].as_slice());
+            let pool_key = Address::from_slice(&pool_id[12..32]);
+            return Some((DexType::PancakeInfinity, Some(pool_id), None, Some(pool_key)));
+        }
+        return Some((DexType::PancakeInfinity, None, None, None));
+    }
     if topic0 == *topics::CURVE_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
@@ -708,6 +734,7 @@ mod camelot;
 mod trader_joe;
 mod pendle;
 mod v4;
+mod infinity;
 pub mod remote;
 
 /// Unified pool discovery — scans both DEX activity events and factory
@@ -854,10 +881,10 @@ async fn discover_pools_shard(
     // Single unified filter across all pool-level event types. Previously this
     // was split into a "fast" V2/V3-only path with Curve/Balancer topics only
     // queried on failure — which meant Curve/Balancer/LB/Pendle *activity*
-    // discovery almost never ran. V4 Swap logs are included but carry only a
-    // bytes32 poolId (singleton PoolManager): hits are matched against the
-    // Initialize-event scan / SQLite cache and are never resolved through
-    // per-pool metadata calls.
+    // discovery almost never ran. V4 / Pancake-Infinity Swap logs are included
+    // but carry only a bytes32 poolId (singleton PoolManagers): hits are matched
+    // against the Initialize-event scan / SQLite cache and are never resolved
+    // through per-pool metadata calls.
     let dex_activity_topics: Vec<B256> = vec![
         topics::V2_SWAP,
         topics::V2_SYNC,
@@ -877,6 +904,7 @@ async fn discover_pools_shard(
         *topics::PENDLE_SWAP_PT_AND_TOKEN,
         *topics::PENDLE_SWAP_YT_AND_TOKEN,
         *topics::V4_SWAP,
+        *topics::INF_CL_SWAP,
     ];
 
     let mut current = from_block;
@@ -934,6 +962,7 @@ async fn discover_pools_shard(
         trader_joe::scan_trader_joe_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
         pendle::scan_pendle_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
         v4::scan_v4_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        infinity::scan_infinity_cl_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
 
         if let Some(ref f) = on_batch {
             f();
@@ -1111,7 +1140,7 @@ async fn discover_pools_shard(
         // Skip pools already fully resolved via factory events
         if let Some(fp) = factory_pools.get(addr) {
             match fp.dex_type {
-                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::TraderJoeLB | DexType::Pendle => continue,
+                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity | DexType::TraderJoeLB | DexType::Pendle => continue,
                 _ => {}
             }
         }
@@ -1226,6 +1255,21 @@ async fn discover_pools_shard(
                 // of the index; a later run that observes the pool's Initialize
                 // event (or a cache hit) makes them resolvable.
                 unmatched_v4_hits += 1;
+            }
+            DexType::PancakeInfinity => {
+                // Singleton CLPoolManager — tokens come from the Initialize-event
+                // scan (factory_pools), never per-pool RPC (synthetic key is not
+                // a contract). Pools seen only via activity stay out of the index.
+                let (t0, t1) = factory_pools
+                    .get(addr)
+                    .map(|fp| (fp.token0, fp.token1))
+                    .unwrap_or((Address::ZERO, Address::ZERO));
+                let addr = *addr;
+                let dt = *dex_type;
+                let fsb = *first_seen_block;
+                fetch_tasks.push(Box::pin(async move {
+                    (addr, dt, Some(t0), Some(t1), None, None, fsb)
+                }));
             }
             DexType::Curve | DexType::Balancer => {
                 let (t0, t1) = balancer_tokens.unwrap_or((Address::ZERO, Address::ZERO));
@@ -1392,6 +1436,7 @@ async fn discover_pools_shard(
             }
             DexType::UniswapV3 => fee_opt.unwrap_or(3000),
             DexType::UniswapV4 => fee_opt.unwrap_or(3000),
+            DexType::PancakeInfinity => fee_opt.unwrap_or(3000),
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
             DexType::TraderJoeLB => fee_opt.unwrap_or(0),
             DexType::Pendle => fee_opt.unwrap_or(0),
@@ -1501,6 +1546,16 @@ pub async fn health_check_pools(
             DexType::UniswapV3 | DexType::UniswapV4 => {
                 // slot0() selector: 0x0c4c660e (check sqrtPriceX96 != 0)
                 tasks.push((i, pool.address, Bytes::from_static(&[0x0c, 0x4c, 0x66, 0x0e])));
+            }
+            DexType::PancakeInfinity => {
+                // Singleton CLPoolManager — health = getSlot0(poolId) on the
+                // manager (the synthetic pool key is not a contract address).
+                if let (Some(manager), Some(pool_id)) = (pool.factory, pool.pool_id) {
+                    let mut calldata = Vec::with_capacity(36);
+                    calldata.extend_from_slice(&INF_CL_SLOT0_SELECTOR);
+                    calldata.extend_from_slice(&pool_id);
+                    tasks.push((i, manager, Bytes::from(calldata)));
+                }
             }
             DexType::TraderJoeLB => {
                 // getActiveId() selector: keccak256("getActiveId()")[..4]
@@ -1714,6 +1769,45 @@ mod tests {
         assert_eq!(pid, Some(pool_id.0));
         assert!(tokens.is_none());
         // Synthetic key = last 20 bytes of poolId (consistent with v4.rs)
+        assert_eq!(addr_override, Some(Address::from_slice(&pool_id[12..32])));
+    }
+
+    /// Pancake Infinity CL Initialize has a distinct canonical signature from
+    /// Uniswap V4's (uint24 fee + bytes32 parameters + uint160 sqrtPriceX96 +
+    /// int24 tick instead of uint24 fee + int24 tickSpacing + address hooks),
+    /// so the two manager topics must differ and never shadow each other.
+    #[test]
+    fn infinity_cl_initialize_topic_differs_from_v4() {
+        use crate::chain::events::INF_CL_SWAP_TOPIC;
+        assert_ne!(*INF_CL_INITIALIZE_TOPIC, *V4_INITIALIZE_TOPIC);
+        assert_eq!(
+            *INF_CL_INITIALIZE_TOPIC,
+            keccak256(b"Initialize(bytes32,address,address,address,uint24,bytes32,uint160,int24)")
+        );
+        assert_ne!(*INF_CL_SWAP_TOPIC, *topics::V4_SWAP);
+    }
+
+    /// Infinity CL Swap logs must classify like V4: singleton emitter, poolId in
+    /// topics[1], synthetic pool key from poolId[12..32].
+    #[test]
+    fn classify_infinity_cl_swap_recovers_pool_id() {
+        let pool_manager = address!("a0FfB9c1CE1Fe56963B0321B32E7A0302114058b");
+        let pool_id = B256::from([
+            0x21, 0x43, 0x65, 0x87, 0xa9, 0xcb, 0xed, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc,
+            0xfe, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x9a,
+            0xbc, 0xde, 0xf0, 0x11,
+        ]);
+        let log = make_log(
+            pool_manager,
+            vec![*topics::INF_CL_SWAP, pool_id],
+            vec![0u8; 128 + 32], // 7 data words incl. trailing protocolFee
+        );
+
+        let (dex_type, pid, tokens, addr_override) =
+            classify_dex_event(&log).expect("Infinity CL swap must classify");
+        assert_eq!(dex_type, DexType::PancakeInfinity);
+        assert_eq!(pid, Some(pool_id.0));
+        assert!(tokens.is_none());
         assert_eq!(addr_override, Some(Address::from_slice(&pool_id[12..32])));
     }
 

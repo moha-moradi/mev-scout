@@ -141,6 +141,8 @@ pub enum Amm {
     V2,
     V3,
     V4,
+    /// Pancake Infinity centralized-liquidity pools (singleton CLPoolManager).
+    Infinity,
     Curve,
     Balancer,
     Solidly,
@@ -154,6 +156,7 @@ impl Amm {
             Amm::V2 => "v2",
             Amm::V3 => "v3",
             Amm::V4 => "v4",
+            Amm::Infinity => "infinity",
             Amm::Curve => "curve",
             Amm::Balancer => "balancer",
             Amm::Solidly => "solidly",

@@ -111,6 +111,7 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
         camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
         solidly_fee_bps: None,
         v4_pool_manager: chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok()),
+        infinity_cl_pool_manager: chain_config.infinity_cl_pool_manager.as_ref().and_then(|s| s.parse().ok()),
         trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
         pendle_factory: chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()),
         rpc_concurrency: 8,

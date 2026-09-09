@@ -1198,6 +1198,11 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 crate::pool::state::UniswapV4PoolState::new(info),
             ));
         }
+        crate::dex_type::DexType::PancakeInfinity => {
+            pool_manager.add_pool(PoolState::PancakeInfinity(
+                crate::pool::state::PancakeInfinityPoolState::new(info),
+            ));
+        }
         crate::dex_type::DexType::Curve => {
             pool_manager.add_pool(PoolState::Curve(crate::pool::state::CurvePoolState {
                 info,

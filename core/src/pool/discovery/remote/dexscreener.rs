@@ -342,6 +342,9 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
     if id.contains("uniswap") || id.contains("quickswap") || id.contains("sushi") {
         return DexType::UniswapV2;
     }
+    if id.contains("pancakeswap") && id.contains("infinity") {
+        return DexType::PancakeInfinity;
+    }
     if id.contains("camelot") {
         return DexType::Camelot;
     }
@@ -374,7 +377,7 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
 fn is_unsupported_dex(s: &str) -> bool {
     const UNSUPPORTED: &[&str] = &[
         "fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-        "pancakeswap-infinity", "pharaoh-dlmm", "ekubo",
+        "pharaoh-dlmm", "ekubo",
     ];
     UNSUPPORTED.iter().any(|n| s.contains(n))
         || (s.contains("pharaoh") && !s.contains("v3"))
@@ -456,14 +459,22 @@ mod tests {
     #[test]
     fn test_unsupported_dex_flagged() {
         for bad in ["fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-                    "pancakeswap-infinity", "pharaoh-dlmm", "ekubo", "pharaoh-bins"] {
+                    "pharaoh-dlmm", "ekubo", "pharaoh-bins"] {
             assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
         }
         // Supported siblings must NOT be flagged.
         for good in ["pharaoh-v3", "aerodrome", "velodrome", "velodrome-v3",
-                     "aerodrome-slipstream", "uniswap", "pancakeswap"] {
+                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity"] {
             assert!(!is_unsupported_dex(good), "{good} should stay supported");
         }
+    }
+
+    #[test]
+    fn pancakeswap_infinity_maps_to_infinity() {
+        assert_eq!(
+            infer_dex_type(Some("pancakeswap-infinity"), &["infinity".to_string()]),
+            DexType::PancakeInfinity
+        );
     }
 
     #[tokio::test]

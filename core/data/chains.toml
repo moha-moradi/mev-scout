@@ -61,6 +61,8 @@ pool_discovery_start_block = 5063800
 wrapped_native_token = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 uniswap_v2_default_fee = 25
 v4_pool_manager = "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df"
+# PancakeSwap Infinity CLPoolManager (BSC) — swap/initialize topics on this singleton.
+infinity_cl_pool_manager = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"
 # LFJ V2.1 LB factory (V2.2 not yet deployed on BSC).
 trader_joe_factories = ["0x8e42f2F4101563bF679975178e880FD87d3eFd4e"]
 curve_factories = ["0xd7E72f3615aa65b92A4DBdC211E296a35512988B"]

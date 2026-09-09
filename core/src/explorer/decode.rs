@@ -21,7 +21,7 @@ use crate::explorer::types::{Amm, JitFact, LiquidationFact, SwapFact, TransferFa
 
 use crate::chain::events::{
     AAVE_V3_LIQUIDATION_CALL_TOPIC, COMPOUND_V3_ABSORB_TOPIC, TRANSFER_TOPIC, V2_SWAP_TOPIC,
-    V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    V3_SWAP_TOPIC, V4_SWAP_TOPIC, INF_CL_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -138,6 +138,31 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             fact.token_in = TOKEN1_SENTINEL;
         }
         return Some((Amm::V4, fact));
+    }
+
+    if topic0 == *INF_CL_SWAP_TOPIC {
+        // Pancake Infinity CL singleton manager: same layout as V4 but the
+        // signature carries an extra uint16 protocolFee word (data >= 224).
+        if log.topics.len() < 2 || log.data.len() < 64 {
+            return None;
+        }
+        let pool = Address::from_slice(&log.topics[1].as_slice()[12..]);
+        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
+        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
+        if a0.is_zero() && a1.is_zero() {
+            return None;
+        }
+        let mut fact = base(Amm::Infinity, pool);
+        if a0 < alloy::primitives::I256::ZERO {
+            fact.amount_in = a0.wrapping_abs().into_raw();
+            fact.amount_out = a1.wrapping_abs().into_raw();
+            fact.token_in = TOKEN0_SENTINEL;
+        } else {
+            fact.amount_in = a1.wrapping_abs().into_raw();
+            fact.amount_out = a0.wrapping_abs().into_raw();
+            fact.token_in = TOKEN1_SENTINEL;
+        }
+        return Some((Amm::Infinity, fact));
     }
 
     if topic0 == CURVE_TOKEN_EXCHANGE_TOPIC || topic0 == CURVE_V2_TOKEN_EXCHANGE_TOPIC {

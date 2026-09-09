@@ -36,6 +36,9 @@ pub struct ChainConfig {
     /// Uniswap V4 singleton PoolManager contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v4_pool_manager: Option<String>,
+    /// Pancake Infinity singleton CLPoolManager contract address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infinity_cl_pool_manager: Option<String>,
     /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "trader_joe_factory")]
     pub trader_joe_factories: Option<Vec<String>>,
@@ -61,9 +64,14 @@ mod tests {
         assert!(chains.contains_key("polygon"));
         assert!(chains.contains_key("ethereum"));
     }
+
+    #[test]
+    fn bsc_wires_pancake_infinity_manager() {
+        let chains = default_chains();
+        let bsc = &chains["bsc"];
+        assert_eq!(
+            bsc.infinity_cl_pool_manager.as_deref(),
+            Some("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b")
+        );
+    }
 }
-
-
-
-
-

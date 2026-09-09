@@ -525,6 +525,9 @@ impl MultiHopArbDetector {
             PoolState::UniswapV4(v4) => {
                 max_v3_tradeable_amount(v4, true).max(max_v3_tradeable_amount(v4, false))
             }
+            PoolState::PancakeInfinity(v4) => {
+                max_v3_tradeable_amount(v4, true).max(max_v3_tradeable_amount(v4, false))
+            }
             PoolState::Curve(c) => c.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
@@ -658,7 +661,7 @@ pub fn marginal_exchange_rate(
             };
             ratio(ti, to) // Pendle is simulated fee-free upstream
         }
-        PoolState::UniswapV3(_) | PoolState::UniswapV4(_) => {
+        PoolState::UniswapV3(_) | PoolState::UniswapV4(_) | PoolState::PancakeInfinity(_) => {
             let (sqrt_price_x96, t0, t1, fee) = match pool {
                 PoolState::UniswapV3(v3) => (
                     v3.sqrt_price_x96,
@@ -667,6 +670,12 @@ pub fn marginal_exchange_rate(
                     v3.info.fee,
                 ),
                 PoolState::UniswapV4(v4) => (
+                    v4.sqrt_price_x96,
+                    v4.info.token0,
+                    v4.info.token1,
+                    v4.info.fee,
+                ),
+                PoolState::PancakeInfinity(v4) => (
                     v4.sqrt_price_x96,
                     v4.info.token0,
                     v4.info.token1,

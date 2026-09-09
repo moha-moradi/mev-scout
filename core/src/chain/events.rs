@@ -39,6 +39,19 @@ pub static V4_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
 });
 
+// ── Pancake Infinity CL ──────────────────────────────────────────────
+
+/// Pancake Infinity CLPoolManager Swap event (verified against
+/// pancakeswap/infinity-core CLPoolManager.sol + ICLPoolManager.sol):
+/// `emit Swap(id, msg.sender, delta.amount0(), delta.amount1(), sqrtPriceX96,
+///             liquidity, tick, fee, protocolFee)` with `id: PoolId (bytes32)`
+/// in topics[1]. The singleton CLPoolManager emits for every pool; the pool
+/// key is the bytes32 PoolId (synthetic pool address = its first 20 bytes,
+/// mirroring `discovery/infinity.rs`).
+pub static INF_CL_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
+});
+
 // ── Balancer V2 ─────────────────────────────────────────────────────
 
 pub static BALANCER_FLASH_LOAN_TOPIC: LazyLock<B256> =
@@ -434,6 +447,45 @@ pub fn decode_uniswap_v4_swap(log: &Log) -> Option<TradeEvent> {
     })
 }
 
+/// Decode a Pancake Infinity CLPoolManager Swap event log.
+///
+/// Same singleton-manager shape as Uniswap V4: `topics[1]` carries the bytes32
+/// PoolId (synthetic pool address = first 20 bytes) and the first two data
+/// words are signed int128 net deltas. The remaining words (sqrtPriceX96,
+/// liquidity, tick) match the V4 layout, so quoting reuses the CL math.
+pub fn decode_infinity_cl_swap(log: &Log) -> Option<TradeEvent> {
+    let topics = log.topics();
+    if topics.len() < 2 {
+        return None;
+    }
+    let pool_id: [u8; 32] = topics[1].0;
+    let pool = Address::from_slice(&pool_id[12..32]);
+    let data = &log.data().data;
+    if data.len() < 64 {
+        return None;
+    }
+    let a0 = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
+    let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
+    let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
+    let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
+    if amount_in.is_zero() && amount_out.is_zero() {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool,
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in,
+        amount_out,
+        dex_type: "pancake_infinity".to_string(),
+    })
+}
+
 /// Decode a Uniswap V2 Swap event log.
 pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
@@ -641,6 +693,32 @@ mod tests {
         // Signed magnitudes; larger leg reported as amount_in
         assert_eq!(evt.amount_in, U256::from(5_000u64));
         assert_eq!(evt.amount_out, U256::from(2_500u64));
+    }
+
+    #[test]
+    fn decode_infinity_cl_swap_uses_pool_id_topic() {
+        // Pancake Infinity CL emits from the singleton CLPoolManager with the
+        // same bytes32-PoolId scheme as V4, plus a trailing uint16 protocolFee
+        // word (Swap data = 7 ABI words; decoder needs only the first two).
+        let pool_id = b256!("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd");
+        let mut amount0 = [0xffu8; 32];
+        amount0[16..32].copy_from_slice(&(-12_000i128).to_be_bytes());
+        let mut amount1 = [0u8; 32];
+        amount1[16..32].copy_from_slice(&9_999i128.to_be_bytes());
+        // sqrtPriceX96 + liquidity + tick + fee + protocolFee — zeroed, unused by the decoder.
+        let tail = vec![0u8; 128 + 32];
+
+        let log = make_log(
+            Address::ZERO, // CLPoolManager singleton — not a pool address
+            vec![*INF_CL_SWAP_TOPIC, pool_id],
+            [amount0.to_vec(), amount1.to_vec(), tail].concat(),
+        );
+
+        let evt = decode_infinity_cl_swap(&log).unwrap();
+        assert_eq!(evt.dex_type, "pancake_infinity");
+        assert_eq!(evt.pool, Address::from_slice(&pool_id[12..32]));
+        assert_eq!(evt.amount_in, U256::from(12_000u64));
+        assert_eq!(evt.amount_out, U256::from(9_999u64));
     }
 
     #[test]
