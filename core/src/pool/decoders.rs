@@ -1,6 +1,8 @@
 //! Event log decoders for Uniswap V2/V3, Curve, and Balancer pool interactions.
 
-use alloy::primitives::{b256, Address, B256, U256};
+use std::sync::LazyLock;
+
+use alloy::primitives::{b256, keccak256, Address, B256, U256};
 
 use crate::data::ExecutedLog;
 use crate::utils::u128_from_be_bytes;
@@ -31,6 +33,22 @@ pub const LB_SWAP_TOPIC: B256 =
 /// Pendle Market: Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)
 pub const PENDLE_SWAP_TOPIC: B256 =
     b256!("a98cde8f489864e7d7a5c03592c98faaf8e6761ef998532b4be69213f5f41047");
+
+/// Fluid DEX pool: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to)
+/// (verified against Instadapp/fluid-contracts-public poolT1/coreModule/events.sol).
+/// No indexed params — everything is in the data words.
+pub static FLUID_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"Swap(bool,uint256,uint256,address)"));
+
+/// Metric V2 pool: Swap(address sender, address recipient, bool exactInput,
+/// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)
+/// (plan §3.4 signature — topic digest computed from the string, on-chain
+/// verification deferred like Q6/Q10/Q11).
+pub static METRIC_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(
+        b"Swap(address,address,bool,int128,int128,int16,uint104)",
+    )
+});
 
 /// Result of decoding a V3 Swap event.
 #[derive(Debug, Clone)]
@@ -290,6 +308,76 @@ pub fn decode_pendle_swap(log: &ExecutedLog) -> Option<PendleSwapDecoded> {
         is_net_pt_out,
         amount_in,
         amount_out,
+    })
+}
+
+/// Result of decoding a Fluid DEX pool Swap event.
+#[derive(Debug, Clone)]
+pub struct FluidSwapDecoded {
+    /// true = token0 → token1 direction.
+    pub swap0to1: bool,
+    pub amount_in: u128,
+    pub amount_out: u128,
+}
+
+/// Attempt to decode a Fluid DEX pool Swap event from an executed log.
+///
+/// Event (verified against fluid-contracts-public): `Swap(bool swap0to1,
+/// uint256 amountIn, uint256 amountOut, address to)` — no indexed params, so
+/// data = [swap0to1 (32B), amountIn (32B), amountOut (32B), to (32B)].
+pub fn decode_fluid_swap(log: &ExecutedLog) -> Option<FluidSwapDecoded> {
+    if log.topics.is_empty() || log.topics[0] != *FLUID_SWAP_TOPIC {
+        return None;
+    }
+    if log.data.len() < 96 {
+        return None;
+    }
+    let swap0to1 = log.data[31] != 0;
+    let amount_in = u128_from_be_bytes(&log.data[32..64]);
+    let amount_out = u128_from_be_bytes(&log.data[64..96]);
+    Some(FluidSwapDecoded {
+        swap0to1,
+        amount_in,
+        amount_out,
+    })
+}
+
+/// Result of decoding a Metric V2 Swap event.
+#[derive(Debug, Clone)]
+pub struct MetricSwapDecoded {
+    pub exact_input: bool,
+    pub amount0_delta: i128,
+    pub amount1_delta: i128,
+    pub new_tick: i16,
+    pub new_position_in_bin: u128,
+}
+
+/// Attempt to decode a Metric V2 Swap event from an executed log.
+///
+/// Event (plan §3.4): `Swap(address sender, address recipient, bool exactInput,
+/// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104
+/// newPositionInBin)` — sender/recipient assumed indexed (topics[1..2]); data
+/// = [exactInput (32B), amount0Delta (32B), amount1Delta (32B), newTick (32B),
+/// newPositionInBin (32B, uint104 right-aligned)] = 160 bytes.
+pub fn decode_metric_swap(log: &ExecutedLog) -> Option<MetricSwapDecoded> {
+    if log.topics.is_empty() || log.topics[0] != *METRIC_SWAP_TOPIC {
+        return None;
+    }
+    if log.data.len() < 160 {
+        return None;
+    }
+    let exact_input = log.data[31] != 0;
+    let amount0_delta = i128::from_be_bytes(log.data[32..48].try_into().ok()?);
+    let amount1_delta = i128::from_be_bytes(log.data[64..80].try_into().ok()?);
+    // newTick is int16 sign-extended into its 32-byte word (rightmost 2 bytes).
+    let new_tick = i16::from_be_bytes(log.data[126..128].try_into().ok()?);
+    let new_position_in_bin = u128_from_be_bytes(&log.data[160..192]);
+    Some(MetricSwapDecoded {
+        exact_input,
+        amount0_delta,
+        amount1_delta,
+        new_tick,
+        new_position_in_bin,
     })
 }
 

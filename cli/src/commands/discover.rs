@@ -401,6 +401,10 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
 
         let pendle_factory: Option<Address> = chain_config.pendle_factory.as_ref()
             .and_then(|s| s.parse::<Address>().ok());
+        let metric_factory: Option<Address> = chain_config.metric_factory.as_ref()
+            .and_then(|s| s.parse::<Address>().ok());
+        let fluid_factory: Option<Address> = chain_config.fluid_factory.as_ref()
+            .and_then(|s| s.parse::<Address>().ok());
 
         if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
             || !solidly_factories.is_empty() || !camelot_factories.is_empty())
@@ -425,6 +429,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             infinity_cl_pool_manager,
             trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
             pendle_factory,
+            metric_factory,
+            fluid_factory,
             rpc_concurrency: args.rpc_concurrency,
             token_cache: Some(&token_cache),
             pool_cache: Some(&cache),
@@ -614,6 +620,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 DexType::Pendle => {
                     println!("  {dex}  {}  {}/{}  maturity={}{}",
                         p.address, t0, t1, p.maturity_timestamp.unwrap_or(0), tvl_note);
+                }
+                DexType::Metric | DexType::Fluid => {
+                    println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
                 }
             }
         }

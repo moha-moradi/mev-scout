@@ -1271,6 +1271,16 @@ pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
                 }));
             }
         }
+        crate::dex_type::DexType::Metric => {
+            pool_manager.add_pool(PoolState::Metric(
+                crate::pool::state::pool_types::MetricPoolState::new(info),
+            ));
+        }
+        crate::dex_type::DexType::Fluid => {
+            pool_manager.add_pool(PoolState::Fluid(
+                crate::pool::state::pool_types::FluidPoolState::new(info),
+            ));
+        }
     }
 }
 

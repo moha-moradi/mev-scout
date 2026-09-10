@@ -126,6 +126,7 @@ pub fn quote_exact_in(
             };
             pendle::pendle_output_amount(amount_in, total_in, total_out)
         }
+        PoolState::Metric(_) | PoolState::Fluid(_) => None,
     }
 }
 

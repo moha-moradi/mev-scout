@@ -47,6 +47,16 @@ pub mod topics {
         keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
     });
 
+    /// Fluid DEX pool Swap event (`Swap(bool,uint256,uint256,address)` —
+    /// no indexed params; verified against fluid-contracts-public).
+    pub static FLUID_SWAP: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
+
+    /// Metric V2 pool Swap event (plan §3.4 signature; digest computed from
+    /// the string, on-chain verification deferred like Q6/Q10/Q11).
+    pub static METRIC_SWAP: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
+
     /// Trader Joe Liquidity Book 2.0 Pair Swap event
     /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
     /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
@@ -104,6 +114,8 @@ pub mod topics {
             *BALANCER_SWAP,
             *V4_SWAP,
             *INF_CL_SWAP,
+            *FLUID_SWAP,
+            *METRIC_SWAP,
             *TRADER_JOE_LB_SWAP,
             *TRADER_JOE_LB_SWAP_LEGACY,
             *PENDLE_MARKET_SWAP,

@@ -101,6 +101,21 @@ pub static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"PoolCreated(address,address,int24,address)")
 });
 
+// Metric V2 pool creation — `PoolCreated(address indexed token0,
+// address indexed token1, address indexed priceProvider, address pool,
+// bytes32 poolId)` (plan §3.4; digest computed from the signature, on-chain
+// verification deferred like Q6/Q10/Q11).
+pub static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"PoolCreated(address,address,address,address,bytes32)")
+});
+
+// Fluid DEX pool deployment — `LogDexDeployed(address indexed dex, uint256
+// indexed dexId)` (verified against Instadapp/fluid-contracts-public
+// factory/main.sol). Token metadata is fetched later via token0()/token1().
+pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256(b"LogDexDeployed(address,uint256)")
+});
+
 /// readState(address) selector for Pendle Finance markets
 static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
     let hash = keccak256(b"readState(address)");
@@ -360,6 +375,10 @@ pub struct DiscoveryConfig<'a> {
     pub v4_pool_manager: Option<Address>,
     /// Pancake Infinity singleton CLPoolManager contract address (BSC).
     pub infinity_cl_pool_manager: Option<Address>,
+    /// Metric V2 AMM factory address (single deterministic factory per chain).
+    pub metric_factory: Option<Address>,
+    /// Fluid DEX factory address (same address on all chains).
+    pub fluid_factory: Option<Address>,
     /// Solidly-style pool fee in basis points (default: 30).
     pub solidly_fee_bps: Option<u32>,
     /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
@@ -647,6 +666,17 @@ fn classify_dex_event(
         }
         return Some((DexType::PancakeInfinity, None, None, None));
     }
+    if topic0 == *topics::FLUID_SWAP {
+        // Fluid DEX pools are per-pool contracts — the pool address is the
+        // emitting contract; tokens come from token0()/token1() metadata
+        // fetch (Phase 2) or the SQLite cache.
+        return Some((DexType::Fluid, None, None, None));
+    }
+    if topic0 == *topics::METRIC_SWAP {
+        // Metric V2 pools are per-pool contracts emitting from the pool
+        // address; the PoolCreated factory event carries the tokens.
+        return Some((DexType::Metric, None, None, None));
+    }
     if topic0 == *topics::CURVE_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_V2_TOKEN_EXCHANGE
         || topic0 == *topics::CURVE_TOKEN_EXCHANGE_UNDERLYING
@@ -735,6 +765,8 @@ mod trader_joe;
 mod pendle;
 mod v4;
 mod infinity;
+mod metric;
+mod fluid;
 pub mod remote;
 
 /// Unified pool discovery — scans both DEX activity events and factory
@@ -905,6 +937,8 @@ async fn discover_pools_shard(
         *topics::PENDLE_SWAP_YT_AND_TOKEN,
         *topics::V4_SWAP,
         *topics::INF_CL_SWAP,
+        *topics::FLUID_SWAP,
+        *topics::METRIC_SWAP,
     ];
 
     let mut current = from_block;
@@ -963,6 +997,8 @@ async fn discover_pools_shard(
         pendle::scan_pendle_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
         v4::scan_v4_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
         infinity::scan_infinity_cl_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        metric::scan_metric_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        fluid::scan_fluid_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
 
         if let Some(ref f) = on_batch {
             f();
@@ -1140,7 +1176,7 @@ async fn discover_pools_shard(
         // Skip pools already fully resolved via factory events
         if let Some(fp) = factory_pools.get(addr) {
             match fp.dex_type {
-                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity | DexType::TraderJoeLB | DexType::Pendle => continue,
+                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity | DexType::TraderJoeLB | DexType::Pendle | DexType::Metric => continue,
                 _ => {}
             }
         }
@@ -1166,7 +1202,7 @@ async fn discover_pools_shard(
             }
         }
         match dex_type {
-            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot | DexType::Fluid => {
                 let rpc = rpc.clone();
                 let addr = *addr;
                 let sel0 = token0_selector.clone();
@@ -1279,6 +1315,13 @@ async fn discover_pools_shard(
                 fetch_tasks.push(Box::pin(async move {
                     (addr, dt, Some(t0), Some(t1), None, None, fsb)
                 }));
+            }
+            DexType::Metric => {
+                // Metric pool contracts have no verified token getters (the
+                // oracle-anchored pool ABI is not public) — activity hits that
+                // were not resolved by the PoolCreated factory scan or the
+                // SQLite cache stay out of the index (same policy as V4).
+                unmatched_v4_hits += 1;
             }
             DexType::Pendle => {
                 // Pendle markets from activity events: token0 is PT (known), token1 = SY (call PT.SY())
@@ -1408,6 +1451,23 @@ async fn discover_pools_shard(
     let mut resolved_addrs: HashSet<Address> = HashSet::new();
     let mut discovered_pools = Vec::new();
 
+    // Fluid DEX factory entries carry no tokens (LogDexDeployed exposes only
+    // the pool address) — patch them from the token0()/token1() fetch results
+    // before the factory drain below.
+    for (addr, dex_type, token0_opt, token1_opt, _, _, _) in &results {
+        if *dex_type != DexType::Fluid {
+            continue;
+        }
+        if let Some(fp) = factory_pools.get_mut(addr) {
+            if let (Some(t0), Some(t1)) = (token0_opt, token1_opt) {
+                if fp.token0.is_zero() && fp.token1.is_zero() {
+                    fp.token0 = *t0;
+                    fp.token1 = *t1;
+                }
+            }
+        }
+    }
+
     // First, add all factory-discovered pools (they have creation_block, factory, etc.)
     for (_, mut dp) in factory_pools.drain() {
         if dp.dex_name.is_none() {
@@ -1440,6 +1500,7 @@ async fn discover_pools_shard(
             DexType::Curve | DexType::Balancer => fee_opt.unwrap_or(0),
             DexType::TraderJoeLB => fee_opt.unwrap_or(0),
             DexType::Pendle => fee_opt.unwrap_or(0),
+            DexType::Metric | DexType::Fluid => fee_opt.unwrap_or(0),
         };
         let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _, _)| *pid);
         let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
@@ -1586,6 +1647,10 @@ pub async fn health_check_pools(
                     tasks.push((i, vault, Bytes::from(calldata)));
                 }
             }
+            // Metric / Fluid: no verified on-chain health probe (Metric's pool
+            // ABI is unpublished; Fluid reserves live in the Liquidity layer) —
+            // pools are kept without a liveness verdict.
+            DexType::Metric | DexType::Fluid => {}
         }
     }
 

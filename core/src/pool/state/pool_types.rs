@@ -345,6 +345,60 @@ pub struct BalancerPoolState {
     pub rate_providers: Vec<Option<Address>>,
 }
 
+/// Runtime state for a Fluid DEX pool (Instadapp unified liquidity).
+///
+/// Reserves live in the shared Liquidity layer (BigMath-encoded), not in the
+/// pool contract, so full state reconstruction needs `eth_call` reads (Q13).
+/// From swap logs alone we track the last observed swap direction and amounts
+/// (`Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to)`),
+/// which is enough for flow visibility but not for quoting.
+#[derive(Debug, Clone)]
+pub struct FluidPoolState {
+    pub info: PoolInfo,
+    /// Direction of the last observed swap: true = token0 → token1.
+    pub last_swap0to1: bool,
+    /// Amount in (token sold into the pool) of the last observed swap.
+    pub last_amount_in: u128,
+    /// Amount out (token paid by the pool) of the last observed swap.
+    pub last_amount_out: u128,
+}
+
+impl FluidPoolState {
+    pub fn new(info: PoolInfo) -> Self {
+        FluidPoolState {
+            info,
+            last_swap0to1: false,
+            last_amount_in: 0,
+            last_amount_out: 0,
+        }
+    }
+}
+
+/// Runtime state for a Metric V2 pool (oracle-anchored tick/bin AMM).
+///
+/// Bin bounds derive from a per-pool `IPriceProvider` oracle mid-price stored
+/// as Q64.64 — not reproducible from swap logs alone (Q12). We track the
+/// last observed tick / active-bin position from the custom Swap event for
+/// state visibility; quoting stays disabled until the oracle ABI is verified.
+#[derive(Debug, Clone)]
+pub struct MetricPoolState {
+    pub info: PoolInfo,
+    /// Last observed active tick from the pool's Swap event.
+    pub tick: i16,
+    /// Last observed position within the active bin (uint104 from the event).
+    pub position_in_bin: u128,
+}
+
+impl MetricPoolState {
+    pub fn new(info: PoolInfo) -> Self {
+        MetricPoolState {
+            info,
+            tick: 0,
+            position_in_bin: 0,
+        }
+    }
+}
+
 /// Runtime state for any tracked pool.
 ///
 /// Enum variants correspond to supported DEX types.
@@ -363,6 +417,10 @@ pub enum PoolState {
     TraderJoeLB(TraderJoeLBPoolState),
     /// Pendle Finance AMM markets (PT/SY yield trading)
     Pendle(PendlePoolState),
+    /// Metric V2 pools (oracle-anchored tick/bin AMM)
+    Metric(MetricPoolState),
+    /// Fluid DEX pools (unified-liquidity; log-only flow tracking)
+    Fluid(FluidPoolState),
 }
 
 impl PoolState {
@@ -376,6 +434,8 @@ impl PoolState {
             PoolState::Balancer(s) => s.info.address,
             PoolState::TraderJoeLB(s) => s.info.address,
             PoolState::Pendle(s) => s.info.address,
+            PoolState::Metric(s) => s.info.address,
+            PoolState::Fluid(s) => s.info.address,
         }
     }
 
@@ -389,6 +449,8 @@ impl PoolState {
             PoolState::Balancer(s) => &s.info,
             PoolState::TraderJoeLB(s) => &s.info,
             PoolState::Pendle(s) => &s.info,
+            PoolState::Metric(s) => &s.info,
+            PoolState::Fluid(s) => &s.info,
         }
     }
 
@@ -402,6 +464,8 @@ impl PoolState {
             PoolState::Balancer(s) => &mut s.info,
             PoolState::TraderJoeLB(s) => &mut s.info,
             PoolState::Pendle(s) => &mut s.info,
+            PoolState::Metric(s) => &mut s.info,
+            PoolState::Fluid(s) => &mut s.info,
         }
     }
 
@@ -426,6 +490,8 @@ impl PoolState {
             PoolState::Balancer(_) => STABLE_POOL_GAS,
             PoolState::TraderJoeLB(_) => STABLE_POOL_GAS,
             PoolState::Pendle(_) => STABLE_POOL_GAS,
+            PoolState::Metric(_) => V3_POOL_GAS,
+            PoolState::Fluid(_) => DEFAULT_POOL_GAS,
         }
     }
 }

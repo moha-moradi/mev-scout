@@ -362,11 +362,20 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
     if id.contains("balancer") {
         return DexType::Balancer;
     }
+    if id.contains("pharaoh") && id.contains("dlmm") {
+        return DexType::TraderJoeLB;
+    }
     if id.contains("traderjoe") || id.contains("lfj") {
         return DexType::TraderJoeLB;
     }
     if id.contains("pendle") {
         return DexType::Pendle;
+    }
+    if id.contains("metric") {
+        return DexType::Metric;
+    }
+    if id.contains("fluid") {
+        return DexType::Fluid;
     }
     DexType::UniswapV2
 }
@@ -376,11 +385,9 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
 /// until a decoder lands. Guarded before `infer_dex_type`.
 fn is_unsupported_dex(s: &str) -> bool {
     const UNSUPPORTED: &[&str] = &[
-        "fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-        "pharaoh-dlmm", "ekubo",
+        "dodo", "woofi", "hashflow", "maverick", "ekubo",
     ];
     UNSUPPORTED.iter().any(|n| s.contains(n))
-        || (s.contains("pharaoh") && !s.contains("v3"))
 }
 
 #[cfg(test)]
@@ -453,18 +460,19 @@ mod tests {
             DexType::UniswapV3
         );
         assert_eq!(infer_dex_type(Some("lfj"), &[]), DexType::TraderJoeLB);
+        assert_eq!(infer_dex_type(Some("pharaoh-dlmm"), &[]), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("unknown-dex"), &[]), DexType::UniswapV2);
     }
 
     #[test]
     fn test_unsupported_dex_flagged() {
-        for bad in ["fluid", "metric", "dodo", "woofi", "hashflow", "maverick",
-                    "pharaoh-dlmm", "ekubo", "pharaoh-bins"] {
+        for bad in ["dodo", "woofi", "hashflow", "maverick", "ekubo"] {
             assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
         }
         // Supported siblings must NOT be flagged.
-        for good in ["pharaoh-v3", "aerodrome", "velodrome", "velodrome-v3",
-                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity"] {
+        for good in ["pharaoh-v3", "pharaoh-dlmm", "aerodrome", "velodrome", "velodrome-v3",
+                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity",
+                     "metric", "fluid"] {
             assert!(!is_unsupported_dex(good), "{good} should stay supported");
         }
     }

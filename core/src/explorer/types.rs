@@ -143,6 +143,10 @@ pub enum Amm {
     V4,
     /// Pancake Infinity centralized-liquidity pools (singleton CLPoolManager).
     Infinity,
+    /// Metric V2 oracle-anchored tick/bin AMM pools.
+    Metric,
+    /// Fluid DEX unified-liquidity pools (Instadapp).
+    Fluid,
     Curve,
     Balancer,
     Solidly,
@@ -157,6 +161,8 @@ impl Amm {
             Amm::V3 => "v3",
             Amm::V4 => "v4",
             Amm::Infinity => "infinity",
+            Amm::Metric => "metric",
+            Amm::Fluid => "fluid",
             Amm::Curve => "curve",
             Amm::Balancer => "balancer",
             Amm::Solidly => "solidly",

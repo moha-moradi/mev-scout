@@ -266,7 +266,10 @@ impl ChainName {
             ChainName::Polygon => &["0x1764ee18e8B3ccA4787249Ceb249356192594585"],
             ChainName::Bsc => &["0xd7E72f3615aa65b92A4DBdC211E296a35512988B"],
             ChainName::Arbitrum => &["0x9AF14D26075f142eb3F292D5065EB3faa646167b"],
-            ChainName::Ethereum => &["0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf"],
+            ChainName::Ethereum => &[
+                "0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf",
+                "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6", // Lista DEX SmartSwap (Curve-like)
+            ],
             ChainName::Optimism => &["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"],
             _ => &[],
         }
@@ -277,6 +280,33 @@ impl ChainName {
         match self {
             ChainName::Arbitrum => vec![
                 "0x6EcCab422D763aC031210895C81787E87B43A652", // Camelot
+            ],
+            _ => vec![],
+        }
+    }
+
+    /// Metric V2 AMM factory address (oracle-anchored tick/bin AMM).
+    /// Same address on all supported chains.
+    pub fn default_metric_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Ethereum
+            | ChainName::Base
+            | ChainName::Arbitrum
+            | ChainName::Optimism
+            | ChainName::Polygon
+            | ChainName::Bsc
+            | ChainName::Avalanche => vec![
+                "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C", // Metric V2
+            ],
+        }
+    }
+
+    /// Fluid DEX factory address (Instadapp unified-liquidity pools).
+    /// Deployed on Ethereum only.
+    pub fn default_fluid_factories(&self) -> Vec<&'static str> {
+        match self {
+            ChainName::Ethereum => vec![
+                "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085", // Fluid DEX
             ],
             _ => vec![],
         }
@@ -345,6 +375,14 @@ mod tests {
                 f.parse::<Address>()
                     .unwrap_or_else(|e| panic!("{label} curve factory {f}: {e}"));
             }
+            for f in chain.default_metric_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} metric factory {f}: {e}"));
+            }
+            for f in chain.default_fluid_factories() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{label} fluid factory {f}: {e}"));
+            }
         }
     }
 
@@ -390,6 +428,35 @@ mod tests {
             .contains(&"0x512eb749541B7cf294be882D636218c84a5e9E5F")); // Blackhole CLMM (Algebra)
     }
 
+    /// Metric V2 factory (Phase 3.4) pinned so silent removals surface in CI.
+    #[test]
+    fn metric_factory_present() {
+        for chain in [
+            ChainName::Ethereum,
+            ChainName::Base,
+            ChainName::Arbitrum,
+            ChainName::Optimism,
+            ChainName::Polygon,
+            ChainName::Bsc,
+            ChainName::Avalanche,
+        ] {
+            assert!(
+                chain.default_metric_factories().contains(&"0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"),
+                "{chain:?} must include Metric V2 factory"
+            );
+        }
+    }
+
+    /// Fluid DEX factory (Phase 3.2) pinned so silent removals surface in CI.
+    #[test]
+    fn fluid_factory_present() {
+        assert!(ChainName::Ethereum
+            .default_fluid_factories()
+            .contains(&"0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085"));
+        // Fluid is Ethereum-only.
+        assert!(ChainName::Base.default_fluid_factories().is_empty());
+    }
+
     /// Coverage-plan LB and Curve factories (Phases 1.5/1.7/3.5), pinned so silent
     /// removals from the effective default lists surface in CI.
     #[test]
@@ -403,5 +470,9 @@ mod tests {
         assert!(ChainName::Polygon
             .default_curve_factories()
             .contains(&"0x1764ee18e8B3ccA4787249Ceb249356192594585"));
+        // Lista DEX SmartSwap (Curve-like stableswap) — Phase 3.7.
+        assert!(ChainName::Ethereum
+            .default_curve_factories()
+            .contains(&"0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6"));
     }
 }

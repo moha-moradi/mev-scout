@@ -154,6 +154,8 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
         }
         DexType::Pendle => PoolState::Pendle(mev_scout_core::pool::state::PendlePoolState::new(info)),
+        DexType::Metric => PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info)),
+        DexType::Fluid => PoolState::Fluid(mev_scout_core::pool::state::FluidPoolState::new(info)),
     }
 }
 
@@ -329,6 +331,8 @@ async fn test_e2e_pool_discovery() {
         infinity_cl_pool_manager: None,
         trader_joe_factories: None,
         pendle_factory: None,
+        metric_factory: None,
+        fluid_factory: None,
         token_cache: None,
         pool_cache: None,
     };

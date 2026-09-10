@@ -114,6 +114,8 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
         infinity_cl_pool_manager: chain_config.infinity_cl_pool_manager.as_ref().and_then(|s| s.parse().ok()),
         trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
         pendle_factory: chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()),
+        metric_factory: chain_config.metric_factory.as_ref().and_then(|s| s.parse().ok()),
+        fluid_factory: chain_config.fluid_factory.as_ref().and_then(|s| s.parse().ok()),
         rpc_concurrency: 8,
         token_cache: None,
         pool_cache: Some(&cache),

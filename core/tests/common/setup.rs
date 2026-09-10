@@ -81,6 +81,8 @@ pub fn pool_info_to_state(info: PoolInfo) -> PoolState {
             mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0),
         ),
         DexType::Pendle => PoolState::Pendle(PendlePoolState::new(info)),
+        DexType::Metric => PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info)),
+        DexType::Fluid => PoolState::Fluid(mev_scout_core::pool::state::FluidPoolState::new(info)),
     }
 }
 

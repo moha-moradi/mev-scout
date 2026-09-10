@@ -178,6 +178,8 @@ fn pool_info_ref(ps: &PoolState) -> &PoolInfo {
         PoolState::Balancer(s) => &s.info,
         PoolState::TraderJoeLB(s) => &s.info,
         PoolState::Pendle(s) => &s.info,
+        PoolState::Metric(s) => &s.info,
+        PoolState::Fluid(s) => &s.info,
     }
 }
 
@@ -191,6 +193,8 @@ fn pool_info_mut(ps: &mut PoolState) -> &mut PoolInfo {
         PoolState::Balancer(s) => &mut s.info,
         PoolState::TraderJoeLB(s) => &mut s.info,
         PoolState::Pendle(s) => &mut s.info,
+        PoolState::Metric(s) => &mut s.info,
+        PoolState::Fluid(s) => &mut s.info,
     }
 }
 
@@ -275,6 +279,8 @@ impl PoolManager {
                     Some(PoolState::Balancer(b)) => (*addr, DexType::Balancer, None, 0, None, true, b.info.balancer_pool_type),
                     Some(PoolState::TraderJoeLB(s)) => (*addr, DexType::TraderJoeLB, None, 0i32, s.info.factory, true, None),
                     Some(PoolState::Pendle(s)) => (*addr, DexType::Pendle, None, 0i32, s.info.factory, true, None),
+                    Some(PoolState::Metric(s)) => (*addr, DexType::Metric, None, 0i32, s.info.factory, true, None),
+                    Some(PoolState::Fluid(s)) => (*addr, DexType::Fluid, None, 0i32, s.info.factory, true, None),
                     None => (*addr, DexType::UniswapV2, None, 0, None, false, None),
                 })
                 .collect();
@@ -461,6 +467,7 @@ impl PoolManager {
                 PoolState::Curve(s) => s.balances.iter().all(|&b| b == 0),
                 PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
                 PoolState::Pendle(s) => s.total_pt == 0 && s.total_sy == 0,
+                PoolState::Metric(_) | PoolState::Fluid(_) => false,
             };
             is_unhealthy.then(|| *addr)
         }).collect();
@@ -482,6 +489,8 @@ impl PoolManager {
                 PoolState::Curve(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
                 PoolState::TraderJoeLB(s) => vec![s.info.token0, s.info.token1],
                 PoolState::Pendle(s) => vec![s.info.token0, s.info.token1],
+                PoolState::Metric(s) => vec![s.info.token0, s.info.token1],
+                PoolState::Fluid(s) => vec![s.info.token0, s.info.token1],
             };
             for token in &tokens {
                 if !token.is_zero() {
@@ -785,6 +794,7 @@ impl PoolManager {
             DexType::Solidly | DexType::Camelot => Self::init_solidly_camelot_pool(rpc, pool, br, factory).await,
             DexType::TraderJoeLB => Self::init_lb_pool(rpc, pool, br).await,
             DexType::Pendle => Self::init_pendle_pool(rpc, pool, br).await,
+            DexType::Metric | DexType::Fluid => None,
         }
     }
 
@@ -1522,6 +1532,8 @@ impl PoolManager {
                     _ => None,
                 }
             }
+            PoolState::Metric(m) => Some(PoolState::Metric(m.clone())),
+            PoolState::Fluid(f) => Some(PoolState::Fluid(f.clone())),
         }
     }
 

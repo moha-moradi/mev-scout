@@ -532,6 +532,7 @@ impl MultiHopArbDetector {
             PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
             PoolState::Pendle(p) => std::cmp::min(p.total_pt, p.total_sy),
+            PoolState::Metric(_) | PoolState::Fluid(_) => 0,
         }
     }
 
@@ -720,6 +721,7 @@ pub fn marginal_exchange_rate(
             let r = (bj as f64 / bi as f64) * (wi as f64 / wj as f64);
             (r.is_finite() && r > 0.0).then_some(r)
         }
+        PoolState::Metric(_) | PoolState::Fluid(_) => None,
     }
 }
 

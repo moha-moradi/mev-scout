@@ -225,6 +225,7 @@ impl PoolManager {
             Some(PoolState::Balancer(b)) => b.balances.iter().sum(),
             Some(PoolState::TraderJoeLB(lb)) => lb.reserve_x.min(lb.reserve_y),
             Some(PoolState::Pendle(p)) => p.total_pt.min(p.total_sy),
+            Some(PoolState::Metric(_)) | Some(PoolState::Fluid(_)) => 0,
             None => 0,
         }
     }
@@ -681,6 +682,7 @@ impl PoolManager {
                 PoolState::Balancer(s) => s.balances.iter().all(|b| *b > 0),
                 PoolState::TraderJoeLB(s) => s.reserve_x > 0 && s.reserve_y > 0,
                 PoolState::Pendle(s) => s.total_pt > 0 && s.total_sy > 0,
+                PoolState::Metric(_) | PoolState::Fluid(_) => false,
             })
             .count()
     }

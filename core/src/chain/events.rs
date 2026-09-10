@@ -52,6 +52,32 @@ pub static INF_CL_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
 });
 
+// ── Fluid DEX ────────────────────────────────────────────────────────
+
+/// Fluid DEX pool Swap event (verified against Instadapp/fluid-contracts-public
+/// poolT1/coreModule/events.sol): `emit Swap(swap0to1, amountIn, amountOut, to)`
+/// — no indexed params, everything is in the data words. Emitted by each
+/// per-pool `Dex` contract; reserves live in the shared Liquidity layer.
+pub static FLUID_DEX_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
+
+/// Fluid DEX factory pool-creation event (verified against the same repo's
+/// factory/main.sol): `emit LogDexDeployed(dex, dexId)` with both params
+/// indexed. Consumed by `discovery/fluid.rs`; kept here for completeness.
+pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LogDexDeployed(address,uint256)"));
+
+// ── Metric V2 ────────────────────────────────────────────────────────
+
+/// Metric V2 pool Swap event (plan §3.4 signature): `Swap(address sender,
+/// address recipient, bool exactInput, int128 amount0Delta, int128 amount1Delta,
+/// int16 newTick, uint104 newPositionInBin)` with sender/recipient assumed
+/// indexed. Topic digest computed from the signature string; on-chain
+/// verification deferred (same class as Q6/Q10/Q11).
+pub static METRIC_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Swap(address,address,bool,int128,int128,int16,uint104)")
+});
+
 // ── Balancer V2 ─────────────────────────────────────────────────────
 
 pub static BALANCER_FLASH_LOAN_TOPIC: LazyLock<B256> =
@@ -483,6 +509,69 @@ pub fn decode_infinity_cl_swap(log: &Log) -> Option<TradeEvent> {
         amount_in,
         amount_out,
         dex_type: "pancake_infinity".to_string(),
+    })
+}
+
+/// Decode a Fluid DEX pool Swap event log.
+///
+/// Event layout (verified against fluid-contracts-public): data = [swap0to1
+/// (32B), amountIn (32B), amountOut (32B), to (32B)]. The pool address is the
+/// emitting contract. Tokens are not in the event — the caller resolves them
+/// from pool state.
+pub fn decode_fluid_swap(log: &Log) -> Option<TradeEvent> {
+    let data = &log.data().data;
+    if data.len() < 96 {
+        return None;
+    }
+    let amount_in = U256::from_be_slice(&data[32..64]);
+    let amount_out = U256::from_be_slice(&data[64..96]);
+    if amount_in.is_zero() && amount_out.is_zero() {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool: log.address(),
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in,
+        amount_out,
+        dex_type: "fluid".to_string(),
+    })
+}
+
+/// Decode a Metric V2 pool Swap event log.
+///
+/// Event layout (plan §3.4): topics = [sig, sender, recipient]; data = 5 words
+/// [exactInput, int128 amount0Delta, int128 amount1Delta, int16 newTick,
+/// uint104 newPositionInBin]. Like V3, one delta leg is negative — report
+/// magnitudes, larger as amount_in.
+pub fn decode_metric_swap(log: &Log) -> Option<TradeEvent> {
+    let data = &log.data().data;
+    if data.len() < 160 {
+        return None;
+    }
+    let a0 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[64..96]).unwrap_or(I256::ZERO).wrapping_abs();
+    let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
+    let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
+    let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
+    if amount_in.is_zero() && amount_out.is_zero() {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool: log.address(),
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in,
+        amount_out,
+        dex_type: "metric".to_string(),
     })
 }
 

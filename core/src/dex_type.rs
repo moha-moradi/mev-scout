@@ -1,5 +1,5 @@
 //! DEX type enum (UniswapV2, UniswapV3, UniswapV4, Solidly, Camelot, Curve, Balancer,
-//! TraderJoeLB, Pendle, PancakeInfinity) and associated metadata.
+//! TraderJoeLB, Pendle, PancakeInfinity, Metric, Fluid) and associated metadata.
 
 use serde::{Deserialize, Serialize};
 
@@ -38,4 +38,12 @@ pub enum DexType {
     #[serde(rename = "pancake_infinity")]
     #[strum(serialize = "PancakeInfinity")]
     PancakeInfinity = 10,
+    /// Metric V2 — oracle-anchored tick/bin AMM (single factory on 10 chains).
+    #[serde(rename = "metric")]
+    #[strum(serialize = "Metric")]
+    Metric = 11,
+    /// Fluid DEX (Instadapp) — unified-liquidity pools; price via eth_call centerPrice.
+    #[serde(rename = "fluid")]
+    #[strum(serialize = "Fluid")]
+    Fluid = 12,
 }

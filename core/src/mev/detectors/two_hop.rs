@@ -447,6 +447,7 @@ fn two_hop_profit_at(
             };
             constant_product_output_amount(input_amount, r_a_other, r_a_shared, 0)?
         }
+        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
     };
 
     let output = match pool_b {
@@ -490,6 +491,7 @@ fn two_hop_profit_at(
             };
             constant_product_output_amount(intermediate, r_b_in, r_b_out, 0)?
         }
+        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
     };
 
     (output > input_amount).then(|| output - input_amount)
@@ -628,6 +630,7 @@ fn estimate_arb_pair_profit(
                 p.total_sy
             }
         }
+        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
     };
     let test_input = (max_input / 1000).max(1);
 

@@ -45,6 +45,12 @@ pub struct ChainConfig {
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pendle_factory: Option<String>,
+    /// Metric V2 AMM factory address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_factory: Option<String>,
+    /// Fluid DEX factory address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluid_factory: Option<String>,
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
@@ -73,5 +79,34 @@ mod tests {
             bsc.infinity_cl_pool_manager.as_deref(),
             Some("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b")
         );
+    }
+
+    #[test]
+    fn ethereum_wires_fluid_and_metric_factories() {
+        let chains = default_chains();
+        let ethereum = &chains["ethereum"];
+        assert_eq!(
+            ethereum.fluid_factory.as_deref(),
+            Some("0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085")
+        );
+        assert_eq!(
+            ethereum.metric_factory.as_deref(),
+            Some("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C")
+        );
+    }
+
+    #[test]
+    fn metric_factory_wired_on_all_supported_chains() {
+        let chains = default_chains();
+        for name in [
+            "polygon", "avalanche", "bsc", "arbitrum", "base", "ethereum", "optimism",
+        ] {
+            let cfg = &chains[name];
+            assert_eq!(
+                cfg.metric_factory.as_deref(),
+                Some("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"),
+                "{name} must wire the Metric V2 factory"
+            );
+        }
     }
 }

@@ -186,6 +186,16 @@ impl PoolManager {
                 self.process_pendle_swap_log(log);
                 continue;
             }
+            // Fluid DEX pool Swap
+            if topic0 == *decoders::FLUID_SWAP_TOPIC {
+                self.process_fluid_swap_log(log);
+                continue;
+            }
+            // Metric V2 Swap
+            if topic0 == *decoders::METRIC_SWAP_TOPIC {
+                self.process_metric_swap_log(log);
+                continue;
+            }
         }
     }
 
@@ -354,6 +364,51 @@ impl PoolManager {
                 decoded.amount_in,
                 decoded.amount_out,
             );
+        }
+    }
+
+    fn process_fluid_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_fluid_swap(log) {
+            self.apply_fluid_swap(&log.address, decoded.swap0to1, decoded.amount_in, decoded.amount_out);
+        }
+    }
+
+    fn process_metric_swap_log(&mut self, log: &ExecutedLog) {
+        if !self.pools.contains_key(&log.address) {
+            return;
+        }
+        if let Some(decoded) = decoders::decode_metric_swap(log) {
+            self.apply_metric_swap(
+                &log.address,
+                decoded.new_tick,
+                decoded.new_position_in_bin,
+            );
+        }
+    }
+
+    /// Update a Fluid DEX pool's last-observed swap flow.
+    pub fn apply_fluid_swap(
+        &mut self,
+        address: &Address,
+        swap0to1: bool,
+        amount_in: u128,
+        amount_out: u128,
+    ) {
+        if let Some(PoolState::Fluid(state)) = self.pools.get_mut(address) {
+            state.last_swap0to1 = swap0to1;
+            state.last_amount_in = amount_in;
+            state.last_amount_out = amount_out;
+        }
+    }
+
+    /// Update a Metric V2 pool's last-observed tick / bin position.
+    pub fn apply_metric_swap(&mut self, address: &Address, new_tick: i16, position_in_bin: u128) {
+        if let Some(PoolState::Metric(state)) = self.pools.get_mut(address) {
+            state.tick = new_tick;
+            state.position_in_bin = position_in_bin;
         }
     }
 }

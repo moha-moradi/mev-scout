@@ -4,7 +4,8 @@
 //! path) rather than `ExecutedLog` (the replay path), so the explorer never
 //! needs the EVM replayer. Covers:
 //! - raw ERC-20 `Transfer` (the accounting primitive for profit attribution)
-//! - DEX swap events: V2, V3, V4, Curve, Balancer, Solidly, Trader Joe LB, Pendle
+//! - DEX swap events: V2, V3, V4, Curve, Balancer, Solidly, Trader Joe LB, Pendle,
+//!   Fluid, Metric
 //! - liquidation registry: Aave V3 `LiquidationCall`, Compound V3 `Absorb`
 //! - V3 `Mint`/`Burn` (JIT positions)
 //!
@@ -25,7 +26,8 @@ use crate::chain::events::{
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-    LB_SWAP_TOPIC, PENDLE_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
+    FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, V3_BURN_TOPIC,
+    V3_MINT_TOPIC,
 };
 
 /// Solidly/Velodrome/Aerodrome Swap topic (`Swap(uint256,uint256,address,address)`),
@@ -216,6 +218,48 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         fact.amount_in = pt.wrapping_abs().into_raw();
         fact.amount_out = sy.wrapping_abs().into_raw();
         return Some((Amm::Pendle, fact));
+    }
+
+    if topic0 == *FLUID_SWAP_TOPIC {
+        // Fluid: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to),
+        // no indexed params, so data = [swap0to1, amountIn, amountOut, to] = 128 bytes.
+        // Direction is encoded in the first-word bool; tokens resolve via transfer pairing.
+        if log.data.len() < 128 {
+            return None;
+        }
+        let swap0to1 = log.data[31] != 0;
+        let mut fact = base(Amm::Fluid, log.address);
+        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+        fact.amount_out = U256::from_be_slice(&log.data[64..96]);
+        fact.token_in = if swap0to1 { TOKEN0_SENTINEL } else { TOKEN1_SENTINEL };
+        fact.token_out = if swap0to1 { TOKEN1_SENTINEL } else { TOKEN0_SENTINEL };
+        return Some((Amm::Fluid, fact));
+    }
+
+    if topic0 == *METRIC_SWAP_TOPIC {
+        // Metric V2: Swap(address sender, address recipient, bool exactInput,
+        // int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104
+        // newPositionInBin). sender/recipient indexed; data =
+        // [exactInput, amount0Delta, amount1Delta, newTick, newPositionInBin] = 160 bytes.
+        if log.data.len() < 160 {
+            return None;
+        }
+        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
+        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[64..96]));
+        if a0.is_zero() && a1.is_zero() {
+            return None;
+        }
+        let mut fact = base(Amm::Metric, log.address);
+        if a0 < alloy::primitives::I256::ZERO {
+            fact.amount_in = a0.wrapping_abs().into_raw();
+            fact.amount_out = a1.wrapping_abs().into_raw();
+            fact.token_in = TOKEN0_SENTINEL;
+        } else {
+            fact.amount_in = a1.wrapping_abs().into_raw();
+            fact.amount_out = a0.wrapping_abs().into_raw();
+            fact.token_in = TOKEN1_SENTINEL;
+        }
+        return Some((Amm::Metric, fact));
     }
 
     if topic0 == *SOLIDLY_SWAP_TOPIC {

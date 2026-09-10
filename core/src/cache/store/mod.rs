@@ -439,6 +439,9 @@ fn dex_type_from_i64(v: i64) -> anyhow::Result<crate::dex_type::DexType> {
         7 => Ok(crate::dex_type::DexType::UniswapV4),
         8 => Ok(crate::dex_type::DexType::TraderJoeLB),
         9 => Ok(crate::dex_type::DexType::Pendle),
+        10 => Ok(crate::dex_type::DexType::PancakeInfinity),
+        11 => Ok(crate::dex_type::DexType::Metric),
+        12 => Ok(crate::dex_type::DexType::Fluid),
         n => anyhow::bail!("invalid dex_type discriminant: {}", n),
     }
 }

@@ -18,6 +18,8 @@ pool_discovery_start_block = 49100000
 wrapped_native_token = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
 v4_pool_manager = "0x67366782805870060151383f4bbff9dab53e5cd6"
 curve_factories = ["0x1764ee18e8B3ccA4787249Ceb249356192594585"]
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [avalanche]
 chain_id = 43114
@@ -43,6 +45,8 @@ trader_joe_factories = [
   "0x8e42f2F4101563bF679975178e880FD87d3eFd4e",
   "0xEb480050b016f6c6d45203D2346B68bDDDa23D4D",
 ]
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [bsc]
 chain_id = 56
@@ -67,6 +71,8 @@ infinity_cl_pool_manager = "0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"
 trader_joe_factories = ["0x8e42f2F4101563bF679975178e880FD87d3eFd4e"]
 curve_factories = ["0xd7E72f3615aa65b92A4DBdC211E296a35512988B"]
 pendle_factory = "0x80cE46449DF1c977f6ba60495125ce282F83DdFB"
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [arbitrum]
 chain_id = 42161
@@ -84,6 +90,8 @@ trader_joe_factories = [
 ]
 curve_factories = ["0x9AF14D26075f142eb3F292D5065EB3faa646167b"]
 pendle_factory = "0x49F2f7002669E0e4425Fa0203975625Ab4af3143"
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [base]
 chain_id = 8453
@@ -100,6 +108,8 @@ wrapped_native_token = "0x4200000000000000000000000000000000000006"
 solidly_factories = ["0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14"]
 v4_pool_manager = "0x498581ff718922c3f8e6a244956af099b2652b2b"
 pendle_factory = "0x81E80A50E56d10C501fF17B5Fe2F662bd9EA4590"
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [ethereum]
 chain_id = 1
@@ -118,11 +128,16 @@ uniswap_v2_factories = [
 pool_discovery_start_block = 10008335
 wrapped_native_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 curve_registry = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
-curve_factories = ["0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf"]
+# Curve + Lista DEX SmartSwap (Curve-like stableswap) factory.
+curve_factories = ["0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf", "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6"]
 v4_pool_manager = "0x000000000004444c5dc75cB358380D2e3dE08A90"
 # LFJ V2.1 LB factory (live on Ethereum per LFJ + DefiLlama).
 trader_joe_factories = ["0xDC8d77b69155c7E68A95a4fb0f06a71FF90B943a"]
 pendle_factory = "0x6fcf753f2C67b83f7B09746Bbc4FA0047b35D050"
+# Fluid DEX factory (Instadapp unified-liquidity pools — Ethereum only).
+fluid_factory = "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085"
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 
 [optimism]
 chain_id = 10
@@ -141,3 +156,5 @@ solidly_factories = ["0x420DD381b31aEf6683db6B902084cB0FFECe40Da"]
 curve_factories = ["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"]
 v4_pool_manager = "0x9a13f98cb987694c9f086b1f5eb990eea8264ec3"
 pendle_factory = "0x95a937f7064C75C6Bc257160088C0a9D58cca333"
+# Metric V2 AMM factory (same deterministic address on all chains).
+metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
