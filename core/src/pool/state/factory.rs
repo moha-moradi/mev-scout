@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::LazyLock;
 
-use alloy::primitives::{keccak256, Address, Bytes, U256};
+use alloy::primitives::{Address, Bytes, U256};
 use futures::future::{join3, join_all};
 use tokio::sync::Semaphore;
 
@@ -12,6 +11,7 @@ use crate::rpc::{BlockRef, RpcClient};
 use crate::pool::state::manager::PoolManager;
 use crate::pool::math::consts::{BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO};
 use crate::pool::state::pool_types::{PoolInfo, PoolState, UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState, PancakeInfinityPoolState, CurvePoolState, CurvePoolVariant, BalancerPoolState, BalancerPoolVariant, TraderJoeLBPoolState, PendlePoolState};
+use crate::pool::selectors::{CURVE_A, CURVE_BALANCES_I128, CURVE_BALANCES_U256, CURVE_BASE_POOL, CURVE_COINS_I128, CURVE_COINS_U256, CURVE_FEE, CURVE_GAMMA, CURVE_GET_A, CURVE_PRICE_SCALE, FEE, GET_AMPLIFICATION_PARAMETER, GET_NORMALIZED_WEIGHTS, GET_POOL_TOKENS, GET_RATE_PROVIDER, GET_RESERVES, GET_SCALING_FACTORS, GET_SWAP_FEE_PERCENTAGE, INF_CL_LIQUIDITY, INF_CL_SLOT0, LB_GET_ACTIVE_ID, LB_GET_BIN, LB_GET_BIN_STEP, PENDLE_READ_STATE, PENDLE_READ_TOKENS, PENDLE_SY, TICK_SPACING, TOKEN0, TOKEN1, V3_LIQUIDITY, V3_SLOT0, V3_TICK_BITMAP, V3_TICKS};
 pub enum PoolInitResult {
     V2Reserves { reserve0: u128, reserve1: u128 },
     V3State { sqrt_price_x96: U256, tick: i32, liquidity: u128, initialized_ticks: std::collections::BTreeMap<i32, i128> },
@@ -22,151 +22,6 @@ pub enum PoolInitResult {
     LBState { active_id: u32, bin_step: u32, reserve_x: u128, reserve_y: u128 },
     PendleState { total_pt: u128, total_sy: u128, sy_address: Address },
 }
-
-/// getReserves() selector
-const GET_RESERVES_SELECTOR: [u8; 4] = [0x09, 0x02, 0xf1, 0xac];
-
-/// balances(int128) selector for Curve pools
-const CURVE_BALANCES_SELECTOR: [u8; 4] = [0x49, 0x7b, 0x66, 0x78];
-
-/// A() selector for Curve pools amplification coefficient
-const CURVE_A_SELECTOR: [u8; 4] = [0x0f, 0x0b, 0x7c, 0x7e];
-
-/// fee() selector for Curve pools �?� swap fee (parts per 10??�??)
-const CURVE_FEE_SELECTOR: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43];
-
-/// get_A() selector for Curve CryptoSwap V2 pools
-const CURVE_GET_A_SELECTOR: [u8; 4] = [0x4d, 0x30, 0xa4, 0x7f];
-
-/// gamma() selector for Curve CryptoSwap V2 pools
-const CURVE_GAMMA_SELECTOR: [u8; 4] = [0x67, 0x1d, 0x47, 0x23];
-
-/// price_scale() selector for Curve CryptoSwap V2 pools (returns all scales as array)
-const CURVE_PRICE_SCALE_SELECTOR: [u8; 4] = [0x5e, 0x0d, 0x7a, 0x5a];
-
-/// base_pool() selector for Curve Metapools
-const CURVE_BASE_POOL_SELECTOR: [u8; 4] = [0x9c, 0xec, 0x6e, 0xae];
-
-/// slot0() selector for Uniswap V3
-static V3_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"slot0()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-/// liquidity() selector for Uniswap V3
-static V3_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"liquidity()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-/// getSlot0(bytes32) selector for Pancake Infinity CL manager (poolId arg).
-static INF_CL_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getSlot0(bytes32)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-/// getLiquidity(bytes32) selector for Pancake Infinity CL manager (poolId arg).
-static INF_CL_LIQUIDITY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getLiquidity(bytes32)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-/// getPoolTokens(bytes32) selector for Balancer V2 vault
-static GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getPoolTokens(bytes32)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getNormalizedWeights() selector for Balancer weighted pools
-static GET_NORMALIZED_WEIGHTS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getNormalizedWeights()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getSwapFeePercentage() selector for Balancer pools
-static GET_SWAP_FEE_PERCENTAGE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getSwapFeePercentage()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getAmplificationParameter() selector for Balancer stable pools
-static GET_AMPLIFICATION_PARAMETER_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getAmplificationParameter()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getScalingFactors() selector for Balancer composable/boosted pools
-static GET_SCALING_FACTORS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getScalingFactors()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getRateProvider(uint256) selector for Balancer pool rate providers
-static GET_RATE_PROVIDER_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getRateProvider(uint256)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// tickBitmap(int16) selector for Uniswap V3 tick bitmap queries
-static V3_TICK_BITMAP_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"tickBitmap(int16)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// ticks(int24) selector for Uniswap V3 per-tick data queries
-static V3_TICKS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"ticks(int24)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getBin(uint256) selector for Trader Joe LB pools
-static LB_GET_BIN_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getBin(uint256)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getBinStep() selector for Trader Joe LB pools
-static LB_GET_BIN_STEP_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getBinStep()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// readState(address) selector for Pendle Finance markets
-static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"readState(address)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// SY() selector for Pendle PT tokens
-static PENDLE_SY_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"SY()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-// ── Metadata-repair selectors (remote-sourced pools) ─────────────────
-
-static TOKEN0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"token0()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-static TOKEN1_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"token1()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// fee() — shared by Uniswap V3/V4 pools (same selector as Curve's fee())
-static FEE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"fee()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-static TICK_SPACING_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"tickSpacing()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// readTokens() selector for Pendle markets — returns (SY, PT, YT)
-static PENDLE_READ_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"readTokens()");
-    Bytes::copy_from_slice(&hash[..4])
-});
 
 fn pool_info_ref(ps: &PoolState) -> &PoolInfo {
     match ps {
@@ -422,7 +277,7 @@ impl PoolManager {
                         // Resolve SY token if token1 is still ZERO
                         if state.info.token1.is_zero() && !state.info.token0.is_zero() {
                             let mut sy_calldata = Vec::with_capacity(4);
-                            sy_calldata.extend_from_slice(&PENDLE_SY_SELECTOR);
+                            sy_calldata.extend_from_slice(&PENDLE_SY);
                             if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await {
                                 if result.len() >= 32 {
                                     let resolved_sy = Address::from_slice(&result[12..32]);
@@ -568,28 +423,28 @@ impl PoolManager {
                 let mut bin_step = None;
                 if job.pendle_tokens {
                     // readTokens() returns (SY, PT, YT); convention here: token0=PT, token1=SY
-                    if let Ok(res) = Self::call_once(&rpc, job.addr, PENDLE_READ_TOKENS_SELECTOR.clone(), br).await {
+                    if let Ok(res) = Self::call_once(&rpc, job.addr, PENDLE_READ_TOKENS.clone(), br).await {
                         if res.len() >= 96 {
                             t1 = Some(Address::from_slice(&res[12..32]));
                             t0 = Some(Address::from_slice(&res[44..64]));
                         }
                     }
                 } else if job.tokens {
-                    t0 = Self::call_once(&rpc, job.addr, TOKEN0_SELECTOR.clone(), br).await.ok()
+                    t0 = Self::call_once(&rpc, job.addr, TOKEN0.clone(), br).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
-                    t1 = Self::call_once(&rpc, job.addr, TOKEN1_SELECTOR.clone(), br).await.ok()
+                    t1 = Self::call_once(&rpc, job.addr, TOKEN1.clone(), br).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
                 }
                 if job.fee {
-                    fee = Self::call_once(&rpc, job.addr, FEE_SELECTOR.clone(), br).await.ok()
+                    fee = Self::call_once(&rpc, job.addr, FEE.clone(), br).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]])));
                 }
                 if job.tick_spacing {
-                    ts = Self::call_once(&rpc, job.addr, TICK_SPACING_SELECTOR.clone(), br).await.ok()
+                    ts = Self::call_once(&rpc, job.addr, TICK_SPACING.clone(), br).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| i32::from_be_bytes([b[28], b[29], b[30], b[31]])));
                 }
                 if job.bin_step {
-                    bin_step = Self::call_once(&rpc, job.addr, LB_GET_BIN_STEP_SELECTOR.clone(), br).await.ok()
+                    bin_step = Self::call_once(&rpc, job.addr, LB_GET_BIN_STEP.clone(), br).await.ok()
                         .and_then(|b| (b.len() >= 32).then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]])));
                 }
                 (job.addr, job.dex_type, t0, t1, fee, ts, bin_step)
@@ -831,7 +686,7 @@ impl PoolManager {
         }
 
         // Fallback: eth_call getReserves()
-        let data = Bytes::copy_from_slice(&GET_RESERVES_SELECTOR);
+        let data = Bytes::copy_from_slice(&GET_RESERVES);
         if let Ok(result) = Self::call_once(rpc, pool, data, br).await {
             if result.len() >= 64 {
                 let r0 = Self::decode_u128_from_abi_word(&result[..32]);
@@ -915,8 +770,8 @@ impl PoolManager {
         tick_spacing: i32,
         cache: Option<&SqliteStore>,
     ) -> Option<(U256, i32, u128, std::collections::BTreeMap<i32, i128>)> {
-        let slot0_result = Self::call_once(rpc, pool, V3_SLOT0_SELECTOR.clone(), br).await;
-        let liq_result = Self::call_once(rpc, pool, V3_LIQUIDITY_SELECTOR.clone(), br).await;
+        let slot0_result = Self::call_once(rpc, pool, V3_SLOT0.clone(), br).await;
+        let liq_result = Self::call_once(rpc, pool, V3_LIQUIDITY.clone(), br).await;
         if let (Ok(slot0), Ok(liq)) = (slot0_result.as_ref(), liq_result.as_ref()) {
             if slot0.len() >= 96 && liq.len() >= 32 {
                 let mut buf = [0u8; 32];
@@ -967,10 +822,10 @@ impl PoolManager {
         pool_id: [u8; 32],
         br: BlockRef,
     ) -> Option<(U256, i32, u128)> {
-        let mut slot0_calldata = INF_CL_SLOT0_SELECTOR.to_vec();
+        let mut slot0_calldata = INF_CL_SLOT0.to_vec();
         slot0_calldata.extend_from_slice(&pool_id);
         let slot0_result = Self::call_once(rpc, manager, Bytes::from(slot0_calldata), br).await.ok()?;
-        let mut liq_calldata = INF_CL_LIQUIDITY_SELECTOR.to_vec();
+        let mut liq_calldata = INF_CL_LIQUIDITY.to_vec();
         liq_calldata.extend_from_slice(&pool_id);
         let liq_result = Self::call_once(rpc, manager, Bytes::from(liq_calldata), br).await.ok()?;
         if slot0_result.len() < 64 || liq_result.len() < 32 {
@@ -1038,7 +893,7 @@ impl PoolManager {
 
             // Build calldata for tickBitmap(int16)
             let mut calldata = Vec::with_capacity(36);
-            calldata.extend_from_slice(&V3_TICK_BITMAP_SELECTOR);
+            calldata.extend_from_slice(&V3_TICK_BITMAP);
             let mut arg = [0u8; 32];
             let w_i16 = w as i16;
             let w_be = w_i16.to_be_bytes();
@@ -1116,7 +971,7 @@ impl PoolManager {
     ) -> Option<i128> {
         // Build calldata for ticks(int24)
         let mut calldata = Vec::with_capacity(36);
-        calldata.extend_from_slice(&V3_TICKS_SELECTOR);
+        calldata.extend_from_slice(&V3_TICKS);
         let mut arg = [0u8; 32];
         let tick_bytes = tick.to_be_bytes();
         arg[29..32].copy_from_slice(&tick_bytes[1..4]);
@@ -1200,7 +1055,7 @@ impl PoolManager {
         // getPoolTokens returns both tokens AND balances in one RPC call.
         let data = {
             let mut calldata = Vec::with_capacity(36);
-            calldata.extend_from_slice(&GET_POOL_TOKENS_SELECTOR);
+            calldata.extend_from_slice(&GET_POOL_TOKENS);
             calldata.extend_from_slice(pool_id);
             Bytes::from(calldata)
         };
@@ -1242,7 +1097,7 @@ impl PoolManager {
         let (weights, fee_bps, scaling_factors) = join3(
             async {
                 let mut calldata = Vec::with_capacity(4);
-                calldata.extend_from_slice(&GET_NORMALIZED_WEIGHTS_SELECTOR);
+                calldata.extend_from_slice(&GET_NORMALIZED_WEIGHTS);
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let w_off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
@@ -1264,7 +1119,7 @@ impl PoolManager {
             },
             async {
                 let mut calldata = Vec::with_capacity(4);
-                calldata.extend_from_slice(&GET_SWAP_FEE_PERCENTAGE_SELECTOR);
+                calldata.extend_from_slice(&GET_SWAP_FEE_PERCENTAGE);
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
                         let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
@@ -1276,7 +1131,7 @@ impl PoolManager {
             },
             async {
                 let mut calldata = Vec::with_capacity(4);
-                calldata.extend_from_slice(&GET_SCALING_FACTORS_SELECTOR);
+                calldata.extend_from_slice(&GET_SCALING_FACTORS);
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 64 => {
                         let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
@@ -1303,7 +1158,7 @@ impl PoolManager {
             let mut rp = Vec::with_capacity(token_count);
             for i in 0..token_count {
                 let mut calldata = Vec::with_capacity(36);
-                calldata.extend_from_slice(&GET_RATE_PROVIDER_SELECTOR);
+                calldata.extend_from_slice(&GET_RATE_PROVIDER);
                 calldata.extend_from_slice(&U256::from(i).to_be_bytes::<32>());
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 32 => {
@@ -1333,7 +1188,7 @@ impl PoolManager {
         } else {
             // No weights �?� try amplification parameter to detect Stable pool
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&GET_AMPLIFICATION_PARAMETER_SELECTOR);
+            calldata.extend_from_slice(&GET_AMPLIFICATION_PARAMETER);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 96 => {
                     let value = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
@@ -1547,7 +1402,7 @@ impl PoolManager {
     ) -> Option<PoolInitResult> {
         // Step 1: getActiveId()
         let active_id = {
-            let result = Self::call_once(rpc, pool, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52]), br).await.ok()?;
+            let result = Self::call_once(rpc, pool, LB_GET_ACTIVE_ID.clone(), br).await.ok()?;
             if result.len() < 32 { return None; }
             U256::from_be_slice(&result[..32]).to::<u64>() as u32
         };
@@ -1556,7 +1411,7 @@ impl PoolManager {
         // fetched at the `latest` tag, which any full node serves, instead of
         // requiring historical archive state.
         let bin_step = {
-            let result = rpc.call_latest(pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP_SELECTOR)).await.ok().unwrap_or_default();
+            let result = rpc.call_latest(pool, Bytes::copy_from_slice(&LB_GET_BIN_STEP)).await.ok().unwrap_or_default();
             if result.len() >= 32 {
                 U256::from_be_slice(&result[..32]).to::<u64>() as u32
             } else {
@@ -1567,7 +1422,7 @@ impl PoolManager {
         // Step 3: getBin(activeId)
         let (reserve_x, reserve_y) = {
             let mut calldata = Vec::with_capacity(36);
-            calldata.extend_from_slice(&LB_GET_BIN_SELECTOR);
+            calldata.extend_from_slice(&LB_GET_BIN);
             let mut arg = [0u8; 32];
             let id_bytes = (active_id as u64).to_be_bytes();
             arg[24..32].copy_from_slice(&id_bytes);
@@ -1600,7 +1455,7 @@ impl PoolManager {
 
         // readState(address(0))
         let mut calldata = Vec::with_capacity(36);
-        calldata.extend_from_slice(&PENDLE_READ_STATE_SELECTOR);
+        calldata.extend_from_slice(&PENDLE_READ_STATE);
         calldata.extend_from_slice(&[0u8; 32]); // address(0) as router
         let (total_pt, total_sy) = match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
             Ok(result) if result.len() >= 64 => {
@@ -1622,7 +1477,10 @@ impl PoolManager {
         Some(PoolInitResult::PendleState { total_pt, total_sy, sy_address: Address::ZERO })
     }
 
-    /// Fetch Curve pool state by calling `coins(int128)` and `balances(int128)` for each token index.
+    /// Fetch Curve pool state by calling `coins(i)` and `balances(i)` for each
+    /// token index. Classic Vyper pools expose the int128 overloads while NG /
+    /// forked deployments expose the uint256 ones, so both selectors are tried
+    /// (uint256 first, int128 fallback — arg encoding is identical either way).
     /// Tries up to 16 token indices, stopping when a call returns zero address or fails.
     /// Detects pool variant (Plain/Meta/Crypto) and fetches variant-specific state.
     async fn fetch_curve_state(
@@ -1631,8 +1489,6 @@ impl PoolManager {
         br: BlockRef,
         pre_fetched_tokens: Option<Vec<Address>>,
     ) -> Option<PoolInitResult> {
-        static CURVE_COINS_SELECTOR: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
-        static CURVE_COINS_U256_SELECTOR: [u8; 4] = [0x19, 0x6c, 0xac, 0x5f]; // coins(uint256) — used by some forks
         let mut tokens = Vec::new();
         let mut balances = Vec::new();
         let max_tokens = 16u8;
@@ -1643,7 +1499,7 @@ impl PoolManager {
                 if token_addr.is_zero() || i >= max_tokens as usize { break; }
                 let balance = {
                     let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                    calldata.extend_from_slice(&CURVE_BALANCES_U256);
                     let mut arg = [0u8; 32];
                     arg[31] = i as u8;
                     calldata.extend_from_slice(&arg);
@@ -1651,7 +1507,20 @@ impl PoolManager {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                         }
-                        _ => break,
+                        _ => {
+                            // Fallback: balances(int128) — classic Vyper pools.
+                            let mut calldata = Vec::with_capacity(36);
+                            calldata.extend_from_slice(&CURVE_BALANCES_I128);
+                            let mut arg = [0u8; 32];
+                            arg[31] = i as u8;
+                            calldata.extend_from_slice(&arg);
+                            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
+                                Ok(result) if result.0.len() >= 32 => {
+                                    U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                                }
+                                _ => break,
+                            }
+                        }
                     }
                 };
                 tokens.push(token_addr);
@@ -1661,7 +1530,7 @@ impl PoolManager {
             for i in 0u8..max_tokens {
                 let token = {
                     let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&CURVE_COINS_SELECTOR);
+                    calldata.extend_from_slice(&CURVE_COINS_U256);
                     let mut arg = [0u8; 32];
                     arg[31] = i;
                     calldata.extend_from_slice(&arg);
@@ -1672,8 +1541,9 @@ impl PoolManager {
                             addr
                         }
                         _ => {
+                            // Fallback: coins(int128) — classic Vyper pools.
                             let mut calldata2 = Vec::with_capacity(36);
-                            calldata2.extend_from_slice(&CURVE_COINS_U256_SELECTOR);
+                            calldata2.extend_from_slice(&CURVE_COINS_I128);
                             let mut arg2 = [0u8; 32];
                             arg2[31] = i;
                             calldata2.extend_from_slice(&arg2);
@@ -1691,7 +1561,7 @@ impl PoolManager {
 
                 let balance = {
                     let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                    calldata.extend_from_slice(&CURVE_BALANCES_U256);
                     let mut arg = [0u8; 32];
                     arg[31] = i;
                     calldata.extend_from_slice(&arg);
@@ -1699,7 +1569,20 @@ impl PoolManager {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                         }
-                        _ => break,
+                        _ => {
+                            // Fallback: balances(int128) — classic Vyper pools.
+                            let mut calldata = Vec::with_capacity(36);
+                            calldata.extend_from_slice(&CURVE_BALANCES_I128);
+                            let mut arg = [0u8; 32];
+                            arg[31] = i;
+                            calldata.extend_from_slice(&arg);
+                            match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
+                                Ok(result) if result.0.len() >= 32 => {
+                                    U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
+                                }
+                                _ => break,
+                            }
+                        }
                     }
                 };
 
@@ -1716,7 +1599,7 @@ impl PoolManager {
         let a_coeff = {
             // Try get_A() first (CryptoSwap V2), fallback to A() (StableSwap V1)
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&CURVE_GET_A_SELECTOR);
+            calldata.extend_from_slice(&CURVE_GET_A);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
@@ -1724,7 +1607,7 @@ impl PoolManager {
                 _ => {
                     // Fallback to A()
                     let mut calldata2 = Vec::with_capacity(4);
-                    calldata2.extend_from_slice(&CURVE_A_SELECTOR);
+                    calldata2.extend_from_slice(&CURVE_A);
                     match Self::call_once(rpc, pool, Bytes::from(calldata2), br).await {
                         Ok(result) if result.0.len() >= 32 => {
                             U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
@@ -1738,7 +1621,7 @@ impl PoolManager {
         // Fetch swap fee fee()
         let fee_bps = {
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&CURVE_FEE_SELECTOR);
+            calldata.extend_from_slice(&CURVE_FEE);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let chain_fee = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128;
@@ -1751,7 +1634,7 @@ impl PoolManager {
         // --- Variant detection: single gamma() call serves both detection and value ---
         let gamma_result = {
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&CURVE_GAMMA_SELECTOR);
+            calldata.extend_from_slice(&CURVE_GAMMA);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(r) if r.0.len() >= 32 && !r.0[..32].iter().all(|&b| b == 0) => {
                     Some(U256::from_be_slice(&r.0[..32]).as_limbs()[0] as u128)
@@ -1764,7 +1647,7 @@ impl PoolManager {
         // Try base_pool() — only Metapools have this
         let base_pool = if !is_crypto {
             let mut calldata = Vec::with_capacity(4);
-            calldata.extend_from_slice(&CURVE_BASE_POOL_SELECTOR);
+            calldata.extend_from_slice(&CURVE_BASE_POOL);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                 Ok(result) if result.0.len() >= 32 => {
                     let addr = Address::from_slice(&result.0[12..32]);
@@ -1781,7 +1664,7 @@ impl PoolManager {
             // Price scale — returns a dynamic array of N-1 values
             let price_scales = {
                 let mut calldata = Vec::with_capacity(4);
-                calldata.extend_from_slice(&CURVE_PRICE_SCALE_SELECTOR);
+                calldata.extend_from_slice(&CURVE_PRICE_SCALE);
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
                     Ok(result) if result.0.len() >= 64 => {
                         let off = U256::from_be_slice(&result.0[..32]).as_limbs()[0] as usize;
