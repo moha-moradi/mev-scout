@@ -32,44 +32,39 @@ impl TimedOutput {
     }
 }
 
-pub fn repo_config() -> PathBuf {
+pub fn example_config() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("mev-scout.toml")
+        .join("mev-scout.example.toml")
 }
 
-/// Path of the repo `mev-scout.toml` as a `String`, ready for `-f` args.
-pub fn repo_config_str() -> String {
-    repo_config().to_str().unwrap().to_string()
+/// Path of the tracked `mev-scout.example.toml` as a `String`, ready for `-f` args.
+pub fn example_config_str() -> String {
+    example_config().to_str().unwrap().to_string()
 }
 
-pub fn repo_config_text() -> String {
-    fs::read_to_string(repo_config()).unwrap_or_default()
+pub fn example_config_text() -> String {
+    fs::read_to_string(example_config()).unwrap_or_default()
 }
 
-/// Write a config derived from the repo `mev-scout.toml` into `ws` and return
-/// its path as a `String`, ready for `-f` args.
+/// Write a config derived from the tracked `mev-scout.example.toml` into `ws`
+/// and return its path as a `String`, ready for `-f` args.
 pub fn make_cfg(ws: &Path, extras: &[(&str, &str)]) -> String {
     temp_config(ws, extras).to_str().unwrap().to_string()
 }
 
-/// Resolve the RPC URL used by E2E tests: the `RPC_URL` env var wins (lets a
-/// fresh clone without a committed `mev-scout.toml` still run the gated
-/// suites), otherwise the first `https://` URL in the repo config file.
-pub fn first_rpc_url() -> Option<String> {
-    if let Ok(url) = std::env::var("RPC_URL") {
-        if !url.trim().is_empty() {
-            return Some(url);
-        }
+/// Resolve the RPC URL used by E2E tests from the `RPC_URL` env var only.
+/// Live keys live in the untracked local config, so tests must never read a
+/// committed file for secrets.
+pub fn rpc_url() -> Option<String> {
+    let url = std::env::var("RPC_URL").ok()?;
+    let url = url.trim();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
     }
-    let text = fs::read_to_string(repo_config()).ok()?;
-    let start = text.find("https://")?;
-    let end = text[start..]
-        .find(|c: char| c.is_whitespace() || c == '"' || c == ',' || c == ']')
-        .map(|i| start + i)
-        .unwrap_or(text.len());
-    Some(text[start..end].to_string())
 }
 
 pub fn temp_ws(tag: &str) -> PathBuf {
@@ -80,13 +75,13 @@ pub fn temp_ws(tag: &str) -> PathBuf {
     p
 }
 
-/// Clone the repo `mev-scout.toml` into `ws`, replacing or appending the given
+/// Clone the tracked `mev-scout.example.toml` into `ws`, replacing or appending the given
 /// flat `key = value` lines. Handles the multi-line `rpc_urls` array replacement.
 /// Values are auto-formatted: quoted strings keep their quotes (backslashes
 /// escaped), bare strings get quoted with backslashes escaped, numbers/bools/
 /// arrays pass through verbatim.
 pub fn temp_config(ws: &Path, extras: &[(&str, &str)]) -> PathBuf {
-    let src = fs::read_to_string(repo_config()).unwrap_or_default();
+    let src = fs::read_to_string(example_config()).unwrap_or_default();
     let mut lines: Vec<String> = src.lines().map(String::from).collect();
     for (key, value) in extras {
         let needle = format!("{key} =");
@@ -217,35 +212,22 @@ pub fn expect_fail(out: &TimedOutput, ctx: &str) {
 }
 
 pub fn rpc_ready(ws: &Path) -> bool {
+    let Some(url) = rpc_url() else {
+        return false;
+    };
     let mut c = scout(ws);
-    if let Some(url) = first_rpc_url() {
-        // Inject the resolved URL (env var or repo config) so the probe also
-        // works when the local config has no usable endpoints.
-        let cfg = temp_config(ws, &[("rpc_urls", &format!("[\"{url}\"]"))]);
-        c.args([
-            "-f",
-            cfg.to_str().unwrap(),
-            "scan",
-            "--kind",
-            "trades",
-            "--blocks",
-            "1",
-            "--limit",
-            "1",
-        ]);
-    } else {
-        c.args([
-            "-f",
-            &repo_config_str(),
-            "scan",
-            "--kind",
-            "trades",
-            "--blocks",
-            "1",
-            "--limit",
-            "1",
-        ]);
-    }
+    let cfg = temp_config(ws, &[("rpc_urls", &format!("[\"{url}\"]"))]);
+    c.args([
+        "-f",
+        cfg.to_str().unwrap(),
+        "scan",
+        "--kind",
+        "trades",
+        "--blocks",
+        "1",
+        "--limit",
+        "1",
+    ]);
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }
 
@@ -256,7 +238,7 @@ pub fn ensure_gate_and_rpc(tag: &str) -> Option<PathBuf> {
     }
     let ws = temp_ws(tag);
     if !rpc_ready(&ws) {
-        eprintln!("SKIP: Polygon RPCs from mev-scout.toml unreachable");
+        eprintln!("SKIP: Polygon RPC probe failed (no RPC_URL / unreachable)");
         return None;
     }
     Some(ws)

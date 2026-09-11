@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, repo_config_str,
+    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, example_config_str,
     run_timed, rpc_lock, scout, temp_ws, HEAVY_TIMEOUT,
 };
 use std::time::Duration;
@@ -137,7 +137,7 @@ fn live_loop_duration_graceful_exit() {
 fn live_duration_without_loop_rejected_offline() {
     let ws = temp_ws("live_gate_offline");
     let mut c = scout(&ws);
-    c.args(["-f", &repo_config_str(), "live", "--duration", "15m"]);
+    c.args(["-f", &example_config_str(), "live", "--duration", "15m"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("spawn failed");
     expect_fail(&out, "live --duration without --loop");
     assert!(out.stderr.contains("--duration requires --loop"));

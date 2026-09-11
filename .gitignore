@@ -5,3 +5,8 @@ tmp_output.txt
 *.log
 *.txt
 /results
+
+# Live configs with secrets (secrets now come from environment variables)
+/mev-scout.toml
+/mev-scout-arbitrum.toml
+/mev-scout.base.toml

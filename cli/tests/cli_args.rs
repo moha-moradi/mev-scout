@@ -1,14 +1,14 @@
 mod common;
 
 use common::{
-    expect_fail, expect_ok, make_cfg, repo_config_str, run_timed, scout, temp_ws, TEST_TIMEOUT,
+    expect_fail, expect_ok, make_cfg, example_config_str, run_timed, scout, temp_ws, TEST_TIMEOUT,
     TimedOutput,
 };
 use std::path::Path;
 use std::time::Duration;
 
 fn cfg() -> String {
-    repo_config_str()
+    example_config_str()
 }
 
 fn run(ws: &Path, args: &[&str]) -> TimedOutput {
@@ -148,26 +148,26 @@ fn unknown_subcommand_rejected() {
 }
 
 #[test]
-fn config_prints_resolved_toml_from_repo_file() {
+fn config_prints_resolved_toml_from_example_toml() {
     let ws = temp_ws("args_config");
     let out = run(&ws, &["-f", &cfg(), "config"]);
-    expect_ok(&out, "config with repo mev-scout.toml");
+    expect_ok(&out, "config with mev-scout.example.toml");
     assert!(
         out.stdout.contains("polygon"),
         "config output should mention chain polygon"
     );
-    // Dynamic provider count: compare against the repo TOML itself instead of
+    // Dynamic provider count: compare against the example TOML itself instead of
     // a hard-coded threshold, so adding/removing providers doesn't break the
-    // test. The resolved config must include at least every committed URL.
-    let repo_https_count = common::repo_config_text().matches("https://").count();
+    // test. The resolved config must include at least every placeholder URL.
+    let example_https_count = common::example_config_text().matches("https://").count();
     assert!(
-        repo_https_count >= 1,
-        "repo mev-scout.toml should commit at least one provider"
+        example_https_count >= 1,
+        "mev-scout.example.toml should contain at least one provider placeholder"
     );
     let https_count = out.stdout.matches("https://").count();
     assert!(
-        https_count >= repo_https_count,
-        "config should resolve all {repo_https_count} committed providers, found {https_count} https URLs"
+        https_count >= example_https_count,
+        "config should resolve all {example_https_count} example providers, found {https_count} https URLs"
     );
 }
 

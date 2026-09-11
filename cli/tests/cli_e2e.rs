@@ -3,13 +3,12 @@
 //! Exercises the full CLI path against a live Polygon RPC:
 //! RPC init → range resolution → fetch → pool init → backtest → JSON export.
 //!
-//! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL comes from
-//! `common::first_rpc_url()` (`RPC_URL` env var first, then the first
-//! `https://` entry of `mev-scout.toml`).
+//! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL comes from the
+//! `RPC_URL` env var only.
 
 mod common;
 
-use common::{first_rpc_url, run_timed, temp_config, temp_ws, HEAVY_TIMEOUT};
+use common::{rpc_url, run_timed, temp_config, temp_ws, HEAVY_TIMEOUT};
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_mev-scout");
@@ -25,10 +24,10 @@ fn cli_real_run_smoke() {
         return;
     }
 
-    let rpc = match first_rpc_url() {
+    let rpc = match rpc_url() {
         Some(url) => url,
         None => {
-            skip("no RPC URL available (set RPC_URL or add one to mev-scout.toml)");
+            skip("no RPC URL available (export RPC_URL with a valid Polygon endpoint)");
             return;
         }
     };

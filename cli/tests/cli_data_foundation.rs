@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, repo_config_str, rpc_lock,
+    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, example_config_str, rpc_lock,
     run_timed, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use std::time::Duration;
@@ -185,7 +185,7 @@ fn validate_pools_tolerant_to_reference_failures() {
     };
 
     let mut c = scout(&ws);
-    c.args(["-f", &repo_config_str(), "validate-pools", "--days", "1", "--json"]);
+    c.args(["-f", &example_config_str(), "validate-pools", "--days", "1", "--json"]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,
         Err(e) => {
