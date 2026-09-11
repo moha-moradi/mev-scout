@@ -79,9 +79,6 @@ pub struct OutputConfig {
     /// Output format: "table", "json", or "csv"
     #[serde(default = "default_output_format")]
     pub output: String,
-    /// Directory for result exports
-    #[serde(default = "default_export_path")]
-    pub export_path: String,
     /// Directory for SQLite database file
     #[serde(default = "default_db_path")]
     pub db_path: String,
@@ -119,7 +116,6 @@ fn default_gas_model() -> String { "historical_exact".to_string() }
 fn default_gas_limit() -> u64 { 200_000 }
 fn default_priority_fee_gwei() -> f64 { 0.0 }
 fn default_output_format() -> String { "table".to_string() }
-fn default_export_path() -> String { "./results".to_string() }
 fn default_db_path() -> String { String::new() }
 fn default_max_pairs_per_token() -> usize { 50 }
 fn default_proximity_window() -> usize { 3 }
@@ -167,7 +163,6 @@ impl Default for OutputConfig {
     fn default() -> Self {
         OutputConfig {
             output: default_output_format(),
-            export_path: default_export_path(),
             db_path: default_db_path(),
         }
     }
@@ -551,7 +546,6 @@ pub struct BacktestOverrides {
 #[derive(Debug, Clone, Default)]
 pub struct OutputOverrides {
     pub output: Option<String>,
-    pub export_path: Option<String>,
     pub db_path: Option<String>,
 }
 
@@ -597,7 +591,7 @@ macro_rules! merge_sub {
 /// # Example
 ///
 /// ```
-/// use crate::config::ConfigBuilder;
+/// use mev_scout_core::config::ConfigBuilder;
 ///
 /// let config = ConfigBuilder::default()
 ///     .with_chain("polygon")
@@ -656,7 +650,6 @@ impl Config {
         ]);
         merge_sub!(self, overrides, output, [
             (output),
-            (export_path),
             (db_path)
         ]);
         merge_sub!(self, overrides, explorer, [

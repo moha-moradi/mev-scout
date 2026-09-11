@@ -174,36 +174,25 @@ fn config_prints_resolved_toml_from_repo_file() {
 #[test]
 fn report_error_paths_fail_cleanly() {
     let ws = temp_ws("args_report_err");
-    let missing = ws.join("nope");
-    let missing_cfg = make_cfg(&ws, &[("export_path", missing.to_str().unwrap())]);
-    let out = run(&ws, &["-f", &missing_cfg, "report"]);
-    expect_fail(&out, "report on missing export dir");
+
+    // report on a fresh workspace with no recorded runs
+    let out = run(&ws, &["-f", &cfg(), "report"]);
+    expect_fail(&out, "report with no run history");
     assert!(
-        out.stderr.contains("does not exist"),
-        "expected missing-dir error, got: {}",
+        out.stderr.contains("no runs recorded"),
+        "expected 'no runs recorded' error, got: {}",
         out.stderr
     );
 
-    let empty = ws.join("empty");
-    std::fs::create_dir_all(&empty).unwrap();
-    let empty_cfg = make_cfg(&ws, &[("export_path", empty.to_str().unwrap())]);
-    let out = run(&ws, &["-f", &empty_cfg, "report"]);
-    expect_fail(&out, "report on empty export dir");
-    assert!(
-        out.stderr.contains("no results files"),
-        "expected no-results error, got: {}",
-        out.stderr
-    );
-
-    let rid_cfg = make_cfg(&ws, &[("export_path", empty.to_str().unwrap())]);
+    // report with a non-existent --run-id
     let out = run(
         &ws,
-        &["-f", &rid_cfg, "report", "--run-id", "missing_run_id"],
+        &["-f", &cfg(), "report", "--run-id", "nonexistent_run_id"],
     );
-    expect_fail(&out, "report on nonexistent run id");
+    expect_fail(&out, "report with non-existent run-id");
     assert!(
-        out.stderr.contains("results file not found"),
-        "expected file-not-found error, got: {}",
+        out.stderr.contains("not found"),
+        "expected run-not-found error, got: {}",
         out.stderr
     );
 }
@@ -491,40 +480,78 @@ fn tokens_filters_work_offline() {
     );
 }
 
-// ── report positive selection with a hand-written ResultsFile (offline) ─────
+// ── report positive selection with a hand-written SQLite fixture (offline) ───
 
-fn write_minimal_results_file(dir: &Path, run_id: &str) -> std::path::PathBuf {
-    let path = dir.join(format!("{run_id}.json"));
-    let json = serde_json::json!({
-        "run_id": run_id,
-        "chain": "polygon",
-        "start_block": 50_000_000u64,
-        "end_block": 50_000_004u64,
-        "range_mode": "blocks",
-        "strategies": ["two_hop_arb"],
-        "flash_loan_provider": "none",
-        "resolved_at": 0u64,
-        "created_at": 0u64,
-        "opportunities": [],
-    });
-    std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
-    path
+/// Seed a cache DB and an explorer DB in `ws/cache/` with two run manifests
+/// and a couple of opportunity rows, so the offline `report` tests can run.
+fn seed_report_fixture(ws: &Path) {
+    use rusqlite::Connection;
+    std::fs::create_dir_all(ws.join("cache")).unwrap();
+    let cache_path = ws.join("cache/polygon-mev-scout.sqlite");
+    let conn = Connection::open(&cache_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS run_manifests (
+            run_id TEXT PRIMARY KEY,
+            chain TEXT NOT NULL,
+            start_block INTEGER NOT NULL,
+            end_block INTEGER NOT NULL,
+            resolved_at INTEGER NOT NULL,
+            range_mode TEXT NOT NULL,
+            strategies TEXT NOT NULL,
+            flash_loan_provider TEXT NOT NULL
+        );
+        INSERT INTO run_manifests
+            (run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider)
+        VALUES
+            ('run_1111111111', 'polygon', 50000000, 50000004, 1700000000, 'blocks', 'two_hop_arb', 'none'),
+            ('run_2222222222', 'polygon', 60000000, 60000004, 1700000100, 'blocks', 'two_hop_arb', 'none');",
+    )
+    .unwrap();
+
+    let explorer_path = ws.join("cache/explorer-polygon.sqlite");
+    let econn = Connection::open(&explorer_path).unwrap();
+    econn
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS opportunities(
+                run_id TEXT,
+                chain TEXT,
+                block_number INTEGER NOT NULL,
+                tx_index INTEGER,
+                strategy TEXT NOT NULL,
+                pool_a TEXT,
+                pool_b TEXT,
+                token_in TEXT,
+                token_out TEXT,
+                input_amount TEXT,
+                expected_profit TEXT,
+                gas_cost_wei TEXT,
+                path TEXT,
+                timestamp INTEGER,
+                mempool_only INTEGER,
+                confidence TEXT,
+                sender TEXT,
+                tx_hash TEXT,
+                detection_path TEXT,
+                canonical_id TEXT
+            );
+            INSERT INTO opportunities
+                (run_id, chain, block_number, tx_index, strategy, pool_a, expected_profit, gas_cost_wei, timestamp)
+            VALUES
+                ('run_2222222222', 'polygon', 60000001, 10, 'two_hop_arb',
+                 '0x0000000000000000000000000000000000000001', '500', '21000', 1700000100),
+                ('run_2222222222', 'polygon', 60000003, 22, 'two_hop_arb',
+                 '0x0000000000000000000000000000000000000002', '120', '42000', 1700000102);",
+        )
+        .unwrap();
 }
 
 #[test]
 fn report_selects_explicit_run_id_offline() {
     let ws = temp_ws("args_report_pos");
-    let export = ws.join("export");
-    std::fs::create_dir_all(&export).unwrap();
-    write_minimal_results_file(&export, "run_1111111111");
-    std::thread::sleep(Duration::from_millis(50));
-    write_minimal_results_file(&export, "run_2222222222");
+    seed_report_fixture(&ws);
 
-    let cfg_path = make_cfg(
-        &ws,
-        &[("export_path", export.to_str().unwrap()), ("output", "\"json\"")],
-    );
-
+    // explicit --run-id selects the older run
+    let cfg_path = make_cfg(&ws, &[("output", "\"json\"")]);
     let out = run(
         &ws,
         &["-f", &cfg_path, "report", "--run-id", "run_1111111111"],
@@ -535,33 +562,33 @@ fn report_selects_explicit_run_id_offline() {
     assert_eq!(
         parsed["run_id"].as_str(),
         Some("run_1111111111"),
-        "explicit --run-id must select that exact file"
+        "explicit --run-id must select that run"
     );
 
+    // default (latest) picks run_2222222222 (higher resolved_at)
     let out = run(&ws, &["-f", &cfg_path, "report"]);
-    expect_ok(&out, "report default (latest by created order)");
+    expect_ok(&out, "report default (latest by resolved_at)");
     let parsed: serde_json::Value =
         serde_json::from_str(out.stdout.trim()).expect("report --output json must print pure JSON");
     assert_eq!(
         parsed["run_id"].as_str(),
         Some("run_2222222222"),
-        "default selection must pick the newest results file"
+        "default selection must pick the latest run"
     );
 
-    let cfg_path = make_cfg(&ws, &[("export_path", export.to_str().unwrap())]);
-    let out = run(&ws, &["-f", &cfg_path, "report"]);
+    // default table output (no output key in config → defaults to table)
+    let default_cfg = make_cfg(&ws, &[]);
+    let out = run(&ws, &["-f", &default_cfg, "report"]);
     expect_ok(&out, "report default table output");
     assert!(
         out.stdout.contains("Run ID:"),
         "table output lacks Run ID"
     );
 
-    let csv_cfg = make_cfg(
-        &ws,
-        &[("export_path", export.to_str().unwrap()), ("output", "\"csv\"")],
-    );
+    // csv output
+    let csv_cfg = make_cfg(&ws, &[("output", "\"csv\"")]);
     let out = run(&ws, &["-f", &csv_cfg, "report"]);
-    expect_ok(&out, "report csv with empty opportunities");
+    expect_ok(&out, "report csv with opportunities");
     assert!(
         out.stdout.lines().any(|l| l.trim()
             == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"),

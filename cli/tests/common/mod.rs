@@ -54,25 +54,6 @@ pub fn make_cfg(ws: &Path, extras: &[(&str, &str)]) -> String {
     temp_config(ws, extras).to_str().unwrap().to_string()
 }
 
-/// Return the newest `<prefix>*.json` file in `dir` by modification time.
-/// Entries whose metadata cannot be read are skipped instead of failing the
-/// whole lookup.
-pub fn newest_json_file(dir: &Path, prefix: &str) -> Option<PathBuf> {
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    for e in fs::read_dir(dir).ok()?.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with(prefix) && name.ends_with(".json") {
-            let Ok(mtime) = e.metadata().and_then(|m| m.modified()) else {
-                continue;
-            };
-            if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
-                best = Some((mtime, e.path()));
-            }
-        }
-    }
-    best.map(|(_, p)| p)
-}
-
 /// Resolve the RPC URL used by E2E tests: the `RPC_URL` env var wins (lets a
 /// fresh clone without a committed `mev-scout.toml` still run the gated
 /// suites), otherwise the first `https://` URL in the repo config file.

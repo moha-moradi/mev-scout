@@ -44,7 +44,6 @@ fn cli_real_run_smoke() {
             ("rpc_urls", &format!("[\"{rpc}\"]")),
             ("strategies", "\"two_hop_arb\""),
             ("output", "\"json\""),
-            ("export_path", export.to_str().unwrap()),
             ("db_path", db.to_str().unwrap()),
         ],
     );
@@ -82,34 +81,34 @@ fn cli_real_run_smoke() {
         );
     }
 
-    // The CLI writes results to <export>/run_<epoch>.json.
-    let results: Vec<_> = std::fs::read_dir(&export)
-        .unwrap_or_else(|e| panic!("failed to read export dir {}: {e}", export.display()))
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("run_") && name.ends_with(".json")
-        })
-        .collect();
-    assert!(
-        !results.is_empty(),
-        "expected run_*.json results in {}",
-        export.display()
+    // Execution history lives in SQLite. Verify via report.
+    let report_cfg = temp_config(
+        &ws,
+        &[
+            ("rpc_urls", &format!("[\"{rpc}\"]")),
+            ("db_path", db.to_str().unwrap()),
+            ("output", "\"json\""),
+        ],
     );
-
-    for r in &results {
-        let content = std::fs::read_to_string(r.path()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(
-            parsed["chain"], "polygon",
-            "results file should report chain=polygon"
-        );
-        assert!(
-            parsed["start_block"].is_number() && parsed["end_block"].is_number(),
-            "results file should include a numeric block range"
-        );
-    }
+    let mut report_cmd = Command::new(BIN);
+    report_cmd.args(["--quiet", "-f", report_cfg.to_str().unwrap(), "report"]);
+    let report_out = run_timed(&mut report_cmd, HEAVY_TIMEOUT)
+        .expect("report after run exceeded budget");
+    assert!(
+        report_out.success,
+        "mev-scout report after run exited with {:?}",
+        report_out.code
+    );
+    let parsed: serde_json::Value = serde_json::from_str(report_out.stdout.trim())
+        .expect("report --output json must print pure JSON");
+    assert_eq!(
+        parsed["chain"], "polygon",
+        "report should report chain=polygon"
+    );
+    assert!(
+        parsed["start_block"].is_number() && parsed["end_block"].is_number(),
+        "report should include a numeric block range"
+    );
 
     let _ = std::fs::remove_dir_all(&export);
 }

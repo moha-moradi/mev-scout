@@ -7,7 +7,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::cli::RunArgs;
 use crate::display::{
     persist_opportunities_to_explorer, persist_rejections_to_explorer, print_startup_plan,
-    render_block_summary_table, render_results_table, save_results_json,
+    render_block_summary_table, render_results_table,
 };
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
@@ -172,6 +172,8 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let (all_opportunities, block_stats) = runner.run_range(&resolved)?;
     let elapsed = start.elapsed();
 
+    // Execution history lives only in SQLite: run metadata in the cache
+    // store's `run_manifests`, opportunities/rejections in the explorer store.
     let results_file = ResultsFile {
         run_id: run_id.clone(),
         chain: validation_result.chain_name.to_string(),
@@ -184,11 +186,8 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         created_at: epoch_secs(),
         opportunities: all_opportunities.clone(),
     };
-    if let Err(e) = save_results_json(&config.output.export_path, &run_id, &results_file) {
-        tracing::warn!("Failed to save results: {}", e);
-    }
 
-    // Results layer (§9.2): also persist into the explorer opportunities table.
+    // Results layer (§9.2): persist into the explorer opportunities table.
     persist_opportunities_to_explorer(config, validation_result.chain_name, &run_id, &results_file);
     // Rejection capture (§9.3) when --record-rejections.
     let rejections = runner.take_rejections();

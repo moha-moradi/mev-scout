@@ -464,7 +464,7 @@ pub async fn run_live(
 mod tests {
     use super::*;
     use alloy::primitives::U256;
-    use crate::explorer::types::{Confidence, MevKind};
+    use crate::explorer::types::MevKind;
 
     #[test]
     fn profit_priority_polygon() {

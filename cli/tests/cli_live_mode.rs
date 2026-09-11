@@ -1,10 +1,9 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, newest_json_file, repo_config_str,
+    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, repo_config_str,
     run_timed, rpc_lock, scout, temp_ws, HEAVY_TIMEOUT,
 };
-use serde_json::Value;
 use std::time::Duration;
 
 fn live_cfg(ws: &std::path::Path, extras: &[(&str, &str)]) -> String {
@@ -23,15 +22,12 @@ fn live_one_shot_smoke() {
     let Some(ws) = ensure_gate_and_rpc("live1") else {
         return;
     };
-    let results = ws.join("results");
-    let results_s = results.to_str().unwrap();
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
     let cfg = live_cfg(
         &ws,
         &[
-            ("export_path", results_s),
             ("db_path", db_s),
         ],
     );
@@ -51,9 +47,17 @@ fn live_one_shot_smoke() {
         out.stdout
     );
 
-    let file = newest_json_file(&results, "live_").expect("live must export live_*.json");
-    let parsed: Value =
-        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).expect("live_*.json parses");
+    // Verify live history stored in SQLite via report
+    let report_cfg = make_cfg(&ws, &[
+        ("db_path", db_s),
+        ("output", "\"json\""),
+    ]);
+    let mut c = scout(&ws);
+    c.args(["-f", &report_cfg, "report"]);
+    let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report after live spawn failed");
+    expect_ok(&out, "report after live one-shot");
+    let parsed: serde_json::Value =
+        serde_json::from_str(out.stdout.trim()).expect("report --output json must print pure JSON");
     assert_eq!(parsed["range_mode"].as_str(), Some("live"));
     assert_eq!(parsed["chain"].as_str(), Some("polygon"));
     assert!(parsed["opportunities"].is_array());
@@ -65,15 +69,12 @@ fn live_loop_duration_graceful_exit() {
     let Some(ws) = ensure_gate_and_rpc("loop30") else {
         return;
     };
-    let results = ws.join("results");
-    let results_s = results.to_str().unwrap();
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
     let pipeline = live_cfg(
         &ws,
         &[
-            ("export_path", results_s),
             ("db_path", db_s),
         ],
     );
@@ -117,20 +118,19 @@ fn live_loop_duration_graceful_exit() {
         );
     }
 
-    let exported = std::fs::read_dir(&results)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| {
-                    let n = e.file_name().to_string_lossy().into_owned();
-                    n.starts_with("live_") && n.ends_with(".json")
-                })
-                .count()
-        })
-        .unwrap_or(0);
-    assert!(
-        exported >= 1,
-        "expected at least one live_*.json export per processed tick"
-    );
+    // Verify live history stored in SQLite via report
+    let report_cfg = make_cfg(&ws, &[
+        ("db_path", db_s),
+        ("output", "\"json\""),
+    ]);
+    let mut c = scout(&ws);
+    c.args(["-f", &report_cfg, "report"]);
+    let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report after live loop failed");
+    expect_ok(&out, "report after live --loop");
+    let parsed: serde_json::Value =
+        serde_json::from_str(out.stdout.trim()).expect("report --output json must print pure JSON");
+    assert_eq!(parsed["range_mode"].as_str(), Some("live"));
+    assert_eq!(parsed["chain"].as_str(), Some("polygon"));
 }
 
 #[test]

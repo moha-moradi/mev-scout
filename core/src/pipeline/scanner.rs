@@ -57,6 +57,12 @@ pub mod topics {
     pub static METRIC_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
 
+    /// Solidly/Velodrome/Aerodrome pool Swap event
+    /// (`Swap(address,address,uint256,uint256,uint256,uint256)` — verified
+    /// against velodrome-finance/contracts `IPool.sol`).
+    pub static SOLIDLY_SWAP: LazyLock<B256> =
+        LazyLock::new(|| keccak256("Swap(address,address,uint256,uint256,uint256,uint256)"));
+
     /// Trader Joe Liquidity Book 2.0 Pair Swap event
     /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
     /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
@@ -116,6 +122,7 @@ pub mod topics {
             *INF_CL_SWAP,
             *FLUID_SWAP,
             *METRIC_SWAP,
+            *SOLIDLY_SWAP,
             *TRADER_JOE_LB_SWAP,
             *TRADER_JOE_LB_SWAP_LEGACY,
             *PENDLE_MARKET_SWAP,

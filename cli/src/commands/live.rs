@@ -5,10 +5,9 @@ use std::time::{Duration, Instant};
 use crate::cli::LiveArgs;
 use crate::display::{
     persist_opportunities_to_explorer, persist_rejections_to_explorer, render_results_table,
-    save_results_json,
 };
 use crate::rpc_setup::init_rpc;
-use mev_scout_core::cache::SqliteStore;
+use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation::{self, ValidationResult};
 use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
@@ -164,7 +163,21 @@ async fn run_once(
         created_at: epoch_secs(),
         opportunities: opps.clone(),
     };
-    let _ = save_results_json(&config.output.export_path, &run_id, &results_file);
+    // Execution history lives only in SQLite: manifest in the cache store's
+    // `run_manifests`, opportunities/rejections in the explorer store.
+    let manifest = RunManifest {
+        run_id: run_id.clone(),
+        chain: validation.chain_name.to_string(),
+        start_block: tip,
+        end_block: tip,
+        resolved_at: epoch_secs(),
+        range_mode: "live".to_string(),
+        strategies: results_file.strategies.clone(),
+        flash_loan_provider: results_file.flash_loan_provider.clone(),
+    };
+    if let Err(e) = cache.put_manifest(&manifest) {
+        tracing::warn!("run-manifest persist failed: {e}");
+    }
     persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
     let rejections = runner.take_rejections();
     persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
@@ -352,8 +365,20 @@ async fn run_loop(
             created_at: epoch_secs(),
             opportunities: opps.clone(),
         };
-        if let Err(e) = save_results_json(&config.output.export_path, &run_id, &results_file) {
-            tracing::warn!("Failed to save results: {}", e);
+        // Execution history lives only in SQLite: manifest in the cache
+        // store's `run_manifests`, opportunities in the explorer store.
+        let manifest = RunManifest {
+            run_id: run_id.clone(),
+            chain: validation.chain_name.to_string(),
+            start_block: resolved.start_block,
+            end_block: resolved.end_block,
+            resolved_at: epoch_secs(),
+            range_mode: "live".to_string(),
+            strategies: results_file.strategies.clone(),
+            flash_loan_provider: results_file.flash_loan_provider.clone(),
+        };
+        if let Err(e) = cache.put_manifest(&manifest) {
+            tracing::warn!("run-manifest persist failed: {e}");
         }
         persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
         let rejections = runner.take_rejections();
@@ -372,7 +397,6 @@ async fn run_loop(
     println!("  Blocks processed: {}", blocks_processed);
     println!("  Txs scanned:      {}", total_txs_scanned);
     println!("  Opportunities:    {}", total_opportunities);
-    println!("  Export path:      {}", config.output.export_path);
 
     Ok(())
 }

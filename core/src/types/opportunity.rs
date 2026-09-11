@@ -172,7 +172,8 @@ impl MevOpportunity {
 
 /// Saved results file wrapping opportunities with run metadata.
 ///
-/// Written to `export_path` and re-read by the `report` subcommand.
+/// Built during `run`/`live` for persistence into the explorer SQLite store,
+/// and reconstructed by the `report` subcommand from stored rows.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResultsFile {
     pub run_id: String,

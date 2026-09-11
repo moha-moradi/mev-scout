@@ -104,8 +104,90 @@ pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
 
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 
+/// Velodrome V2/Aerodrome pool Swap topic (`Swap(address indexed sender,
+/// address indexed to, uint256 amount0In, uint256 amount1In, uint256
+/// amount0Out, uint256 amount1Out)` — verified against velodrome-finance/
+/// contracts `IPool.sol`). Original Solidly V1 / Camelot pairs instead emit
+/// the Uniswap V2 signature, covered by `V2_SWAP_TOPIC`.
 pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Swap(uint256,uint256,address,address)"));
+    LazyLock::new(|| keccak256("Swap(address,address,uint256,uint256,uint256,uint256)"));
+
+/// Decode a Solidly/Velodrome/Aerodrome Swap event.
+///
+/// Topics: [sig, sender, to]; data carries
+/// `[amount0In, amount1In, amount0Out, amount1Out]` = 128 bytes — the same
+/// four-amount layout as Uniswap V2's Swap data. Exactly one of the in-words
+/// and one of the out-words is nonzero for a normal swap.
+pub fn decode_solidly_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
+    let data = &log.data().data;
+    if data.len() < 128 {
+        return None;
+    }
+    let a0i = U256::from_be_slice(&data[0..32]);
+    let a1i = U256::from_be_slice(&data[32..64]);
+    let a0o = U256::from_be_slice(&data[64..96]);
+    let a1o = U256::from_be_slice(&data[96..128]);
+    if a0i.is_zero() && a1i.is_zero() && a0o.is_zero() && a1o.is_zero() {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool,
+        token_in: Address::ZERO,
+        token_out: Address::ZERO,
+        amount_in: a0i.max(a1i),
+        amount_out: a0o.max(a1o),
+        dex_type: "solidly".to_string(),
+    })
+}
+
+// ── Balancer V2 ───────────────────────────────────────────────────
+
+/// Balancer V2 Vault Swap event: `Swap(bytes32 indexed poolId, address
+/// indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256
+/// amountOut)`. Hash verified against the Balancer V2 Vault contract.
+pub static BALANCER_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    crate::pool::decoders::BALANCER_SWAP_TOPIC.into()
+});
+
+/// Decode a Balancer V2 Vault Swap event.
+///
+/// The pool address is derived from the poolId (first 20 bytes of the
+/// bytes32 poolId). Token addresses are extracted from indexed topics.
+pub fn decode_balancer_swap(log: &Log) -> Option<TradeEvent> {
+    let topics = log.topics();
+    if topics.len() < 4 || topics[0] != *BALANCER_SWAP_TOPIC {
+        return None;
+    }
+    let data = &log.data().data;
+    if data.len() < 64 {
+        return None;
+    }
+    // poolId = first 20 bytes are the pool address, last 12 bytes are specialization
+    let pool = Address::from_slice(&topics[1][12..]);
+    let token_in = Address::from_slice(&topics[2][12..]);
+    let token_out = Address::from_slice(&topics[3][12..]);
+    let amount_in = U256::from_be_slice(&data[0..32]);
+    let amount_out = U256::from_be_slice(&data[32..64]);
+    if amount_in.is_zero() && amount_out.is_zero() {
+        return None;
+    }
+    Some(TradeEvent {
+        block: log.block_number?,
+        tx_hash: log.transaction_hash?,
+        tx_index: log.transaction_index,
+        log_index: log.log_index?,
+        pool,
+        token_in,
+        token_out,
+        amount_in,
+        amount_out,
+        dex_type: "balancer".to_string(),
+    })
+}
 
 // ── Curve ───────────────────────────────────────────────────────────
 
@@ -407,16 +489,25 @@ pub fn decode_aave_v3_liquidation(log: &Log) -> Option<LiquidationEvent> {
 }
 
 /// Decode a Uniswap V3 (or V4) Swap event log.
+///
+/// V3 amounts are signed int256: amount < 0 means the pool received that
+/// token (token in), amount > 0 means the pool paid out (token out). The
+/// decoder reports magnitudes; the larger absolute value is `amount_in`.
 pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
     if data.len() < 64 {
         return None;
     }
-    let amount_in_raw = U256::from_be_slice(&data[0..32]);
-    let amount_out_raw = U256::from_be_slice(&data[32..64]);
-    if amount_in_raw.is_zero() && amount_out_raw.is_zero() {
+    let a0 = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO);
+    let a1 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO);
+    if a0.is_zero() && a1.is_zero() {
         return None;
     }
+    let abs0 = a0.wrapping_abs();
+    let abs1 = a1.wrapping_abs();
+    let (amount_in, amount_out) = if abs0 >= abs1 { (abs0, abs1) } else { (abs1, abs0) };
+    let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
+    let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
     Some(TradeEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -425,8 +516,8 @@ pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
         pool,
         token_in: Address::ZERO,
         token_out: Address::ZERO,
-        amount_in: amount_in_raw,
-        amount_out: amount_out_raw,
+        amount_in,
+        amount_out,
         dex_type: "uniswap_v3".to_string(),
     })
 }
@@ -576,13 +667,23 @@ pub fn decode_metric_swap(log: &Log) -> Option<TradeEvent> {
 }
 
 /// Decode a Uniswap V2 Swap event log.
+///
+/// V2 event data: `amount0In, amount1In, amount0Out, amount1Out` — four
+/// uint256 words. Exactly one In and one Out are non-zero per swap.
 pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
-    if data.len() < 64 {
+    if data.len() < 128 {
         return None;
     }
-    let amount_in_raw = U256::from_be_slice(&data[0..32]);
-    let amount_out_raw = U256::from_be_slice(&data[32..64]);
+    let a0i = U256::from_be_slice(&data[0..32]);
+    let a1i = U256::from_be_slice(&data[32..64]);
+    let a0o = U256::from_be_slice(&data[64..96]);
+    let a1o = U256::from_be_slice(&data[96..128]);
+    let amount_in = a0i.max(a1i);
+    let amount_out = a0o.max(a1o);
+    if amount_in.is_zero() && amount_out.is_zero() {
+        return None;
+    }
     Some(TradeEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -591,22 +692,25 @@ pub fn decode_uniswap_v2_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
         pool,
         token_in: Address::ZERO,
         token_out: Address::ZERO,
-        amount_in: amount_in_raw,
-        amount_out: amount_out_raw,
+        amount_in,
+        amount_out,
         dex_type: "uniswap_v2".to_string(),
     })
 }
 
 /// Decode a Curve TokenExchange event log.
+///
+/// Data layout: `sold_id(int128), amount_sold(uint256), bought_id(int128),
+/// amount_bought(uint256)`. The `amount_bought` (token out) is at offset 96.
 pub fn decode_curve_exchange(log: &Log, pool: Address) -> Option<TradeEvent> {
     let data = &log.data().data;
-    let amount_in = if data.len() >= 32 {
+    let amount_in = if data.len() >= 64 {
         U256::from_be_slice(&data[32..64])
     } else {
         return None;
     };
-    let amount_out = if data.len() >= 96 {
-        U256::from_be_slice(&data[64..96])
+    let amount_out = if data.len() >= 128 {
+        U256::from_be_slice(&data[96..128])
     } else {
         U256::ZERO
     };
@@ -716,6 +820,17 @@ mod tests {
             V3_SWAP_TOPIC,
             b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
         );
+    }
+
+    /// Solidly topic must be the verified Velodrome V2 signature and must
+    /// NOT collide with the V2 topic (original Solidly V1 pairs share V2's).
+    #[test]
+    fn solidly_swap_topic_is_verified() {
+        assert_eq!(
+            *SOLIDLY_SWAP_TOPIC,
+            b256!("b3e2773606abfd36b5bd91394b3a54d1398336c65005baf7bf7a05efeffaf75b")
+        );
+        assert_ne!(*SOLIDLY_SWAP_TOPIC, V2_SWAP_TOPIC);
     }
 
     /// Regression guard: the V4 Swap topic must NOT equal the V3 topic.
@@ -832,6 +947,35 @@ mod tests {
     }
 
     #[test]
+    fn decode_solidly_swap_four_amount_layout() {
+        // Velodrome V2/Aerodrome: data = [amount0In, amount1In, amount0Out,
+        // amount1Out]; one token1-sized input, token0-sized output.
+        let a0_in = [0u8; 32];
+        let mut a1_in = [0u8; 32];
+        let mut a0_out = [0u8; 32];
+        let a1_out = [0u8; 32];
+        a1_in[24..32].copy_from_slice(&2_000_000u64.to_be_bytes());
+        a0_out[24..32].copy_from_slice(&1_960_000u64.to_be_bytes());
+        let log = make_log(
+            Address::ZERO,
+            vec![
+                *SOLIDLY_SWAP_TOPIC,
+                B256::ZERO, // sender
+                B256::ZERO, // to
+            ],
+            [a0_in, a1_in, a0_out, a1_out].concat(),
+        );
+        let evt = decode_solidly_swap(&log, Address::ZERO).unwrap();
+        assert_eq!(evt.dex_type, "solidly");
+        assert_eq!(evt.amount_in, U256::from(2_000_000u64));
+        assert_eq!(evt.amount_out, U256::from(1_960_000u64));
+
+        // Short payload (< 128 bytes) must be skipped, not panic.
+        let short = make_log(Address::ZERO, vec![*SOLIDLY_SWAP_TOPIC], vec![0u8; 96]);
+        assert!(decode_solidly_swap(&short, Address::ZERO).is_none());
+    }
+
+    #[test]
     fn decode_transfer_from_log() {
         let from_addr = b256!("000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let to_addr = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -840,7 +984,7 @@ mod tests {
             buf[24..32].copy_from_slice(&1000u64.to_be_bytes());
             buf
         };
-        let mut topics_vec = vec![TRANSFER_TOPIC, from_addr, to_addr];
+        let topics_vec = vec![TRANSFER_TOPIC, from_addr, to_addr];
         let data_bytes = alloy::primitives::Bytes::from(value_bytes.to_vec());
         let data = LogData::new_unchecked(topics_vec, data_bytes);
 

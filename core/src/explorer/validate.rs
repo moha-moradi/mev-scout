@@ -682,7 +682,7 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::address;
 
     fn store_with_fixtures() -> ExplorerStore {
         use alloy::primitives::{address as addr, b256 as b256f, U256 as U256t};

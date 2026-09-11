@@ -2749,7 +2749,7 @@ Status of each strategy in the MEV Scout codebase:
 - **Pool math**: Core CPMM, V3 sqrt-price, Curve StableSwap, Balancer weighted, Trader Joe LB, Pendle
 - **Detection filters**: FoT tokens, rebase tokens, V4 hook flags
 
-**Recent backtest run** (`results/run_1783523729.json`):
+**Recent backtest run** (run `1783523729`, stored in SQLite `run_manifests`):
 - Chain: Polygon | Blocks: 89,878,932–89,879,031 (100 blocks)
 - Strategies: two_hop_arb, multi_hop_arb, jit, jit_arb, sandwich, liquidation
 - Result: 0 opportunities detected (range may not have had live opportunities)

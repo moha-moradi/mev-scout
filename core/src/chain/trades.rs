@@ -7,13 +7,14 @@ use alloy::primitives::{Address, B256};
 use alloy::rpc::types::Log;
 
 use super::events::{
-    decode_curve_exchange, decode_fluid_swap, decode_infinity_cl_swap,
-    decode_metric_swap, decode_pendle_swap, decode_trader_joe_lb_swap, decode_uniswap_v2_swap,
+    decode_balancer_swap, decode_curve_exchange, decode_fluid_swap, decode_infinity_cl_swap,
+    decode_metric_swap, decode_pendle_swap, decode_solidly_swap,
+    decode_trader_joe_lb_swap, decode_uniswap_v2_swap,
     decode_uniswap_v3_swap, decode_uniswap_v4_swap, TradeEvent,
-    CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC, FLUID_DEX_SWAP_TOPIC,
-    INF_CL_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_MARKET_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
-    TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRADER_JOE_LB_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
-    V4_SWAP_TOPIC,
+    BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+    FLUID_DEX_SWAP_TOPIC, INF_CL_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_MARKET_SWAP_TOPIC,
+    SOLIDLY_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRADER_JOE_LB_SWAP_TOPIC,
+    V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use super::scanner::LogScanner;
 use crate::rpc::RpcClient;
@@ -26,6 +27,7 @@ pub fn trade_topics() -> Vec<B256> {
         *V4_SWAP_TOPIC,
         *INF_CL_SWAP_TOPIC,
         *SOLIDLY_SWAP_TOPIC,
+        *BALANCER_SWAP_TOPIC,
         *TRADER_JOE_LB_SWAP_TOPIC,
         *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
         *PENDLE_MARKET_SWAP_TOPIC,
@@ -75,8 +77,14 @@ fn decode_trade_log(log: &Log) -> Option<TradeEvent> {
     if **topic == *PENDLE_MARKET_SWAP_TOPIC {
         return decode_pendle_swap(log, pool);
     }
-    if **topic == V3_SWAP_TOPIC || **topic == *SOLIDLY_SWAP_TOPIC {
+    if **topic == V3_SWAP_TOPIC {
         return decode_uniswap_v3_swap(log, pool);
+    }
+    if **topic == *SOLIDLY_SWAP_TOPIC {
+        return decode_solidly_swap(log, pool);
+    }
+    if **topic == *BALANCER_SWAP_TOPIC {
+        return decode_balancer_swap(log);
     }
     // V4 swaps emit from the singleton PoolManager; the decoder recovers the
     // synthetic pool key from the bytes32 poolId in topics[1].
@@ -107,6 +115,6 @@ mod tests {
 
     #[test]
     fn trade_topics_count() {
-        assert_eq!(trade_topics().len(), 12);
+        assert_eq!(trade_topics().len(), 13);
     }
 }

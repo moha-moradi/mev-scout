@@ -45,7 +45,6 @@ run when the extras differ.
 - `ensure_gate_and_rpc(tag)` — `MEV_SCOUT_E2E` gate + RPC probe; `None` → SKIP.
 - `run_timed(cmd, timeout)` — spawn with timeout + kill; returns captured IO.
 - `make_cfg(ws, extras)` / `repo_config_str()` — config file from repo TOML.
-- `newest_json_file(dir, prefix)` — newest `<prefix>*.json` by mtime.
 - `extract_json_array(s)` — ANSI-tolerant JSON array extraction (tracing INFO
   lines share the process stdout, so JSON output is rarely "pure").
 - `parse_receipt_match_pct(line)` — parse the replay match percentage.

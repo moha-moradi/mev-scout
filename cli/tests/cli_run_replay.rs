@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, make_cfg, newest_json_file, run_timed, rpc_lock, scout,
+    ensure_gate_and_rpc, expect_ok, make_cfg, run_timed, rpc_lock, scout,
     HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use serde_json::Value;
@@ -38,8 +38,6 @@ fn fetch_run_replay_report_chain() {
     };
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
-    let results = ws.join("results");
-    let results_s = results.to_str().unwrap();
 
     let fetch_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
@@ -53,22 +51,25 @@ fn fetch_run_replay_report_chain() {
 
     let run_cfg = make_cfg(
         &ws,
-        &[("db_path", db_s), ("export_path", results_s), ("output", "\"json\"")],
+        &[("db_path", db_s), ("output", "\"json\"")],
     );
     let mut c = scout(&ws);
     c.args(["-f", &run_cfg, "run", "--blocks", "5"]);
     let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("run spawn failed");
     expect_ok(&out, "run 5 blocks");
 
-    let run_file = newest_json_file(&results, "run_")
-        .expect("run must export run_*.json under export path");
-    let content = std::fs::read_to_string(&run_file).unwrap();
-    let results_json: Value = serde_json::from_str(&content).expect("run_*.json must parse");
+    // Read run history from SQLite via report
+    let report_json_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
+    let mut c = scout(&ws);
+    c.args(["-f", &report_json_cfg, "report"]);
+    let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report json spawn failed");
+    expect_ok(&out, "report json from sqlite");
+    let results_json: Value =
+        serde_json::from_str(out.stdout.trim()).expect("report --output json must print pure JSON");
     assert_eq!(
         results_json["chain"].as_str(),
         Some("polygon"),
-        "chain mismatch in {}",
-        run_file.display()
+        "chain mismatch in report"
     );
     let start_block = results_json["start_block"]
         .as_u64()
@@ -113,7 +114,7 @@ fn fetch_run_replay_report_chain() {
         }
     }
 
-    let tab_cfg = make_cfg(&ws, &[("export_path", results_s)]);
+    let tab_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args(["-f", &tab_cfg, "report"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report table spawn failed");
@@ -121,19 +122,7 @@ fn fetch_run_replay_report_chain() {
     assert!(out.stdout.contains("Run ID:"), "table output lacks Run ID");
     assert!(out.stdout.contains("Chain:"), "table output lacks Chain");
 
-    let json_cfg = make_cfg(&ws, &[("export_path", results_s), ("output", "\"json\"")]);
-    let mut c = scout(&ws);
-    c.args(["-f", &json_cfg, "report"]);
-    let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report json spawn failed");
-    expect_ok(&out, "report json roundtrip");
-    let reparsed: Value =
-        serde_json::from_str(out.stdout.trim()).expect("report --output json must print pure JSON");
-    assert_eq!(
-        reparsed, results_json,
-        "report roundtrip must equal the exported run file"
-    );
-
-    let csv_cfg = make_cfg(&ws, &[("export_path", results_s), ("output", "\"csv\"")]);
+    let csv_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"csv\"")]);
     let mut c = scout(&ws);
     c.args(["-f", &csv_cfg, "report"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report csv spawn failed");
@@ -145,7 +134,8 @@ fn fetch_run_replay_report_chain() {
         out.stdout
     );
 
-    let tab_cfg2 = make_cfg(&ws, &[("export_path", results_s)]);
+    // Default (latest) report
+    let tab_cfg2 = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args(["-f", &tab_cfg2, "report"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report default-table spawn failed");

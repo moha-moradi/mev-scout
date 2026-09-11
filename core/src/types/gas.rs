@@ -10,7 +10,7 @@ use crate::dex_type::DexType;
 pub const MIN_CALIBRATION_SAMPLES: u32 = 30;
 /// Hop-count buckets are capped at this value (higher shapes fold in).
 const MAX_HOP_INDEX: usize = 8;
-/// Slack for all `DexType` discriminants (currently 0..=9).
+/// Slack for all `DexType` discriminants (currently 0..=12).
 const DEX_SLOTS: usize = 16;
 /// Hop slots: pool counts 0..=MAX_HOP_INDEX.
 const HOP_SLOTS: usize = MAX_HOP_INDEX + 1;

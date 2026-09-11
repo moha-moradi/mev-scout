@@ -141,14 +141,12 @@ fn test_config_builder() {
         .with_chain("ethereum")
         .with_output(OutputConfig {
             output: "json".into(),
-            export_path: "./out".into(),
             ..OutputConfig::default()
         })
         .build();
 
     assert_eq!(config.chain, "ethereum");
     assert_eq!(config.output.output, "json");
-    assert_eq!(config.output.export_path, "./out");
 
     // Unset fields keep defaults
     assert_eq!(config.gas.gas_limit, 200_000);

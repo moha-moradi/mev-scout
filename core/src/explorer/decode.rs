@@ -14,8 +14,7 @@
 //! (registry-free, chain-generic). Pool-registry lookups can enrich later but
 //! are not required for classification.
 
-use alloy::primitives::{Address, B256, U256};
-use std::sync::LazyLock;
+use alloy::primitives::{Address, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{Amm, JitFact, LiquidationFact, SwapFact, TransferFact};
@@ -26,15 +25,9 @@ use crate::chain::events::{
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-    FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, V3_BURN_TOPIC,
-    V3_MINT_TOPIC,
+    FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
+    V3_BURN_TOPIC, V3_MINT_TOPIC,
 };
-
-/// Solidly/Velodrome/Aerodrome Swap topic (`Swap(uint256,uint256,address,address)`),
-/// mirrored here from `chain::events` for local reference.
-pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    alloy::primitives::keccak256("Swap(uint256,uint256,address,address)")
-});
 
 /// Decode an ERC-20 Transfer fact from a receipt log.
 pub fn decode_transfer(log: &LogData) -> Option<TransferFact> {
@@ -180,10 +173,12 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
 
     if topic0 == BALANCER_SWAP_TOPIC {
         // topics: [sig, poolId, tokenIn, tokenOut]; data: amountIn, amountOut
+        // Pool address is the first 20 bytes of the bytes32 poolId.
         if log.topics.len() < 4 || log.data.len() < 64 {
             return None;
         }
-        let mut fact = base(Amm::Balancer, log.address);
+        let pool = Address::from_slice(&log.topics[1].as_slice()[12..]);
+        let mut fact = base(Amm::Balancer, pool);
         fact.token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
         fact.token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
         fact.amount_in = U256::from_be_slice(&log.data[0..32]);
@@ -191,20 +186,23 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         return Some((Amm::Balancer, fact));
     }
 
-    if topic0 == LB_SWAP_TOPIC {
-        // topics: [sig, sender, tokenIn, tokenOut]; data: amountIn, amountOut
-        if log.topics.len() < 4 || log.data.len() < 64 {
+    if topic0 == *LB_SWAP_TOPIC {
+        // LB 2.0: topics [sig, sender, to]; data = swapForY(bool), amountIn,
+        // amountOut, volatilityAccumulated, fees. Direction: swapForY = X→Y
+        // (token0 in), else Y→X (token1 in). Tokens resolve via transfer pairing.
+        if log.topics.len() < 3 || log.data.len() < 96 {
             return None;
         }
+        let swap_for_y = log.data[31] != 0;
         let mut fact = base(Amm::Lb, log.address);
-        fact.token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
-        fact.token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
-        fact.amount_in = U256::from_be_slice(&log.data[0..32]);
-        fact.amount_out = U256::from_be_slice(&log.data[32..64]);
+        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+        fact.amount_out = U256::from_be_slice(&log.data[64..96]);
+        fact.token_in = if swap_for_y { TOKEN0_SENTINEL } else { TOKEN1_SENTINEL };
+        fact.token_out = if swap_for_y { TOKEN1_SENTINEL } else { TOKEN0_SENTINEL };
         return Some((Amm::Lb, fact));
     }
 
-    if topic0 == PENDLE_SWAP_TOPIC {
+    if topic0 == *PENDLE_SWAP_TOPIC {
         // topics: [sig, caller, receiver]; data: int256 netPt, int256 netSy, ...
         if log.topics.len() < 3 || log.data.len() < 64 {
             return None;
@@ -263,21 +261,23 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     }
 
     if topic0 == *SOLIDLY_SWAP_TOPIC {
-        // Solidly/Velodrome pool Swap(uint256,uint256,address,address):
-        // data carries (amount0In, amount1In, amount0Out, amount1Out) packed
-        // as two uint256 pairs in stable/volatile variants; treat like V2
-        // magnitudes via transfer pairing for direction.
-        if log.data.len() < 64 {
+        // Velodrome V2/Aerodrome: topics [sig, sender, to]; data =
+        // [amount0In, amount1In, amount0Out, amount1Out] — the same
+        // four-amount layout as Uniswap V2's Swap data. Direction is
+        // resolved via transfer pairing, exactly like V2.
+        if log.data.len() < 128 {
             return None;
         }
-        let a0 = U256::from_be_slice(&log.data[0..32]);
-        let a1 = U256::from_be_slice(&log.data[32..64]);
-        if a0.is_zero() && a1.is_zero() {
+        let a0i = U256::from_be_slice(&log.data[0..32]);
+        let a1i = U256::from_be_slice(&log.data[32..64]);
+        let a0o = U256::from_be_slice(&log.data[64..96]);
+        let a1o = U256::from_be_slice(&log.data[96..128]);
+        if a0i.is_zero() && a1i.is_zero() && a0o.is_zero() && a1o.is_zero() {
             return None;
         }
         let mut fact = base(Amm::Solidly, log.address);
-        fact.amount_in = a0;
-        fact.amount_out = a1;
+        fact.amount_in = a0i.max(a1i);
+        fact.amount_out = a0o.max(a1o);
         return Some((Amm::Solidly, fact));
     }
 
@@ -377,8 +377,8 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
 /// the V3 sentinel direction when the paired transfer is unambiguous.
 pub fn attach_swap_tokens(swaps: &mut [SwapFact], transfers: &[TransferFact]) {
     for s in swaps.iter_mut() {
-        // Balancer/LB already carry explicit tokens from topics.
-        if s.amm == Amm::Balancer || s.amm == Amm::Lb {
+        // Balancer already carries explicit tokens from topics.
+        if s.amm == Amm::Balancer {
             continue;
         }
         let mut token_in = Address::ZERO;
@@ -390,7 +390,7 @@ pub fn attach_swap_tokens(swaps: &mut [SwapFact], transfers: &[TransferFact]) {
             if dist < 0 && t.to == s.pool {
                 // nearest before
                 match best_in {
-                    Some(d) if d >= dist.abs() => {}
+                    Some(d) if d <= dist.abs() => {}
                     _ => {
                         best_in = Some(dist.abs());
                         token_in = t.token;
@@ -420,7 +420,7 @@ pub fn attach_swap_tokens(swaps: &mut [SwapFact], transfers: &[TransferFact]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, b256};
+    use alloy::primitives::{address, b256, B256};
 
     fn log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> LogData {
         LogData {

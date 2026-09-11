@@ -144,8 +144,9 @@ impl PoolManager {
             self.dirty_pools.insert(log.address);
             let topic0 = log.topics[0];
 
-            // V2 Swap
-            if topic0 == SWAP_TOPIC {
+            // V2 Swap (also Solidly-family pools: identical four-amount data
+            // layout, different topic0 — see `SOLIDLY_SWAP_TOPIC`).
+            if topic0 == SWAP_TOPIC || topic0 == *decoders::SOLIDLY_SWAP_TOPIC {
                 self.process_v2_swap_log(log);
                 continue;
             }
@@ -343,13 +344,20 @@ impl PoolManager {
             return;
         }
         if let Some(decoded) = decoders::decode_lb_swap(log) {
-            self.apply_lb_swap(
-                &log.address,
-                decoded.token_in,
-                decoded.token_out,
-                decoded.amount_in,
-                decoded.amount_out,
-            );
+            if let Some(PoolState::TraderJoeLB(state)) = self.pools.get(&log.address) {
+                let (token_in, token_out) = if decoded.swap_for_y {
+                    (state.info.token0, state.info.token1)
+                } else {
+                    (state.info.token1, state.info.token0)
+                };
+                self.apply_lb_swap(
+                    &log.address,
+                    token_in,
+                    token_out,
+                    decoded.amount_in,
+                    decoded.amount_out,
+                );
+            }
         }
     }
 

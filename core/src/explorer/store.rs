@@ -17,6 +17,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::explorer::types::{MevEvent, MevKind};
+use crate::types::{MevOpportunity, Strategy};
 
 /// One persisted realized-MEV operation row (`mev_ops`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -793,6 +794,123 @@ impl ExplorerStore {
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Reconstruct the `MevOpportunity` list recorded for a run id
+    /// (SQLite-backed `report`). Rows whose strategy string cannot be parsed
+    /// are skipped with a warning. Fields not persisted in the `opportunities`
+    /// table (raw/slippage profit variants, JIT tick bounds, sandwich
+    /// victim/backrun indices) come back as defaults.
+    pub fn opportunities_by_run(&self, run_id: &str) -> anyhow::Result<Vec<MevOpportunity>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT block_number, tx_index, strategy, pool_a, pool_b,
+                    token_in, token_out, input_amount, expected_profit, gas_cost_wei,
+                    path, timestamp, mempool_only, confidence, sender, tx_hash,
+                    detection_path, canonical_id
+             FROM opportunities
+             WHERE run_id = ?1
+             ORDER BY block_number, tx_index",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![run_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)? as u64,
+                r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<i64>>(11)?.map(|v| v as u64),
+                r.get::<_, Option<i64>>(12)?.unwrap_or(0) != 0,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<String>>(14)?,
+                r.get::<_, Option<String>>(15)?,
+                r.get::<_, Option<String>>(16)?,
+                r.get::<_, Option<String>>(17)?,
+            ))
+        })?;
+        let parse_addr =
+            |s: &Option<String>| s.as_deref().and_then(|v| v.parse().ok()).unwrap_or(Address::ZERO);
+        let mut out = Vec::new();
+        for row in rows {
+            let (
+                block_number,
+                tx_index,
+                strategy_str,
+                pool_a,
+                pool_b,
+                token_in,
+                token_out,
+                input_amount,
+                expected_profit,
+                gas_cost_wei,
+                path,
+                timestamp,
+                mempool_only,
+                confidence,
+                sender,
+                tx_hash,
+                detection_path,
+                canonical_id,
+            ) = row?;
+            let strategy = match strategy_str.parse::<Strategy>() {
+                Ok(s) => s,
+                Err(_) => {
+                    tracing::warn!(
+                        "opportunities_by_run: skipping row with unknown strategy '{strategy_str}'"
+                    );
+                    continue;
+                }
+            };
+            out.push(MevOpportunity {
+                canonical_id,
+                block_number,
+                tx_index: tx_index.unwrap_or(0),
+                strategy,
+                pool_a: parse_addr(&pool_a),
+                pool_b: parse_addr(&pool_b),
+                token_in: parse_addr(&token_in),
+                token_out: parse_addr(&token_out),
+                input_amount: input_amount
+                    .as_deref()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(U256::ZERO),
+                expected_profit: expected_profit
+                    .as_deref()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(U256::ZERO),
+                raw_profit: None,
+                profit_slippage_p1: None,
+                profit_slippage_m1: None,
+                profit_slippage_p2: None,
+                profit_slippage_m2: None,
+                gas_cost_wei: gas_cost_wei
+                    .as_deref()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                timestamp: timestamp.unwrap_or(0),
+                path: path.and_then(|p| {
+                    let parsed: Vec<Address> =
+                        p.split(',').filter_map(|a| a.parse().ok()).collect();
+                    (!parsed.is_empty()).then_some(parsed)
+                }),
+                tick_lower: None,
+                tick_upper: None,
+                liquidity_amount: None,
+                victim_tx_index: None,
+                backrun_tx_index: None,
+                mempool_only,
+                confidence: confidence.as_deref().and_then(|v| v.parse().ok()),
+                sender: sender.as_deref().and_then(|v| v.parse().ok()),
+                tx_hash: tx_hash.as_deref().and_then(|v| v.parse().ok()),
+                detection_path,
+            });
         }
         Ok(out)
     }

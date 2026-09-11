@@ -4,7 +4,7 @@ An MEV opportunity scanner & backtester for EVM chains (primary target: Polygon)
 Two crates:
 
 - **`core/`** — `mev-scout-core`: all engine logic (fetching, replay, detection, caching).
-- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 10 subcommands. Parses args, loads config, dispatches to core.
+- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 11 subcommands. Parses args, loads config, dispatches to core.
 
 ---
 
@@ -14,7 +14,7 @@ Two crates:
 flowchart TB
     subgraph CLI["mev-scout-cli (binary: mev-scout)"]
         MAIN["main.rs<br/>parse args · load config · logging"]
-        CLIDEF["cli.rs<br/>clap: 10 subcommands + BlockRange args"]
+        CLIDEF["cli.rs<br/>clap: 11 subcommands + BlockRange args"]
         DISPATCH["commands/mod.rs<br/>CliCommand trait → dispatch"]
         UI["display.rs · overrides.rs · rpc_setup.rs<br/>tables · config merge · RPC init"]
     end
@@ -46,6 +46,10 @@ flowchart TB
             CHAIN["chain<br/>trades · transfers · flashloans<br/>liquidations · labels"]
         end
 
+        subgraph EXPLORE["Realized-MEV explorer"]
+            EXPL["explorer<br/>ingest · decode · classify · profit<br/>store (own SQLite) · validate · reject"]
+        end
+
         subgraph SUPPORT["Support"]
             CFG["config<br/>TOML settings + validation"]
             TYPES["types<br/>MevOpportunity · Strategy · GasConfig · ResultsFile"]
@@ -63,6 +67,7 @@ flowchart TB
     DISPATCH --> CHAIN
     DISPATCH --> POOL
     DISPATCH --> PIPE
+    DISPATCH --> EXPL
 
     RESOLVER --> RPC
     FETCH --> RPC
@@ -75,6 +80,8 @@ flowchart TB
     MEV --> POOL
     POOL --> RPC
     POOL --> CACHE
+    EXPL --> RPC
+    PIPE -. "record-rejections" .-> EXPL
     CHAIN --> RPC
     CFG --> TYPES
     PIPE --> TYPES
@@ -86,6 +93,7 @@ flowchart TB
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
 - `cache` (SQLite) is the local-first backbone — fetch stores blocks there; replay and the runner read from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, log scans, and replay's on-demand state misses (via `CachedRpcDb`).
+- `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`explorer_{chain}.sqlite`) so backfill writes never contend with replay-path cache reads; `run`/`live` with `--record-rejections` feed rejected candidates into it.
 
 ---
 
@@ -103,6 +111,7 @@ flowchart TB
 | `replay` | Debug a single block through revm | yes (fallback calls) | — |
 | `report` | Re-render a saved run's JSON | no | — |
 | `config` | Print fully-resolved TOML | no | — |
+| `explorer` | Realized-MEV forensics (index/feed/stats/top/show/explain/validate/export) | yes (logs; optional traces) | Explorer SQLite store |
 
 ---
 
@@ -113,7 +122,7 @@ flowchart TB
 The main pipeline. Everything is cached first, then replayed and detected.
 
 ```
-mev-scout run --days 7 [--batch-rpc]
+mev-scout run --days 7 [--batch-rpc] [--record-rejections]
 ```
 
 ```mermaid
@@ -136,7 +145,7 @@ flowchart TB
     N -- yes --> O["prefetch_aave_reserves<br/>(for LiquidationDetector)"]
     N -- no --> P
     O --> P["runner.run_range<br/>per block: filtered revm replay<br/>→ detectors → MevOpportunities"]
-    P --> Q["ResultsFile → export JSON<br/>render results table<br/>render block summary table"]
+    P --> Q["ResultsFile → export JSON<br/>render results table<br/>render block summary table<br/>(--record-rejections: rejected<br/>candidates → explorer store)"]
 ```
 
 Inside `run_range` — per block:
@@ -154,7 +163,7 @@ flowchart LR
 
 ### 3.2 `live` — real-time streaming detection
 
-Same engine, one-shot or continuous polling (`--loop [--duration 1h] [--poll-interval-ms 2000]`).
+Same engine, one-shot or continuous polling (`--loop [--duration 1h] [--poll-interval-ms 2000]`); `--record-rejections` persists rejected candidates to the explorer store.
 
 ```mermaid
 flowchart TB
@@ -335,7 +344,7 @@ flowchart TB
 
 ### 3.9 `report` — re-render saved results
 
-Offline. Reads a `ResultsFile` JSON written by `run`/`live` and re-renders it — no chain access.
+Offline. Reads run history from the SQLite stores — the `run_manifests` table (cache DB) for run metadata and the `opportunities`/`rejected_candidates` tables (explorer DB) — and re-renders them — no chain access.
 
 ```
 mev-scout report [--run-id run_1717...]
@@ -343,15 +352,15 @@ mev-scout report [--run-id run_1717...]
 
 ```mermaid
 flowchart LR
-    A["export dir from config<br/>(output.export_path)"] --> B{"--run-id given?"}
-    B -- no --> C["pick newest *.json<br/>(by file creation time)"]
-    B -- yes --> D["{run_id}.json"]
-    C --> E["read + parse ResultsFile"]
+    A["cache DB<br/>(run_manifests)"] --> B{"--run-id given?"}
+    B -- no --> C["pick latest run<br/>(by resolved_at)"]
+    B -- yes --> D["row for run_id"]
+    C --> E["manifest metadata"]
     D --> E
     E --> F{"output format"}
     F -- table --> G["run header +<br/>render_results_table"]
     F -- csv --> H["CSV rows:<br/>block, tx_index, strategy,<br/>input, profit, gas, confidence"]
-    F -- json --> I["pretty-print full file"]
+    F -- json --> I["pretty-print full run"]
 ```
 
 ### 3.10 `config` — print resolved config
@@ -365,6 +374,37 @@ mev-scout config [-f custom.toml] [--verbose]
 ```mermaid
 flowchart LR
     A["main.rs: load -f file,<br/>mev-scout.toml, or defaults"] --> B["merge CLI overrides<br/>(overrides.rs)"] --> C["to_toml_string → stdout"]
+```
+
+### 3.11 `explorer` — realized-MEV forensics
+
+Forensic reconstruction of MEV that was actually extracted on-chain — the counterpart to the scanner's simulated opportunities. Pipeline: `ingest` (block+receipt fetch, reorg-aware, resumable) → `decode` (swaps, transfers, liquidation facts) → `classify` (per-block pattern passes) → `profit` (token balance-delta accounting, gas, USD) → `store` (dedicated SQLite, `explorer_{chain}.sqlite`) → query surface below. Also ingests scanner `ResultsFile` opportunities and (via `run`/`live --record-rejections`) rejected candidates, enabling cross-validation and miss-cause attribution.
+
+```
+mev-scout explorer doctor
+mev-scout explorer index [--from N --to N | --days N] [--live [--duration DURATION]]
+mev-scout explorer live-feed [--kinds KINDS] [--min-profit-usd USD] [--duration DURATION]
+mev-scout explorer stats [--since 1d|7d|30d|all] [--kind KIND]
+mev-scout explorer top --by sender|token|pool --metric profit|ops [--since WINDOW]
+mev-scout explorer show <TX_HASH> [--trace]
+mev-scout explorer explain <TX_HASH>
+mev-scout explorer validate [--since WINDOW] [--match-window N] [--threshold-sweep]
+mev-scout explorer export --format json|csv [--out FILE]
+```
+
+```mermaid
+flowchart TB
+    A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer_{chain}.sqlite, WAL)"]
+    B --> C{"subcommand"}
+    C -- doctor --> D["probe every provider:<br/>latest · archive · bulk-receipts · traces"]
+    C -- index --> E["ingest: backfill range or --live<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
+    E --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
+    C -- "live-feed" --> G["tail of mev_ops<br/>(--kinds, --min-profit-usd, poll)"]
+    C -- "stats / top" --> H["pure SQL aggregates:<br/>op counts · profit · daily · leaderboards"]
+    C -- "show / explain" --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)<br/>explain: rejected candidates + miss cause"]
+    C -- validate --> J["realized ground truth vs run/live<br/>tiered recall · miss taxonomy · sweep"]
+    C -- export --> K["bulk json|csv"]
+    F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
 ---
@@ -385,6 +425,7 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 
 | Artifact | Produced by | Consumed by |
 |---|---|---|
-| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, manifests) | `run`, `live`, `fetch`, `discover`, `validate-pools` | `run`, `live`, `replay`, `discover` (incremental), `tokens` |
-| `results/*.json` (`run_{epoch}` / `live_{epoch}`) | `run`, `live` | `report` |
+| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `fetch`, `discover`, `validate-pools` | `run`, `live`, `replay`, `discover` (incremental), `tokens`, `report` (manifests) |
+| Explorer store `explorer_{chain}.sqlite` — run results layer: `opportunities` rows (one per detection) | `run`, `live` | `report` (SQLite-backed; results live only in the DB, no JSON files) |
+| Explorer store `explorer_{chain}.sqlite` (blocks, txs, transfers, swaps, `mev_ops`, opportunities, rejected_candidates, sync_state) | `explorer index`, `run`/`live` (opportunities; rejected candidates with `--record-rejections`) | `explorer` (live-feed, stats, top, show, explain, validate, export) |
 | Signature DB (4byte directory snapshot) | `fetch` (unless `--no-sig-resolve`) | tx decoding |

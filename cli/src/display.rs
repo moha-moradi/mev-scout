@@ -32,23 +32,9 @@ pub fn print_startup_plan(result: &validation::ValidationResult, config: &Config
     println!();
 }
 
-pub fn save_results_json(
-    export_path: &str,
-    run_id: &str,
-    results_file: &ResultsFile,
-) -> anyhow::Result<()> {
-    let dir = std::path::Path::new(export_path);
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("{}.json", run_id));
-    let json = serde_json::to_string_pretty(results_file)?;
-    std::fs::write(&path, json)?;
-    println!("Results saved to {}", path.display());
-    Ok(())
-}
-
 /// Persist run/live results into the explorer store's `opportunities` table
-/// (plan §9.2/Phase 1: the results layer feeds `explorer validate`). The JSON
-/// export above stays the primary artifact; failures here warn only.
+/// (plan §9.2/Phase 1: the results layer feeds `explorer validate`). The
+/// execution history lives only in SQLite; failures here warn only.
 pub fn persist_opportunities_to_explorer(
     config: &Config,
     chain: mev_scout_core::types::ChainName,

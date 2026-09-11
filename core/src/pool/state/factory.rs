@@ -279,8 +279,10 @@ impl PoolManager {
                     Some(PoolState::Balancer(b)) => (*addr, DexType::Balancer, None, 0, None, true, b.info.balancer_pool_type),
                     Some(PoolState::TraderJoeLB(s)) => (*addr, DexType::TraderJoeLB, None, 0i32, s.info.factory, true, None),
                     Some(PoolState::Pendle(s)) => (*addr, DexType::Pendle, None, 0i32, s.info.factory, true, None),
-                    Some(PoolState::Metric(s)) => (*addr, DexType::Metric, None, 0i32, s.info.factory, true, None),
-                    Some(PoolState::Fluid(s)) => (*addr, DexType::Fluid, None, 0i32, s.info.factory, true, None),
+                    // Metric/Fluid are log-only flow-tracking pools; fetch_pool_state
+                    // returns None for them, so skip init RPC tasks entirely.
+                    Some(PoolState::Metric(s)) => (*addr, DexType::Metric, None, 0i32, s.info.factory, false, None),
+                    Some(PoolState::Fluid(s)) => (*addr, DexType::Fluid, None, 0i32, s.info.factory, false, None),
                     None => (*addr, DexType::UniswapV2, None, 0, None, false, None),
                 })
                 .collect();

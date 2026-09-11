@@ -17,10 +17,9 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, newest_json_file, run_timed,
+    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, run_timed,
     rpc_lock, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
-use serde_json::Value;
 use std::time::Duration;
 
 /// 10-minute cap for the whole-file heavy helpers (kept below HEAVY_TIMEOUT).
@@ -530,8 +529,6 @@ fn batch_rpc_smokes_run_and_fetch() {
         return;
     };
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
-    let results = ws.join("results");
-    let results_s = results.to_str().unwrap();
 
     let fetch_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
     let mut c = scout(&ws);
@@ -543,16 +540,20 @@ fn batch_rpc_smokes_run_and_fetch() {
 
     let run_cfg = make_cfg(
         &ws,
-        &[("db_path", &db_s), ("export_path", results_s), ("output", "\"json\"")],
+        &[("db_path", &db_s), ("output", "\"json\"")],
     );
     let mut c = scout(&ws);
     c.args(["-f", &run_cfg, "run", "--batch-rpc", "--blocks", "2"]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "run --batch-rpc") {
         expect_ok(&out, "run --batch-rpc 2 blocks");
-        assert!(
-            newest_json_file(&results, "run_").is_some(),
-            "batch-rpc run must still export run_*.json"
-        );
+        // Verify history is in SQLite via report
+        let report_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
+        let mut c2 = scout(&ws);
+        c2.args(["-f", &report_cfg, "report"]);
+        if let Some(out2) = tolerant(run_timed(&mut c2, common::TEST_TIMEOUT), "report after batch-rpc run") {
+            expect_ok(&out2, "report after batch-rpc run");
+            assert!(out2.stdout.contains("Run ID:"), "report should contain Run ID");
+        }
     }
 }
 
@@ -563,13 +564,10 @@ fn replay_tx_index_zero_smoke() {
         return;
     };
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
-    let out_dir = ws.join("tmp_out");
-    std::fs::create_dir_all(&out_dir).unwrap();
     let cfg = make_cfg(
         &ws,
         &[
             ("db_path", &db_s),
-            ("export_path", out_dir.to_str().unwrap()),
         ],
     );
 
@@ -588,14 +586,19 @@ fn replay_tx_index_zero_smoke() {
     };
     expect_ok(&out, "run for replay block");
 
-    // Resolve the fetched block number from the exported run file written to
-    // `export_path` by the `run` above.
-    let exported = newest_json_file(&out_dir, "run_");
-    let block: Option<u64> = exported.as_deref().and_then(|p| {
-        let content = std::fs::read_to_string(p).ok()?;
-        let v: Value = serde_json::from_str(&content).ok()?;
-        v["start_block"].as_u64()
-    });
+    // Resolve the fetched block number from the run history in SQLite
+    // via report --output json.
+    let report_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
+    let mut c2 = scout(&ws);
+    c2.args(["-f", &report_cfg, "report"]);
+    let report_out = run_timed(&mut c2, common::TEST_TIMEOUT)
+        .expect("report after run for replay block");
+    let block: Option<u64> = report_out
+        .stdout
+        .lines()
+        .next()
+        .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .and_then(|v| v["start_block"].as_u64());
     let Some(block) = block else {
         eprintln!("SKIP: could not resolve a fetched block number for replay --tx-index");
         return;

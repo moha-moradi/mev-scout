@@ -32,4 +32,21 @@ impl super::SqliteStore {
             None => Ok(None),
         }
     }
+
+    /// Most recent run by resolution time (ties broken by insert order).
+    /// Powers the `report` default "latest run" selection from SQLite.
+    pub fn latest_manifest(&self) -> anyhow::Result<Option<RunManifest>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider
+             FROM run_manifests
+             ORDER BY resolved_at DESC, rowid DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(super::row_to_manifest(&row)?)),
+            None => Ok(None),
+        }
+    }
 }

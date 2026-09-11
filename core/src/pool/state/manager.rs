@@ -349,9 +349,11 @@ impl PoolManager {
                 continue;
             }
             let topic0 = log.topics[0];
-            if topic0 == SWAP_TOPIC {
+            if topic0 == SWAP_TOPIC || topic0 == *decoders::SOLIDLY_SWAP_TOPIC {
                 // V2-family Swap (also Solidly/Camelot stable pools): tokens
                 // come from pool info, declared amounts from event data.
+                // Solidly-family pools emit `SOLIDLY_SWAP_TOPIC` but share
+                // the same four-amount data layout as Uniswap V2.
                 let Some(info) = self.pools.get(&log.address).map(|p| p.info().clone()) else {
                     continue;
                 };
@@ -438,20 +440,31 @@ impl PoolManager {
                 ));
                 continue;
             }
-            if topic0 == decoders::LB_SWAP_TOPIC {
+            if topic0 == *decoders::LB_SWAP_TOPIC {
                 let Some(d) = decoders::decode_lb_swap(log) else {
+                    continue;
+                };
+                let (token_in, token_out) = if let Some(PoolState::TraderJoeLB(state)) =
+                    self.pools.get(&log.address)
+                {
+                    if d.swap_for_y {
+                        (state.info.token0, state.info.token1)
+                    } else {
+                        (state.info.token1, state.info.token0)
+                    }
+                } else {
                     continue;
                 };
                 declarations.push((
                     log.address,
-                    Some(d.token_in),
+                    Some(token_in),
                     d.amount_in,
-                    Some(d.token_out),
+                    Some(token_out),
                     d.amount_out,
                 ));
                 continue;
             }
-            if topic0 == decoders::PENDLE_SWAP_TOPIC {
+            if topic0 == *decoders::PENDLE_SWAP_TOPIC {
                 let Some(d) = decoders::decode_pendle_swap(log) else {
                     continue;
                 };

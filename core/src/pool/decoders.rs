@@ -2,7 +2,7 @@
 
 use std::sync::LazyLock;
 
-use alloy::primitives::{b256, keccak256, Address, B256, U256};
+use alloy::primitives::{b256, keccak256, Address, B256, I256, U256};
 
 use crate::data::ExecutedLog;
 use crate::utils::u128_from_be_bytes;
@@ -26,13 +26,30 @@ pub const CURVE_V2_TOKEN_EXCHANGE_TOPIC: B256 =
 pub const BALANCER_SWAP_TOPIC: B256 =
     b256!("fb412c811a17d1a8ad0ecab229fb91d821f5bbe210a5a6feae3dc626faf608d1");
 
-/// Trader Joe V2 LB: Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed tokenIn, address indexed tokenOut)
-pub const LB_SWAP_TOPIC: B256 =
-    b256!("471ecc56e700fb8a2507cd80eddcee4766779c9c463acc6e95754876cad5a351");
+/// Trader Joe LB 2.0/2.2: Swap(address indexed sender, address indexed to,
+/// bool swapForY, uint256 amountIn, uint256 amountOutX, uint256 amountOutY,
+/// uint256 totalFee, uint256 flashParameter).  Hash verified against the
+/// canonical LB 2.0 signature `Swap(address,address,uint256,bool,uint256,
+/// uint256,uint256,uint256)`.
+pub static LB_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    *crate::chain::events::TRADER_JOE_LB_SWAP_TOPIC
+});
 
-/// Pendle Market: Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)
-pub const PENDLE_SWAP_TOPIC: B256 =
-    b256!("a98cde8f489864e7d7a5c03592c98faaf8e6761ef998532b4be69213f5f41047");
+/// Pendle V2 Market Swap topic. Matches the canonical Pendle V2 signature
+/// `Swap(address indexed caller, address indexed receiver, int256
+/// netPtToAccount, int256 netSyToAccount, uint256 netSyFee, uint256
+/// netSyToReserve)`.
+pub static PENDLE_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    *crate::chain::events::PENDLE_MARKET_SWAP_TOPIC
+});
+
+/// Velodrome V2/Aerodrome pool Swap topic (`Swap(address,address,uint256,
+/// uint256,uint256,uint256)` — verified against velodrome-finance/contracts
+/// `IPool.sol`). Data layout is the same four-amount word sequence as the
+/// Uniswap V2 Swap event.
+pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    *crate::chain::events::SOLIDLY_SWAP_TOPIC
+});
 
 /// Fluid DEX pool: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to)
 /// (verified against Instadapp/fluid-contracts-public poolT1/coreModule/events.sol).
@@ -241,69 +258,79 @@ pub fn decode_balancer_swap(log: &ExecutedLog) -> Option<BalancerSwapDecoded> {
 /// Result of decoding a Trader Joe LB Swap event.
 #[derive(Debug, Clone)]
 pub struct LBSwapDecoded {
-    /// Amount of tokenX entering the pool
+    /// Amount of the input token entering the pool.
     pub amount_in: u128,
-    /// Amount of tokenY leaving the pool (or vice versa)
+    /// Amount of the output token leaving the pool.
     pub amount_out: u128,
-    /// Token going into the pool
-    pub token_in: Address,
-    /// Token coming out of the pool
-    pub token_out: Address,
+    /// true = swapping token0 (X) for token1 (Y); false = Y for X.
+    pub swap_for_y: bool,
 }
 
-/// Attempt to decode a Trader Joe LB Swap event from an executed log.
+/// Attempt to decode a Trader Joe LB 2.0/2.2 Swap event from an executed log.
 ///
-/// Event: `Swap(address indexed sender, uint256 amountIn, uint256 amountOut, address indexed tokenIn, address indexed tokenOut)`
-/// Topics: [sig, sender, tokenIn, tokenOut]
-/// Data: [amountIn (32 bytes), amountOut (32 bytes)]
+/// LB 2.0 / 2.2 event (non-legacy): data layout is
+/// `[swapForY(bool), amountIn(uint256), amountOutX(uint256),
+/// amountOutY(uint256), totalFee(uint256), flashParameter(uint256)]`.
+/// Indexed topics: `[sig, sender, to]`.
 pub fn decode_lb_swap(log: &ExecutedLog) -> Option<LBSwapDecoded> {
     if log.topics.is_empty() || log.topics[0] != *LB_SWAP_TOPIC {
         return None;
     }
-    if log.topics.len() < 4 || log.data.len() < 64 {
+    if log.data.len() < 96 {
         return None;
     }
-    let token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
-    let token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
-    let amount_in = u128_from_be_bytes(&log.data[..32]);
-    let amount_out = u128_from_be_bytes(&log.data[32..64]);
+    let swap_for_y = log.data[31] != 0;
+    let amount_in = u128_from_be_bytes(&log.data[32..64]);
+    let amount_out = u128_from_be_bytes(&log.data[64..96]);
 
     Some(LBSwapDecoded {
         amount_in,
         amount_out,
-        token_in,
-        token_out,
+        swap_for_y,
     })
 }
 
-/// Result of decoding a Pendle Market Swap event.
+/// Result of decoding a Pendle V2 Market Swap event.
 #[derive(Debug, Clone)]
 pub struct PendleSwapDecoded {
     /// Whether the swap results in net PT outflow from the AMM
+    /// (netPtToAccount > 0).
     pub is_net_pt_out: bool,
-    /// Amount of token going into the AMM
+    /// Amount of the input token going into the AMM.
     pub amount_in: u128,
-    /// Amount of token coming out of the AMM
+    /// Amount of the output token coming out of the AMM.
     pub amount_out: u128,
 }
 
-/// Attempt to decode a Pendle Market Swap event from an executed log.
+/// Attempt to decode a Pendle V2 Market Swap event from an executed log.
 ///
-/// Event: `Swap(address indexed caller, bool isNetPtOut, uint256 amountIn, uint256 amountOut, address indexed receiver)`
-/// Topics: [sig, caller, receiver]
-/// Data: [isNetPtOut padded to 32 bytes, amountIn (32 bytes), amountOut (32 bytes)]
+/// V2 event: `Swap(address indexed caller, address indexed receiver, int256
+/// netPtToAccount, int256 netSyToAccount, uint256 netSyFee, uint256
+/// netSyToReserve)`. Topics: [sig, caller, receiver]. Data: 4 ABI words.
+///
+/// When netPtToAccount > 0 the user is buying PT (SY in, PT out);
+/// when < 0 the user is selling PT (PT in, SY out).
 pub fn decode_pendle_swap(log: &ExecutedLog) -> Option<PendleSwapDecoded> {
     if log.topics.is_empty() || log.topics[0] != *PENDLE_SWAP_TOPIC {
         return None;
     }
-    if log.topics.len() < 3 || log.data.len() < 96 {
+    if log.topics.len() < 3 || log.data.len() < 64 {
         return None;
     }
-    // isNetPtOut is ABI-encoded bool in first 32 bytes (rightmost byte = value)
-    let is_net_pt_out = log.data[31] != 0;
-    let amount_in = u128_from_be_bytes(&log.data[32..64]);
-    let amount_out = u128_from_be_bytes(&log.data[64..96]);
-
+    let net_pt = I256::try_from_be_slice(&log.data[0..32]).unwrap_or(I256::ZERO);
+    let net_sy = I256::try_from_be_slice(&log.data[32..64]).unwrap_or(I256::ZERO);
+    let is_net_pt_out = net_pt.is_positive();
+    let (amount_in, amount_out) = if is_net_pt_out {
+        (
+            net_sy.wrapping_abs().into_raw().to::<u128>(),
+            net_pt.into_raw().to::<u128>(),
+        )
+    } else {
+        (
+            net_pt.wrapping_abs().into_raw().to::<u128>(),
+            net_sy.into_raw().to::<u128>(),
+        )
+    };
     Some(PendleSwapDecoded {
         is_net_pt_out,
         amount_in,
@@ -367,11 +394,14 @@ pub fn decode_metric_swap(log: &ExecutedLog) -> Option<MetricSwapDecoded> {
         return None;
     }
     let exact_input = log.data[31] != 0;
-    let amount0_delta = i128::from_be_bytes(log.data[32..48].try_into().ok()?);
-    let amount1_delta = i128::from_be_bytes(log.data[64..80].try_into().ok()?);
+    // int128 values are ABI-encoded as 32-byte words; the value sits in the
+    // lower 16 bytes (right-aligned, sign-extended into the upper 16).
+    let amount0_delta = i128::from_be_bytes(log.data[48..64].try_into().ok()?);
+    let amount1_delta = i128::from_be_bytes(log.data[80..96].try_into().ok()?);
     // newTick is int16 sign-extended into its 32-byte word (rightmost 2 bytes).
     let new_tick = i16::from_be_bytes(log.data[126..128].try_into().ok()?);
-    let new_position_in_bin = u128_from_be_bytes(&log.data[160..192]);
+    // newPositionInBin is uint104 in the 5th ABI word (data[128..160]).
+    let new_position_in_bin = u128_from_be_bytes(&log.data[128..160]);
     Some(MetricSwapDecoded {
         exact_input,
         amount0_delta,
