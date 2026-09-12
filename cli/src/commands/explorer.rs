@@ -111,7 +111,10 @@ pub async fn cmd_doctor(config: &Config) -> anyhow::Result<()> {
         "traces",
         "rps",
     ]);
-    for (url, rps, archive_flag) in providers.iter() {
+    for p in providers.iter() {
+        let url = &p.url;
+        let rps = p.rps;
+        let archive_flag = p.archive;
         let shown = if url.len() > 40 {
             format!("{}..", &url[..38])
         } else {
@@ -127,7 +130,7 @@ pub async fn cmd_doctor(config: &Config) -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "x".into()),
             Err(_) => "x".into(),
         };
-        let archive = if *archive_flag { "config" } else { "n/a" };
+        let archive = if archive_flag { "config" } else { "n/a" };
         let bulk = match mev_scout_core::rpc::RpcClient::from_urls(&urls, chain.chain_id()) {
             Ok(c) => {
                 let tip = c.get_block_number().await.unwrap_or(0);

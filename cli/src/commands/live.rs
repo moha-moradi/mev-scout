@@ -9,7 +9,7 @@ use crate::display::{
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation::{self, ValidationResult};
-use mev_scout_core::config::Config;
+use mev_scout_core::config::{Config, ProviderConfig};
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::state::PoolManager;
@@ -110,7 +110,7 @@ async fn run_once(
     config: &Config,
     validation: &ValidationResult,
     rpc: &mev_scout_core::rpc::RpcClient,
-    provider_configs: &[(String, Option<f64>, bool)],
+    provider_configs: &[ProviderConfig],
     cache: &SqliteStore,
     pool_addresses: &[Address],
     args: &LiveArgs,
@@ -238,7 +238,7 @@ async fn run_loop(
     config: &Config,
     validation: &ValidationResult,
     rpc: &mev_scout_core::rpc::RpcClient,
-    provider_configs: &[(String, Option<f64>, bool)],
+    provider_configs: &[ProviderConfig],
     cache: &SqliteStore,
     pool_addresses: &[Address],
     args: &LiveArgs,

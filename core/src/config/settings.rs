@@ -282,6 +282,14 @@ impl Default for Config {
     }
 }
 
+/// One resolved RPC endpoint: URL, optional RPS limit, archive capability.
+#[derive(Clone, Debug)]
+pub struct ProviderConfig {
+    pub url: String,
+    pub rps: Option<f64>,
+    pub archive: bool,
+}
+
 impl Config {
     /// Effective explorer database path for the given chain.
     pub fn effective_explorer_db_path(&self, chain: &ChainName) -> String {
@@ -291,9 +299,7 @@ impl Config {
             self.explorer.db_path.clone()
         }
     }
-}
 
-impl Config {
     /// Parse a TOML configuration file from disk.
     pub fn load(path: &str) -> error::Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
@@ -426,11 +432,11 @@ impl Config {
     pub fn effective_provider_configs(
         &self,
         chain_name: ChainName,
-    ) -> error::Result<Vec<(String, Option<f64>, bool)>> {
+    ) -> error::Result<Vec<ProviderConfig>> {
         let urls = self.effective_rpc_urls().unwrap_or_default();
         if !urls.is_empty() {
             let public_endpoints = chain_name.public_rpc_endpoints();
-            let result: Vec<(String, Option<f64>, bool)> = urls
+            let result: Vec<ProviderConfig> = urls
                 .into_iter()
                 .enumerate()
                 .map(|(i, url)| {
@@ -441,14 +447,22 @@ impl Config {
                             .find(|e| url.contains(e.url) || e.url.contains(&url))
                             .map(|e| e.archive)
                             .unwrap_or(false);
-                        return (url, Some(r), archive);
+                        return ProviderConfig {
+                            url,
+                            rps: Some(r),
+                            archive,
+                        };
                     }
                     let (default_rps, archive) = public_endpoints
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
                         .map(|e| (Some(e.default_rps), e.archive))
                         .unwrap_or((Some(self.rpc.rps_limit), false));
-                    (url, default_rps, archive)
+                    ProviderConfig {
+                        url,
+                        rps: default_rps,
+                        archive,
+                    }
                 })
                 .collect();
             Ok(result)
@@ -461,7 +475,11 @@ impl Config {
             }
             Ok(public
                 .into_iter()
-                .map(|e| (e.url.to_string(), Some(e.default_rps), e.archive))
+                .map(|e| ProviderConfig {
+                    url: e.url.to_string(),
+                    rps: Some(e.default_rps),
+                    archive: e.archive,
+                })
                 .collect())
         }
     }
@@ -469,7 +487,7 @@ impl Config {
     /// Auto-calculate optimal `block_concurrency` from provider RPS limits.
     pub fn effective_block_concurrency(
         &self,
-        provider_configs: &[(String, Option<f64>, bool)],
+        provider_configs: &[ProviderConfig],
     ) -> usize {
         if let Some(bc) = self.rpc.block_concurrency {
             tracing::info!("block_concurrency: using explicit value {bc}");
@@ -482,7 +500,7 @@ impl Config {
 
         let min_rps = provider_configs
             .iter()
-            .filter_map(|(_, r, _)| *r)
+            .filter_map(|p| p.rps)
             .filter(|r| *r > 0.0)
             .fold(f64::INFINITY, f64::min);
 

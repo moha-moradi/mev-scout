@@ -64,7 +64,14 @@ impl<'a> ScanScope<'a> {
 ///
 /// `PoolManager` is the single source of truth for pool state during a run.
 /// An arbitrage pair is (pool A, pool B, token in).
-type ArbPair = (Address, Address, Address);
+/// One arbitrage candidate: two pools sharing `shared_token` as the hop token
+/// (`pool_a < pool_b` by address).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ArbPair {
+    pub pool_a: Address,
+    pub pool_b: Address,
+    pub shared_token: Address,
+}
 #[derive(Debug)]
 pub struct PoolManager {
     pub(crate) pools: HashMap<Address, PoolState>,
@@ -273,7 +280,11 @@ impl PoolManager {
                     let b = sorted[j];
                     let key = if a < b { (a, b) } else { (b, a) };
                     if seen.insert(key) {
-                        pairs.push((key.0, key.1, *_token));
+                        pairs.push(ArbPair {
+                            pool_a: key.0,
+                            pool_b: key.1,
+                            shared_token: *_token,
+                        });
                     }
                 }
             }
@@ -665,7 +676,7 @@ impl Clone for PoolManager {
         let cache = self
             .pairs_cache
             .lock()
-            .expect("pairs_cache mutex poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .clone();
         PoolManager {
             pools: self.pools.clone(),

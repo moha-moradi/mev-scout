@@ -4,7 +4,7 @@ pub mod validation;
 pub use defaults::{default_chains, ChainConfig};
 pub use settings::{
     BacktestConfig, BacktestOverrides, CliOverrides, Config, ConfigBuilder, GasConfig,
-    GasOverrides, OutputConfig, OutputOverrides, RpcConfig, RpcOverrides,
+    GasOverrides, OutputConfig, OutputOverrides, ProviderConfig, RpcConfig, RpcOverrides,
 };
 pub use validation::{
     resolve_block_range, resolve_chain, validate_and_resolve, validate_and_resolve_for,

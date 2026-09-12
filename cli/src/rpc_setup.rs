@@ -1,10 +1,10 @@
-use mev_scout_core::config::Config;
+use mev_scout_core::config::{Config, ProviderConfig};
 use mev_scout_core::rpc::RpcClient;
 use mev_scout_core::types::ChainName;
 
 pub struct RpcSetup {
     pub rpc: RpcClient,
-    pub provider_configs: Vec<(String, Option<f64>, bool)>,
+    pub provider_configs: Vec<ProviderConfig>,
 }
 
 pub async fn init_rpc(
@@ -16,20 +16,20 @@ pub async fn init_rpc(
     let chain_id = chain_name.chain_id();
     let rpc_refs: Vec<&str> = provider_configs
         .iter()
-        .map(|(u, _, _)| u.as_str())
+        .map(|p| p.url.as_str())
         .collect();
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
     rpc.with_provider_rps(
         &provider_configs
             .iter()
-            .map(|(_, r, _)| r.unwrap_or(config.rpc.rps_limit))
+            .map(|p| p.rps.unwrap_or(config.rpc.rps_limit))
             .collect::<Vec<_>>(),
     )
     .await;
     rpc.with_provider_archive(
         &provider_configs
             .iter()
-            .map(|(_, _, a)| *a)
+            .map(|p| p.archive)
             .collect::<Vec<_>>(),
     )
     .await;

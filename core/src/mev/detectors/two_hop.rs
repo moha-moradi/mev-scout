@@ -81,15 +81,15 @@ impl TwoHopArbDetector {
         let mut opportunities = Vec::new();
         let pairs = pool_manager.arbitrage_pairs();
 
-        for (pool_a, pool_b, shared_token) in pairs.iter() {
-            if !scope.contains_pair(pool_a, pool_b) {
+        for pair in pairs.iter() {
+            if !scope.contains_pair(&pair.pool_a, &pair.pool_b) {
                 continue;
             }
             if let Some(opp) = Self::check_direction(
                 pool_manager,
-                *pool_a,
-                *pool_b,
-                *shared_token,
+                pair.pool_a,
+                pair.pool_b,
+                pair.shared_token,
                 self.block_number,
                 tx_index,
                 timestamp,
@@ -103,9 +103,9 @@ impl TwoHopArbDetector {
             }
             if let Some(opp) = Self::check_direction(
                 pool_manager,
-                *pool_b,
-                *pool_a,
-                *shared_token,
+                pair.pool_b,
+                pair.pool_a,
+                pair.shared_token,
                 self.block_number,
                 tx_index,
                 timestamp,

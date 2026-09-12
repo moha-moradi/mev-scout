@@ -611,10 +611,10 @@ impl RpcClient {
 
     /// Distribute a block range across providers by effective weight.
     ///
-    /// Returns `Vec<(usize, u64, u64)>` — (provider_index, range_start, range_end).
-    /// Each provider receives blocks proportional to its effective weight
-    /// (RPS adjusted by observed latency via `effective_weight()`).
-    pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<(usize, u64, u64)> {
+    /// Returns one [`ProviderShard`] per available provider. Each provider
+    /// receives blocks proportional to its effective weight (RPS adjusted by
+    /// observed latency via `effective_weight()`).
+    pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<ProviderShard> {
         let total_blocks = end - start + 1;
         let provs = self.providers.lock().await;
         let alive: Vec<(usize, f64)> = provs
@@ -629,7 +629,11 @@ impl RpcClient {
         }
 
         if alive.len() == 1 {
-            return vec![(alive[0].0, start, end)];
+            return vec![ProviderShard {
+                provider_idx: alive[0].0,
+                from: start,
+                to: end,
+            }];
         }
 
         let total_weight: f64 = alive.iter().map(|(_, w)| w).sum();
@@ -645,7 +649,11 @@ impl RpcClient {
             };
             let shard_start = start + assigned;
             let shard_end = shard_start + share - 1;
-            shards.push((*provider_idx, shard_start, shard_end));
+            shards.push(ProviderShard {
+                provider_idx: *provider_idx,
+                from: shard_start,
+                to: shard_end,
+            });
             assigned += share;
         }
 

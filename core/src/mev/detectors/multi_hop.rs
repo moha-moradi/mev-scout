@@ -190,7 +190,8 @@ impl MultiHopArbDetector {
 
         // Seed 2-pool paths from existing arbitrage pairs (both directions)
         let pairs = pm.arbitrage_pairs();
-        for &(pool_a, pool_b, _shared) in pairs.iter() {
+        for pair in pairs.iter() {
+            let (pool_a, pool_b) = (pair.pool_a, pair.pool_b);
             if !scope.contains_pair(&pool_a, &pool_b) {
                 continue;
             }
