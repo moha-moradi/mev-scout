@@ -1,4 +1,5 @@
 use crate::dex_type::DexType;
+use crate::pool::math::FeeTier;
 use alloy::primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -164,6 +165,15 @@ impl Default for PoolInfo {
             volume_usd_24h: None,
             volume_usd_30d: None,
         }
+    }
+}
+
+impl PoolInfo {
+    /// Canonical fee interpretation for this pool (unit derived from
+    /// `dex_type`, see `FeeTier::from_raw`). All quoting math goes through
+    /// this accessor instead of reading `fee`'s implied unit per match arm.
+    pub fn fee_tier(&self) -> FeeTier {
+        FeeTier::from_raw(self.dex_type, self.fee)
     }
 }
 

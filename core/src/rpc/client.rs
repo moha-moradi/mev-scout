@@ -113,6 +113,18 @@ where
     }
 }
 
+/// A contiguous block range assigned to one provider by
+/// [`RpcClient::distribute_blocks`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderShard {
+    /// Index into the provider list.
+    pub provider_idx: usize,
+    /// First block of the range (inclusive).
+    pub from: u64,
+    /// Last block of the range (inclusive).
+    pub to: u64,
+}
+
 /// Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 /// and health tracking.
 ///

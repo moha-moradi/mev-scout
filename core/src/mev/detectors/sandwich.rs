@@ -294,7 +294,7 @@ impl SandwichDetector {
                 } else {
                     (r1_pre, r0_pre)
                 };
-                constant_product_output_amount(front_in_adj, r_in, r_out, v2.info.fee)?
+                constant_product_output_amount(front_in_adj, r_in, r_out, v2.info.fee_tier())?
             }
             PoolState::UniswapV3(v3) => quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?,
             _ => {
@@ -354,7 +354,7 @@ impl SandwichDetector {
                 } else {
                     (r0_av, r1_av)
                 };
-                constant_product_output_amount(front_out_adj, r_in, r_out, v2.info.fee)?
+                constant_product_output_amount(front_out_adj, r_in, r_out, v2.info.fee_tier())?
             }
             _ => {
                 // Non-V2: estimate backrun using the same relative exchange rate
@@ -389,7 +389,7 @@ impl SandwichDetector {
                 } else {
                     (v2.reserve1, v2.reserve0)
                 };
-                constant_product_output_amount(profit_raw, r_in, r_out, v2.info.fee)?
+                constant_product_output_amount(profit_raw, r_in, r_out, v2.info.fee_tier())?
             }
             _ => quote_exact_in(pool, profit_token, native_token, profit_raw)?,
         };
@@ -437,7 +437,7 @@ impl SandwichDetector {
                             profit_raw,
                             reserve_in,
                             reserve_out,
-                            v2.info.fee,
+                            v2.info.fee_tier(),
                         )
                     }
                     Some(pool) => quote_exact_in(pool, profit_token, native_token, profit_raw),

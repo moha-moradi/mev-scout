@@ -176,10 +176,10 @@ impl Fetcher {
 
         let mut range_handles = Vec::new();
 
-        for (provider_idx, shard_start, shard_end) in &shards {
+        for shard in &shards {
             let shard_missing: Vec<u64> = missing
                 .iter()
-                .filter(|&&b| b >= *shard_start && b <= *shard_end)
+                .filter(|&&b| b >= shard.from && b <= shard.to)
                 .copied()
                 .collect();
 
@@ -188,7 +188,7 @@ impl Fetcher {
             }
 
             let shard_ranges = crate::cache::SqliteStore::contiguous_ranges(&shard_missing);
-            let provider_idx = *provider_idx;
+            let provider_idx = shard.provider_idx;
 
             for (run_start, run_end) in shard_ranges {
                 let sem = semaphore.clone();

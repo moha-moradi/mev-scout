@@ -547,7 +547,12 @@ impl MultiHopArbDetector {
                 } else {
                     return None;
                 };
-                constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
+                constant_product_output_amount(
+                    amount_in,
+                    reserve_in,
+                    reserve_out,
+                    v2.info.fee_tier(),
+                )
             }
             PoolState::Curve(curve) => {
                 let token_out = curve.token_index.keys().filter(|k| **k != token_in).min()?;
@@ -628,9 +633,6 @@ pub fn marginal_exchange_rate(
     token_in: Address,
     token_out: Address,
 ) -> Option<f64> {
-    const BPS: f64 = 10_000.0;
-    const PPM: f64 = 1_000_000.0;
-
     let ratio = |reserve_in: u128, reserve_out: u128| -> Option<f64> {
         if reserve_in == 0 || reserve_out == 0 {
             return None;
@@ -641,7 +643,7 @@ pub fn marginal_exchange_rate(
     match pool {
         PoolState::UniswapV2(v2) => {
             let (ri, ro) = v2_directional_reserves(v2, token_in, token_out)?;
-            Some((1.0 - v2.info.fee as f64 / BPS) * ratio(ri, ro)?)
+            Some(v2.info.fee_tier().kept_factor_f64() * ratio(ri, ro)?)
         }
         PoolState::TraderJoeLB(lb) => {
             let (ri, ro) = if lb.info.token0 == token_in && lb.info.token1 == token_out {
@@ -651,7 +653,7 @@ pub fn marginal_exchange_rate(
             } else {
                 return None;
             };
-            Some((1.0 - lb.info.fee as f64 / BPS) * ratio(ri, ro)?)
+            Some(lb.info.fee_tier().kept_factor_f64() * ratio(ri, ro)?)
         }
         PoolState::Pendle(p) => {
             let (ti, to) = if p.info.token0 == token_in && p.info.token1 == token_out {
@@ -664,24 +666,24 @@ pub fn marginal_exchange_rate(
             ratio(ti, to) // Pendle is simulated fee-free upstream
         }
         PoolState::UniswapV3(_) | PoolState::UniswapV4(_) | PoolState::PancakeInfinity(_) => {
-            let (sqrt_price_x96, t0, t1, fee) = match pool {
+            let (sqrt_price_x96, t0, t1, fee_tier) = match pool {
                 PoolState::UniswapV3(v3) => (
                     v3.sqrt_price_x96,
                     v3.info.token0,
                     v3.info.token1,
-                    v3.info.fee,
+                    v3.info.fee_tier(),
                 ),
                 PoolState::UniswapV4(v4) => (
                     v4.sqrt_price_x96,
                     v4.info.token0,
                     v4.info.token1,
-                    v4.info.fee,
+                    v4.info.fee_tier(),
                 ),
                 PoolState::PancakeInfinity(v4) => (
                     v4.sqrt_price_x96,
                     v4.info.token0,
                     v4.info.token1,
-                    v4.info.fee,
+                    v4.info.fee_tier(),
                 ),
                 _ => unreachable!(),
             };
@@ -690,7 +692,7 @@ pub fn marginal_exchange_rate(
                 return None;
             }
             let price01 = sqrt_price_ratio_f64(sqrt_price_x96)?;
-            let fee_factor = 1.0 - fee as f64 / PPM;
+            let fee_factor = fee_tier.kept_factor_f64();
             if t0 == token_in && t1 == token_out {
                 Some(fee_factor * price01)
             } else if t1 == token_in && t0 == token_out {

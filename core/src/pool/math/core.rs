@@ -1,7 +1,8 @@
 //! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
 //! and unified `quote_exact_in` dispatcher for all pool types.
 
-use super::consts::{BPS_DENOMINATOR, GOLDEN_SECTION_REFINE_ITERATIONS};
+use super::consts::GOLDEN_SECTION_REFINE_ITERATIONS;
+use super::fee::FeeTier;
 use crate::pool::state::PoolState;
 use alloy::primitives::{Address, U256, U512};
 
@@ -68,7 +69,7 @@ pub fn quote_exact_in(
             } else {
                 return None;
             };
-            constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee)
+            constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee_tier())
         }
         PoolState::UniswapV3(v3) => {
             let zero_for_one = v3.info.token0 == token_in;
@@ -114,7 +115,7 @@ pub fn quote_exact_in(
             } else {
                 return None;
             };
-            lb::lb_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee)
+            lb::lb_output_amount(amount_in, reserve_in, reserve_out, lb.info.fee_tier())
         }
         PoolState::Pendle(p) => {
             let (total_in, total_out) = if p.info.token0 == token_in {
@@ -130,26 +131,38 @@ pub fn quote_exact_in(
     }
 }
 
+/// One constant-product leg, oriented in swap direction (W5.1/W5.2).
+///
+/// Bundles reserves with the unit-explicit fee so a bps fee can never be
+/// read where ppm is expected.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolQuote {
+    pub reserve_in: u128,
+    pub reserve_out: u128,
+    pub fee: FeeTier,
+}
+
 /// Compute output amount for a given input amount under constant product.
 ///
 /// Implements the Uniswap V2 AMM formula with fee:
-/// `dx * (BPS_DENOMINATOR - fee) * reserve_out / (reserve_in * BPS_DENOMINATOR + dx * (BPS_DENOMINATOR - fee))`
+/// `dx * kept_num * reserve_out / (reserve_in * kept_den + dx * kept_num)`
+/// where `(kept_num, kept_den)` is the fee tier's kept fraction (e.g. 9970/10000).
 ///
 /// Returns `None` if the input is zero, reserves are depleted, or the output rounds to zero.
 pub fn constant_product_output_amount(
     amount_in: u128,
     reserve_in: u128,
     reserve_out: u128,
-    fee: u32,
+    fee: FeeTier,
 ) -> Option<u128> {
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = BPS_DENOMINATOR - fee as u128;
+    let (fee_factor, fee_den) = fee.kept_fraction();
     let amount_in_with_fee = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_with_fee.checked_mul(reserve_out)?;
     let denominator = reserve_in
-        .checked_mul(BPS_DENOMINATOR)?
+        .checked_mul(fee_den)?
         .checked_add(amount_in_with_fee)?;
     let output = numerator / denominator;
     if output == 0 {
@@ -180,40 +193,38 @@ pub struct TwoHopArbResult {
 /// simulator picks the best candidate in a small window around `x*`.
 ///
 /// Returns `None` if the price gap is too small to cover fees (profit <= 0).
-pub fn optimal_two_hop_arb(
-    pool_a_reserve_in: u128,
-    pool_a_reserve_out: u128,
-    pool_a_fee: u32,
-    pool_b_reserve_in: u128,
-    pool_b_reserve_out: u128,
-    pool_b_fee: u32,
-) -> Option<TwoHopArbResult> {
-    let max_input = pool_a_reserve_in.min(pool_b_reserve_out);
-    if max_input < 2 || pool_a_reserve_out == 0 || pool_b_reserve_in == 0 {
+pub fn optimal_two_hop_arb(a: PoolQuote, b: PoolQuote) -> Option<TwoHopArbResult> {
+    let max_input = a.reserve_in.min(b.reserve_out);
+    if max_input < 2 || a.reserve_out == 0 || b.reserve_in == 0 {
         return None;
     }
 
-    let ga = U512::from(BPS_DENOMINATOR.saturating_sub(pool_a_fee as u128));
-    let gb = U512::from(BPS_DENOMINATOR.saturating_sub(pool_b_fee as u128));
-    let ra_o = U512::from(pool_a_reserve_out);
-    let rb_o = U512::from(pool_b_reserve_out);
-    let ra_i = U512::from(pool_a_reserve_in);
-    let rb_i = U512::from(pool_b_reserve_in);
-    let bps = U512::from(BPS_DENOMINATOR);
+    // Kept fractions (den−fee, den) per leg, in exact integers.
+    let (na, da) = a.fee.kept_fraction();
+    let (nb, db) = b.fee.kept_fraction();
+    let na = U512::from(na);
+    let da = U512::from(da);
+    let nb = U512::from(nb);
+    let db = U512::from(db);
+    let ra_o = U512::from(a.reserve_out);
+    let rb_o = U512::from(b.reserve_out);
+    let ra_i = U512::from(a.reserve_in);
+    let rb_i = U512::from(b.reserve_in);
 
     // Composite output: y(x) = C·x / (D0 + D1·x) where
-    //   C  = ga·gb·Ra_o·Rb_o
-    //   D0 = Ra_i·Rb_i·BPS²
-    //   D1 = Rb_i·BPS·ga + ga·gb·Ra_o
+    //   C  = na·nb·Ra_o·Rb_o
+    //   D0 = Ra_i·Rb_i·da·db
+    //   D1 = Rb_i·db·na + na·nb·Ra_o
     // Profit P(x) = y(x) − x peaks at x* = (√(C·D0) − D0) / D1.
-    // √(C·D0) factorizes into BPS · √(ga·gb) · √(Ra_o·Rb_o) · √(Ra_i·Rb_i)
+    // √(C·D0) factorizes into √(da·na·db·nb) · √(Ra_o·Rb_o) · √(Ra_i·Rb_i)
     // so each square root fits in 256 bits and stays exact to ±1 unit.
-    let d0 = ra_i * rb_i * bps * bps;
-    let d1 = rb_i * bps * ga + ga * gb * ra_o;
+    let d0 = ra_i * rb_i * da * db;
+    let d1 = rb_i * db * na + na * nb * ra_o;
     if d1.is_zero() {
         return None;
     }
-    let root = bps * isqrt_u512(ga * gb) * isqrt_u512(ra_o * rb_o) * isqrt_u512(ra_i * rb_i);
+    let root =
+        isqrt_u512(da * na * db * nb) * isqrt_u512(ra_o * rb_o) * isqrt_u512(ra_i * rb_i);
     if root <= d0 {
         return None; // marginal rate cannot cover fees — no profitable trade
     }
@@ -237,15 +248,7 @@ pub fn optimal_two_hop_arb(
         if cand == 0 || cand > max_input {
             continue;
         }
-        if let Some(r) = simulate_two_hop(
-            cand,
-            pool_a_reserve_in,
-            pool_a_reserve_out,
-            pool_a_fee,
-            pool_b_reserve_in,
-            pool_b_reserve_out,
-            pool_b_fee,
-        ) {
+        if let Some(r) = simulate_two_hop(cand, a, b) {
             match &best {
                 Some(b) if b.profit >= r.profit => {}
                 _ => best = Some(r),
@@ -256,19 +259,13 @@ pub fn optimal_two_hop_arb(
     best
 }
 
-fn simulate_two_hop(
-    input_amount: u128,
-    r_a_in: u128,
-    r_a_out: u128,
-    fee_a: u32,
-    r_b_in: u128,
-    r_b_out: u128,
-    fee_b: u32,
-) -> Option<TwoHopArbResult> {
+fn simulate_two_hop(input_amount: u128, a: PoolQuote, b: PoolQuote) -> Option<TwoHopArbResult> {
     // Swap 1: buy intermediate token from pool A
-    let intermediate = constant_product_output_amount(input_amount, r_a_in, r_a_out, fee_a)?;
+    let intermediate =
+        constant_product_output_amount(input_amount, a.reserve_in, a.reserve_out, a.fee)?;
     // Swap 2: sell intermediate to pool B for token_out
-    let output = constant_product_output_amount(intermediate, r_b_in, r_b_out, fee_b)?;
+    let output =
+        constant_product_output_amount(intermediate, b.reserve_in, b.reserve_out, b.fee)?;
     if output <= input_amount {
         return None;
     }
@@ -487,29 +484,22 @@ pub fn optimal_two_hop_arb_segmented(
 mod tests {
     use super::*;
 
+    fn leg(reserve_in: u128, reserve_out: u128, fee: u32) -> PoolQuote {
+        PoolQuote {
+            reserve_in,
+            reserve_out,
+            fee: FeeTier::Bps(fee),
+        }
+    }
+
     /// Brute-force reference: dense scan of the exact integer simulator.
-    fn brute_force_best(
-        pool_a_reserve_in: u128,
-        pool_a_reserve_out: u128,
-        pool_a_fee: u32,
-        pool_b_reserve_in: u128,
-        pool_b_reserve_out: u128,
-        pool_b_fee: u32,
-    ) -> Option<TwoHopArbResult> {
-        let max_input = pool_a_reserve_in.min(pool_b_reserve_out);
+    fn brute_force_best(a: PoolQuote, b: PoolQuote) -> Option<TwoHopArbResult> {
+        let max_input = a.reserve_in.min(b.reserve_out);
         let step = (max_input / 20_000).max(1);
         let mut best: Option<TwoHopArbResult> = None;
         let mut x = step;
         while x <= max_input {
-            if let Some(r) = simulate_two_hop(
-                x,
-                pool_a_reserve_in,
-                pool_a_reserve_out,
-                pool_a_fee,
-                pool_b_reserve_in,
-                pool_b_reserve_out,
-                pool_b_fee,
-            ) {
+            if let Some(r) = simulate_two_hop(x, a, b) {
                 match &best {
                     Some(b) if b.profit >= r.profit => {}
                     _ => best = Some(r),
@@ -556,8 +546,10 @@ mod tests {
             (5_000_000, 9_000_000, 10, 9_000_000, 4_000_000, 3000),
         ];
         for &(ra_i, ra_o, fa, rb_i, rb_o, fb) in &cases {
-            let fast = optimal_two_hop_arb(ra_i, ra_o, fa, rb_i, rb_o, fb);
-            let slow = brute_force_best(ra_i, ra_o, fa, rb_i, rb_o, fb);
+            let a = leg(ra_i, ra_o, fa);
+            let b = leg(rb_i, rb_o, fb);
+            let fast = optimal_two_hop_arb(a, b);
+            let slow = brute_force_best(a, b);
             assert_eq!(
                 fast.is_some(),
                 slow.is_some(),
@@ -588,7 +580,11 @@ mod tests {
 
     #[test]
     fn closed_form_no_profit_when_prices_aligned() {
-        assert!(optimal_two_hop_arb(1_000_000, 1_000_000, 30, 1_000_000, 1_000_000, 30).is_none());
+        assert!(optimal_two_hop_arb(
+            leg(1_000_000, 1_000_000, 30),
+            leg(1_000_000, 1_000_000, 30)
+        )
+        .is_none());
     }
 
     #[test]
@@ -646,8 +642,8 @@ mod tests {
         let rb_i = 2_000_000u128;
         let rb_o = 500_000u128;
         let fee = 30u32;
-        let quote_a = |x: u128| constant_product_output_amount(x, ra_i, ra_o, fee);
-        let quote_b = |x: u128| constant_product_output_amount(x, rb_i, rb_o, fee);
+        let quote_a = |x: u128| constant_product_output_amount(x, ra_i, ra_o, FeeTier::Bps(fee));
+        let quote_b = |x: u128| constant_product_output_amount(x, rb_i, rb_o, FeeTier::Bps(fee));
         let combined = |x: u128| -> Option<u128> { quote_b(quote_a(x)?) };
 
         let max_input = ra_i.min(rb_o);
@@ -679,7 +675,8 @@ mod tests {
             let out = (scale as f64 * (1.0 - base.powf(w_num as f64 / 10.0))) as u128;
             (out > 0).then_some(out)
         };
-        let quote_b = |x: u128| constant_product_output_amount(x, 3_000_000, 1_500_000, 30);
+        let quote_b =
+            |x: u128| constant_product_output_amount(x, 3_000_000, 1_500_000, FeeTier::Bps(30));
         let combined = |x: u128| -> Option<u128> { quote_b(quote_a(x)?) };
 
         let max_input = 9_000_000u128;

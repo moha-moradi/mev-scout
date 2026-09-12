@@ -163,7 +163,7 @@ fn main() -> anyhow::Result<()> {
     let provider_configs = config.effective_provider_configs(chain_name)?;
     let urls: Vec<&str> = provider_configs
         .iter()
-        .map(|(u, _, _)| u.as_str())
+        .map(|p| p.url.as_str())
         .collect();
     let rpc = RpcClient::from_urls(&urls, chain_id)?;
 
@@ -173,14 +173,14 @@ fn main() -> anyhow::Result<()> {
         rpc.with_provider_rps(
             &provider_configs
                 .iter()
-                .map(|(_, r, _)| r.unwrap_or(config.rpc.rps_limit))
+                .map(|p| p.rps.unwrap_or(config.rpc.rps_limit))
                 .collect::<Vec<_>>(),
         )
         .await;
         rpc.with_provider_archive(
             &provider_configs
                 .iter()
-                .map(|(_, _, a)| *a)
+                .map(|p| p.archive)
                 .collect::<Vec<_>>(),
         )
         .await;

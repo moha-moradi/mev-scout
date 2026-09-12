@@ -924,19 +924,19 @@ pub async fn discover_pools(
 
     let shard_tasks: Vec<_> = shards
         .into_iter()
-        .map(|(provider_idx, shard_start, shard_end)| {
+        .map(|shard| {
             let rpc = rpc.clone();
             let config_ref = config;
             let batch_size = effective_batch_size;
             async move {
                 discover_pools_shard(
                     &rpc,
-                    shard_start,
-                    shard_end,
+                    shard.from,
+                    shard.to,
                     batch_size,
                     config_ref,
                     None,
-                    Some(provider_idx),
+                    Some(shard.provider_idx),
                 )
                 .await
             }

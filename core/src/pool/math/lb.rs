@@ -12,6 +12,7 @@
 //!   - `lb_max_output`: maximum output draining the active bin
 
 use super::consts::{BPS_DENOMINATOR, Q64_SHIFT};
+use super::fee::FeeTier;
 use alloy::primitives::U256;
 
 /// Compute the price of bin `active_id` relative to bin 0.
@@ -49,7 +50,8 @@ pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
 /// Quote an output amount for a swap within the active bin.
 ///
 /// Within a single bin, LB is effectively constant-product:
-/// `output = amountIn * (BPS_DENOMINATOR - fee) * reserveOut / (reserveIn * BPS_DENOMINATOR + amountIn * (BPS_DENOMINATOR - fee))`
+/// `output = amountIn * kept * reserveOut / (reserveIn * feeDen + amountIn * kept)`
+/// where `(kept, feeDen)` is the fee tier's kept fraction (e.g. 9970/10000).
 ///
 /// This is conservative: it only considers the active bin's reserves.
 /// Cross-bin liquidity provides additional depth, so the actual output
@@ -58,16 +60,16 @@ pub fn lb_output_amount(
     amount_in: u128,
     reserve_in: u128,
     reserve_out: u128,
-    fee: u32,
+    fee: FeeTier,
 ) -> Option<u128> {
     if amount_in == 0 || reserve_in == 0 || reserve_out == 0 {
         return None;
     }
-    let fee_factor = BPS_DENOMINATOR - fee as u128;
+    let (fee_factor, fee_den) = fee.kept_fraction();
     let amount_in_eff = amount_in.checked_mul(fee_factor)?;
     let numerator = amount_in_eff.checked_mul(reserve_out)?;
     let denominator = reserve_in
-        .checked_mul(BPS_DENOMINATOR)?
+        .checked_mul(fee_den)?
         .checked_add(amount_in_eff)?;
     let output = numerator / denominator;
     if output == 0 {
@@ -78,14 +80,14 @@ pub fn lb_output_amount(
 
 /// Maximum output draining the active bin (swap entire reserve).
 ///
-/// Returns `reserve_out * (BPS_DENOMINATOR - fee) / BPS_DENOMINATOR` — the maximum extractable
+/// Returns `reserve_out * kept / feeDen` — the maximum extractable
 /// output after fee deduction.
-pub fn lb_max_output(reserve_out: u128, fee: u32) -> Option<u128> {
+pub fn lb_max_output(reserve_out: u128, fee: FeeTier) -> Option<u128> {
     if reserve_out == 0 {
         return None;
     }
-    let fee_factor = BPS_DENOMINATOR - fee as u128;
-    let output = (reserve_out * fee_factor) / BPS_DENOMINATOR;
+    let (fee_factor, fee_den) = fee.kept_fraction();
+    let output = (reserve_out * fee_factor) / fee_den;
     if output == 0 {
         return None;
     }
@@ -112,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_output_basic() {
-        let out = lb_output_amount(1000, 10000, 10000, 30).unwrap();
+        let out = lb_output_amount(1000, 10000, 10000, FeeTier::Bps(30)).unwrap();
         // fee_factor = 9970, eff_in = 9970000
         // num = 9970000 * 10000 = 99700000000
         // den = 10000 * 10000 + 9970000 = 109970000
@@ -123,7 +125,7 @@ mod tests {
 
     #[test]
     fn test_max_output() {
-        let out = lb_max_output(10000, 30).unwrap();
+        let out = lb_max_output(10000, FeeTier::Bps(30)).unwrap();
         assert_eq!(out, 9970);
     }
 }

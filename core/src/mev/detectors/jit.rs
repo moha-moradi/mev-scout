@@ -4,8 +4,9 @@ use crate::data::ExecutedLog;
 use crate::pool::decoders::{
     decode_v3_mint_burn, decode_v3_swap, V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC,
 };
-use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
+use crate::pool::math::consts::PERCENT_DENOMINATOR;
 use crate::pool::math::v3::estimate_v3_swap_gas;
+use crate::pool::math::{FeeTier, DEFAULT_V3_FEE};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
@@ -202,7 +203,10 @@ impl JitDetector {
             let Some(mints) = self.active_mints.get(pool) else {
                 continue;
             };
-            let pool_fee = pool_manager.get(pool).map(|p| p.info().fee).unwrap_or(3000);
+            let pool_fee = pool_manager
+                .get(pool)
+                .map(|p| p.info().fee_tier())
+                .unwrap_or_else(|| FeeTier::Ppm(DEFAULT_V3_FEE));
             for mint in mints {
                 let dedup_key = (*pool, mint.mint_tx_index, mint.burned);
                 if self.emitted.contains(&dedup_key) {
@@ -253,7 +257,7 @@ impl JitDetector {
         burned: bool,
         base_fee_per_gas: u128,
         gas_config: &GasConfig,
-        pool_fee: u32,
+        pool_fee: FeeTier,
         pool_manager: &PoolManager,
     ) -> MevOpportunity {
         let pool_tokens = pool_manager.get(&pool).map(|p| {
@@ -290,21 +294,18 @@ impl JitDetector {
                 }
             }
             // Volume-based fallback when fee growth deltas are not available
-            if pool_fee > 0 && mint.swap_volume > 0 && mint.amount > 0 {
+            if mint.swap_volume > 0 && mint.amount > 0 {
                 let pool_liquidity = pool_manager
                     .get_v3_state(&pool)
                     .map(|s| s.liquidity)
                     .unwrap_or(0);
                 let raw = if pool_liquidity > 0 && mint.amount < pool_liquidity {
-                    mint.swap_volume
-                        .saturating_mul(pool_fee as u128)
+                    pool_fee
+                        .fee_on_amount(mint.swap_volume)
                         .saturating_mul(mint.amount)
-                        .saturating_div(1_000_000u128)
                         .saturating_div(pool_liquidity)
                 } else {
-                    mint.swap_volume
-                        .saturating_mul(pool_fee as u128)
-                        .saturating_div(PPM_DENOMINATOR)
+                    pool_fee.fee_on_amount(mint.swap_volume)
                 };
                 // Normalize fallback estimate using token0 as reference
                 let (t0, _) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));

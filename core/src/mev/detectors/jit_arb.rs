@@ -4,7 +4,7 @@ use crate::data::ExecutedLog;
 use crate::pool::decoders::{
     decode_v3_mint_burn, decode_v3_swap, V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC,
 };
-use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
+use crate::pool::math::consts::PERCENT_DENOMINATOR;
 use crate::pool::math::v3::estimate_v3_swap_gas;
 use crate::pool::math::{constant_product_output_amount, quote_exact_in};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
@@ -395,7 +395,12 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             } else {
                 (v2.reserve1, v2.reserve0)
             };
-            constant_product_output_amount(swap.amount_in, reserve_in, reserve_out, v2.info.fee)
+            constant_product_output_amount(
+                swap.amount_in,
+                reserve_in,
+                reserve_out,
+                v2.info.fee_tier(),
+            )
                 .unwrap_or(0)
         }
         Some(pool) => quote_exact_in(pool, swap.token_in, shared, swap.amount_in).unwrap_or(0),
@@ -447,7 +452,7 @@ fn estimate_jit_fee_revenue(
     proximity_window: usize,
 ) -> u128 {
     let Some(ps) = pm.get(&pool_p) else { return 0 };
-    let fee_rate = ps.info().fee as u128;
+    let fee_rate = ps.info().fee_tier();
     let window = proximity_window.max(2) as u64;
 
     let mut total_fees: u128 = 0;
@@ -472,7 +477,7 @@ fn estimate_jit_fee_revenue(
         }
 
         // Fee revenue ≈ position liquidity share × swap fee amount
-        let swap_fee = sw.amount_in.saturating_mul(fee_rate) / PPM_DENOMINATOR;
+        let swap_fee = fee_rate.fee_on_amount(sw.amount_in);
         let earned = mint
             .amount
             .saturating_mul(swap_fee)

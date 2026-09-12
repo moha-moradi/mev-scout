@@ -12,17 +12,13 @@ const PCT_102: u128 = 102;
 /// Percentage multiplier for -2% adjustment (98/100).
 const PCT_98: u128 = 98;
 
-/// Basis points that make up 100% — fee denominator for constant-product pools.
-const BPS_FEE_DENOM: u64 = 10_000;
-/// Parts per million that make up 100% — fee denominator for concentrated-liquidity pools.
-const PPM_FEE_DENOM: u64 = 1_000_000;
-
 use crate::pool::math::balancer as balancer_math;
 use crate::pool::math::curve as curve_math;
 use crate::pool::math::v3::{estimate_v3_swap_gas, max_v3_tradeable_amount, quote_v3_exact_in};
 use crate::pool::math::{
     constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic,
-    optimal_two_hop_arb_segmented, quote_exact_in, v3_breakpoints, TwoHopArbResult,
+    optimal_two_hop_arb_segmented, quote_exact_in, v3_breakpoints, FeeTier, PoolQuote,
+    TwoHopArbResult,
 };
 use crate::pool::state::{
     calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager,
@@ -250,7 +246,18 @@ pub fn quote_path(
         (PoolState::UniswapV2(a), PoolState::UniswapV2(b)) => {
             let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
             let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            optimal_two_hop_arb(r_a_other, r_a_shared, fee_a, r_b_in, r_b_out, fee_b)
+            optimal_two_hop_arb(
+                PoolQuote {
+                    reserve_in: r_a_other,
+                    reserve_out: r_a_shared,
+                    fee: fee_a,
+                },
+                PoolQuote {
+                    reserve_in: r_b_in,
+                    reserve_out: r_b_out,
+                    fee: fee_b,
+                },
+            )
         }
         (PoolState::UniswapV3(a), PoolState::UniswapV3(b)) => {
             let zero_a = shared_token == a.info.token1;
@@ -440,7 +447,7 @@ fn two_hop_profit_at(
             } else {
                 return None;
             };
-            constant_product_output_amount(input_amount, r_a_other, r_a_shared, a.info.fee)?
+            constant_product_output_amount(input_amount, r_a_other, r_a_shared, a.info.fee_tier())?
         }
         PoolState::Pendle(a) => {
             let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
@@ -450,7 +457,7 @@ fn two_hop_profit_at(
             } else {
                 return None;
             };
-            constant_product_output_amount(input_amount, r_a_other, r_a_shared, 0)?
+            constant_product_output_amount(input_amount, r_a_other, r_a_shared, FeeTier::Free)?
         }
         PoolState::Metric(_) | PoolState::Fluid(_) => return None,
     };
@@ -484,7 +491,7 @@ fn two_hop_profit_at(
             } else {
                 return None;
             };
-            constant_product_output_amount(intermediate, r_b_in, r_b_out, b.info.fee)?
+            constant_product_output_amount(intermediate, r_b_in, r_b_out, b.info.fee_tier())?
         }
         PoolState::Pendle(b) => {
             let (r_b_in, r_b_out) = if b.info.token0 == shared_token {
@@ -494,7 +501,7 @@ fn two_hop_profit_at(
             } else {
                 return None;
             };
-            constant_product_output_amount(intermediate, r_b_in, r_b_out, 0)?
+            constant_product_output_amount(intermediate, r_b_in, r_b_out, FeeTier::Free)?
         }
         PoolState::Metric(_) | PoolState::Fluid(_) => return None,
     };
@@ -674,8 +681,8 @@ fn v2_reserves(
     pool: &UniswapV2PoolState,
     shared_token: Address,
     buy_side: bool,
-) -> Option<(u128, u128, u32)> {
-    let fee = pool.info.fee;
+) -> Option<(u128, u128, FeeTier)> {
+    let fee = pool.info.fee_tier();
     if buy_side {
         // We give the other token, receive shared_token
         if pool.info.token0 == shared_token {
@@ -816,19 +823,20 @@ fn marginal_price_fraction(pool: &PoolState, shared_token: Address) -> Option<(U
     }
 }
 
-/// Pool fee as an exact fraction per DEX convention:
-/// basis points for constant-product pools, parts-per-million for
-/// concentrated-liquidity pools. Pendle is simulated fee-free upstream.
+/// Pool fee as an exact fraction, unit resolved by the canonical
+/// [`FeeTier`] map (see [`PoolInfo::fee_tier`]). Pendle is simulated fee-free
+/// upstream. Returns `None` for pool types without a quoted fee.
 fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
-    match pool {
-        PoolState::UniswapV2(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
-        PoolState::TraderJoeLB(p) => Some((p.info.fee as u64, BPS_FEE_DENOM)),
-        PoolState::UniswapV3(p) | PoolState::UniswapV4(p) => {
-            Some((p.info.fee as u64, PPM_FEE_DENOM))
-        }
-        PoolState::Pendle(_) => Some((0, BPS_FEE_DENOM)),
-        _ => None,
-    }
+    let tier = match pool {
+        PoolState::UniswapV2(p) => p.info.fee_tier(),
+        PoolState::TraderJoeLB(p) => p.info.fee_tier(),
+        PoolState::UniswapV3(p) => p.info.fee_tier(),
+        PoolState::UniswapV4(p) => p.info.fee_tier(),
+        PoolState::Pendle(p) => p.info.fee_tier(),
+        _ => return None,
+    };
+    let (num, den) = tier.fraction();
+    Some((num as u64, den as u64))
 }
 
 /// Combine first-pool breakpoints (already in input-x space) with second-pool

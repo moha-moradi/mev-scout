@@ -2,7 +2,7 @@
 
 use super::consts::{
     NEWTON_CONVERGENCE_EPSILON, NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS,
-    PPM_DENOMINATOR, WEI_PER_ETHER,
+    WEI_PER_ETHER,
 };
 use crate::pool::state::{CurvePoolState, CurvePoolVariant};
 use alloy::primitives::Address;
@@ -58,7 +58,7 @@ pub fn curve_stableswap_output_amount(
 
     let a = pool.a_coeff as f64;
     let nn = (n as f64).powf(n as f64);
-    let fee_factor = 1.0 - (pool.info.fee as f64) / PPM_DENOMINATOR as f64;
+    let fee_factor = pool.info.fee_tier().kept_factor_f64();
 
     // Phase 1: Compute invariant D from all balances (Newton's method)
     let sum: f64 = balances.iter().sum();
@@ -150,7 +150,7 @@ pub fn curve_cryptoswap_output_amount(
     // Phase 2: Static fee (Tier 1 approximation — see T2.1 for dynamic fee)
     // For CryptoSwap V2, the dynamic fee = fee + (price_deviation * fee_gamma),
     // but for now we use the static fee() value as a conservative approximation.
-    let fee_factor = 1.0 - (pool.info.fee as f64) / PPM_DENOMINATOR as f64;
+    let fee_factor = pool.info.fee_tier().kept_factor_f64();
 
     // Phase 3: Solve for x_out' (Newton over y)
     // Price scale: adjust balances using price_scale before invariant computation.

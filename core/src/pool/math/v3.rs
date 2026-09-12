@@ -5,11 +5,9 @@ use std::sync::Mutex;
 
 use alloy::primitives::{U256, U512};
 
-use super::consts::{
-    LIQUIDITY_FRACTION_DENOM, PPM_DENOMINATOR, Q96_SHIFT, SQRT_RATIO_CACHE_CAPACITY,
-};
+use super::consts::{LIQUIDITY_FRACTION_DENOM, Q96_SHIFT, SQRT_RATIO_CACHE_CAPACITY};
+use super::fee::FeeTier;
 use crate::pool::state::UniswapV3PoolState;
-
 const MIN_TICK: i32 = -887272;
 const MAX_TICK: i32 = 887272;
 
@@ -209,7 +207,7 @@ fn compute_swap_step(
     sqrt_ratio_target_x96: U256,
     liquidity: u128,
     amount_remaining: U256,
-    fee: u32,
+    fee: FeeTier,
 ) -> (U256, U256, U256, U256) {
     let zero_for_one = sqrt_ratio_target_x96 < sqrt_ratio_current_x96;
 
@@ -230,8 +228,10 @@ fn compute_swap_step(
     }
     .unwrap_or(U256::ZERO);
 
-    let fee_on_max = mul_div_round_up(max_in, U256::from(fee as u64), U256::from(PPM_DENOMINATOR))
-        .unwrap_or(U256::ZERO);
+    let (fee_num, fee_den) = fee.fraction();
+    let fee_on_max =
+        mul_div_round_up(max_in, U256::from(fee_num as u64), U256::from(fee_den as u64))
+            .unwrap_or(U256::ZERO);
     let total_max_cost = max_in + fee_on_max;
 
     if amount_remaining >= total_max_cost {
@@ -255,9 +255,12 @@ fn compute_swap_step(
         (sqrt_ratio_target_x96, max_in, amount_out, fee_on_max)
     } else {
         let remaining = amount_remaining;
-        let fee_amount =
-            mul_div_round_up(remaining, U256::from(fee as u64), U256::from(PPM_DENOMINATOR))
-                .unwrap_or(U256::ZERO);
+        let fee_amount = mul_div_round_up(
+            remaining,
+            U256::from(fee_num as u64),
+            U256::from(fee_den as u64),
+        )
+        .unwrap_or(U256::ZERO);
         let amount_after_fee = remaining - fee_amount.min(remaining);
 
         let next_sqrt = get_next_sqrt_price_from_input(
@@ -409,9 +412,9 @@ pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, zero_for_one: bool) ->
         return pool.liquidity.saturating_div(LIQUIDITY_FRACTION_DENOM);
     }
 
-    let fee = pool.info.fee as u128;
-    let max_input_with_fee = max_in * U256::from(PPM_DENOMINATOR as u64)
-        / U256::from(PPM_DENOMINATOR as u64 - fee.min(PPM_DENOMINATOR - 1) as u64);
+    let (fee_num, fee_den) = pool.info.fee_tier().fraction();
+    let max_input_with_fee = max_in * U256::from(fee_den as u64)
+        / U256::from(fee_den.saturating_sub(fee_num.min(fee_den - 1)) as u64);
 
     let limbs = max_input_with_fee.as_limbs();
     let result = limbs[0] as u128;
@@ -464,7 +467,7 @@ pub fn v3_breakpoints(
             target_sqrt_price,
             liquidity,
             U256::MAX,
-            pool.info.fee,
+            pool.info.fee_tier(),
         );
         let consumed = match amount_in_step.checked_add(fee_step) {
             Some(v) => v.min(U256::from(u128::MAX)).to::<u128>(),
@@ -573,7 +576,7 @@ pub fn quote_v3_exact_in(
             target_sqrt_price,
             liquidity,
             amount_remaining,
-            pool.info.fee,
+            pool.info.fee_tier(),
         );
 
         total_amount_out += amount_out_step;

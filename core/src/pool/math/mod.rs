@@ -2,6 +2,7 @@ pub mod balancer;
 pub mod consts;
 pub mod core;
 pub mod curve;
+pub mod fee;
 pub mod lb;
 pub mod pendle;
 pub mod stable_swap;
@@ -20,8 +21,10 @@ pub use consts::{
 };
 pub use core::{
     constant_product_output_amount, optimal_on_segments, optimal_two_hop_arb,
-    optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented, quote_exact_in, TwoHopArbResult,
+    optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented, quote_exact_in, PoolQuote,
+    TwoHopArbResult,
 };
+pub use fee::{FeeTier, BPS_FEE_DENOM, PPM_FEE_DENOM};
 pub use curve::{
     curve_cryptoswap_output_amount, curve_output_amount, curve_stableswap_output_amount,
 };

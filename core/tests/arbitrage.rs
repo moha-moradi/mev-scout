@@ -148,17 +148,17 @@ fn test_pool_manager_arbitrage_pairs() {
     // Pair A-B (via WMATIC), Pair A-C (via USDC), Pair B-C should NOT share a token
     assert_eq!(pairs.len(), 2, "Should find 2 arbitrage pairs");
     assert!(
-        pairs
-            .iter()
-            .any(|(a, b, t)| (*a == pool_a && *b == pool_b && *t == wmatic())
-                || (*a == pool_b && *b == pool_a && *t == wmatic())),
+        pairs.iter().any(|p| {
+            (p.pool_a == pool_a && p.pool_b == pool_b && p.shared_token == wmatic())
+                || (p.pool_a == pool_b && p.pool_b == pool_a && p.shared_token == wmatic())
+        }),
         "A-B via WMATIC"
     );
     assert!(
-        pairs
-            .iter()
-            .any(|(a, b, t)| (*a == pool_a && *b == pool_c && *t == usdc())
-                || (*a == pool_c && *b == pool_a && *t == usdc())),
+        pairs.iter().any(|p| {
+            (p.pool_a == pool_a && p.pool_b == pool_c && p.shared_token == usdc())
+                || (p.pool_a == pool_c && p.pool_b == pool_a && p.shared_token == usdc())
+        }),
         "A-C via USDC"
     );
 }
