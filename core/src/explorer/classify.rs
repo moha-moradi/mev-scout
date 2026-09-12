@@ -67,15 +67,18 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 kind: MevKind::Liquidation,
                 // `LiquidationCall` carries no liquidator address; the tx
                 // sender is the attribution target (zero fallback covered).
-                searcher: if liq.liquidator.is_zero() { tx.from } else { liq.liquidator },
+                searcher: if liq.liquidator.is_zero() {
+                    tx.from
+                } else {
+                    liq.liquidator
+                },
                 contract: tx.to,
                 pools: vec![],
                 profit_token: Some(liq.collateral_asset),
                 profit_amount: Some(liq.collateral_amount),
                 profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
-                    (tx.effective_gas_price_gwei * 1e9) as u128,
-                )),
+                gas_cost_wei: U256::from(tx.gas_used)
+                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
                 confidence: Confidence::Exact,
                 victim_hashes: vec![],
                 victim_swap_size: None,
@@ -106,11 +109,8 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             continue;
         }
 
-        let ledger = DeltaLedger::from_transfers(
-            &tx.transfers,
-            input.wrapped_native,
-            (tx.from, tx.value),
-        );
+        let ledger =
+            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
 
         // Participant scope: sender + receiver-side contracts (searcher
         // attribution per plan: "EOA sender (or its deployed contract)").
@@ -119,7 +119,12 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             candidates.push(to);
         }
         // Addresses with ≥2 swap participations via transfers also qualify
-        for (addr, _) in tx.transfers.iter().map(|t| (t.from, ())).chain(tx.transfers.iter().map(|t| (t.to, ()))) {
+        for (addr, _) in tx
+            .transfers
+            .iter()
+            .map(|t| (t.from, ()))
+            .chain(tx.transfers.iter().map(|t| (t.to, ())))
+        {
             let _ = addr;
         }
 
@@ -211,9 +216,11 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     let mut sandwiches = classify_sandwiches(input);
     events.append(&mut sandwiches);
 
-    events.sort_by(|a, b| a.tx_index.cmp(&b.tx_index).then_with(|| {
-        kind_order(a.kind).cmp(&kind_order(b.kind))
-    }));
+    events.sort_by(|a, b| {
+        a.tx_index
+            .cmp(&b.tx_index)
+            .then_with(|| kind_order(a.kind).cmp(&kind_order(b.kind)))
+    });
     events
 }
 
@@ -320,15 +327,8 @@ fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
                         if opposite_dir(f, leg) {
                             // First opposite-direction attacker swap after a
                             // victim closes the sandwich.
-out.push(fold_sandwich(
-                            input,
-                            pool,
-                            attacker,
-                            f,
-                            leg,
-                            &walk,
-                        ));
-                        break;
+                            out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
+                            break;
                         }
                     }
                     // Same-direction or pre-victim opposite swaps keep the
@@ -412,11 +412,13 @@ fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
     let mints: Vec<JitFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.jit.iter().map(move |j| {
-            let mut j2 = j.clone();
-            j2.tx_index = t.tx_index;
-            j2
-        }))
+        .flat_map(|t| {
+            t.jit.iter().map(move |j| {
+                let mut j2 = j.clone();
+                j2.tx_index = t.tx_index;
+                j2
+            })
+        })
         .filter(|j| j.is_mint)
         .collect();
     let burns: Vec<(u64, &JitFact)> = input
@@ -440,7 +442,10 @@ fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 .txs
                 .iter()
                 .filter(|t| t.tx_index == mint.tx_index)
-                .map(|t| U256::from(t.gas_used).saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128)))
+                .map(|t| {
+                    U256::from(t.gas_used)
+                        .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128))
+                })
                 .next()
                 .unwrap_or(U256::ZERO);
             out.push(MevEvent {
@@ -491,7 +496,12 @@ pub fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B25
 pub fn decode_tx_logs(
     tx_index: u64,
     logs: &[crate::data::LogData],
-) -> (Vec<TransferFact>, Vec<SwapFact>, Vec<crate::explorer::types::LiquidationFact>, Vec<JitFact>) {
+) -> (
+    Vec<TransferFact>,
+    Vec<SwapFact>,
+    Vec<crate::explorer::types::LiquidationFact>,
+    Vec<JitFact>,
+) {
     let mut transfers = Vec::new();
     let mut swaps = Vec::new();
     let mut liquidations = Vec::new();
@@ -579,7 +589,13 @@ mod tests {
         }
     }
 
-    fn transfer(log_idx: u64, token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
+    fn transfer(
+        log_idx: u64,
+        token: Address,
+        from: Address,
+        to: Address,
+        amt: u64,
+    ) -> TransferFact {
         TransferFact {
             tx_index: 0,
             log_index: log_idx,
@@ -627,7 +643,7 @@ mod tests {
         }
     }
 
-    fn event_of<'a>(events: &'a [MevEvent], kind: MevKind) -> &'a MevEvent {
+    fn event_of(events: &[MevEvent], kind: MevKind) -> &MevEvent {
         events.iter().find(|e| e.kind == kind).unwrap_or_else(|| {
             panic!(
                 "expected a {:?} event; got {:?}",
@@ -788,7 +804,7 @@ mod tests {
         let ev = classify_kind(&input, MevKind::Jit);
         assert_eq!(ev.searcher, ATK);
         assert_eq!(ev.tx_index, 0); // anchored to the mint tx
-        // burn tx index embedded in details
+                                    // burn tx index embedded in details
         assert_eq!(ev.details["burn_tx_index"], serde_json::json!(1));
     }
 
@@ -801,18 +817,36 @@ mod tests {
         let front = swap(POOL_A, USDC, TOKA, 100, 200);
         let victim = swap(POOL_A, USDC, TOKA, 200, 350);
         let back = swap(POOL_A, TOKA, USDC, 350, 195);
-        let t0 = tx(0, ATK, true, vec![front], vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-        ]);
-        let t1 = tx(1, VICTIM, true, vec![victim], vec![
-            transfer(0, USDC, VICTIM, POOL_A, 200),
-            transfer(1, TOKA, POOL_A, VICTIM, 350),
-        ]);
-        let t2 = tx(2, ATK, true, vec![back], vec![
-            transfer(0, TOKA, ATK, POOL_A, 350),
-            transfer(1, USDC, POOL_A, ATK, 195),
-        ]);
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![front],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let t1 = tx(
+            1,
+            VICTIM,
+            true,
+            vec![victim],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 200),
+                transfer(1, TOKA, POOL_A, VICTIM, 350),
+            ],
+        );
+        let t2 = tx(
+            2,
+            ATK,
+            true,
+            vec![back],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 350),
+                transfer(1, USDC, POOL_A, ATK, 195),
+            ],
+        );
         let input = block(vec![t0, t1, t2]);
         let ev = classify_kind(&input, MevKind::Sandwich);
         assert_eq!(ev.searcher, ATK);
@@ -830,14 +864,26 @@ mod tests {
     fn plain_two_leg_exchange_is_not_sandwich() {
         // Attacker buys then sells with no third-party victim in between:
         // a normal round-trip, not a sandwich.
-        let t0 = tx(0, ATK, true, vec![swap(POOL_A, USDC, TOKA, 100, 200)], vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-        ]);
-        let t1 = tx(1, ATK, true, vec![swap(POOL_A, TOKA, USDC, 200, 95)], vec![
-            transfer(0, TOKA, ATK, POOL_A, 200),
-            transfer(1, USDC, POOL_A, ATK, 95),
-        ]);
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let t1 = tx(
+            1,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 200, 95)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 95),
+            ],
+        );
         let input = block(vec![t0, t1]);
         assert!(!kinds(&classify_block(&input)).contains(&MevKind::Sandwich));
     }
@@ -846,18 +892,36 @@ mod tests {
     fn victim_before_front_is_not_sandwich() {
         // The victim swap precedes the attacker's front-run: the attacker did
         // not open a position yet, so this is not a sandwich.
-        let t0 = tx(0, VICTIM, true, vec![swap(POOL_A, USDC, TOKA, 200, 350)], vec![
-            transfer(0, USDC, VICTIM, POOL_A, 200),
-            transfer(1, TOKA, POOL_A, VICTIM, 350),
-        ]);
-        let t1 = tx(1, ATK, true, vec![swap(POOL_A, USDC, TOKA, 100, 200)], vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-        ]);
-        let t2 = tx(2, ATK, true, vec![swap(POOL_A, TOKA, USDC, 200, 195)], vec![
-            transfer(0, TOKA, ATK, POOL_A, 200),
-            transfer(1, USDC, POOL_A, ATK, 195),
-        ]);
+        let t0 = tx(
+            0,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 200, 350)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 200),
+                transfer(1, TOKA, POOL_A, VICTIM, 350),
+            ],
+        );
+        let t1 = tx(
+            1,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let t2 = tx(
+            2,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 200, 195)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 195),
+            ],
+        );
         let input = block(vec![t0, t1, t2]);
         assert!(!kinds(&classify_block(&input)).contains(&MevKind::Sandwich));
     }

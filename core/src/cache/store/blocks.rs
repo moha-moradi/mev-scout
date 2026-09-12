@@ -42,6 +42,7 @@ impl super::SqliteStore {
         )
     }
 
+    #[allow(clippy::type_complexity)] // signature batch type — named in W5.1
     pub fn put_block_data_batch(
         &self,
         batch: &[(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)],
@@ -92,9 +93,12 @@ impl super::SqliteStore {
                 let block_event_sigs = event_sigs_batch.and_then(|b| b.get(block_idx));
 
                 for (tx_i, tx_data) in txs.iter().enumerate() {
-                    let access_list_blob = super::SqliteStore::serialize_access_list(&tx_data.access_list)?;
-                    let authorization_list_blob = super::SqliteStore::serialize_access_list(&tx_data.authorization_list)?;
-                    let (sig_hash, sig_name) = block_tx_sigs.and_then(|s| s.get(tx_i))
+                    let access_list_blob =
+                        super::SqliteStore::serialize_access_list(&tx_data.access_list)?;
+                    let authorization_list_blob =
+                        super::SqliteStore::serialize_access_list(&tx_data.authorization_list)?;
+                    let (sig_hash, sig_name) = block_tx_sigs
+                        .and_then(|s| s.get(tx_i))
                         .map(|(ref sel, ref name)| (Some(sel.to_vec()), name.clone()))
                         .unwrap_or((None, None));
                     tx_stmt.execute(rusqlite::params![
@@ -126,11 +130,12 @@ impl super::SqliteStore {
                         r.gas_used as i64,
                         r.cumulative_gas_used as i64,
                         logs_blob,
-                        r.contract_address.map(|a| super::SqliteStore::addr_to_blob(&a)),
+                        r.contract_address
+                            .map(|a| super::SqliteStore::addr_to_blob(&a)),
                     ])?;
                     for (log_index, log_entry) in r.logs.iter().enumerate() {
                         let amount = super::SqliteStore::decode_erc20_amount(log_entry);
-                        let topic0 = log_entry.topics.get(0).map(|t| t.as_slice().to_vec());
+                        let topic0 = log_entry.topics.first().map(|t| t.as_slice().to_vec());
                         let topic1 = log_entry.topics.get(1).map(|t| t.as_slice().to_vec());
                         let topic2 = log_entry.topics.get(2).map(|t| t.as_slice().to_vec());
                         let topic3 = log_entry.topics.get(3).map(|t| t.as_slice().to_vec());
@@ -237,10 +242,12 @@ impl super::SqliteStore {
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
         let mut txs = Vec::new();
         while let Some(row) = rows.next()? {
-            let access_list = row.get::<_, Option<Vec<u8>>>(11)?
+            let access_list = row
+                .get::<_, Option<Vec<u8>>>(11)?
                 .map(|b| super::SqliteStore::deserialize_access_list(&b).unwrap_or_default())
                 .unwrap_or_default();
-            let authorization_list = row.get::<_, Option<Vec<u8>>>(12)?
+            let authorization_list = row
+                .get::<_, Option<Vec<u8>>>(12)?
                 .map(|b| super::SqliteStore::deserialize_access_list(&b).unwrap_or_default())
                 .unwrap_or_default();
             txs.push(TxData {
@@ -248,7 +255,9 @@ impl super::SqliteStore {
                 index: row.get::<_, i64>(1)? as u64,
                 tx_type: row.get::<_, i64>(2)? as u8,
                 from: super::SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(3)?),
-                to: row.get::<_, Option<Vec<u8>>>(4)?.map(|b| super::SqliteStore::blob_to_addr(&b)),
+                to: row
+                    .get::<_, Option<Vec<u8>>>(4)?
+                    .map(|b| super::SqliteStore::blob_to_addr(&b)),
                 input: row.get::<_, Vec<u8>>(5)?.into(),
                 value: super::SqliteStore::blob_to_u256(&row.get::<_, Vec<u8>>(6)?),
                 gas_limit: row.get::<_, i64>(7)? as u64,
@@ -277,7 +286,8 @@ impl super::SqliteStore {
                 r.gas_used as i64,
                 r.cumulative_gas_used as i64,
                 logs_blob,
-                r.contract_address.map(|a| super::SqliteStore::addr_to_blob(&a)),
+                r.contract_address
+                    .map(|a| super::SqliteStore::addr_to_blob(&a)),
             ])?;
         }
         Ok(())
@@ -298,7 +308,8 @@ impl super::SqliteStore {
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
         let mut receipts = Vec::new();
         while let Some(row) = rows.next()? {
-            let logs: Vec<crate::data::LogData> = super::SqliteStore::deserialize(&row.get::<_, Vec<u8>>(5)?)?;
+            let logs: Vec<crate::data::LogData> =
+                super::SqliteStore::deserialize(&row.get::<_, Vec<u8>>(5)?)?;
             receipts.push(ReceiptData {
                 tx_hash: super::SqliteStore::blob_to_b256(&row.get::<_, Vec<u8>>(0)?),
                 tx_index: row.get::<_, i64>(1)? as u64,
@@ -306,7 +317,9 @@ impl super::SqliteStore {
                 gas_used: row.get::<_, i64>(3)? as u64,
                 cumulative_gas_used: row.get::<_, i64>(4)? as u64,
                 logs,
-                contract_address: row.get::<_, Option<Vec<u8>>>(6)?.map(|b| super::SqliteStore::blob_to_addr(&b)),
+                contract_address: row
+                    .get::<_, Option<Vec<u8>>>(6)?
+                    .map(|b| super::SqliteStore::blob_to_addr(&b)),
             });
         }
         Ok(Some(receipts))

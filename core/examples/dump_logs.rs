@@ -6,7 +6,10 @@ fn main() -> anyhow::Result<()> {
     let db: String = env::args()
         .nth(1)
         .unwrap_or_else(|| "./cache/polygon-mev-scout.sqlite".into());
-    let block: u64 = env::args().nth(2).unwrap_or_else(|| "92045880".into()).parse()?;
+    let block: u64 = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "92045880".into())
+        .parse()?;
     let conn = Connection::open(db)?;
     let mut stmt = conn.prepare(
         "SELECT r.tx_index, r.logs
@@ -29,8 +32,11 @@ fn main() -> anyhow::Result<()> {
             .sum();
         let sys = logs
             .iter()
-            .filter(|l| l.address == alloy::primitives::address!("0000000000000000000000000000000000001010")
-                 || l.address == alloy::primitives::address!("0000000000000000000000000000000000001001"))
+            .filter(|l| {
+                l.address == alloy::primitives::address!("0000000000000000000000000000000000001010")
+                    || l.address
+                        == alloy::primitives::address!("0000000000000000000000000000000000001001")
+            })
             .count();
         out.push((idx, nlog, topics, datab, loggas, sys));
     }

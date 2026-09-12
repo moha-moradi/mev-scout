@@ -34,7 +34,7 @@ macro_rules! build_mainnet_evm {
 }
 
 use alloy::eips::eip7702::{Authorization, SignedAuthorization};
-use alloy::primitives::{address, keccak256, Address, B256, Bytes, U256};
+use alloy::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use alloy::signers::Either;
 use revm::bytecode::Bytecode;
 use revm::context::block::BlockEnv;
@@ -45,8 +45,8 @@ use revm::context_interface::result::{EVMError, ExecutionResult, InvalidTransact
 use revm::context_interface::transaction::{AccessList, AccessListItem};
 use revm::database::CacheDB;
 use revm::handler::{ExecuteCommitEvm, MainBuilder, MainContext};
-use revm::primitives::{TxKind, KECCAK_EMPTY};
 use revm::primitives::hardfork::SpecId;
+use revm::primitives::{TxKind, KECCAK_EMPTY};
 use revm::state::AccountInfo;
 use revm::Context;
 
@@ -90,18 +90,16 @@ pub fn spec_id_for_block(chain_id: u64, block_number: u64) -> SpecId {
     }
 }
 
-
-
 /// Register Polygon-specific precompiles and system contracts.
 pub fn register_polygon_precompiles(
     db: &mut CacheDB<CachedRpcDb>,
     block_num: u64,
 ) -> anyhow::Result<()> {
     let prev_block = block_num.saturating_sub(1);
-        let (rpc, handle) = {
-            let inner = &db.db;
-            (inner.rpc().clone(), inner.handle().clone())
-        };
+    let (rpc, handle) = {
+        let inner = &db.db;
+        (inner.rpc().clone(), inner.handle().clone())
+    };
 
     let f09 = rpc.get_code_no_retry(addr_from_last_byte(0x09), prev_block);
     let f0a = rpc.get_code_no_retry(addr_from_last_byte(0x0a), prev_block);
@@ -170,9 +168,8 @@ pub fn register_polygon_precompiles(
         .iter()
         .map(|b| rpc.get_code_no_retry(addr_from_last_byte(*b), prev_block))
         .collect();
-    let probe_codes = tokio::task::block_in_place(|| {
-        handle.block_on(futures::future::join_all(probe_futures))
-    });
+    let probe_codes =
+        tokio::task::block_in_place(|| handle.block_on(futures::future::join_all(probe_futures)));
     for (b, code) in probe_addrs.iter().zip(probe_codes) {
         if let Ok(code) = code {
             if !code.is_empty() {
@@ -428,9 +425,16 @@ impl BlockReplayer {
             ));
         } else {
             // EVM emits logs in execution order, so the sequences must line up positionally.
-            for (i, (l, r_log)) in exec_logs_filtered.iter().zip(receipt_logs.iter()).enumerate() {
+            for (i, (l, r_log)) in exec_logs_filtered
+                .iter()
+                .zip(receipt_logs.iter())
+                .enumerate()
+            {
                 if l.address != r_log.address {
-                    mismatches.push(format!("log[{}].address (exec={}, receipt={})", i, l.address, r_log.address));
+                    mismatches.push(format!(
+                        "log[{}].address (exec={}, receipt={})",
+                        i, l.address, r_log.address
+                    ));
                 }
                 if l.data.data != r_log.data {
                     mismatches.push(format!("log[{}].data", i));
@@ -685,4 +689,3 @@ impl BlockReplayer {
         }
     }
 }
-

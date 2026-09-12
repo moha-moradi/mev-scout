@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use super::V4_INITIALIZE_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig};
-use super::V4_INITIALIZE_TOPIC;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) async fn scan_v4_batch(
     rpc: &RpcClient,
@@ -51,16 +51,22 @@ pub(crate) async fn scan_v4_batch(
                     let creation_block = log.block_number.unwrap_or(0);
                     let pool_addr = Address::from_slice(&topics[1][12..32]);
                     factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::UniswapV4, creation_block)
-                            .with_tick_spacing(Some(tick_spacing))
-                            .with_factory(Some(pool_manager))
-                            .with_hook_address(hook_address));
+                        DiscoveredPool::new(
+                            pool_addr,
+                            token0,
+                            token1,
+                            fee,
+                            DexType::UniswapV4,
+                            creation_block,
+                        )
+                        .with_tick_spacing(Some(tick_spacing))
+                        .with_factory(Some(pool_manager))
+                        .with_hook_address(hook_address),
+                    );
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "V4 PoolManager scan failed for {current}..{batch_end}: {e:#}"
-                );
+                tracing::warn!("V4 PoolManager scan failed for {current}..{batch_end}: {e:#}");
             }
         }
     }

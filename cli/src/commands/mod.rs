@@ -25,12 +25,12 @@ pub use scan::cmd_scan;
 pub use tokens::cmd_tokens;
 pub use validate_pools::cmd_validate_pools;
 
-use async_trait::async_trait;
-use mev_scout_core::config::Config;
 use crate::cli::{
     DiscoverArgs, ExplorerArgs, FetchArgs, LiveArgs, ReplayArgs, ReportArgs, RunArgs, ScanArgs,
     TokensArgs, ValidatePoolsArgs,
 };
+use async_trait::async_trait;
+use mev_scout_core::config::Config;
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
@@ -42,47 +42,65 @@ pub trait CliCommand {
 
 #[async_trait(?Send)]
 impl CliCommand for RunArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_run(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_run(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for FetchArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_fetch(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_fetch(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for ReportArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_report(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_report(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for ReplayArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_replay(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_replay(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for DiscoverArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_discover(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_discover(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for TokensArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_tokens(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_tokens(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for ScanArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_scan(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_scan(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for LiveArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_live(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_live(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
 impl CliCommand for ValidatePoolsArgs {
-    async fn execute(&self, config: &Config) -> anyhow::Result<()> { cmd_validate_pools(config, self).await }
+    async fn execute(&self, config: &Config) -> anyhow::Result<()> {
+        cmd_validate_pools(config, self).await
+    }
 }
 
 #[async_trait(?Send)]
@@ -99,13 +117,20 @@ impl CliCommand for ExplorerArgs {
                     config,
                     a.kinds.as_deref(),
                     a.min_profit_usd,
-                    a.poll_interval_ms.unwrap_or(config.explorer.poll_interval_ms),
+                    a.poll_interval_ms
+                        .unwrap_or(config.explorer.poll_interval_ms),
                     a.duration.as_deref(),
                 )
                 .await
             }
             ExplorerCommand::Stats(a) => {
-                cmd_stats(config, a.since.as_deref(), a.window.as_deref(), a.kind.as_deref()).await
+                cmd_stats(
+                    config,
+                    a.since.as_deref(),
+                    a.window.as_deref(),
+                    a.kind.as_deref(),
+                )
+                .await
             }
             ExplorerCommand::Top(a) => {
                 cmd_top(config, &a.by, &a.metric, a.since.as_deref(), a.limit).await
@@ -117,7 +142,11 @@ impl CliCommand for ExplorerArgs {
                     config,
                     a.since.as_deref(),
                     a.match_window,
-                    if a.run.is_empty() { None } else { Some(a.run.clone()) },
+                    if a.run.is_empty() {
+                        None
+                    } else {
+                        Some(a.run.clone())
+                    },
                     a.threshold_sweep,
                     a.emit_missing_pools,
                     a.json,
@@ -125,7 +154,14 @@ impl CliCommand for ExplorerArgs {
                 .await
             }
             ExplorerCommand::Export(a) => {
-                cmd_export(config, a.since.as_deref(), a.kinds.as_deref(), &a.format, a.out.as_deref()).await
+                cmd_export(
+                    config,
+                    a.since.as_deref(),
+                    a.kinds.as_deref(),
+                    &a.format,
+                    a.out.as_deref(),
+                )
+                .await
             }
         }
     }

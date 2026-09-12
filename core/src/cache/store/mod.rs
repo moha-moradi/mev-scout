@@ -49,9 +49,10 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Acquire the SQLite connection mutex guard.
-    /// Panics with a clear message if the mutex is poisoned (process state corrupted).
+    /// Recovers from a poisoned mutex (a panic while locked must not
+    /// cascade — the connection itself remains usable).
     pub fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
-        self.conn.lock().expect("SQLite connection mutex poisoned")
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -298,7 +299,11 @@ impl SqliteStore {
     }
 
     pub fn serialize_access_list<T: Serialize>(list: &[T]) -> anyhow::Result<Option<Vec<u8>>> {
-        if list.is_empty() { Ok(None) } else { Ok(Some(Self::serialize(list)?)) }
+        if list.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(Self::serialize(list)?))
+        }
     }
 
     pub fn deserialize_access_list<T: serde::de::DeserializeOwned>(
@@ -355,14 +360,15 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         arr.copy_from_slice(&v);
         arr
     });
-    let factory = row.get::<_, Option<Vec<u8>>>(8).ok()
-        .and_then(|v| v.and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes))));
-    let is_stable = row.get::<_, Option<i64>>(9).ok().flatten().map(|v| v != 0);
-    let underlying_tokens: Option<Vec<Address>> = row.get::<_, Option<String>>(10).ok()
-        .flatten()
-        .and_then(|json_str| {
+    let factory = row
+        .get::<_, Option<Vec<u8>>>(8)?
+        .and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes)));
+    let is_stable = row.get::<_, Option<i64>>(9)?.map(|v| v != 0);
+    let underlying_tokens: Option<Vec<Address>> =
+        row.get::<_, Option<String>>(10)?.and_then(|json_str| {
             let hexes: Vec<String> = serde_json::from_str(&json_str).ok()?;
-            let addrs: Vec<Address> = hexes.iter()
+            let addrs: Vec<Address> = hexes
+                .iter()
                 .filter_map(|h| h.strip_prefix("0x").or(Some(h.as_str())))
                 .filter_map(|h| hex::decode(h).ok())
                 .filter(|b| b.len() == 20)
@@ -370,23 +376,28 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
                 .collect();
             (!addrs.is_empty()).then_some(addrs)
         });
-    let balancer_pool_type = row.get::<_, Option<i64>>(11).ok().flatten().map(|v| v as u8);
-    let hook_address = row.get::<_, Option<Vec<u8>>>(12).ok()
-        .and_then(|v| v.and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes))));
-    let bin_step = row.get::<_, Option<i64>>(13).ok().flatten().map(|v| v as u32);
-    let maturity_timestamp = row.get::<_, Option<i64>>(14).ok().flatten().map(|v| v as u64);
-    let dex_name = row.get::<_, Option<String>>(15).ok().flatten();
-    let token0_symbol = row.get::<_, Option<String>>(16).ok().flatten();
-    let token1_symbol = row.get::<_, Option<String>>(17).ok().flatten();
-    let tvl_usd = row.get::<_, Option<f64>>(18).ok().flatten();
-    let volume_usd_24h = row.get::<_, Option<f64>>(19).ok().flatten();
-    let volume_usd_30d = row.get::<_, Option<f64>>(20).ok().flatten();
+    let balancer_pool_type = row.get::<_, Option<i64>>(11)?.map(|v| v as u8);
+    let hook_address = row
+        .get::<_, Option<Vec<u8>>>(12)?
+        .and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes)));
+    let bin_step = row.get::<_, Option<i64>>(13)?.map(|v| v as u32);
+    let maturity_timestamp = row.get::<_, Option<i64>>(14)?.map(|v| v as u64);
+    let dex_name = row.get::<_, Option<String>>(15)?;
+    let token0_symbol = row.get::<_, Option<String>>(16)?;
+    let token1_symbol = row.get::<_, Option<String>>(17)?;
+    let tvl_usd = row.get::<_, Option<f64>>(18)?;
+    let volume_usd_24h = row.get::<_, Option<f64>>(19)?;
+    let volume_usd_30d = row.get::<_, Option<f64>>(20)?;
     let token0 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(1)?);
     let token1 = SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(2)?);
-    let is_fot = Some(crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
-        || crate::pool::state::pool_types::is_fee_on_transfer_token(&token1));
-    let is_rebase = Some(crate::pool::state::pool_types::is_rebase_token(&token0)
-        || crate::pool::state::pool_types::is_rebase_token(&token1));
+    let is_fot = Some(
+        crate::pool::state::pool_types::is_fee_on_transfer_token(&token0)
+            || crate::pool::state::pool_types::is_fee_on_transfer_token(&token1),
+    );
+    let is_rebase = Some(
+        crate::pool::state::pool_types::is_rebase_token(&token0)
+            || crate::pool::state::pool_types::is_rebase_token(&token1),
+    );
     Ok(PoolInfo {
         address: SqliteStore::blob_to_addr(&row.get::<_, Vec<u8>>(0)?),
         token0,
@@ -423,7 +434,12 @@ fn row_to_manifest(row: &rusqlite::Row) -> anyhow::Result<RunManifest> {
         end_block: row.get::<_, i64>(3)? as u64,
         resolved_at: row.get::<_, i64>(4)? as u64,
         range_mode: row.get(5)?,
-        strategies: row.get::<_, String>(6)?.split(',').map(|s| s.to_string()).filter(|s| !s.is_empty()).collect(),
+        strategies: row
+            .get::<_, String>(6)?
+            .split(',')
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         flash_loan_provider: row.get(7)?,
     })
 }

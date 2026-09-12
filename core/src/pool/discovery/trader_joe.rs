@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use super::LB_PAIR_CREATED_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
-use super::LB_PAIR_CREATED_TOPIC;
+use std::collections::{HashMap, HashSet};
 
+#[allow(clippy::too_many_arguments)] // discovery plumbing — slimmed in W4
 pub(crate) async fn scan_trader_joe_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
@@ -39,11 +40,22 @@ pub(crate) async fn scan_trader_joe_batch(
                         let token1 = Address::from_slice(&topics[3][12..32]);
                         let creation_block = log.block_number.unwrap_or(0);
                         pool_hits.entry(lb_pair).or_insert((
-                            DexType::TraderJoeLB, None, None, creation_block,
+                            DexType::TraderJoeLB,
+                            None,
+                            None,
+                            creation_block,
                         ));
                         factory_pools.entry(lb_pair).or_insert(
-                            DiscoveredPool::new(lb_pair, token0, token1, 0, DexType::TraderJoeLB, creation_block)
-                                .with_factory(Some(factory)));
+                            DiscoveredPool::new(
+                                lb_pair,
+                                token0,
+                                token1,
+                                0,
+                                DexType::TraderJoeLB,
+                                creation_block,
+                            )
+                            .with_factory(Some(factory)),
+                        );
                     }
                 }
                 Err(e) => {

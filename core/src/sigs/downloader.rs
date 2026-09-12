@@ -15,15 +15,14 @@ pub fn default_sig_db_path() -> PathBuf {
 
 /// Return the data directory for mev-scout.
 fn dirs_data_dir() -> PathBuf {
-    let base = std::env::var("MEV_SCOUT_DATA_DIR")
+    std::env::var("MEV_SCOUT_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home).join(".mev-scout")
-        });
-    base
+        })
 }
 
 /// Build a comprehensive signature DB with all known DEX/MEV signatures.
@@ -398,109 +397,254 @@ fn build_fallback_db(db_path: &PathBuf) -> anyhow::Result<()> {
     // ── Comprehensive event signatures ────────────────────────────────────
     let events: &[(&str, &str)] = &[
         // ERC20 / Generic
-        ("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "Transfer(address,address,uint256)"),
-        ("8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925", "Approval(address,address,uint256)"),
-        ("17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31", "ApprovalForAll(address,address,bool)"),
-
+        (
+            "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "Transfer(address,address,uint256)",
+        ),
+        (
+            "8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b925",
+            "Approval(address,address,uint256)",
+        ),
+        (
+            "17307eab39ab6107e8899845ad3d59bd9653f200f220920489ca2b5937696c31",
+            "ApprovalForAll(address,address,bool)",
+        ),
         // Uniswap V2 Pair
-        ("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822", "Swap(address,uint256,uint256,uint256,uint256,address)"),
-        ("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1", "Sync(uint112,uint112)"),
-        ("4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f", "Mint(address,uint256,uint256)"),
-        ("dccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496", "Burn(address,uint256,uint256,address)"),
-
+        (
+            "d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",
+            "Swap(address,uint256,uint256,uint256,uint256,address)",
+        ),
+        (
+            "1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1",
+            "Sync(uint112,uint112)",
+        ),
+        (
+            "4c209b5fc8ad50758f13e2e1088ba56a560dff690a1c6fef26394f4c03821c4f",
+            "Mint(address,uint256,uint256)",
+        ),
+        (
+            "dccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d81936496",
+            "Burn(address,uint256,uint256,address)",
+        ),
         // Uniswap V2 Factory
-        ("0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9", "PairCreated(address,address,address,uint256)"),
-
+        (
+            "0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9",
+            "PairCreated(address,address,address,uint256)",
+        ),
         // Uniswap V3 Pool
-        ("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67", "Swap(address,address,int256,int256,uint160,uint128,int24)"),
-        ("7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde", "Mint(address,address,int24,int24,uint128,uint256,uint256)"),
-        ("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c", "Burn(address,int24,int24,uint128,uint256,uint256)"),
-        ("70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0", "Collect(address,address,int24,int24,uint128,uint128)"),
-        ("98636036cb66a9c19a37435efc1e90142190214e8abeb821bdba3f2990dd4c95", "Initialize(uint160,int24)"),
-
+        (
+            "c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+            "Swap(address,address,int256,int256,uint160,uint128,int24)",
+        ),
+        (
+            "7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde",
+            "Mint(address,address,int24,int24,uint128,uint256,uint256)",
+        ),
+        (
+            "0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c",
+            "Burn(address,int24,int24,uint128,uint256,uint256)",
+        ),
+        (
+            "70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0",
+            "Collect(address,address,int24,int24,uint128,uint128)",
+        ),
+        (
+            "98636036cb66a9c19a37435efc1e90142190214e8abeb821bdba3f2990dd4c95",
+            "Initialize(uint160,int24)",
+        ),
         // Uniswap V3 Factory
-        ("783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118", "PoolCreated(address,address,uint24,int24,address)"),
-
+        (
+            "783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118",
+            "PoolCreated(address,address,uint24,int24,address)",
+        ),
         // Balancer V2 Vault
-        ("03f136671577c42a8d927db6cc79022fa6b34165c6b08d1e479327ed183b2fdf", "Swap(bytes32,uint256,uint256,uint256,uint256,address,address,address,uint256,uint256)"),
-        ("c58f35ca649f2ebaf8f1189e10cb3c07d7255c417018d4002ad6dceb86d27e74", "FlashLoan(address,address,address,uint256,uint256,uint256)"),
-        ("947ff4e0d0464be2d887b57d38dc37b5109e07b91290f501caa5243addc89588", "PoolBalanceChanged(bytes32,address,address,uint256[],uint256[],uint256[],uint256)"),
-        ("6edcaf6241105b4c94c2efdbf3a6b12458eb3d07be3a0e81d24b13c44045fe7a", "PoolBalanceManaged(bytes32,address,address,int256,int256)"),
-
+        (
+            "03f136671577c42a8d927db6cc79022fa6b34165c6b08d1e479327ed183b2fdf",
+            "Swap(bytes32,uint256,uint256,uint256,uint256,address,address,address,uint256,uint256)",
+        ),
+        (
+            "c58f35ca649f2ebaf8f1189e10cb3c07d7255c417018d4002ad6dceb86d27e74",
+            "FlashLoan(address,address,address,uint256,uint256,uint256)",
+        ),
+        (
+            "947ff4e0d0464be2d887b57d38dc37b5109e07b91290f501caa5243addc89588",
+            "PoolBalanceChanged(bytes32,address,address,uint256[],uint256[],uint256[],uint256)",
+        ),
+        (
+            "6edcaf6241105b4c94c2efdbf3a6b12458eb3d07be3a0e81d24b13c44045fe7a",
+            "PoolBalanceManaged(bytes32,address,address,int256,int256)",
+        ),
         // Curve Pool
-        ("8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140", "TokenExchange(address,int128,uint256,int128,uint256)"),
-        ("d013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b", "TokenExchangeUnderlying(address,int128,uint256,int128,uint256)"),
-        ("26f55a85081d24974e85c6c00045d0f0453991e95873f52bff0d21af4079a768", "AddLiquidity(address,uint256[2],uint256[2],uint256,uint256)"),
-        ("7c363854ccf79623411f8995b362bce5eddff18c927edc6f5dbbb5e05819a82c", "RemoveLiquidity(address,uint256[2],uint256[2],uint256)"),
-        ("43fb02998f4e03da2e0e6fff53fdbf0c40a9f45f145dc377fc30615d7d7a8a64", "RemoveLiquidityOne(address,uint256,uint256,uint256,uint256)"),
-        ("2b5508378d7e19e0d5fa338419034731416c4f5b219a10379956f764317fd47e", "RemoveLiquidityImbalance(address,uint256[2],uint256[2],uint256,uint256)"),
-
+        (
+            "8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140",
+            "TokenExchange(address,int128,uint256,int128,uint256)",
+        ),
+        (
+            "d013ca23e77a65003c2c659c5442c00c805371b7fc1ebd4c206c41d1536bd90b",
+            "TokenExchangeUnderlying(address,int128,uint256,int128,uint256)",
+        ),
+        (
+            "26f55a85081d24974e85c6c00045d0f0453991e95873f52bff0d21af4079a768",
+            "AddLiquidity(address,uint256[2],uint256[2],uint256,uint256)",
+        ),
+        (
+            "7c363854ccf79623411f8995b362bce5eddff18c927edc6f5dbbb5e05819a82c",
+            "RemoveLiquidity(address,uint256[2],uint256[2],uint256)",
+        ),
+        (
+            "43fb02998f4e03da2e0e6fff53fdbf0c40a9f45f145dc377fc30615d7d7a8a64",
+            "RemoveLiquidityOne(address,uint256,uint256,uint256,uint256)",
+        ),
+        (
+            "2b5508378d7e19e0d5fa338419034731416c4f5b219a10379956f764317fd47e",
+            "RemoveLiquidityImbalance(address,uint256[2],uint256[2],uint256,uint256)",
+        ),
         // Aave V3 Pool
-        ("de6857219544bb5b7746f48ed30be6386fefc61b2f864cacf559893bf50fd951", "Deposit(address,address,address,uint256,uint16)"),
-        ("3115d1449a7b732c986cba18244e897a450f61e1bb8d589cd2e69e6c8924f9f7", "Withdraw(address,address,address,uint256)"),
-        ("39884ffb02602a13fb58b50134a8735509d9c8f846d749abcb003939e159f733", "Borrow(address,address,address,uint256,uint256,uint16)"),
-        ("4cdde6e09bb755c9a5589ebaec640bbfedff1362d4b255ebf8339782b9942faa", "Repay(address,address,address,uint256)"),
-        ("bc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b", "Upgraded(address)"),
-        ("7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f", "AdminChanged(address,address)"),
-
+        (
+            "de6857219544bb5b7746f48ed30be6386fefc61b2f864cacf559893bf50fd951",
+            "Deposit(address,address,address,uint256,uint16)",
+        ),
+        (
+            "3115d1449a7b732c986cba18244e897a450f61e1bb8d589cd2e69e6c8924f9f7",
+            "Withdraw(address,address,address,uint256)",
+        ),
+        (
+            "39884ffb02602a13fb58b50134a8735509d9c8f846d749abcb003939e159f733",
+            "Borrow(address,address,address,uint256,uint256,uint16)",
+        ),
+        (
+            "4cdde6e09bb755c9a5589ebaec640bbfedff1362d4b255ebf8339782b9942faa",
+            "Repay(address,address,address,uint256)",
+        ),
+        (
+            "bc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b",
+            "Upgraded(address)",
+        ),
+        (
+            "7e644d79422f17c01e4894b5f4f588d331ebfa28653d42ae832dc59e38c9798f",
+            "AdminChanged(address,address)",
+        ),
         // WETH / Wrapped Native
-        ("e1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c", "Deposit(address,uint256)"),
-        ("7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65", "Withdrawal(address,uint256)"),
-
+        (
+            "e1fffcc4923d04b559f4d29a8bfc6cda04eb5b0d3c460751c2402c5c5cc9109c",
+            "Deposit(address,uint256)",
+        ),
+        (
+            "7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65",
+            "Withdrawal(address,uint256)",
+        ),
         // ERC-4626
-        ("dcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7", "Deposit(address,address,uint256,uint256)"),
-        ("fbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db", "Withdraw(address,address,address,uint256,uint256)"),
-
+        (
+            "dcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7",
+            "Deposit(address,address,uint256,uint256)",
+        ),
+        (
+            "fbde797d201c681b91056529119e0b02407c7bb96a4a2c75c01fc9667232c8db",
+            "Withdraw(address,address,address,uint256,uint256)",
+        ),
         // ERC-2612 Permit / MetaTx
-        ("98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5", "AuthorizationUsed(address,bytes32)"),
-        ("1cdd46ff242716cdaa72d159d339a485b3438398348d68f09d7c8c0a59353d81", "AuthorizationCanceled(address,bytes32)"),
-
+        (
+            "98de503528ee59b575ef0c0a2576a82497bfc029a5685b209e9ec333479b10a5",
+            "AuthorizationUsed(address,bytes32)",
+        ),
+        (
+            "1cdd46ff242716cdaa72d159d339a485b3438398348d68f09d7c8c0a59353d81",
+            "AuthorizationCanceled(address,bytes32)",
+        ),
         // Flashbots / MEV
-        ("7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65", "Withdrawal(address,uint256)"),
-
+        (
+            "7fcf532c15f0a6db0bd6d0e038bea71d30d808c7d98cb3bf7268a95bf5081b65",
+            "Withdrawal(address,uint256)",
+        ),
         // LayerZero
-        ("7cbf52d2f4e464c2fa3f4efd38a15b0b722d0c038c9b692f54c0e0e0a9dc3a16", "PacketSent(uint16,bytes,bytes,uint64,uint16,bytes,uint256)"),
-        ("92cf4c1500f8410f73a50a8f7a94e5f6faa1df68beef7095b789344b8ed29129", "PacketReceived(uint16,bytes,uint64,bytes)"),
-
+        (
+            "7cbf52d2f4e464c2fa3f4efd38a15b0b722d0c038c9b692f54c0e0e0a9dc3a16",
+            "PacketSent(uint16,bytes,bytes,uint64,uint16,bytes,uint256)",
+        ),
+        (
+            "92cf4c1500f8410f73a50a8f7a94e5f6faa1df68beef7095b789344b8ed29129",
+            "PacketReceived(uint16,bytes,uint64,bytes)",
+        ),
         // 0x Protocol
-        ("f22d49d86be3f16496ab51f25ce7821e2e17d9539be6c61b6457ed4811cf79cb", "OrderFilled(address,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"),
-        ("26b214029d2b6a3a3bb2ae7cc0a5d4c9329a86381429e16dc45b3633cf83d369", "OrderCancelled(address,bytes32,uint256)"),
-
+        (
+            "f22d49d86be3f16496ab51f25ce7821e2e17d9539be6c61b6457ed4811cf79cb",
+            "OrderFilled(address,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)",
+        ),
+        (
+            "26b214029d2b6a3a3bb2ae7cc0a5d4c9329a86381429e16dc45b3633cf83d369",
+            "OrderCancelled(address,bytes32,uint256)",
+        ),
         // Generic events
-        ("8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0", "OwnershipTransferred(address,address)"),
-        ("62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258", "Paused(address)"),
-        ("5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa", "Unpaused(address)"),
-
+        (
+            "8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0",
+            "OwnershipTransferred(address,address)",
+        ),
+        (
+            "62e78cea01bee320cd4e420270b5ea74000d11b0c9f74754ebdbfc544b05a258",
+            "Paused(address)",
+        ),
+        (
+            "5db9ee0a495bf2e6ff9c91a7834c1ba4fdd244a5e8aa4e537bd38aeae4b073aa",
+            "Unpaused(address)",
+        ),
         // DEX-specific swap events (missing from original fallback)
-        ("2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b", "Swap(bytes32,address,address,uint256,uint256)"),
-        ("c2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f", "DODOSwap(address,address,uint256,uint256,address,address)"),
-
+        (
+            "2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b",
+            "Swap(bytes32,address,address,uint256,uint256)",
+        ),
+        (
+            "c2c0245e056d5fb095f04cd6373bc770802ebd1e6c918eb78fdef843cdb37b0f",
+            "DODOSwap(address,address,uint256,uint256,address,address)",
+        ),
         // Curve V2 events (missing from original fallback)
-        ("95d7b7eb49650fc975a7948ff147be2a3b8e3210fbacbba6ff2a7bcbebd2986e", "TokenExchange(address,int128,uint256,int128,uint256,uint256)"),
-        ("e3607c2ce07864d07fe66ae81737853c59f6961b40c954197162bd764ffb9e77", "TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)"),
-
+        (
+            "95d7b7eb49650fc975a7948ff147be2a3b8e3210fbacbba6ff2a7bcbebd2986e",
+            "TokenExchange(address,int128,uint256,int128,uint256,uint256)",
+        ),
+        (
+            "e3607c2ce07864d07fe66ae81737853c59f6961b40c954197162bd764ffb9e77",
+            "TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)",
+        ),
         // DEX pool discovery events (missing from original fallback)
-        ("0a37da2b1868bfc70f4dc3988da03432d740f6ffbdc860da6941898a959a7df2", "PairCreated(address,address,bool,address)"),
-        ("30fcf386678f0a00ca73486610fda45a0bd09cb9ede7e2e5078f4c842f21b1da", "PairCreated(address,address,address,uint256,bool)"),
-        ("3c13bc30b8e878c53fd2a36b679409c073afd75950be43d8858768e956fbc20e", "PoolRegistered(bytes32,address,uint8)"),
-        ("0c98febfffcec480c66a977e13f14bafdb5199ea9603591a0715b0cabe0c3ae2", "PoolAdded(address,uint256)"),
+        (
+            "0a37da2b1868bfc70f4dc3988da03432d740f6ffbdc860da6941898a959a7df2",
+            "PairCreated(address,address,bool,address)",
+        ),
+        (
+            "30fcf386678f0a00ca73486610fda45a0bd09cb9ede7e2e5078f4c842f21b1da",
+            "PairCreated(address,address,address,uint256,bool)",
+        ),
+        (
+            "3c13bc30b8e878c53fd2a36b679409c073afd75950be43d8858768e956fbc20e",
+            "PoolRegistered(bytes32,address,uint8)",
+        ),
+        (
+            "0c98febfffcec480c66a977e13f14bafdb5199ea9603591a0715b0cabe0c3ae2",
+            "PoolAdded(address,uint256)",
+        ),
     ];
 
-    let mut m_stmt = conn.prepare("INSERT OR IGNORE INTO methods (selector, signature) VALUES (?1, ?2)")?;
+    let mut m_stmt =
+        conn.prepare("INSERT OR IGNORE INTO methods (selector, signature) VALUES (?1, ?2)")?;
     for (hex, sig) in methods {
         let sel = hex::decode(hex)?;
         m_stmt.execute(rusqlite::params![sel, sig])?;
     }
     drop(m_stmt);
 
-    let mut e_stmt = conn.prepare("INSERT OR IGNORE INTO events (topic, signature) VALUES (?1, ?2)")?;
+    let mut e_stmt =
+        conn.prepare("INSERT OR IGNORE INTO events (topic, signature) VALUES (?1, ?2)")?;
     for (hex, sig) in events {
         let topic = hex::decode(hex)?;
         e_stmt.execute(rusqlite::params![topic, sig])?;
     }
     drop(e_stmt);
 
-    tracing::info!("Built fallback sig DB: {} methods, {} events", methods.len(), events.len());
+    tracing::info!(
+        "Built fallback sig DB: {} methods, {} events",
+        methods.len(),
+        events.len()
+    );
     Ok(())
 }
 
@@ -536,7 +680,10 @@ async fn try_download_sig_db(db_path: &PathBuf) -> anyhow::Result<()> {
     tracing::info!("Downloading signature database from {SIG_DB_URL}...");
     let resp = reqwest::get(SIG_DB_URL).await?;
     let compressed_bytes = resp.bytes().await?;
-    tracing::info!("Downloaded {} bytes (zstd compressed)", compressed_bytes.len());
+    tracing::info!(
+        "Downloaded {} bytes (zstd compressed)",
+        compressed_bytes.len()
+    );
 
     let mut decoder = ruzstd::StreamingDecoder::new(&compressed_bytes[..])?;
     let mut decompressed = Vec::new();

@@ -181,14 +181,14 @@ impl FromStr for GasModel {
             _ => {
                 if let Some(rest) = lower.strip_prefix("distribution_") {
                     if let Ok(p) = rest.parse::<u8>() {
-                        if p >= 1 && p <= 99 {
+                        if (1..=99).contains(&p) {
                             return Ok(GasModel::Distribution(p));
                         }
                     }
                 }
                 if let Some(rest) = lower.strip_prefix("distribution") {
                     if let Ok(p) = rest.parse::<u8>() {
-                        if p >= 1 && p <= 99 {
+                        if (1..=99).contains(&p) {
                             return Ok(GasModel::Distribution(p));
                         }
                     }

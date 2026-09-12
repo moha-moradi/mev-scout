@@ -37,8 +37,7 @@ pub struct ProfitTokenPolicy {
 /// `Transfer(me, 0x0, wad)`. Mints/burns on the wrapper are delta noise for
 /// searchers that wrap mid-tx.
 fn is_wrap_noise(t: &TransferFact, wrapped_native: Address) -> bool {
-    t.token == wrapped_native
-        && (t.from == Address::ZERO || t.to == Address::ZERO)
+    t.token == wrapped_native && (t.from == Address::ZERO || t.to == Address::ZERO)
 }
 
 /// Per-address per-token delta map.
@@ -250,10 +249,7 @@ mod tests {
         let pool = address!("2000000000000000000000000000000000000000");
         let usdc = address!("4000000000000000000000000000000000000000");
         let junk = address!("6000000000000000000000000000000000000000");
-        let transfers = vec![
-            tf(0, junk, pool, me, 10_000),
-            tf(1, usdc, pool, me, 7),
-        ];
+        let transfers = vec![tf(0, junk, pool, me, 10_000), tf(1, usdc, pool, me, 7)];
         let ledger = DeltaLedger::from_transfers(&transfers, W, (Address::ZERO, U256::ZERO));
         let policy = ProfitTokenPolicy {
             priority: vec![usdc],

@@ -1,7 +1,6 @@
 use alloy::primitives::address;
 use mev_scout_core::config::{
-    CliOverrides, Config, ConfigBuilder,
-    BacktestOverrides, GasOverrides, OutputConfig,
+    BacktestOverrides, CliOverrides, Config, ConfigBuilder, GasOverrides, OutputConfig,
 };
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::DiscoveredPool;
@@ -123,15 +122,27 @@ fn test_discover_v3_pipeline() {
     };
 
     let info: PoolInfo = dp.into();
-    assert_eq!(info.address, address!("cafe000000000000000000000000000000000001"));
-    assert_eq!(info.token0, address!("aaaa0000000000000000000000000000000000aa"));
-    assert_eq!(info.token1, address!("bbbb0000000000000000000000000000000000bb"));
+    assert_eq!(
+        info.address,
+        address!("cafe000000000000000000000000000000000001")
+    );
+    assert_eq!(
+        info.token0,
+        address!("aaaa0000000000000000000000000000000000aa")
+    );
+    assert_eq!(
+        info.token1,
+        address!("bbbb0000000000000000000000000000000000bb")
+    );
     assert_eq!(info.fee, 500);
     assert_eq!(info.dex_type, DexType::UniswapV3);
     assert_eq!(info.tick_spacing, Some(10));
     assert_eq!(info.creation_block, 42);
     assert!(info.pool_id.is_none());
-    assert_eq!(info.factory, Some(address!("cafe0000000000000000000000000000000000aa")));
+    assert_eq!(
+        info.factory,
+        Some(address!("cafe0000000000000000000000000000000000aa"))
+    );
 }
 
 /// ── Test 10: ConfigBuilder produces correct config ───────────────────────────

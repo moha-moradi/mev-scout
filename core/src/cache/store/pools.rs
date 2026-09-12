@@ -57,7 +57,7 @@ impl super::SqliteStore {
         )?;
         let mut rows = stmt.query(rusqlite::params![super::SqliteStore::addr_to_blob(address)])?;
         match rows.next()? {
-            Some(row) => Ok(Some(super::row_to_pool_info(&row)?)),
+            Some(row) => Ok(Some(super::row_to_pool_info(row)?)),
             None => Ok(None),
         }
     }
@@ -71,7 +71,7 @@ impl super::SqliteStore {
         let mut rows = stmt.query([])?;
         let mut pools = Vec::new();
         while let Some(row) = rows.next()? {
-            pools.push(super::row_to_pool_info(&row)?);
+            pools.push(super::row_to_pool_info(row)?);
         }
         Ok(pools)
     }
@@ -101,9 +101,7 @@ impl super::SqliteStore {
 
     pub fn max_creation_block(&self) -> anyhow::Result<Option<u64>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT MAX(creation_block) FROM pool_info",
-        )?;
+        let mut stmt = conn.prepare("SELECT MAX(creation_block) FROM pool_info")?;
         let mut rows = stmt.query([])?;
         match rows.next()? {
             Some(row) => {
@@ -186,6 +184,9 @@ mod tests {
             )
             .unwrap();
         }
-        assert!(store.earliest_creation_block_by_factory().unwrap().is_empty());
+        assert!(store
+            .earliest_creation_block_by_factory()
+            .unwrap()
+            .is_empty());
     }
 }

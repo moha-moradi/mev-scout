@@ -25,7 +25,13 @@ pub struct PendingBlockCapture {
 /// The returned txs can be used for informational display or merged with
 /// settled transactions for extended MEV detection (Phase 2+).
 pub async fn capture_pending_block(rpc: &RpcClient) -> Option<PendingBlockCapture> {
-    let (block_data, txs) = rpc.get_pending_block().await.ok()?;
+    let (block_data, txs) = match rpc.get_pending_block().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Failed to fetch pending block (mempool pass skipped): {e:#}");
+            return None;
+        }
+    };
     let tx_count = txs.len();
     tracing::info!(
         "Captured pending block: {} pending transactions (block #{})",

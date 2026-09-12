@@ -18,7 +18,7 @@ use crate::cli::{ValidatePoolsArgs, ValidationSource};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::{validation, Config};
-use mev_scout_core::pool::discovery::{pick_factories, remote, DiscoveryConfig, DiscoveredPool};
+use mev_scout_core::pool::discovery::{pick_factories, remote, DiscoveredPool, DiscoveryConfig};
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::recommended_get_logs_batch;
 use mev_scout_core::types::{ChainName, RangeMode};
@@ -49,8 +49,10 @@ struct DexRecallRow {
 }
 
 pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> anyhow::Result<()> {
-    let (chain_name, chain_config) = validation::resolve_chain(config)
-        .context("failed to resolve chain configuration")?;
+    let (chain_name, chain_config) =
+        validation::resolve_chain(config).context("failed to resolve chain configuration")?;
+    validation::validate_chain_config_addresses(&chain_config)
+        .context("chain configuration has invalid addresses")?;
 
     println!("  Pool Discovery Accuracy Validation");
     println!("  Chain:   {}", chain_name);
@@ -65,8 +67,7 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
 
     if want(ValidationSource::Gecko) {
         let slug = chain_name.to_string();
-        let pools =
-            remote::discover_via_geckoterminal(&slug, Some(1000), None).await;
+        let pools = remote::discover_via_geckoterminal(&slug, Some(1000), None).await;
         if !pools.is_empty() {
             println!("  Reference [gecko]:    {} pools", pools.len());
             references.push(("gecko".into(), pools));
@@ -85,50 +86,109 @@ pub async fn cmd_validate_pools(config: &Config, args: &ValidatePoolsArgs) -> an
     let cache_path = config.effective_db_path(&chain_name);
     let cache = SqliteStore::open(&cache_path)?;
 
-    let vault = chain_config.balancer_vault.as_ref().and_then(|s| s.parse::<Address>().ok());
-    let registry = chain_config.curve_registry.as_ref().and_then(|s| s.parse::<Address>().ok());
+    let vault = chain_config
+        .balancer_vault
+        .as_ref()
+        .and_then(|s| s.parse::<Address>().ok());
+    let registry = chain_config
+        .curve_registry
+        .as_ref()
+        .and_then(|s| s.parse::<Address>().ok());
     let parse_all = |v: &Option<Vec<String>>| -> Vec<Address> {
         v.as_ref()
             .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
             .unwrap_or_default()
     };
-    let v2_factories = pick_factories(parse_all(&chain_config.uniswap_v2_factories), chain_name.default_uniswap_v2_factories());
-    let v3_factories = pick_factories(parse_all(&chain_config.uniswap_v3_factories), chain_name.default_uniswap_v3_factories());
-    let solidly_factories = pick_factories(parse_all(&chain_config.solidly_factories), &chain_name.default_solidly_factories());
-    let camelot_factories = pick_factories(parse_all(&chain_config.camelot_factories), &chain_name.default_camelot_factories());
-    let trader_joe_factories = pick_factories(parse_all(&chain_config.trader_joe_factories), &chain_name.default_trader_joe_factories());
-    let curve_factories = pick_factories(parse_all(&chain_config.curve_factories), chain_name.default_curve_factories());
+    let v2_factories = pick_factories(
+        parse_all(&chain_config.uniswap_v2_factories),
+        chain_name.default_uniswap_v2_factories(),
+    );
+    let v3_factories = pick_factories(
+        parse_all(&chain_config.uniswap_v3_factories),
+        chain_name.default_uniswap_v3_factories(),
+    );
+    let solidly_factories = pick_factories(
+        parse_all(&chain_config.solidly_factories),
+        &chain_name.default_solidly_factories(),
+    );
+    let camelot_factories = pick_factories(
+        parse_all(&chain_config.camelot_factories),
+        &chain_name.default_camelot_factories(),
+    );
+    let trader_joe_factories = pick_factories(
+        parse_all(&chain_config.trader_joe_factories),
+        &chain_name.default_trader_joe_factories(),
+    );
+    let curve_factories = pick_factories(
+        parse_all(&chain_config.curve_factories),
+        chain_name.default_curve_factories(),
+    );
 
     let disc_config = DiscoveryConfig {
         batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, 500),
         v2_fee_override: chain_config.uniswap_v2_default_fee,
         balancer_vault: vault,
-        v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
-        v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
+        v2_factories: if v2_factories.is_empty() {
+            None
+        } else {
+            Some(v2_factories.as_slice())
+        },
+        v3_factories: if v3_factories.is_empty() {
+            None
+        } else {
+            Some(v3_factories.as_slice())
+        },
         curve_registry: registry,
-        curve_factories: if curve_factories.is_empty() { None } else { Some(curve_factories.as_slice()) },
-        solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
-        camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+        curve_factories: if curve_factories.is_empty() {
+            None
+        } else {
+            Some(curve_factories.as_slice())
+        },
+        solidly_factories: if solidly_factories.is_empty() {
+            None
+        } else {
+            Some(solidly_factories.as_slice())
+        },
+        camelot_factories: if camelot_factories.is_empty() {
+            None
+        } else {
+            Some(camelot_factories.as_slice())
+        },
         solidly_fee_bps: None,
-        v4_pool_manager: chain_config.v4_pool_manager.as_ref().and_then(|s| s.parse().ok()),
-        infinity_cl_pool_manager: chain_config.infinity_cl_pool_manager.as_ref().and_then(|s| s.parse().ok()),
-        trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
-        pendle_factory: chain_config.pendle_factory.as_ref().and_then(|s| s.parse().ok()),
-        metric_factory: chain_config.metric_factory.as_ref().and_then(|s| s.parse().ok()),
-        fluid_factory: chain_config.fluid_factory.as_ref().and_then(|s| s.parse().ok()),
+        v4_pool_manager: chain_config
+            .v4_pool_manager
+            .as_ref()
+            .and_then(|s| s.parse().ok()),
+        infinity_cl_pool_manager: chain_config
+            .infinity_cl_pool_manager
+            .as_ref()
+            .and_then(|s| s.parse().ok()),
+        trader_joe_factories: if trader_joe_factories.is_empty() {
+            None
+        } else {
+            Some(trader_joe_factories.as_slice())
+        },
+        pendle_factory: chain_config
+            .pendle_factory
+            .as_ref()
+            .and_then(|s| s.parse().ok()),
+        metric_factory: chain_config
+            .metric_factory
+            .as_ref()
+            .and_then(|s| s.parse().ok()),
+        fluid_factory: chain_config
+            .fluid_factory
+            .as_ref()
+            .and_then(|s| s.parse().ok()),
         rpc_concurrency: 8,
         token_cache: None,
         pool_cache: Some(&cache),
     };
 
-    let (set_a_raw, _active) = mev_scout_core::pool::discovery::discover_pools(
-        &rpc, from, to, &disc_config, None,
-    )
-    .await?;
-    let (set_a, _removed) = mev_scout_core::pool::discovery::health_check_pools(
-        &rpc, set_a_raw, 8, vault,
-    )
-    .await;
+    let (set_a_raw, _active) =
+        mev_scout_core::pool::discovery::discover_pools(&rpc, from, to, &disc_config, None).await?;
+    let (set_a, _removed) =
+        mev_scout_core::pool::discovery::health_check_pools(&rpc, set_a_raw, 8, vault).await;
     println!("  On-chain (healthy): {} pools", set_a.len());
     println!();
 
@@ -233,10 +293,16 @@ fn compare_source(
 }
 
 /// Per-DEX recall against a reference set (explorer-top-N semantics).
-fn dex_recall(reference: &[DiscoveredPool], a_by_addr: &HashMap<Address, &DiscoveredPool>) -> Vec<DexRecallRow> {
+fn dex_recall(
+    reference: &[DiscoveredPool],
+    a_by_addr: &HashMap<Address, &DiscoveredPool>,
+) -> Vec<DexRecallRow> {
     let mut by_dex: HashMap<String, (usize, usize)> = HashMap::new(); // dex → (ref, matched)
     for r in reference {
-        let key = r.dex_name.clone().unwrap_or_else(|| format!("{:?}", r.dex_type));
+        let key = r
+            .dex_name
+            .clone()
+            .unwrap_or_else(|| format!("{:?}", r.dex_type));
         let e = by_dex.entry(key).or_insert((0, 0));
         e.0 += 1;
         if a_by_addr.contains_key(&r.address) {
@@ -246,13 +312,17 @@ fn dex_recall(reference: &[DiscoveredPool], a_by_addr: &HashMap<Address, &Discov
     let mut rows: Vec<DexRecallRow> = by_dex
         .into_iter()
         .map(|(dex, (ref_n, m))| DexRecallRow {
-            recall_pct: if ref_n == 0 { 0.0 } else { 100.0 * m as f64 / ref_n as f64 },
+            recall_pct: if ref_n == 0 {
+                0.0
+            } else {
+                100.0 * m as f64 / ref_n as f64
+            },
             dex,
             reference_pools: ref_n,
             matched: m,
         })
         .collect();
-    rows.sort_by(|a, b| b.reference_pools.cmp(&a.reference_pools));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.reference_pools));
     rows
 }
 
@@ -260,7 +330,15 @@ fn render_reports(reports: &[SourceReport]) {
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
     table.set_header(vec![
-        "Source", "Ref |B|", "Matched", "Recall %", "Extra in A", "Fee ≠", "TokSide ≠", "TVL n", "TVL Δ$ mean",
+        "Source",
+        "Ref |B|",
+        "Matched",
+        "Recall %",
+        "Extra in A",
+        "Fee ≠",
+        "TokSide ≠",
+        "TVL n",
+        "TVL Δ$ mean",
     ]);
     for r in reports {
         let recall_cell = if r.recall_pct >= 80.0 {
@@ -313,14 +391,24 @@ fn write_markdown(
     days: u64,
 ) -> anyhow::Result<()> {
     let mut out = String::new();
-    out.push_str(&format!("# Pool discovery accuracy — {} (last {days}d)\n\n", chain));
+    out.push_str(&format!(
+        "# Pool discovery accuracy — {} (last {days}d)\n\n",
+        chain
+    ));
     out.push_str("| Source | Ref \\|B\\| | Matched | Recall % | Extra in A | Fee mismatches | Token-side mismatches | TVL compared | TVL Δ mean USD |\n");
     out.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for r in reports {
         out.push_str(&format!(
             "| {} | {} | {} | {:.1} | {} | {} | {} | {} | {:.0} |\n",
-            r.source, r.reference_pools, r.matched, r.recall_pct, r.extra_in_discovery,
-            r.fee_mismatches, r.token_side_mismatches, r.tvl_compared, r.tvl_mean_abs_delta_usd,
+            r.source,
+            r.reference_pools,
+            r.matched,
+            r.recall_pct,
+            r.extra_in_discovery,
+            r.fee_mismatches,
+            r.token_side_mismatches,
+            r.tvl_compared,
+            r.tvl_mean_abs_delta_usd,
         ));
     }
     out.push_str("\n## Top missing pools (by TVL)\n\n");
@@ -359,16 +447,25 @@ mod tests {
     #[test]
     fn test_dex_recall_counts_and_ordering() {
         let reference = vec![
-            pool("0x1111111111111111111111111111111111111111", "quickswap", Some(10.0)),
-            pool("0x2222222222222222222222222222222222222222", "quickswap", Some(9.0)),
-            pool("0x3333333333333333333333333333333333333333", "uniswap-v3", Some(8.0)),
+            pool(
+                "0x1111111111111111111111111111111111111111",
+                "quickswap",
+                Some(10.0),
+            ),
+            pool(
+                "0x2222222222222222222222222222222222222222",
+                "quickswap",
+                Some(9.0),
+            ),
+            pool(
+                "0x3333333333333333333333333333333333333333",
+                "uniswap-v3",
+                Some(8.0),
+            ),
         ];
         // Only the first quickswap pool was discovered on-chain.
-        let a_by_addr: HashMap<Address, &DiscoveredPool> = reference
-            .iter()
-            .take(1)
-            .map(|p| (p.address, p))
-            .collect();
+        let a_by_addr: HashMap<Address, &DiscoveredPool> =
+            reference.iter().take(1).map(|p| (p.address, p)).collect();
 
         let rows = dex_recall(&reference, &a_by_addr);
         assert_eq!(rows.len(), 2);

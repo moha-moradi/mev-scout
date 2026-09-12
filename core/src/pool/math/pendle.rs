@@ -38,8 +38,8 @@ pub fn pendle_output_amount(amount_in: u128, total_in: u128, total_out: u128) ->
     // For MEV detection, we approximate with 0 fee (the invariant encodes it).
     //
     // Constant product: out = amountIn * totalOut / (totalIn + amountIn)
-    let numerator = (amount_in as u128).checked_mul(total_out as u128)?;
-    let denominator = (total_in as u128).checked_add(amount_in as u128)?;
+    let numerator = amount_in.checked_mul(total_out)?;
+    let denominator = total_in.checked_add(amount_in)?;
     let cp_output = numerator / denominator;
 
     // Logistic damping for large swaps (> 20% of pool depth).
@@ -47,7 +47,7 @@ pub fn pendle_output_amount(amount_in: u128, total_in: u128, total_out: u128) ->
     // produces less output than a constant-product model predicts.
     // We apply: damping = 1 / (1 + (swap_ratio / 0.8)^2)
     // where swap_ratio = amount_in / total_in.
-    let swap_ratio_1000 = (amount_in as u128).checked_mul(PERMILLE_DENOMINATOR)? / total_in;
+    let swap_ratio_1000 = amount_in.checked_mul(PERMILLE_DENOMINATOR)? / total_in;
 
     if swap_ratio_1000 <= MIN_DAMPING_PERMILLE {
         // Small swap: constant product is accurate enough

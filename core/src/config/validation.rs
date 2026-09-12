@@ -3,9 +3,7 @@
 use crate::config::defaults::ChainConfig;
 use crate::config::settings::Config;
 use crate::error::ConfigError;
-use crate::types::{
-    ChainName, FlashLoanProvider, GasModel, OutputFormat, RangeMode, Strategy,
-};
+use crate::types::{ChainName, FlashLoanProvider, GasModel, OutputFormat, RangeMode, Strategy};
 
 /// Resolved configuration returned by successful validation.
 ///
@@ -21,7 +19,9 @@ pub struct ValidationResult {
     pub gas_model: GasModel,
 }
 
-pub fn resolve_chain(config: &Config) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
+pub fn resolve_chain(
+    config: &Config,
+) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
     let chain_name: ChainName = config
         .chain
         .parse()
@@ -74,10 +74,18 @@ pub fn resolve_block_range(
     to_block: Option<u64>,
 ) -> std::result::Result<RangeMode, ConfigError> {
     let mut flags = Vec::new();
-    if days.is_some() { flags.push("--days"); }
-    if blocks.is_some() { flags.push("--blocks"); }
-    if block.is_some() { flags.push("--block"); }
-    if from_block.is_some() || to_block.is_some() { flags.push("--from-block/--to-block"); }
+    if days.is_some() {
+        flags.push("--days");
+    }
+    if blocks.is_some() {
+        flags.push("--blocks");
+    }
+    if block.is_some() {
+        flags.push("--block");
+    }
+    if from_block.is_some() || to_block.is_some() {
+        flags.push("--from-block/--to-block");
+    }
 
     if flags.len() > 1 {
         return Err(ConfigError::Validation(format!(
@@ -87,7 +95,8 @@ pub fn resolve_block_range(
         )));
     }
 
-    if (from_block.is_some() && to_block.is_none()) || (from_block.is_none() && to_block.is_some()) {
+    if (from_block.is_some() && to_block.is_none()) || (from_block.is_none() && to_block.is_some())
+    {
         return Err(ConfigError::Validation(
             "--from-block and --to-block must be used together.".to_string(),
         ));
@@ -122,9 +131,7 @@ pub fn resolve_block_range(
 
     if let Some(b) = block {
         if b == 0 {
-            return Err(ConfigError::Validation(
-                "--block must be > 0.".to_string(),
-            ));
+            return Err(ConfigError::Validation("--block must be > 0.".to_string()));
         }
         return Ok(RangeMode::Single(b));
     }
@@ -137,29 +144,43 @@ pub fn resolve_block_range(
 }
 
 fn check_range_conflicts(cfg: &Config) -> std::result::Result<RangeMode, ConfigError> {
-    resolve_block_range(cfg.days, cfg.blocks, cfg.block, cfg.from_block, cfg.to_block)
+    resolve_block_range(
+        cfg.days,
+        cfg.blocks,
+        cfg.block,
+        cfg.from_block,
+        cfg.to_block,
+    )
 }
 
 /// Validates config for the replay subcommand.
 /// Only allows --block (single block), rejects all other range flags.
-pub fn validate_replay(config: &Config) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
+pub fn validate_replay(
+    config: &Config,
+) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    match resolve_block_range(config.days, config.blocks, config.block, config.from_block, config.to_block) {
-        Ok(RangeMode::Single(b)) if b > 0 => {},
+    match resolve_block_range(
+        config.days,
+        config.blocks,
+        config.block,
+        config.from_block,
+        config.to_block,
+    ) {
+        Ok(RangeMode::Single(b)) if b > 0 => {}
         Ok(RangeMode::Single(_)) => {
-            return Err(ConfigError::Validation(
-                "--block must be > 0.".to_string(),
-            ));
+            return Err(ConfigError::Validation("--block must be > 0.".to_string()));
         }
         Ok(RangeMode::Days(_)) => {
             return Err(ConfigError::Validation(
-                "--days is not supported by the replay subcommand. Use --block instead.".to_string(),
+                "--days is not supported by the replay subcommand. Use --block instead."
+                    .to_string(),
             ));
         }
         Ok(RangeMode::Blocks(_)) => {
             return Err(ConfigError::Validation(
-                "--blocks is not supported by the replay subcommand. Use --block instead.".to_string(),
+                "--blocks is not supported by the replay subcommand. Use --block instead."
+                    .to_string(),
             ));
         }
         Ok(RangeMode::Range(_, _)) => {
@@ -188,26 +209,36 @@ pub fn validate_and_resolve(config: &Config) -> std::result::Result<ValidationRe
     validate_and_resolve_for(config, true)
 }
 
-pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std::result::Result<ValidationResult, ConfigError> {
+pub fn validate_and_resolve_for(
+    config: &Config,
+    check_strategies: bool,
+) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config.backtest.flash_loan_provider.parse().map_err(|e| {
-        ConfigError::Validation(format!("{e}"))
-    })?;
+    let provider: FlashLoanProvider = config
+        .backtest
+        .flash_loan_provider
+        .parse()
+        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
 
-    if provider.is_forced() {
-        let contract_field = match provider {
-            FlashLoanProvider::Balancer => "balancer_vault",
-            FlashLoanProvider::Aave => "aave_v3_pool",
-            FlashLoanProvider::Uniswap => "uniswap_v3_factories",
-            _ => unreachable!(),
-        };
-        let has_contract = match provider {
-            FlashLoanProvider::Balancer => chain_config.balancer_vault.is_some(),
-            FlashLoanProvider::Aave => chain_config.aave_v3_pool.is_some(),
-            FlashLoanProvider::Uniswap => chain_config.uniswap_v3_factories.as_ref().is_some_and(|f| !f.is_empty()),
-            _ => true,
-        };
+    // Forced providers need a chain-specific contract address; Auto picks
+    // per-opportunity and needs none. The match is exhaustive, so adding a
+    // provider variant is a compile error here rather than a runtime gap.
+    let forced_contract: Option<(&str, bool)> = match provider {
+        FlashLoanProvider::Balancer => {
+            Some(("balancer_vault", chain_config.balancer_vault.is_some()))
+        }
+        FlashLoanProvider::Aave => Some(("aave_v3_pool", chain_config.aave_v3_pool.is_some())),
+        FlashLoanProvider::Uniswap => Some((
+            "uniswap_v3_factories",
+            chain_config
+                .uniswap_v3_factories
+                .as_ref()
+                .is_some_and(|f| !f.is_empty()),
+        )),
+        FlashLoanProvider::Auto => None,
+    };
+    if let Some((contract_field, has_contract)) = forced_contract {
         if !has_contract {
             tracing::warn!(
                 "{} contract address is missing for chain '{}'. \
@@ -219,9 +250,8 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     }
 
     let strategies: Vec<Strategy> = if check_strategies {
-        let s = Strategy::from_comma_list(&config.backtest.strategies)
-            .map_err(|e| ConfigError::Validation(format!("{e}")))?;
-        s
+        Strategy::from_comma_list(&config.backtest.strategies)
+            .map_err(|e| ConfigError::Validation(e.to_string()))?
     } else {
         Vec::new()
     };
@@ -235,18 +265,25 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
         validate_rpc_urls(&config.rpc.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config.gas.gas_model.parse().map_err(|e| {
-        ConfigError::Validation(format!("{e}"))
-    })?;
+    let gas_model: GasModel = config
+        .gas
+        .gas_model
+        .parse()
+        .map_err(|e: String| ConfigError::Validation(e.to_string()))?;
 
-    let _: OutputFormat = config.output.output.parse().map_err(|e| {
-        ConfigError::Validation(format!("{e}"))
-    })?;
+    let _: OutputFormat = config
+        .output
+        .output
+        .parse()
+        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
 
     if !(21_000..=30_000_000).contains(&config.gas.gas_limit) {
         return Err(ConfigError::InvalidValue {
             field: "gas_limit".into(),
-            message: format!("must be between 21,000 and 30,000,000, got {}", config.gas.gas_limit),
+            message: format!(
+                "must be between 21,000 and 30,000,000, got {}",
+                config.gas.gas_limit
+            ),
         });
     }
 
@@ -260,7 +297,10 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
     if config.backtest.proximity_window > 100 {
         return Err(ConfigError::InvalidValue {
             field: "proximity_window".into(),
-            message: format!("must be between 0 and 100, got {}", config.backtest.proximity_window),
+            message: format!(
+                "must be between 0 and 100, got {}",
+                config.backtest.proximity_window
+            ),
         });
     }
 
@@ -281,13 +321,14 @@ pub fn validate_and_resolve_for(config: &Config, check_strategies: bool) -> std:
 pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config.backtest.flash_loan_provider.parse().map_err(|e| {
-        ConfigError::Validation(format!("{e}"))
-    })?;
+    let provider: FlashLoanProvider = config
+        .backtest
+        .flash_loan_provider
+        .parse()
+        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
 
-    let strategies: Vec<Strategy> =
-        Strategy::from_comma_list(&config.backtest.strategies)
-            .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+    let strategies: Vec<Strategy> = Strategy::from_comma_list(&config.backtest.strategies)
+        .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
     if let Some(url) = &config.rpc.rpc_url {
         validate_rpc_url(url)?;
@@ -296,9 +337,11 @@ pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, C
         validate_rpc_urls(&config.rpc.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config.gas.gas_model.parse().map_err(|e| {
-        ConfigError::Validation(format!("{e}"))
-    })?;
+    let gas_model: GasModel = config
+        .gas
+        .gas_model
+        .parse()
+        .map_err(|e: String| ConfigError::Validation(e.to_string()))?;
 
     Ok(ValidationResult {
         chain_name,
@@ -310,4 +353,58 @@ pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, C
     })
 }
 
+/// Validate that every address-bearing field in a `ChainConfig` parses as
+/// an [`Address`]. A single typo'd address previously silently dropped a
+/// DEX venue (factory lists were parsed with `.ok()`), turning the whole
+/// DEX family's discovery off without any signal.
+///
+/// Returns `Err(ConfigError::InvalidValue)` naming the offending field.
+pub fn validate_chain_config_addresses(
+    chain_config: &ChainConfig,
+) -> std::result::Result<(), ConfigError> {
+    use alloy::primitives::Address;
 
+    let mut checked: Vec<(&str, &String)> = Vec::new();
+    for (field, v) in [
+        ("balancer_vault", &chain_config.balancer_vault),
+        ("aave_v3_pool", &chain_config.aave_v3_pool),
+        ("curve_registry", &chain_config.curve_registry),
+        ("wrapped_native_token", &chain_config.wrapped_native_token),
+        ("v4_pool_manager", &chain_config.v4_pool_manager),
+        (
+            "infinity_cl_pool_manager",
+            &chain_config.infinity_cl_pool_manager,
+        ),
+        ("pendle_factory", &chain_config.pendle_factory),
+        ("metric_factory", &chain_config.metric_factory),
+        ("fluid_factory", &chain_config.fluid_factory),
+    ] {
+        if let Some(v) = v {
+            checked.push((field, v));
+        }
+    }
+    for (field, list) in [
+        ("uniswap_v3_factories", &chain_config.uniswap_v3_factories),
+        ("uniswap_v2_factories", &chain_config.uniswap_v2_factories),
+        ("solidly_factories", &chain_config.solidly_factories),
+        ("camelot_factories", &chain_config.camelot_factories),
+        ("curve_factories", &chain_config.curve_factories),
+        ("trader_joe_factories", &chain_config.trader_joe_factories),
+    ] {
+        if let Some(list) = list {
+            for addr in list {
+                checked.push((field, addr));
+            }
+        }
+    }
+
+    for (field, value) in checked {
+        if value.parse::<Address>().is_err() {
+            return Err(ConfigError::InvalidValue {
+                field: field.to_string(),
+                message: format!("'{value}' is not a valid EVM address"),
+            });
+        }
+    }
+    Ok(())
+}

@@ -1,23 +1,27 @@
-use std::collections::{HashMap, HashSet};
-use alloy::primitives::{keccak256, Address, B256, U256};
 use crate::data::ExecutedLog;
-use crate::types::MevOpportunity;
-use crate::pool::math::consts::{BPS_DENOMINATOR, LIQUIDATION_GAS_LIMIT, PERCENT_DENOMINATOR, PPM_DENOMINATOR};
+use crate::pool::math::consts::{
+    BPS_DENOMINATOR, LIQUIDATION_GAS_LIMIT, PERCENT_DENOMINATOR, PPM_DENOMINATOR,
+};
 use crate::pool::state::{calldata_gas_estimate, PoolManager};
 use crate::rpc::RpcClient;
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
+use alloy::primitives::{keccak256, Address, B256, U256};
+use std::collections::{HashMap, HashSet};
 
 /// Aave V3 LiquidationCall event signature.
-static LIQUIDATION_CALL_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)"));
+static LIQUIDATION_CALL_TOPIC: std::sync::LazyLock<B256> = std::sync::LazyLock::new(|| {
+    keccak256("LiquidationCall(address,address,address,uint256,uint256,address,bool)")
+});
 
 /// Aave V3 Supply event signature.
 static SUPPLY_TOPIC: std::sync::LazyLock<B256> =
     std::sync::LazyLock::new(|| keccak256("Supply(address,address,address,uint256,uint16)"));
 
 /// Aave V3 Borrow event signature.
-static BORROW_TOPIC: std::sync::LazyLock<B256> =
-    std::sync::LazyLock::new(|| keccak256("Borrow(address,address,address,uint256,uint8,uint256,uint16)"));
+static BORROW_TOPIC: std::sync::LazyLock<B256> = std::sync::LazyLock::new(|| {
+    keccak256("Borrow(address,address,address,uint256,uint8,uint256,uint16)")
+});
 
 /// Aave V3 Withdraw event signature.
 static WITHDRAW_TOPIC: std::sync::LazyLock<B256> =
@@ -69,8 +73,15 @@ impl AaveReserveCache {
         token_bytes[12..32].copy_from_slice(token.as_slice());
         calldata.extend_from_slice(&token_bytes);
 
-        let result = rpc.call(aave_pool, calldata.into(), block).await.ok()?;
+        let result = match rpc.call(aave_pool, calldata.into(), block).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("Aave reserve fetch failed for {token}: {e:#}");
+                return None;
+            }
+        };
         if result.len() < 64 {
+            tracing::warn!("Aave reserve fetch returned short response for {token}");
             return None;
         }
 
@@ -79,8 +90,10 @@ impl AaveReserveCache {
 
         Some(AaveReserveData {
             ltv_bps: (config & U256::from(0xFFFFu64)).to::<u16>(),
-            liquidation_threshold_bps: ((config >> U256::from(16u64)) & U256::from(0xFFFFu64)).to::<u16>(),
-            liquidation_bonus_bps: ((config >> U256::from(32u64)) & U256::from(0xFFFFu64)).to::<u16>(),
+            liquidation_threshold_bps: ((config >> U256::from(16u64)) & U256::from(0xFFFFu64))
+                .to::<u16>(),
+            liquidation_bonus_bps: ((config >> U256::from(32u64)) & U256::from(0xFFFFu64))
+                .to::<u16>(),
         })
     }
 
@@ -96,9 +109,13 @@ impl AaveReserveCache {
         self.reserves.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.reserves.is_empty()
+    }
+
     /// Pre-fetch reserve data for a set of tokens at the given block.
-    /// Skips tokens already in the cache. Tokens that fail to fetch
-    /// are silently skipped (the caller will fall back to defaults).
+    /// Skips tokens already in the cache. Tokens that fail to fetch are
+    /// logged and skipped (the caller will fall back to defaults).
     pub async fn prefetch(
         &mut self,
         rpc: &RpcClient,
@@ -278,7 +295,12 @@ impl LiquidationDetector {
             return;
         }
         let pos = self.users.entry(on_behalf).or_default();
-        *pos.collateral.entry(reserve).or_insert(0) = pos.collateral.get(&reserve).copied().unwrap_or(0).saturating_add(amount);
+        *pos.collateral.entry(reserve).or_insert(0) = pos
+            .collateral
+            .get(&reserve)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(amount);
     }
 
     /// Borrow(address indexed reserve, address indexed user, address indexed onBehalfOf,
@@ -299,7 +321,12 @@ impl LiquidationDetector {
             return;
         }
         let pos = self.users.entry(on_behalf).or_default();
-        *pos.debt.entry(reserve).or_insert(0) = pos.debt.get(&reserve).copied().unwrap_or(0).saturating_add(amount);
+        *pos.debt.entry(reserve).or_insert(0) = pos
+            .debt
+            .get(&reserve)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(amount);
     }
 
     /// Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount)
@@ -358,7 +385,9 @@ impl LiquidationDetector {
 
         // 1. Reactive: emit stored LiquidationCall events
         for ev in &events {
-            if let Some(opp) = self.emit_opportunity(ev, pool_manager, timestamp, base_fee_per_gas, gas_config) {
+            if let Some(opp) =
+                self.emit_opportunity(ev, pool_manager, timestamp, base_fee_per_gas, gas_config)
+            {
                 opportunities.push(opp);
             }
         }
@@ -377,12 +406,14 @@ impl LiquidationDetector {
 
             for (&asset, &amount) in &pos.collateral {
                 if let Some(native) = pool_manager.normalize_to_native(asset, amount) {
-                    let threshold_bps = self.reserve_cache
+                    let threshold_bps = self
+                        .reserve_cache
                         .get(&asset)
                         .map(|d| d.liquidation_threshold_bps as u128)
                         .unwrap_or(FALLBACK_LIQUIDATION_THRESHOLD_BPS as u128);
                     total_collateral_native = total_collateral_native.saturating_add(native);
-                    weighted_threshold_sum = weighted_threshold_sum.saturating_add(native.saturating_mul(threshold_bps));
+                    weighted_threshold_sum =
+                        weighted_threshold_sum.saturating_add(native.saturating_mul(threshold_bps));
                 }
             }
 
@@ -397,14 +428,17 @@ impl LiquidationDetector {
             }
 
             // Compute weighted average liquidation threshold
-            let avg_threshold_bps = if total_collateral_native > 0 {
-                (weighted_threshold_sum / total_collateral_native) as u16
-            } else {
-                FALLBACK_LIQUIDATION_THRESHOLD_BPS
-            };
+            let avg_threshold_bps = weighted_threshold_sum
+                .checked_div(total_collateral_native)
+                .map(|r| r as u16)
+                .unwrap_or(FALLBACK_LIQUIDATION_THRESHOLD_BPS);
 
             // Compute health factor using the real Aave V3 formula
-            let hf = compute_health_factor(total_collateral_native, total_debt_native, avg_threshold_bps);
+            let hf = compute_health_factor(
+                total_collateral_native,
+                total_debt_native,
+                avg_threshold_bps,
+            );
 
             // Flag positions with HF < 1.0 (immediately liquidatable)
             // or HF < 1.1 (approaching liquidation, early warning)
@@ -413,17 +447,23 @@ impl LiquidationDetector {
             }
 
             // Pick the most valuable debt asset to close
-            let best_debt = pos.debt.iter()
+            let best_debt = pos
+                .debt
+                .iter()
                 .filter_map(|(&asset, &amount)| {
-                    pool_manager.normalize_to_native(asset, amount)
+                    pool_manager
+                        .normalize_to_native(asset, amount)
                         .map(|val| (asset, amount, val))
                 })
                 .max_by_key(|&(_, _, val)| val);
 
             // Pick the most valuable collateral asset to seize
-            let best_collateral = pos.collateral.iter()
+            let best_collateral = pos
+                .collateral
+                .iter()
                 .filter_map(|(&asset, &amount)| {
-                    pool_manager.normalize_to_native(asset, amount)
+                    pool_manager
+                        .normalize_to_native(asset, amount)
                         .map(|val| (asset, amount, val))
                 })
                 .max_by_key(|&(_, _, val)| val);
@@ -432,10 +472,11 @@ impl LiquidationDetector {
                 Some(t) => t,
                 None => continue,
             };
-            let (collateral_asset, _total_collateral_amount, _best_collateral_native) = match best_collateral {
-                Some(t) => t,
-                None => continue,
-            };
+            let (collateral_asset, _total_collateral_amount, _best_collateral_native) =
+                match best_collateral {
+                    Some(t) => t,
+                    None => continue,
+                };
 
             // Dedup: same key as reactive events
             let key = (collateral_asset, debt_asset, user);
@@ -457,7 +498,8 @@ impl LiquidationDetector {
             }
 
             // Use per-asset liquidation bonus if available, fall back to default 5%
-            let bonus_bps = self.reserve_cache
+            let bonus_bps = self
+                .reserve_cache
                 .get(&collateral_asset)
                 .map(|d| d.liquidation_bonus_bps as u128)
                 .unwrap_or(FALLBACK_LIQUIDATION_BONUS_BPS as u128);
@@ -471,12 +513,14 @@ impl LiquidationDetector {
             // H9: Compute slippage — profit scales linearly with debt_to_cover (fixed bonus rate)
             let liq_slippage = |pct: u128| -> Option<U256> {
                 let debt_adj = debt_to_cover.saturating_mul(pct) / PERCENT_DENOMINATOR;
-                if debt_adj == 0 { return None; }
+                if debt_adj == 0 {
+                    return None;
+                }
                 let debt_native_adj = pool_manager
                     .normalize_to_native(debt_asset, debt_adj)
                     .unwrap_or(debt_adj);
                 let profit_adj = debt_native_adj
-                    .saturating_mul(bonus_bps as u128)
+                    .saturating_mul(bonus_bps)
                     .saturating_div(BPS_DENOMINATOR);
                 Some(U256::from(profit_adj))
             };
@@ -491,7 +535,9 @@ impl LiquidationDetector {
                 token_out: collateral_asset,
                 input_amount: U256::from(debt_to_cover),
                 expected_profit: U256::from(profit_native),
-                raw_profit: Some(U256::from(debt_to_cover_native.saturating_add(profit_native))),
+                raw_profit: Some(U256::from(
+                    debt_to_cover_native.saturating_add(profit_native),
+                )),
                 profit_slippage_p1: liq_slippage(101),
                 profit_slippage_m1: liq_slippage(99),
                 profit_slippage_p2: liq_slippage(102),
@@ -526,9 +572,11 @@ impl LiquidationDetector {
         let gas_limit = LIQUIDATION_GAS_LIMIT.saturating_add(calldata_gas_estimate(2));
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
-        let collateral_native = pool_manager.normalize_to_native(ev.collateral_asset, ev.liquidated_collateral_amount)
+        let collateral_native = pool_manager
+            .normalize_to_native(ev.collateral_asset, ev.liquidated_collateral_amount)
             .unwrap_or(ev.liquidated_collateral_amount);
-        let debt_native = pool_manager.normalize_to_native(ev.debt_asset, ev.debt_to_cover)
+        let debt_native = pool_manager
+            .normalize_to_native(ev.debt_asset, ev.debt_to_cover)
             .unwrap_or(ev.debt_to_cover);
 
         let profit_native = collateral_native.saturating_sub(debt_native);
@@ -536,12 +584,16 @@ impl LiquidationDetector {
         // H9: Compute slippage — profit scales linearly with debt_to_cover
         let liq_slippage = |pct: u128| -> Option<U256> {
             let debt_adj = ev.debt_to_cover.saturating_mul(pct) / PERCENT_DENOMINATOR;
-            if debt_adj == 0 { return None; }
+            if debt_adj == 0 {
+                return None;
+            }
             let debt_native_adj = pool_manager
                 .normalize_to_native(ev.debt_asset, debt_adj)
                 .unwrap_or(debt_adj);
             let ratio_adj = debt_native_adj * PPM_DENOMINATOR / debt_native.max(1);
-                Some(U256::from(profit_native.saturating_mul(ratio_adj) / PPM_DENOMINATOR))
+            Some(U256::from(
+                profit_native.saturating_mul(ratio_adj) / PPM_DENOMINATOR,
+            ))
         };
         Some(MevOpportunity {
             canonical_id: None,
@@ -597,4 +649,3 @@ fn decrease_balance(map: &mut HashMap<Address, u128>, key: Address, amount: u128
         None => {}
     }
 }
-

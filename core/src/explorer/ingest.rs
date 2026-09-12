@@ -121,16 +121,18 @@ pub async fn index_block(
 ) -> anyhow::Result<IndexedBlock> {
     if store.block_classified(block_number)? {
         debug!(block = block_number, "already classified, skipping");
-        return Ok(IndexedBlock { block: block_number, events: 0, ops: 0 });
+        return Ok(IndexedBlock {
+            block: block_number,
+            events: 0,
+            ops: 0,
+        });
     }
 
     let (block_data, txs, receipts) = rpc.get_block_and_receipts_batch(block_number).await?;
 
     // Build per-tx decoded input.
-    let receipt_by_index: HashMap<u64, &crate::data::ReceiptData> = receipts
-        .iter()
-        .map(|r| (r.tx_index, r))
-        .collect();
+    let receipt_by_index: HashMap<u64, &crate::data::ReceiptData> =
+        receipts.iter().map(|r| (r.tx_index, r)).collect();
 
     let mut tx_inputs: Vec<TxInput> = Vec::with_capacity(txs.len());
     let mut tx_rows: Vec<TxRow> = Vec::with_capacity(txs.len());
@@ -149,7 +151,8 @@ pub async fn index_block(
             continue; // failed txs carry no realized MEV
         }
 
-        let (transfers, swaps, liquidations, jit) = classify::decode_tx_logs(tx.index, &receipt.logs);
+        let (transfers, swaps, liquidations, jit) =
+            classify::decode_tx_logs(tx.index, &receipt.logs);
         let jit_count = jit.len();
 
         // Effective gas price: receipt has gasUsed; effective = base + priority.
@@ -254,7 +257,11 @@ pub async fn index_block(
         &token_prices,
     )?;
 
-    Ok(IndexedBlock { block: block_number, events: txs.len(), ops })
+    Ok(IndexedBlock {
+        block: block_number,
+        events: txs.len(),
+        ops,
+    })
 }
 
 /// Effective chain head for indexing: head − confirmations.
@@ -444,8 +451,7 @@ pub async fn run_live(
                 }
                 since_reorg_check = 0;
             }
-            let native_price =
-                native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+            let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             for block in next_block..=safe {
                 let indexed = index_block(rpc, store, cfg, block, native_price, None).await?;
                 indexed_total += indexed.ops as u64;
@@ -463,8 +469,8 @@ pub async fn run_live(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::U256;
     use crate::explorer::types::MevKind;
+    use alloy::primitives::U256;
 
     #[test]
     fn profit_priority_polygon() {

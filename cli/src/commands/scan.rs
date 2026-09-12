@@ -7,8 +7,8 @@ use crate::cli::{ScanArgs, ScanKind};
 use crate::rpc_setup::init_rpc;
 
 pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
-    let (chain_name, _chain_config) = validation::resolve_chain(config)
-        .context("failed to resolve chain")?;
+    let (chain_name, _chain_config) =
+        validation::resolve_chain(config).context("failed to resolve chain")?;
 
     let setup = init_rpc(config, chain_name, true).await?;
     let rpc = setup.rpc;
@@ -29,11 +29,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
     let addresses: Option<Vec<alloy::primitives::Address>> = args
         .addresses
         .as_ref()
-        .map(|a| {
-            a.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect()
-        })
+        .map(|a| a.iter().filter_map(|s| s.parse().ok()).collect())
         .filter(|v: &Vec<alloy::primitives::Address>| !v.is_empty());
 
     let addrs_ref = addresses.as_deref();
@@ -115,7 +111,10 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
                     }
                 }
             } else {
-                println!("  Loaded {} address labels (use --address to look up specific addresses)", db.len());
+                println!(
+                    "  Loaded {} address labels (use --address to look up specific addresses)",
+                    db.len()
+                );
             }
         }
     }
@@ -145,7 +144,14 @@ fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &Sca
         }
         _ => {
             let mut table = Table::new();
-            table.set_header(vec!["Block", "TX Hash", "Pool", "DEX", "Amount In", "Amount Out"]);
+            table.set_header(vec![
+                "Block",
+                "TX Hash",
+                "Pool",
+                "DEX",
+                "Amount In",
+                "Amount Out",
+            ]);
             for t in &items {
                 table.add_row(vec![
                     t.block.to_string(),
@@ -158,12 +164,20 @@ fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &Sca
             }
             println!("{table}");
             println!();
-            println!("  {} trade(s) found (showing {})", trades.len(), items.len());
+            println!(
+                "  {} trade(s) found (showing {})",
+                trades.len(),
+                items.len()
+            );
         }
     }
 }
 
-fn print_transfers(transfers: &[mev_scout_core::chain::events::TransferEvent], args: &ScanArgs, out: &str) {
+fn print_transfers(
+    transfers: &[mev_scout_core::chain::events::TransferEvent],
+    args: &ScanArgs,
+    out: &str,
+) {
     let items: Vec<_> = if args.limit > 0 {
         transfers.iter().take(args.limit).collect()
     } else {
@@ -198,12 +212,20 @@ fn print_transfers(transfers: &[mev_scout_core::chain::events::TransferEvent], a
             }
             println!("{table}");
             println!();
-            println!("  {} transfer(s) found (showing {})", transfers.len(), items.len());
+            println!(
+                "  {} transfer(s) found (showing {})",
+                transfers.len(),
+                items.len()
+            );
         }
     }
 }
 
-fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], args: &ScanArgs, out: &str) {
+fn print_flash_loans(
+    loans: &[mev_scout_core::chain::events::FlashLoanEvent],
+    args: &ScanArgs,
+    out: &str,
+) {
     let items: Vec<_> = if args.limit > 0 {
         loans.iter().take(args.limit).collect()
     } else {
@@ -230,7 +252,9 @@ fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], ar
         }
         _ => {
             let mut table = Table::new();
-            table.set_header(vec!["Block", "TX Hash", "Protocol", "Token", "Amount", "Fee"]);
+            table.set_header(vec![
+                "Block", "TX Hash", "Protocol", "Token", "Amount", "Fee",
+            ]);
             for t in &items {
                 table.add_row(vec![
                     t.block.to_string(),
@@ -243,12 +267,20 @@ fn print_flash_loans(loans: &[mev_scout_core::chain::events::FlashLoanEvent], ar
             }
             println!("{table}");
             println!();
-            println!("  {} flash loan(s) found (showing {})", loans.len(), items.len());
+            println!(
+                "  {} flash loan(s) found (showing {})",
+                loans.len(),
+                items.len()
+            );
         }
     }
 }
 
-fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], args: &ScanArgs, out: &str) {
+fn print_liquidations(
+    liqs: &[mev_scout_core::chain::events::LiquidationEvent],
+    args: &ScanArgs,
+    out: &str,
+) {
     let items: Vec<_> = if args.limit > 0 {
         liqs.iter().take(args.limit).collect()
     } else {
@@ -260,7 +292,9 @@ fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], 
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
         "csv" => {
-            println!("block,tx_hash,protocol,user,liquidator,collateral,debt_amount,collateral_amount");
+            println!(
+                "block,tx_hash,protocol,user,liquidator,collateral,debt_amount,collateral_amount"
+            );
             for t in &items {
                 println!(
                     "{},{},{},{:?},{:?},{:?},{},{}",
@@ -277,7 +311,15 @@ fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], 
         }
         _ => {
             let mut table = Table::new();
-            table.set_header(vec!["Block", "TX Hash", "Protocol", "User", "Liquidator", "Collateral", "Debt"]);
+            table.set_header(vec![
+                "Block",
+                "TX Hash",
+                "Protocol",
+                "User",
+                "Liquidator",
+                "Collateral",
+                "Debt",
+            ]);
             for t in &items {
                 table.add_row(vec![
                     t.block.to_string(),
@@ -291,7 +333,11 @@ fn print_liquidations(liqs: &[mev_scout_core::chain::events::LiquidationEvent], 
             }
             println!("{table}");
             println!();
-            println!("  {} liquidation(s) found (showing {})", liqs.len(), items.len());
+            println!(
+                "  {} liquidation(s) found (showing {})",
+                liqs.len(),
+                items.len()
+            );
         }
     }
 }

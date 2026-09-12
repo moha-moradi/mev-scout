@@ -3,15 +3,17 @@
 //! The activity-scanner tests hit a live RPC endpoint and are gated like the
 //! CLI E2E suite: they need `MEV_SCOUT_E2E=1` and `RPC_URL`, otherwise they
 //! skip gracefully (no fallback to the repo `mev-scout.toml`).
-use alloy::primitives::{address, Address, B256, Bytes, U256};
+use alloy::primitives::{address, Address, Bytes, B256, U256};
 use mev_scout_core::data::ExecutedLog;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::mev::detectors::jit_arb::JitArbDetector;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::scanner::ActivityScanner;
 use mev_scout_core::pipeline::BacktestRunner;
 use mev_scout_core::pool::decoders::{V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::dex_type::DexType;
-use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
+use mev_scout_core::pool::state::{
+    PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
+};
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
@@ -72,7 +74,10 @@ async fn test_activity_scanner_finds_active_blocks() {
     );
 
     // QuickSwap WMATIC/USDC is a high-volume pool — should have activity
-    assert!(!active.is_empty(), "Should find at least one active block for a high-volume pool");
+    assert!(
+        !active.is_empty(),
+        "Should find at least one active block for a high-volume pool"
+    );
     assert!(
         active.len() < (end - start + 1) as usize,
         "Not all blocks should be active"
@@ -143,7 +148,10 @@ async fn test_activity_scanner_multi_block_batch() {
         }
     };
 
-    eprintln!("Multi-batch scan [{start}..{end}] (batch=1): {} active blocks", active.len());
+    eprintln!(
+        "Multi-batch scan [{start}..{end}] (batch=1): {} active blocks",
+        active.len()
+    );
     assert!(
         active.len() <= (end - start + 1) as usize,
         "Active set should not exceed scanned range"
@@ -163,10 +171,20 @@ async fn test_runner_run_block_synthetic() {
 
     // Verify pool manager has pools and arb pairs
     assert!(pm.pool_count() > 0, "PoolManager should have pools");
-    assert!(!pm.arbitrage_pairs().is_empty(), "PoolManager should have arbitrage pairs");
+    assert!(
+        !pm.arbitrage_pairs().is_empty(),
+        "PoolManager should have arbitrage pairs"
+    );
 
     // Direct detection should find arb
-    let opps_direct = TwoHopArbDetector::new(1).detect(&pm, 0, 12345678, 50_000_000_000, GasConfig::default(), &ScanScope::Full);
+    let opps_direct = TwoHopArbDetector::new(1).detect(
+        &pm,
+        0,
+        12345678,
+        50_000_000_000,
+        GasConfig::default(),
+        &ScanScope::Full,
+    );
     eprintln!("Direct detection: {} opps", opps_direct.len());
     assert!(!opps_direct.is_empty(), "Direct detection should find arb");
 
@@ -177,10 +195,16 @@ async fn test_runner_run_block_synthetic() {
 
     eprintln!("run_block returned {} opportunities", opps.len());
     for opp in &opps {
-        eprintln!("  opp: profit={}, gas_cost_wei={}", opp.expected_profit, opp.gas_cost_wei);
+        eprintln!(
+            "  opp: profit={}, gas_cost_wei={}",
+            opp.expected_profit, opp.gas_cost_wei
+        );
     }
 
-    assert!(!opps.is_empty(), "Should detect arb between imbalanced pools");
+    assert!(
+        !opps.is_empty(),
+        "Should detect arb between imbalanced pools"
+    );
     assert_eq!(stats.block_number, 1);
     assert_eq!(stats.total_tx_count, 2);
     assert_eq!(stats.dex_tx_count, 0, "No txs matched pools (fast path)");
@@ -384,7 +408,11 @@ fn test_runner_proximity_window() {
         detector_wide.process_tx(i, &logs_for_tx(i), Some(sender), &pm);
     }
     let opps_wide = detector_wide.detect(12345, &pm, 0, &gas_cfg);
-    assert_eq!(opps_wide.len(), 1, "Window=5 should detect JitArb (gap=4 ≤ 5)");
+    assert_eq!(
+        opps_wide.len(),
+        1,
+        "Window=5 should detect JitArb (gap=4 ≤ 5)"
+    );
 
     // Window = 1 — gap=4 > 1 → NOT detected
     let mut detector_narrow = JitArbDetector::new(42).with_proximity_window(1);
@@ -392,5 +420,8 @@ fn test_runner_proximity_window() {
         detector_narrow.process_tx(i, &logs_for_tx(i), Some(sender), &pm);
     }
     let opps_narrow = detector_narrow.detect(12345, &pm, 0, &gas_cfg);
-    assert!(opps_narrow.is_empty(), "Window=1 should NOT detect JitArb (gap=4 > 1)");
+    assert!(
+        opps_narrow.is_empty(),
+        "Window=1 should NOT detect JitArb (gap=4 > 1)"
+    );
 }

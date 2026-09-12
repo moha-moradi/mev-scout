@@ -13,53 +13,58 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use alloy::primitives::{keccak256, Address, B256, Bytes, U256};
+use alloy::primitives::{keccak256, Address, Bytes, B256, U256};
 use alloy::rpc::types::Filter;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::SqliteStore;
 use crate::dex_type::DexType;
-use crate::pool::state::PoolInfo;
-use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
-use crate::rpc::RpcClient;
 use crate::pipeline::topics;
+use crate::pool::selectors::{
+    BALANCER_GET_POOL, CURVE_BALANCES_U256, CURVE_COINS_I128, CURVE_COINS_U256, FEE,
+    GET_POOL_TOKENS, GET_RESERVES, INF_CL_SLOT0, LB_GET_ACTIVE_ID, PENDLE_READ_STATE, PENDLE_SY,
+    SYMBOL, TICK_SPACING, TOKEN0, TOKEN1, TRADER_JOE_TOKEN_X, TRADER_JOE_TOKEN_Y, V3_SLOT0,
+};
+use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
+use crate::pool::state::PoolInfo;
+use crate::rpc::RpcClient;
 
 /// Type alias for DEX activity event hits — shared across per-DEX scanners.
-pub(crate) type PoolHits = HashMap<
-    Address,
-    (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64),
->;
+pub(crate) type PoolHits =
+    HashMap<Address, (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64)>;
 
-pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PairCreated(address,address,address,uint256)")
-});
+/// Parsed DEX event classification: factory, pool id, token pair, and the
+/// override address used when the emitting contract is not the pool itself.
+type PoolHitCandidate = (
+    DexType,
+    Option<[u8; 32]>,
+    Option<(Address, Address)>,
+    Option<Address>,
+);
 
-pub static V3_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolCreated(address,address,uint24,int24,address)")
-});
+pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PairCreated(address,address,address,uint256)"));
 
-pub static BALANCER_POOL_REGISTERED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolRegistered(bytes32,address,uint8)")
-});
+pub static V3_POOL_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolCreated(address,address,uint24,int24,address)"));
 
-pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolAdded(address,uint256)")
-});
+pub static BALANCER_POOL_REGISTERED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolRegistered(bytes32,address,uint8)"));
+
+pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolAdded(address,uint256)"));
 
 // CurveStableswapFactoryNG pool-creation event — `PoolDeployed(address pool)`.
-pub static CURVE_POOL_DEPLOYED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolDeployed(address)")
-});
+pub static CURVE_POOL_DEPLOYED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolDeployed(address)"));
 
 // Solidly-style PairCreated (bool stable, address pair) — Velodrome, Aerodrome, Equalizer, Thena
-pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PairCreated(address,address,bool,address)")
-});
+pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PairCreated(address,address,bool,address)"));
 
 // Camelot PairCreated (address pair, uint256 fee, bool stable)
-pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PairCreated(address,address,address,uint256,bool)")
-});
+pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PairCreated(address,address,address,uint256,bool)"));
 
 // Uniswap V4 Initialize event from singleton PoolManager
 pub static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
@@ -72,86 +77,37 @@ pub static INF_CL_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"Initialize(bytes32,address,address,address,uint24,bytes32,uint160,int24)")
 });
 
-/// getSlot0(bytes32) selector for the Pancake Infinity CLPoolManager (poolId arg).
-pub static INF_CL_SLOT0_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getSlot0(bytes32)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
 // Trader Joe V2 LB PairCreated event
-pub static LB_PAIR_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"LBPairCreated(address,address,address,uint256,address[])")
-});
+pub static LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"LBPairCreated(address,address,address,uint256,address[])"));
 
 // Pendle Finance NewMarket event
-pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"NewMarket(address,address,uint256)")
-});
+pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"NewMarket(address,address,uint256)"));
 
 // Algebra (QuickSwap V3) Pool creation event — `Pool(address,address,address)` with two indexed tokens.
 // Unlike canonical Uniswap V3 `PoolCreated(address,address,uint24,int24,address)`.
-pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Pool(address,address,address)")
-});
+pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"Pool(address,address,address)"));
 
 // Aerodrome Slipstream / Velodrome V3 CL pool creation event —
 // `PoolCreated(address,address,int24,address)` (token0, token1, tickSpacing indexed; pool in data).
 // Bespoke topic, not canonical Uniswap V3 nor Algebra.
-pub static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolCreated(address,address,int24,address)")
-});
+pub static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolCreated(address,address,int24,address)"));
 
 // Metric V2 pool creation — `PoolCreated(address indexed token0,
 // address indexed token1, address indexed priceProvider, address pool,
 // bytes32 poolId)` (plan §3.4; digest computed from the signature, on-chain
 // verification deferred like Q6/Q10/Q11).
-pub static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"PoolCreated(address,address,address,address,bytes32)")
-});
+pub static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"PoolCreated(address,address,address,address,bytes32)"));
 
 // Fluid DEX pool deployment — `LogDexDeployed(address indexed dex, uint256
 // indexed dexId)` (verified against Instadapp/fluid-contracts-public
 // factory/main.sol). Token metadata is fetched later via token0()/token1().
-pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"LogDexDeployed(address,uint256)")
-});
-
-/// readState(address) selector for Pendle Finance markets
-static PENDLE_READ_STATE_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"readState(address)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// Trader Joe LBPair token getters: `tokenX()` / `tokenY()`.
-/// The standard `token0()` / `token1()` selectors REVERT on an LBPair, so
-/// Phase-2 metadata fetch must use these instead (keccak256 prefixes
-/// `16dc165b…` / `b7d19fc4…`, verified against lfj-gg/joe-v2 LBPair ABI).
-static TRADER_JOE_TOKEN_X_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"tokenX()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-static TRADER_JOE_TOKEN_Y_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"tokenY()");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// Selector for Balancer V2 Vault.getPool(address) → (bytes32 poolId, address[] tokens)
-static BALANCER_GET_POOL_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getPool(address)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// balances(uint256) selector for Curve pools — check token balance
-static CURVE_BALANCES_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"balances(uint256)");
-    Bytes::copy_from_slice(&hash[..4])
-});
-
-/// getPoolTokens(bytes32) selector for Balancer V2 Vault
-static BALANCER_GET_POOL_TOKENS_SELECTOR: LazyLock<Bytes> = LazyLock::new(|| {
-    let hash = keccak256(b"getPoolTokens(bytes32)");
-    Bytes::copy_from_slice(&hash[..4])
-});
+pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"LogDexDeployed(address,uint256)"));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveredPool {
@@ -218,38 +174,108 @@ macro_rules! merge_option {
 }
 
 impl DiscoveredPool {
-    pub fn new(address: Address, token0: Address, token1: Address, fee: u32, dex_type: DexType, creation_block: u64) -> Self {
+    pub fn new(
+        address: Address,
+        token0: Address,
+        token1: Address,
+        fee: u32,
+        dex_type: DexType,
+        creation_block: u64,
+    ) -> Self {
         Self {
-            address, token0, token1, fee, dex_type, creation_block,
-            tick_spacing: None, pool_id: None, factory: None, is_stable: None,
-            balancer_pool_type: None, hook_address: None, bin_step: None,
-            maturity_timestamp: None, underlying_tokens: None, dex_name: None,
-            token0_symbol: None, token1_symbol: None,
-            tvl_usd: None, volume_usd_24h: None, volume_usd_30d: None,
+            address,
+            token0,
+            token1,
+            fee,
+            dex_type,
+            creation_block,
+            tick_spacing: None,
+            pool_id: None,
+            factory: None,
+            is_stable: None,
+            balancer_pool_type: None,
+            hook_address: None,
+            bin_step: None,
+            maturity_timestamp: None,
+            underlying_tokens: None,
+            dex_name: None,
+            token0_symbol: None,
+            token1_symbol: None,
+            tvl_usd: None,
+            volume_usd_24h: None,
+            volume_usd_30d: None,
         }
     }
 
-    pub fn with_tick_spacing(mut self, v: Option<i32>) -> Self { self.tick_spacing = v; self }
-    pub fn with_pool_id(mut self, v: Option<[u8; 32]>) -> Self { self.pool_id = v; self }
-    pub fn with_factory(mut self, v: Option<Address>) -> Self { self.factory = v; self }
-    pub fn with_is_stable(mut self, v: Option<bool>) -> Self { self.is_stable = v; self }
-    pub fn with_balancer_pool_type(mut self, v: Option<u8>) -> Self { self.balancer_pool_type = v; self }
-    pub fn with_hook_address(mut self, v: Option<Address>) -> Self { self.hook_address = v; self }
-    pub fn with_bin_step(mut self, v: Option<u32>) -> Self { self.bin_step = v; self }
-    pub fn with_maturity_timestamp(mut self, v: Option<u64>) -> Self { self.maturity_timestamp = v; self }
-    pub fn with_underlying_tokens(mut self, v: Option<Vec<Address>>) -> Self { self.underlying_tokens = v; self }
-    pub fn with_dex_name(mut self, v: Option<String>) -> Self { self.dex_name = v; self }
-    pub fn with_token0_symbol(mut self, v: Option<String>) -> Self { self.token0_symbol = v; self }
-    pub fn with_token1_symbol(mut self, v: Option<String>) -> Self { self.token1_symbol = v; self }
-    pub fn with_tvl_usd(mut self, v: Option<f64>) -> Self { self.tvl_usd = v; self }
-    pub fn with_volume_usd_24h(mut self, v: Option<f64>) -> Self { self.volume_usd_24h = v; self }
-    pub fn with_volume_usd_30d(mut self, v: Option<f64>) -> Self { self.volume_usd_30d = v; self }
+    pub fn with_tick_spacing(mut self, v: Option<i32>) -> Self {
+        self.tick_spacing = v;
+        self
+    }
+    pub fn with_pool_id(mut self, v: Option<[u8; 32]>) -> Self {
+        self.pool_id = v;
+        self
+    }
+    pub fn with_factory(mut self, v: Option<Address>) -> Self {
+        self.factory = v;
+        self
+    }
+    pub fn with_is_stable(mut self, v: Option<bool>) -> Self {
+        self.is_stable = v;
+        self
+    }
+    pub fn with_balancer_pool_type(mut self, v: Option<u8>) -> Self {
+        self.balancer_pool_type = v;
+        self
+    }
+    pub fn with_hook_address(mut self, v: Option<Address>) -> Self {
+        self.hook_address = v;
+        self
+    }
+    pub fn with_bin_step(mut self, v: Option<u32>) -> Self {
+        self.bin_step = v;
+        self
+    }
+    pub fn with_maturity_timestamp(mut self, v: Option<u64>) -> Self {
+        self.maturity_timestamp = v;
+        self
+    }
+    pub fn with_underlying_tokens(mut self, v: Option<Vec<Address>>) -> Self {
+        self.underlying_tokens = v;
+        self
+    }
+    pub fn with_dex_name(mut self, v: Option<String>) -> Self {
+        self.dex_name = v;
+        self
+    }
+    pub fn with_token0_symbol(mut self, v: Option<String>) -> Self {
+        self.token0_symbol = v;
+        self
+    }
+    pub fn with_token1_symbol(mut self, v: Option<String>) -> Self {
+        self.token1_symbol = v;
+        self
+    }
+    pub fn with_tvl_usd(mut self, v: Option<f64>) -> Self {
+        self.tvl_usd = v;
+        self
+    }
+    pub fn with_volume_usd_24h(mut self, v: Option<f64>) -> Self {
+        self.volume_usd_24h = v;
+        self
+    }
+    pub fn with_volume_usd_30d(mut self, v: Option<f64>) -> Self {
+        self.volume_usd_30d = v;
+        self
+    }
 
     /// Merge metadata from `other` into `self`, filling only `None` fields.
     ///
     /// Used to merge partially-complete discovery results from different runs.
     pub fn merge_from(&mut self, other: &DiscoveredPool) {
-        debug_assert_eq!(self.address, other.address, "merge_from called with different addresses");
+        debug_assert_eq!(
+            self.address, other.address,
+            "merge_from called with different addresses"
+        );
 
         // dex_type reconciliation: `UniswapV2` doubles as the remote-source
         // fallback label (`infer_dex_type`), so it must not survive a conflict
@@ -307,7 +333,8 @@ impl DiscoveredPool {
 
 impl From<DiscoveredPool> for PoolInfo {
     fn from(d: DiscoveredPool) -> Self {
-        let is_fot = Some(is_fee_on_transfer_token(&d.token0) || is_fee_on_transfer_token(&d.token1));
+        let is_fot =
+            Some(is_fee_on_transfer_token(&d.token0) || is_fee_on_transfer_token(&d.token1));
         let is_rebase = Some(is_rebase_token(&d.token0) || is_rebase_token(&d.token1));
         PoolInfo {
             address: d.address,
@@ -339,10 +366,11 @@ impl From<DiscoveredPool> for PoolInfo {
 }
 
 /// Process a single DEX activity log, updating active_blocks and pool_hits.
+#[allow(clippy::type_complexity)] // pool-hit payload tuple — pooled in W5.1
 fn process_discovery_log(
     log: &alloy::rpc::types::Log,
     active_blocks: &mut HashSet<u64>,
-    pool_hits: &mut HashMap<Address, (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64)>,
+    pool_hits: &mut PoolHits,
 ) {
     if let Some(bn) = log.block_number {
         active_blocks.insert(bn);
@@ -352,7 +380,9 @@ fn process_discovery_log(
         // contract; the real pool address is recovered from event data/topics.
         let addr = addr_override.unwrap_or_else(|| log.address());
         let block_num = log.block_number.unwrap_or(0);
-        let entry = pool_hits.entry(addr).or_insert((dex_type, pool_id, tokens, block_num));
+        let entry = pool_hits
+            .entry(addr)
+            .or_insert((dex_type, pool_id, tokens, block_num));
         if block_num > 0 && block_num < entry.3 {
             entry.3 = block_num;
         }
@@ -450,7 +480,11 @@ fn decode_abi_string(data: &[u8]) -> Option<String> {
     }
     let bytes = &data[start..end];
     // Trim trailing null padding and non-printable chars
-    let trimmed = bytes.iter().rposition(|&b| b != 0).map(|i| &bytes[..=i]).unwrap_or(bytes);
+    let trimmed = bytes
+        .iter()
+        .rposition(|&b| b != 0)
+        .map(|i| &bytes[..=i])
+        .unwrap_or(bytes);
     String::from_utf8(trimmed.to_vec()).ok()
 }
 
@@ -463,11 +497,7 @@ const MIN_SPLIT_BATCH: u64 = 10;
 /// Probe the RPC's `eth_getLogs` block range limit by binary-searching with
 /// increasingly larger empty filters. Returns the largest range that succeeds,
 /// capped at `requested`.
-async fn probe_get_logs_limit(
-    rpc: &RpcClient,
-    to_block: u64,
-    requested: u64,
-) -> u64 {
+async fn probe_get_logs_limit(rpc: &RpcClient, to_block: u64, requested: u64) -> u64 {
     let candidates: &[u64] = &[100, 250, 500, 1000, 2000, 5000, 10_000];
     let mut working = MIN_SPLIT_BATCH;
     for &candidate in candidates {
@@ -538,7 +568,13 @@ async fn get_logs_with_retry(
             }
         }
     }
-    Err(last_err.expect("last_err should be Some after loop failure"))
+    match last_err {
+        Some(e) => Err(e),
+        None => Err(anyhow::anyhow!(
+            "get_logs retry loop for {batch_start}..{batch_end} exited after \
+             {MAX_RETRIES} attempts without recording an error"
+        )),
+    }
 }
 
 async fn get_logs_split_recursive(
@@ -568,13 +604,17 @@ async fn get_logs_split_recursive(
                         let mid = from + range / 2 - 1;
                         let left_f = base_filter.clone().from_block(from).to_block(mid);
                         let right_f = base_filter.clone().from_block(mid + 1).to_block(to);
-                        let mut results = Box::pin(get_logs_split_recursive(rpc, &left_f, from, mid)).await?;
-                        results.extend(Box::pin(get_logs_split_recursive(rpc, &right_f, mid + 1, to)).await?);
+                        let mut results =
+                            Box::pin(get_logs_split_recursive(rpc, &left_f, from, mid)).await?;
+                        results.extend(
+                            Box::pin(get_logs_split_recursive(rpc, &right_f, mid + 1, to)).await?,
+                        );
                         return Ok(results);
                     }
                     tracing::warn!(
                         "Split get_logs failed for {from}..{to} (attempt {}/{}): {e:#}.",
-                        attempt + 1, MAX_RETRIES
+                        attempt + 1,
+                        MAX_RETRIES
                     );
                 }
             }
@@ -599,22 +639,15 @@ async fn get_logs_split_recursive(
 /// `addr_override` is set when the emitting contract is not the pool itself
 /// (e.g. the Balancer Vault singleton): the pool address is derived from the
 /// event (Balancer poolIds encode the pool address in their top 20 bytes).
-fn classify_dex_event(
-    log: &alloy::rpc::types::Log,
-) -> Option<(DexType, Option<[u8; 32]>, Option<(Address, Address)>, Option<Address>)> {
+fn classify_dex_event(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
     let topic0 = log.topics()[0];
     if topic0 == topics::V2_SWAP || topic0 == topics::V2_SYNC {
         return Some((DexType::UniswapV2, None, None, None));
     }
-    if topic0 == topics::V3_SWAP
-        || topic0 == *topics::V3_MINT
-        || topic0 == topics::V3_BURN
-    {
+    if topic0 == topics::V3_SWAP || topic0 == *topics::V3_MINT || topic0 == topics::V3_BURN {
         return Some((DexType::UniswapV3, None, None, None));
     }
-    if topic0 == *topics::TRADER_JOE_LB_SWAP
-        || topic0 == *topics::TRADER_JOE_LB_SWAP_LEGACY
-    {
+    if topic0 == *topics::TRADER_JOE_LB_SWAP || topic0 == *topics::TRADER_JOE_LB_SWAP_LEGACY {
         // LBPair contracts are per-pool and emit their own Swap events.
         return Some((DexType::TraderJoeLB, None, None, None));
     }
@@ -662,7 +695,12 @@ fn classify_dex_event(
             let mut pool_id = [0u8; 32];
             pool_id.copy_from_slice(topics[1].as_slice());
             let pool_key = Address::from_slice(&pool_id[12..32]);
-            return Some((DexType::PancakeInfinity, Some(pool_id), None, Some(pool_key)));
+            return Some((
+                DexType::PancakeInfinity,
+                Some(pool_id),
+                None,
+                Some(pool_key),
+            ));
         }
         return Some((DexType::PancakeInfinity, None, None, None));
     }
@@ -692,7 +730,12 @@ fn classify_dex_event(
             let pool_addr = Address::from_slice(&pool_id[..20]);
             let token_in = Address::from_slice(&topics[2][12..]);
             let token_out = Address::from_slice(&topics[3][12..]);
-            return Some((DexType::Balancer, Some(pool_id), Some((token_in, token_out)), Some(pool_addr)));
+            return Some((
+                DexType::Balancer,
+                Some(pool_id),
+                Some((token_in, token_out)),
+                Some(pool_addr),
+            ));
         }
         return Some((DexType::Balancer, None, None, None));
     }
@@ -702,6 +745,7 @@ fn classify_dex_event(
 // ── Helper: scan factory creation events ──
 
 /// Pins to a specific provider when `provider_idx` is `Some`.
+#[allow(clippy::too_many_arguments)] // discovery plumbing — slimmed in W4
 async fn scan_factory_creation_events_pinned(
     rpc: &RpcClient,
     factories: &[Address],
@@ -755,19 +799,19 @@ macro_rules! get_logs_pinned {
 }
 
 // ── Per-DEX scanner submodules ──
-mod v2;
-mod v3;
 mod balancer;
-mod curve;
-mod solidly;
 mod camelot;
-mod trader_joe;
-mod pendle;
-mod v4;
+mod curve;
+mod fluid;
 mod infinity;
 mod metric;
-mod fluid;
+mod pendle;
 pub mod remote;
+mod solidly;
+mod trader_joe;
+mod v2;
+mod v3;
+mod v4;
 
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).
@@ -811,7 +855,8 @@ pub async fn discover_pools(
     if effective_batch_size != config.batch_size {
         tracing::info!(
             "Adapted batch_size: {} → {} (RPC eth_getLogs limit detected)",
-            config.batch_size, effective_batch_size
+            config.batch_size,
+            effective_batch_size
         );
     }
 
@@ -823,29 +868,47 @@ pub async fn discover_pools(
         // Single provider — run sequentially (no parallelism overhead)
         tracing::info!("Discovery: using 1 provider shard");
         return discover_pools_shard(
-            rpc, from_block, to_block, effective_batch_size, config, on_batch, None,
-        ).await;
+            rpc,
+            from_block,
+            to_block,
+            effective_batch_size,
+            config,
+            on_batch,
+            None,
+        )
+        .await;
     }
 
     tracing::info!(
         "Discovery: distributing {} blocks across {} provider shards",
-        to_block - from_block + 1, num_shards
+        to_block - from_block + 1,
+        num_shards
     );
 
     // ── Run each shard in parallel ──
     use futures::stream::{self, StreamExt};
     let rpc_concurrency = config.rpc_concurrency;
 
-    let shard_tasks: Vec<_> = shards.into_iter().map(|(provider_idx, shard_start, shard_end)| {
-        let rpc = rpc.clone();
-        let config_ref = config;
-        let batch_size = effective_batch_size;
-        async move {
-            discover_pools_shard(
-                &rpc, shard_start, shard_end, batch_size, config_ref, None, Some(provider_idx),
-            ).await
-        }
-    }).collect();
+    let shard_tasks: Vec<_> = shards
+        .into_iter()
+        .map(|(provider_idx, shard_start, shard_end)| {
+            let rpc = rpc.clone();
+            let config_ref = config;
+            let batch_size = effective_batch_size;
+            async move {
+                discover_pools_shard(
+                    &rpc,
+                    shard_start,
+                    shard_end,
+                    batch_size,
+                    config_ref,
+                    None,
+                    Some(provider_idx),
+                )
+                .await
+            }
+        })
+        .collect();
 
     let shard_results: Vec<_> = stream::iter(shard_tasks)
         .buffer_unordered(rpc_concurrency.min(num_shards))
@@ -854,10 +917,7 @@ pub async fn discover_pools(
 
     // ── Merge shard results ──
     let mut active_blocks = HashSet::new();
-    let mut pool_hits: HashMap<
-        Address,
-        (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64),
-    > = HashMap::new();
+    let mut pool_hits: PoolHits = HashMap::new();
     let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();
 
     for result in shard_results {
@@ -869,7 +929,10 @@ pub async fn discover_pools(
                 for pool in shard_pools {
                     let addr = pool.address;
                     let entry = pool_hits.entry(addr).or_insert((
-                        pool.dex_type, pool.pool_id, None, pool.creation_block,
+                        pool.dex_type,
+                        pool.pool_id,
+                        None,
+                        pool.creation_block,
                     ));
                     if pool.creation_block > 0 && pool.creation_block < entry.3 {
                         entry.3 = pool.creation_block;
@@ -902,10 +965,7 @@ async fn discover_pools_shard(
     provider_idx: Option<usize>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let mut active_blocks = HashSet::new();
-    let mut pool_hits: HashMap<
-        Address,
-        (DexType, Option<[u8; 32]>, Option<(Address, Address)>, u64),
-    > = HashMap::new();
+    let mut pool_hits: PoolHits = HashMap::new();
     let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();
 
     // Pre-build the DEX activity topic list.
@@ -987,18 +1047,129 @@ async fn discover_pools_shard(
             }
         }
 
-        v2::scan_v2_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        v3::scan_v3_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        balancer::scan_balancer_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
-        curve::scan_curve_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
-        solidly::scan_solidly_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        camelot::scan_camelot_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        trader_joe::scan_trader_joe_batch(rpc, config, current, batch_end, &mut active_blocks, &mut pool_hits, &mut factory_pools, provider_idx).await;
-        pendle::scan_pendle_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        v4::scan_v4_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        infinity::scan_infinity_cl_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        metric::scan_metric_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
-        fluid::scan_fluid_batch(rpc, config, current, batch_end, &mut active_blocks, &mut factory_pools, provider_idx).await;
+        v2::scan_v2_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        v3::scan_v3_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        balancer::scan_balancer_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut pool_hits,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        curve::scan_curve_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut pool_hits,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        solidly::scan_solidly_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        camelot::scan_camelot_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        trader_joe::scan_trader_joe_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut pool_hits,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        pendle::scan_pendle_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        v4::scan_v4_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        infinity::scan_infinity_cl_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        metric::scan_metric_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
+        fluid::scan_fluid_batch(
+            rpc,
+            config,
+            current,
+            batch_end,
+            &mut active_blocks,
+            &mut factory_pools,
+            provider_idx,
+        )
+        .await;
 
         if let Some(ref f) = on_batch {
             f();
@@ -1025,7 +1196,8 @@ async fn discover_pools_shard(
     // Balancer pools found via Swap events may have pool_id: None if the event
     // topics were truncated. Call Vault.getPool(address) to resolve missing pool_ids.
     if let Some(vault) = config.balancer_vault {
-        let balancer_to_resolve: Vec<Address> = pool_hits.iter()
+        let balancer_to_resolve: Vec<Address> = pool_hits
+            .iter()
             .filter(|(_, (dt, pid, _, _))| *dt == DexType::Balancer && pid.is_none())
             .map(|(addr, _)| *addr)
             .collect();
@@ -1036,41 +1208,52 @@ async fn discover_pools_shard(
                 balancer_to_resolve.len()
             );
             use futures::stream::{self, StreamExt};
-            let resolve_tasks: Vec<_> = balancer_to_resolve.into_iter().map(|addr| {
-                let rpc = rpc.clone();
-                let vault = vault;
-                async move {
-                    let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&BALANCER_GET_POOL_SELECTOR);
-                    let mut arg = [0u8; 32];
-                    arg[12..32].copy_from_slice(addr.as_slice());
-                    calldata.extend_from_slice(&arg);
-                    match rpc.call_latest(vault, Bytes::from(calldata)).await {
-                        Ok(result) if result.0.len() >= 32 => {
-                            let mut pool_id = [0u8; 32];
-                            pool_id.copy_from_slice(&result.0[..32]);
-                            // getPool returns (bytes32 poolId, address[] tokens)
-                            // Decode the dynamic array: offset at 32..64, length at offset, then addresses
-                            let tokens = if result.0.len() >= 64 {
-                                let offset = U256::from_be_slice(&result.0[32..64]).to::<usize>();
-                                if result.0.len() >= offset + 32 {
-                                    let len = U256::from_be_slice(&result.0[offset..offset+32]).to::<usize>();
-                                    let mut tokens = Vec::with_capacity(len);
-                                    for i in 0..len {
-                                        let pos = offset + 32 + i * 32;
-                                        if pos + 32 <= result.0.len() {
-                                            tokens.push(Address::from_slice(&result.0[pos+12..pos+32]));
+            let resolve_tasks: Vec<_> = balancer_to_resolve
+                .into_iter()
+                .map(|addr| {
+                    let rpc = rpc.clone();
+                    async move {
+                        let mut calldata = Vec::with_capacity(36);
+                        calldata.extend_from_slice(&BALANCER_GET_POOL);
+                        let mut arg = [0u8; 32];
+                        arg[12..32].copy_from_slice(addr.as_slice());
+                        calldata.extend_from_slice(&arg);
+                        match rpc.call_latest(vault, Bytes::from(calldata)).await {
+                            Ok(result) if result.0.len() >= 32 => {
+                                let mut pool_id = [0u8; 32];
+                                pool_id.copy_from_slice(&result.0[..32]);
+                                // getPool returns (bytes32 poolId, address[] tokens)
+                                // Decode the dynamic array: offset at 32..64, length at offset, then addresses
+                                let tokens = if result.0.len() >= 64 {
+                                    let offset =
+                                        U256::from_be_slice(&result.0[32..64]).to::<usize>();
+                                    if result.0.len() >= offset + 32 {
+                                        let len =
+                                            U256::from_be_slice(&result.0[offset..offset + 32])
+                                                .to::<usize>();
+                                        let mut tokens = Vec::with_capacity(len);
+                                        for i in 0..len {
+                                            let pos = offset + 32 + i * 32;
+                                            if pos + 32 <= result.0.len() {
+                                                tokens.push(Address::from_slice(
+                                                    &result.0[pos + 12..pos + 32],
+                                                ));
+                                            }
                                         }
+                                        (!tokens.is_empty()).then_some(tokens)
+                                    } else {
+                                        None
                                     }
-                                    (!tokens.is_empty()).then_some(tokens)
-                                } else { None }
-                            } else { None };
-                            Some((addr, pool_id, tokens))
+                                } else {
+                                    None
+                                };
+                                Some((addr, pool_id, tokens))
+                            }
+                            _ => None,
                         }
-                        _ => None,
                     }
-                }
-            }).collect();
+                })
+                .collect();
 
             let resolved: Vec<_> = stream::iter(resolve_tasks)
                 .buffer_unordered(config.rpc_concurrency)
@@ -1099,7 +1282,8 @@ async fn discover_pools_shard(
     // ── Phase 1.6: Resolve Curve underlying tokens ──
     // For Curve pools discovered via registry, fetch the full token list via coins(i).
     {
-        let curve_pools: Vec<Address> = factory_pools.iter()
+        let curve_pools: Vec<Address> = factory_pools
+            .iter()
             .filter(|(_, fp)| fp.dex_type == DexType::Curve && fp.underlying_tokens.is_none())
             .map(|(addr, _)| *addr)
             .collect();
@@ -1110,29 +1294,47 @@ async fn discover_pools_shard(
                 curve_pools.len()
             );
             use futures::stream::{self, StreamExt};
-            static CURVE_COINS_SELECTOR_DYN: [u8; 4] = [0xc6, 0x61, 0x1f, 0x94]; // coins(int128)
-            let resolve_tasks: Vec<_> = curve_pools.into_iter().map(|addr| {
-                let rpc = rpc.clone();
-                async move {
-                    let mut tokens = Vec::new();
-                    for i in 0u8..8u8 {
-                        let mut calldata = Vec::with_capacity(36);
-                        calldata.extend_from_slice(&CURVE_COINS_SELECTOR_DYN);
-                        let mut arg = [0u8; 32];
-                        arg[31] = i;
-                        calldata.extend_from_slice(&arg);
-                        match rpc.call_latest(addr, Bytes::from(calldata)).await {
-                            Ok(result) if result.0.len() >= 32 => {
-                                let token = Address::from_slice(&result.0[12..32]);
-                                if token.is_zero() { break; }
-                                tokens.push(token);
+            // Classic Vyper Curve factories expose `coins(int128)`, NG
+            // factories `coins(uint256)` — try the canonical int128 signature
+            // first, then the uint256 variant (same fallback order as
+            // `fetch_curve_state` in pool/state/factory.rs).
+            let resolve_tasks: Vec<_> = curve_pools
+                .into_iter()
+                .map(|addr| {
+                    let rpc = rpc.clone();
+                    async move {
+                        let mut tokens = Vec::new();
+                        for i in 0u8..8u8 {
+                            let mut arg = [0u8; 32];
+                            arg[31] = i;
+                            let mut calldata = Vec::with_capacity(36);
+                            calldata.extend_from_slice(&CURVE_COINS_I128);
+                            calldata.extend_from_slice(&arg);
+                            let call = match rpc.call_latest(addr, Bytes::from(calldata)).await {
+                                Ok(result) if result.0.len() >= 32 => Some(result),
+                                _ => {
+                                    // NG deployment: retry with coins(uint256)
+                                    let mut calldata = Vec::with_capacity(36);
+                                    calldata.extend_from_slice(&CURVE_COINS_U256);
+                                    calldata.extend_from_slice(&arg);
+                                    rpc.call_latest(addr, Bytes::from(calldata)).await.ok()
+                                }
+                            };
+                            match call {
+                                Some(result) if result.0.len() >= 32 => {
+                                    let token = Address::from_slice(&result.0[12..32]);
+                                    if token.is_zero() {
+                                        break;
+                                    }
+                                    tokens.push(token);
+                                }
+                                _ => break,
                             }
-                            _ => break,
                         }
+                        (!tokens.is_empty()).then_some((addr, tokens))
                     }
-                    (!tokens.is_empty()).then(|| (addr, tokens))
-                }
-            }).collect();
+                })
+                .collect();
 
             let resolved: Vec<_> = stream::iter(resolve_tasks)
                 .buffer_unordered(config.rpc_concurrency)
@@ -1147,7 +1349,10 @@ async fn discover_pools_shard(
                 }
             }
             if resolved_count > 0 {
-                tracing::info!("Resolved underlying tokens for {} Curve pools", resolved_count);
+                tracing::info!(
+                    "Resolved underlying tokens for {} Curve pools",
+                    resolved_count
+                );
             }
         }
     }
@@ -1156,46 +1361,77 @@ async fn discover_pools_shard(
     // All metadata (token0, token1, fee, tickSpacing) is immutable, so we use
     // call_latest() to avoid "historical state not available" errors from
     // providers without full archive support.
-    let token0_selector = Bytes::from_static(&[0x0d, 0xfe, 0x16, 0x81]);
-    let token1_selector = Bytes::from_static(&[0xd2, 0x12, 0x20, 0xa7]);
-    let fee_selector = Bytes::from_static(&[0xdd, 0xca, 0x3f, 0x43]);
-    let tick_spacing_selector = Bytes::from_static(&[0x37, 0xcf, 0xda, 0xca]);
+    let token0_selector = TOKEN0.clone();
+    let token1_selector = TOKEN1.clone();
+    let fee_selector = FEE.clone();
+    let tick_spacing_selector = TICK_SPACING.clone();
 
-    type FetchTask = Pin<Box<dyn Future<Output = (Address, DexType, Option<Address>, Option<Address>, Option<u32>, Option<u32>, u64)> + Send>>;
+    type FetchTask = Pin<
+        Box<
+            dyn Future<
+                    Output = (
+                        Address,
+                        DexType,
+                        Option<Address>,
+                        Option<Address>,
+                        Option<u32>,
+                        Option<u32>,
+                        u64,
+                    ),
+                > + Send,
+        >,
+    >;
 
     let mut fetch_tasks: Vec<FetchTask> = Vec::new();
     let mut cache_hits: usize = 0;
     let mut unmatched_v4_hits: usize = 0;
 
     // Collect pool_hits data to avoid borrowing pool_hits across async boundaries
-    let pool_hits_vec: Vec<_> = pool_hits.iter().map(|(addr, (dt, pid, tokens, fsb))| {
-        (*addr, *dt, *pid, *tokens, *fsb)
-    }).collect();
+    let pool_hits_vec: Vec<_> = pool_hits
+        .iter()
+        .map(|(addr, (dt, pid, tokens, fsb))| (*addr, *dt, *pid, *tokens, *fsb))
+        .collect();
 
     for (addr, dex_type, _balancer_pool_id, balancer_tokens, first_seen_block) in &pool_hits_vec {
         // Skip pools already fully resolved via factory events
         if let Some(fp) = factory_pools.get(addr) {
             match fp.dex_type {
-                DexType::UniswapV2 | DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity | DexType::TraderJoeLB | DexType::Pendle | DexType::Metric => continue,
+                DexType::UniswapV2
+                | DexType::UniswapV3
+                | DexType::UniswapV4
+                | DexType::PancakeInfinity
+                | DexType::TraderJoeLB
+                | DexType::Pendle
+                | DexType::Metric => continue,
                 _ => {}
             }
         }
         // Skip pools already known from a previous discovery run (SQLite cache)
-        if let Some(cached) = config.pool_cache.and_then(|c| c.get_discovered_pool(addr).ok().flatten()) {
+        if let Some(cached) = config
+            .pool_cache
+            .and_then(|c| c.get_discovered_pool(addr).ok().flatten())
+        {
             if cached.token0 != Address::ZERO && cached.token1 != Address::ZERO {
-                let dp = DiscoveredPool::new(cached.address, cached.token0, cached.token1, cached.fee, cached.dex_type, cached.creation_block)
-                    .with_tick_spacing(cached.tick_spacing.map(|ts| ts as i32))
-                    .with_pool_id(cached.pool_id)
-                    .with_factory(cached.factory)
-                    .with_is_stable(cached.is_stable)
-                    .with_balancer_pool_type(cached.balancer_pool_type)
-                    .with_hook_address(cached.hook_address)
-                    .with_bin_step(cached.bin_step)
-                    .with_maturity_timestamp(cached.maturity_timestamp)
-                    .with_underlying_tokens(cached.underlying_tokens)
-                    .with_dex_name(cached.dex_name.as_deref().map(String::from))
-                    .with_token0_symbol(cached.token0_symbol.as_deref().map(String::from))
-                    .with_token1_symbol(cached.token1_symbol.as_deref().map(String::from));
+                let dp = DiscoveredPool::new(
+                    cached.address,
+                    cached.token0,
+                    cached.token1,
+                    cached.fee,
+                    cached.dex_type,
+                    cached.creation_block,
+                )
+                .with_tick_spacing(cached.tick_spacing.map(|ts| ts as i32))
+                .with_pool_id(cached.pool_id)
+                .with_factory(cached.factory)
+                .with_is_stable(cached.is_stable)
+                .with_balancer_pool_type(cached.balancer_pool_type)
+                .with_hook_address(cached.hook_address)
+                .with_bin_step(cached.bin_step)
+                .with_maturity_timestamp(cached.maturity_timestamp)
+                .with_underlying_tokens(cached.underlying_tokens)
+                .with_dex_name(cached.dex_name.as_deref().map(String::from))
+                .with_token0_symbol(cached.token0_symbol.as_deref().map(String::from))
+                .with_token1_symbol(cached.token1_symbol.as_deref().map(String::from));
                 factory_pools.entry(*addr).or_insert(dp);
                 cache_hits += 1;
                 continue;
@@ -1212,14 +1448,17 @@ async fn discover_pools_shard(
                 fetch_tasks.push(Box::pin(async move {
                     let (r0, r1) = futures::future::join(
                         async {
-                            rpc.call_latest(addr, sel0).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel0).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
                         async {
-                            rpc.call_latest(addr, sel1).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel1).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
-                    ).await;
+                    )
+                    .await;
                     (addr, dex_type, r0, r1, None, None, fsb)
                 }));
             }
@@ -1229,21 +1468,24 @@ async fn discover_pools_shard(
                 // the standard selectors revert and leave tokens unresolved.
                 let rpc = rpc.clone();
                 let addr = *addr;
-                let sel_x = TRADER_JOE_TOKEN_X_SELECTOR.clone();
-                let sel_y = TRADER_JOE_TOKEN_Y_SELECTOR.clone();
+                let sel_x = TRADER_JOE_TOKEN_X.clone();
+                let sel_y = TRADER_JOE_TOKEN_Y.clone();
                 let fsb = *first_seen_block;
                 let dex_type = *dex_type;
                 fetch_tasks.push(Box::pin(async move {
                     let (r0, r1) = futures::future::join(
                         async {
-                            rpc.call_latest(addr, sel_x).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel_x).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
                         async {
-                            rpc.call_latest(addr, sel_y).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel_y).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
-                    ).await;
+                    )
+                    .await;
                     (addr, dex_type, r0, r1, None, None, fsb)
                 }));
             }
@@ -1258,29 +1500,41 @@ async fn discover_pools_shard(
                 fetch_tasks.push(Box::pin(async move {
                     let (token0, token1, fee, tick_spacing) = futures::future::join4(
                         async {
-                            rpc.call_latest(addr, sel0).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel0).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
                         async {
-                            rpc.call_latest(addr, sel1).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                            rpc.call_latest(addr, sel1).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
+                            })
                         },
                         async {
-                            rpc.call_latest(addr, sel_fee).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| {
-                                    u32::from_be_bytes([b[28], b[29], b[30], b[31]])
-                                }))
+                            rpc.call_latest(addr, sel_fee).await.ok().and_then(|b| {
+                                (b.len() >= 32)
+                                    .then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
+                            })
                         },
                         async {
-                            rpc.call_latest(addr, sel_ts).await.ok()
-                                .and_then(|b| (b.len() >= 32).then(|| {
+                            rpc.call_latest(addr, sel_ts).await.ok().and_then(|b| {
+                                (b.len() >= 32).then(|| {
                                     let mut ts = [0u8; 4];
                                     ts.copy_from_slice(&b[28..32]);
                                     i32::from_be_bytes(ts) as u32
-                                }))
+                                })
+                            })
                         },
-                    ).await;
-                    (addr, DexType::UniswapV3, token0, token1, fee, tick_spacing, fsb)
+                    )
+                    .await;
+                    (
+                        addr,
+                        DexType::UniswapV3,
+                        token0,
+                        token1,
+                        fee,
+                        tick_spacing,
+                        fsb,
+                    )
                 }));
             }
             DexType::UniswapV4 => {
@@ -1333,9 +1587,8 @@ async fn discover_pools_shard(
                 // If token0 is non-zero, try to get SY from PT.SY()
                 fetch_tasks.push(Box::pin(async move {
                     let token1 = if !t0.is_zero() {
-                        // SY() selector: keccak256("SY()")[..4]
-                        let sel_sy = Bytes::from_static(&[0x8d, 0xb3, 0x9e, 0x41]);
-                        match rpc.call_latest(t0, sel_sy).await {
+                        // PT token exposes its SY yield source via SY()
+                        match rpc.call_latest(t0, PENDLE_SY.clone()).await {
                             Ok(b) if b.len() >= 32 => Some(Address::from_slice(&b[12..32])),
                             _ => None,
                         }
@@ -1352,7 +1605,9 @@ async fn discover_pools_shard(
     if cache_hits > 0 {
         tracing::info!(
             "Pool cache: {} of {} pools served from cache ({} RPC tasks remaining)",
-            cache_hits, pool_hits_vec.len(), rpc_tasks,
+            cache_hits,
+            pool_hits_vec.len(),
+            rpc_tasks,
         );
     }
     if unmatched_v4_hits > 0 {
@@ -1375,15 +1630,19 @@ async fn discover_pools_shard(
 
     // ── Phase 2.5: Resolve token symbols via ERC-20 symbol() ──
     // Collect all unique token addresses from factory_pools and results
-    let symbol_selector = Bytes::from_static(&[0x95, 0xd8, 0x9b, 0x41]); // symbol()
+    let symbol_selector = SYMBOL.clone(); // ERC-20 symbol()
     let mut token_addrs: HashSet<Address> = HashSet::new();
     for fp in factory_pools.values() {
         token_addrs.insert(fp.token0);
         token_addrs.insert(fp.token1);
     }
     for (_, _, t0_opt, t1_opt, _, _, _) in &results {
-        if let Some(t) = t0_opt { token_addrs.insert(*t); }
-        if let Some(t) = t1_opt { token_addrs.insert(*t); }
+        if let Some(t) = t0_opt {
+            token_addrs.insert(*t);
+        }
+        if let Some(t) = t1_opt {
+            token_addrs.insert(*t);
+        }
     }
     token_addrs.remove(&Address::ZERO);
 
@@ -1402,7 +1661,9 @@ async fn discover_pools_shard(
         }
         tracing::info!(
             "Token cache: {}/{} tokens cached, {} need RPC resolution",
-            cached.len(), token_vec.len(), uncached.len()
+            cached.len(),
+            token_vec.len(),
+            uncached.len()
         );
         (cached, uncached)
     } else {
@@ -1410,16 +1671,22 @@ async fn discover_pools_shard(
     };
 
     // Only call symbol() for uncached tokens
-    let symbol_tasks: Vec<_> = uncached_tokens.iter().map(|addr| {
-        let rpc = rpc.clone();
-        let addr = *addr;
-        let sel = symbol_selector.clone();
-        async move {
-            let sym = rpc.call_latest(addr, sel).await.ok()
-                .and_then(|b| decode_abi_string(&b));
-            (addr, sym)
-        }
-    }).collect();
+    let symbol_tasks: Vec<_> = uncached_tokens
+        .iter()
+        .map(|addr| {
+            let rpc = rpc.clone();
+            let addr = *addr;
+            let sel = symbol_selector.clone();
+            async move {
+                let sym = rpc
+                    .call_latest(addr, sel)
+                    .await
+                    .ok()
+                    .and_then(|b| decode_abi_string(&b));
+                (addr, sym)
+            }
+        })
+        .collect();
 
     let rpc_resolved: HashMap<Address, String> = if symbol_tasks.is_empty() {
         HashMap::new()
@@ -1443,7 +1710,10 @@ async fn discover_pools_shard(
     let cached_count = symbol_results.len() - rpc_resolved_count;
     tracing::info!(
         "Resolved symbols for {}/{} tokens ({} cached, {} from RPC)",
-        symbol_results.len(), token_vec.len(), cached_count, rpc_resolved_count
+        symbol_results.len(),
+        token_vec.len(),
+        cached_count,
+        rpc_resolved_count
     );
 
     // ── Phase 3: Build output ──
@@ -1480,9 +1750,28 @@ async fn discover_pools_shard(
     }
 
     // Then, add metadata-fetched pools not already resolved
-    for (addr, dex_type, token0_opt, token1_opt, fee_opt, tick_spacing, first_seen_block) in results {
+    let mut degraded_count = 0u32;
+    for (addr, dex_type, token0_opt, token1_opt, fee_opt, tick_spacing, first_seen_block) in results
+    {
         if !resolved_addrs.insert(addr) {
             continue;
+        }
+        // Count DEXes that require token metadata but failed to resolve.
+        // V2/Solidly/Camelot/Fluid/TraderJoeLB/V3/V4 always expect two tokens;
+        // a zero/None pair means the RPC call failed or returned a short response.
+        let requires_tokens = matches!(
+            dex_type,
+            DexType::UniswapV2
+                | DexType::Solidly
+                | DexType::Camelot
+                | DexType::Fluid
+                | DexType::TraderJoeLB
+                | DexType::UniswapV3
+                | DexType::UniswapV4
+                | DexType::PancakeInfinity
+        );
+        if requires_tokens && (token0_opt.is_none() || token1_opt.is_none()) {
+            degraded_count += 1;
         }
         let token0 = token0_opt.unwrap_or(Address::ZERO);
         let token1 = token1_opt.unwrap_or(Address::ZERO);
@@ -1503,22 +1792,34 @@ async fn discover_pools_shard(
             DexType::Metric | DexType::Fluid => fee_opt.unwrap_or(0),
         };
         let pool_id = pool_hits.get(&addr).and_then(|(_, pid, _, _)| *pid);
-        let creation_block = pool_hits.get(&addr).map(|(_, _, _, b)| *b).unwrap_or(first_seen_block);
-        let underlying_tokens = factory_pools.get(&addr).and_then(|fp| fp.underlying_tokens.clone());
+        let creation_block = pool_hits
+            .get(&addr)
+            .map(|(_, _, _, b)| *b)
+            .unwrap_or(first_seen_block);
+        let underlying_tokens = factory_pools
+            .get(&addr)
+            .and_then(|fp| fp.underlying_tokens.clone());
 
-        discovered_pools.push(DiscoveredPool::new(addr, token0, token1, fee, dex_type, creation_block)
-            .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
-            .with_pool_id(pool_id)
-            .with_underlying_tokens(underlying_tokens)
-            .with_dex_name(Some(dex_type.to_string()))
-            .with_token0_symbol(symbol_results.get(&token0).cloned())
-            .with_token1_symbol(symbol_results.get(&token1).cloned()));
+        discovered_pools.push(
+            DiscoveredPool::new(addr, token0, token1, fee, dex_type, creation_block)
+                .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
+                .with_pool_id(pool_id)
+                .with_underlying_tokens(underlying_tokens)
+                .with_dex_name(Some(dex_type.to_string()))
+                .with_token0_symbol(symbol_results.get(&token0).cloned())
+                .with_token1_symbol(symbol_results.get(&token1).cloned()),
+        );
     }
 
     tracing::info!(
         "Discovery complete: resolved {} pools",
         discovered_pools.len(),
     );
+    if degraded_count > 0 {
+        tracing::warn!(
+            "Discovery: {degraded_count} pool(s) had RPC metadata failures — token/fee fields fall back to defaults"
+        );
+    }
 
     Ok((discovered_pools, active_blocks))
 }
@@ -1533,10 +1834,8 @@ pub async fn discover_and_cache(
     config: &DiscoveryConfig<'_>,
     on_batch: Option<&dyn Fn()>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let (pools, active_blocks) = discover_pools(
-        rpc, from_block, to_block, config, on_batch,
-    )
-    .await?;
+    let (pools, active_blocks) =
+        discover_pools(rpc, from_block, to_block, config, on_batch).await?;
 
     // Save newly discovered pool symbols to the token cache
     if let Some(token_cache) = config.token_cache {
@@ -1562,11 +1861,13 @@ pub async fn discover_and_cache(
 
     let pool_count = pools.len();
     let mut persisted = 0usize;
+    let mut skipped_zero = 0usize;
     for pool in &pools {
         // Zero-token entries (e.g. V4 activity hits without an Initialize/cache
         // match, or Curve/Balancer hits whose tokens could not be resolved)
         // would poison the pool universe downstream — never persist them.
         if pool.token0.is_zero() || pool.token1.is_zero() {
+            skipped_zero += 1;
             continue;
         }
         let info: PoolInfo = pool.clone().into();
@@ -1578,6 +1879,13 @@ pub async fn discover_and_cache(
     }
     if persisted > 0 {
         tracing::info!("Cached {persisted}/{pool_count} pools from discovery");
+    }
+    if skipped_zero > 0 {
+        // Observable signal for a flaky RPC or hit-to-metadata gap: these
+        // pools were silently dropped rather than corrupting the universe.
+        tracing::warn!(
+            "Discovery: {skipped_zero}/{pool_count} pools skipped (unresolved/zero tokens) — check RPC health"
+        );
     }
 
     Ok((pools, active_blocks))
@@ -1601,40 +1909,38 @@ pub async fn health_check_pools(
     for (i, pool) in pools.iter().enumerate() {
         match pool.dex_type {
             DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
-                // getReserves() selector: 0x0902f1ac
-                tasks.push((i, pool.address, Bytes::from_static(&[0x09, 0x02, 0xf1, 0xac])));
+                // getReserves() — probe reserves for non-zero r0/r1
+                tasks.push((i, pool.address, GET_RESERVES.clone()));
             }
             DexType::UniswapV3 | DexType::UniswapV4 => {
-                // slot0() selector: 0x0c4c660e (check sqrtPriceX96 != 0)
-                tasks.push((i, pool.address, Bytes::from_static(&[0x0c, 0x4c, 0x66, 0x0e])));
+                // slot0() — check sqrtPriceX96 != 0
+                tasks.push((i, pool.address, V3_SLOT0.clone()));
             }
             DexType::PancakeInfinity => {
                 // Singleton CLPoolManager — health = getSlot0(poolId) on the
                 // manager (the synthetic pool key is not a contract address).
                 if let (Some(manager), Some(pool_id)) = (pool.factory, pool.pool_id) {
                     let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&INF_CL_SLOT0_SELECTOR);
+                    calldata.extend_from_slice(&INF_CL_SLOT0);
                     calldata.extend_from_slice(&pool_id);
                     tasks.push((i, manager, Bytes::from(calldata)));
                 }
             }
             DexType::TraderJoeLB => {
-                // getActiveId() selector: keccak256("getActiveId()")[..4]
-                // 0x4fc08452
-                tasks.push((i, pool.address, Bytes::from_static(&[0x4f, 0xc0, 0x84, 0x52])));
+                // getActiveId() — non-zero active bin means the pool is live
+                tasks.push((i, pool.address, LB_GET_ACTIVE_ID.clone()));
             }
             DexType::Pendle => {
-                // readState(address) selector: keccak256("readState(address)")[..4]
-                // Check if totalPt > 0 (non-zero reserves = active market)
+                // readState(address) — check if totalPt > 0 (non-zero reserves = active market)
                 let mut calldata = Vec::with_capacity(36);
-                calldata.extend_from_slice(&PENDLE_READ_STATE_SELECTOR);
+                calldata.extend_from_slice(&PENDLE_READ_STATE);
                 calldata.extend_from_slice(&[0u8; 32]); // address(0) as router param
                 tasks.push((i, pool.address, Bytes::from(calldata)));
             }
             DexType::Curve => {
-                // balances(uint256) selector — check token0 balance
+                // balances(uint256) — check token0 balance
                 let mut calldata = Vec::with_capacity(36);
-                calldata.extend_from_slice(&CURVE_BALANCES_SELECTOR);
+                calldata.extend_from_slice(&CURVE_BALANCES_U256);
                 calldata.extend_from_slice(&[0u8; 32]); // index 0
                 tasks.push((i, pool.address, Bytes::from(calldata)));
             }
@@ -1642,7 +1948,7 @@ pub async fn health_check_pools(
                 // getPoolTokens(bytes32) on vault — check if any balance is non-zero
                 if let (Some(vault), Some(pool_id)) = (balancer_vault, pool.pool_id) {
                     let mut calldata = Vec::with_capacity(36);
-                    calldata.extend_from_slice(&BALANCER_GET_POOL_TOKENS_SELECTOR);
+                    calldata.extend_from_slice(&GET_POOL_TOKENS);
                     calldata.extend_from_slice(&pool_id);
                     tasks.push((i, vault, Bytes::from(calldata)));
                 }
@@ -1658,13 +1964,19 @@ pub async fn health_check_pools(
         return (pools, 0);
     }
 
-    tracing::info!("Health checking {} pools (concurrency={})...", tasks.len(), rpc_concurrency);
+    tracing::info!(
+        "Health checking {} pools (concurrency={})...",
+        tasks.len(),
+        rpc_concurrency
+    );
 
     // Get latest block for the call
     let block = match rpc.get_block_number().await {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!("Health check: failed to get block number: {e:#}. Skipping health check.");
+            tracing::warn!(
+                "Health check: failed to get block number: {e:#}. Skipping health check."
+            );
             return (pools, 0);
         }
     };
@@ -1673,7 +1985,11 @@ pub async fn health_check_pools(
     let dex_types: Vec<DexType> = pools.iter().map(|p| p.dex_type).collect();
 
     /// Outcome of a single pool health probe.
-    enum PoolHealth { Alive, Dead, Unknown }
+    enum PoolHealth {
+        Alive,
+        Dead,
+        Unknown,
+    }
 
     // Run health checks with bounded concurrency.
     // RPC errors are treated as *unknown* and the pool is kept: a flaky public
@@ -1681,7 +1997,8 @@ pub async fn health_check_pools(
     let check_results: Vec<(usize, PoolHealth)> = stream::iter(tasks)
         .map(|(idx, to, data)| {
             let rpc = rpc.clone();
-            let is_v3 = dex_types[idx] == DexType::UniswapV3 || dex_types[idx] == DexType::UniswapV4;
+            let is_v3 =
+                dex_types[idx] == DexType::UniswapV3 || dex_types[idx] == DexType::UniswapV4;
             let is_lb = dex_types[idx] == DexType::TraderJoeLB;
             let is_pendle = dex_types[idx] == DexType::Pendle;
             let is_curve = dex_types[idx] == DexType::Curve;
@@ -1705,10 +2022,15 @@ pub async fn health_check_pools(
                             // getPoolTokens: decode dynamic array of balances
                             // (address[], uint256[], uint256) — check if any balance > 0
                             if bytes.len() >= 96 {
-                                let balances_offset = U256::from_be_slice(&bytes[32..64]).as_limbs()[0] as usize;
+                                let balances_offset =
+                                    U256::from_be_slice(&bytes[32..64]).as_limbs()[0] as usize;
                                 let token_count_offset = 64 + balances_offset;
                                 if token_count_offset + 32 <= bytes.len() {
-                                    let token_count = U256::from_be_slice(&bytes[token_count_offset..token_count_offset + 32]).as_limbs()[0] as usize;
+                                    let token_count = U256::from_be_slice(
+                                        &bytes[token_count_offset..token_count_offset + 32],
+                                    )
+                                    .as_limbs()[0]
+                                        as usize;
                                     let balances_start = token_count_offset + 32;
                                     let mut has_balance = false;
                                     for j in 0..token_count {
@@ -1722,7 +2044,7 @@ pub async fn health_check_pools(
                                         }
                                     }
                                     has_balance
-                        } else {
+                                } else {
                                     false
                                 }
                             } else {
@@ -1734,7 +2056,11 @@ pub async fn health_check_pools(
                                 && (!bytes.iter().take(32).all(|b| *b == 0)
                                     || !bytes[32..64].iter().all(|b| *b == 0))
                         };
-                        if responsive { PoolHealth::Alive } else { PoolHealth::Dead }
+                        if responsive {
+                            PoolHealth::Alive
+                        } else {
+                            PoolHealth::Dead
+                        }
                     }
                     Err(e) => {
                         tracing::debug!(
@@ -1777,7 +2103,11 @@ pub async fn health_check_pools(
         .collect();
     let removed = original_count - filtered.len();
     if removed > 0 {
-        tracing::info!("Health check: removed {} drained/paused pools ({} remaining)", removed, filtered.len());
+        tracing::info!(
+            "Health check: removed {} drained/paused pools ({} remaining)",
+            removed,
+            filtered.len()
+        );
     } else {
         tracing::info!("Health check: all {} pools healthy", filtered.len());
     }
@@ -1799,7 +2129,10 @@ mod tests {
     fn make_log(address: Address, topics_vec: Vec<B256>, data: Vec<u8>) -> alloy::rpc::types::Log {
         let log_data = LogData::new_unchecked(topics_vec, Bytes::from(data));
         alloy::rpc::types::Log {
-            inner: alloy::primitives::Log { address, data: log_data },
+            inner: alloy::primitives::Log {
+                address,
+                data: log_data,
+            },
             block_number: Some(1000),
             block_hash: None,
             block_timestamp: None,
@@ -1882,16 +2215,16 @@ mod tests {
     #[test]
     fn trader_joe_metadata_selectors_match_lbpair_abi() {
         assert_eq!(
-            *TRADER_JOE_TOKEN_X_SELECTOR,
+            *TRADER_JOE_TOKEN_X,
             Bytes::from_static(&[0x16, 0xdc, 0x16, 0x5b])
         );
         assert_eq!(
-            *TRADER_JOE_TOKEN_Y_SELECTOR,
+            *TRADER_JOE_TOKEN_Y,
             Bytes::from_static(&[0xb7, 0xd1, 0x9f, 0xc4])
         );
         // Sanity: they must differ from the standard pair selectors.
         let token0 = keccak256(b"token0()");
-        assert_ne!(*TRADER_JOE_TOKEN_X_SELECTOR, Bytes::copy_from_slice(&token0[..4]));
+        assert_ne!(*TRADER_JOE_TOKEN_X, Bytes::copy_from_slice(&token0[..4]));
     }
 
     /// Pendle router PT/YT swap logs must classify as Pendle with the hit
@@ -1909,7 +2242,12 @@ mod tests {
         ] {
             let log = make_log(
                 address!("d0019e86edB35E1fedaaB03aED5c3c60f115d28b"), // router-ish emitter
-                vec![topic, caller.into_word(), market.into_word(), receiver.into_word()],
+                vec![
+                    topic,
+                    caller.into_word(),
+                    market.into_word(),
+                    receiver.into_word(),
+                ],
                 vec![0u8; 64],
             );
             let (dex_type, pid, tokens, addr_override) =
@@ -1927,12 +2265,8 @@ mod tests {
         let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
         // Remote V2-fallback (fee unset) yields to a specific on-chain type.
-        let mut fallback = DiscoveredPool::new(
-            Address::ZERO, t0, t1, 0, DexType::UniswapV2, 0,
-        );
-        let onchain_v3 = DiscoveredPool::new(
-            Address::ZERO, t0, t1, 500, DexType::UniswapV3, 100,
-        );
+        let mut fallback = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::UniswapV2, 0);
+        let onchain_v3 = DiscoveredPool::new(Address::ZERO, t0, t1, 500, DexType::UniswapV3, 100);
         fallback.merge_from(&onchain_v3);
         assert_eq!(fallback.dex_type, DexType::UniswapV3);
         assert_eq!(fallback.fee, 500);
@@ -1945,12 +2279,9 @@ mod tests {
 
         // A confirmed on-chain V2 pool (explicit fee) is not flipped by a
         // conflicting remote label.
-        let mut confirmed_v2 = DiscoveredPool::new(
-            Address::ZERO, t0, t1, 30, DexType::UniswapV2, 0,
-        );
-        let mislabeled_v3 = DiscoveredPool::new(
-            Address::ZERO, t0, t1, 0, DexType::UniswapV3, 0,
-        );
+        let mut confirmed_v2 =
+            DiscoveredPool::new(Address::ZERO, t0, t1, 30, DexType::UniswapV2, 0);
+        let mislabeled_v3 = DiscoveredPool::new(Address::ZERO, t0, t1, 0, DexType::UniswapV3, 0);
         confirmed_v2.merge_from(&mislabeled_v3);
         assert_eq!(confirmed_v2.dex_type, DexType::UniswapV2);
 

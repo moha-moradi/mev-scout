@@ -441,7 +441,9 @@ mod tests {
             ChainName::Avalanche,
         ] {
             assert!(
-                chain.default_metric_factories().contains(&"0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"),
+                chain
+                    .default_metric_factories()
+                    .contains(&"0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"),
                 "{chain:?} must include Metric V2 factory"
             );
         }

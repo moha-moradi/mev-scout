@@ -28,7 +28,7 @@ impl super::SqliteStore {
         )?;
         let mut rows = stmt.query(rusqlite::params![run_id])?;
         match rows.next()? {
-            Some(row) => Ok(Some(super::row_to_manifest(&row)?)),
+            Some(row) => Ok(Some(super::row_to_manifest(row)?)),
             None => Ok(None),
         }
     }
@@ -45,7 +45,7 @@ impl super::SqliteStore {
         )?;
         let mut rows = stmt.query([])?;
         match rows.next()? {
-            Some(row) => Ok(Some(super::row_to_manifest(&row)?)),
+            Some(row) => Ok(Some(super::row_to_manifest(row)?)),
             None => Ok(None),
         }
     }

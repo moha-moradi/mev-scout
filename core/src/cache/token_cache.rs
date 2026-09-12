@@ -45,9 +45,7 @@ impl TokenCache {
     /// Load all cached token symbols from SQLite into memory.
     pub fn load(store: &SqliteStore) -> anyhow::Result<Self> {
         let conn = store.conn();
-        let mut stmt = conn.prepare(
-            "SELECT address, symbol, decimals FROM token_symbols"
-        )?;
+        let mut stmt = conn.prepare("SELECT address, symbol, decimals FROM token_symbols")?;
 
         let rows = stmt.query_map([], |row| {
             let addr_bytes: Vec<u8> = row.get(0)?;
@@ -91,11 +89,16 @@ impl TokenCache {
 
         for t in &data.always_warm {
             if let Ok(addr) = t.address.parse::<Address>() {
-                inner.entry(addr).or_insert_with(|| (t.symbol.clone(), Some(t.decimals)));
+                inner
+                    .entry(addr)
+                    .or_insert_with(|| (t.symbol.clone(), Some(t.decimals)));
             }
         }
 
-        tracing::info!("Token cache: pre-populated with {} known symbols", inner.len());
+        tracing::info!(
+            "Token cache: pre-populated with {} known symbols",
+            inner.len()
+        );
         TokenCache { inner }
     }
 
@@ -141,7 +144,7 @@ impl TokenCache {
             if self.inner.contains_key(addr) {
                 continue;
             }
-            let addr_bytes: &[u8] = &addr.0.as_slice();
+            let addr_bytes: &[u8] = addr.0.as_slice();
             conn.execute(
                 "INSERT OR REPLACE INTO token_symbols (address, symbol, decimals) VALUES (?1, ?2, ?3)",
                 rusqlite::params![addr_bytes, symbol, decimals],

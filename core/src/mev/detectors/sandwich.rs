@@ -1,22 +1,21 @@
 //! Sandwich attack detection — identifies buy-sell pairs that sandwich a victim transaction.
 
-use std::collections::{HashMap, HashSet};
-use alloy::primitives::{Address, U256};
-use crate::data::ExecutedLog;
-use crate::types::MevOpportunity;
-use crate::pool::decoders::{
-    decode_balancer_swap, decode_curve_swap, decode_v3_swap,
-    BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-    V3_SWAP_TOPIC,
-};
 use crate::chain::events::V2_SWAP_TOPIC;
-use crate::pool::math::quote_exact_in;
+use crate::data::ExecutedLog;
+use crate::pool::decoders::{
+    decode_balancer_swap, decode_curve_swap, decode_v3_swap, BALANCER_SWAP_TOPIC,
+    CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC, V3_SWAP_TOPIC,
+};
 use crate::pool::math::constant_product_output_amount;
-use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
+use crate::pool::math::quote_exact_in;
 use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in};
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
 use crate::utils::u128_from_be_bytes;
+use alloy::primitives::{Address, U256};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SwapDirection {
@@ -86,7 +85,13 @@ impl SandwichDetector {
         }
     }
 
-    fn process_v2_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+    fn process_v2_swap(
+        &mut self,
+        log: &ExecutedLog,
+        tx_index: usize,
+        sender: Address,
+        pool_manager: &PoolManager,
+    ) {
         if log.data.len() < 128 {
             return;
         }
@@ -96,20 +101,20 @@ impl SandwichDetector {
         let amt0_out = u128_from_be_bytes(&log.data[64..96]);
         let amt1_out = u128_from_be_bytes(&log.data[96..128]);
 
-        let (direction, amount_in, amount_out, token_in, token_out) =
-            if amt0_in > 0 && amt1_out > 0 {
-                let info = pool_manager.get(&log.address).map(|p| p.info());
-                let ti = info.map(|i| i.token0);
-                let to = info.map(|i| i.token1);
-                (SwapDirection::Token0ForToken1, amt0_in, amt1_out, ti, to)
-            } else if amt1_in > 0 && amt0_out > 0 {
-                let info = pool_manager.get(&log.address).map(|p| p.info());
-                let ti = info.map(|i| i.token1);
-                let to = info.map(|i| i.token0);
-                (SwapDirection::Token1ForToken0, amt1_in, amt0_out, ti, to)
-            } else {
-                return;
-            };
+        let (direction, amount_in, amount_out, token_in, token_out) = if amt0_in > 0 && amt1_out > 0
+        {
+            let info = pool_manager.get(&log.address).map(|p| p.info());
+            let ti = info.map(|i| i.token0);
+            let to = info.map(|i| i.token1);
+            (SwapDirection::Token0ForToken1, amt0_in, amt1_out, ti, to)
+        } else if amt1_in > 0 && amt0_out > 0 {
+            let info = pool_manager.get(&log.address).map(|p| p.info());
+            let ti = info.map(|i| i.token1);
+            let to = info.map(|i| i.token0);
+            (SwapDirection::Token1ForToken0, amt1_in, amt0_out, ti, to)
+        } else {
+            return;
+        };
 
         self.swap_records.push(SwapRecord {
             tx_index,
@@ -123,7 +128,13 @@ impl SandwichDetector {
         });
     }
 
-    fn process_v3_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+    fn process_v3_swap(
+        &mut self,
+        log: &ExecutedLog,
+        tx_index: usize,
+        sender: Address,
+        pool_manager: &PoolManager,
+    ) {
         if let Some(decoded) = decode_v3_swap(log) {
             // Determine direction and amounts from signed values
             let (direction, amount_in, amount_out, token_in, token_out) =
@@ -131,12 +142,24 @@ impl SandwichDetector {
                     let info = pool_manager.get(&log.address).map(|p| p.info());
                     let ti = info.map(|i| i.token0);
                     let to = info.map(|i| i.token1);
-                    (SwapDirection::Token0ForToken1, decoded.amount0 as u128, decoded.amount1.unsigned_abs(), ti, to)
+                    (
+                        SwapDirection::Token0ForToken1,
+                        decoded.amount0 as u128,
+                        decoded.amount1.unsigned_abs(),
+                        ti,
+                        to,
+                    )
                 } else if decoded.amount0 < 0 && decoded.amount1 > 0 {
                     let info = pool_manager.get(&log.address).map(|p| p.info());
                     let ti = info.map(|i| i.token1);
                     let to = info.map(|i| i.token0);
-                    (SwapDirection::Token1ForToken0, decoded.amount1 as u128, decoded.amount0.unsigned_abs(), ti, to)
+                    (
+                        SwapDirection::Token1ForToken0,
+                        decoded.amount1 as u128,
+                        decoded.amount0.unsigned_abs(),
+                        ti,
+                        to,
+                    )
                 } else {
                     return;
                 };
@@ -154,30 +177,43 @@ impl SandwichDetector {
         }
     }
 
-    fn process_curve_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+    fn process_curve_swap(
+        &mut self,
+        log: &ExecutedLog,
+        tx_index: usize,
+        sender: Address,
+        pool_manager: &PoolManager,
+    ) {
         if let Some(decoded) = decode_curve_swap(log) {
             let pool = pool_manager.get(&log.address);
             let token_in = pool.and_then(|p| {
                 if let PoolState::Curve(curve) = p {
-                    curve.token_index.iter()
+                    curve
+                        .token_index
+                        .iter()
                         .find(|(_, &idx)| idx == decoded.coin_sold as usize)
                         .map(|(addr, _)| *addr)
-                } else { None }
+                } else {
+                    None
+                }
             });
             let token_out = pool.and_then(|p| {
                 if let PoolState::Curve(curve) = p {
-                    curve.token_index.iter()
+                    curve
+                        .token_index
+                        .iter()
                         .find(|(_, &idx)| idx == decoded.coin_bought as usize)
                         .map(|(addr, _)| *addr)
-                } else { None }
+                } else {
+                    None
+                }
             });
-            let direction = if Some(true) == token_in.and_then(|ti| {
-                pool.map(|p| p.info().token0 == ti)
-            }) {
-                SwapDirection::Token0ForToken1
-            } else {
-                SwapDirection::Token1ForToken0
-            };
+            let direction =
+                if Some(true) == token_in.and_then(|ti| pool.map(|p| p.info().token0 == ti)) {
+                    SwapDirection::Token0ForToken1
+                } else {
+                    SwapDirection::Token1ForToken0
+                };
             self.swap_records.push(SwapRecord {
                 tx_index,
                 sender,
@@ -191,18 +227,23 @@ impl SandwichDetector {
         }
     }
 
-    fn process_balancer_swap(&mut self, log: &ExecutedLog, tx_index: usize, sender: Address, pool_manager: &PoolManager) {
+    fn process_balancer_swap(
+        &mut self,
+        log: &ExecutedLog,
+        tx_index: usize,
+        sender: Address,
+        pool_manager: &PoolManager,
+    ) {
         if let Some(decoded) = decode_balancer_swap(log) {
             let pool = pool_manager.get(&log.address);
             let token_in = Some(decoded.token_in);
             let token_out = Some(decoded.token_out);
-            let direction = if Some(true) == token_in.and_then(|ti| {
-                pool.map(|p| p.info().token0 == ti)
-            }) {
-                SwapDirection::Token0ForToken1
-            } else {
-                SwapDirection::Token1ForToken0
-            };
+            let direction =
+                if Some(true) == token_in.and_then(|ti| pool.map(|p| p.info().token0 == ti)) {
+                    SwapDirection::Token0ForToken1
+                } else {
+                    SwapDirection::Token1ForToken0
+                };
             self.swap_records.push(SwapRecord {
                 tx_index,
                 sender,
@@ -238,11 +279,15 @@ impl SandwichDetector {
                 // Current pool state includes original frontrun + victim.
                 // Reverse-apply original frontrun to get pre-frontrun reserves.
                 let (r0_pre, r1_pre) = if front_dir_is_t0t1 {
-                    (v2.reserve0.saturating_sub(front.amount_in),
-                     v2.reserve1.saturating_add(front.amount_out))
+                    (
+                        v2.reserve0.saturating_sub(front.amount_in),
+                        v2.reserve1.saturating_add(front.amount_out),
+                    )
                 } else {
-                    (v2.reserve0.saturating_add(front.amount_out),
-                     v2.reserve1.saturating_sub(front.amount_in))
+                    (
+                        v2.reserve0.saturating_add(front.amount_out),
+                        v2.reserve1.saturating_sub(front.amount_in),
+                    )
                 };
                 let (r_in, r_out) = if front_dir_is_t0t1 {
                     (r0_pre, r1_pre)
@@ -251,9 +296,7 @@ impl SandwichDetector {
                 };
                 constant_product_output_amount(front_in_adj, r_in, r_out, v2.info.fee)?
             }
-            PoolState::UniswapV3(v3) => {
-                quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?
-            }
+            PoolState::UniswapV3(v3) => quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?,
             _ => {
                 let (ti, to) = if front_dir_is_t0t1 {
                     (token_in, token_out)
@@ -271,27 +314,39 @@ impl SandwichDetector {
             PoolState::UniswapV2(v2) => {
                 // For V2 we can compute exactly: reverse frontrun, apply adjusted, apply victim.
                 let (r0_pre, r1_pre) = if front_dir_is_t0t1 {
-                    (v2.reserve0.saturating_sub(front.amount_in),
-                     v2.reserve1.saturating_add(front.amount_out))
+                    (
+                        v2.reserve0.saturating_sub(front.amount_in),
+                        v2.reserve1.saturating_add(front.amount_out),
+                    )
                 } else {
-                    (v2.reserve0.saturating_add(front.amount_out),
-                     v2.reserve1.saturating_sub(front.amount_in))
+                    (
+                        v2.reserve0.saturating_add(front.amount_out),
+                        v2.reserve1.saturating_sub(front.amount_in),
+                    )
                 };
                 // Apply adjusted frontrun
                 let (r0_af, r1_af) = if front_dir_is_t0t1 {
-                    (r0_pre.saturating_add(front_in_adj),
-                     r1_pre.saturating_sub(front_out_adj))
+                    (
+                        r0_pre.saturating_add(front_in_adj),
+                        r1_pre.saturating_sub(front_out_adj),
+                    )
                 } else {
-                    (r0_pre.saturating_sub(front_out_adj),
-                     r1_pre.saturating_add(front_in_adj))
+                    (
+                        r0_pre.saturating_sub(front_out_adj),
+                        r1_pre.saturating_add(front_in_adj),
+                    )
                 };
                 // Apply victim (same direction as frontrun, historical amounts)
                 let (r0_av, r1_av) = if front_dir_is_t0t1 {
-                    (r0_af.saturating_add(victim.amount_in),
-                     r1_af.saturating_sub(victim.amount_out))
+                    (
+                        r0_af.saturating_add(victim.amount_in),
+                        r1_af.saturating_sub(victim.amount_out),
+                    )
                 } else {
-                    (r0_af.saturating_sub(victim.amount_out),
-                     r1_af.saturating_add(victim.amount_in))
+                    (
+                        r0_af.saturating_sub(victim.amount_out),
+                        r1_af.saturating_add(victim.amount_in),
+                    )
                 };
                 // Backrun sells front_out_adj in opposite direction
                 let (r_in, r_out) = if front_dir_is_t0t1 {
@@ -304,9 +359,13 @@ impl SandwichDetector {
             _ => {
                 // Non-V2: estimate backrun using the same relative exchange rate
                 // as the historical backrun, which accounts for the victim swap's effect.
-                let back_rate = (back.amount_out as u128).saturating_mul(PPM_DENOMINATOR)
-                    .saturating_div((back.amount_in as u128).max(1));
-                front_out_adj.saturating_mul(back_rate).saturating_div(PPM_DENOMINATOR)
+                let back_rate = back
+                    .amount_out
+                    .saturating_mul(PPM_DENOMINATOR)
+                    .saturating_div(back.amount_in.max(1));
+                front_out_adj
+                    .saturating_mul(back_rate)
+                    .saturating_div(PPM_DENOMINATOR)
             }
         };
 
@@ -369,19 +428,19 @@ impl SandwichDetector {
             if let Some(ref_pool) = pool_manager.find_pair_pool(&profit_token, &native_token) {
                 let converted = match pool_manager.get(&ref_pool) {
                     Some(crate::pool::state::PoolState::UniswapV2(v2)) => {
-                        let (reserve_in, reserve_out) =
-                            if v2.info.token0 == profit_token {
-                                (v2.reserve0, v2.reserve1)
-                            } else {
-                                (v2.reserve1, v2.reserve0)
-                            };
+                        let (reserve_in, reserve_out) = if v2.info.token0 == profit_token {
+                            (v2.reserve0, v2.reserve1)
+                        } else {
+                            (v2.reserve1, v2.reserve0)
+                        };
                         constant_product_output_amount(
-                            profit_raw, reserve_in, reserve_out, v2.info.fee,
+                            profit_raw,
+                            reserve_in,
+                            reserve_out,
+                            v2.info.fee,
                         )
                     }
-                    Some(pool) => {
-                        quote_exact_in(pool, profit_token, native_token, profit_raw)
-                    }
+                    Some(pool) => quote_exact_in(pool, profit_token, native_token, profit_raw),
                     _ => None,
                 };
                 if let Some(converted) = converted {
@@ -434,8 +493,7 @@ impl SandwichDetector {
                 let (token_in, token_out) = match (front.token_in, front.token_out) {
                     (Some(ti), Some(to)) => (ti, to),
                     _ => {
-                        let pool_info = pool_manager.get(&front.pool)
-                            .map(|p| p.info());
+                        let pool_info = pool_manager.get(&front.pool).map(|p| p.info());
                         match pool_info {
                             Some(info) => match front.direction {
                                 SwapDirection::Token0ForToken1 => (info.token0, info.token1),
@@ -446,11 +504,13 @@ impl SandwichDetector {
                     }
                 };
 
-                let (profit_wei, raw_profit) = self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
+                let (profit_wei, raw_profit) =
+                    self.compute_sandwich_profit(front, back, token_in, token_out, pool_manager);
 
                 // Per-opportunity gas: front-run swap + back-run swap on the pool
                 // H7: Use direction-aware V3 estimate for each swap leg.
-                let pool_gas = pool_manager.get(&front.pool)
+                let pool_gas = pool_manager
+                    .get(&front.pool)
                     .map(|p| match p {
                         PoolState::UniswapV3(v3) => {
                             let front_dir = front.direction == SwapDirection::Token0ForToken1;
@@ -463,7 +523,8 @@ impl SandwichDetector {
                     .unwrap_or(80_000u64.saturating_mul(2));
                 let calldata = calldata_gas_estimate(1);
                 let gas_limit = 40_000 + calldata + pool_gas;
-                let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+                let gas_cost_wei =
+                    gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
 
                 // H9: Compute slippage by re-quoting through the pool at adjusted frontrun amounts
                 let profit_token = match front.direction {
@@ -475,19 +536,33 @@ impl SandwichDetector {
                     SwapDirection::Token1ForToken0 => token_in,
                 };
                 let sandwich_slippage = |pct: u128| -> Option<U256> {
-                    if front.amount_in == 0 { return None; }
-                    let adj_in = (front.amount_in as u128).saturating_mul(pct) / PERCENT_DENOMINATOR;
-                    if adj_in == 0 { return None; }
+                    if front.amount_in == 0 {
+                        return None;
+                    }
+                    let adj_in = front.amount_in.saturating_mul(pct) / PERCENT_DENOMINATOR;
+                    if adj_in == 0 {
+                        return None;
+                    }
                     let raw_adj = Self::sandwich_raw_profit_at(
-                        pool_manager, front, victim, back,
-                        token_in, token_out, adj_in,
+                        pool_manager,
+                        front,
+                        victim,
+                        back,
+                        token_in,
+                        token_out,
+                        adj_in,
                     )?;
                     // Normalize to native using the same path as compute_sandwich_profit
                     if pool_manager.is_wrapped_native(&profit_token) {
                         return Some(U256::from(raw_adj));
                     }
                     if pool_manager.is_wrapped_native(&native_token) {
-                        return Self::normalize_profit_to_native(pool_manager, profit_token, native_token, raw_adj);
+                        return Self::normalize_profit_to_native(
+                            pool_manager,
+                            profit_token,
+                            native_token,
+                            raw_adj,
+                        );
                     }
                     Some(U256::from(raw_adj))
                 };
@@ -528,4 +603,3 @@ impl SandwichDetector {
         opportunities
     }
 }
-

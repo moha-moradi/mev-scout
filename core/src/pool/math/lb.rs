@@ -27,10 +27,10 @@ pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
     }
     // Q64.64: 1.0 = 2^64
     let base_num = BPS_DENOMINATOR + bin_step as u128;
-    let scale = BPS_DENOMINATOR as u128;
+    let scale = BPS_DENOMINATOR;
     let mut result: u128 = 1u128 << 64;
     // base in Q64.64
-    let mut base: u128 = ((base_num as u128) << 64) / scale;
+    let mut base: u128 = (base_num << 64) / scale;
     let mut exp = active_id;
     while exp > 0 {
         if exp & 1 == 1 {
@@ -85,7 +85,7 @@ pub fn lb_max_output(reserve_out: u128, fee: u32) -> Option<u128> {
         return None;
     }
     let fee_factor = BPS_DENOMINATOR - fee as u128;
-    let output = (reserve_out as u128 * fee_factor) / BPS_DENOMINATOR;
+    let output = (reserve_out * fee_factor) / BPS_DENOMINATOR;
     if output == 0 {
         return None;
     }

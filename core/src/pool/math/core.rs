@@ -30,7 +30,7 @@ fn isqrt_u512(n: U512) -> U512 {
         v >>= 1usize;
         bits += 1;
     }
-    let mut x = U512::from(1u8) << ((bits + 1) / 2);
+    let mut x = U512::from(1u8) << bits.div_ceil(2);
     loop {
         let y = (x + n / x) >> 1usize;
         if y >= x {

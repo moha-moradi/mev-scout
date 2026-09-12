@@ -21,8 +21,8 @@ use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::types::{GasConfig, ResultsFile};
 
 pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
-    let validation_result = validation::validate_and_resolve(config)
-        .context("invalid configuration")?;
+    let validation_result =
+        validation::validate_and_resolve(config).context("invalid configuration")?;
     print_startup_plan(&validation_result, config);
 
     let setup = init_rpc(config, validation_result.chain_name, true).await?;
@@ -36,10 +36,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         Err(e) => anyhow::bail!("{e}"),
     };
 
-    let run_id = format!(
-        "run_{}",
-        epoch_secs()
-    );
+    let run_id = format!("run_{}", epoch_secs());
 
     let manifest = RunManifest {
         run_id: run_id.clone(),
@@ -48,7 +45,11 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         end_block: resolved.end_block,
         resolved_at: epoch_secs(),
         range_mode: resolved.mode_string(),
-        strategies: validation_result.strategies.iter().map(|s| s.to_string()).collect(),
+        strategies: validation_result
+            .strategies
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         flash_loan_provider: validation_result.flash_loan_provider.to_string(),
     };
     cache.put_manifest(&manifest)?;
@@ -88,7 +89,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let tick = || pb.inc(1);
 
     let fetch_summary = if !pool_addresses.is_empty() {
-        fetcher.fetch_relevant(&resolved, &pool_addresses, Some(&tick)).await?
+        fetcher
+            .fetch_relevant(&resolved, &pool_addresses, Some(&tick))
+            .await?
     } else {
         fetcher.fetch_range(&resolved, Some(&tick)).await?
     };
@@ -130,12 +133,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let prev_block = resolved.start_block.saturating_sub(1);
 
     if !validation_result.strategies.is_empty() {
-        BacktestRunner::init_pools(
-            &mut pool_manager,
-            &rpc,
-            prev_block,
-            Some(&cache),
-        ).await;
+        BacktestRunner::init_pools(&mut pool_manager, &rpc, prev_block, Some(&cache)).await;
     }
 
     let replayer = BlockReplayer::new(
@@ -163,7 +161,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
         if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
-            runner.prefetch_aave_reserves(aave_pool, resolved.start_block.saturating_sub(1)).await;
+            runner
+                .prefetch_aave_reserves(aave_pool, resolved.start_block.saturating_sub(1))
+                .await;
         }
     }
 

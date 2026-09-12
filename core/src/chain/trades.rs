@@ -8,13 +8,12 @@ use alloy::rpc::types::Log;
 
 use super::events::{
     decode_balancer_swap, decode_curve_exchange, decode_fluid_swap, decode_infinity_cl_swap,
-    decode_metric_swap, decode_pendle_swap, decode_solidly_swap,
-    decode_trader_joe_lb_swap, decode_uniswap_v2_swap,
-    decode_uniswap_v3_swap, decode_uniswap_v4_swap, TradeEvent,
+    decode_metric_swap, decode_pendle_swap, decode_solidly_swap, decode_trader_joe_lb_swap,
+    decode_uniswap_v2_swap, decode_uniswap_v3_swap, decode_uniswap_v4_swap, TradeEvent,
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
     FLUID_DEX_SWAP_TOPIC, INF_CL_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_MARKET_SWAP_TOPIC,
-    SOLIDLY_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRADER_JOE_LB_SWAP_TOPIC,
-    V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    SOLIDLY_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRADER_JOE_LB_SWAP_TOPIC, V2_SWAP_TOPIC,
+    V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use super::scanner::LogScanner;
 use crate::rpc::RpcClient;
@@ -51,7 +50,9 @@ pub async fn scan_trades(
 ) -> anyhow::Result<Vec<TradeEvent>> {
     let scanner = LogScanner::new(rpc.clone()).with_batch_size(batch_size);
     let topics = trade_topics();
-    let logs = scanner.scan(from_block, to_block, &topics, pool_addresses).await?;
+    let logs = scanner
+        .scan(from_block, to_block, &topics, pool_addresses)
+        .await?;
 
     let mut events = Vec::with_capacity(logs.len());
     for log in &logs {

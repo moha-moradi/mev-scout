@@ -2,3 +2,33 @@
 resolver = "2"
 members = ["core", "cli"]
 
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "allow"  # ratchet later; currently ~61 sites across the tree
+expect_used = "allow"  # ratchet later; currently ~11 sites across the tree
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
+alloy = { version = "2", features = [
+    "providers",
+    "rpc-types",
+    "transport-http",
+    "rpc-client",
+    "consensus",
+    "reqwest-default-tls",
+    "signers",
+    "eips",
+] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+

@@ -1,24 +1,24 @@
 //! Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 //! and block-range sharding for load distribution across public/private RPC endpoints.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::rpc::consts::{DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 use alloy::consensus::Transaction;
 use alloy::eips::BlockId;
 use alloy::eips::BlockNumberOrTag;
 use alloy::network::TransactionBuilder;
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::{Provider, RootProvider};
+use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::rpc::types::{Block, Filter, Log, Transaction as AlloyTx, TransactionReceipt};
-use alloy::rpc::client::{BatchRequest, RpcClient as AlloyRpcClient, Waiter};
 use futures;
 use serde_json::Value;
 use url::Url;
-use crate::data::types::{AccessListItem, BlockData, LogData, ReceiptData, TxData};
 
 use super::middleware::{ProviderState, RateLimiter};
 
@@ -103,10 +103,8 @@ where
             Err(e) => {
                 let msg = e.to_string();
                 if attempts < MAX_ATTEMPTS && is_transport_error(&msg) {
-                    tokio::time::sleep(
-                        tokio::time::Duration::from_millis(400 * attempts as u64),
-                    )
-                    .await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(400 * attempts as u64))
+                        .await;
                     continue;
                 }
                 return Err(e);
@@ -154,7 +152,9 @@ impl RpcClient {
             .iter()
             .enumerate()
             .map(|(i, url)| {
-                let u: Url = url.parse().map_err(|e| anyhow::anyhow!("invalid RPC URL '{url}': {e}"))?;
+                let u: Url = url
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid RPC URL '{url}': {e}"))?;
                 let rpc_client = AlloyRpcClient::new_http_with_client(http_client.clone(), u);
                 let provider = RootProvider::new(rpc_client);
                 Ok(ProviderState::new(provider, None, format!("provider-{i}")))
@@ -167,8 +167,6 @@ impl RpcClient {
             dispatch_counter: Arc::new(AtomicUsize::new(0)),
         })
     }
-
-
 
     /// Build a shared `reqwest::Client` with gzip compression, TCP nodelay, and a request timeout.
     fn build_http_client() -> anyhow::Result<reqwest::Client> {
@@ -194,7 +192,13 @@ impl RpcClient {
             let arch = if p.archive() { "archive" } else { "full" };
             entries.push(format!(
                 "p{}[{}] {:.0}w {:.0}orig {:.1}ms {} {}",
-                i, p.label(), p.weight(), p.original_weight(), p.latency_ms(), status, arch,
+                i,
+                p.label(),
+                p.weight(),
+                p.original_weight(),
+                p.latency_ms(),
+                status,
+                arch,
             ));
         }
         format!("{} providers: {}", provs.len(), entries.join("  "))
@@ -240,7 +244,10 @@ impl RpcClient {
     /// provider. Keeps the relative weight ordering (retries still prefer
     /// higher-weight providers) while spreading the first-try pick across all
     /// available endpoints instead of stable-sorting onto one winner.
-    fn rotate_for_load(&self, mut available: Vec<(usize, ProviderState)>) -> Vec<(usize, ProviderState)> {
+    fn rotate_for_load(
+        &self,
+        mut available: Vec<(usize, ProviderState)>,
+    ) -> Vec<(usize, ProviderState)> {
         if available.len() > 1 {
             let offset = self.dispatch_counter.fetch_add(1, Ordering::Relaxed) % available.len();
             available.rotate_left(offset);
@@ -289,13 +296,11 @@ impl RpcClient {
             // Prefer archive-capable providers for accurate historical state.
             let a_archive = a.1.archive() as u8;
             let b_archive = b.1.archive() as u8;
-            b_archive
-                .cmp(&a_archive)
-                .then_with(|| {
-                    b.1.effective_weight()
-                        .partial_cmp(&a.1.effective_weight())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            b_archive.cmp(&a_archive).then_with(|| {
+                b.1.effective_weight()
+                    .partial_cmp(&a.1.effective_weight())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         });
 
         drop(provs);
@@ -461,7 +466,10 @@ impl RpcClient {
                                     "transport/rate-limit error on {} (attempt {attempts}): {err_msg}",
                                     provider.label(),
                                 );
-                                tokio::time::sleep(tokio::time::Duration::from_millis(300 * attempts as u64)).await;
+                                tokio::time::sleep(tokio::time::Duration::from_millis(
+                                    300 * attempts as u64,
+                                ))
+                                .await;
                                 continue;
                             }
                             break Err((e, is_evm_revert));
@@ -482,7 +490,8 @@ impl RpcClient {
                     Err((e, is_evm_revert)) => {
                         let err_msg = format!("{e:#}");
                         let rate_limited = !is_evm_revert && is_rate_limit_error(&err_msg);
-                        let state_unavailable = !is_evm_revert && is_state_unavailable_error(&err_msg);
+                        let state_unavailable =
+                            !is_evm_revert && is_state_unavailable_error(&err_msg);
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             if is_evm_revert {
@@ -574,10 +583,8 @@ impl RpcClient {
             None => {
                 if archive_only {
                     let provs = self.providers.lock().await;
-                    let archive_total = provs
-                        .iter()
-                        .filter(|p| p.archive() && p.is_alive())
-                        .count();
+                    let archive_total =
+                        provs.iter().filter(|p| p.archive() && p.is_alive()).count();
                     let archive_alive = provs
                         .iter()
                         .filter(|p| p.archive() && p.is_available())
@@ -654,7 +661,11 @@ impl RpcClient {
         // Snapshot provider labels+providers without holding the lock during validation.
         let snapshots: Vec<(usize, RootProvider, String)> = {
             let provs = self.providers.lock().await;
-            provs.iter().enumerate().map(|(i, s)| (i, s.provider().clone(), s.label().to_string())).collect()
+            provs
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (i, s.provider().clone(), s.label().to_string()))
+                .collect()
         };
 
         // Validate all providers concurrently.
@@ -682,7 +693,9 @@ impl RpcClient {
             if let Some(state) = provs.get_mut(i) {
                 if let Err(ref e) = phase1 {
                     tracing::warn!("Provider {i} ({label}) failed basic validation: {e}");
-                    state.mark_dead(tokio::time::Duration::from_secs(DEAD_PROVIDER_COOLDOWN_SECS));
+                    state.mark_dead(tokio::time::Duration::from_secs(
+                        DEAD_PROVIDER_COOLDOWN_SECS,
+                    ));
                     results[i] = phase1;
                     continue;
                 }
@@ -708,12 +721,15 @@ impl RpcClient {
 
     /// Fetch the latest block number from the chain.
     pub async fn get_block_number(&self) -> anyhow::Result<u64> {
-        self.retry_call(|provider| async move {
-            provider
-                .get_block_number()
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))
-        }, false)
+        self.retry_call(
+            |provider| async move {
+                provider
+                    .get_block_number()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            },
+            false,
+        )
         .await
     }
 
@@ -722,29 +738,35 @@ impl RpcClient {
     /// Requests the full block header and extracts the timestamp.
     /// Used by `RangeResolver` for `--days` block range resolution.
     pub async fn get_block_timestamp(&self, block_number: u64) -> anyhow::Result<u64> {
-        self.retry_call(|provider| async move {
-            let block = provider
-                .get_block_by_number(block_number.into())
-                .hashes()
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-                .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
-            Ok(block.header.timestamp)
-        }, false)
+        self.retry_call(
+            |provider| async move {
+                let block = provider
+                    .get_block_by_number(block_number.into())
+                    .hashes()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?
+                    .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
+                Ok(block.header.timestamp)
+            },
+            false,
+        )
         .await
     }
 
     /// Fetch just a block's hash (header-only, no transactions).
     pub async fn get_block_hash(&self, block_number: u64) -> anyhow::Result<B256> {
-        self.retry_call(|provider| async move {
-            let block = provider
-                .get_block_by_number(block_number.into())
-                .hashes()
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-                .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
-            Ok(block.header.hash)
-        }, false)
+        self.retry_call(
+            |provider| async move {
+                let block = provider
+                    .get_block_by_number(block_number.into())
+                    .hashes()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?
+                    .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
+                Ok(block.header.hash)
+            },
+            false,
+        )
         .await
     }
 
@@ -752,15 +774,18 @@ impl RpcClient {
     ///
     /// Used for pool discovery (scanning `PairCreated` / `PoolCreated` events).
     pub async fn get_logs(&self, filter: &Filter) -> anyhow::Result<Vec<Log>> {
-        self.retry_call(|provider| {
-            let filter = filter.clone();
-            async move {
-                provider
-                    .get_logs(&filter)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-        }, false)
+        self.retry_call(
+            |provider| {
+                let filter = filter.clone();
+                async move {
+                    provider
+                        .get_logs(&filter)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))
+                }
+            },
+            false,
+        )
         .await
     }
 
@@ -832,7 +857,21 @@ impl RpcClient {
                 tx_array.retain(|tx| {
                     tx.get("type")
                         .and_then(|t| t.as_str())
-                        .map(|t| matches!(t, "0x0" | "0x00" | "0x01" | "0x1" | "0x02" | "0x2" | "0x03" | "0x3" | "0x04" | "0x4"))
+                        .map(|t| {
+                            matches!(
+                                t,
+                                "0x0"
+                                    | "0x00"
+                                    | "0x01"
+                                    | "0x1"
+                                    | "0x02"
+                                    | "0x2"
+                                    | "0x03"
+                                    | "0x3"
+                                    | "0x04"
+                                    | "0x4"
+                            )
+                        })
                         .unwrap_or(true)
                 });
             }
@@ -844,7 +883,21 @@ impl RpcClient {
             receipts.retain(|r| {
                 r.get("type")
                     .and_then(|t| t.as_str())
-                    .map(|t| matches!(t, "0x0" | "0x00" | "0x01" | "0x1" | "0x02" | "0x2" | "0x03" | "0x3" | "0x04" | "0x4"))
+                    .map(|t| {
+                        matches!(
+                            t,
+                            "0x0"
+                                | "0x00"
+                                | "0x01"
+                                | "0x1"
+                                | "0x02"
+                                | "0x2"
+                                | "0x03"
+                                | "0x3"
+                                | "0x04"
+                                | "0x4"
+                        )
+                    })
                     .unwrap_or(true)
             });
         }
@@ -858,23 +911,26 @@ impl RpcClient {
         &self,
         tx_hash: B256,
     ) -> anyhow::Result<Value> {
-        self.retry_call(|provider| async move {
-            let raw: Value = provider
-                .client()
-                .request(
-                    "debug_traceTransaction",
-                    (
-                        format!("{tx_hash:#x}"),
-                        serde_json::json!({
-                            "tracer": "prestateTracer",
-                            "tracerConfig": { "diffMode": true }
-                        }),
-                    ),
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            Ok(raw)
-        }, false)
+        self.retry_call(
+            |provider| async move {
+                let raw: Value = provider
+                    .client()
+                    .request(
+                        "debug_traceTransaction",
+                        (
+                            format!("{tx_hash:#x}"),
+                            serde_json::json!({
+                                "tracer": "prestateTracer",
+                                "tracerConfig": { "diffMode": true }
+                            }),
+                        ),
+                    )
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                Ok(raw)
+            },
+            false,
+        )
         .await
     }
 
@@ -884,25 +940,28 @@ impl RpcClient {
     /// Transactions are converted from alloy types to internal types via `alloy_tx_to_tx_data`.
     pub async fn get_block(&self, block_number: u64) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block: Block = self
-            .retry_call(|provider| async move {
-                let raw: Value = provider
-                    .client()
-                    .request(
-                        "eth_getBlockByNumber",
-                        (BlockNumberOrTag::Number(block_number), true),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .retry_call(
+                |provider| async move {
+                    let raw: Value = provider
+                        .client()
+                        .request(
+                            "eth_getBlockByNumber",
+                            (BlockNumberOrTag::Number(block_number), true),
+                        )
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-                if raw.is_null() {
-                    anyhow::bail!("block {} not found", block_number);
-                }
+                    if raw.is_null() {
+                        anyhow::bail!("block {} not found", block_number);
+                    }
 
-                let mut raw = raw;
-                Self::clean_block_transactions(&mut raw);
+                    let mut raw = raw;
+                    Self::clean_block_transactions(&mut raw);
 
-                serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
-            }, false)
+                    serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
+                },
+                false,
+            )
             .await?;
 
         let txs: Vec<TxData> = block
@@ -930,25 +989,25 @@ impl RpcClient {
     /// Returns an error if the RPC does not support pending block queries.
     pub async fn get_pending_block(&self) -> anyhow::Result<(BlockData, Vec<TxData>)> {
         let block: Block = self
-            .retry_call(|provider| async move {
-                let raw: Value = provider
-                    .client()
-                    .request(
-                        "eth_getBlockByNumber",
-                        (BlockNumberOrTag::Pending, true),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+            .retry_call(
+                |provider| async move {
+                    let raw: Value = provider
+                        .client()
+                        .request("eth_getBlockByNumber", (BlockNumberOrTag::Pending, true))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-                if raw.is_null() {
-                    anyhow::bail!("pending block not available");
-                }
+                    if raw.is_null() {
+                        anyhow::bail!("pending block not available");
+                    }
 
-                let mut raw = raw;
-                Self::clean_block_transactions(&mut raw);
+                    let mut raw = raw;
+                    Self::clean_block_transactions(&mut raw);
 
-                serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
-            }, false)
+                    serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
+                },
+                false,
+            )
             .await?;
 
         let txs: Vec<TxData> = block
@@ -973,19 +1032,21 @@ impl RpcClient {
     /// Receipts are converted from alloy types to internal types via `alloy_receipt_to_receipt_data`.
     pub async fn get_receipts(&self, block_number: u64) -> anyhow::Result<Vec<ReceiptData>> {
         let receipts = self
-            .retry_call(|provider| async move {
-                provider
-                    .get_block_receipts(alloy::eips::BlockId::number(block_number))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?
-                    .ok_or_else(|| anyhow::anyhow!("receipts not found for block {}", block_number))
-            }, false)
+            .retry_call(
+                |provider| async move {
+                    provider
+                        .get_block_receipts(alloy::eips::BlockId::number(block_number))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("receipts not found for block {}", block_number)
+                        })
+                },
+                false,
+            )
             .await?;
 
-        Ok(receipts
-            .iter()
-            .map(alloy_receipt_to_receipt_data)
-            .collect())
+        Ok(receipts.iter().map(alloy_receipt_to_receipt_data).collect())
     }
 
     /// Fetch block + receipts in a single JSON-RPC batch request.
@@ -996,9 +1057,10 @@ impl RpcClient {
         &self,
         block_number: u64,
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
-        self.retry_call(|provider| async move {
-            Self::batch_rpc_call(provider, block_number).await
-        }, false)
+        self.retry_call(
+            |provider| async move { Self::batch_rpc_call(provider, block_number).await },
+            false,
+        )
         .await
     }
 
@@ -1092,8 +1154,9 @@ impl RpcClient {
         let block_json_size = raw.to_string().len();
         let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        let mut receipts_raw: Value =
-            receipts_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let mut receipts_raw: Value = receipts_waiter
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         if receipts_raw.is_null() {
             anyhow::bail!(
                 "block {block_number} receipts not found (eth_getBlockReceipts returned null — \
@@ -1126,7 +1189,11 @@ impl RpcClient {
 
         let block_data = Self::block_to_data(&block);
 
-        Ok((block_data, txs, receipts.iter().map(alloy_receipt_to_receipt_data).collect()))
+        Ok((
+            block_data,
+            txs,
+            receipts.iter().map(alloy_receipt_to_receipt_data).collect(),
+        ))
     }
 
     /// Fetch a single storage slot value at a historical block via `eth_getStorageAt`.
@@ -1206,7 +1273,8 @@ impl RpcClient {
             let provs = self.providers.lock().await;
             // Prefer an archive provider that can serve historical state;
             // fall back to any alive provider if none available.
-            provs.iter()
+            provs
+                .iter()
                 .find(|p| p.is_available() && p.archive() && p.state_capable())
                 .or_else(|| provs.iter().find(|p| p.is_available() && p.state_capable()))
                 .or_else(|| provs.iter().find(|p| p.is_available()))
@@ -1275,19 +1343,20 @@ impl RpcClient {
         block: BlockId,
         archive_only: bool,
     ) -> anyhow::Result<Bytes> {
-        self.retry_call(|provider| {
-            let data = data.clone();
-            async move {
-                let request = TransactionRequest::default()
-                    .with_to(to)
-                    .with_input(data);
-                provider
-                    .call(request)
-                    .block(block)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))
-            }
-        }, archive_only)
+        self.retry_call(
+            |provider| {
+                let data = data.clone();
+                async move {
+                    let request = TransactionRequest::default().with_to(to).with_input(data);
+                    provider
+                        .call(request)
+                        .block(block)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{}", e))
+                }
+            },
+            archive_only,
+        )
         .await
     }
 
@@ -1322,12 +1391,15 @@ impl RpcClient {
         address: Address,
         slot: U256,
     ) -> anyhow::Result<U256> {
-        self.retry_call(|provider| async move {
-            provider
-                .get_storage_at(address, slot)
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))
-        }, false)
+        self.retry_call(
+            |provider| async move {
+                provider
+                    .get_storage_at(address, slot)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{}", e))
+            },
+            false,
+        )
         .await
     }
 
@@ -1379,18 +1451,15 @@ impl RpcClient {
     /// be used in the hybrid backtest path.
     pub async fn detect_state_horizon(&self, tip: u64) -> u64 {
         const MAX_DEPTH: u64 = 2000;
-        const PROBE_ADDRESS: alloy::primitives::Address = alloy::primitives::address!(
-            "d0e1139178bc088d7467266f75993d5164f4b058"
-        );
+        const PROBE_ADDRESS: alloy::primitives::Address =
+            alloy::primitives::address!("d0e1139178bc088d7467266f75993d5164f4b058");
 
         let lo = tip.saturating_sub(MAX_DEPTH);
         let hi = tip.saturating_sub(1).max(1);
 
         // Quick smoke test: can we get state at `hi` at all?
         if self.get_balance(PROBE_ADDRESS, hi).await.is_err() {
-            tracing::warn!(
-                "State unavailable at block {hi} — falling back to tip - 100"
-            );
+            tracing::warn!("State unavailable at block {hi} — falling back to tip - 100");
             return tip.saturating_sub(100);
         }
 
@@ -1430,7 +1499,6 @@ impl RpcClient {
         })
         .await
     }
-
 }
 
 /// Extract the first 4 bytes of transaction calldata as a method selector.
@@ -1538,7 +1606,10 @@ mod tests {
             "HTTP error 402 with body: Out of CU",
         ] {
             assert!(is_rate_limit_error(msg), "should detect rate limit: {msg}");
-            assert!(is_transport_error(msg), "429/quota should be retryable: {msg}");
+            assert!(
+                is_transport_error(msg),
+                "429/quota should be retryable: {msg}"
+            );
         }
     }
 
@@ -1570,5 +1641,3 @@ mod tests {
         }
     }
 }
-
-

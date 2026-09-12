@@ -1,12 +1,13 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
-use alloy::primitives::{Address, B256};
-use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
 use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
 use super::{CURVE_POOL_ADDED_TOPIC, CURVE_POOL_DEPLOYED_TOPIC};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
+use alloy::primitives::{Address, B256};
+use alloy::rpc::types::Filter;
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
+#[allow(clippy::too_many_arguments)] // discovery plumbing — slimmed in W4
 pub(crate) async fn scan_curve_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
@@ -59,17 +60,26 @@ pub(crate) async fn scan_curve_batch(
                     };
                     let creation_block = log.block_number.unwrap_or(0);
                     pool_hits.entry(pool_addr).or_insert((
-                        DexType::Curve, None, None, creation_block,
+                        DexType::Curve,
+                        None,
+                        None,
+                        creation_block,
                     ));
                     factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Curve, creation_block)
-                            .with_factory(Some(log.address())));
+                        DiscoveredPool::new(
+                            pool_addr,
+                            Address::ZERO,
+                            Address::ZERO,
+                            0,
+                            DexType::Curve,
+                            creation_block,
+                        )
+                        .with_factory(Some(log.address())),
+                    );
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "Curve factory scan failed for {current}..{batch_end}: {e:#}"
-                );
+                tracing::warn!("Curve factory scan failed for {current}..{batch_end}: {e:#}");
             }
         }
     }

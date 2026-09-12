@@ -28,7 +28,9 @@ pub async fn scan_liquidations(
 ) -> anyhow::Result<Vec<LiquidationEvent>> {
     let scanner = LogScanner::new(rpc.clone()).with_batch_size(batch_size);
     let topics = liquidation_topics();
-    let logs = scanner.scan(from_block, to_block, &topics, addresses).await?;
+    let logs = scanner
+        .scan(from_block, to_block, &topics, addresses)
+        .await?;
 
     let mut events = Vec::with_capacity(logs.len());
     for log in &logs {
@@ -47,7 +49,11 @@ fn decode_liquidation_log(log: &Log) -> Option<LiquidationEvent> {
     }
     let topic = log.topics().first()?;
     if **topic == *COMPOUND_V3_ABSORB_TOPIC {
-        let absorber = log.topics().get(1).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
+        let absorber = log
+            .topics()
+            .get(1)
+            .map(|t| Address::from_slice(&t[12..]))
+            .unwrap_or(Address::ZERO);
         let data = &log.data().data;
         let borrower = if data.len() >= 20 {
             Address::from_slice(&data[0..20])

@@ -101,6 +101,7 @@ pub struct MevOpportunity {
 
 /// Build a canonical dedup string from the opportunity's key fields (L9).
 /// Exposed as a free function so the runner can assign IDs after collection.
+#[allow(clippy::too_many_arguments)] // key-field struct — introduced in W4
 pub fn compute_canonical_id(
     strategy: Strategy,
     _block: u64,

@@ -102,7 +102,7 @@ pub fn balancer_stable_output_amount(
         .balances
         .iter()
         .enumerate()
-        .filter(|(i, _)| bpt_idx.map_or(true, |b| *i != b))
+        .filter(|(i, _)| bpt_idx != Some(*i))
         .map(|(i, &b)| {
             let raw = b as f64;
             if has_scaling {
@@ -174,7 +174,7 @@ pub fn balancer_stable_output_amount(
     let x_out_new =
         super::stable_swap::newton_stableswap_output(n_scaled, ann, d, sum_others, prod_others)?;
     let output = scaled_balances[so] - x_out_new;
-    (output > 0.0).then(|| output as u128)
+    (output > 0.0).then_some(output as u128)
 }
 
 /// Extract Balancer weights for a specific token pair (token_in → token_out).

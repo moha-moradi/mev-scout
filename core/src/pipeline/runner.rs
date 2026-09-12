@@ -161,7 +161,12 @@ impl BacktestRunner {
         let mut kept = Vec::with_capacity(opps.len());
         for opp in opps.drain(..) {
             if opp.expected_profit.is_zero() {
-                self.record_rejection(&opp, block_num, crate::explorer::RejectReason::QuoteNonpositive, None);
+                self.record_rejection(
+                    &opp,
+                    block_num,
+                    crate::explorer::RejectReason::QuoteNonpositive,
+                    None,
+                );
                 continue;
             }
             if opp.expected_profit <= U256::from(opp.gas_cost_wei) {
@@ -169,7 +174,10 @@ impl BacktestRunner {
                     &opp,
                     block_num,
                     crate::explorer::RejectReason::GasDominates,
-                    Some(format!("profit={} wei <= gas={} wei", opp.expected_profit, opp.gas_cost_wei)),
+                    Some(format!(
+                        "profit={} wei <= gas={} wei",
+                        opp.expected_profit, opp.gas_cost_wei
+                    )),
                 );
                 continue;
             }
@@ -178,7 +186,10 @@ impl BacktestRunner {
                     &opp,
                     block_num,
                     crate::explorer::RejectReason::BelowMinProfit,
-                    Some(format!("profit={} wei <= min_profit={} wei", opp.expected_profit, self.min_profit_wei)),
+                    Some(format!(
+                        "profit={} wei <= min_profit={} wei",
+                        opp.expected_profit, self.min_profit_wei
+                    )),
                 );
                 continue;
             }
@@ -209,27 +220,30 @@ impl BacktestRunner {
         if !self.record_rejections {
             return;
         }
-        let path = opp
-            .path
-            .as_ref()
-            .map(|p| p.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(","));
-        self.pending_rejections.push(crate::explorer::RejectedCandidate {
-            block_number: block_num,
-            tx_index: Some(opp.tx_index as u64),
-            strategy: opp.strategy.to_string(),
-            pool_a: Some(format!("{:#x}", opp.pool_a)),
-            pool_b: (opp.pool_b != Address::ZERO).then(|| format!("{:#x}", opp.pool_b)),
-            path,
-            token_in: (!opp.token_in.is_zero()).then(|| format!("{:#x}", opp.token_in)),
-            token_out: (!opp.token_out.is_zero()).then(|| format!("{:#x}", opp.token_out)),
-            input_amount: Some(opp.input_amount.to_string()),
-            expected_profit: Some(opp.expected_profit.to_string()),
-            expected_profit_usd: None,
-            gas_cost_wei: Some(opp.gas_cost_wei.to_string()),
-            reject_reason: reason.as_str().to_string(),
-            detail,
-            created_at: crate::utils::epoch_secs(),
+        let path = opp.path.as_ref().map(|p| {
+            p.iter()
+                .map(|a| format!("{a:#x}"))
+                .collect::<Vec<_>>()
+                .join(",")
         });
+        self.pending_rejections
+            .push(crate::explorer::RejectedCandidate {
+                block_number: block_num,
+                tx_index: Some(opp.tx_index as u64),
+                strategy: opp.strategy.to_string(),
+                pool_a: Some(format!("{:#x}", opp.pool_a)),
+                pool_b: (opp.pool_b != Address::ZERO).then(|| format!("{:#x}", opp.pool_b)),
+                path,
+                token_in: (!opp.token_in.is_zero()).then(|| format!("{:#x}", opp.token_in)),
+                token_out: (!opp.token_out.is_zero()).then(|| format!("{:#x}", opp.token_out)),
+                input_amount: Some(opp.input_amount.to_string()),
+                expected_profit: Some(opp.expected_profit.to_string()),
+                expected_profit_usd: None,
+                gas_cost_wei: Some(opp.gas_cost_wei.to_string()),
+                reject_reason: reason.as_str().to_string(),
+                detail,
+                created_at: crate::utils::epoch_secs(),
+            });
     }
 
     /// Pre-fetch Aave V3 reserve data for all known token addresses.
@@ -589,9 +603,14 @@ impl BacktestRunner {
 
         // Filter: cap candidates per transaction, keeping only top-profit ones
         if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
-            all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
+            all_opportunities.sort_by_key(|o| std::cmp::Reverse(o.expected_profit));
             let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
-            self.record_rejections_batch(&dropped, block_num, crate::explorer::RejectReason::MaxCandidates, "per-tx top-N cap");
+            self.record_rejections_batch(
+                &dropped,
+                block_num,
+                crate::explorer::RejectReason::MaxCandidates,
+                "per-tx top-N cap",
+            );
         }
 
         // Assign canonical dedup IDs (L9) to all opportunities
@@ -608,9 +627,7 @@ impl BacktestRunner {
             ));
             opp.detection_path = Some("replay".to_string());
             if opp.sender.is_none() {
-                opp.sender = txs
-                    .get(opp.tx_index)
-                    .map(|t| t.from);
+                opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }
             if opp.tx_hash.is_none() {
                 opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
@@ -779,9 +796,14 @@ impl BacktestRunner {
 
         // Filter: cap candidates per transaction, keeping only top-profit ones
         if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
-            all_opportunities.sort_by(|a, b| b.expected_profit.cmp(&a.expected_profit));
+            all_opportunities.sort_by_key(|o| std::cmp::Reverse(o.expected_profit));
             let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
-            self.record_rejections_batch(&dropped, block_num, crate::explorer::RejectReason::MaxCandidates, "per-tx top-N cap");
+            self.record_rejections_batch(
+                &dropped,
+                block_num,
+                crate::explorer::RejectReason::MaxCandidates,
+                "per-tx top-N cap",
+            );
         }
 
         for opp in &mut all_opportunities {

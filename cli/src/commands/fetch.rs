@@ -12,10 +12,11 @@ use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::resolver::RangeResolver;
 
 pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> {
-    let (chain_name, _chain_config) = validation::resolve_chain(config)
-        .context("failed to resolve chain")?;
+    let (chain_name, _chain_config) =
+        validation::resolve_chain(config).context("failed to resolve chain")?;
 
-    let setup = init_rpc(config, chain_name, true).await
+    let setup = init_rpc(config, chain_name, true)
+        .await
         .context("failed to initialize RPC client")?;
     let provider_configs = setup.provider_configs;
     let rpc = setup.rpc;
@@ -37,10 +38,7 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     let resolver = RangeResolver::new(rpc.clone());
     let resolved = resolver.resolve(&range_mode).await?;
 
-    let run_id = format!(
-        "run_{}",
-        epoch_secs()
-    );
+    let run_id = format!("run_{}", epoch_secs());
 
     let manifest = RunManifest {
         run_id: run_id.clone(),
@@ -65,16 +63,18 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     fetcher = fetcher.with_block_concurrency(bc);
     if !args.no_sig_resolve {
         match mev_scout_core::sigs::ensure_signature_db(None).await {
-            Ok(sig_db_path) => {
-                match mev_scout_core::sigs::SignatureResolver::new(&sig_db_path) {
-                    Ok(resolver) => {
-                        fetcher = fetcher.with_sig_resolver(resolver);
-                        tracing::info!("Signature resolution enabled");
-                    }
-                    Err(e) => tracing::warn!("Failed to load signature DB: {e} — continuing without sig resolution"),
+            Ok(sig_db_path) => match mev_scout_core::sigs::SignatureResolver::new(&sig_db_path) {
+                Ok(resolver) => {
+                    fetcher = fetcher.with_sig_resolver(resolver);
+                    tracing::info!("Signature resolution enabled");
                 }
-            }
-            Err(e) => tracing::warn!("Failed to ensure signature DB: {e} — continuing without sig resolution"),
+                Err(e) => tracing::warn!(
+                    "Failed to load signature DB: {e} — continuing without sig resolution"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                "Failed to ensure signature DB: {e} — continuing without sig resolution"
+            ),
         }
     } else {
         tracing::info!("Signature resolution disabled (--no-sig-resolve)");

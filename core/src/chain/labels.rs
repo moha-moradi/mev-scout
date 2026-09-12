@@ -30,8 +30,7 @@ const BUNDLED_LABELS: &str = include_str!("../../data/address_labels.json");
 impl LabelDb {
     /// Load labels from the bundled JSON snapshot.
     pub fn load() -> Self {
-        let raw: Vec<AddressLabel> = serde_json::from_str(BUNDLED_LABELS)
-            .unwrap_or_default();
+        let raw: Vec<AddressLabel> = serde_json::from_str(BUNDLED_LABELS).unwrap_or_default();
         let mut labels = HashMap::new();
         for entry in &raw {
             labels
@@ -51,6 +50,10 @@ impl LabelDb {
     pub fn len(&self) -> usize {
         self.labels.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -60,6 +63,6 @@ mod tests {
     #[test]
     fn bundled_labels_load() {
         let db = LabelDb::load();
-        assert!(db.len() > 0, "should have at least some bundled labels");
+        assert!(!db.is_empty(), "should have at least some bundled labels");
     }
 }

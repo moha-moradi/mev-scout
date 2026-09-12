@@ -384,9 +384,7 @@ fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
 /// wrong `DexType` poisons pool state, so they are skipped (with a warning)
 /// until a decoder lands. Guarded before `infer_dex_type`.
 fn is_unsupported_dex(s: &str) -> bool {
-    const UNSUPPORTED: &[&str] = &[
-        "dodo", "woofi", "hashflow", "maverick", "ekubo",
-    ];
+    const UNSUPPORTED: &[&str] = &["dodo", "woofi", "hashflow", "maverick", "ekubo"];
     UNSUPPORTED.iter().any(|n| s.contains(n))
 }
 
@@ -460,19 +458,35 @@ mod tests {
             DexType::UniswapV3
         );
         assert_eq!(infer_dex_type(Some("lfj"), &[]), DexType::TraderJoeLB);
-        assert_eq!(infer_dex_type(Some("pharaoh-dlmm"), &[]), DexType::TraderJoeLB);
+        assert_eq!(
+            infer_dex_type(Some("pharaoh-dlmm"), &[]),
+            DexType::TraderJoeLB
+        );
         assert_eq!(infer_dex_type(Some("unknown-dex"), &[]), DexType::UniswapV2);
     }
 
     #[test]
     fn test_unsupported_dex_flagged() {
         for bad in ["dodo", "woofi", "hashflow", "maverick", "ekubo"] {
-            assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
+            assert!(
+                is_unsupported_dex(bad),
+                "{bad} should be flagged unsupported"
+            );
         }
         // Supported siblings must NOT be flagged.
-        for good in ["pharaoh-v3", "pharaoh-dlmm", "aerodrome", "velodrome", "velodrome-v3",
-                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity",
-                     "metric", "fluid"] {
+        for good in [
+            "pharaoh-v3",
+            "pharaoh-dlmm",
+            "aerodrome",
+            "velodrome",
+            "velodrome-v3",
+            "aerodrome-slipstream",
+            "uniswap",
+            "pancakeswap",
+            "pancakeswap-infinity",
+            "metric",
+            "fluid",
+        ] {
             assert!(!is_unsupported_dex(good), "{good} should stay supported");
         }
     }

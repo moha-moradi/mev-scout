@@ -1,4 +1,4 @@
-﻿//! `mev-scout explorer` subcommands (plan §10):
+//! `mev-scout explorer` subcommands (plan §10):
 //! doctor, index, live, stats, top, show, explain, validate, export.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,8 +25,7 @@ fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerS
 }
 
 fn ingest_config(config: &Config, chain: ChainName) -> anyhow::Result<IngestConfig> {
-    let (_, chain_cfg) =
-        validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
     Ok(cfg)
@@ -35,10 +34,7 @@ fn ingest_config(config: &Config, chain: ChainName) -> anyhow::Result<IngestConf
 fn parse_kinds(s: &str) -> anyhow::Result<Vec<MevKind>> {
     let mut out = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-        out.push(
-            MevKind::parse(part)
-                .ok_or_else(|| anyhow::anyhow!("unknown kind '{part}'"))?,
-        );
+        out.push(MevKind::parse(part).ok_or_else(|| anyhow::anyhow!("unknown kind '{part}'"))?);
     }
     Ok(out)
 }
@@ -107,7 +103,14 @@ pub async fn cmd_doctor(config: &Config) -> anyhow::Result<()> {
     let providers = &setup.provider_configs;
 
     let mut table = Table::new();
-    table.set_header(vec!["provider", "latest", "archive", "bulk-receipts", "traces", "rps"]);
+    table.set_header(vec![
+        "provider",
+        "latest",
+        "archive",
+        "bulk-receipts",
+        "traces",
+        "rps",
+    ]);
     for (url, rps, archive_flag) in providers.iter() {
         let shown = if url.len() > 40 {
             format!("{}..", &url[..38])
@@ -231,7 +234,10 @@ pub async fn cmd_index(
         );
     }
 
-    println!("Indexing blocks {from}-{to} ({} blocks) — {chain}", to - from + 1);
+    println!(
+        "Indexing blocks {from}-{to} ({} blocks) — {chain}",
+        to - from + 1
+    );
     let t0 = std::time::Instant::now();
     let (blocks_done, ops) = backfill_range(
         &setup.rpc,
@@ -277,7 +283,7 @@ pub async fn cmd_live_feed(
     };
     let deadline = duration.map(parse_duration).transpose()?;
 
-    let _ = stop_flag_with_deadline(deadline); // Ctrl+C handling
+    let stop = stop_flag_with_deadline(deadline); // Ctrl+C handling
     let t0 = std::time::Instant::now();
 
     println!(
@@ -286,6 +292,10 @@ pub async fn cmd_live_feed(
 
     let mut cursor = store.op_count_since(0)?;
     loop {
+        if stop.load(Ordering::Relaxed) {
+            println!("\n(stop requested — closing feed)");
+            break;
+        }
         if let Some(dl) = deadline {
             if t0.elapsed() >= dl {
                 break;
@@ -305,7 +315,10 @@ pub async fn cmd_live_feed(
                     time_hhmmss(row.ts),
                     row.block_number,
                     row.kind,
-                    row.profit_token.as_deref().map(short_addr).unwrap_or_else(|| "-".into()),
+                    row.profit_token
+                        .as_deref()
+                        .map(short_addr)
+                        .unwrap_or_else(|| "-".into()),
                     row.net_profit_usd.or(row.profit_usd).unwrap_or(0.0),
                     short_addr(&row.eoa),
                 );
@@ -340,8 +353,21 @@ pub async fn cmd_stats(
     let store = explorer_store(config, chain)?;
     let ts = since_ts(since);
 
-    let overview = store.stats_overview(ts)?;
+    // Validate the --kind value up front so a typo cannot silently filter out
+    // every row; the filter then applies to every stats section.
+    let kind_filter = kind.and_then(MevKind::parse).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid --kind '{}' (expected one of arb_atomic, sandwich, liquidation, jit, jit_arb, unknown)",
+            kind.unwrap_or("")
+        )
+    })?;
+    let kind_str = Some(kind_filter.as_str());
+
+    let overview = store.stats_overview_filtered(ts, kind_str)?;
     println!("Explorer stats — {chain} since={}", since.unwrap_or("all"));
+    if let Some(k) = kind_str {
+        println!("  (filtered to kind: {k})");
+    }
     println!(
         "  ops: {} | searchers: {} | gross: ${:.2} | gas: ${:.2} | net: ${:.2} | highest single: ${:.2}",
         overview.ops,
@@ -352,14 +378,12 @@ pub async fn cmd_stats(
         overview.highest_single_usd,
     );
 
-    let _kind_filter = kind.and_then(MevKind::parse);
-
     println!("\nPer-kind:");
-    let rows = store.stats_by_kind(ts)?;
+    let rows = store.stats_by_kind_filtered(ts, kind_str)?;
     print_stats_table(&rows);
 
     println!("\nDaily breakdown:");
-    let rows = store.stats_daily(ts)?;
+    let rows = store.stats_daily_filtered(ts, kind_str)?;
     print_stats_table(&rows);
 
     if matches!(window, Some("week") | Some("month") | Some("year")) {
@@ -370,11 +394,11 @@ pub async fn cmd_stats(
     }
 
     println!("\nTop searchers (7d):");
-    let rows = store.top_senders(since_ts(Some("7d")), 10)?;
+    let rows = store.top_senders_filtered(since_ts(Some("7d")), 10, kind_str)?;
     print_stats_table(&rows);
 
     println!("\nTop pools:");
-    let rows = store.top_pools(ts, 10)?;
+    let rows = store.top_pools_filtered(ts, 10, kind_str)?;
     print_stats_table(&rows);
     Ok(())
 }
@@ -427,8 +451,7 @@ pub async fn cmd_top(
 fn route_text(ev: &MevOpRow) -> String {
     let mut hops: Vec<String> = Vec::new();
     if let Some(route) = ev.route_json.as_deref() {
-        if let Ok(serde_json::Value::Array(arr)) =
-            serde_json::from_str::<serde_json::Value>(route)
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(route)
         {
             for h in arr {
                 let pool = h.get("pool").and_then(|v| v.as_str()).unwrap_or("?");
@@ -527,8 +550,7 @@ fn summarize_prestatediff(raw: &serde_json::Value) -> String {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<U256>().ok());
             if let (Some(pb), Some(prb)) = (post_bal, pre_bal) {
-                let signed = pb.as_limbs()[0] as i128
-                    + ((pb.as_limbs()[1] as i128) << 64)
+                let signed = pb.as_limbs()[0] as i128 + ((pb.as_limbs()[1] as i128) << 64)
                     - prb.as_limbs()[0] as i128
                     - ((prb.as_limbs()[1] as i128) << 64);
                 lines.push(format!(
@@ -569,8 +591,7 @@ pub async fn cmd_explain(config: &Config, tx_hash: &str) -> anyhow::Result<()> {
     );
 
     // M-taxonomy via the validate engine on a 1-block window.
-    let report =
-        validate::compute_validation(&store, chain, block, block, 0, None, false)?;
+    let report = validate::compute_validation(&store, chain, block, block, 0, None, false)?;
     let miss = report.miss_distribution();
     println!("  inferred cause (per §11.1.2):");
     println!(

@@ -2,11 +2,11 @@
 
 pub mod cache;
 pub mod chain;
+pub mod config;
+pub mod data;
 pub mod dex_type;
 pub mod error;
 pub mod explorer;
-pub mod config;
-pub mod data;
 pub mod fetch;
 pub mod mev;
 pub mod pipeline;

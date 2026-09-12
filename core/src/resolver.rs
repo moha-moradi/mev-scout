@@ -71,22 +71,14 @@ impl RangeResolver {
         let lo = estimated_start.saturating_sub(margin);
         let hi = std::cmp::min(estimated_start + margin, tip);
 
-        let start = self
-            .binary_search_timestamp(target_ts, lo, hi)
-            .await?;
+        let start = self.binary_search_timestamp(target_ts, lo, hi).await?;
 
         let start_dt: DateTime<Utc> =
-            DateTime::from_timestamp(
-                self.rpc.get_block_timestamp(start).await? as i64,
-                0,
-            )
-            .unwrap_or_default();
+            DateTime::from_timestamp(self.rpc.get_block_timestamp(start).await? as i64, 0)
+                .unwrap_or_default();
         let end_dt: DateTime<Utc> =
-            DateTime::from_timestamp(
-                self.rpc.get_block_timestamp(tip).await? as i64,
-                0,
-            )
-            .unwrap_or_default();
+            DateTime::from_timestamp(self.rpc.get_block_timestamp(tip).await? as i64, 0)
+                .unwrap_or_default();
 
         tracing::info!(
             "Days filter resolved: blocks {}–{} ({} blocks, from {} to {})",
@@ -130,9 +122,14 @@ impl RangeResolver {
     ///
     /// Uses integer arithmetic throughout so sub-second block times are handled
     /// correctly without precision loss: `estimated_blocks = total_elapsed * sample_count / sample_elapsed`.
-    async fn estimate_window_blocks(&self, tip: u64, tip_ts: u64, target_ts: u64) -> error::Result<u64> {
+    async fn estimate_window_blocks(
+        &self,
+        tip: u64,
+        tip_ts: u64,
+        target_ts: u64,
+    ) -> error::Result<u64> {
         const SAMPLE_SIZE: u64 = 1000;
-        let sample = if tip > SAMPLE_SIZE { tip - SAMPLE_SIZE } else { 0 };
+        let sample = tip.saturating_sub(SAMPLE_SIZE);
         let sample_ts = self.rpc.get_block_timestamp(sample).await?;
         let sample_elapsed = tip_ts.saturating_sub(sample_ts);
         let sample_count = tip - sample;
@@ -140,7 +137,10 @@ impl RangeResolver {
         if sample_elapsed == 0 {
             Ok(sample_count)
         } else {
-            Ok(total_elapsed * sample_count / sample_elapsed)
+            Ok(total_elapsed
+                .checked_mul(sample_count)
+                .and_then(|v| v.checked_div(sample_elapsed))
+                .unwrap_or(sample_count))
         }
     }
 
@@ -162,5 +162,3 @@ impl RangeResolver {
         Ok(lo)
     }
 }
-
-

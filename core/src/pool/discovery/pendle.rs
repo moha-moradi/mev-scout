@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use super::PENDLE_NEW_MARKET_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::primitives::U256;
 use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig};
-use super::PENDLE_NEW_MARKET_TOPIC;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) async fn scan_pendle_batch(
     rpc: &RpcClient,
@@ -35,19 +35,24 @@ pub(crate) async fn scan_pendle_batch(
                     }
                     let market_addr = Address::from_slice(&topics[1][12..32]);
                     let pt_addr = Address::from_slice(&topics[2][12..32]);
-                    let expiry = U256::from_be_slice(&log_data.data[..32])
-                        .to::<u64>();
+                    let expiry = U256::from_be_slice(&log_data.data[..32]).to::<u64>();
                     let creation_block = log.block_number.unwrap_or(0);
                     factory_pools.entry(market_addr).or_insert(
-                        DiscoveredPool::new(market_addr, pt_addr, Address::ZERO, 0, DexType::Pendle, creation_block)
-                            .with_factory(Some(factory))
-                            .with_maturity_timestamp(Some(expiry)));
+                        DiscoveredPool::new(
+                            market_addr,
+                            pt_addr,
+                            Address::ZERO,
+                            0,
+                            DexType::Pendle,
+                            creation_block,
+                        )
+                        .with_factory(Some(factory))
+                        .with_maturity_timestamp(Some(expiry)),
+                    );
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "Pendle factory scan failed for {current}..{batch_end}: {e:#}"
-                );
+                tracing::warn!("Pendle factory scan failed for {current}..{batch_end}: {e:#}");
             }
         }
     }

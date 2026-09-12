@@ -44,4 +44,3 @@ pub fn abi_decode_u256(data: &[u8], offset: usize) -> Option<U256> {
     }
     Some(U256::from_be_slice(&data[offset..offset + 32]))
 }
-

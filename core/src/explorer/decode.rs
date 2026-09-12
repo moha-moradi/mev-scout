@@ -20,8 +20,8 @@ use crate::data::LogData;
 use crate::explorer::types::{Amm, JitFact, LiquidationFact, SwapFact, TransferFact};
 
 use crate::chain::events::{
-    AAVE_V3_LIQUIDATION_CALL_TOPIC, COMPOUND_V3_ABSORB_TOPIC, TRANSFER_TOPIC, V2_SWAP_TOPIC,
-    V3_SWAP_TOPIC, V4_SWAP_TOPIC, INF_CL_SWAP_TOPIC,
+    AAVE_V3_LIQUIDATION_CALL_TOPIC, COMPOUND_V3_ABSORB_TOPIC, INF_CL_SWAP_TOPIC, TRANSFER_TOPIC,
+    V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -38,7 +38,7 @@ pub fn decode_transfer(log: &LogData) -> Option<TransferFact> {
         return None;
     }
     Some(TransferFact {
-        tx_index: 0, // stamped by caller
+        tx_index: 0,  // stamped by caller
         log_index: 0, // stamped by caller
         token: log.address,
         from: Address::from_slice(&log.topics[1][12..]),
@@ -197,8 +197,16 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         let mut fact = base(Amm::Lb, log.address);
         fact.amount_in = U256::from_be_slice(&log.data[32..64]);
         fact.amount_out = U256::from_be_slice(&log.data[64..96]);
-        fact.token_in = if swap_for_y { TOKEN0_SENTINEL } else { TOKEN1_SENTINEL };
-        fact.token_out = if swap_for_y { TOKEN1_SENTINEL } else { TOKEN0_SENTINEL };
+        fact.token_in = if swap_for_y {
+            TOKEN0_SENTINEL
+        } else {
+            TOKEN1_SENTINEL
+        };
+        fact.token_out = if swap_for_y {
+            TOKEN1_SENTINEL
+        } else {
+            TOKEN0_SENTINEL
+        };
         return Some((Amm::Lb, fact));
     }
 
@@ -229,8 +237,16 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         let mut fact = base(Amm::Fluid, log.address);
         fact.amount_in = U256::from_be_slice(&log.data[32..64]);
         fact.amount_out = U256::from_be_slice(&log.data[64..96]);
-        fact.token_in = if swap0to1 { TOKEN0_SENTINEL } else { TOKEN1_SENTINEL };
-        fact.token_out = if swap0to1 { TOKEN1_SENTINEL } else { TOKEN0_SENTINEL };
+        fact.token_in = if swap0to1 {
+            TOKEN0_SENTINEL
+        } else {
+            TOKEN1_SENTINEL
+        };
+        fact.token_out = if swap0to1 {
+            TOKEN1_SENTINEL
+        } else {
+            TOKEN0_SENTINEL
+        };
         return Some((Amm::Fluid, fact));
     }
 
@@ -346,12 +362,8 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if log.topics.len() < 3 || log.data.len() < 160 {
         return None;
     }
-    let tick_lower = i32::from_be_bytes([
-        log.data[28], log.data[29], log.data[30], log.data[31],
-    ]);
-    let tick_upper = i32::from_be_bytes([
-        log.data[60], log.data[61], log.data[62], log.data[63],
-    ]);
+    let tick_lower = i32::from_be_bytes([log.data[28], log.data[29], log.data[30], log.data[31]]);
+    let tick_upper = i32::from_be_bytes([log.data[60], log.data[61], log.data[62], log.data[63]]);
     let liquidity = crate::utils::u128_from_be_bytes(&log.data[64 + 16..96]);
     Some(JitFact {
         tx_index: 0,
@@ -446,7 +458,10 @@ mod tests {
             },
         );
         let t = decode_transfer(&l).unwrap();
-        assert_eq!(t.token, address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"));
+        assert_eq!(
+            t.token,
+            address!("a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+        );
         assert_eq!(t.amount, U256::from(42));
     }
 
@@ -484,7 +499,10 @@ mod tests {
         );
         let liq = decode_liquidation(&l).unwrap();
         assert_eq!(liq.protocol, "aave_v3");
-        assert_eq!(liq.user, address!("dddddddddddddddddddddddddddddddddddddddd"));
+        assert_eq!(
+            liq.user,
+            address!("dddddddddddddddddddddddddddddddddddddddd")
+        );
         // liquidator is not in the event — resolved to tx.from at classify time
         assert_eq!(
             liq.liquidator,
@@ -508,19 +526,25 @@ mod tests {
             amount: U256::from(1),
         };
         let transfers = vec![
-            mk(0, tin, address!("4000000000000000000000000000000000000000"), pool),
-            mk(2, tout, pool, address!("4000000000000000000000000000000000000000")),
+            mk(
+                0,
+                tin,
+                address!("4000000000000000000000000000000000000000"),
+                pool,
+            ),
+            mk(
+                2,
+                tout,
+                pool,
+                address!("4000000000000000000000000000000000000000"),
+            ),
         ];
-        let (_, mut s) = decode_swap(&log(
-            pool,
-            vec![V2_SWAP_TOPIC, B256::ZERO, B256::ZERO],
-            {
-                let mut d = vec![0u8; 128];
-                d[31] = 5; // amount0In
-                d[64 + 31] = 4; // amount0Out
-                d
-            },
-        ))
+        let (_, mut s) = decode_swap(&log(pool, vec![V2_SWAP_TOPIC, B256::ZERO, B256::ZERO], {
+            let mut d = vec![0u8; 128];
+            d[31] = 5; // amount0In
+            d[64 + 31] = 4; // amount0Out
+            d
+        }))
         .unwrap();
         s.log_index = 1;
         attach_swap_tokens(std::slice::from_mut(&mut s), &transfers);

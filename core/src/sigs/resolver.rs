@@ -52,24 +52,34 @@ impl SignatureResolver {
     /// Resolve a 4-byte function selector to a human-readable method signature.
     ///
     /// Checks the in-memory cache first, then queries the local sig DB.
-    /// Returns `Ok(None)` if the selector is not found.
+    /// Returns `Ok(None)` only when the selector is genuinely absent from
+    /// the DB (`QueryReturnedNoRows`). DB read errors propagate rather than
+    /// being misreported as misses, and an errored lookup is never cached.
     pub fn resolve_method(&self, selector: &[u8; 4]) -> anyhow::Result<Option<String>> {
-        if let Some(result) = self.method_cache.read().expect("method cache poisoned").get(selector) {
+        if let Some(result) = self
+            .method_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(selector)
+        {
             return Ok(result.clone());
         }
 
         let result: Option<String> = {
-            let conn = self.conn.lock().expect("DB connection poisoned");
-            conn.query_row(
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            match conn.query_row(
                 "SELECT signature FROM methods WHERE selector = ?1",
                 rusqlite::params![selector.to_vec()],
                 |row| row.get(0),
-            )
-            .ok()
+            ) {
+                Ok(sig) => Some(sig),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            }
         };
 
         {
-            let mut cache = self.method_cache.write().expect("method cache poisoned");
+            let mut cache = self.method_cache.write().unwrap_or_else(|e| e.into_inner());
             if cache.len() < CACHE_CAPACITY {
                 cache.insert(*selector, result.clone());
             }
@@ -81,24 +91,34 @@ impl SignatureResolver {
     /// Resolve a 32-byte event topic hash to a human-readable event signature.
     ///
     /// Checks the in-memory cache first, then queries the local sig DB.
-    /// Returns `Ok(None)` if the topic is not found.
+    /// Returns `Ok(None)` only when the topic is genuinely absent from
+    /// the DB (`QueryReturnedNoRows`). DB read errors propagate rather than
+    /// being misreported as misses, and an errored lookup is never cached.
     pub fn resolve_event(&self, topic: &B256) -> anyhow::Result<Option<String>> {
-        if let Some(result) = self.event_cache.read().expect("event cache poisoned").get(topic) {
+        if let Some(result) = self
+            .event_cache
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(topic)
+        {
             return Ok(result.clone());
         }
 
         let result: Option<String> = {
-            let conn = self.conn.lock().expect("DB connection poisoned");
-            conn.query_row(
+            let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+            match conn.query_row(
                 "SELECT signature FROM events WHERE topic = ?1",
                 rusqlite::params![topic.as_slice().to_vec()],
                 |row| row.get(0),
-            )
-            .ok()
+            ) {
+                Ok(sig) => Some(sig),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e.into()),
+            }
         };
 
         {
-            let mut cache = self.event_cache.write().expect("event cache poisoned");
+            let mut cache = self.event_cache.write().unwrap_or_else(|e| e.into_inner());
             if cache.len() < CACHE_CAPACITY {
                 cache.insert(*topic, result.clone());
             }

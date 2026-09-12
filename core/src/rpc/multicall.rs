@@ -71,7 +71,7 @@ fn encode_aggregate3(calls: &[SubCall]) -> Bytes {
     let mut offset = n * 96; // heads region
     for call in calls {
         tail_offsets.push(offset as u64);
-        let padded = ((call.data.len() + 31) / 32) * 32;
+        let padded = call.data.len().div_ceil(32) * 32;
         offset += 32 + padded;
     }
 
@@ -93,7 +93,7 @@ fn encode_aggregate3(calls: &[SubCall]) -> Bytes {
     for call in calls {
         push_word_u64(&mut buf, call.data.len() as u64);
         let mut d = call.data.to_vec();
-        d.resize(((d.len() + 31) / 32) * 32, 0);
+        d.resize(d.len().div_ceil(32) * 32, 0);
         buf.extend_from_slice(&d);
     }
 
@@ -139,7 +139,9 @@ fn decode_aggregate3(result: &[u8]) -> Option<Vec<Option<Bytes>>> {
             out.push(None);
             continue;
         }
-        out.push(Some(Bytes::copy_from_slice(&result[abs + 32..abs + 32 + len])));
+        out.push(Some(Bytes::copy_from_slice(
+            &result[abs + 32..abs + 32 + len],
+        )));
     }
     Some(out)
 }
@@ -250,11 +252,20 @@ pub async fn resolve_pool_metadata(
         }
         out.insert(
             pool,
-            PoolMetadata { token0, token1, fee, tick_spacing },
+            PoolMetadata {
+                token0,
+                token1,
+                fee,
+                tick_spacing,
+            },
         );
     }
 
-    tracing::info!("Multicall3: resolved metadata for {}/{} pool(s)", out.len(), pools.len());
+    tracing::info!(
+        "Multicall3: resolved metadata for {}/{} pool(s)",
+        out.len(),
+        pools.len()
+    );
     Ok(out)
 }
 
@@ -267,18 +278,30 @@ mod tests {
     fn aggregate3_encoding_layout() {
         let left_pad_one = address!("0000000000000000000000000000000000000001");
         let calls = vec![
-            SubCall { target: left_pad_one, data: Bytes::from_static(&[0xaa, 0xbb]) },
-            SubCall { target: Address::ZERO, data: Bytes::from_static(&[0xcc; 32]) },
+            SubCall {
+                target: left_pad_one,
+                data: Bytes::from_static(&[0xaa, 0xbb]),
+            },
+            SubCall {
+                target: Address::ZERO,
+                data: Bytes::from_static(&[0xcc; 32]),
+            },
         ];
         let enc = encode_aggregate3(&calls);
 
         // selector + args head (array offset 0x20) + array length 2
         assert_eq!(&enc[0..4], &AGGREGATE3_SELECTOR);
-        assert_eq!(enc[4..36], hex!("0000000000000000000000000000000000000000000000000000000000000020"));
-        assert_eq!(enc[36..68], hex!("0000000000000000000000000000000000000000000000000000000000000002"));
+        assert_eq!(
+            enc[4..36],
+            hex!("0000000000000000000000000000000000000000000000000000000000000020")
+        );
+        assert_eq!(
+            enc[36..68],
+            hex!("0000000000000000000000000000000000000000000000000000000000000002")
+        );
 
         let data_start = 68usize; // selector(4) + 2 head words
-        // Element 0 head: target | allowFailure | tailOffset
+                                  // Element 0 head: target | allowFailure | tailOffset
         let e0 = &enc[data_start..data_start + 96];
         assert_eq!(&e0[12..32], left_pad_one.as_slice());
         assert_eq!(e0[63], 1);
@@ -310,9 +333,12 @@ mod tests {
     #[test]
     fn aggregate3_decode_roundtrip() {
         let mut ret: Vec<u8> = Vec::new();
-        ret.extend_from_slice(&[0u8; 31]); ret.push(1); // success = true
-        ret.extend_from_slice(&[0u8; 31]); ret.push(0x40); // array offset
-        ret.extend_from_slice(&[0u8; 31]); ret.push(2); // 2 elements
+        ret.extend_from_slice(&[0u8; 31]);
+        ret.push(1); // success = true
+        ret.extend_from_slice(&[0u8; 31]);
+        ret.push(0x40); // array offset
+        ret.extend_from_slice(&[0u8; 31]);
+        ret.push(2); // 2 elements
 
         // Solidity nested-dynamic layout: element offsets are relative to the
         // array data area, whose FIRST slot holds the length word (byte 64,
@@ -329,8 +355,10 @@ mod tests {
         // Element 0: len 1, data [0xab]
         ret.extend_from_slice(&[0u8; 24]);
         ret.extend_from_slice(&1u64.to_be_bytes());
-        ret.extend_from_slice(&[0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        ret.extend_from_slice(&[
+            0xab, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0,
+        ]);
         // Element 1: len 0 → empty slot
         ret.extend_from_slice(&[0u8; 32]);
 

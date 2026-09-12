@@ -279,12 +279,7 @@ impl ExplorerStore {
     }
 
     /// Upsert sync checkpoint after indexing through `indexed_to`.
-    pub fn set_sync_state(
-        &self,
-        chain_id: u64,
-        head: u64,
-        indexed_to: u64,
-    ) -> anyhow::Result<()> {
+    pub fn set_sync_state(&self, chain_id: u64, head: u64, indexed_to: u64) -> anyhow::Result<()> {
         let now = crate::utils::epoch_secs() as i64;
         self.conn.execute(
             "INSERT INTO sync_state(chain_id, head, indexed_to, last_indexed_at)
@@ -319,11 +314,7 @@ impl ExplorerStore {
     }
 
     /// Blocks in `[from, to]` not yet classified (gap resume).
-    pub fn unclassified_blocks(
-        &self,
-        from: u64,
-        to: u64,
-    ) -> anyhow::Result<Vec<u64>> {
+    pub fn unclassified_blocks(&self, from: u64, to: u64) -> anyhow::Result<Vec<u64>> {
         let mut stmt = self.conn.prepare(
             "WITH RECURSIVE seq(b) AS (
                SELECT ?1 UNION ALL SELECT b+1 FROM seq WHERE b < ?2
@@ -332,10 +323,9 @@ impl ExplorerStore {
              WHERE b NOT IN (SELECT block FROM blocks_classified
                              WHERE block BETWEEN ?1 AND ?2)",
         )?;
-        let rows = stmt.query_map(
-            rusqlite::params![from as i64, to as i64],
-            |r| r.get::<_, i64>(0),
-        )?;
+        let rows = stmt.query_map(rusqlite::params![from as i64, to as i64], |r| {
+            r.get::<_, i64>(0)
+        })?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row? as u64);
@@ -361,8 +351,10 @@ impl ExplorerStore {
             "DELETE FROM swaps WHERE block_number >= ?1",
             [fork_block as i64],
         )?;
-        self.conn
-            .execute("DELETE FROM txs WHERE block_number >= ?1", [fork_block as i64])?;
+        self.conn.execute(
+            "DELETE FROM txs WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
         self.conn.execute(
             "DELETE FROM blocks WHERE block_number >= ?1",
             [fork_block as i64],
@@ -388,6 +380,7 @@ impl ExplorerStore {
 
     /// Insert block header + txs + swaps + transfers + mev events in one
     /// transaction. Idempotent via OR IGNORE on natural keys.
+    #[allow(clippy::too_many_arguments)] // refactored into a facts bundle in W4
     pub fn insert_block_facts(
         &self,
         block_number: u64,
@@ -519,7 +512,9 @@ impl ExplorerStore {
                         net,
                         ev.details.get("route").map(|r| r.to_string()),
                         serde_json::to_string(
-                            &ev.victim_hashes.iter().map(|h| format!("{:#x}", h))
+                            &ev.victim_hashes
+                                .iter()
+                                .map(|h| format!("{:#x}", h))
                                 .collect::<Vec<_>>()
                         )
                         .ok(),
@@ -551,11 +546,10 @@ impl ExplorerStore {
 
     /// Purge `transfers` older than `keep_blocks` behind head (retention §9.4).
     pub fn prune_transfers(&self, before_block: u64) -> anyhow::Result<usize> {
-        let n = self
-            .conn
-            .execute("DELETE FROM transfers WHERE block_number < ?1", [
-                before_block as i64,
-            ])?;
+        let n = self.conn.execute(
+            "DELETE FROM transfers WHERE block_number < ?1",
+            [before_block as i64],
+        )?;
         Ok(n)
     }
 
@@ -644,36 +638,73 @@ impl ExplorerStore {
         Ok(out)
     }
 
-    /// Period stats grouped by kind (§10 `stats`).
+    /// Period stats grouped by kind (`stats`).
     pub fn stats_by_kind(&self, since_ts: u64) -> anyhow::Result<Vec<StatsRow>> {
-        stats_grouped(
-            &self.conn,
-            "kind",
-            since_ts,
-            None,
-        )
+        self.stats_by_kind_filtered(since_ts, None)
+    }
+
+    /// `stats_by_kind` restricted to one `kind` value (`stats --kind`).
+    pub fn stats_by_kind_filtered(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        stats_grouped(&self.conn, "kind", since_ts, kind)
     }
 
     /// Sender leaderboard (`top --by sender`).
     pub fn top_senders(&self, since_ts: u64, limit: usize) -> anyhow::Result<Vec<StatsRow>> {
-        top_grouped(&self.conn, "eoa", since_ts, limit)
+        self.top_senders_filtered(since_ts, limit, None)
+    }
+
+    /// `top_senders` restricted to one `kind` value (`stats --kind`).
+    pub fn top_senders_filtered(
+        &self,
+        since_ts: u64,
+        limit: usize,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        top_grouped(&self.conn, "eoa", since_ts, limit, kind)
     }
 
     /// Most profitable tokens (`top --by token`).
     pub fn top_tokens(&self, since_ts: u64, limit: usize) -> anyhow::Result<Vec<StatsRow>> {
-        top_grouped(&self.conn, "profit_token", since_ts, limit)
+        self.top_tokens_filtered(since_ts, limit, None)
+    }
+
+    /// `top_tokens` restricted to one `kind` value.
+    pub fn top_tokens_filtered(
+        &self,
+        since_ts: u64,
+        limit: usize,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        top_grouped(&self.conn, "profit_token", since_ts, limit, kind)
     }
 
     /// Busiest pools (`top --by pool`) — pool list comes from route_json.
     pub fn top_pools(&self, since_ts: u64, limit: usize) -> anyhow::Result<Vec<StatsRow>> {
+        self.top_pools_filtered(since_ts, limit, None)
+    }
+
+    /// `top_pools` restricted to one `kind` value (`stats --kind`).
+    pub fn top_pools_filtered(
+        &self,
+        since_ts: u64,
+        limit: usize,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
         // Pools live inside route_json; extract with json_each.
+        let kind_clause = kind
+            .map(|k| format!("AND m.kind = '{k}'"))
+            .unwrap_or_default();
         let sql = format!(
             "SELECT j.value->>'$.pool' AS label,
                     COUNT(DISTINCT m.id) AS ops,
                     COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
                     COALESCE(SUM(m.net_profit_usd), 0) AS net_usd
              FROM mev_ops m, json_each(COALESCE(m.route_json, '[]')) j
-             WHERE m.ts >= {since_ts} AND j.value->>'$.pool' IS NOT NULL
+             WHERE m.ts >= {since_ts} {kind_clause} AND j.value->>'$.pool' IS NOT NULL
              GROUP BY label
              ORDER BY gross_usd DESC
              LIMIT {limit}"
@@ -689,13 +720,25 @@ impl ExplorerStore {
 
     /// Daily breakdown (`stats --window day`).
     pub fn stats_daily(&self, since_ts: u64) -> anyhow::Result<Vec<StatsRow>> {
+        self.stats_daily_filtered(since_ts, None)
+    }
+
+    /// `stats_daily` restricted to one `kind` value (`stats --kind`).
+    pub fn stats_daily_filtered(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
         let sql = format!(
             "SELECT date(ts, 'unixepoch') AS label,
                     COUNT(*) AS ops,
                     COALESCE(SUM(profit_usd), 0) AS gross_usd,
                     COALESCE(SUM(net_profit_usd), 0) AS net_usd
              FROM mev_ops
-             WHERE ts >= {since_ts}
+             WHERE ts >= {since_ts} {kind_clause}
              GROUP BY label
              ORDER BY label DESC"
         );
@@ -835,8 +878,16 @@ impl ExplorerStore {
                 r.get::<_, Option<String>>(17)?,
             ))
         })?;
-        let parse_addr =
-            |s: &Option<String>| s.as_deref().and_then(|v| v.parse().ok()).unwrap_or(Address::ZERO);
+        let parse_addr = |s: &Option<String>| -> anyhow::Result<Address> {
+            match s {
+                Some(v) => v.parse::<Address>().map_err(|e| {
+                    anyhow::anyhow!(
+                        "opportunities table holds unparseable address '{v}' (schema drift?): {e}"
+                    )
+                }),
+                None => Ok(Address::ZERO),
+            }
+        };
         let mut out = Vec::new();
         for row in rows {
             let (
@@ -873,33 +924,58 @@ impl ExplorerStore {
                 block_number,
                 tx_index: tx_index.unwrap_or(0),
                 strategy,
-                pool_a: parse_addr(&pool_a),
-                pool_b: parse_addr(&pool_b),
-                token_in: parse_addr(&token_in),
-                token_out: parse_addr(&token_out),
-                input_amount: input_amount
-                    .as_deref()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(U256::ZERO),
-                expected_profit: expected_profit
-                    .as_deref()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(U256::ZERO),
+                pool_a: parse_addr(&pool_a)?,
+                pool_b: parse_addr(&pool_b)?,
+                token_in: parse_addr(&token_in)?,
+                token_out: parse_addr(&token_out)?,
+                input_amount: match &input_amount {
+                    Some(v) => v.parse::<U256>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "opportunities table holds unparseable input_amount '{v}' (schema drift?): {e}"
+                        )
+                    })?,
+                    None => U256::ZERO,
+                },
+                expected_profit: match &expected_profit {
+                    Some(v) => v.parse::<U256>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "opportunities table holds unparseable expected_profit '{v}' (schema drift?): {e}"
+                        )
+                    })?,
+                    None => U256::ZERO,
+                },
                 raw_profit: None,
                 profit_slippage_p1: None,
                 profit_slippage_m1: None,
                 profit_slippage_p2: None,
                 profit_slippage_m2: None,
-                gas_cost_wei: gas_cost_wei
-                    .as_deref()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0),
+                gas_cost_wei: match &gas_cost_wei {
+                    Some(v) => v.parse::<u128>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "opportunities table holds unparseable gas_cost_wei '{v}' (schema drift?): {e}"
+                        )
+                    })?,
+                    None => 0,
+                },
                 timestamp: timestamp.unwrap_or(0),
-                path: path.and_then(|p| {
-                    let parsed: Vec<Address> =
-                        p.split(',').filter_map(|a| a.parse().ok()).collect();
-                    (!parsed.is_empty()).then_some(parsed)
-                }),
+                path: match &path {
+                    Some(p) => {
+                        if p.is_empty() {
+                            None
+                        } else {
+                            let parsed: anyhow::Result<Vec<Address>> =
+                                p.split(',').map(|a| {
+                                    a.parse::<Address>().map_err(|e| {
+                                        anyhow::anyhow!(
+                                            "opportunities table holds unparseable path address '{a}' (schema drift?): {e}"
+                                        )
+                                    })
+                                }).collect();
+                            Some(parsed?).filter(|v| !v.is_empty())
+                        }
+                    }
+                    None => None,
+                },
                 tick_lower: None,
                 tick_upper: None,
                 liquidity_amount: None,
@@ -907,8 +983,22 @@ impl ExplorerStore {
                 backrun_tx_index: None,
                 mempool_only,
                 confidence: confidence.as_deref().and_then(|v| v.parse().ok()),
-                sender: sender.as_deref().and_then(|v| v.parse().ok()),
-                tx_hash: tx_hash.as_deref().and_then(|v| v.parse().ok()),
+                sender: match &sender {
+                    Some(v) => Some(v.parse::<Address>().map_err(|e| {
+                        anyhow::anyhow!(
+                            "opportunities table holds unparseable sender '{v}' (schema drift?): {e}"
+                        )
+                    })?),
+                    None => None,
+                },
+                tx_hash: match &tx_hash {
+                    Some(v) => Some(v.parse().map_err(|e| {
+                        anyhow::anyhow!(
+                            "opportunities table holds unparseable tx_hash '{v}' (schema drift?): {e}"
+                        )
+                    })?),
+                    None => None,
+                },
                 detection_path,
             });
         }
@@ -1154,6 +1244,18 @@ impl ExplorerStore {
 
     /// Whole-window overview stats (`stats` header block).
     pub fn stats_overview(&self, since_ts: u64) -> anyhow::Result<OverviewRow> {
+        self.stats_overview_filtered(since_ts, None)
+    }
+
+    /// `stats_overview` restricted to one `kind` value (`stats --kind`).
+    pub fn stats_overview_filtered(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<OverviewRow> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
         let sql = format!(
             "SELECT COUNT(*),
                     COALESCE(SUM(profit_usd), 0),
@@ -1161,7 +1263,7 @@ impl ExplorerStore {
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa)
-             FROM mev_ops WHERE ts >= {since_ts}"
+             FROM mev_ops WHERE ts >= {since_ts} {kind_clause}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
             Ok(OverviewRow {
@@ -1259,11 +1361,9 @@ impl ExplorerStore {
         let addr = format!("{address:#x}");
         let exists: Option<i64> = self
             .conn
-            .query_row(
-                "SELECT 1 FROM labels WHERE address = ?1",
-                [&addr],
-                |r| r.get(0),
-            )
+            .query_row("SELECT 1 FROM labels WHERE address = ?1", [&addr], |r| {
+                r.get(0)
+            })
             .map(Some)
             .unwrap_or(None);
         if exists.is_none() {
@@ -1433,13 +1533,17 @@ fn top_grouped(
     group_col: &str,
     since_ts: u64,
     limit: usize,
+    kind: Option<&str>,
 ) -> anyhow::Result<Vec<StatsRow>> {
+    let kind_clause = kind
+        .map(|k| format!("AND kind = '{k}'"))
+        .unwrap_or_default();
     let sql = format!(
         "SELECT {group_col} AS label, COUNT(*) AS ops,
                 COALESCE(SUM(profit_usd), 0) AS gross_usd,
                 COALESCE(SUM(net_profit_usd), 0) AS net_usd
          FROM mev_ops
-         WHERE ts >= {since_ts} AND {group_col} IS NOT NULL
+         WHERE ts >= {since_ts} {kind_clause} AND {group_col} IS NOT NULL
          GROUP BY label
          ORDER BY gross_usd DESC
          LIMIT {limit}"
@@ -1488,7 +1592,10 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd { usd: 0.5, decimals: 6 },
+            crate::explorer::pricing::TokenUsd {
+                usd: 0.5,
+                decimals: 6,
+            },
         );
         let n = store
             .insert_block_facts(
@@ -1513,7 +1620,11 @@ mod tests {
         assert_eq!(ops.len(), 1);
         assert!(ops[0].profit_usd.unwrap() > 0.0);
         assert!(ops[0].net_profit_usd.unwrap() < ops[0].profit_usd.unwrap());
-        assert!(ops[0].canonical_id.as_deref().unwrap().starts_with("ArbAtomic|"));
+        assert!(ops[0]
+            .canonical_id
+            .as_deref()
+            .unwrap()
+            .starts_with("ArbAtomic|"));
 
         let blocks = store
             .blocks_with_kind(100, 100, MevKind::ArbAtomic)
@@ -1525,6 +1636,98 @@ mod tests {
 
         store.unwind_from(100).unwrap();
         assert!(!store.block_classified(100).unwrap());
+    }
+
+    #[test]
+    fn stats_kind_filter_matches_only_that_kind() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            crate::explorer::pricing::TokenUsd {
+                usd: 0.5,
+                decimals: 6,
+            },
+        );
+        let mut sand_evt = sample_event(120);
+        sand_evt.ts = 1_700_000_101;
+        sand_evt.kind = MevKind::Sandwich;
+        let mut arb_evt = sample_event(121);
+        arb_evt.ts = 1_700_000_200;
+        arb_evt.kind = MevKind::ArbAtomic;
+        let n = store
+            .insert_block_facts(
+                120,
+                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
+                1_700_000_100,
+                Some(25.0),
+                5,
+                &[],
+                &[],
+                &[],
+                &[sand_evt],
+                Some(0.75),
+                &prices,
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let n = store
+            .insert_block_facts(
+                121,
+                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
+                1_700_000_200,
+                Some(25.0),
+                5,
+                &[],
+                &[],
+                &[],
+                &[arb_evt],
+                Some(0.75),
+                &prices,
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let all = store.stats_by_kind_filtered(1_699_999_000, None).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let arb = store
+            .stats_by_kind_filtered(1_699_999_000, Some("arb_atomic"))
+            .unwrap();
+        assert_eq!(arb.len(), 1);
+        assert_eq!(arb[0].label, "arb_atomic");
+        assert_eq!(arb[0].ops, 1);
+
+        let sand = store
+            .stats_by_kind_filtered(1_699_999_000, Some("sandwich"))
+            .unwrap();
+        assert_eq!(sand.len(), 1);
+        assert_eq!(sand[0].label, "sandwich");
+
+        let none = store
+            .stats_by_kind_filtered(1_699_999_000, Some("liquidation"))
+            .unwrap();
+        assert!(none.is_empty());
+
+        let overview = store
+            .stats_overview_filtered(1_699_999_000, Some("sandwich"))
+            .unwrap();
+        assert_eq!(overview.ops, 1);
+
+        let senders = store
+            .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"))
+            .unwrap();
+        assert!(!senders.is_empty());
+
+        let senders_sand = store
+            .top_senders_filtered(1_699_999_000, 5, Some("sandwich"))
+            .unwrap();
+        assert!(!senders_sand.is_empty());
+
+        let misc = store
+            .top_senders_filtered(1_699_999_000, 5, Some("liquidations"))
+            .unwrap();
+        assert!(misc.is_empty());
     }
 
     #[test]

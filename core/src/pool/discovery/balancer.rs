@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use super::BALANCER_POOL_REGISTERED_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
-use super::BALANCER_POOL_REGISTERED_TOPIC;
+use std::collections::{HashMap, HashSet};
 
+#[allow(clippy::too_many_arguments)] // discovery plumbing — slimmed in W4
 pub(crate) async fn scan_balancer_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
@@ -41,19 +42,28 @@ pub(crate) async fn scan_balancer_batch(
                     let pool_addr = Address::from_slice(&topics[2][12..32]);
                     let creation_block = log.block_number.unwrap_or(0);
                     pool_hits.entry(pool_addr).or_insert((
-                        DexType::Balancer, Some(pool_id), None, creation_block,
+                        DexType::Balancer,
+                        Some(pool_id),
+                        None,
+                        creation_block,
                     ));
                     factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(pool_addr, Address::ZERO, Address::ZERO, 0, DexType::Balancer, creation_block)
-                            .with_pool_id(Some(pool_id))
-                            .with_factory(Some(vault))
-                            .with_balancer_pool_type(Some(pool_type)));
+                        DiscoveredPool::new(
+                            pool_addr,
+                            Address::ZERO,
+                            Address::ZERO,
+                            0,
+                            DexType::Balancer,
+                            creation_block,
+                        )
+                        .with_pool_id(Some(pool_id))
+                        .with_factory(Some(vault))
+                        .with_balancer_pool_type(Some(pool_type)),
+                    );
                 }
             }
             Err(e) => {
-                tracing::warn!(
-                    "Balancer vault scan failed for {current}..{batch_end}: {e:#}"
-                );
+                tracing::warn!("Balancer vault scan failed for {current}..{batch_end}: {e:#}");
             }
         }
     }

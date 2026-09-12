@@ -4,7 +4,19 @@
 use serde::{Deserialize, Serialize};
 
 #[repr(i64)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumString,
+)]
 #[strum(ascii_case_insensitive)]
 pub enum DexType {
     #[default]

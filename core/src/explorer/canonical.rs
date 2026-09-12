@@ -27,7 +27,10 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                 "Sandwich|{:#x}|victim:{:?}|backrun:{:?}",
                 first_pool(&ev.pools),
                 ev.victim_hashes.len(),
-                ev.details.get("backrun_tx_index").cloned().unwrap_or(serde_json::json!(null))
+                ev.details
+                    .get("backrun_tx_index")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(null))
             )
         }
         crate::explorer::types::MevKind::Liquidation => {
@@ -43,26 +46,23 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
         }
         crate::explorer::types::MevKind::Jit | crate::explorer::types::MevKind::JitArb => {
             let (lo, hi) = (
-                ev.details.get("tick_lower").cloned().unwrap_or(serde_json::json!(0)),
-                ev.details.get("tick_upper").cloned().unwrap_or(serde_json::json!(0)),
+                ev.details
+                    .get("tick_lower")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(0)),
+                ev.details
+                    .get("tick_upper")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(0)),
             );
-            format!(
-                "Jit|{:#x}|{}|{}",
-                first_pool(&ev.pools),
-                lo,
-                hi
-            )
+            format!("Jit|{:#x}|{}|{}", first_pool(&ev.pools), lo, hi)
         }
         _ => {
             let mut pools = ev.pools.clone();
             pools.sort();
             pools.dedup();
             let pool_strs: Vec<String> = pools.iter().map(|p| format!("{:#x}", p)).collect();
-            format!(
-                "{:?}|{}",
-                ev.kind,
-                pool_strs.join("|"),
-            )
+            format!("{:?}|{}", ev.kind, pool_strs.join("|"),)
         }
     }
 }

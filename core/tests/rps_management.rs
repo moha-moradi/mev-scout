@@ -42,7 +42,9 @@ fn rate_limiter_respects_configured_rps() {
 }
 
 fn test_rpc_url() -> Option<String> {
-    std::env::var("MEV_SCOUT_TEST_RPC").ok().filter(|s| !s.is_empty())
+    std::env::var("MEV_SCOUT_TEST_RPC")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 async fn run_burst(rpc: &RpcClient, count: usize) -> (usize, usize, Duration, Vec<String>) {

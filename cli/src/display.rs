@@ -1,5 +1,5 @@
-use comfy_table::Table;
 use alloy::primitives::{Address, U256};
+use comfy_table::Table;
 
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
@@ -51,10 +51,12 @@ pub fn persist_opportunities_to_explorer(
         }
     };
     for opp in &results_file.opportunities {
-        let path_str = opp
-            .path
-            .as_ref()
-            .map(|p| p.iter().map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(","));
+        let path_str = opp.path.as_ref().map(|p| {
+            p.iter()
+                .map(|a| format!("{a:#x}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        });
         let confidence_str = opp.confidence.map(|c| format!("{c:.2}"));
         if let Err(e) = store.insert_opportunity(
             run_id,
@@ -69,7 +71,7 @@ pub fn persist_opportunities_to_explorer(
             Some(opp.input_amount),
             Some(opp.expected_profit),
             Some(U256::from(opp.gas_cost_wei)),
-            opp.path.as_ref().and_then(|_| path_str.as_deref()),
+            opp.path.as_ref().and(path_str.as_deref()),
             Some(opp.timestamp),
             opp.mempool_only,
             confidence_str.as_deref(),
@@ -125,7 +127,11 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
                 return name.to_string();
             }
             if let (Some(t0), Some(t1)) = (&info.token0_symbol, &info.token1_symbol) {
-                let dex = info.dex_name.as_deref().map(String::from).unwrap_or(info.dex_type.to_string());
+                let dex = info
+                    .dex_name
+                    .as_deref()
+                    .map(String::from)
+                    .unwrap_or(info.dex_type.to_string());
                 return format!("{dex} {}/{}", t0, t1);
             }
             format!("{}", addr)
@@ -133,14 +139,22 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
         .unwrap_or_else(|| format!("{}", addr))
 }
 
-pub fn render_results_table(all_opportunities: &[mev_scout_core::types::MevOpportunity], pool_manager: Option<&PoolManager>) {
+pub fn render_results_table(
+    all_opportunities: &[mev_scout_core::types::MevOpportunity],
+    pool_manager: Option<&PoolManager>,
+) {
     let mut table = Table::new();
     let has_confidence = all_opportunities.iter().any(|opp| opp.confidence.is_some());
 
-    if pool_manager.is_some() {
+    if let Some(pm) = pool_manager {
         let mut headers = vec![
-            "Block", "Tx", "Strategy", "Pool A / Pool B",
-            "Input", "Profit (token_out)", "Gas (wei)",
+            "Block",
+            "Tx",
+            "Strategy",
+            "Pool A / Pool B",
+            "Input",
+            "Profit (token_out)",
+            "Gas (wei)",
         ];
         if has_confidence {
             headers.push("Confidence");
@@ -148,7 +162,6 @@ pub fn render_results_table(all_opportunities: &[mev_scout_core::types::MevOppor
         table.set_header(headers);
 
         for opp in all_opportunities {
-            let pm = pool_manager.expect("pool_manager is_some() checked above");
             let name_a = pool_name(pm, &opp.pool_a);
             let name_b = if opp.pool_b == Address::ZERO {
                 String::new()
@@ -159,20 +172,31 @@ pub fn render_results_table(all_opportunities: &[mev_scout_core::types::MevOppor
                 format!("{}", opp.block_number),
                 format!("{}", opp.tx_index),
                 format!("{}", opp.strategy),
-                if name_b.is_empty() { name_a } else { format!("{} / {}", name_a, name_b) },
+                if name_b.is_empty() {
+                    name_a
+                } else {
+                    format!("{} / {}", name_a, name_b)
+                },
                 format!("{}", opp.input_amount),
                 format!("{}", opp.expected_profit),
                 format!("{}", opp.gas_cost_wei),
             ];
             if has_confidence {
-                row.push(opp.confidence.map_or("-".to_string(), |c| format!("{:.2}", c)));
+                row.push(
+                    opp.confidence
+                        .map_or("-".to_string(), |c| format!("{:.2}", c)),
+                );
             }
             table.add_row(row);
         }
     } else {
         let mut headers = vec![
-            "Block", "Tx", "Strategy",
-            "Input", "Profit (token_out)", "Gas (wei)",
+            "Block",
+            "Tx",
+            "Strategy",
+            "Input",
+            "Profit (token_out)",
+            "Gas (wei)",
         ];
         if has_confidence {
             headers.push("Confidence");
@@ -189,7 +213,10 @@ pub fn render_results_table(all_opportunities: &[mev_scout_core::types::MevOppor
                 format!("{}", opp.gas_cost_wei),
             ];
             if has_confidence {
-                row.push(opp.confidence.map_or("-".to_string(), |c| format!("{:.2}", c)));
+                row.push(
+                    opp.confidence
+                        .map_or("-".to_string(), |c| format!("{:.2}", c)),
+                );
             }
             table.add_row(row);
         }
@@ -233,14 +260,14 @@ pub fn render_block_summary_table(summaries: &[BlockReplayStats]) {
     }
     if has_pending {
         table.add_row(vec![
-            format!("{}", "Total"),
+            "Total".to_string(),
             format!("{}", total_tx),
             format!("{}", total_dex),
             format!("{}", total_pending),
         ]);
     } else {
         table.add_row(vec![
-            format!("{}", "Total"),
+            "Total".to_string(),
             format!("{}", total_tx),
             format!("{}", total_dex),
         ]);

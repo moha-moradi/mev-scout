@@ -1,7 +1,7 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, example_config_str, rpc_lock,
+    ensure_gate_and_rpc, example_config_str, expect_ok, extract_json_array, make_cfg, rpc_lock,
     run_timed, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use std::time::Duration;
@@ -96,7 +96,14 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
 
     let fetch_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &fetch_cfg, "fetch", "--blocks", "5", "--no-sig-resolve"]);
+    c.args([
+        "-f",
+        &fetch_cfg,
+        "fetch",
+        "--blocks",
+        "5",
+        "--no-sig-resolve",
+    ]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("fetch spawn failed");
     expect_ok(&out, "fetch 5 blocks");
     assert!(
@@ -114,15 +121,7 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
     let scan_cfg = make_cfg(&ws, &[("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args([
-        "-f",
-        &scan_cfg,
-        "scan",
-        "--kind",
-        "trades",
-        "--blocks",
-        "5",
-        "--limit",
-        "20",
+        "-f", &scan_cfg, "scan", "--kind", "trades", "--blocks", "5", "--limit", "20",
     ]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("scan spawn failed");
     expect_ok(&out, "scan trades 5 blocks json");
@@ -132,7 +131,10 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         .expect("scan --output json must be an array");
     for e in items {
         assert!(e.get("block").is_some(), "trade event missing block: {e}");
-        assert!(e.get("tx_hash").is_some(), "trade event missing tx_hash: {e}");
+        assert!(
+            e.get("tx_hash").is_some(),
+            "trade event missing tx_hash: {e}"
+        );
     }
 }
 
@@ -185,7 +187,14 @@ fn validate_pools_tolerant_to_reference_failures() {
     };
 
     let mut c = scout(&ws);
-    c.args(["-f", &example_config_str(), "validate-pools", "--days", "1", "--json"]);
+    c.args([
+        "-f",
+        &example_config_str(),
+        "validate-pools",
+        "--days",
+        "1",
+        "--json",
+    ]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,
         Err(e) => {

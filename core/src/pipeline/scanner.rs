@@ -67,8 +67,9 @@ pub mod topics {
     /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
     /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
     /// The same canonical signature is emitted by LB 2.2 pairs (per-side amounts).
-    pub static TRADER_JOE_LB_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)"));
+    pub static TRADER_JOE_LB_SWAP: LazyLock<B256> = LazyLock::new(|| {
+        keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)")
+    });
 
     /// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event
     /// (`sender, to, uint24 id, bytes32 amountsIn, bytes32 amountsOut,
@@ -259,7 +260,7 @@ mod tests {
             *topics::INF_CL_SWAP,
             keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
         );
-        assert!(topics::all_topics().iter().any(|t| *t == *topics::INF_CL_SWAP));
+        assert!(topics::all_topics().contains(&*topics::INF_CL_SWAP));
     }
 
     /// Trader Joe LB topics: the 2.0 form (uint256 id + swapForY) and the
@@ -268,7 +269,10 @@ mod tests {
     fn trader_joe_lb_topics_are_distinct_and_verified() {
         assert_ne!(*topics::TRADER_JOE_LB_SWAP, topics::V3_SWAP);
         assert_ne!(*topics::TRADER_JOE_LB_SWAP_LEGACY, topics::V3_SWAP);
-        assert_ne!(*topics::TRADER_JOE_LB_SWAP, *topics::TRADER_JOE_LB_SWAP_LEGACY);
+        assert_ne!(
+            *topics::TRADER_JOE_LB_SWAP,
+            *topics::TRADER_JOE_LB_SWAP_LEGACY
+        );
         assert_eq!(
             *topics::TRADER_JOE_LB_SWAP,
             b256!("c528cda9e500228b16ce84fadae290d9a49aecb17483110004c5af0a07f6fd73")
@@ -284,7 +288,8 @@ mod tests {
     ///           netSyFee u256, netSyToReserve u256)
     #[test]
     fn pendle_swap_topic_is_verified() {
-        let expected = alloy::primitives::keccak256("Swap(address,address,int256,int256,uint256,uint256)");
+        let expected =
+            alloy::primitives::keccak256("Swap(address,address,int256,int256,uint256,uint256)");
         assert_eq!(*topics::PENDLE_MARKET_SWAP, expected);
         assert_ne!(*topics::PENDLE_MARKET_SWAP, topics::V3_SWAP);
     }

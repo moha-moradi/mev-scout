@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
-use alloy::primitives::Address;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig};
-use super::METRIC_POOL_CREATED_TOPIC;
 use super::scan_factory_creation_events_pinned;
+use super::METRIC_POOL_CREATED_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
+use alloy::primitives::Address;
+use std::collections::{HashMap, HashSet};
 
 /// Metric V2 factory scan — `PoolCreated(address indexed token0, address
 /// indexed token1, address indexed priceProvider, address pool, bytes32
@@ -23,8 +23,14 @@ pub(crate) async fn scan_metric_batch(
     if let Some(factories) = config.metric_factory {
         let factories = std::slice::from_ref(&factories);
         scan_factory_creation_events_pinned(
-            rpc, factories, *METRIC_POOL_CREATED_TOPIC, current, batch_end,
-            active_blocks, factory_pools, provider_idx,
+            rpc,
+            factories,
+            *METRIC_POOL_CREATED_TOPIC,
+            current,
+            batch_end,
+            active_blocks,
+            factory_pools,
+            provider_idx,
             |log| {
                 let log_data = log.data();
                 let topics = log.topics();
@@ -35,9 +41,20 @@ pub(crate) async fn scan_metric_batch(
                 let token0 = Address::from_slice(&topics[1][12..]);
                 let token1 = Address::from_slice(&topics[2][12..]);
                 let creation_block = log.block_number.unwrap_or(0);
-                Some((pool_addr, DiscoveredPool::new(pool_addr, token0, token1, 0, DexType::Metric, creation_block)
-                    .with_factory(Some(log.address()))))
+                Some((
+                    pool_addr,
+                    DiscoveredPool::new(
+                        pool_addr,
+                        token0,
+                        token1,
+                        0,
+                        DexType::Metric,
+                        creation_block,
+                    )
+                    .with_factory(Some(log.address())),
+                ))
             },
-        ).await;
+        )
+        .await;
     }
 }

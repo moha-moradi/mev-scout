@@ -8,18 +8,23 @@ use revm::context::cfg::CfgEnv;
 use revm::context::tx::TxEnv;
 use revm::context_interface::block::BlobExcessGasAndPrice;
 use revm::context_interface::cfg::GasParams;
+use revm::context_interface::result::ExecutionResult;
 use revm::context_interface::transaction::AccessList;
 use revm::database::CacheDB;
 use revm::handler::{MainBuilder, MainContext};
 use revm::primitives::hardfork::SpecId;
 use revm::primitives::TxKind;
-use revm::context_interface::result::ExecutionResult;
 use revm::{Context, ExecuteCommitEvm};
 use std::env;
 
 fn main() -> anyhow::Result<()> {
-    let toml = env::args().nth(1).unwrap_or_else(|| "mev-scout.toml".into());
-    let block_num: u64 = env::args().nth(2).unwrap_or_else(|| "92053774".into()).parse()?;
+    let toml = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "mev-scout.toml".into());
+    let block_num: u64 = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "92053774".into())
+        .parse()?;
     let start: usize = env::args().nth(3).unwrap_or_else(|| "0".into()).parse()?;
     let end: usize = env::args().nth(4).unwrap_or_else(|| "30".into()).parse()?;
 
@@ -27,7 +32,10 @@ fn main() -> anyhow::Result<()> {
     let chain_name: mev_scout_core::types::ChainName = config.chain.parse()?;
     let chain_id = chain_name.chain_id();
     let provider_configs = config.effective_provider_configs(chain_name)?;
-    let urls: Vec<&str> = provider_configs.iter().map(|(u, _, _)| u.as_str()).collect();
+    let urls: Vec<&str> = provider_configs
+        .iter()
+        .map(|(u, _, _)| u.as_str())
+        .collect();
     let rpc = RpcClient::from_urls(&urls, chain_id)?;
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -40,8 +48,13 @@ fn main() -> anyhow::Result<()> {
                 .collect::<Vec<_>>(),
         )
         .await;
-        rpc.with_provider_archive(&provider_configs.iter().map(|(_, _, a)| *a).collect::<Vec<_>>())
-            .await;
+        rpc.with_provider_archive(
+            &provider_configs
+                .iter()
+                .map(|(_, _, a)| *a)
+                .collect::<Vec<_>>(),
+        )
+        .await;
     });
 
     let db_path = config.effective_db_path(&chain_name);
@@ -58,7 +71,11 @@ fn main() -> anyhow::Result<()> {
 
     let mut cache_db: CacheDB<CachedRpcDb> = if start == 0 {
         CacheDB::new(CachedRpcDb::new(
-            handle.clone(), cache.clone(), rpc.clone(), chain_id, block_num.saturating_sub(1),
+            handle.clone(),
+            cache.clone(),
+            rpc.clone(),
+            chain_id,
+            block_num.saturating_sub(1),
         ))
     } else {
         replayer.replay_to(block_num, start - 1)?.0
@@ -107,10 +124,9 @@ fn main() -> anyhow::Result<()> {
         let zero_bytes = tx.input.iter().filter(|b| **b == 0).count() as u64;
         let nonzero_bytes = calldata_len as u64 - zero_bytes;
         let floor_tokens_manual = zero_bytes + nonzero_bytes * 4;
-        let floor_manual = 10 * floor_tokens_manual + 21000
-            + (al_addrs + al_keys * 4) * 10;
-        let intrinsic_manual = 21000 + (zero_bytes * 4) + (nonzero_bytes * 16)
-            + (al_addrs * 2400) + (al_keys * 1900);
+        let floor_manual = 10 * floor_tokens_manual + 21000 + (al_addrs + al_keys * 4) * 10;
+        let intrinsic_manual =
+            21000 + (zero_bytes * 4) + (nonzero_bytes * 16) + (al_addrs * 2400) + (al_keys * 1900);
 
         let kind = match tx.to {
             Some(addr) => TxKind::Call(addr),
@@ -128,26 +144,37 @@ fn main() -> anyhow::Result<()> {
             gas_priority_fee: tx.max_priority_fee_per_gas,
             nonce: tx.nonce,
             access_list: AccessList(
-                tx.access_list.iter().map(|item| revm::context_interface::transaction::AccessListItem {
-                    address: item.address,
-                    storage_keys: item.slots.to_vec(),
-                }).collect(),
+                tx.access_list
+                    .iter()
+                    .map(
+                        |item| revm::context_interface::transaction::AccessListItem {
+                            address: item.address,
+                            storage_keys: item.slots.to_vec(),
+                        },
+                    )
+                    .collect(),
             ),
             chain_id: Some(chain_id),
             blob_hashes: Vec::new(),
             max_fee_per_blob_gas: 0,
-            authorization_list: tx.authorization_list.iter().map(|a| {
-                alloy::signers::Either::Left(alloy::eips::eip7702::SignedAuthorization::new_unchecked(
-                    alloy::eips::eip7702::Authorization {
-                        chain_id: a.chain_id,
-                        address: a.address,
-                        nonce: a.nonce,
-                    },
-                    a.y_parity,
-                    a.r,
-                    a.s,
-                ))
-            }).collect(),
+            authorization_list: tx
+                .authorization_list
+                .iter()
+                .map(|a| {
+                    alloy::signers::Either::Left(
+                        alloy::eips::eip7702::SignedAuthorization::new_unchecked(
+                            alloy::eips::eip7702::Authorization {
+                                chain_id: a.chain_id,
+                                address: a.address,
+                                nonce: a.nonce,
+                            },
+                            a.y_parity,
+                            a.r,
+                            a.s,
+                        ),
+                    )
+                })
+                .collect(),
         };
 
         let init_gas = gas_params.initial_tx_gas_for_tx(&tx_env);
@@ -160,15 +187,13 @@ fn main() -> anyhow::Result<()> {
                 let (total_spent, refunded, floor_result) = match &result {
                     ExecutionResult::Success { gas, .. }
                     | ExecutionResult::Revert { gas, .. }
-                    | ExecutionResult::Halt { gas, .. } => (
-                        gas.total_gas_spent(),
-                        gas.inner_refunded(),
-                        gas.floor_gas(),
-                    ),
+                    | ExecutionResult::Halt { gas, .. } => {
+                        (gas.total_gas_spent(), gas.inner_refunded(), gas.floor_gas())
+                    }
                 };
                 let revm_gas = result.tx_gas_used();
                 let delta = receipt.gas_used as i64 - revm_gas as i64;
-                let floor_applied = if revm_gas as u64 == floor_result { "Y" } else { "N" };
+                let floor_applied = if revm_gas == floor_result { "Y" } else { "N" };
                 println!(
                     "{i:3} | {:#04x} | {revm_gas:8} | {:7} | {delta:+6} | {total_spent:11} | {refunded:8} | {floor_revm:11} | {floor_manual:13} | {intrinsic_revm:15} | {intrinsic_manual:17} | {:8} | {:3} | {:7} | {:7} | {} floor={floor_applied} state={state_gas_revm}",
                     tx.tx_type,

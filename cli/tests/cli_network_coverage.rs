@@ -17,8 +17,8 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, run_timed,
-    rpc_lock, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
+    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, rpc_lock, run_timed, scout,
+    HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use std::time::Duration;
 
@@ -46,7 +46,15 @@ fn scan_kinds_labels_transfers_flashloans_and_outputs() {
     // labels — cheapest (bundled, local DB), only needs RPC up for init.
     let labels_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &labels_cfg, "scan", "--kind", "labels", "--blocks", "1"]);
+    c.args([
+        "-f",
+        &labels_cfg,
+        "scan",
+        "--kind",
+        "labels",
+        "--blocks",
+        "1",
+    ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan labels") {
         expect_ok(&out, "scan --kind labels");
         assert!(
@@ -60,15 +68,21 @@ fn scan_kinds_labels_transfers_flashloans_and_outputs() {
     let json_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args([
-        "-f", &json_cfg, "scan", "--kind", "transfers", "--blocks", "1", "--limit", "10",
+        "-f",
+        &json_cfg,
+        "scan",
+        "--kind",
+        "transfers",
+        "--blocks",
+        "1",
+        "--limit",
+        "10",
     ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan transfers json") {
         expect_ok(&out, "scan --kind transfers json");
         let events = extract_json_array(&out.stdout)
             .expect("transfers --output json should print a JSON array");
-        let items = events
-            .as_array()
-            .expect("transfers json must be an array");
+        let items = events.as_array().expect("transfers json must be an array");
         for e in items {
             assert!(e.get("block").is_some(), "transfer missing block: {e}");
             assert!(e.get("tx_hash").is_some(), "transfer missing tx_hash: {e}");
@@ -78,7 +92,17 @@ fn scan_kinds_labels_transfers_flashloans_and_outputs() {
     // transfers — CSV output header.
     let csv_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"csv\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &csv_cfg, "scan", "--kind", "transfers", "--blocks", "1", "--limit", "5"]);
+    c.args([
+        "-f",
+        &csv_cfg,
+        "scan",
+        "--kind",
+        "transfers",
+        "--blocks",
+        "1",
+        "--limit",
+        "5",
+    ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan transfers csv") {
         expect_ok(&out, "scan --kind transfers csv");
         assert!(
@@ -95,7 +119,15 @@ fn scan_kinds_labels_transfers_flashloans_and_outputs() {
     // and the CSV step above has since overwritten `output`.
     let json_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &json_cfg, "scan", "--kind", "flashloans", "--blocks", "1"]);
+    c.args([
+        "-f",
+        &json_cfg,
+        "scan",
+        "--kind",
+        "flashloans",
+        "--blocks",
+        "1",
+    ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan flashloans") {
         expect_ok(&out, "scan --kind flashloans");
         let events = extract_json_array(&out.stdout)
@@ -128,7 +160,10 @@ fn scan_address_filter_and_silent_invalid_filter() {
         "2",
         "--json",
     ]);
-    let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover for address filter") else {
+    let Some(out) = tolerant(
+        run_timed(&mut c, HEAVY_TIMEOUT),
+        "discover for address filter",
+    ) else {
         return;
     };
     expect_ok(&out, "discover onchain 2 blocks");
@@ -200,7 +235,10 @@ fn scan_address_filter_and_silent_invalid_filter() {
         "5",
     ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "scan invalid address") {
-        expect_ok(&out, "scan with unparsable --address must not fail (documented silent drop)");
+        expect_ok(
+            &out,
+            "scan with unparsable --address must not fail (documented silent drop)",
+        );
     }
 }
 
@@ -227,7 +265,10 @@ fn discover_hybrid_incremental_and_flags() {
         "6000",
         "--json",
     ]);
-    if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover batch-size warning") {
+    if let Some(out) = tolerant(
+        run_timed(&mut c, HEAVY_TIMEOUT),
+        "discover batch-size warning",
+    ) {
         expect_ok(&out, "discover with --batch-size 6000");
         assert!(
             out.combined().contains("exceeds recommended maximum"),
@@ -260,7 +301,15 @@ fn discover_hybrid_incremental_and_flags() {
         expect_ok(&out, "discover onchain with --solidly-fee-bps 30");
 
         let mut c = scout(&ws);
-        c.args(["-f", &base_cfg, "discover", "--incremental", "--blocks", "2", "--json"]);
+        c.args([
+            "-f",
+            &base_cfg,
+            "discover",
+            "--incremental",
+            "--blocks",
+            "2",
+            "--json",
+        ]);
         if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover incremental") {
             expect_ok(&out, "discover --incremental after baseline");
         }
@@ -289,7 +338,8 @@ fn discover_hybrid_incremental_and_flags() {
                     .iter()
                     .filter_map(|p| p.get("address").and_then(|a| a.as_str()))
                     .collect();
-                let unique: std::collections::HashSet<_> = addrs.iter().map(|s| s.to_lowercase()).collect();
+                let unique: std::collections::HashSet<_> =
+                    addrs.iter().map(|s| s.to_lowercase()).collect();
                 assert_eq!(
                     addrs.len(),
                     unique.len(),
@@ -403,7 +453,10 @@ fn discover_remote_option_flags_enrich_min_tvl_resolve_metadata() {
         "10",
         "--json",
     ]);
-    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover --resolve-remote-metadata") {
+    match tolerant(
+        run_timed(&mut c, EXTRA_HEAVY),
+        "discover --resolve-remote-metadata",
+    ) {
         Some(out) if out.success => {
             let pools = extract_json_array(&out.stdout)
                 .expect("resolve-remote-metadata discover success must print a JSON array");
@@ -463,7 +516,9 @@ fn validate_pools_gecko_markdown_out() {
 
 /// Parse `Resolved range: blocks X–Y (N blocks)` (en dash) into (X, Y).
 fn parse_resolved_range(stdout: &str) -> Option<(String, String)> {
-    let line = stdout.lines().find(|l| l.contains("Resolved range: blocks "))?;
+    let line = stdout
+        .lines()
+        .find(|l| l.contains("Resolved range: blocks "))?;
     let range = line.split("blocks ").nth(1)?.split(' ').next()?;
     let (a, b) = range.split_once('–')?;
     Some((a.trim().to_string(), b.trim().to_string()))
@@ -471,7 +526,9 @@ fn parse_resolved_range(stdout: &str) -> Option<(String, String)> {
 
 /// Parse the `Cached:       N` summary line into N.
 fn parse_cached_count(stdout: &str) -> Option<u64> {
-    let line = stdout.lines().find(|l| l.trim_start().starts_with("Cached:"))?;
+    let line = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("Cached:"))?;
     line.split(':').nth(1)?.trim().parse().ok()
 }
 
@@ -487,7 +544,9 @@ fn fetch_idempotency_cached_on_refetch() {
     // Warm the RPC (fetch --blocks would resolve a fresh tip on every pass,
     // so the idempotency proof below pins the exact range instead).
     let mut c = scout(&ws);
-    c.args(["-f", &cfg, "scan", "--kind", "trades", "--blocks", "3", "--limit", "1"]);
+    c.args([
+        "-f", &cfg, "scan", "--kind", "trades", "--blocks", "3", "--limit", "1",
+    ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "tip probe") {
         expect_ok(&out, "tip probe scan");
     }
@@ -505,7 +564,14 @@ fn fetch_idempotency_cached_on_refetch() {
     // Second pass over the SAME pinned range must come entirely from cache.
     let mut c = scout(&ws);
     c.args([
-        "-f", &cfg, "fetch", "--from-block", &from, "--to-block", &to, "--no-sig-resolve",
+        "-f",
+        &cfg,
+        "fetch",
+        "--from-block",
+        &from,
+        "--to-block",
+        &to,
+        "--no-sig-resolve",
     ]);
     let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "fetch second pass") else {
         return;
@@ -532,16 +598,21 @@ fn batch_rpc_smokes_run_and_fetch() {
 
     let fetch_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &fetch_cfg, "fetch", "--batch-rpc", "--blocks", "2", "--no-sig-resolve"]);
+    c.args([
+        "-f",
+        &fetch_cfg,
+        "fetch",
+        "--batch-rpc",
+        "--blocks",
+        "2",
+        "--no-sig-resolve",
+    ]);
     if let Some(out) = tolerant(run_timed(&mut c, NETWORK_TIMEOUT), "fetch --batch-rpc") {
         expect_ok(&out, "fetch --batch-rpc 2 blocks");
         assert!(out.stdout.contains("Fetch complete:"));
     }
 
-    let run_cfg = make_cfg(
-        &ws,
-        &[("db_path", &db_s), ("output", "\"json\"")],
-    );
+    let run_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args(["-f", &run_cfg, "run", "--batch-rpc", "--blocks", "2"]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "run --batch-rpc") {
@@ -550,9 +621,15 @@ fn batch_rpc_smokes_run_and_fetch() {
         let report_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
         let mut c2 = scout(&ws);
         c2.args(["-f", &report_cfg, "report"]);
-        if let Some(out2) = tolerant(run_timed(&mut c2, common::TEST_TIMEOUT), "report after batch-rpc run") {
+        if let Some(out2) = tolerant(
+            run_timed(&mut c2, common::TEST_TIMEOUT),
+            "report after batch-rpc run",
+        ) {
             expect_ok(&out2, "report after batch-rpc run");
-            assert!(out2.stdout.contains("Run ID:"), "report should contain Run ID");
+            assert!(
+                out2.stdout.contains("Run ID:"),
+                "report should contain Run ID"
+            );
         }
     }
 }
@@ -564,12 +641,7 @@ fn replay_tx_index_zero_smoke() {
         return;
     };
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
-    let cfg = make_cfg(
-        &ws,
-        &[
-            ("db_path", &db_s),
-        ],
-    );
+    let cfg = make_cfg(&ws, &[("db_path", &db_s)]);
 
     // replay reads from the cache — fetch a fixed single block first.
     let mut c = scout(&ws);
@@ -591,8 +663,8 @@ fn replay_tx_index_zero_smoke() {
     let report_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c2 = scout(&ws);
     c2.args(["-f", &report_cfg, "report"]);
-    let report_out = run_timed(&mut c2, common::TEST_TIMEOUT)
-        .expect("report after run for replay block");
+    let report_out =
+        run_timed(&mut c2, common::TEST_TIMEOUT).expect("report after run for replay block");
     let block: Option<u64> = report_out
         .stdout
         .lines()

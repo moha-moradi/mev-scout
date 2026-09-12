@@ -11,7 +11,13 @@ pub struct ChainTimingParams {
 
 pub fn chain_timing(chain: &str) -> ChainTimingParams {
     match chain.to_lowercase().as_str() {
-        "ethereum" => ChainTimingParams { genesis_ts: 1438269988, secs_per_block: 12.0, blocks_per_day: 7200, anchor_block: 0, anchor_ts: 0 },
+        "ethereum" => ChainTimingParams {
+            genesis_ts: 1438269988,
+            secs_per_block: 12.0,
+            blocks_per_day: 7200,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
         "polygon" => ChainTimingParams {
             genesis_ts: 1591031691,
             secs_per_block: 1.5,
@@ -21,11 +27,47 @@ pub fn chain_timing(chain: &str) -> ChainTimingParams {
             anchor_block: 91370547,
             anchor_ts: 1785760841,
         },
-        "bsc" => ChainTimingParams { genesis_ts: 1597734000, secs_per_block: 3.0, blocks_per_day: 28800, anchor_block: 0, anchor_ts: 0 },
-        "avalanche" | "avalanche_c" => ChainTimingParams { genesis_ts: 1624402800, secs_per_block: 2.0, blocks_per_day: 43200, anchor_block: 0, anchor_ts: 0 },
-        "arbitrum" => ChainTimingParams { genesis_ts: 1630812600, secs_per_block: 0.26, blocks_per_day: 330000, anchor_block: 0, anchor_ts: 0 },
-        "base" => ChainTimingParams { genesis_ts: 1686787200, secs_per_block: 2.0, blocks_per_day: 43200, anchor_block: 0, anchor_ts: 0 },
-        "optimism" => ChainTimingParams { genesis_ts: 1631808000, secs_per_block: 2.0, blocks_per_day: 43200, anchor_block: 0, anchor_ts: 0 },
-        _ => ChainTimingParams { genesis_ts: 1609459200, secs_per_block: 12.0, blocks_per_day: 7200, anchor_block: 0, anchor_ts: 0 },
+        "bsc" => ChainTimingParams {
+            genesis_ts: 1597734000,
+            secs_per_block: 3.0,
+            blocks_per_day: 28800,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
+        "avalanche" | "avalanche_c" => ChainTimingParams {
+            genesis_ts: 1624402800,
+            secs_per_block: 2.0,
+            blocks_per_day: 43200,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
+        "arbitrum" => ChainTimingParams {
+            genesis_ts: 1630812600,
+            secs_per_block: 0.26,
+            blocks_per_day: 330000,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
+        "base" => ChainTimingParams {
+            genesis_ts: 1686787200,
+            secs_per_block: 2.0,
+            blocks_per_day: 43200,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
+        "optimism" => ChainTimingParams {
+            genesis_ts: 1631808000,
+            secs_per_block: 2.0,
+            blocks_per_day: 43200,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
+        _ => ChainTimingParams {
+            genesis_ts: 1609459200,
+            secs_per_block: 12.0,
+            blocks_per_day: 7200,
+            anchor_block: 0,
+            anchor_ts: 0,
+        },
     }
 }

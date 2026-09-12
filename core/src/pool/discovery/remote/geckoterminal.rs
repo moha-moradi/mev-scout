@@ -108,7 +108,11 @@ impl GeckoTerminalClient {
         }
 
         // Restore top-pools-by-TVL semantics client-side (API sorts by volume only).
-        pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
+        pools.sort_by(|a, b| {
+            b.tvl_usd
+                .partial_cmp(&a.tvl_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(pools)
     }
@@ -169,7 +173,11 @@ impl GeckoTerminalClient {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
+        pools.sort_by(|a, b| {
+            b.tvl_usd
+                .partial_cmp(&a.tvl_usd)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(pools)
     }
@@ -186,7 +194,10 @@ impl GeckoTerminalClient {
         })?;
         let mut dexes = Vec::new();
         for page in 1..=3usize {
-            let url = format!("{}/api/v2/networks/{network}/dexes?page={page}", self.base_url);
+            let url = format!(
+                "{}/api/v2/networks/{network}/dexes?page={page}",
+                self.base_url
+            );
             let resp = self.get_with_retry(&url).await?;
             let batch: Vec<String> = resp
                 .get("data")
@@ -219,15 +230,29 @@ impl GeckoTerminalClient {
                     let status = resp.status();
                     if status.is_success() {
                         let text = resp.text().await.unwrap_or_default();
-                        let json: Value = serde_json::from_str(&text)
-                            .map_err(|e| anyhow::anyhow!("invalid JSON from GeckoTerminal: {} — {}", e, &text[..text.len().min(500)]))?;
+                        let json: Value = serde_json::from_str(&text).map_err(|e| {
+                            anyhow::anyhow!(
+                                "invalid JSON from GeckoTerminal: {} — {}",
+                                e,
+                                &text[..text.len().min(500)]
+                            )
+                        })?;
                         return Ok(json);
                     }
                     let body = resp.text().await.unwrap_or_default();
-                    let msg = format!("HTTP {} from GeckoTerminal: {}", status.as_u16(), &body[..body.len().min(300)]);
+                    let msg = format!(
+                        "HTTP {} from GeckoTerminal: {}",
+                        status.as_u16(),
+                        &body[..body.len().min(300)]
+                    );
                     if status.as_u16() == 429 && attempt + 1 < MAX_RETRIES {
                         let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                        tracing::debug!("GeckoTerminal 429, retry {}/{} after {}ms", attempt + 1, MAX_RETRIES, delay);
+                        tracing::debug!(
+                            "GeckoTerminal 429, retry {}/{} after {}ms",
+                            attempt + 1,
+                            MAX_RETRIES,
+                            delay
+                        );
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                         last_err = Some(anyhow::anyhow!(msg));
                         continue;
@@ -254,10 +279,15 @@ impl GeckoTerminalClient {
 }
 
 impl Default for GeckoTerminalClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-fn parse_geckoterminal_response(json: &Value, min_tvl: Option<f64>) -> anyhow::Result<Vec<RemotePool>> {
+fn parse_geckoterminal_response(
+    json: &Value,
+    min_tvl: Option<f64>,
+) -> anyhow::Result<Vec<RemotePool>> {
     parse_gecko_response_inner(json, min_tvl, None)
 }
 
@@ -271,7 +301,9 @@ fn parse_gecko_response_inner(
     min_tvl: Option<f64>,
     dex_override: Option<&str>,
 ) -> anyhow::Result<Vec<RemotePool>> {
-    let data = json.get("data").and_then(|v| v.as_array())
+    let data = json
+        .get("data")
+        .and_then(|v| v.as_array())
         .ok_or_else(|| anyhow::anyhow!("missing data array"))?;
 
     // Included array may hold token details
@@ -281,13 +313,21 @@ fn parse_gecko_response_inner(
     // De-duplicate the per-DEX "unsupported, skipping" warning.
     let mut warned = HashSet::new();
     for item in data {
-        let attrs = match item.get("attributes") { Some(a) => a, None => continue };
+        let attrs = match item.get("attributes") {
+            Some(a) => a,
+            None => continue,
+        };
         let addr_str = attrs.get("address").and_then(|v| v.as_str()).unwrap_or("");
-        let address = match parse_addr(addr_str) { Some(a) => a, None => continue };
+        let address = match parse_addr(addr_str) {
+            Some(a) => a,
+            None => continue,
+        };
 
         // TVL and volume parsing
-        let tvl = attrs.get("reserve_in_usd")
-            .and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())
+        let tvl = attrs
+            .get("reserve_in_usd")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
             .or_else(|| attrs.get("reserve_in_usd").and_then(|v| v.as_f64()));
 
         if let Some(min) = min_tvl {
@@ -301,18 +341,32 @@ fn parse_gecko_response_inner(
             }
         }
 
-        let vol_24h = attrs.get("volume_usd")
+        let vol_24h = attrs
+            .get("volume_usd")
             .and_then(|v| v.get("h24"))
-            .and_then(|v| v.as_str()).and_then(|s| s.parse::<f64>().ok())
-            .or_else(|| attrs.get("volume_usd").and_then(|v| v.get("h24")).and_then(|v| v.as_f64()));
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| {
+                attrs
+                    .get("volume_usd")
+                    .and_then(|v| v.get("h24"))
+                    .and_then(|v| v.as_f64())
+            });
 
         // Dex name from relationships or attributes
-        let dex_name = item.get("relationships")
+        let dex_name = item
+            .get("relationships")
             .and_then(|r| r.get("dex"))
             .and_then(|d| d.get("data"))
-            .and_then(|d| d.get("id")).and_then(|v| v.as_str())
+            .and_then(|d| d.get("id"))
+            .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .or_else(|| attrs.get("dex_id").and_then(|v| v.as_str()).map(|s| s.to_string()));
+            .or_else(|| {
+                attrs
+                    .get("dex_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
 
         // Tokens: try relationships base_token / quote_token, or attributes
         let (token0, token1) = extract_tokens(item, attrs, included);
@@ -363,11 +417,23 @@ fn parse_gecko_response_inner(
     Ok(out)
 }
 
-fn extract_tokens(item: &Value, attrs: &Value, included: Option<&Vec<Value>>) -> (Option<Address>, Option<Address>) {
+fn extract_tokens(
+    item: &Value,
+    attrs: &Value,
+    included: Option<&Vec<Value>>,
+) -> (Option<Address>, Option<Address>) {
     // Try relationships.base_token / quote_token
     let rel = item.get("relationships");
-    let base_id = rel.and_then(|r| r.get("base_token")).and_then(|b| b.get("data")).and_then(|d| d.get("id")).and_then(|v| v.as_str());
-    let quote_id = rel.and_then(|r| r.get("quote_token")).and_then(|b| b.get("data")).and_then(|d| d.get("id")).and_then(|v| v.as_str());
+    let base_id = rel
+        .and_then(|r| r.get("base_token"))
+        .and_then(|b| b.get("data"))
+        .and_then(|d| d.get("id"))
+        .and_then(|v| v.as_str());
+    let quote_id = rel
+        .and_then(|r| r.get("quote_token"))
+        .and_then(|b| b.get("data"))
+        .and_then(|d| d.get("id"))
+        .and_then(|v| v.as_str());
 
     if let (Some(b), Some(q)) = (base_id, quote_id) {
         // IDs look like "polygon_pos_0xabc..."; extract hex
@@ -388,8 +454,14 @@ fn extract_tokens(item: &Value, attrs: &Value, included: Option<&Vec<Value>>) ->
 
     // Fallback: attributes base_token_price_quote_token etc not reliable
     // Try attrs base_token / quote_token
-    let base_attr = attrs.get("base_token_address").and_then(|v| v.as_str()).and_then(parse_addr);
-    let quote_attr = attrs.get("quote_token_address").and_then(|v| v.as_str()).and_then(parse_addr);
+    let base_attr = attrs
+        .get("base_token_address")
+        .and_then(|v| v.as_str())
+        .and_then(parse_addr);
+    let quote_attr = attrs
+        .get("quote_token_address")
+        .and_then(|v| v.as_str())
+        .and_then(parse_addr);
     if base_attr.is_some() && quote_attr.is_some() {
         return (base_attr, quote_attr);
     }
@@ -402,7 +474,10 @@ fn resolve_included(included: &[Value], id: &str) -> Option<Address> {
     for item in included {
         let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if item_id == id {
-            let addr = item.get("attributes").and_then(|a| a.get("address")).and_then(|v| v.as_str())
+            let addr = item
+                .get("attributes")
+                .and_then(|a| a.get("address"))
+                .and_then(|v| v.as_str())
                 .or_else(|| extract_hex(id))
                 .unwrap_or("");
             return parse_addr(addr);
@@ -423,7 +498,9 @@ fn extract_hex(s: &str) -> Option<&str> {
 fn parse_addr(s: &str) -> Option<Address> {
     let s = s.trim();
     let hex = s.trim_start_matches("0x").trim_start_matches("0X");
-    if hex.len() != 40 { return None; }
+    if hex.len() != 40 {
+        return None;
+    }
     let mut bytes = [0u8; 20];
     hex::decode_to_slice(hex, &mut bytes).ok()?;
     Some(Address::from_slice(&bytes))
@@ -456,7 +533,11 @@ pub fn infer_dex_type(dex: Option<&str>) -> DexType {
         _ if s.contains("solidly") => DexType::Solidly,
         _ if s.contains("pendle") => DexType::Pendle,
         _ if s.contains("pharaoh") && s.contains("dlmm") => DexType::TraderJoeLB,
-        _ if s.contains("trader-joe") || s.contains("traderjoe") || s.contains("liquidity-book") || s.contains("lfj") => {
+        _ if s.contains("trader-joe")
+            || s.contains("traderjoe")
+            || s.contains("liquidity-book")
+            || s.contains("lfj") =>
+        {
             DexType::TraderJoeLB
         }
         _ if s.contains("balancer") => DexType::Balancer,
@@ -476,9 +557,7 @@ pub fn infer_dex_type(dex: Option<&str>) -> DexType {
 /// wrong `DexType` poisons pool state, so they are skipped (with a warning)
 /// until a decoder lands. Guarded before `infer_dex_type`.
 pub(crate) fn is_unsupported_dex(s: &str) -> bool {
-    const UNSUPPORTED: &[&str] = &[
-        "dodo", "woofi", "hashflow", "maverick", "ekubo",
-    ];
+    const UNSUPPORTED: &[&str] = &["dodo", "woofi", "hashflow", "maverick", "ekubo"];
     UNSUPPORTED.iter().any(|n| s.contains(n))
 }
 
@@ -587,20 +666,28 @@ mod tests {
         // Regression guard: the API rejects `sort=h_tvl` with HTTP 400 since ~2026-08;
         // ensure we always send one of the allowed sort options.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::query_param("sort", "h24_volume_usd_desc"))
+            .and(wiremock::matchers::query_param(
+                "sort",
+                "h24_volume_usd_desc",
+            ))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
             .mount(&mock_server)
             .await;
         // Any request NOT carrying the new sort param fails the test.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(400).set_body_string(
-                r#"{"errors":[{"status":"400","title":"Invalid sort option"}]}"#,
-            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(400).set_body_string(
+                    r#"{"errors":[{"status":"400","title":"Invalid sort option"}]}"#,
+                ),
+            )
             .mount(&mock_server)
             .await;
 
         let client = GeckoTerminalClient::with_base(mock_server.uri());
-        let pools = client.fetch_top_pools("polygon", Some(10), None).await.unwrap();
+        let pools = client
+            .fetch_top_pools("polygon", Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(pools.len(), 1);
     }
 
@@ -636,7 +723,10 @@ mod tests {
             .await;
 
         let client = GeckoTerminalClient::with_base(mock_server.uri());
-        let pools = client.fetch_top_pools("polygon", Some(10), None).await.unwrap();
+        let pools = client
+            .fetch_top_pools("polygon", Some(10), None)
+            .await
+            .unwrap();
         assert_eq!(pools.len(), 3);
         assert_eq!(pools[0].tvl_usd, Some(500_000.0));
         assert_eq!(pools[1].tvl_usd, Some(5_000.0));
@@ -665,14 +755,23 @@ mod tests {
 
     #[test]
     fn infer_dex_type_specific_labels_win_over_v2_fallback() {
-        assert_eq!(infer_dex_type(Some("quickswap-algebra")), DexType::UniswapV3);
+        assert_eq!(
+            infer_dex_type(Some("quickswap-algebra")),
+            DexType::UniswapV3
+        );
         assert_eq!(infer_dex_type(Some("algebra-integral")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("quickswap")), DexType::UniswapV2);
         assert_eq!(infer_dex_type(Some("uniswap-v3")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("uniswap-v4")), DexType::UniswapV4);
         assert_eq!(infer_dex_type(Some("pancakeswap-v3")), DexType::UniswapV3);
-        assert_eq!(infer_dex_type(Some("pancakeswap-infinity")), DexType::PancakeInfinity);
-        assert_eq!(infer_dex_type(Some("pancakeswap-infinity-clmm-base")), DexType::PancakeInfinity);
+        assert_eq!(
+            infer_dex_type(Some("pancakeswap-infinity")),
+            DexType::PancakeInfinity
+        );
+        assert_eq!(
+            infer_dex_type(Some("pancakeswap-infinity-clmm-base")),
+            DexType::PancakeInfinity
+        );
         assert_eq!(infer_dex_type(Some("trader-joe")), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("lfj")), DexType::TraderJoeLB);
         assert_eq!(infer_dex_type(Some("pendle")), DexType::Pendle);
@@ -681,7 +780,10 @@ mod tests {
         assert_eq!(infer_dex_type(Some("velodrome")), DexType::Solidly);
         assert_eq!(infer_dex_type(Some("velodrome-v3")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("aerodrome")), DexType::Solidly);
-        assert_eq!(infer_dex_type(Some("aerodrome-slipstream")), DexType::UniswapV3);
+        assert_eq!(
+            infer_dex_type(Some("aerodrome-slipstream")),
+            DexType::UniswapV3
+        );
         assert_eq!(infer_dex_type(Some("pharaoh-v3")), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("pharaoh-dlmm")), DexType::TraderJoeLB);
     }
@@ -689,12 +791,25 @@ mod tests {
     #[test]
     fn test_unsupported_dex_flagged() {
         for bad in ["dodo", "woofi", "hashflow", "maverick", "ekubo"] {
-            assert!(is_unsupported_dex(bad), "{bad} should be flagged unsupported");
+            assert!(
+                is_unsupported_dex(bad),
+                "{bad} should be flagged unsupported"
+            );
         }
         // Supported siblings must NOT be flagged.
-        for good in ["pharaoh-v3", "pharaoh-dlmm", "aerodrome", "velodrome", "velodrome-v3",
-                     "aerodrome-slipstream", "uniswap", "pancakeswap", "pancakeswap-infinity",
-                     "metric", "fluid"] {
+        for good in [
+            "pharaoh-v3",
+            "pharaoh-dlmm",
+            "aerodrome",
+            "velodrome",
+            "velodrome-v3",
+            "aerodrome-slipstream",
+            "uniswap",
+            "pancakeswap",
+            "pancakeswap-infinity",
+            "metric",
+            "fluid",
+        ] {
             assert!(!is_unsupported_dex(good), "{good} should stay supported");
         }
     }
@@ -748,7 +863,9 @@ mod tests {
             ]
         });
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/v2/networks/polygon_pos/dexes"))
+            .and(wiremock::matchers::path(
+                "/api/v2/networks/polygon_pos/dexes",
+            ))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(body))
             .mount(&mock_server)
             .await;

@@ -50,7 +50,8 @@ fn token_overlap(op: &OpportunityRow, ev: &MevOpRow) -> bool {
         endpoints.insert(t);
     }
     if let Some(route) = ev.route_json.as_deref() {
-        if let Ok(serde_json::Value::Array(hops)) = serde_json::from_str::<serde_json::Value>(route) {
+        if let Ok(serde_json::Value::Array(hops)) = serde_json::from_str::<serde_json::Value>(route)
+        {
             for hop in hops {
                 if let Some(t) = hop.get("token_in").and_then(|v| v.as_str()) {
                     endpoints.insert(t.to_ascii_lowercase());
@@ -74,7 +75,8 @@ fn token_overlap(op: &OpportunityRow, ev: &MevOpRow) -> bool {
 fn route_pools(ev: &MevOpRow) -> HashSet<String> {
     let mut out = HashSet::new();
     if let Some(route) = ev.route_json.as_deref() {
-        if let Ok(serde_json::Value::Array(hops)) = serde_json::from_str::<serde_json::Value>(route) {
+        if let Ok(serde_json::Value::Array(hops)) = serde_json::from_str::<serde_json::Value>(route)
+        {
             for hop in hops {
                 if let Some(p) = hop.get("pool").and_then(|v| v.as_str()) {
                     out.insert(p.to_ascii_lowercase());
@@ -134,8 +136,7 @@ pub struct MissTaxonomy {
     pub unknown_coverage: u64,
 }
 
-impl MissTaxonomy {
-}
+impl MissTaxonomy {}
 
 /// Recall figures at each tier for one kind.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -258,11 +259,9 @@ pub fn compute_validation(
     let opportunities: Vec<OpportunityRow> = store
         .opportunities_in_range(&chain_str, from_block, to_block)?
         .into_iter()
-        .filter(|op| {
-            match run_filter {
-                Some(ids) => op.run_id.as_ref().map(|r| ids.contains(r)).unwrap_or(false),
-                None => true,
-            }
+        .filter(|op| match run_filter {
+            Some(ids) => op.run_id.as_ref().map(|r| ids.contains(r)).unwrap_or(false),
+            None => true,
         })
         .collect();
 
@@ -339,7 +338,11 @@ pub fn compute_validation(
                         (opportunities[i].block_number as i64 - ev.block_number as i64).abs()
                             <= match_window as i64
                     }) {
-                        tier = Some(("T1", i, opportunities[i].block_number as i64 - ev.block_number as i64));
+                        tier = Some((
+                            "T1",
+                            i,
+                            opportunities[i].block_number as i64 - ev.block_number as i64,
+                        ));
                     }
                 }
             }
@@ -361,7 +364,8 @@ pub fn compute_validation(
                                 continue;
                             }
                             let dist = (op.block_number as i64 - ev.block_number as i64).abs();
-                            if best.map(|(bi, bd)| dist < bd && !matched_opp.contains(&bi))
+                            if best
+                                .map(|(bi, bd)| dist < bd && !matched_opp.contains(&bi))
                                 .unwrap_or(true)
                             {
                                 best = Some((i, dist));
@@ -481,15 +485,26 @@ pub fn compute_validation(
                 }
                 total_usd += usd;
                 total_n += 1;
-                if matches.iter().any(|m| m.tx_hash == ev.tx_hash && m.block == ev.block_number) {
+                if matches
+                    .iter()
+                    .any(|m| m.tx_hash == ev.tx_hash && m.block == ev.block_number)
+                {
                     matched_usd += usd;
                     matched_n += 1;
                 }
             }
             threshold_sweep_points.push(SweepPoint {
                 min_usd,
-                count_recall: if total_n == 0 { 1.0 } else { matched_n as f64 / total_n as f64 },
-                usd_recall: if total_usd <= 0.0 { 1.0 } else { matched_usd / total_usd },
+                count_recall: if total_n == 0 {
+                    1.0
+                } else {
+                    matched_n as f64 / total_n as f64
+                },
+                usd_recall: if total_usd <= 0.0 {
+                    1.0
+                } else {
+                    matched_usd / total_usd
+                },
             });
         }
     }
@@ -569,10 +584,16 @@ fn attribute_miss(
     if rel.iter().any(|r| m4_like(&r.reject_reason)) {
         return MissCause::M4;
     }
-    if rel.iter().any(|r| m5_like(&r.reject_reason) && strategy_matches(&r.strategy)) {
+    if rel
+        .iter()
+        .any(|r| m5_like(&r.reject_reason) && strategy_matches(&r.strategy))
+    {
         return MissCause::M5;
     }
-    if rel.iter().any(|r| m3_like(&r.reject_reason) && strategy_matches(&r.strategy)) {
+    if rel
+        .iter()
+        .any(|r| m3_like(&r.reject_reason) && strategy_matches(&r.strategy))
+    {
         return MissCause::M3;
     }
 
@@ -601,13 +622,25 @@ fn attribute_miss(
 pub fn render_validation_report(report: &ValidationReport) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    let _ = writeln!(out, "Explorer validation — {} blocks {}–{}", report.chain, report.from_block, report.to_block);
+    let _ = writeln!(
+        out,
+        "Explorer validation — {} blocks {}–{}",
+        report.chain, report.from_block, report.to_block
+    );
     let _ = writeln!(
         out,
         "  Runs: {} | match window: ±{} blocks | rejections recorded: {}",
-        if report.opportunity_runs.is_empty() { "(none)".into() } else { report.opportunity_runs.join(",") },
+        if report.opportunity_runs.is_empty() {
+            "(none)".into()
+        } else {
+            report.opportunity_runs.join(",")
+        },
         report.match_window,
-        if report.rejections_recorded { "yes" } else { "NO — misses degrade to unknown-coverage" },
+        if report.rejections_recorded {
+            "yes"
+        } else {
+            "NO — misses degrade to unknown-coverage"
+        },
     );
     let _ = writeln!(
         out,
@@ -636,21 +669,49 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
         );
     }
     let _ = writeln!(out);
-    let _ = writeln!(out, "  Headline USD-weighted recall: {:.1}%", report.headline_usd_recall() * 100.0);
-    let _ = writeln!(out, "  Precision signal (unmatched opportunities): {}", report.precision_signal_count);
+    let _ = writeln!(
+        out,
+        "  Headline USD-weighted recall: {:.1}%",
+        report.headline_usd_recall() * 100.0
+    );
+    let _ = writeln!(
+        out,
+        "  Precision signal (unmatched opportunities): {}",
+        report.precision_signal_count
+    );
 
     let miss = report.miss_distribution();
     let _ = writeln!(out);
     let _ = writeln!(out, "  Miss taxonomy (M1–M8, §11.1.2):");
     let _ = writeln!(out, "    M1 pool-gap:            {:>5}", miss.m1_pool_gap);
     let _ = writeln!(out, "    M2 venue-gap:           {:>5}", miss.m2_venue_gap);
-    let _ = writeln!(out, "    M3 pricing/threshold:   {:>5}", miss.m3_pricing_threshold);
+    let _ = writeln!(
+        out,
+        "    M3 pricing/threshold:   {:>5}",
+        miss.m3_pricing_threshold
+    );
     let _ = writeln!(out, "    M4 gas-model:           {:>5}", miss.m4_gas_model);
     let _ = writeln!(out, "    M5 quote/AMM-math:      {:>5}", miss.m5_quote_math);
-    let _ = writeln!(out, "    M6 competition:         {:>5}", miss.m6_competition);
-    let _ = writeln!(out, "    M7 scanner-coverage:    {:>5}", miss.m7_scanner_coverage);
-    let _ = writeln!(out, "    M8 false-ground-truth:  {:>5}", miss.m8_false_ground_truth);
-    let _ = writeln!(out, "    unknown-coverage:       {:>5}", miss.unknown_coverage);
+    let _ = writeln!(
+        out,
+        "    M6 competition:         {:>5}",
+        miss.m6_competition
+    );
+    let _ = writeln!(
+        out,
+        "    M7 scanner-coverage:    {:>5}",
+        miss.m7_scanner_coverage
+    );
+    let _ = writeln!(
+        out,
+        "    M8 false-ground-truth:  {:>5}",
+        miss.m8_false_ground_truth
+    );
+    let _ = writeln!(
+        out,
+        "    unknown-coverage:       {:>5}",
+        miss.unknown_coverage
+    );
 
     if !report.missing_pools.is_empty() {
         let _ = writeln!(out);
@@ -665,7 +726,10 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
 
     if !report.threshold_sweep.is_empty() {
         let _ = writeln!(out);
-        let _ = writeln!(out, "  Threshold sweep (min_usd → count recall / USD recall):");
+        let _ = writeln!(
+            out,
+            "  Threshold sweep (min_usd → count recall / USD recall):"
+        );
         for s in &report.threshold_sweep {
             let _ = writeln!(
                 out,
@@ -693,59 +757,104 @@ mod tests {
         let ev = |block: u64, pools: Vec<alloy::primitives::Address>, cid: &str| {
             let _ = cid;
             MevEvent {
-            block,
-            ts: 1_700_000_000,
-            tx_index: 1,
-            tx_hash: b256f!("1111111111111111111111111111111111111111111111111111111111111111"),
-            kind: MevKind::ArbAtomic,
-            searcher: addr!("2222000000000000000000000000000000000002"),
-            contract: None,
-            pools: pools.clone(),
-            profit_token: Some(addr!("4444000000000000000000000000000000000004")),
-            profit_amount: Some(U256t::from(1_000_000u64)),
-            profit_usd: None,
-            gas_cost_wei: U256t::from(100_000_000_000_000u64),
-            confidence: Confidence::Exact,
-            victim_hashes: vec![],
-            victim_swap_size: None,
-            details: serde_json::json!({
-                "route": [
-                    {"pool": format!("{:#x}", pools[0]), "amm": "v3",
-                     "token_in": "0x4444000000000000000000000000000000000004",
-                     "token_out": "0x5555000000000000000000000000000000000005",
-                     "amount_in": "1", "amount_out": "2"}
-                ]
-            }),
-        }
+                block,
+                ts: 1_700_000_000,
+                tx_index: 1,
+                tx_hash: b256f!("1111111111111111111111111111111111111111111111111111111111111111"),
+                kind: MevKind::ArbAtomic,
+                searcher: addr!("2222000000000000000000000000000000000002"),
+                contract: None,
+                pools: pools.clone(),
+                profit_token: Some(addr!("4444000000000000000000000000000000000004")),
+                profit_amount: Some(U256t::from(1_000_000u64)),
+                profit_usd: None,
+                gas_cost_wei: U256t::from(100_000_000_000_000u64),
+                confidence: Confidence::Exact,
+                victim_hashes: vec![],
+                victim_swap_size: None,
+                details: serde_json::json!({
+                    "route": [
+                        {"pool": format!("{:#x}", pools[0]), "amm": "v3",
+                         "token_in": "0x4444000000000000000000000000000000000004",
+                         "token_out": "0x5555000000000000000000000000000000000005",
+                         "amount_in": "1", "amount_out": "2"}
+                    ]
+                }),
+            }
         };
         let pool_a = addr!("3333000000000000000000000000000000000003");
         let pool_b = addr!("33330000000000000000000000000000000000ff");
         let mut prices = HashMap::new();
         prices.insert(
             addr!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd { usd: 1.0, decimals: 6 },
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
         );
         // Block 100: realized op with canonical id (scanner knows pool_a + cid)
         let e = ev(100, vec![pool_a], "ArbAtomic|matching");
         let hash1 = b256f!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let hash2 = b256f!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        store.insert_block_facts(100, &hash1, 1_700_000_000, Some(25.0), 5, &[], &[], &[], &[e], Some(1.0), &prices).unwrap();
+        store
+            .insert_block_facts(
+                100,
+                &hash1,
+                1_700_000_000,
+                Some(25.0),
+                5,
+                &[],
+                &[],
+                &[],
+                &[e],
+                Some(1.0),
+                &prices,
+            )
+            .unwrap();
         // Block 102: realized op on an unknown pool (M1) + scanner never there
         let e2 = ev(102, vec![pool_b], "ArbAtomic|other");
-        store.insert_block_facts(102, &hash2, 1_700_000_100, Some(25.0), 5, &[], &[], &[], &[e2], Some(1.0), &prices).unwrap();
+        store
+            .insert_block_facts(
+                102,
+                &hash2,
+                1_700_000_100,
+                Some(25.0),
+                5,
+                &[],
+                &[],
+                &[],
+                &[e2],
+                Some(1.0),
+                &prices,
+            )
+            .unwrap();
 
-        store.insert_opportunity(
-            "run_1", "polygon", 100, Some(1), "TwoHopArb",
-            Some(pool_a), None,
-            Some(addr!("4444000000000000000000000000000000000004")),
-            Some(addr!("5555000000000000000000000000000000000005")),
-            Some(U256t::from(1_000_000u64)), Some(U256t::from(900_000u64)), Some(U256t::from(50_000u64)),
-            None, Some(1_700_000_000), false, Some("0.9"),
-            None, None, Some("replay"),
-            // T1 join key: must equal the explorer-side canonical form the
-            // store computed for the block-100 event (ArbAtomic|sorted pools).
-            Some(&format!("ArbAtomic|{pool_a:#x}")),
-        ).unwrap();
+        store
+            .insert_opportunity(
+                "run_1",
+                "polygon",
+                100,
+                Some(1),
+                "TwoHopArb",
+                Some(pool_a),
+                None,
+                Some(addr!("4444000000000000000000000000000000000004")),
+                Some(addr!("5555000000000000000000000000000000000005")),
+                Some(U256t::from(1_000_000u64)),
+                Some(U256t::from(900_000u64)),
+                Some(U256t::from(50_000u64)),
+                None,
+                Some(1_700_000_000),
+                false,
+                Some("0.9"),
+                None,
+                None,
+                Some("replay"),
+                // T1 join key: must equal the explorer-side canonical form the
+                // store computed for the block-100 event (ArbAtomic|sorted pools).
+                Some(&format!("ArbAtomic|{pool_a:#x}")),
+            )
+            .unwrap();
         store
     }
 
@@ -763,7 +872,11 @@ mod tests {
         )
         .unwrap();
 
-        let (kind, t) = report.per_kind.iter().find(|(k, _)| k == "arb_atomic").unwrap();
+        let (kind, t) = report
+            .per_kind
+            .iter()
+            .find(|(k, _)| k == "arb_atomic")
+            .unwrap();
         assert_eq!(*kind, "arb_atomic");
         assert_eq!(t.ops, 2);
         // block 100 matched T1 via canonical_id
@@ -772,14 +885,30 @@ mod tests {
         assert_eq!(t.misses.m1_pool_gap, 1);
         // headline USD recall = 50% (matched pool_a op carries same USD weight)
         assert!((report.headline_usd_recall() - 0.5).abs() < 1e-9);
-        assert!(report.missing_pools.contains(&format!("{:#x}", address!("33330000000000000000000000000000000000ff"))));
+        assert!(report.missing_pools.contains(&format!(
+            "{:#x}",
+            address!("33330000000000000000000000000000000000ff")
+        )));
     }
 
     #[test]
     fn t3_is_ceiling() {
         let store = store_with_fixtures();
-        let report = compute_validation(&store, crate::types::ChainName::Polygon, 90, 110, 0, None, false).unwrap();
-        let (_, t) = report.per_kind.iter().find(|(k, _)| k == "arb_atomic").unwrap();
+        let report = compute_validation(
+            &store,
+            crate::types::ChainName::Polygon,
+            90,
+            110,
+            0,
+            None,
+            false,
+        )
+        .unwrap();
+        let (_, t) = report
+            .per_kind
+            .iter()
+            .find(|(k, _)| k == "arb_atomic")
+            .unwrap();
         // block 100 has a scanner opportunity → T3 includes it
         assert_eq!(t.matched_t3, 1);
     }
@@ -787,7 +916,16 @@ mod tests {
     #[test]
     fn report_renders() {
         let store = store_with_fixtures();
-        let report = compute_validation(&store, crate::types::ChainName::Polygon, 90, 110, 0, None, true).unwrap();
+        let report = compute_validation(
+            &store,
+            crate::types::ChainName::Polygon,
+            90,
+            110,
+            0,
+            None,
+            true,
+        )
+        .unwrap();
         let text = render_validation_report(&report);
         assert!(text.contains("arb_atomic"));
         assert!(text.contains("Miss taxonomy"));

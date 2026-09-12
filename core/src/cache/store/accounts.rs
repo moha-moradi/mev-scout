@@ -33,7 +33,10 @@ impl super::SqliteStore {
         let mut stmt = conn.prepare(
             "SELECT nonce, balance, code_hash FROM accounts WHERE block_number = ?1 AND address = ?2",
         )?;
-        let mut rows = stmt.query(rusqlite::params![block_num as i64, super::SqliteStore::addr_to_blob(&address)])?;
+        let mut rows = stmt.query(rusqlite::params![
+            block_num as i64,
+            super::SqliteStore::addr_to_blob(&address)
+        ])?;
         match rows.next()? {
             Some(row) => Ok(Some(AccountData {
                 nonce: row.get::<_, i64>(0)? as u64,
@@ -81,7 +84,9 @@ impl super::SqliteStore {
             super::SqliteStore::u256_to_blob(&slot),
         ])?;
         match rows.next()? {
-            Some(row) => Ok(Some(super::SqliteStore::blob_to_u256(&row.get::<_, Vec<u8>>(0)?))),
+            Some(row) => Ok(Some(super::SqliteStore::blob_to_u256(
+                &row.get::<_, Vec<u8>>(0)?,
+            ))),
             None => Ok(None),
         }
     }
@@ -97,10 +102,10 @@ impl super::SqliteStore {
 
     pub fn get_code(&self, address: Address) -> anyhow::Result<Option<Bytes>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT code FROM contract_code WHERE address = ?1",
-        )?;
-        let mut rows = stmt.query(rusqlite::params![super::SqliteStore::addr_to_blob(&address)])?;
+        let mut stmt = conn.prepare("SELECT code FROM contract_code WHERE address = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![super::SqliteStore::addr_to_blob(
+            &address
+        )])?;
         match rows.next()? {
             Some(row) => Ok(Some(row.get::<_, Vec<u8>>(0)?.into())),
             None => Ok(None),

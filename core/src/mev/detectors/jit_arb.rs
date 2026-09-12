@@ -1,15 +1,17 @@
 //! JIT arbitrage detection — identifies arbitrage trades that sandwich a JIT liquidity event.
 
-use std::collections::{HashMap, HashSet};
-use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
-use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
-use crate::pool::math::{quote_exact_in, constant_product_output_amount};
+use crate::pool::decoders::{
+    decode_v3_mint_burn, decode_v3_swap, V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC,
+};
 use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
-use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::math::v3::estimate_v3_swap_gas;
+use crate::pool::math::{constant_product_output_amount, quote_exact_in};
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
+use alloy::primitives::{Address, U256};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 struct SwapEvent {
@@ -60,7 +62,13 @@ impl JitArbDetector {
         self
     }
 
-    pub fn process_tx(&mut self, tx_index: usize, logs: &[ExecutedLog], sender: Option<Address>, pm: &PoolManager) {
+    pub fn process_tx(
+        &mut self,
+        tx_index: usize,
+        logs: &[ExecutedLog],
+        sender: Option<Address>,
+        pm: &PoolManager,
+    ) {
         let sender = match sender {
             Some(s) => s,
             None => return,
@@ -95,7 +103,9 @@ impl JitArbDetector {
                 if let Some(decoded) = decode_v3_mint_burn(log) {
                     if let Some(mints) = self.active_mints.get_mut(&log.address) {
                         for mint in mints.iter_mut() {
-                            if mint.burned { continue; }
+                            if mint.burned {
+                                continue;
+                            }
                             if mint.sender == sender
                                 && mint.tick_lower == decoded.tick_lower
                                 && mint.tick_upper == decoded.tick_upper
@@ -110,18 +120,26 @@ impl JitArbDetector {
             }
 
             if t0 == V3_SWAP_TOPIC {
-                let (amount_in, token_in, tick, liquidity) = if let Some(decoded) = decode_v3_swap(log) {
-                    let amt = if decoded.amount0 > 0 { decoded.amount0 as u128 }
-                               else { decoded.amount1 as u128 };
-                    let sold = if decoded.amount0 > 0 {
-                        pm.get(&log.address).map(|p| p.info().token0).unwrap_or(Address::ZERO)
+                let (amount_in, token_in, tick, liquidity) =
+                    if let Some(decoded) = decode_v3_swap(log) {
+                        let amt = if decoded.amount0 > 0 {
+                            decoded.amount0 as u128
+                        } else {
+                            decoded.amount1 as u128
+                        };
+                        let sold = if decoded.amount0 > 0 {
+                            pm.get(&log.address)
+                                .map(|p| p.info().token0)
+                                .unwrap_or(Address::ZERO)
+                        } else {
+                            pm.get(&log.address)
+                                .map(|p| p.info().token1)
+                                .unwrap_or(Address::ZERO)
+                        };
+                        (amt, sold, Some(decoded.tick), Some(decoded.liquidity))
                     } else {
-                        pm.get(&log.address).map(|p| p.info().token1).unwrap_or(Address::ZERO)
+                        (0, Address::ZERO, None, None)
                     };
-                    (amt, sold, Some(decoded.tick), Some(decoded.liquidity))
-                } else {
-                    (0, Address::ZERO, None, None)
-                };
 
                 self.swap_events.push(SwapEvent {
                     tx_index,
@@ -155,15 +173,23 @@ impl JitArbDetector {
         let pool_addrs: Vec<Address> = self.active_mints.keys().copied().collect();
 
         for &pool_p in &pool_addrs {
-            let Some(mints) = self.active_mints.get(&pool_p) else { continue };
+            let Some(mints) = self.active_mints.get(&pool_p) else {
+                continue;
+            };
             for mint in mints {
                 let dedup_key = (pool_p, mint.mint_tx_index, mint.sender);
                 if self.emitted.contains(&dedup_key) || !mint.swapped {
                     continue;
                 }
 
-                let swaps_on_p: Vec<&SwapEvent> = self.swap_events.iter()
-                    .filter(|s| s.pool == pool_p && s.sender == mint.sender && s.tx_index >= mint.mint_tx_index)
+                let swaps_on_p: Vec<&SwapEvent> = self
+                    .swap_events
+                    .iter()
+                    .filter(|s| {
+                        s.pool == pool_p
+                            && s.sender == mint.sender
+                            && s.tx_index >= mint.mint_tx_index
+                    })
                     .collect();
                 if swaps_on_p.is_empty() {
                     continue;
@@ -181,20 +207,38 @@ impl JitArbDetector {
                         if max_idx - min_idx > self.proximity_window {
                             continue;
                         }
-                            if pools_share_token(pm, pool_p, swap_q.pool) {
-                                self.emitted.insert(dedup_key);
+                        if pools_share_token(pm, pool_p, swap_q.pool) {
+                            self.emitted.insert(dedup_key);
 
-                            let (total_profit, arb_profit, fee_rev) = compute_jit_arb_profit(pm, swap_p, swap_q, mint, pool_p, &self.swap_events, self.proximity_window);
+                            let (total_profit, arb_profit, fee_rev) = compute_jit_arb_profit(
+                                pm,
+                                swap_p,
+                                swap_q,
+                                mint,
+                                pool_p,
+                                &self.swap_events,
+                                self.proximity_window,
+                            );
 
                             opportunities.push(Self::build_opp(
-                                self.block_number, pool_p, swap_q.pool, mint, timestamp,
-                                U256::from(total_profit), arb_profit, fee_rev,
-                                base_fee_per_gas, gas_config, pm,
+                                self.block_number,
+                                pool_p,
+                                swap_q.pool,
+                                mint,
+                                timestamp,
+                                U256::from(total_profit),
+                                arb_profit,
+                                fee_rev,
+                                base_fee_per_gas,
+                                gas_config,
+                                pm,
                             ));
                             break;
                         }
                     }
-                    if !opportunities.is_empty() { break; }
+                    if !opportunities.is_empty() {
+                        break;
+                    }
                 }
             }
         }
@@ -202,6 +246,7 @@ impl JitArbDetector {
         opportunities
     }
 
+    #[allow(clippy::too_many_arguments)] // opportunity assembly — thinned in W4
     fn build_opp(
         block_number: u64,
         jit_pool: Address,
@@ -217,7 +262,8 @@ impl JitArbDetector {
     ) -> MevOpportunity {
         // Per-opportunity gas: JIT position (Mint+Swap) + arb swap on related pool
         // H7: Use direction-aware V3 estimate for JIT pool (swap can go either way).
-        let jit_pool_gas = pm.get(&jit_pool)
+        let jit_pool_gas = pm
+            .get(&jit_pool)
             .map(|p| match p {
                 PoolState::UniswapV3(v3) => {
                     estimate_v3_swap_gas(v3, true).max(estimate_v3_swap_gas(v3, false))
@@ -225,7 +271,8 @@ impl JitArbDetector {
                 other => other.gas_estimate(),
             })
             .unwrap_or(80_000);
-        let arb_pool_gas = pm.get(&arb_pool)
+        let arb_pool_gas = pm
+            .get(&arb_pool)
             .map(|p| p.gas_estimate())
             .unwrap_or(80_000);
         let calldata = calldata_gas_estimate(2);
@@ -233,8 +280,14 @@ impl JitArbDetector {
         let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
         // Populate token_in/token_out from the JIT pool — both tokens are involved
         // in the liquidity provision and subsequent arb swap.
-        let token_in = pm.get(&jit_pool).map(|p| p.info().token0).unwrap_or(Address::ZERO);
-        let token_out = pm.get(&jit_pool).map(|p| p.info().token1).unwrap_or(Address::ZERO);
+        let token_in = pm
+            .get(&jit_pool)
+            .map(|p| p.info().token0)
+            .unwrap_or(Address::ZERO);
+        let token_out = pm
+            .get(&jit_pool)
+            .map(|p| p.info().token1)
+            .unwrap_or(Address::ZERO);
         let raw_profit = if pm.is_wrapped_native(&token_in) || pm.is_wrapped_native(&token_out) {
             None // profit is already in native or mixed
         } else {
@@ -242,7 +295,9 @@ impl JitArbDetector {
         };
         // H9: JitArb profit = arb_profit (fixed) + fee_rev (scales with position size)
         let jit_arb_slippage = |pct: u128| -> Option<U256> {
-            if fee_rev == 0 { return None; }
+            if fee_rev == 0 {
+                return None;
+            }
             let fee_adj = fee_rev.saturating_mul(pct) / PERCENT_DENOMINATOR;
             let total_adj = arb_profit.saturating_add(fee_adj);
             Some(U256::from(total_adj))
@@ -281,8 +336,12 @@ impl JitArbDetector {
 }
 
 fn pools_share_token(pm: &PoolManager, pool_a: Address, pool_b: Address) -> bool {
-    let Some(info_a) = pm.get(&pool_a).map(|p| p.info()) else { return false };
-    let Some(info_b) = pm.get(&pool_b).map(|p| p.info()) else { return false };
+    let Some(info_a) = pm.get(&pool_a).map(|p| p.info()) else {
+        return false;
+    };
+    let Some(info_b) = pm.get(&pool_b).map(|p| p.info()) else {
+        return false;
+    };
     info_a.token0 == info_b.token0
         || info_a.token0 == info_b.token1
         || info_a.token1 == info_b.token0
@@ -339,9 +398,7 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
             constant_product_output_amount(swap.amount_in, reserve_in, reserve_out, v2.info.fee)
                 .unwrap_or(0)
         }
-        Some(pool) => {
-            quote_exact_in(pool, swap.token_in, shared, swap.amount_in).unwrap_or(0)
-        }
+        Some(pool) => quote_exact_in(pool, swap.token_in, shared, swap.amount_in).unwrap_or(0),
         _ => 0,
     }
 }
@@ -404,7 +461,9 @@ fn estimate_jit_fee_revenue(
         }
 
         // Only V3 pools carry tick/liquidity data
-        let (Some(tick), Some(pool_liquidity)) = (sw.tick, sw.liquidity) else { continue };
+        let (Some(tick), Some(pool_liquidity)) = (sw.tick, sw.liquidity) else {
+            continue;
+        };
         if pool_liquidity == 0 || mint.amount == 0 {
             continue;
         }
@@ -414,11 +473,11 @@ fn estimate_jit_fee_revenue(
 
         // Fee revenue ≈ position liquidity share × swap fee amount
         let swap_fee = sw.amount_in.saturating_mul(fee_rate) / PPM_DENOMINATOR;
-        let earned = mint.amount
+        let earned = mint
+            .amount
             .saturating_mul(swap_fee)
             .saturating_div(pool_liquidity);
         total_fees = total_fees.saturating_add(earned);
     }
     total_fees
 }
-

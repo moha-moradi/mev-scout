@@ -48,7 +48,14 @@ fn cli_real_run_smoke() {
     );
 
     let mut cmd = Command::new(BIN);
-    cmd.args(["--quiet", "-f", cfg_path.to_str().unwrap(), "run", "--blocks", "1"]);
+    cmd.args([
+        "--quiet",
+        "-f",
+        cfg_path.to_str().unwrap(),
+        "run",
+        "--blocks",
+        "1",
+    ]);
 
     eprintln!("Running: {}", cmd.get_program().to_string_lossy());
     let out = match run_timed(&mut cmd, HEAVY_TIMEOUT) {
@@ -63,11 +70,7 @@ fn cli_real_run_smoke() {
     eprintln!("--- stderr ---");
     eprintln!("{}", out.stderr);
 
-    assert!(
-        out.success,
-        "mev-scout run exited with {:?}",
-        out.code
-    );
+    assert!(out.success, "mev-scout run exited with {:?}", out.code);
 
     // `--quiet` must suppress tracing lines (error-level filter); progress
     // bars and the final summary still go to stdout.
@@ -91,8 +94,8 @@ fn cli_real_run_smoke() {
     );
     let mut report_cmd = Command::new(BIN);
     report_cmd.args(["--quiet", "-f", report_cfg.to_str().unwrap(), "report"]);
-    let report_out = run_timed(&mut report_cmd, HEAVY_TIMEOUT)
-        .expect("report after run exceeded budget");
+    let report_out =
+        run_timed(&mut report_cmd, HEAVY_TIMEOUT).expect("report after run exceeded budget");
     assert!(
         report_out.success,
         "mev-scout report after run exited with {:?}",

@@ -408,7 +408,7 @@ pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, zero_for_one: bool) ->
 
     let fee = pool.info.fee as u128;
     let max_input_with_fee = max_in * U256::from(PPM_DENOMINATOR as u64)
-        / U256::from(PPM_DENOMINATOR as u64 - fee.min(PPM_DENOMINATOR as u128 - 1) as u64);
+        / U256::from(PPM_DENOMINATOR as u64 - fee.min(PPM_DENOMINATOR - 1) as u64);
 
     let limbs = max_input_with_fee.as_limbs();
     let result = limbs[0] as u128;
@@ -652,7 +652,6 @@ fn get_swap_target_for_tick(
 /// accumulating the input required per tick step.
 ///
 /// When no initialized ticks are known, caps at the nearest tick_spacing boundary.
-
 #[cfg(test)]
 mod tests {
     use super::*;

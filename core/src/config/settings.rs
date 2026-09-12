@@ -5,12 +5,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::{ChainConfig, default_chains};
+use super::defaults::{default_chains, ChainConfig};
 use crate::error;
 
-use crate::types::{
-    ChainName, FlashLoanProvider, RangeMode, Strategy,
-};
+use crate::types::{ChainName, FlashLoanProvider, RangeMode, Strategy};
 
 // ── Sub-config structs ──────────────────────────────────────────────
 
@@ -102,23 +100,51 @@ pub struct ExplorerConfig {
     pub checkpoint_every: u64,
 }
 
-fn default_explorer_confirmations() -> u64 { 6 }
-fn default_explorer_poll_ms() -> u64 { 2000 }
-fn default_explorer_checkpoint_every() -> u64 { 500 }
+fn default_explorer_confirmations() -> u64 {
+    6
+}
+fn default_explorer_poll_ms() -> u64 {
+    2000
+}
+fn default_explorer_checkpoint_every() -> u64 {
+    500
+}
 
 // ── Default helpers ─────────────────────────────────────────────────
 
-fn default_rps_limit() -> f64 { 0.0 }
-fn default_chain() -> String { "polygon".to_string() }
-fn default_flash_loan_provider() -> String { "auto".to_string() }
-fn default_strategies() -> String { "all".to_string() }
-fn default_gas_model() -> String { "historical_exact".to_string() }
-fn default_gas_limit() -> u64 { 200_000 }
-fn default_priority_fee_gwei() -> f64 { 0.0 }
-fn default_output_format() -> String { "table".to_string() }
-fn default_db_path() -> String { String::new() }
-fn default_max_pairs_per_token() -> usize { 50 }
-fn default_proximity_window() -> usize { 3 }
+fn default_rps_limit() -> f64 {
+    0.0
+}
+fn default_chain() -> String {
+    "polygon".to_string()
+}
+fn default_flash_loan_provider() -> String {
+    "auto".to_string()
+}
+fn default_strategies() -> String {
+    "all".to_string()
+}
+fn default_gas_model() -> String {
+    "historical_exact".to_string()
+}
+fn default_gas_limit() -> u64 {
+    200_000
+}
+fn default_priority_fee_gwei() -> f64 {
+    0.0
+}
+fn default_output_format() -> String {
+    "table".to_string()
+}
+fn default_db_path() -> String {
+    String::new()
+}
+fn default_max_pairs_per_token() -> usize {
+    50
+}
+fn default_proximity_window() -> usize {
+    3
+}
 
 // ── Default impls for sub-structs ───────────────────────────────────
 
@@ -270,13 +296,37 @@ impl Config {
 impl Config {
     /// Parse a TOML configuration file from disk.
     pub fn load(path: &str) -> error::Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| error::Error::Other(format!("Failed to read config file '{}': {}", path, e)))?;
-        let mut cfg: Config = toml::from_str(&content)
-            .map_err(|e| error::Error::Other(format!("Failed to parse config file '{}': {}", path, e)))?;
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            error::Error::Other(format!("Failed to read config file '{}': {}", path, e))
+        })?;
+        let mut cfg: Config = toml::from_str(&content).map_err(|e| {
+            error::Error::Other(format!("Failed to parse config file '{}': {}", path, e))
+        })?;
         cfg.expand_env_secrets();
         cfg.config_path = Some(PathBuf::from(path));
         Ok(cfg)
+    }
+
+    /// Load a config file, returning `Ok(None)` only when the file does
+    /// not exist. Read/parse failures are hard errors so a broken or
+    /// malformed config never silently runs with defaults.
+    pub fn load_optional(path: &str) -> error::Result<Option<Self>> {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(error::Error::Other(format!(
+                    "Failed to read config file '{}': {}",
+                    path, e
+                )))
+            }
+        };
+        let mut cfg: Config = toml::from_str(&content).map_err(|e| {
+            error::Error::Other(format!("Failed to parse config file '{}': {}", path, e))
+        })?;
+        cfg.expand_env_secrets();
+        cfg.config_path = Some(PathBuf::from(path));
+        Ok(Some(cfg))
     }
 
     /// Expand `${ENV_VAR}` references in secret-bearing string fields
@@ -319,15 +369,28 @@ impl Config {
         }
     }
 
-    /// Load a config file, falling back to defaults if the file is missing or invalid.
-    pub fn load_or_default(path: &str) -> Self {
-        let mut cfg = Self::load(path).unwrap_or_default();
-        cfg.config_path = Some(PathBuf::from(path));
+    /// Load a config file, falling back to defaults only when the file
+    /// does not exist. Parse/validation failures propagate so a malformed
+    /// config never silently runs with wrong chain/RPC/strategy defaults.
+    pub fn load_or_default(path: &str) -> error::Result<Self> {
+        let mut cfg = match Self::load_optional(path)? {
+            Some(mut cfg) => {
+                cfg.config_path = Some(PathBuf::from(path));
+                cfg
+            }
+            None => {
+                tracing::info!("config file '{path}' not found; using built-in defaults");
+                Config {
+                    config_path: Some(PathBuf::from(path)),
+                    ..Config::default()
+                }
+            }
+        };
         let defaults = default_chains();
         for (name, default_cfg) in defaults {
             cfg.chains.entry(name).or_insert(default_cfg);
         }
-        cfg
+        Ok(cfg)
     }
 
     #[cfg(test)]
@@ -342,7 +405,8 @@ impl Config {
         let urls = Self::merge_rpc_urls(&self.rpc.rpc_urls, &self.rpc.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
-                "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
+                "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config."
+                    .into(),
             ));
         }
         Ok(urls)
@@ -350,8 +414,7 @@ impl Config {
 
     /// Human-readable RPC summary for the startup plan display.
     fn effective_rpc_display(&self) -> String {
-        let user_count = self.rpc.rpc_urls.len()
-            + if self.rpc.rpc_url.is_some() { 1 } else { 0 };
+        let user_count = self.rpc.rpc_urls.len() + if self.rpc.rpc_url.is_some() { 1 } else { 0 };
         if user_count > 0 {
             format!("{} provider(s) configured", user_count)
         } else {
@@ -360,7 +423,10 @@ impl Config {
     }
 
     /// Build full provider configs by merging user-supplied URLs with public fallbacks.
-    pub fn effective_provider_configs(&self, chain_name: ChainName) -> error::Result<Vec<(String, Option<f64>, bool)>> {
+    pub fn effective_provider_configs(
+        &self,
+        chain_name: ChainName,
+    ) -> error::Result<Vec<(String, Option<f64>, bool)>> {
         let urls = self.effective_rpc_urls().unwrap_or_default();
         if !urls.is_empty() {
             let public_endpoints = chain_name.public_rpc_endpoints();
@@ -393,7 +459,10 @@ impl Config {
                     "No RPC URL provided and no public endpoints available for this chain. Use --rpc <URL>, --rpc-urls, or set rpc_url in config.".into()
                 ));
             }
-            Ok(public.into_iter().map(|e| (e.url.to_string(), Some(e.default_rps), e.archive)).collect())
+            Ok(public
+                .into_iter()
+                .map(|e| (e.url.to_string(), Some(e.default_rps), e.archive))
+                .collect())
         }
     }
 
@@ -458,7 +527,9 @@ impl Config {
         provider: FlashLoanProvider,
     ) -> String {
         let provider_desc = match provider {
-            FlashLoanProvider::Auto => "auto (Balancer V2 → Aave V3 → Uniswap Flash Swap)".to_string(),
+            FlashLoanProvider::Auto => {
+                "auto (Balancer V2 → Aave V3 → Uniswap Flash Swap)".to_string()
+            }
             other => format!("forced ({other})"),
         };
 
@@ -605,15 +676,25 @@ pub struct ConfigBuilder {
 
 impl ConfigBuilder {
     /// Set the chain name (e.g. "polygon", "ethereum").
-    pub fn with_chain(mut self, chain: impl Into<String>) -> Self { self.chain = Some(chain.into()); self }
+    pub fn with_chain(mut self, chain: impl Into<String>) -> Self {
+        self.chain = Some(chain.into());
+        self
+    }
     /// Replace the output sub-config entirely.
-    pub fn with_output(mut self, output: OutputConfig) -> Self { self.output = Some(output); self }
+    pub fn with_output(mut self, output: OutputConfig) -> Self {
+        self.output = Some(output);
+        self
+    }
 
     /// Build a `Config`, starting from defaults and overriding set fields.
     pub fn build(self) -> Config {
         let mut cfg = Config::default();
-        if let Some(v) = self.chain { cfg.chain = v; }
-        if let Some(v) = self.output { cfg.output = v; }
+        if let Some(v) = self.chain {
+            cfg.chain = v;
+        }
+        if let Some(v) = self.output {
+            cfg.output = v;
+        }
         cfg
     }
 }
@@ -627,37 +708,50 @@ impl Config {
         merge_opt!(self, overrides, to_block, copy_some);
         merge_opt!(self, overrides, chain);
 
-        merge_sub!(self, overrides, rpc, [
-            (rpc_url, into_option),
-            (rpc_urls),
-            (rpc_rps),
-            (rps_limit, copy),
-            (block_concurrency, copy_some)
-        ]);
-        merge_sub!(self, overrides, gas, [
-            (gas_model),
-            (gas_limit, copy),
-            (priority_fee_gwei, copy)
-        ]);
-        merge_sub!(self, overrides, backtest, [
-            (flash_loan_provider),
-            (strategies),
-            (max_pairs_per_token, copy),
-            (proximity_window, copy),
-            (capture_pending, copy),
-            (min_profit_wei, copy),
-            (max_candidates_per_tx, copy)
-        ]);
-        merge_sub!(self, overrides, output, [
-            (output),
-            (db_path)
-        ]);
-        merge_sub!(self, overrides, explorer, [
-            (db_path),
-            (confirmations, copy),
-            (poll_interval_ms, copy),
-            (checkpoint_every, copy)
-        ]);
+        merge_sub!(
+            self,
+            overrides,
+            rpc,
+            [
+                (rpc_url, into_option),
+                (rpc_urls),
+                (rpc_rps),
+                (rps_limit, copy),
+                (block_concurrency, copy_some)
+            ]
+        );
+        merge_sub!(
+            self,
+            overrides,
+            gas,
+            [(gas_model), (gas_limit, copy), (priority_fee_gwei, copy)]
+        );
+        merge_sub!(
+            self,
+            overrides,
+            backtest,
+            [
+                (flash_loan_provider),
+                (strategies),
+                (max_pairs_per_token, copy),
+                (proximity_window, copy),
+                (capture_pending, copy),
+                (min_profit_wei, copy),
+                (max_candidates_per_tx, copy)
+            ]
+        );
+        merge_sub!(self, overrides, output, [(output), (db_path)]);
+        merge_sub!(
+            self,
+            overrides,
+            explorer,
+            [
+                (db_path),
+                (confirmations, copy),
+                (poll_interval_ms, copy),
+                (checkpoint_every, copy)
+            ]
+        );
     }
 }
 
@@ -705,7 +799,10 @@ rpc_url = "https://single.example/${MS_CONFIG_TEST_CG_KEY}"
 "#,
         );
         assert_eq!(cfg.rpc.rpc_urls[0], "https://plain.example/v3");
-        assert_eq!(cfg.rpc.rpc_url.as_deref(), Some("https://single.example/CG-1"));
+        assert_eq!(
+            cfg.rpc.rpc_url.as_deref(),
+            Some("https://single.example/CG-1")
+        );
     }
 
     #[test]

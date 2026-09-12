@@ -31,25 +31,22 @@ pub const BALANCER_SWAP_TOPIC: B256 =
 /// uint256 totalFee, uint256 flashParameter).  Hash verified against the
 /// canonical LB 2.0 signature `Swap(address,address,uint256,bool,uint256,
 /// uint256,uint256,uint256)`.
-pub static LB_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    *crate::chain::events::TRADER_JOE_LB_SWAP_TOPIC
-});
+pub static LB_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| *crate::chain::events::TRADER_JOE_LB_SWAP_TOPIC);
 
 /// Pendle V2 Market Swap topic. Matches the canonical Pendle V2 signature
 /// `Swap(address indexed caller, address indexed receiver, int256
 /// netPtToAccount, int256 netSyToAccount, uint256 netSyFee, uint256
 /// netSyToReserve)`.
-pub static PENDLE_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    *crate::chain::events::PENDLE_MARKET_SWAP_TOPIC
-});
+pub static PENDLE_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| *crate::chain::events::PENDLE_MARKET_SWAP_TOPIC);
 
 /// Velodrome V2/Aerodrome pool Swap topic (`Swap(address,address,uint256,
 /// uint256,uint256,uint256)` — verified against velodrome-finance/contracts
 /// `IPool.sol`). Data layout is the same four-amount word sequence as the
 /// Uniswap V2 Swap event.
-pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    *crate::chain::events::SOLIDLY_SWAP_TOPIC
-});
+pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| *crate::chain::events::SOLIDLY_SWAP_TOPIC);
 
 /// Fluid DEX pool: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to)
 /// (verified against Instadapp/fluid-contracts-public poolT1/coreModule/events.sol).
@@ -61,11 +58,8 @@ pub static FLUID_SWAP_TOPIC: LazyLock<B256> =
 /// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)
 /// (plan §3.4 signature — topic digest computed from the string, on-chain
 /// verification deferred like Q6/Q10/Q11).
-pub static METRIC_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(
-        b"Swap(address,address,bool,int128,int128,int16,uint104)",
-    )
-});
+pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"Swap(address,address,bool,int128,int128,int16,uint104)"));
 
 /// Result of decoding a V3 Swap event.
 #[derive(Debug, Clone)]
@@ -119,19 +113,43 @@ pub fn decode_v3_swap(log: &ExecutedLog) -> Option<V3SwapDecoded> {
     // amount0 is signed int256, bytes 0..32
     let amount0_bytes: [u8; 32] = log.data[..32].try_into().ok()?;
     let amount0 = i128::from_be_bytes([
-        amount0_bytes[16], amount0_bytes[17], amount0_bytes[18], amount0_bytes[19],
-        amount0_bytes[20], amount0_bytes[21], amount0_bytes[22], amount0_bytes[23],
-        amount0_bytes[24], amount0_bytes[25], amount0_bytes[26], amount0_bytes[27],
-        amount0_bytes[28], amount0_bytes[29], amount0_bytes[30], amount0_bytes[31],
+        amount0_bytes[16],
+        amount0_bytes[17],
+        amount0_bytes[18],
+        amount0_bytes[19],
+        amount0_bytes[20],
+        amount0_bytes[21],
+        amount0_bytes[22],
+        amount0_bytes[23],
+        amount0_bytes[24],
+        amount0_bytes[25],
+        amount0_bytes[26],
+        amount0_bytes[27],
+        amount0_bytes[28],
+        amount0_bytes[29],
+        amount0_bytes[30],
+        amount0_bytes[31],
     ]);
 
     // amount1 is signed int256, bytes 32..64
     let amount1_bytes: [u8; 32] = log.data[32..64].try_into().ok()?;
     let amount1 = i128::from_be_bytes([
-        amount1_bytes[16], amount1_bytes[17], amount1_bytes[18], amount1_bytes[19],
-        amount1_bytes[20], amount1_bytes[21], amount1_bytes[22], amount1_bytes[23],
-        amount1_bytes[24], amount1_bytes[25], amount1_bytes[26], amount1_bytes[27],
-        amount1_bytes[28], amount1_bytes[29], amount1_bytes[30], amount1_bytes[31],
+        amount1_bytes[16],
+        amount1_bytes[17],
+        amount1_bytes[18],
+        amount1_bytes[19],
+        amount1_bytes[20],
+        amount1_bytes[21],
+        amount1_bytes[22],
+        amount1_bytes[23],
+        amount1_bytes[24],
+        amount1_bytes[25],
+        amount1_bytes[26],
+        amount1_bytes[27],
+        amount1_bytes[28],
+        amount1_bytes[29],
+        amount1_bytes[30],
+        amount1_bytes[31],
     ]);
 
     let sqrt_price_x96 = U256::from_be_slice(&log.data[64..96]);
@@ -410,4 +428,3 @@ pub fn decode_metric_swap(log: &ExecutedLog) -> Option<MetricSwapDecoded> {
         new_position_in_bin,
     })
 }
-

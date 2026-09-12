@@ -40,7 +40,11 @@ pub struct ChainConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infinity_cl_pool_manager: Option<String>,
     /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "trader_joe_factory")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "trader_joe_factory"
+    )]
     pub trader_joe_factories: Option<Vec<String>>,
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,8 +58,7 @@ pub struct ChainConfig {
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
-    toml::from_str(include_str!("../../data/chains.toml"))
-        .expect("invalid chains.toml")
+    toml::from_str(include_str!("../../data/chains.toml")).expect("invalid chains.toml")
 }
 
 #[cfg(test)]
@@ -99,7 +102,13 @@ mod tests {
     fn metric_factory_wired_on_all_supported_chains() {
         let chains = default_chains();
         for name in [
-            "polygon", "avalanche", "bsc", "arbitrum", "base", "ethereum", "optimism",
+            "polygon",
+            "avalanche",
+            "bsc",
+            "arbitrum",
+            "base",
+            "ethereum",
+            "optimism",
         ] {
             let cfg = &chains[name];
             assert_eq!(

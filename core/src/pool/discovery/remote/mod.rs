@@ -46,15 +46,22 @@ pub struct RemotePool {
 
 impl From<RemotePool> for DiscoveredPool {
     fn from(r: RemotePool) -> Self {
-        DiscoveredPool::new(r.address, r.token0, r.token1, r.fee, r.dex_type, r.creation_block)
-            .with_tick_spacing(r.tick_spacing)
-            .with_dex_name(r.dex_name)
-            .with_token0_symbol(r.token0_symbol)
-            .with_token1_symbol(r.token1_symbol)
-            .with_tvl_usd(r.tvl_usd)
-            .with_volume_usd_24h(r.volume_usd_24h)
-            .with_volume_usd_30d(r.volume_usd_30d)
-            .with_underlying_tokens(r.underlying_tokens)
+        DiscoveredPool::new(
+            r.address,
+            r.token0,
+            r.token1,
+            r.fee,
+            r.dex_type,
+            r.creation_block,
+        )
+        .with_tick_spacing(r.tick_spacing)
+        .with_dex_name(r.dex_name)
+        .with_token0_symbol(r.token0_symbol)
+        .with_token1_symbol(r.token1_symbol)
+        .with_tvl_usd(r.tvl_usd)
+        .with_volume_usd_24h(r.volume_usd_24h)
+        .with_volume_usd_30d(r.volume_usd_30d)
+        .with_underlying_tokens(r.underlying_tokens)
     }
 }
 
@@ -106,16 +113,16 @@ pub async fn discover_via_geckoterminal(
 fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
     match chain.to_ascii_lowercase().as_str() {
         "ethereum" | "eth" => &[
-            "uniswap-v4-ethereum",   // #2
-            "uniswap_v3",            // #3
-            "fluid-ethereum",        // #4
+            "uniswap-v4-ethereum", // #2
+            "uniswap_v3",          // #3
+            "fluid-ethereum",      // #4
             "pancakeswap-v3-ethereum",
             "curve",
             "balancer_ethereum",
             "uniswap_v2",
         ],
         "base" => &[
-            "aerodrome-slipstream",             // #1 CL
+            "aerodrome-slipstream", // #1 CL
             "uniswap-v3-base",
             "pancakeswap-v3-base",
             "uniswap-v4-base",
@@ -126,14 +133,14 @@ fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
             "uniswap-v2-base",
         ],
         "bsc" => &[
-            "pancakeswap-v3-bsc",   // #1
-            "pancakeswap_v2",       // #5
+            "pancakeswap-v3-bsc", // #1
+            "pancakeswap_v2",     // #5
             "uniswap-v2-bsc",
             "traderjoe-v2-bsc",
             "traderjoe-v2-1-bsc",
         ],
         "arbitrum" => &[
-            "uniswap_v3_arbitrum",  // #1
+            "uniswap_v3_arbitrum", // #1
             "uniswap-v4-arbitrum",
             "camelot-v3",
             "ramses-v3-arbitrum",
@@ -144,11 +151,11 @@ fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
             "balancer_arbitrum",
         ],
         "polygon" => &[
-            "uniswap_v3_polygon_pos",   // #4
-            "uniswap-v4-polygon",       // #2
+            "uniswap_v3_polygon_pos", // #4
+            "uniswap-v4-polygon",     // #2
             "quickswap_v3",
             "quickswap",
-            "ramses-v3-polygon",        // RamsesX
+            "ramses-v3-polygon", // RamsesX
             "fluid-polygon",
             "curve_polygon_pos",
             "uniswap-v2-polygon",
@@ -162,10 +169,10 @@ fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
             "curve_optimism",
         ],
         "avalanche" => &[
-            "pharaoh-dlmm",             // #1
-            "pharaoh-exchange-v3",      // #2
+            "pharaoh-dlmm",        // #1
+            "pharaoh-exchange-v3", // #2
             "traderjoe-v2-2-avalanche",
-            "blackhole-v3",             // CLMM leg
+            "blackhole-v3", // CLMM leg
             "uniswap-v3-avalanche",
             "uniswap-v4-avalanche",
             "pangolin-v3",
@@ -212,7 +219,10 @@ async fn supplement_via_per_dex(
             break;
         }
         let per_dex_cap = (cap - pools.len()).min(200);
-        match client.fetch_pools_for_dex(chain, dex, Some(per_dex_cap), min_tvl).await {
+        match client
+            .fetch_pools_for_dex(chain, dex, Some(per_dex_cap), min_tvl)
+            .await
+        {
             Ok(extra) => {
                 let added = extra.len();
                 for p in extra {
@@ -230,7 +240,11 @@ async fn supplement_via_per_dex(
         }
     }
     // Re-sort by TVL so the merged set keeps the explorer-like ordering.
-    pools.sort_by(|a, b| b.tvl_usd.partial_cmp(&a.tvl_usd).unwrap_or(std::cmp::Ordering::Equal));
+    pools.sort_by(|a, b| {
+        b.tvl_usd
+            .partial_cmp(&a.tvl_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     pools.truncate(cap);
     Ok(pools)
 }
@@ -279,10 +293,16 @@ pub async fn discover_via_remote(
 
 /// Union helper: merge multiple `DiscoveredPool` vecs by address using
 /// `merge_from`. HashMap-indexed — O(n) instead of the previous O(n²) scan.
-pub fn merge_pools(mut base: Vec<DiscoveredPool>, extra: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
+pub fn merge_pools(
+    mut base: Vec<DiscoveredPool>,
+    extra: Vec<DiscoveredPool>,
+) -> Vec<DiscoveredPool> {
     use std::collections::HashMap;
-    let mut index: HashMap<Address, usize> =
-        base.iter().enumerate().map(|(i, p)| (p.address, i)).collect();
+    let mut index: HashMap<Address, usize> = base
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.address, i))
+        .collect();
     for p in extra {
         match index.get(&p.address) {
             Some(&i) => base[i].merge_from(&p),
@@ -306,9 +326,12 @@ mod tests {
         let b = address!("2222222222222222222222222222222222222222");
         let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        let base = vec![DiscoveredPool::new(a, t0, t1, 3000, DexType::UniswapV3, 1).with_tvl_usd(Some(100.0))];
+        let base =
+            vec![DiscoveredPool::new(a, t0, t1, 3000, DexType::UniswapV3, 1)
+                .with_tvl_usd(Some(100.0))];
         let extra = vec![
-            DiscoveredPool::new(a, t0, t1, 3000, DexType::UniswapV3, 0).with_volume_usd_24h(Some(50.0)),
+            DiscoveredPool::new(a, t0, t1, 3000, DexType::UniswapV3, 0)
+                .with_volume_usd_24h(Some(50.0)),
             DiscoveredPool::new(b, t0, t1, 3000, DexType::UniswapV3, 2),
         ];
         let merged = merge_pools(base, extra);
@@ -336,7 +359,10 @@ mod tests {
             );
         }
         // Matching is case-insensitive and unknown chains degrade to empty.
-        assert_eq!(curated_dex_slugs("ETH").first(), Some(&"uniswap-v4-ethereum"));
+        assert_eq!(
+            curated_dex_slugs("ETH").first(),
+            Some(&"uniswap-v4-ethereum")
+        );
         assert!(curated_dex_slugs("zksync").is_empty());
     }
 }

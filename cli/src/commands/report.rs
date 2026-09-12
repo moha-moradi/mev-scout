@@ -20,8 +20,9 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
     let run_id = match &args.run_id {
         Some(id) => id.clone(),
         None => {
-            let latest = cache.latest_manifest()?
-                .context("no runs recorded in the run-history db — execute `mev-scout run` first")?;
+            let latest = cache.latest_manifest()?.context(
+                "no runs recorded in the run-history db — execute `mev-scout run` first",
+            )?;
             latest.run_id
         }
     };
@@ -65,7 +66,10 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
             println!();
             println!("  Run ID:        {}", results_file.run_id);
             println!("  Chain:         {}", results_file.chain);
-            println!("  Block range:   {}–{}", results_file.start_block, results_file.end_block);
+            println!(
+                "  Block range:   {}–{}",
+                results_file.start_block, results_file.end_block
+            );
             println!("  Mode:          {}", results_file.range_mode);
             println!("  Strategies:    {}", results_file.strategies.join(", "));
             println!("  Flash loan:    {}", results_file.flash_loan_provider);
@@ -89,7 +93,8 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
                     opp.input_amount,
                     opp.expected_profit,
                     opp.gas_cost_wei,
-                    opp.confidence.map_or("".to_string(), |c| format!("{:.2}", c)),
+                    opp.confidence
+                        .map_or("".to_string(), |c| format!("{:.2}", c)),
                 );
             }
         }
@@ -107,6 +112,8 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
 
 /// Explorer cross-validation section for the weekly report: computes the
 /// §11 report over the run's block window when the store has realized data.
+/// Failures here are logged and the section is skipped — the report still
+/// renders — but a broken store must not vanish silently.
 fn explorer_validation_section(
     config: &Config,
     chain_str: &str,
@@ -117,16 +124,31 @@ fn explorer_validation_section(
     use mev_scout_core::explorer::validate;
     use mev_scout_core::types::ChainName;
 
-    let chain: ChainName = chain_str.parse().ok()?;
-    let store = ExplorerStore::open(config.effective_explorer_db_path(&chain)).ok()?;
-    let has_ops = store
-        .ops_in_range(start_block, end_block, &[])
-        .ok()?
-        .is_empty();
-    if has_ops {
+    let chain: ChainName = match chain_str.parse() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Explorer section skipped: invalid chain '{chain_str}': {e}");
+            return None;
+        }
+    };
+    let store = match ExplorerStore::open(config.effective_explorer_db_path(&chain)) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Explorer section skipped: cannot open store for {chain}: {e:#}");
+            return None;
+        }
+    };
+    let empty = match store.ops_in_range(start_block, end_block, &[]) {
+        Ok(ops) => ops.is_empty(),
+        Err(e) => {
+            tracing::warn!("Explorer section skipped: ops_in_range failed: {e:#}");
+            return None;
+        }
+    };
+    if empty {
         return None; // no realized data in-window yet
     }
-    let report = validate::compute_validation(
+    match validate::compute_validation(
         &store,
         chain,
         start_block,
@@ -134,7 +156,11 @@ fn explorer_validation_section(
         0,
         Some(&[run_id.to_string()]),
         false,
-    )
-    .ok()?;
-    Some(validate::render_validation_report(&report))
+    ) {
+        Ok(report) => Some(validate::render_validation_report(&report)),
+        Err(e) => {
+            tracing::warn!("Explorer section skipped: validation compute failed: {e:#}");
+            None
+        }
+    }
 }

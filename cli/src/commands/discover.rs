@@ -9,13 +9,13 @@ use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
-use mev_scout_core::pool::discovery::{pick_factories, DiscoveryConfig, DiscoveredPool};
-use mev_scout_core::pool::discovery::remote as remote_src;
-use mev_scout_core::pool::state::PoolInfo;
-use mev_scout_core::types::ChainName;
 use mev_scout_core::dex_type::DexType;
+use mev_scout_core::pool::discovery::remote as remote_src;
+use mev_scout_core::pool::discovery::{pick_factories, DiscoveredPool, DiscoveryConfig};
+use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::rpc::recommended_get_logs_batch;
+use mev_scout_core::types::ChainName;
 
 /// Fetch remote pools from free aggregators (GeckoTerminal + DexScreener).
 /// Empty vec on failure (caller falls back to RPC).
@@ -71,7 +71,9 @@ fn enrich_from_remote(pools: &mut [DiscoveredPool], remote: &[DiscoveredPool]) {
             }
         }
     }
-    tracing::info!("Enrichment: {enriched} pool(s) received TVL/volume metrics from remote sources");
+    tracing::info!(
+        "Enrichment: {enriched} pool(s) received TVL/volume metrics from remote sources"
+    );
 }
 
 /// Dedup pools by address with field-level merge — HashMap-indexed, O(n)
@@ -143,8 +145,10 @@ fn persist_universe(cache: &SqliteStore, pools: &[DiscoveredPool]) -> usize {
 }
 
 pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
-    let (chain_name, chain_config) = validation::resolve_chain(config)
-        .context("failed to resolve chain configuration")?;
+    let (chain_name, chain_config) =
+        validation::resolve_chain(config).context("failed to resolve chain configuration")?;
+    validation::validate_chain_config_addresses(&chain_config)
+        .context("chain configuration has invalid addresses")?;
     let chain_id = chain_name.chain_id();
 
     let is_remote_only = matches!(args.source, DiscoverySource::Remote);
@@ -174,7 +178,11 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     // ── Block range — not needed for pure remote mode ──
     let (from, to) = if is_remote_only {
         match validation::resolve_block_range(
-            config.days, config.blocks, config.block, config.from_block, config.to_block,
+            config.days,
+            config.blocks,
+            config.block,
+            config.from_block,
+            config.to_block,
         ) {
             Ok(mode) => {
                 let resolver = RangeResolver::new(rpc.clone());
@@ -193,7 +201,11 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         }
     } else {
         match validation::resolve_block_range(
-            config.days, config.blocks, config.block, config.from_block, config.to_block,
+            config.days,
+            config.blocks,
+            config.block,
+            config.from_block,
+            config.to_block,
         ) {
             Ok(mode) => {
                 let resolver = RangeResolver::new(rpc.clone());
@@ -267,9 +279,17 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                     return Ok(());
                 }
                 if !args.json {
-                    println!("  Incremental mode: scanning from block {} (cache max: {})", new_from, max_block);
+                    println!(
+                        "  Incremental mode: scanning from block {} (cache max: {})",
+                        new_from, max_block
+                    );
                 }
-                tracing::info!("Incremental scan: cache max_block={}, scanning {} → {}", max_block, new_from, to);
+                tracing::info!(
+                    "Incremental scan: cache max_block={}, scanning {} → {}",
+                    max_block,
+                    new_from,
+                    to
+                );
                 (new_from, to)
             }
             Ok(_) => {
@@ -279,7 +299,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 (from, to)
             }
             Err(e) => {
-                tracing::warn!("Incremental mode: failed to query cache: {e:#}. Running full scan.");
+                tracing::warn!(
+                    "Incremental mode: failed to query cache: {e:#}. Running full scan."
+                );
                 (from, to)
             }
         }
@@ -304,14 +326,23 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             println!("  Sources:     on-chain events (factory logs)");
         }
         if should_fetch_remote {
-            let tvl_note = min_tvl_opt.map(|v| format!(" min-tvl ${v:.0}")).unwrap_or_default();
-            println!("  Remote:      GeckoTerminal + DexScreener, cap {}{}", args.max_pools, tvl_note);
+            let tvl_note = min_tvl_opt
+                .map(|v| format!(" min-tvl ${v:.0}"))
+                .unwrap_or_default();
+            println!(
+                "  Remote:      GeckoTerminal + DexScreener, cap {}{}",
+                args.max_pools, tvl_note
+            );
         }
         println!();
     }
 
     // Progress bar: only meaningful for on-chain scan
-    let total_blocks = if is_remote_only { 1 } else { to.saturating_sub(from) + 1 };
+    let total_blocks = if is_remote_only {
+        1
+    } else {
+        to.saturating_sub(from) + 1
+    };
     let _pb = if !is_remote_only {
         let pb = ProgressBar::new(total_blocks);
         pb.set_style(
@@ -325,7 +356,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     };
     // Tick closure for discover_and_cache (increment once per batch)
     let tick = || {
-        if let Some(ref pb) = _pb { pb.inc(1); }
+        if let Some(ref pb) = _pb {
+            pb.inc(1);
+        }
     };
 
     let mut all_pools: Vec<DiscoveredPool> = Vec::new();
@@ -384,10 +417,14 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             &chain_name.default_camelot_factories(),
         );
 
-        let v4_pool_manager: Option<Address> = chain_config.v4_pool_manager.as_ref()
+        let v4_pool_manager: Option<Address> = chain_config
+            .v4_pool_manager
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
-        let infinity_cl_pool_manager: Option<Address> = chain_config.infinity_cl_pool_manager.as_ref()
+        let infinity_cl_pool_manager: Option<Address> = chain_config
+            .infinity_cl_pool_manager
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
         let trader_joe_factories: Vec<Address> = pick_factories(
@@ -399,35 +436,76 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             &chain_name.default_trader_joe_factories(),
         );
 
-        let pendle_factory: Option<Address> = chain_config.pendle_factory.as_ref()
+        let pendle_factory: Option<Address> = chain_config
+            .pendle_factory
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
-        let metric_factory: Option<Address> = chain_config.metric_factory.as_ref()
+        let metric_factory: Option<Address> = chain_config
+            .metric_factory
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
-        let fluid_factory: Option<Address> = chain_config.fluid_factory.as_ref()
+        let fluid_factory: Option<Address> = chain_config
+            .fluid_factory
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
 
-        if !args.json && (!v2_factories.is_empty() || !v3_factories.is_empty() || vault.is_some() || registry.is_some()
-            || !solidly_factories.is_empty() || !camelot_factories.is_empty())
+        if !args.json
+            && (!v2_factories.is_empty()
+                || !v3_factories.is_empty()
+                || vault.is_some()
+                || registry.is_some()
+                || !solidly_factories.is_empty()
+                || !camelot_factories.is_empty())
         {
-            tracing::info!("Factories: {} V2, {} V3, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
-                v2_factories.len(), v3_factories.len(), solidly_factories.len(), camelot_factories.len(),
-                vault.is_some(), registry.is_some());
+            tracing::info!(
+                "Factories: {} V2, {} V3, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
+                v2_factories.len(),
+                v3_factories.len(),
+                solidly_factories.len(),
+                camelot_factories.len(),
+                vault.is_some(),
+                registry.is_some()
+            );
         }
 
         let disc_config = DiscoveryConfig {
             batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, args.batch_size),
             v2_fee_override: chain_config.uniswap_v2_default_fee,
             balancer_vault: vault,
-            v2_factories: if v2_factories.is_empty() { None } else { Some(v2_factories.as_slice()) },
-            v3_factories: if v3_factories.is_empty() { None } else { Some(v3_factories.as_slice()) },
+            v2_factories: if v2_factories.is_empty() {
+                None
+            } else {
+                Some(v2_factories.as_slice())
+            },
+            v3_factories: if v3_factories.is_empty() {
+                None
+            } else {
+                Some(v3_factories.as_slice())
+            },
             curve_registry: registry,
-            curve_factories: if curve_factories.is_empty() { None } else { Some(curve_factories.as_slice()) },
-            solidly_factories: if solidly_factories.is_empty() { None } else { Some(solidly_factories.as_slice()) },
-            camelot_factories: if camelot_factories.is_empty() { None } else { Some(camelot_factories.as_slice()) },
+            curve_factories: if curve_factories.is_empty() {
+                None
+            } else {
+                Some(curve_factories.as_slice())
+            },
+            solidly_factories: if solidly_factories.is_empty() {
+                None
+            } else {
+                Some(solidly_factories.as_slice())
+            },
+            camelot_factories: if camelot_factories.is_empty() {
+                None
+            } else {
+                Some(camelot_factories.as_slice())
+            },
             solidly_fee_bps: args.solidly_fee_bps,
             v4_pool_manager,
             infinity_cl_pool_manager,
-            trader_joe_factories: if trader_joe_factories.is_empty() { None } else { Some(trader_joe_factories.as_slice()) },
+            trader_joe_factories: if trader_joe_factories.is_empty() {
+                None
+            } else {
+                Some(trader_joe_factories.as_slice())
+            },
             pendle_factory,
             metric_factory,
             fluid_factory,
@@ -437,16 +515,29 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         };
 
         match mev_scout_core::pool::discovery::discover_and_cache(
-            &rpc, &cache, from, to, &disc_config, Some(&tick),
-        ).await {
+            &rpc,
+            &cache,
+            from,
+            to,
+            &disc_config,
+            Some(&tick),
+        )
+        .await
+        {
             Ok((pools, active_blocks)) => {
-                tracing::info!("On-chain: found {} pools in {} active blocks", pools.len(), active_blocks.len());
+                tracing::info!(
+                    "On-chain: found {} pools in {} active blocks",
+                    pools.len(),
+                    active_blocks.len()
+                );
                 all_pools.extend(pools);
                 all_active_blocks.extend(active_blocks);
             }
             Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
         }
-        if let Some(pb) = _pb { pb.finish_and_clear(); }
+        if let Some(pb) = _pb {
+            pb.finish_and_clear();
+        }
     }
 
     // ── Phase 2: Remote sourcing (aggregator fallback ladder) ──
@@ -505,7 +596,9 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 Ok(resolved) => {
                     let mut filled = 0usize;
                     for p in pools.iter_mut() {
-                        let Some(m) = resolved.get(&p.address) else { continue };
+                        let Some(m) = resolved.get(&p.address) else {
+                            continue;
+                        };
                         let before = (p.token0, p.token1, p.fee, p.tick_spacing);
                         if p.token0.is_zero() {
                             if let Some(t) = m.token0 {
@@ -552,15 +645,24 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     // ── Phase 5.2: Pool health check (applies to all sources — remote TVL can be stale) ──
     if args.health_check && !pools.is_empty() {
         let before = pools.len();
-        let balancer_vault = chain_config.balancer_vault.as_ref()
+        let balancer_vault = chain_config
+            .balancer_vault
+            .as_ref()
             .and_then(|s| s.parse::<Address>().ok());
         let (checked, removed) = mev_scout_core::pool::discovery::health_check_pools(
-            &rpc, pools, args.rpc_concurrency,
+            &rpc,
+            pools,
+            args.rpc_concurrency,
             balancer_vault,
-        ).await;
+        )
+        .await;
         pools = checked;
         if removed > 0 && !args.json {
-            println!("  Health check: removed {} drained/paused pools ({} remaining)", removed, before - removed);
+            println!(
+                "  Health check: removed {} drained/paused pools ({} remaining)",
+                removed,
+                before - removed
+            );
         }
     }
 
@@ -592,17 +694,30 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             });
             let t0 = p.token0_symbol.as_deref().unwrap_or("???");
             let t1 = p.token1_symbol.as_deref().unwrap_or("???");
-            let tvl_note = p.tvl_usd.map(|v| format!(" tvl=${:.0}", v)).unwrap_or_default();
+            let tvl_note = p
+                .tvl_usd
+                .map(|v| format!(" tvl=${:.0}", v))
+                .unwrap_or_default();
             match p.dex_type {
                 DexType::UniswapV2 => {
                     println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
                 }
                 DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity => {
-                    println!("  {dex}  {}  {}/{}  fee={}  tickSpacing={}{}",
-                        p.address, t0, t1, p.fee, p.tick_spacing.unwrap_or(0), tvl_note);
+                    println!(
+                        "  {dex}  {}  {}/{}  fee={}  tickSpacing={}{}",
+                        p.address,
+                        t0,
+                        t1,
+                        p.fee,
+                        p.tick_spacing.unwrap_or(0),
+                        tvl_note
+                    );
                 }
                 DexType::Solidly | DexType::Camelot => {
-                    let stable = p.is_stable.map(|s| if s { " stable" } else { "" }).unwrap_or("");
+                    let stable = p
+                        .is_stable
+                        .map(|s| if s { " stable" } else { "" })
+                        .unwrap_or("");
                     println!("  {dex}{stable}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
                 }
                 DexType::Balancer | DexType::Curve => {
@@ -614,12 +729,24 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                     }
                 }
                 DexType::TraderJoeLB => {
-                    println!("  {dex}  {}  {}/{}  binStep={}{}",
-                        p.address, t0, t1, p.bin_step.unwrap_or(0), tvl_note);
+                    println!(
+                        "  {dex}  {}  {}/{}  binStep={}{}",
+                        p.address,
+                        t0,
+                        t1,
+                        p.bin_step.unwrap_or(0),
+                        tvl_note
+                    );
                 }
                 DexType::Pendle => {
-                    println!("  {dex}  {}  {}/{}  maturity={}{}",
-                        p.address, t0, t1, p.maturity_timestamp.unwrap_or(0), tvl_note);
+                    println!(
+                        "  {dex}  {}  {}/{}  maturity={}{}",
+                        p.address,
+                        t0,
+                        t1,
+                        p.maturity_timestamp.unwrap_or(0),
+                        tvl_note
+                    );
                 }
                 DexType::Metric | DexType::Fluid => {
                     println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
@@ -630,7 +757,11 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         if is_remote_only {
             println!("  Found {} pool(s) via remote sources", pools.len());
         } else {
-            println!("  Found {} pool(s) in {} active blocks", pools.len(), all_active_blocks.len());
+            println!(
+                "  Found {} pool(s) in {} active blocks",
+                pools.len(),
+                all_active_blocks.len()
+            );
             if (is_hybrid || args.enrich) && !pools.is_empty() {
                 let enriched = pools.iter().filter(|p| p.tvl_usd.is_some()).count();
                 println!("  Enriched: {} pool(s) with TVL metadata", enriched);
@@ -647,11 +778,8 @@ mod tests {
     use alloy::primitives::address;
 
     fn temp_store(tag: &str) -> (SqliteStore, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "mev_scout_persist_{}_{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mev_scout_persist_{}_{}", tag, std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("cache.db");
         (SqliteStore::open(&path).unwrap(), path)
@@ -671,21 +799,37 @@ mod tests {
         let pools = vec![
             DiscoveredPool::new(
                 address!("1111111111111111111111111111111111111111"),
-                t0, t1, 0, DexType::UniswapV3, 0,
+                t0,
+                t1,
+                0,
+                DexType::UniswapV3,
+                0,
             )
             .with_tvl_usd(Some(50_000.0)),
             DiscoveredPool::new(
                 address!("2222222222222222222222222222222222222222"),
-                t0, t1, 0, DexType::TraderJoeLB, 0,
+                t0,
+                t1,
+                0,
+                DexType::TraderJoeLB,
+                0,
             ),
             DiscoveredPool::new(
                 address!("3333333333333333333333333333333333333333"),
-                t0, t1, 0, DexType::Pendle, 0,
+                t0,
+                t1,
+                0,
+                DexType::Pendle,
+                0,
             ),
             // Zero-token entry is unusable downstream — must be skipped.
             DiscoveredPool::new(
                 address!("4444444444444444444444444444444444444444"),
-                Address::ZERO, t1, 3000, DexType::UniswapV3, 0,
+                Address::ZERO,
+                t1,
+                3000,
+                DexType::UniswapV3,
+                0,
             ),
         ];
 
@@ -701,7 +845,10 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|| panic!("pool {} missing after round-trip", p.address));
             assert_eq!(got.address, p.address);
-            assert_eq!(got.dex_type, p.dex_type, "dex_type must survive the round-trip");
+            assert_eq!(
+                got.dex_type, p.dex_type,
+                "dex_type must survive the round-trip"
+            );
             assert_eq!(got.token0, p.token0);
             assert_eq!(got.token1, p.token1);
             assert_eq!(got.tvl_usd, p.tvl_usd);
@@ -728,7 +875,14 @@ mod tests {
         let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
         // Run 1: on-chain-resolved metadata (multicall backfill / factory scan).
-        let rich = vec![DiscoveredPool::new(addr, t0, t1, 500, DexType::UniswapV3, 100)];
+        let rich = vec![DiscoveredPool::new(
+            addr,
+            t0,
+            t1,
+            500,
+            DexType::UniswapV3,
+            100,
+        )];
         assert_eq!(persist_universe(&store, &rich), 1);
 
         // Run 2: remote-only re-discovery with less information.
@@ -736,8 +890,15 @@ mod tests {
         assert_eq!(persist_universe(&store, &sparse), 1);
 
         let got = store.get_discovered_pool(&addr).unwrap().unwrap();
-        assert_eq!(got.dex_type, DexType::UniswapV3, "specific type must beat the V2 fallback");
+        assert_eq!(
+            got.dex_type,
+            DexType::UniswapV3,
+            "specific type must beat the V2 fallback"
+        );
         assert_eq!(got.fee, 500, "cached fee must not be reset to 0");
-        assert_eq!(got.creation_block, 100, "cached creation_block must survive");
+        assert_eq!(
+            got.creation_block, 100,
+            "cached creation_block must survive"
+        );
     }
 }

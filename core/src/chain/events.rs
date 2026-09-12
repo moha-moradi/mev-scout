@@ -23,9 +23,8 @@ pub const V2_SWAP_TOPIC: B256 =
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
 
-pub static V3_FLASH_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("Flash(address,address,uint256,uint256,bytes)")
-});
+pub static V3_FLASH_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Flash(address,address,uint256,uint256,bytes)"));
 
 // ── Uniswap V4 ──────────────────────────────────────────────────────
 
@@ -35,9 +34,8 @@ pub static V3_FLASH_TOPIC: LazyLock<B256> = LazyLock::new(|| {
 /// topics[1]. NOTE: this is NOT the same signature as the V3 Swap event —
 /// the previous string here was identical to V3's, hashing to the V3 topic
 /// and silently disabling V4 trade detection.
-pub static V4_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-});
+pub static V4_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)"));
 
 // ── Pancake Infinity CL ──────────────────────────────────────────────
 
@@ -74,9 +72,8 @@ pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
 /// int16 newTick, uint104 newPositionInBin)` with sender/recipient assumed
 /// indexed. Topic digest computed from the signature string; on-chain
 /// verification deferred (same class as Q6/Q10/Q11).
-pub static METRIC_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("Swap(address,address,bool,int128,int128,int16,uint104)")
-});
+pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
 
 // ── Balancer V2 ─────────────────────────────────────────────────────
 
@@ -149,9 +146,8 @@ pub fn decode_solidly_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
 /// Balancer V2 Vault Swap event: `Swap(bytes32 indexed poolId, address
 /// indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256
 /// amountOut)`. Hash verified against the Balancer V2 Vault contract.
-pub static BALANCER_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    crate::pool::decoders::BALANCER_SWAP_TOPIC.into()
-});
+pub static BALANCER_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| crate::pool::decoders::BALANCER_SWAP_TOPIC);
 
 /// Decode a Balancer V2 Vault Swap event.
 ///
@@ -202,8 +198,9 @@ pub static CURVE_V2_TOKEN_EXCHANGE_TOPIC: LazyLock<B256> =
 /// Trader Joe Liquidity Book 2.0 Pair Swap event (also matches the LB 2.2
 /// per-side-amounts form — same canonical signature). Verified against
 /// lfj-gg/joe-v2 branch v2.0.
-pub static TRADER_JOE_LB_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)"));
+pub static TRADER_JOE_LB_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)")
+});
 
 /// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event (packed bytes32 amounts).
 /// Verified against lfj-gg/joe-v2 branches main/v2.1/v2.2.
@@ -505,7 +502,11 @@ pub fn decode_uniswap_v3_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     }
     let abs0 = a0.wrapping_abs();
     let abs1 = a1.wrapping_abs();
-    let (amount_in, amount_out) = if abs0 >= abs1 { (abs0, abs1) } else { (abs1, abs0) };
+    let (amount_in, amount_out) = if abs0 >= abs1 {
+        (abs0, abs1)
+    } else {
+        (abs1, abs0)
+    };
     let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
     let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
     Some(TradeEvent {
@@ -542,8 +543,12 @@ pub fn decode_uniswap_v4_swap(log: &Log) -> Option<TradeEvent> {
     }
     // amount0/amount1 are int128 (sign-extended into their 32-byte words);
     // one leg is typically negative — report magnitudes, larger as amount_in.
-    let a0 = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
-    let a1 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a0 = I256::try_from_be_slice(&data[0..32])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[32..64])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
     let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
     let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
     let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
@@ -581,8 +586,12 @@ pub fn decode_infinity_cl_swap(log: &Log) -> Option<TradeEvent> {
     if data.len() < 64 {
         return None;
     }
-    let a0 = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
-    let a1 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a0 = I256::try_from_be_slice(&data[0..32])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[32..64])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
     let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
     let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
     let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
@@ -644,8 +653,12 @@ pub fn decode_metric_swap(log: &Log) -> Option<TradeEvent> {
     if data.len() < 160 {
         return None;
     }
-    let a0 = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
-    let a1 = I256::try_from_be_slice(&data[64..96]).unwrap_or(I256::ZERO).wrapping_abs();
+    let a0 = I256::try_from_be_slice(&data[32..64])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
+    let a1 = I256::try_from_be_slice(&data[64..96])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
     let (amount_in, amount_out) = if a0 >= a1 { (a0, a1) } else { (a1, a0) };
     let amount_in = U256::try_from(amount_in).unwrap_or(U256::ZERO);
     let amount_out = U256::try_from(amount_out).unwrap_or(U256::ZERO);
@@ -747,12 +760,12 @@ pub fn decode_trader_joe_lb_swap(log: &Log, pool: Address, legacy: bool) -> Opti
             let lo = U256::from_be_slice(&word[16..32]);
             hi.max(lo)
         };
-        (
-            unpack(&data[0..32]),
-            unpack(&data[32..64]),
-        )
+        (unpack(&data[0..32]), unpack(&data[32..64]))
     } else {
-        (U256::from_be_slice(&data[32..64]), U256::from_be_slice(&data[64..96]))
+        (
+            U256::from_be_slice(&data[32..64]),
+            U256::from_be_slice(&data[64..96]),
+        )
     };
     Some(TradeEvent {
         block: log.block_number?,
@@ -777,8 +790,12 @@ pub fn decode_pendle_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
     if data.len() < 64 {
         return None;
     }
-    let pt = I256::try_from_be_slice(&data[0..32]).unwrap_or(I256::ZERO).wrapping_abs();
-    let sy = I256::try_from_be_slice(&data[32..64]).unwrap_or(I256::ZERO).wrapping_abs();
+    let pt = I256::try_from_be_slice(&data[0..32])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
+    let sy = I256::try_from_be_slice(&data[32..64])
+        .unwrap_or(I256::ZERO)
+        .wrapping_abs();
     Some(TradeEvent {
         block: log.block_number?,
         tx_hash: log.transaction_hash?,
@@ -867,7 +884,9 @@ mod tests {
             block_number: Some(100),
             block_hash: None,
             block_timestamp: None,
-            transaction_hash: Some(b256!("0000000000000000000000000000000000000000000000000000000000000001")),
+            transaction_hash: Some(b256!(
+                "0000000000000000000000000000000000000000000000000000000000000001"
+            )),
             transaction_index: Some(0),
             log_index: Some(0),
             removed: false,
@@ -989,11 +1008,16 @@ mod tests {
         let data = LogData::new_unchecked(topics_vec, data_bytes);
 
         let log = Log {
-            inner: alloy::primitives::Log { address: Address::ZERO, data },
+            inner: alloy::primitives::Log {
+                address: Address::ZERO,
+                data,
+            },
             block_number: Some(100),
             block_hash: None,
             block_timestamp: None,
-            transaction_hash: Some(b256!("0000000000000000000000000000000000000000000000000000000000000001")),
+            transaction_hash: Some(b256!(
+                "0000000000000000000000000000000000000000000000000000000000000001"
+            )),
             transaction_index: Some(0),
             log_index: Some(0),
             removed: false,
@@ -1008,10 +1032,18 @@ mod tests {
 
     #[test]
     fn wrong_topic_returns_none() {
-        let data = LogData::new_unchecked(vec![b256!("0000000000000000000000000000000000000000000000000000000000000001")], alloy::primitives::Bytes::new());
+        let data = LogData::new_unchecked(
+            vec![b256!(
+                "0000000000000000000000000000000000000000000000000000000000000001"
+            )],
+            alloy::primitives::Bytes::new(),
+        );
 
         let log = Log {
-            inner: alloy::primitives::Log { address: Address::ZERO, data },
+            inner: alloy::primitives::Log {
+                address: Address::ZERO,
+                data,
+            },
             block_number: Some(100),
             block_hash: None,
             block_timestamp: None,

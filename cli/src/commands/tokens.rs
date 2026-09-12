@@ -7,8 +7,8 @@ use mev_scout_core::config::Config;
 use crate::cli::TokensArgs;
 
 pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()> {
-    let (chain_name, _chain_config) = validation::resolve_chain(config)
-        .context("failed to resolve chain")?;
+    let (chain_name, _chain_config) =
+        validation::resolve_chain(config).context("failed to resolve chain")?;
     let chain_id = chain_name.chain_id();
 
     // ── Load token cache (SQLite + pre-populated known tokens) ──
@@ -47,13 +47,16 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
     // ── Display results ──
     match config.output.output.as_str() {
         "json" => {
-            let out: Vec<serde_json::Value> = entries.iter().map(|(addr, symbol, dec)| {
-                serde_json::json!({
-                    "address": addr,
-                    "symbol": symbol,
-                    "decimals": dec,
+            let out: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|(addr, symbol, dec)| {
+                    serde_json::json!({
+                        "address": addr,
+                        "symbol": symbol,
+                        "decimals": dec,
+                    })
                 })
-            }).collect();
+                .collect();
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         "csv" => {
@@ -67,13 +70,10 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
             let mut table = Table::new();
             table.set_header(vec!["#", "Address", "Symbol", "Decimals"]);
             for (i, (addr, symbol, dec)) in entries.iter().enumerate() {
-                let d = dec.map(|n| n.to_string()).unwrap_or_else(|| "-".to_string());
-                table.add_row(vec![
-                    (i + 1).to_string(),
-                    addr.clone(),
-                    symbol.clone(),
-                    d,
-                ]);
+                let d = dec
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                table.add_row(vec![(i + 1).to_string(), addr.clone(), symbol.clone(), d]);
             }
             println!("  {table}");
             println!();

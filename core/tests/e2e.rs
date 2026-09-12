@@ -10,9 +10,8 @@ use alloy::primitives::{address, Address, U256};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::fetch::Fetcher;
 
-use mev_scout_core::types::MevOpportunity;
-use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::dex_type::DexType;
+use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pool::discovery::{discover_pools, DiscoveryConfig};
 use mev_scout_core::pool::state::{
     BalancerPoolVariant, CurvePoolVariant, PoolInfo, PoolManager, PoolState, ScanScope,
@@ -20,6 +19,7 @@ use mev_scout_core::pool::state::{
 };
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
+use mev_scout_core::types::MevOpportunity;
 use mev_scout_core::types::{ChainName, GasConfig, RangeMode, Strategy};
 
 const POLYGON_CHAIN_ID: u64 = 137;
@@ -117,7 +117,9 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             reserve1: 0,
         }),
         DexType::UniswapV3 => PoolState::UniswapV3(UniswapV3PoolState::new(info)),
-        DexType::UniswapV4 => PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info)),
+        DexType::UniswapV4 => {
+            PoolState::UniswapV4(mev_scout_core::pool::state::UniswapV4PoolState::new(info))
+        }
         DexType::PancakeInfinity => PoolState::PancakeInfinity(
             mev_scout_core::pool::state::PancakeInfinityPoolState::new(info),
         ),
@@ -143,18 +145,20 @@ fn pool_info_to_state(info: PoolInfo) -> PoolState {
             bpt_index: None,
             rate_providers: vec![],
         }),
-        DexType::Solidly | DexType::Camelot => {
-            PoolState::UniswapV2(UniswapV2PoolState {
-                info,
-                reserve0: 0,
-                reserve1: 0,
-            })
+        DexType::Solidly | DexType::Camelot => PoolState::UniswapV2(UniswapV2PoolState {
+            info,
+            reserve0: 0,
+            reserve1: 0,
+        }),
+        DexType::TraderJoeLB => PoolState::TraderJoeLB(
+            mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0),
+        ),
+        DexType::Pendle => {
+            PoolState::Pendle(mev_scout_core::pool::state::PendlePoolState::new(info))
         }
-        DexType::TraderJoeLB => {
-            PoolState::TraderJoeLB(mev_scout_core::pool::state::TraderJoeLBPoolState::new(info, 0, 0))
+        DexType::Metric => {
+            PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info))
         }
-        DexType::Pendle => PoolState::Pendle(mev_scout_core::pool::state::PendlePoolState::new(info)),
-        DexType::Metric => PoolState::Metric(mev_scout_core::pool::state::MetricPoolState::new(info)),
         DexType::Fluid => PoolState::Fluid(mev_scout_core::pool::state::FluidPoolState::new(info)),
     }
 }
@@ -231,11 +235,17 @@ async fn test_e2e_rpc_connectivity() {
     eprintln!("--- test_e2e_rpc_connectivity ---");
     let (rpc, block_num) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
     eprintln!("  Connected to Polygon at block {block_num}");
     assert_eq!(rpc.chain_id(), POLYGON_CHAIN_ID, "Chain ID mismatch");
-    assert!(block_num > 50_000_000, "Block number seems too low: {block_num}");
+    assert!(
+        block_num > 50_000_000,
+        "Block number seems too low: {block_num}"
+    );
 }
 
 /// Test 2: Fetch blocks into SQLite cache and verify roundtrip
@@ -244,7 +254,10 @@ async fn test_e2e_fetch_and_cache() {
     eprintln!("--- test_e2e_fetch_and_cache ---");
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
     let (cache, _dir) = temp_cache("fetch_cache");
     let fetcher = Fetcher::new(rpc, cache);
@@ -258,7 +271,10 @@ async fn test_e2e_fetch_and_cache() {
         mode: RangeMode::Range(start, end),
     };
     eprintln!("  Fetching blocks {start}..{end}");
-    let fetched = fetcher.fetch_range(&range, Option::<&fn()>::None).await.unwrap();
+    let fetched = fetcher
+        .fetch_range(&range, Option::<&fn()>::None)
+        .await
+        .unwrap();
     eprintln!("  Fetched {fetched:?}");
 
     let cache = fetcher.cache_store();
@@ -290,12 +306,20 @@ async fn test_e2e_fetch_and_cache() {
     }
 
     for block_num in start..=end {
-        assert!(cache.has_block(block_num).unwrap(), "Missing block {block_num}");
+        assert!(
+            cache.has_block(block_num).unwrap(),
+            "Missing block {block_num}"
+        );
         let block = cache.get_block(block_num).unwrap().unwrap();
         let txs = cache.get_txs(block_num).unwrap().unwrap();
-        eprintln!("  Block {block_num}: {} txs, hash={:?} ts={}", txs.len(), block.hash, block.timestamp);
+        eprintln!(
+            "  Block {block_num}: {} txs, hash={:?} ts={}",
+            txs.len(),
+            block.hash,
+            block.timestamp
+        );
         assert!(block.timestamp > 0, "Zero timestamp in block {block_num}");
-        assert!(txs.len() > 0, "No txs in block {block_num}");
+        assert!(!txs.is_empty(), "No txs in block {block_num}");
     }
 
     let integrity = cache.check_integrity(start, end).unwrap();
@@ -308,7 +332,10 @@ async fn test_e2e_pool_discovery() {
     eprintln!("--- test_e2e_pool_discovery ---");
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
 
     let start = tip.saturating_sub(10000);
@@ -336,10 +363,7 @@ async fn test_e2e_pool_discovery() {
         token_cache: None,
         pool_cache: None,
     };
-    let (pools, _active) = match discover_pools(
-        &rpc, start, end, &disc_config,
-        None,
-    ).await {
+    let (pools, _active) = match discover_pools(&rpc, start, end, &disc_config, None).await {
         Ok((p, a)) => (p, a),
         Err(e) => {
             eprintln!("  Pool discovery failed (archive RPC likely required): {e}");
@@ -347,19 +371,34 @@ async fn test_e2e_pool_discovery() {
             return;
         }
     };
-    eprintln!("  Found {} pools (V2 from factory + DEX events)", pools.len());
-    assert!(pools.len() > 0, "Should find at least 1 pool in a 10K block range");
+    eprintln!(
+        "  Found {} pools (V2 from factory + DEX events)",
+        pools.len()
+    );
+    assert!(
+        !pools.is_empty(),
+        "Should find at least 1 pool in a 10K block range"
+    );
 
     for p in pools.iter().take(5) {
-        eprintln!("  Pool {}: token0={:?} token1={:?} fee={}", p.address, p.token0, p.token1, p.fee);
+        eprintln!(
+            "  Pool {}: token0={:?} token1={:?} fee={}",
+            p.address, p.token0, p.token1, p.fee
+        );
     }
 
     let (cache, _dir) = temp_cache("discovery");
     for p in &pools {
-        cache.put_discovered_pool(&PoolInfo::from(p.clone())).unwrap();
+        cache
+            .put_discovered_pool(&PoolInfo::from(p.clone()))
+            .unwrap();
     }
     let stored = cache.list_discovered_pools().unwrap();
-    assert_eq!(stored.len(), pools.len(), "All discovered pools should persist");
+    assert_eq!(
+        stored.len(),
+        pools.len(),
+        "All discovered pools should persist"
+    );
 }
 
 /// Test 4: Initialize real V2 pool state from RPC (fast, uses eth_getStorageAt)
@@ -368,25 +407,40 @@ async fn test_e2e_pool_initialization() {
     eprintln!("--- test_e2e_pool_initialization ---");
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
 
     let block_num = tip.saturating_sub(1);
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info(
-        quick_wmatic_usdc(), wmatic(), usdc(), "QuickSwap WMATIC/USDC",
+        quick_wmatic_usdc(),
+        wmatic(),
+        usdc(),
+        "QuickSwap WMATIC/USDC",
     )));
     pm.add_pool(pool_info_to_state(pool_info(
-        sushi_wmatic_usdc(), wmatic(), usdc(), "SushiSwap WMATIC/USDC",
+        sushi_wmatic_usdc(),
+        wmatic(),
+        usdc(),
+        "SushiSwap WMATIC/USDC",
     )));
     pm.add_pool(pool_info_to_state(pool_info(
-        quick_wmatic_usdt(), wmatic(), usdt(), "QuickSwap WMATIC/USDT",
+        quick_wmatic_usdt(),
+        wmatic(),
+        usdt(),
+        "QuickSwap WMATIC/USDT",
     )));
 
     pm.init_from_rpc(&rpc, block_num, None).await;
     let initialized = pm.initialized_count();
     eprintln!("  Initialized {initialized}/3 pools at block {block_num}");
-    assert!(initialized >= 2, "Expected >=2 initialized pools, got {initialized}");
+    assert!(
+        initialized >= 2,
+        "Expected >=2 initialized pools, got {initialized}"
+    );
 
     for (addr, name) in &[
         (quick_wmatic_usdc(), "QuickSwap WMATIC/USDC"),
@@ -394,13 +448,21 @@ async fn test_e2e_pool_initialization() {
         (quick_wmatic_usdt(), "QuickSwap WMATIC/USDT"),
     ] {
         if let Some(PoolState::UniswapV2(s)) = pm.get(addr) {
-            eprintln!("  {name} reserves: {} {} (initialized={})", s.reserve0, s.reserve1, s.reserve0 > 0);
+            eprintln!(
+                "  {name} reserves: {} {} (initialized={})",
+                s.reserve0,
+                s.reserve1,
+                s.reserve0 > 0
+            );
         }
     }
 
     // Major pools should have non-zero reserves
     if let Some(PoolState::UniswapV2(s)) = pm.get(&quick_wmatic_usdc()) {
-        assert!(s.reserve0 > 0 || s.reserve1 > 0, "QuickSwap WMATIC/USDC has zero reserves");
+        assert!(
+            s.reserve0 > 0 || s.reserve1 > 0,
+            "QuickSwap WMATIC/USDC has zero reserves"
+        );
     }
 }
 
@@ -410,18 +472,27 @@ async fn test_e2e_two_hop_arbitrage() {
     eprintln!("--- test_e2e_two_hop_arbitrage ---");
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
 
     let block_num = tip.saturating_sub(1);
     let mut pm = PoolManager::new();
     // Pool A: QuickSwap WMATIC/USDC — high liquidity V2 pool
     pm.add_pool(pool_info_to_state(pool_info(
-        quick_wmatic_usdc(), wmatic(), usdc(), "QuickSwap WMATIC/USDC",
+        quick_wmatic_usdc(),
+        wmatic(),
+        usdc(),
+        "QuickSwap WMATIC/USDC",
     )));
     // Pool B: SushiSwap WMATIC/USDT — shares WMATIC with pool A (arb via WMATIC)
     pm.add_pool(pool_info_to_state(pool_info(
-        sushi_wmatic_usdt(), wmatic(), usdt(), "SushiSwap WMATIC/USDT",
+        sushi_wmatic_usdt(),
+        wmatic(),
+        usdt(),
+        "SushiSwap WMATIC/USDT",
     )));
 
     pm.init_from_rpc(&rpc, block_num, None).await;
@@ -449,7 +520,10 @@ async fn test_e2e_two_hop_arbitrage() {
     let gas_cfg = default_gas_config();
     let opps = detector.detect(&pm, 0, block_num, 50_000_000_000, gas_cfg, &ScanScope::Full);
 
-    eprintln!("  TwoHopArb detection at block {block_num}: {} opportunities", opps.len());
+    eprintln!(
+        "  TwoHopArb detection at block {block_num}: {} opportunities",
+        opps.len()
+    );
     print_opportunities(&opps);
 
     if opps.is_empty() {
@@ -471,16 +545,26 @@ async fn test_e2e_cross_dex_arbitrage() {
     eprintln!("--- test_e2e_cross_dex_arbitrage ---");
     let (rpc, tip) = match try_rpc().await {
         Some(v) => v,
-        None => { eprintln!("SKIP: no RPC available"); return; }
+        None => {
+            eprintln!("SKIP: no RPC available");
+            return;
+        }
     };
 
     let block_num = tip.saturating_sub(1);
     let mut pm = PoolManager::new();
     pm.add_pool(pool_info_to_state(pool_info(
-        quick_wmatic_usdc(), wmatic(), usdc(), "QuickSwap V2",
+        quick_wmatic_usdc(),
+        wmatic(),
+        usdc(),
+        "QuickSwap V2",
     )));
     pm.add_pool(pool_info_to_state(pool_info_v3(
-        uni_v3_wmatic_usdc(), wmatic(), usdc(), 500, "Uniswap V3",
+        uni_v3_wmatic_usdc(),
+        wmatic(),
+        usdc(),
+        500,
+        "Uniswap V3",
     )));
 
     pm.init_from_rpc(&rpc, block_num, None).await;
@@ -492,7 +576,14 @@ async fn test_e2e_cross_dex_arbitrage() {
     }
 
     let mut detector = TwoHopArbDetector::new(block_num);
-    let opps = detector.detect(&pm, 0, block_num, 50_000_000_000, default_gas_config(), &ScanScope::Full);
+    let opps = detector.detect(
+        &pm,
+        0,
+        block_num,
+        50_000_000_000,
+        default_gas_config(),
+        &ScanScope::Full,
+    );
     eprintln!("  Cross-DEX arb opportunities: {}", opps.len());
     print_opportunities(&opps);
 
@@ -505,15 +596,17 @@ async fn test_e2e_cross_dex_arbitrage() {
     }
 }
 
-
-
 /// Test 8: Opportunity serialization roundtrip (no RPC needed)
 #[test]
 fn test_e2e_opportunity_persistence() {
     use mev_scout_core::cache::RunManifest;
 
     let opp = MevOpportunity::new(
-        12345678, 0, Strategy::TwoHopArb, quick_wmatic_usdc(), 9999999999,
+        12345678,
+        0,
+        Strategy::TwoHopArb,
+        quick_wmatic_usdc(),
+        9999999999,
     );
     let json = serde_json::to_string(&opp).unwrap();
     let deserialized: MevOpportunity = serde_json::from_str(&json).unwrap();
@@ -541,9 +634,7 @@ fn test_e2e_opportunity_persistence() {
 #[test]
 fn test_e2e_cache_isolation() {
     let (poly, _dp) = temp_cache("iso_poly");
-    let _eth = SqliteStore::open(
-        Path::new(&temp_cache_dir("iso_eth")).join("cache.db"),
-    ).unwrap();
+    let _eth = SqliteStore::open(Path::new(&temp_cache_dir("iso_eth")).join("cache.db")).unwrap();
 
     let pool = PoolInfo {
         address: quick_wmatic_usdc(),
@@ -600,10 +691,21 @@ async fn e2e_geckoterminal_discovery() {
         pools.len()
     );
     for p in pools.iter().take(10) {
-        assert!(!p.token0.is_zero(), "token0 must not be ZERO for {}", p.address);
-        assert!(!p.token1.is_zero(), "token1 must not be ZERO for {}", p.address);
+        assert!(
+            !p.token0.is_zero(),
+            "token0 must not be ZERO for {}",
+            p.address
+        );
+        assert!(
+            !p.token1.is_zero(),
+            "token1 must not be ZERO for {}",
+            p.address
+        );
     }
     // Aggregators carry token symbols without extra eth_call.
     let with_symbols = pools.iter().filter(|p| p.token0_symbol.is_some()).count();
-    assert!(with_symbols > 0, "aggregator pools should carry token symbols");
+    assert!(
+        with_symbols > 0,
+        "aggregator pools should carry token symbols"
+    );
 }

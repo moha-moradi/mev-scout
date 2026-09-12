@@ -102,8 +102,16 @@ mod tests {
             ("getLiquidity(bytes32)", &INF_CL_LIQUIDITY, "fa6793d5"),
             ("getPool(address)", &BALANCER_GET_POOL, "bbe4f6db"),
             ("getPoolTokens(bytes32)", &GET_POOL_TOKENS, "f94d4668"),
-            ("getNormalizedWeights()", &GET_NORMALIZED_WEIGHTS, "f89f27ed"),
-            ("getSwapFeePercentage()", &GET_SWAP_FEE_PERCENTAGE, "55c67628"),
+            (
+                "getNormalizedWeights()",
+                &GET_NORMALIZED_WEIGHTS,
+                "f89f27ed",
+            ),
+            (
+                "getSwapFeePercentage()",
+                &GET_SWAP_FEE_PERCENTAGE,
+                "55c67628",
+            ),
             (
                 "getAmplificationParameter()",
                 &GET_AMPLIFICATION_PARAMETER,
@@ -136,7 +144,8 @@ mod tests {
             ("symbol()", &SYMBOL, "95d89b41"),
         ];
         for (sig, lock, expected_hex) in cases {
-            let actual = hex::encode(&**lock);
+            let bytes: &Bytes = lock;
+            let actual = hex::encode(bytes);
             assert_eq!(
                 &actual, expected_hex,
                 "selector for {sig} drifted: expected {expected_hex}, got {actual}"

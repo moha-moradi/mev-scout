@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use super::INF_CL_INITIALIZE_TOPIC;
+use super::{DiscoveredPool, DiscoveryConfig};
+use crate::dex_type::DexType;
+use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use crate::rpc::RpcClient;
-use crate::dex_type::DexType;
-use super::{DiscoveredPool, DiscoveryConfig};
-use super::INF_CL_INITIALIZE_TOPIC;
+use std::collections::{HashMap, HashSet};
 
 /// Pancake Infinity CL pools live inside the singleton `CLPoolManager`: the
 /// `Initialize` event carries the pool's bytes32 `PoolId` in topics[1] (the
@@ -54,10 +54,18 @@ pub(crate) async fn scan_infinity_cl_batch(
                     let hook_address = (!hook_address.is_zero()).then_some(hook_address);
                     let creation_block = log.block_number.unwrap_or(0);
                     factory_pools.entry(pool_addr).or_insert(
-                        DiscoveredPool::new(pool_addr, token0, token1, fee, DexType::PancakeInfinity, creation_block)
-                            .with_pool_id(Some(pool_id))
-                            .with_factory(Some(pool_manager))
-                            .with_hook_address(hook_address));
+                        DiscoveredPool::new(
+                            pool_addr,
+                            token0,
+                            token1,
+                            fee,
+                            DexType::PancakeInfinity,
+                            creation_block,
+                        )
+                        .with_pool_id(Some(pool_id))
+                        .with_factory(Some(pool_manager))
+                        .with_hook_address(hook_address),
+                    );
                 }
             }
             Err(e) => {

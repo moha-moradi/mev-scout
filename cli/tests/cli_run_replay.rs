@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_ok, make_cfg, run_timed, rpc_lock, scout,
-    HEAVY_TIMEOUT, NETWORK_TIMEOUT,
+    ensure_gate_and_rpc, expect_ok, make_cfg, rpc_lock, run_timed, scout, HEAVY_TIMEOUT,
+    NETWORK_TIMEOUT,
 };
 use serde_json::Value;
 use std::time::Duration;
@@ -41,7 +41,14 @@ fn fetch_run_replay_report_chain() {
 
     let fetch_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &fetch_cfg, "fetch", "--blocks", "5", "--no-sig-resolve"]);
+    c.args([
+        "-f",
+        &fetch_cfg,
+        "fetch",
+        "--blocks",
+        "5",
+        "--no-sig-resolve",
+    ]);
     let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("fetch spawn failed");
     expect_ok(&out, "fetch 5 blocks for chain test");
     assert!(out.stdout.contains("Fetch complete:"));
@@ -49,10 +56,7 @@ fn fetch_run_replay_report_chain() {
         eprintln!("WARN: provider left gaps; continuing with what was cached");
     }
 
-    let run_cfg = make_cfg(
-        &ws,
-        &[("db_path", db_s), ("output", "\"json\"")],
-    );
+    let run_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args(["-f", &run_cfg, "run", "--blocks", "5"]);
     let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("run spawn failed");
@@ -74,7 +78,9 @@ fn fetch_run_replay_report_chain() {
     let start_block = results_json["start_block"]
         .as_u64()
         .expect("start_block numeric");
-    let end_block = results_json["end_block"].as_u64().expect("end_block numeric");
+    let end_block = results_json["end_block"]
+        .as_u64()
+        .expect("end_block numeric");
     assert!(end_block >= start_block, "end_block must be >= start_block");
     assert!(
         end_block - start_block <= 5,
@@ -89,11 +95,20 @@ fn fetch_run_replay_report_chain() {
     let replay_timeout = Duration::from_secs(900);
     let replay_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
-    c.args(["-f", &replay_cfg, "replay", "--block", &start_block.to_string(), "--analyze"]);
+    c.args([
+        "-f",
+        &replay_cfg,
+        "replay",
+        "--block",
+        &start_block.to_string(),
+        "--analyze",
+    ]);
     let out = match run_timed(&mut c, replay_timeout) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("SKIP: replay of block {start_block} exceeded budget (public-RPC stall):\n{e}");
+            eprintln!(
+                "SKIP: replay of block {start_block} exceeded budget (public-RPC stall):\n{e}"
+            );
             return;
         }
     };
@@ -110,7 +125,9 @@ fn fetch_run_replay_report_chain() {
             }
         }
         None => {
-            eprintln!("WARN: no Receipt verification line in replay output — skipping match-rate check");
+            eprintln!(
+                "WARN: no Receipt verification line in replay output — skipping match-rate check"
+            );
         }
     }
 
@@ -128,8 +145,10 @@ fn fetch_run_replay_report_chain() {
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report csv spawn failed");
     expect_ok(&out, "report csv");
     assert!(
-        out.stdout.lines().any(|l| l.trim()
-            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"),
+        out.stdout.lines().any(|l| {
+            l.trim()
+            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"
+        }),
         "csv header line missing:\n{}",
         out.stdout
     );

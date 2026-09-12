@@ -3,14 +3,16 @@
 //! `test_real_v3_mint_swap_burn_detection` hits a live RPC endpoint and is
 //! gated like the CLI E2E suite: it needs `MEV_SCOUT_E2E=1` and `RPC_URL`,
 //! otherwise it skips gracefully (no fallback to the repo `mev-scout.toml`).
-use alloy::primitives::{address, b256, Address, B256, Bytes};
+use alloy::primitives::{address, b256, Address, Bytes, B256};
 use mev_scout_core::data::ExecutedLog;
+use mev_scout_core::dex_type::DexType;
 use mev_scout_core::mev::detectors::jit::JitDetector;
 use mev_scout_core::mev::detectors::jit_arb::JitArbDetector;
 use mev_scout_core::mev::detectors::sandwich::SandwichDetector;
 use mev_scout_core::pool::decoders::{V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::dex_type::DexType;
-use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState};
+use mev_scout_core::pool::state::{
+    PoolInfo, PoolManager, PoolState, UniswapV2PoolState, UniswapV3PoolState,
+};
 use mev_scout_core::types::Strategy;
 
 mod common;
@@ -25,27 +27,31 @@ fn test_sandwich_detection_synthetic() {
     let v2_swap_topic: B256 =
         b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
-    let v2_swap_log =
-        |pool: Address, amt0_in: u128, amt1_in: u128, amt0_out: u128, amt1_out: u128| -> ExecutedLog {
-            let mut data = Vec::with_capacity(128);
-            let mut buf = vec![0u8; 16];
-            data.extend_from_slice(&buf);
-            data.extend_from_slice(&amt0_in.to_be_bytes());
-            buf = vec![0u8; 16];
-            data.extend_from_slice(&buf);
-            data.extend_from_slice(&amt1_in.to_be_bytes());
-            buf = vec![0u8; 16];
-            data.extend_from_slice(&buf);
-            data.extend_from_slice(&amt0_out.to_be_bytes());
-            buf = vec![0u8; 16];
-            data.extend_from_slice(&buf);
-            data.extend_from_slice(&amt1_out.to_be_bytes());
-            ExecutedLog {
-                address: pool,
-                topics: vec![v2_swap_topic, B256::ZERO, B256::ZERO],
-                data: data.into(),
-            }
-        };
+    let v2_swap_log = |pool: Address,
+                       amt0_in: u128,
+                       amt1_in: u128,
+                       amt0_out: u128,
+                       amt1_out: u128|
+     -> ExecutedLog {
+        let mut data = Vec::with_capacity(128);
+        let mut buf = vec![0u8; 16];
+        data.extend_from_slice(&buf);
+        data.extend_from_slice(&amt0_in.to_be_bytes());
+        buf = vec![0u8; 16];
+        data.extend_from_slice(&buf);
+        data.extend_from_slice(&amt1_in.to_be_bytes());
+        buf = vec![0u8; 16];
+        data.extend_from_slice(&buf);
+        data.extend_from_slice(&amt0_out.to_be_bytes());
+        buf = vec![0u8; 16];
+        data.extend_from_slice(&buf);
+        data.extend_from_slice(&amt1_out.to_be_bytes());
+        ExecutedLog {
+            address: pool,
+            topics: vec![v2_swap_topic, B256::ZERO, B256::ZERO],
+            data: data.into(),
+        }
+    };
 
     let usdc = address!("2791bca1f2de4661ed88a30c99a7a9449aa84174");
     let wmatic = address!("0d500b1d8e8ef31e21c99d1db9a6444d3adf1270");

@@ -12,8 +12,8 @@
 //! `profit` (balance-delta accounting, gas, USD) → `store` (SQLite facts) →
 //! `query` (live/stats/top/show/export CLI surface).
 
-pub mod classify;
 pub mod canonical;
+pub mod classify;
 pub mod decode;
 pub mod ingest;
 pub mod pricing;

@@ -1,14 +1,16 @@
 //! JIT (just-in-time) liquidity detection — identifies liquidity added before a swap and removed after.
 
-use std::collections::{HashMap, HashSet};
-use alloy::primitives::{Address, U256};
 use crate::data::ExecutedLog;
-use crate::pool::decoders::{decode_v3_mint_burn, decode_v3_swap, V3_SWAP_TOPIC, V3_MINT_TOPIC, V3_BURN_TOPIC};
-use crate::types::MevOpportunity;
+use crate::pool::decoders::{
+    decode_v3_mint_burn, decode_v3_swap, V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC,
+};
 use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
-use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::pool::math::v3::estimate_v3_swap_gas;
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
+use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
+use alloy::primitives::{Address, U256};
+use std::collections::{HashMap, HashSet};
 
 /// Tracks an active V3 Mint event that hasn't been fully processed.
 #[derive(Debug, Clone)]
@@ -106,11 +108,14 @@ impl JitDetector {
 
         // Process Mint/Burn first (state changes)
         for (log, kind) in &mints_and_burns {
-            let Some(decoded) = decode_v3_mint_burn(log) else { continue };
+            let Some(decoded) = decode_v3_mint_burn(log) else {
+                continue;
+            };
             match *kind {
                 "mint" => {
                     if decoded.amount > 0 {
-                        let (fg0, fg1) = pm.get_v3_state(&log.address)
+                        let (fg0, fg1) = pm
+                            .get_v3_state(&log.address)
                             .map(|s| (s.fee_growth_global_0_x128, s.fee_growth_global_1_x128))
                             .unwrap_or((U256::ZERO, U256::ZERO));
                         self.active_mints
@@ -133,9 +138,13 @@ impl JitDetector {
                 _ => {
                     if let Some(mints) = self.active_mints.get_mut(&log.address) {
                         for mint in mints.iter_mut() {
-                            if mint.burned { continue; }
+                            if mint.burned {
+                                continue;
+                            }
                             if let Some(s) = sender {
-                                if mint.sender != Some(s) { continue; }
+                                if mint.sender != Some(s) {
+                                    continue;
+                                }
                             }
                             if mint.tick_lower == decoded.tick_lower
                                 && mint.tick_upper == decoded.tick_upper
@@ -152,7 +161,11 @@ impl JitDetector {
 
         // Process swaps with tick-range overlap
         for (log, post_tick, amount_in, _liquidity) in &swap_decoded {
-            let pre_tick = self.pool_tick_cache.get(&log.address).copied().unwrap_or(*post_tick);
+            let pre_tick = self
+                .pool_tick_cache
+                .get(&log.address)
+                .copied()
+                .unwrap_or(*post_tick);
             if let Some(mints) = self.active_mints.get_mut(&log.address) {
                 for mint in mints.iter_mut() {
                     // Check if the swap price crossed this mint's range.
@@ -161,7 +174,8 @@ impl JitDetector {
                     // the pre-swap and post-swap tick: if either is in range,
                     // the position was touched by this swap.
                     let in_range_pre = pre_tick >= mint.tick_lower && pre_tick < mint.tick_upper;
-                    let in_range_post = *post_tick >= mint.tick_lower && *post_tick < mint.tick_upper;
+                    let in_range_post =
+                        *post_tick >= mint.tick_lower && *post_tick < mint.tick_upper;
                     if in_range_pre || in_range_post {
                         mint.swapped = true;
                         mint.swap_volume = mint.swap_volume.saturating_add(*amount_in);
@@ -185,10 +199,10 @@ impl JitDetector {
 
         let pool_addrs: Vec<Address> = self.active_mints.keys().copied().collect();
         for pool in &pool_addrs {
-            let Some(mints) = self.active_mints.get(pool) else { continue };
-            let pool_fee = pool_manager.get(pool)
-                .map(|p| p.info().fee)
-                .unwrap_or(3000);
+            let Some(mints) = self.active_mints.get(pool) else {
+                continue;
+            };
+            let pool_fee = pool_manager.get(pool).map(|p| p.info().fee).unwrap_or(3000);
             for mint in mints {
                 let dedup_key = (*pool, mint.mint_tx_index, mint.burned);
                 if self.emitted.contains(&dedup_key) {
@@ -199,15 +213,29 @@ impl JitDetector {
                 if mint.swapped && mint.burned {
                     self.emitted.insert(dedup_key);
                     opportunities.push(Self::build_opp(
-                        self.block_number, *pool, mint, timestamp, true,
-                        base_fee_per_gas, gas_config, pool_fee, pool_manager,
+                        self.block_number,
+                        *pool,
+                        mint,
+                        timestamp,
+                        true,
+                        base_fee_per_gas,
+                        gas_config,
+                        pool_fee,
+                        pool_manager,
                     ));
                 // Partial JIT: Mint → Swap (no burn yet, or no burn in this block)
                 } else if mint.swapped && !mint.burned {
                     self.emitted.insert(dedup_key);
                     opportunities.push(Self::build_opp(
-                        self.block_number, *pool, mint, timestamp, false,
-                        base_fee_per_gas, gas_config, pool_fee, pool_manager,
+                        self.block_number,
+                        *pool,
+                        mint,
+                        timestamp,
+                        false,
+                        base_fee_per_gas,
+                        gas_config,
+                        pool_fee,
+                        pool_manager,
                     ));
                 }
             }
@@ -216,6 +244,7 @@ impl JitDetector {
         opportunities
     }
 
+    #[allow(clippy::too_many_arguments)] // opportunity assembly — thinned in W4
     fn build_opp(
         block_number: u64,
         pool: Address,
@@ -236,18 +265,26 @@ impl JitDetector {
         // and normalized fees (each fee component converted to wrapped native).
         let (raw_fees, normalized_fees) = 'calc: {
             if let Some(v3) = pool_manager.get_v3_state(&pool) {
-                let d0 = v3.fee_growth_global_0_x128.saturating_sub(mint.fee_growth_snapshot_0_x128);
-                let d1 = v3.fee_growth_global_1_x128.saturating_sub(mint.fee_growth_snapshot_1_x128);
+                let d0 = v3
+                    .fee_growth_global_0_x128
+                    .saturating_sub(mint.fee_growth_snapshot_0_x128);
+                let d1 = v3
+                    .fee_growth_global_1_x128
+                    .saturating_sub(mint.fee_growth_snapshot_1_x128);
                 if !d0.is_zero() || !d1.is_zero() {
-                    let fee0_u256: U256 = U256::from(mint.amount) * d0 >> 128;
-                    let fee1_u256: U256 = U256::from(mint.amount) * d1 >> 128;
+                    let fee0_u256: U256 = (U256::from(mint.amount) * d0) >> 128;
+                    let fee1_u256: U256 = (U256::from(mint.amount) * d1) >> 128;
                     let fee0_raw = fee0_u256.saturating_to::<u128>();
                     let fee1_raw = fee1_u256.saturating_to::<u128>();
                     let raw_total = fee0_raw.saturating_add(fee1_raw);
                     // Normalize each fee component to native
                     let (t0, t1) = pool_tokens.unwrap_or((Address::ZERO, Address::ZERO));
-                    let fee0_native = pool_manager.normalize_to_native(t0, fee0_raw).unwrap_or(fee0_raw);
-                    let fee1_native = pool_manager.normalize_to_native(t1, fee1_raw).unwrap_or(fee1_raw);
+                    let fee0_native = pool_manager
+                        .normalize_to_native(t0, fee0_raw)
+                        .unwrap_or(fee0_raw);
+                    let fee1_native = pool_manager
+                        .normalize_to_native(t1, fee1_raw)
+                        .unwrap_or(fee1_raw);
                     let norm_total = fee0_native.saturating_add(fee1_native);
                     break 'calc (raw_total, norm_total);
                 }
@@ -259,13 +296,13 @@ impl JitDetector {
                     .map(|s| s.liquidity)
                     .unwrap_or(0);
                 let raw = if pool_liquidity > 0 && mint.amount < pool_liquidity {
-                    (mint.swap_volume as u128)
+                    mint.swap_volume
                         .saturating_mul(pool_fee as u128)
-                        .saturating_mul(mint.amount as u128)
+                        .saturating_mul(mint.amount)
                         .saturating_div(1_000_000u128)
-                        .saturating_div(pool_liquidity as u128)
+                        .saturating_div(pool_liquidity)
                 } else {
-                    (mint.swap_volume as u128)
+                    mint.swap_volume
                         .saturating_mul(pool_fee as u128)
                         .saturating_div(PPM_DENOMINATOR)
                 };
@@ -278,7 +315,8 @@ impl JitDetector {
         };
         // Per-opportunity gas: JIT involves Mint + Swap (+ optionally Burn).
         // H7: Use direction-aware V3 estimate since JIT pool is always V3.
-        let pool_gas = pool_manager.get(&pool)
+        let pool_gas = pool_manager
+            .get(&pool)
             .map(|p| match p {
                 PoolState::UniswapV3(v3) => {
                     // JIT swap can go either direction — take the more expensive estimate
@@ -298,8 +336,12 @@ impl JitDetector {
         let raw_profit = (normalized_fees != raw_fees).then(|| U256::from(raw_fees));
         // H9: JIT fee scales linearly with position size — compute ±1%/±2% slippage
         let jit_slippage = |pct: u128| -> Option<U256> {
-            if normalized_fees == 0 { return None; }
-            Some(U256::from(normalized_fees.saturating_mul(pct) / PERCENT_DENOMINATOR))
+            if normalized_fees == 0 {
+                return None;
+            }
+            Some(U256::from(
+                normalized_fees.saturating_mul(pct) / PERCENT_DENOMINATOR,
+            ))
         };
         MevOpportunity {
             canonical_id: None,
@@ -333,5 +375,3 @@ impl JitDetector {
         }
     }
 }
-
-

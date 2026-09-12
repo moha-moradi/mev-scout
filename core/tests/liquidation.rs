@@ -6,9 +6,9 @@
 //      (health factor < 1) that yields an opportunity even with no event.
 // Plus unit checks on compute_health_factor.
 
-use alloy::primitives::{address, keccak256, Address, B256, Bytes, U256};
+use alloy::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use mev_scout_core::data::ExecutedLog;
-use mev_scout_core::mev::detectors::liquidation::{LiquidationDetector, compute_health_factor};
+use mev_scout_core::mev::detectors::liquidation::{compute_health_factor, LiquidationDetector};
 use mev_scout_core::pool::state::PoolManager;
 use mev_scout_core::types::{GasConfig, Strategy};
 
@@ -40,7 +40,13 @@ fn make_log(address: Address, topics: Vec<B256>, words: &[u128]) -> ExecutedLog 
     }
 }
 
-fn liq_call_log(collateral: Address, debt: Address, user: Address, debt_to_cover: u128, seized: u128) -> ExecutedLog {
+fn liq_call_log(
+    collateral: Address,
+    debt: Address,
+    user: Address,
+    debt_to_cover: u128,
+    seized: u128,
+) -> ExecutedLog {
     make_log(
         address!("794a61358d6845594f94dc1db02a252b5b4814ad"), // Aave V3 Pool (Polygon)
         vec![
@@ -87,7 +93,7 @@ fn native_pools() -> PoolManager {
         address!("cccccccccccccccccccccccccccccccccccccccc"),
         usdc(),
         wmatic(),
-        1_000_000_000_000, // 1e12 USDC
+        1_000_000_000_000,         // 1e12 USDC
         2_000_000_000_000_000_000, // 2e18 WMATIC
     ));
     pm.with_wrapped_native(wmatic())
@@ -130,13 +136,21 @@ fn test_liquidation_reactive_event() {
     detector.process_tx(0, &[log]);
 
     let opps = detector.detect(&pm, 1_700_000_000, 30_000_000_000, default_gas());
-    assert_eq!(opps.len(), 1, "LiquidationCall should yield exactly 1 opportunity");
+    assert_eq!(
+        opps.len(),
+        1,
+        "LiquidationCall should yield exactly 1 opportunity"
+    );
 
     let opp = &opps[0];
     assert_eq!(opp.strategy, Strategy::Liquidation);
     assert_eq!(opp.block_number, 42);
     assert_eq!(opp.token_in, usdc(), "token_in should be the debt asset");
-    assert_eq!(opp.token_out, wmatic(), "token_out should be the collateral asset");
+    assert_eq!(
+        opp.token_out,
+        wmatic(),
+        "token_out should be the collateral asset"
+    );
     assert_eq!(opp.input_amount, U256::from(1_000_000_000u128));
     assert!(opp.expected_profit > U256::ZERO, "expected positive profit");
     assert!(opp.gas_cost_wei > 0, "expected positive gas cost");
@@ -153,16 +167,27 @@ fn test_liquidation_proactive_underwater() {
     // Debt:       1e9 USDC     → native ≈ 1.99e15.
     // HF ≈ 0.8 * 1e15 / 1.99e15 ≈ 0.40 < 1 → liquidatable.
     let mut detector = LiquidationDetector::new(42);
-    detector.process_tx(0, &[supply_log(wmatic(), user, user, 1_000_000_000_000_000)]);
+    detector.process_tx(
+        0,
+        &[supply_log(wmatic(), user, user, 1_000_000_000_000_000)],
+    );
     detector.process_tx(1, &[borrow_log(usdc(), user, user, 1_000_000_000)]);
 
     let opps = detector.detect(&pm, 1_700_000_000, 30_000_000_000, default_gas());
-    assert_eq!(opps.len(), 1, "Underwater position should yield exactly 1 opportunity");
+    assert_eq!(
+        opps.len(),
+        1,
+        "Underwater position should yield exactly 1 opportunity"
+    );
 
     let opp = &opps[0];
     assert_eq!(opp.strategy, Strategy::Liquidation);
     assert_eq!(opp.token_in, usdc(), "token_in should be the debt asset");
-    assert_eq!(opp.token_out, wmatic(), "token_out should be the collateral asset");
+    assert_eq!(
+        opp.token_out,
+        wmatic(),
+        "token_out should be the collateral asset"
+    );
     assert!(opp.expected_profit > U256::ZERO, "expected positive profit");
     // Close factor is 50% of debt (1e9 USDC → 5e8 USDC)
     assert_eq!(opp.input_amount, U256::from(500_000_000u128));
@@ -177,9 +202,16 @@ fn test_liquidation_proactive_healthy() {
     // Collateral: 1e16 WMATIC → native 1e16 (10x the debt value).
     // HF ≈ 0.8 * 1e16 / 1.99e15 ≈ 4.0 ≥ 1 → healthy, no opportunity.
     let mut detector = LiquidationDetector::new(42);
-    detector.process_tx(0, &[supply_log(wmatic(), user, user, 10_000_000_000_000_000)]);
+    detector.process_tx(
+        0,
+        &[supply_log(wmatic(), user, user, 10_000_000_000_000_000)],
+    );
     detector.process_tx(1, &[borrow_log(usdc(), user, user, 1_000_000_000)]);
 
     let opps = detector.detect(&pm, 1_700_000_000, 30_000_000_000, default_gas());
-    assert!(opps.is_empty(), "Healthy position should produce no opportunities; got {}", opps.len());
+    assert!(
+        opps.is_empty(),
+        "Healthy position should produce no opportunities; got {}",
+        opps.len()
+    );
 }

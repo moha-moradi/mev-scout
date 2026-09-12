@@ -1,5 +1,5 @@
-use anyhow::Context;
 use alloy::primitives::Address;
+use anyhow::Context;
 use std::time::{Duration, Instant};
 
 use crate::cli::LiveArgs;
@@ -35,20 +35,15 @@ pub fn deadline_from(
             }
             Ok(Some(now + parse_duration_str(d)?))
         }
-        None => {
-            if loop_enabled {
-                Ok(None)
-            } else {
-                Ok(None)
-            }
-        }
+        // No deadline: `live --loop` runs until stopped; one-shot `live` runs a
+        // single pass (its duration is bounded by the chain head itself).
+        None => Ok(None),
     }
 }
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let deadline = deadline_from(args.r#loop, args.duration.as_deref(), Instant::now())?;
-    let validation = validation::validate_live(config)
-        .context("invalid configuration")?;
+    let validation = validation::validate_live(config).context("invalid configuration")?;
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
     let provider_configs = setup.provider_configs;
@@ -72,16 +67,45 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         calibration: Default::default(),
     };
 
-    let mode_label = if args.r#loop { "continuous" } else { "one-shot" };
-    println!("Live mode ({}) — polling every {}ms", mode_label, args.poll_interval_ms);
+    let mode_label = if args.r#loop {
+        "continuous"
+    } else {
+        "one-shot"
+    };
+    println!(
+        "Live mode ({}) — polling every {}ms",
+        mode_label, args.poll_interval_ms
+    );
 
     if args.r#loop {
-        run_loop(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, args, gas_config, deadline).await
+        run_loop(
+            config,
+            &validation,
+            &rpc,
+            &provider_configs,
+            &cache,
+            &pool_addresses,
+            args,
+            gas_config,
+            deadline,
+        )
+        .await
     } else {
-        run_once(config, &validation, &rpc, &provider_configs, &cache, &pool_addresses, args, gas_config).await
+        run_once(
+            config,
+            &validation,
+            &rpc,
+            &provider_configs,
+            &cache,
+            &pool_addresses,
+            args,
+            gas_config,
+        )
+        .await
     }
 }
 
+#[allow(clippy::too_many_arguments)] // run-context bundle — introduced in W4
 async fn run_once(
     config: &Config,
     validation: &ValidationResult,
@@ -92,7 +116,10 @@ async fn run_once(
     _args: &LiveArgs,
     gas_config: GasConfig,
 ) -> anyhow::Result<()> {
-    let tip = rpc.get_block_number().await.context("failed to get chain tip")?;
+    let tip = rpc
+        .get_block_number()
+        .await
+        .context("failed to get chain tip")?;
     println!("Latest block: {}", tip);
 
     let mut pool_manager = PoolManager::new();
@@ -142,7 +169,9 @@ async fn run_once(
         mode: RangeMode::Single(tip),
     };
     if !pool_addresses.is_empty() {
-        fetcher.fetch_relevant(&resolved, pool_addresses, None::<&fn()>).await?;
+        fetcher
+            .fetch_relevant(&resolved, pool_addresses, None::<&fn()>)
+            .await?;
     } else {
         fetcher.fetch_range(&resolved, None::<&fn()>).await?;
     }
@@ -157,7 +186,11 @@ async fn run_once(
         start_block: tip,
         end_block: tip,
         range_mode: "live".to_string(),
-        strategies: validation.strategies.iter().map(|s| s.to_string()).collect(),
+        strategies: validation
+            .strategies
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         flash_loan_provider: validation.flash_loan_provider.to_string(),
         resolved_at: epoch_secs(),
         created_at: epoch_secs(),
@@ -200,6 +233,7 @@ async fn run_once(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // run-context bundle — introduced in W4
 async fn run_loop(
     config: &Config,
     validation: &ValidationResult,
@@ -226,7 +260,10 @@ async fn run_loop(
         }
     }
 
-    let tip = rpc.get_block_number().await.context("failed to get chain tip")?;
+    let tip = rpc
+        .get_block_number()
+        .await
+        .context("failed to get chain tip")?;
     if !validation.strategies.is_empty() {
         let prev_block = tip.saturating_sub(1);
         BacktestRunner::init_pools(&mut pool_manager, rpc, prev_block, Some(cache)).await;
@@ -274,7 +311,9 @@ async fn run_loop(
                 consecutive_failures += 1;
                 tracing::warn!(
                     "Failed to get block number ({}/{}): {}",
-                    consecutive_failures, MAX_CONSECUTIVE_FAILURES, e
+                    consecutive_failures,
+                    MAX_CONSECUTIVE_FAILURES,
+                    e
                 );
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     anyhow::bail!(
@@ -301,7 +340,9 @@ async fn run_loop(
         };
 
         let fetch_result = if !pool_addresses.is_empty() {
-            fetcher.fetch_relevant(&resolved, pool_addresses, None::<&fn()>).await
+            fetcher
+                .fetch_relevant(&resolved, pool_addresses, None::<&fn()>)
+                .await
         } else {
             fetcher.fetch_range(&resolved, None::<&fn()>).await
         };
@@ -309,7 +350,11 @@ async fn run_loop(
             consecutive_failures += 1;
             tracing::warn!(
                 "Fetch failed for blocks {}–{} ({}/{}): {} — will retry same range",
-                from_block, current_tip, consecutive_failures, MAX_CONSECUTIVE_FAILURES, e
+                from_block,
+                current_tip,
+                consecutive_failures,
+                MAX_CONSECUTIVE_FAILURES,
+                e
             );
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                 anyhow::bail!(
@@ -326,7 +371,11 @@ async fn run_loop(
                 consecutive_failures += 1;
                 tracing::warn!(
                     "Backtest failed for blocks {}–{} ({}/{}): {} — will retry same range",
-                    from_block, current_tip, consecutive_failures, MAX_CONSECUTIVE_FAILURES, e
+                    from_block,
+                    current_tip,
+                    consecutive_failures,
+                    MAX_CONSECUTIVE_FAILURES,
+                    e
                 );
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     anyhow::bail!(
@@ -347,7 +396,9 @@ async fn run_loop(
         } else {
             println!(
                 "Block {}–{}: {} opportunity(ies)",
-                from_block, current_tip, opps.len(),
+                from_block,
+                current_tip,
+                opps.len(),
             );
             render_results_table(&opps, Some(&runner.pool_manager));
         }
@@ -359,7 +410,11 @@ async fn run_loop(
             start_block: resolved.start_block,
             end_block: resolved.end_block,
             range_mode: "live".to_string(),
-            strategies: validation.strategies.iter().map(|s| s.to_string()).collect(),
+            strategies: validation
+                .strategies
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             flash_loan_provider: validation.flash_loan_provider.to_string(),
             resolved_at: epoch_secs(),
             created_at: epoch_secs(),
@@ -410,8 +465,14 @@ mod tests {
         assert_eq!(parse_duration_str("90s").unwrap(), Duration::from_secs(90));
         assert_eq!(parse_duration_str("15m").unwrap(), Duration::from_secs(900));
         assert_eq!(parse_duration_str("1h").unwrap(), Duration::from_secs(3600));
-        assert_eq!(parse_duration_str("1h30m").unwrap(), Duration::from_secs(5400));
-        assert_eq!(parse_duration_str("2m 30s").unwrap(), Duration::from_secs(150));
+        assert_eq!(
+            parse_duration_str("1h30m").unwrap(),
+            Duration::from_secs(5400)
+        );
+        assert_eq!(
+            parse_duration_str("2m 30s").unwrap(),
+            Duration::from_secs(150)
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, expect_fail, expect_ok, make_cfg, example_config_str,
-    run_timed, rpc_lock, scout, temp_ws, HEAVY_TIMEOUT,
+    ensure_gate_and_rpc, example_config_str, expect_fail, expect_ok, make_cfg, rpc_lock, run_timed,
+    scout, temp_ws, HEAVY_TIMEOUT,
 };
 use std::time::Duration;
 
@@ -25,12 +25,7 @@ fn live_one_shot_smoke() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let cfg = live_cfg(
-        &ws,
-        &[
-            ("db_path", db_s),
-        ],
-    );
+    let cfg = live_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args(["-f", &cfg, "live"]);
     let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("live one-shot spawn failed");
@@ -48,10 +43,7 @@ fn live_one_shot_smoke() {
     );
 
     // Verify live history stored in SQLite via report
-    let report_cfg = make_cfg(&ws, &[
-        ("db_path", db_s),
-        ("output", "\"json\""),
-    ]);
+    let report_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args(["-f", &report_cfg, "report"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report after live spawn failed");
@@ -72,12 +64,7 @@ fn live_loop_duration_graceful_exit() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let pipeline = live_cfg(
-        &ws,
-        &[
-            ("db_path", db_s),
-        ],
-    );
+    let pipeline = live_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args([
         "-f",
@@ -109,7 +96,10 @@ fn live_loop_duration_graceful_exit() {
         .nth(1)
         .and_then(|s| s.trim().parse().ok())
         .expect("blocks processed is numeric");
-    assert!(blocks >= 1, "30s window on Polygon should process >=1 block");
+    assert!(
+        blocks >= 1,
+        "30s window on Polygon should process >=1 block"
+    );
 
     for forbidden in ["Fetch failed", "Backtest failed", "giving up"] {
         assert!(
@@ -119,10 +109,7 @@ fn live_loop_duration_graceful_exit() {
     }
 
     // Verify live history stored in SQLite via report
-    let report_cfg = make_cfg(&ws, &[
-        ("db_path", db_s),
-        ("output", "\"json\""),
-    ]);
+    let report_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args(["-f", &report_cfg, "report"]);
     let out = run_timed(&mut c, common::TEST_TIMEOUT).expect("report after live loop failed");

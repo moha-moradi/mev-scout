@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use anyhow::Context;
 use futures::future::try_join_all;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -12,10 +13,10 @@ use alloy::primitives::Address;
 
 use crate::cache::SqliteStore;
 use crate::data::{BlockData, ReceiptData, TxData};
+use crate::pipeline::ActivityScanner;
 use crate::resolver::ResolvedRange;
 use crate::rpc::client::extract_selector;
 use crate::rpc::RpcClient;
-use crate::pipeline::ActivityScanner;
 use crate::sigs::SignatureResolver;
 
 type WriteBatch = Vec<(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)>;
@@ -138,7 +139,9 @@ impl Fetcher {
         let start = Instant::now();
 
         let t_phase = Instant::now();
-        let missing = self.cache.missing_blocks_in_range(range.start_block, range.end_block)?;
+        let missing = self
+            .cache
+            .missing_blocks_in_range(range.start_block, range.end_block)?;
         let phase_db_ms = t_phase.elapsed().as_secs_f64() * 1000.0;
         let cached_count = range.block_count.saturating_sub(missing.len() as u64);
 
@@ -153,7 +156,10 @@ impl Fetcher {
         }
 
         let t_distribute = Instant::now();
-        let shards = self.rpc.distribute_blocks(range.start_block, range.end_block).await;
+        let shards = self
+            .rpc
+            .distribute_blocks(range.start_block, range.end_block)
+            .await;
         let phase_distribute_ms = t_distribute.elapsed().as_secs_f64() * 1000.0;
 
         let cap = self.parallelism.clamp(1, 30);
@@ -204,7 +210,9 @@ impl Fetcher {
                 });
                 tracing::info!(
                     "fetch_range: shard p{provider_idx} run {}-{} ({} blocks)",
-                    run_start, run_end, run_len,
+                    run_start,
+                    run_end,
+                    run_len,
                 );
             }
         }
@@ -248,7 +256,7 @@ impl Fetcher {
 
     fn flush_write_buf(&self) -> anyhow::Result<()> {
         let batch = {
-            let mut buf = self.write_buf.lock().expect("write_buf mutex poisoned");
+            let mut buf = self.write_buf.lock().unwrap_or_else(|e| e.into_inner());
             if buf.is_empty() {
                 return Ok(());
             }
@@ -305,10 +313,8 @@ impl Fetcher {
                 } else if batch_rpc {
                     rpc.get_block_and_receipts_batch(block_num).await?
                 } else {
-                    let (block_res, receipts_res) = tokio::join!(
-                        rpc.get_block(block_num),
-                        rpc.get_receipts(block_num),
-                    );
+                    let (block_res, receipts_res) =
+                        tokio::join!(rpc.get_block(block_num), rpc.get_receipts(block_num),);
                     let (block, txs) = block_res?;
                     (block, txs, receipts_res?)
                 };
@@ -372,7 +378,9 @@ impl Fetcher {
             let t0 = Instant::now();
             let block_fetch = async {
                 if let Some(idx) = provider_idx {
-                    self.rpc.get_block_and_receipts_batch_for(idx, block_num).await
+                    self.rpc
+                        .get_block_and_receipts_batch_for(idx, block_num)
+                        .await
                 } else if self.batch_rpc {
                     self.rpc.get_block_and_receipts_batch(block_num).await
                 } else {
@@ -418,7 +426,6 @@ impl Fetcher {
         }
         Ok(fetched)
     }
-
 
     pub async fn fetch_relevant<F: Fn() + Sync>(
         &self,
@@ -542,16 +549,14 @@ impl Fetcher {
                 let sig_resolver = self.sig_resolver.clone();
 
                 async move {
-                    let _permit = sem.acquire().await.expect("semaphore closed");
+                    let _permit = sem.acquire().await.context("fetch semaphore closed")?;
 
                     let t0 = Instant::now();
                     let result = if batch_rpc {
                         rpc.get_block_and_receipts_batch(block_num).await
                     } else {
-                        let (block_res, receipts_res) = tokio::join!(
-                            rpc.get_block(block_num),
-                            rpc.get_receipts(block_num),
-                        );
+                        let (block_res, receipts_res) =
+                            tokio::join!(rpc.get_block(block_num), rpc.get_receipts(block_num),);
                         match (block_res, receipts_res) {
                             (Ok((b, t)), Ok(r)) => Ok((b, t, r)),
                             (Err(e), _) | (_, Err(e)) => Err(e),
@@ -562,7 +567,15 @@ impl Fetcher {
                     match result {
                         Ok((block, txs, receipts)) => {
                             let t2 = Instant::now();
-                            write_block_data(&sig_resolver, &cache, &write_buf, block_num, block, txs, receipts)?;
+                            write_block_data(
+                                &sig_resolver,
+                                &cache,
+                                &write_buf,
+                                block_num,
+                                block,
+                                txs,
+                                receipts,
+                            )?;
                             let t_write = t2.elapsed().as_secs_f64() * 1000.0;
                             let total = t0.elapsed().as_secs_f64() * 1000.0;
                             if let Ok(mut tm) = timing.lock() {
@@ -585,7 +598,11 @@ impl Fetcher {
         self.cache.flush()?;
 
         let count = *refetched.lock().await;
-        tracing::info!("Auto-refetch complete: {}/{} blocks recovered", count, gap_count);
+        tracing::info!(
+            "Auto-refetch complete: {}/{} blocks recovered",
+            count,
+            gap_count
+        );
         Ok(count)
     }
 }
@@ -599,7 +616,7 @@ fn write_block_data(
     txs: Vec<TxData>,
     receipts: Vec<ReceiptData>,
 ) -> anyhow::Result<()> {
-    let mut buf = write_buf.lock().expect("write_buf mutex poisoned");
+    let mut buf = write_buf.lock().unwrap_or_else(|e| e.into_inner());
     buf.push((block_num, block, txs, receipts));
     if buf.len() >= 10 {
         let batch = std::mem::take(&mut *buf);
@@ -642,7 +659,10 @@ fn resolve_tx_sigs(txs: &[TxData], resolver: &SignatureResolver) -> Vec<TxSigEnt
         .collect()
 }
 
-fn resolve_event_sigs(receipts: &[ReceiptData], resolver: &SignatureResolver) -> Vec<Vec<EventSigEntry>> {
+fn resolve_event_sigs(
+    receipts: &[ReceiptData],
+    resolver: &SignatureResolver,
+) -> Vec<Vec<EventSigEntry>> {
     receipts
         .iter()
         .map(|r| {

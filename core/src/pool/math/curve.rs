@@ -94,7 +94,7 @@ pub fn curve_stableswap_output_amount(
         super::stable_swap::newton_stableswap_output(n, ann, d, sum_others, prod_others)?;
 
     let output = balances[idx_out] - x_out_new;
-    (output > 0.0).then(|| output as u128)
+    (output > 0.0).then_some(output as u128)
 }
 
 /// CryptoSwap (V2) output amount.
@@ -156,10 +156,10 @@ pub fn curve_cryptoswap_output_amount(
     // For non-first tokens, balance_i_adj = balance_i * 1e18 / price_scale[i-1].
     let price_scales: Vec<f64> = if pool.price_scale.len() == n - 1 {
         let mut ps = vec![1.0f64; n];
-        for i in 1..n {
-            let scale = pool.price_scale[i - 1] as f64;
+        for (i, slot) in ps[1..].iter_mut().enumerate() {
+            let scale = pool.price_scale[i] as f64;
             if scale > 0.0 {
-                ps[i] = WEI_PER_ETHER as f64 / scale;
+                *slot = WEI_PER_ETHER as f64 / scale;
             }
         }
         ps
@@ -202,7 +202,7 @@ pub fn curve_cryptoswap_output_amount(
     // Convert back from adjusted to actual balance
     let x_out_new = x_out_new_adj / price_scales[idx_out];
     let output = balances[idx_out] - x_out_new;
-    (output > 0.0).then(|| output as u128)
+    (output > 0.0).then_some(output as u128)
 }
 
 /// Newton's method to find the CryptoSwap invariant D.

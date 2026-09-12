@@ -33,7 +33,9 @@ pub async fn scan_flash_loans(
 ) -> anyhow::Result<Vec<FlashLoanEvent>> {
     let scanner = LogScanner::new(rpc.clone()).with_batch_size(batch_size);
     let topics = flash_loan_topics();
-    let logs = scanner.scan(from_block, to_block, &topics, addresses).await?;
+    let logs = scanner
+        .scan(from_block, to_block, &topics, addresses)
+        .await?;
 
     let mut events = Vec::with_capacity(logs.len());
     for log in &logs {
@@ -60,8 +62,16 @@ fn decode_flash_loan_log(log: &Log) -> Option<FlashLoanEvent> {
     let topic = log.topics().first()?;
     if **topic == *V3_FLASH_TOPIC {
         let data = &log.data().data;
-        let initiator = log.topics().get(1).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
-        let target = log.topics().get(2).map(|t| Address::from_slice(&t[12..])).unwrap_or(Address::ZERO);
+        let initiator = log
+            .topics()
+            .get(1)
+            .map(|t| Address::from_slice(&t[12..]))
+            .unwrap_or(Address::ZERO);
+        let target = log
+            .topics()
+            .get(2)
+            .map(|t| Address::from_slice(&t[12..]))
+            .unwrap_or(Address::ZERO);
         let amount = if data.len() >= 32 {
             alloy::primitives::U256::from_be_slice(&data[0..32])
         } else {

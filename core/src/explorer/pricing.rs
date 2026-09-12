@@ -62,7 +62,8 @@ pub fn wei_to_usd(wei: U256, native_usd: f64) -> f64 {
 /// U256 → f64 (precision loss acceptable at report layer).
 pub fn u256_to_f64(v: U256) -> f64 {
     let limbs = v.as_limbs();
-    (limbs[0] as f64) + (limbs[1] as f64) * 2f64.powi(64)
+    (limbs[0] as f64)
+        + (limbs[1] as f64) * 2f64.powi(64)
         + (limbs[2] as f64) * 2f64.powi(128)
         + (limbs[3] as f64) * 2f64.powi(192)
 }
@@ -79,18 +80,13 @@ struct CoingeckoSimplePrice {
 }
 
 /// Fetch the native token USD price from CoinGecko (live path).
-pub async fn fetch_native_price_coingecko(
-    chain: crate::types::ChainName,
-) -> anyhow::Result<f64> {
+pub async fn fetch_native_price_coingecko(chain: crate::types::ChainName) -> anyhow::Result<f64> {
     let id = native_asset_id(chain);
-    let url = format!(
-        "https://api.coingecko.com/api/v3/simple/price?ids={id}&vs_currencies=usd"
-    );
+    let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={id}&vs_currencies=usd");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    let resp: HashMap<String, CoingeckoSimplePrice> =
-        client.get(&url).send().await?.json().await?;
+    let resp: HashMap<String, CoingeckoSimplePrice> = client.get(&url).send().await?.json().await?;
     resp.get(id)
         .and_then(|v| v.usd)
         .ok_or_else(|| anyhow::anyhow!("coingecko: no usd price for {id}"))
@@ -124,10 +120,7 @@ pub async fn fetch_prices_llama(
         return Ok(HashMap::new());
     }
     let prefix = llama_chain_prefix(chain);
-    let assets: Vec<String> = tokens
-        .iter()
-        .map(|t| format!("{prefix}:{t:#x}"))
-        .collect();
+    let assets: Vec<String> = tokens.iter().map(|t| format!("{prefix}:{t:#x}")).collect();
     let url = format!(
         "https://coins.llama.fi/prices/historical/{}?{}",
         timestamp,
@@ -169,23 +162,44 @@ mod tests {
 
     #[test]
     fn conversion_decimals_aware() {
-        let usdc = TokenUsd { usd: 1.0, decimals: 6 };
+        let usdc = TokenUsd {
+            usd: 1.0,
+            decimals: 6,
+        };
         assert!((token_amount_to_usd(U256::from(1_000_000u64), &usdc) - 1.0).abs() < 1e-9);
-        let wpol = TokenUsd { usd: 0.5, decimals: 18 };
-        assert!((token_amount_to_usd(U256::from(2_000_000_000_000_000_000u64), &wpol) - 1.0).abs() < 1e-9);
+        let wpol = TokenUsd {
+            usd: 0.5,
+            decimals: 18,
+        };
+        assert!(
+            (token_amount_to_usd(U256::from(2_000_000_000_000_000_000u64), &wpol) - 1.0).abs()
+                < 1e-9
+        );
         assert!((wei_to_usd(U256::from(1_000_000_000_000_000_000u64), 2.0) - 2.0).abs() < 1e-9);
     }
 
     #[test]
     fn native_ids_chain_aware() {
-        assert_eq!(native_asset_id(crate::types::ChainName::Polygon), "matic-network");
-        assert_eq!(native_asset_id(crate::types::ChainName::Avalanche), "avalanche-2");
+        assert_eq!(
+            native_asset_id(crate::types::ChainName::Polygon),
+            "matic-network"
+        );
+        assert_eq!(
+            native_asset_id(crate::types::ChainName::Avalanche),
+            "avalanche-2"
+        );
     }
 
     #[test]
     fn llama_prefix() {
-        assert_eq!(llama_chain_prefix(crate::types::ChainName::Polygon), "polygon");
-        assert_eq!(llama_chain_prefix(crate::types::ChainName::Avalanche), "avax");
+        assert_eq!(
+            llama_chain_prefix(crate::types::ChainName::Polygon),
+            "polygon"
+        );
+        assert_eq!(
+            llama_chain_prefix(crate::types::ChainName::Avalanche),
+            "avax"
+        );
     }
 
     #[test]

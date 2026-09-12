@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    expect_fail, expect_ok, make_cfg, example_config_str, run_timed, scout, temp_ws, TEST_TIMEOUT,
-    TimedOutput,
+    example_config_str, expect_fail, expect_ok, make_cfg, run_timed, scout, temp_ws, TimedOutput,
+    TEST_TIMEOUT,
 };
 use std::path::Path;
 use std::time::Duration;
@@ -23,8 +23,17 @@ fn help_lists_all_ten_commands() {
     let out = run(&ws, &["--help"]);
     expect_ok(&out, "mev-scout --help");
     for cmd in [
-        "run", "fetch", "report", "config", "replay", "discover",
-        "validate-pools", "tokens", "scan", "live", "explorer",
+        "run",
+        "fetch",
+        "report",
+        "config",
+        "replay",
+        "discover",
+        "validate-pools",
+        "tokens",
+        "scan",
+        "live",
+        "explorer",
     ] {
         assert!(
             out.stdout.contains(cmd),
@@ -133,8 +142,7 @@ fn replay_requires_block_flag() {
     let out = run(&ws, &["replay"]);
     expect_fail(&out, "replay without --block");
     assert!(
-        out.stderr.to_lowercase().contains("required")
-            || out.stderr.contains("--block"),
+        out.stderr.to_lowercase().contains("required") || out.stderr.contains("--block"),
         "expected clap required-arg error, got: {}",
         out.stderr
     );
@@ -298,7 +306,10 @@ fn config_file_block_range_fields_are_ignored_cli_only() {
         ],
     );
     let out = run(&ws, &["-f", &cfg_path, "run"]);
-    expect_fail(&out, "config file with invalid range values written to TOML");
+    expect_fail(
+        &out,
+        "config file with invalid range values written to TOML",
+    );
     assert!(
         out.combined().contains("no block range specified"),
         "config-file range fields must be ignored (serde skip), yielding the \
@@ -313,7 +324,10 @@ fn config_file_block_range_fields_are_ignored_cli_only() {
 fn missing_config_file_falls_back_to_default() {
     let ws = temp_ws("args_cfg_missing");
     let out = run(&ws, &["-f", "definitely_missing_file.toml", "config"]);
-    expect_ok(&out, "config with missing -f file (documented fallback to default)");
+    expect_ok(
+        &out,
+        "config with missing -f file (documented fallback to default)",
+    );
     assert!(
         out.stdout.contains("chain = \"polygon\""),
         "fallback default config should resolve the default chain, got:\n{}",
@@ -327,7 +341,10 @@ fn broken_toml_config_file_falls_back_to_default() {
     let broken = ws.join("broken.toml");
     std::fs::write(&broken, "not valid toml [[[").unwrap();
     let out = run(&ws, &["-f", broken.to_str().unwrap(), "config"]);
-    expect_ok(&out, "config with broken TOML (documented fallback to default)");
+    expect_ok(
+        &out,
+        "config with broken TOML (documented fallback to default)",
+    );
     assert!(
         out.stdout.contains("chain = \"polygon\""),
         "fallback default config should resolve the default chain, got:\n{}",
@@ -340,7 +357,10 @@ fn config_env_var_placeholders_expand_from_environment() {
     let ws = temp_ws("args_cfg_env_expand");
     let cfg_path = make_cfg(
         &ws,
-        &[("rpc_urls", "[\"https://rpc.example/v2/${MS_E2E_TEST_KEY}\"]")],
+        &[(
+            "rpc_urls",
+            "[\"https://rpc.example/v2/${MS_E2E_TEST_KEY}\"]",
+        )],
     );
 
     // Without the variable set the placeholder stays verbatim (visible in the
@@ -378,7 +398,7 @@ fn version_flag_exits_zero_with_version() {
     let out = run(&ws, &["--version"]);
     expect_ok(&out, "mev-scout --version");
     assert!(
-        out.stdout.trim().split_whitespace().count() >= 2
+        out.stdout.split_whitespace().count() >= 2
             && out.stdout.chars().any(|c| c.is_ascii_digit()),
         "--version should print '<name> <version>', got: {}",
         out.stdout
@@ -414,8 +434,6 @@ fn tokens_filters_work_offline() {
     let db = ws.join("tokens.db");
     let db_s: &str = db.to_str().unwrap();
 
-    let base = make_cfg(&ws, &[("db_path", db_s)]);
-
     // Full unfiltered dump via JSON. NB: tracing INFO lines share stdout, so
     // the JSON array must be extracted rather than parsed whole.
     let json_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
@@ -437,9 +455,11 @@ fn tokens_filters_work_offline() {
     let entries = entries.as_array().expect("tokens json must be an array");
     assert!(
         !entries.is_empty()
-            && entries
-                .iter()
-                .all(|t| t["symbol"].as_str().unwrap_or("").to_lowercase().contains("usdc")),
+            && entries.iter().all(|t| t["symbol"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("usdc")),
         "--symbol USDC must only keep USDC-like entries, got: {entries:?}"
     );
 
@@ -580,18 +600,17 @@ fn report_selects_explicit_run_id_offline() {
     let default_cfg = make_cfg(&ws, &[]);
     let out = run(&ws, &["-f", &default_cfg, "report"]);
     expect_ok(&out, "report default table output");
-    assert!(
-        out.stdout.contains("Run ID:"),
-        "table output lacks Run ID"
-    );
+    assert!(out.stdout.contains("Run ID:"), "table output lacks Run ID");
 
     // csv output
     let csv_cfg = make_cfg(&ws, &[("output", "\"csv\"")]);
     let out = run(&ws, &["-f", &csv_cfg, "report"]);
     expect_ok(&out, "report csv with opportunities");
     assert!(
-        out.stdout.lines().any(|l| l.trim()
-            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"),
+        out.stdout.lines().any(|l| {
+            l.trim()
+            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"
+        }),
         "csv header line missing:\n{}",
         out.stdout
     );

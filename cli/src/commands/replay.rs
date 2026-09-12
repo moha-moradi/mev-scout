@@ -27,7 +27,8 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     if !cache.has_block(block_num)? {
         anyhow::bail!(
             "block {} is not cached (run `mev-scout fetch --block {}` first)",
-            block_num, block_num
+            block_num,
+            block_num
         );
     }
 
@@ -94,37 +95,59 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
         );
 
         if args.analyze {
-            let interactions: Vec<String> = r.logs.iter().filter_map(|log| {
-                pool_map.get(&log.address).map(|info| {
-                    let event_type = if log.topics.is_empty() {
-                        "Unknown"
-                    } else {
-                        let t0 = log.topics[0];
-                        if t0 == keccak256(b"Swap(address,uint256,uint256,uint256,uint256,address)") {
-                            "Swap"
-                        } else if t0 == keccak256(b"Sync(uint112,uint112)") {
-                            "Sync"
-                        } else if t0 == keccak256(b"Swap(address,address,int256,int256,uint160,uint128,int24)") {
-                            "Swap"
-                        } else if t0 == keccak256(b"Mint(address,address,int24,int24,uint128,uint256,uint256)") {
-                            "Mint"
-                        } else if t0 == keccak256(b"Burn(address,address,int24,int24,uint128,uint256,uint256)") {
-                            "Burn"
-                        } else {
-                            "Unknown"
-                        }
-                    };
-                    let name = info.name.as_deref().map(String::from).unwrap_or_else(|| format!("{}", info.address));
-                    format!("{} — {}", name, event_type)
-                })
-            }).collect();
+            let interactions: Vec<String> =
+                r.logs
+                    .iter()
+                    .filter_map(|log| {
+                        pool_map.get(&log.address).map(|info| {
+                            let event_type = if log.topics.is_empty() {
+                                "Unknown"
+                            } else {
+                                let t0 = log.topics[0];
+                                if t0
+                                    == keccak256(
+                                        b"Swap(address,uint256,uint256,uint256,uint256,address)",
+                                    )
+                                {
+                                    "Swap"
+                                } else if t0 == keccak256(b"Sync(uint112,uint112)") {
+                                    "Sync"
+                                } else if t0 == keccak256(
+                                    b"Swap(address,address,int256,int256,uint160,uint128,int24)",
+                                ) {
+                                    "Swap"
+                                } else if t0 == keccak256(
+                                    b"Mint(address,address,int24,int24,uint128,uint256,uint256)",
+                                ) {
+                                    "Mint"
+                                } else if t0 == keccak256(
+                                    b"Burn(address,address,int24,int24,uint128,uint256,uint256)",
+                                ) {
+                                    "Burn"
+                                } else {
+                                    "Unknown"
+                                }
+                            };
+                            let name = info
+                                .name
+                                .as_deref()
+                                .map(String::from)
+                                .unwrap_or_else(|| format!("{}", info.address));
+                            format!("{} — {}", name, event_type)
+                        })
+                    })
+                    .collect();
 
             if interactions.is_empty() {
                 println!("         (no DEX interactions)");
             } else {
                 println!("         DEX interactions:");
                 for (j, line) in interactions.iter().enumerate() {
-                    let prefix = if j == interactions.len() - 1 { "         └ " } else { "         ├ " };
+                    let prefix = if j == interactions.len() - 1 {
+                        "         └ "
+                    } else {
+                        "         ├ "
+                    };
                     println!("{}{}", prefix, line);
                 }
             }
@@ -139,14 +162,14 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
     };
     println!(
         "  Receipt verification: {}/{} match ({:.1}%) — {:.2}s",
-        matched, total, pct, elapsed.as_secs_f64()
+        matched,
+        total,
+        pct,
+        elapsed.as_secs_f64()
     );
 
     if pct < 99.0 {
-        tracing::warn!(
-            "Receipt match rate {:.1}% is below 99% threshold",
-            pct
-        );
+        tracing::warn!("Receipt match rate {:.1}% is below 99% threshold", pct);
     }
 
     Ok(())

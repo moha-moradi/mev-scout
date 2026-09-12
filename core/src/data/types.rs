@@ -5,7 +5,7 @@
 //! obvious. Internal extended types (`ExecutedTx`, `ExecutedLog`) carry fields
 //! populated by the block replayer that do not appear on the wire.
 
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,4 +123,3 @@ pub struct ExecutedLog {
     pub topics: Vec<B256>,
     pub data: Bytes,
 }
-

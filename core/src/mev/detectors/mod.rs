@@ -8,12 +8,10 @@ pub mod two_hop;
 
 pub use jit::JitDetector;
 pub use jit_arb::JitArbDetector;
-pub use liquidation::{AaveReserveCache, AaveReserveData, LiquidationDetector, compute_health_factor};
-pub use mempool::{
-    PendingBlockCapture, capture_pending_block, detect_pending_opportunities,
+pub use liquidation::{
+    compute_health_factor, AaveReserveCache, AaveReserveData, LiquidationDetector,
 };
+pub use mempool::{capture_pending_block, detect_pending_opportunities, PendingBlockCapture};
 pub use multi_hop::MultiHopArbDetector;
 pub use sandwich::SandwichDetector;
-pub use two_hop::{
-    TwoHopArbDetector, balancer_quote_exact_in, curve_output_amount, quote_path,
-};
+pub use two_hop::{balancer_quote_exact_in, curve_output_amount, quote_path, TwoHopArbDetector};

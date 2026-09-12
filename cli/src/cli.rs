@@ -508,7 +508,12 @@ pub struct LiveArgs {
     pub duration: Option<String>,
 
     /// Polling interval in milliseconds (default: 2000)
-    #[arg(long = "poll-interval", default_value = "2000", value_name = "MS", help_heading = "Live")]
+    #[arg(
+        long = "poll-interval",
+        default_value = "2000",
+        value_name = "MS",
+        help_heading = "Live"
+    )]
     pub poll_interval_ms: u64,
 
     /// Record rejected candidates (§9.3) into the explorer store for

@@ -31,10 +31,8 @@ fn rpc_url() -> Option<String> {
 }
 
 fn temp_test_dir(name: &str) -> String {
-    let dir = std::env::temp_dir().join(format!(
-        "mev_scout_backtest_{name}_{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("mev_scout_backtest_{name}_{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     dir.to_str().unwrap().to_string()
 }
@@ -78,15 +76,13 @@ async fn sample_recent_blocks(rpc: &RpcClient, chain: &str, days: u64, top: usiz
 
 /// Discover pools via on-chain event logs (QuickSwap V2 factory on Polygon).
 async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Address> {
-    let v2_factory: Address = "5757371414417b8c6caad45baef941abc7d3ab32"
-        .parse()
-        .unwrap();
+    let v2_factory: Address = "5757371414417b8c6caad45baef941abc7d3ab32".parse().unwrap();
 
     let disc_config = DiscoveryConfig {
         batch_size: 2000,
         v2_fee_override: None,
         balancer_vault: None,
-        v2_factories: Some(&vec![v2_factory]),
+        v2_factories: Some(&[v2_factory]),
         v3_factories: None,
         curve_registry: None,
         curve_factories: None,
@@ -175,10 +171,8 @@ async fn test_rpc_guided_backtest() {
 
         // Fetch block data
         let block_dir = format!("{dir}/block_{block}");
-        let cache = SqliteStore::open(
-            std::path::Path::new(&block_dir).join("cache.db"),
-        )
-        .unwrap_or_else(|e| panic!("Failed to open cache for block {block}: {e}"));
+        let cache = SqliteStore::open(std::path::Path::new(&block_dir).join("cache.db"))
+            .unwrap_or_else(|e| panic!("Failed to open cache for block {block}: {e}"));
 
         let fetcher = Fetcher::new(rpc.clone(), cache.clone());
         let resolved_fetch = ResolvedRange {
@@ -188,8 +182,10 @@ async fn test_rpc_guided_backtest() {
             mode: RangeMode::Single(block),
         };
         match fetcher.fetch_range(&resolved_fetch, None::<&fn()>).await {
-            Ok(summary) => eprintln!("  Fetched block {block}: {} txs (elapsed {:.2}s)",
-                summary.total_blocks, summary.elapsed_secs),
+            Ok(summary) => eprintln!(
+                "  Fetched block {block}: {} txs (elapsed {:.2}s)",
+                summary.total_blocks, summary.elapsed_secs
+            ),
             Err(e) => {
                 eprintln!("  Fetch failed for block {block}: {e}");
                 continue;
@@ -254,16 +250,17 @@ async fn test_rpc_guided_backtest() {
         let prev_block = block.saturating_sub(1);
         pm.init_from_rpc(&rpc, prev_block, None).await;
         let initialized = pm.initialized_count();
-        eprintln!("  Initialized {initialized}/{} pools at block {prev_block}", pm.pool_count());
+        eprintln!(
+            "  Initialized {initialized}/{} pools at block {prev_block}",
+            pm.pool_count()
+        );
 
         if initialized == 0 {
             eprintln!("  No pools initialized — skipping block {block}");
             continue;
         }
 
-        pm = pm.with_wrapped_native(
-            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse().unwrap(),
-        );
+        pm = pm.with_wrapped_native("0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse().unwrap());
 
         // Create replayer and runner
         let handle = tokio::runtime::Handle::current();
@@ -290,14 +287,21 @@ async fn test_rpc_guided_backtest() {
         for opp in opps.iter().take(5) {
             eprintln!(
                 "    tx={} strategy={} profit={} wei gas_cost={} wei pool_a={:?} pool_b={:?}",
-                opp.tx_index, opp.strategy, opp.expected_profit, opp.gas_cost_wei, opp.pool_a, opp.pool_b,
+                opp.tx_index,
+                opp.strategy,
+                opp.expected_profit,
+                opp.gas_cost_wei,
+                opp.pool_a,
+                opp.pool_b,
             );
         }
 
         // Validate opportunity fields
         for opp in &opps {
-            assert!(opp.expected_profit > U256::ZERO || opp.gas_cost_wei > 0,
-                "Opportunity should have non-zero profit or gas cost");
+            assert!(
+                opp.expected_profit > U256::ZERO || opp.gas_cost_wei > 0,
+                "Opportunity should have non-zero profit or gas cost"
+            );
             assert!(!opp.pool_a.is_zero(), "pool_a should be set");
         }
     }
@@ -337,12 +341,9 @@ async fn test_synthetic_backtest_on_real_block() {
     let dir = temp_test_dir("synthetic_real_block");
 
     // Fetch one block
-    let cache = SqliteStore::open(
-        std::path::Path::new(&dir).join("cache.db"),
-    )
-    .unwrap();
-let fetcher = Fetcher::new(rpc.clone(), cache.clone());
-        let resolved = ResolvedRange {
+    let cache = SqliteStore::open(std::path::Path::new(&dir).join("cache.db")).unwrap();
+    let fetcher = Fetcher::new(rpc.clone(), cache.clone());
+    let resolved = ResolvedRange {
         start_block: block,
         end_block: block,
         block_count: 1,
@@ -360,19 +361,37 @@ let fetcher = Fetcher::new(rpc.clone(), cache.clone());
     let mut pm = PoolManager::new();
     let pools = vec![
         (
-            "6e7a5fafcec6bb1e78bae2a1f0b612012bf14827".parse::<Address>().unwrap(),
-            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse::<Address>().unwrap(),
-            "2791bca1f2de4661ed88a30c99a7a9449aa84174".parse::<Address>().unwrap(),
+            "6e7a5fafcec6bb1e78bae2a1f0b612012bf14827"
+                .parse::<Address>()
+                .unwrap(),
+            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
+                .parse::<Address>()
+                .unwrap(),
+            "2791bca1f2de4661ed88a30c99a7a9449aa84174"
+                .parse::<Address>()
+                .unwrap(),
         ),
         (
-            "cd353f79d9fade311fc3119b841e1f456b54e858".parse::<Address>().unwrap(),
-            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse::<Address>().unwrap(),
-            "2791bca1f2de4661ed88a30c99a7a9449aa84174".parse::<Address>().unwrap(),
+            "cd353f79d9fade311fc3119b841e1f456b54e858"
+                .parse::<Address>()
+                .unwrap(),
+            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
+                .parse::<Address>()
+                .unwrap(),
+            "2791bca1f2de4661ed88a30c99a7a9449aa84174"
+                .parse::<Address>()
+                .unwrap(),
         ),
         (
-            "604029b0c1a79eebfb31f7c5316434484f3a4b55".parse::<Address>().unwrap(),
-            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse::<Address>().unwrap(),
-            "c2132d05d31c914a87c6611c10748aeb04b58e8f".parse::<Address>().unwrap(),
+            "604029b0c1a79eebfb31f7c5316434484f3a4b55"
+                .parse::<Address>()
+                .unwrap(),
+            "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
+                .parse::<Address>()
+                .unwrap(),
+            "c2132d05d31c914a87c6611c10748aeb04b58e8f"
+                .parse::<Address>()
+                .unwrap(),
         ),
     ];
 
@@ -414,21 +433,26 @@ let fetcher = Fetcher::new(rpc.clone(), cache.clone());
         ));
     }
 
-    pm = pm.with_wrapped_native(
-        "0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse().unwrap(),
-    );
+    pm = pm.with_wrapped_native("0d500b1d8e8ef31e21c99d1db9a6444d3adf1270".parse().unwrap());
 
     let prev = block.saturating_sub(1);
     pm.init_from_rpc(&rpc, prev, None).await;
     let initialized = pm.initialized_count();
-    eprintln!("Initialized {initialized}/{} pools at block {prev}", pm.pool_count());
+    eprintln!(
+        "Initialized {initialized}/{} pools at block {prev}",
+        pm.pool_count()
+    );
 
     let handle = tokio::runtime::Handle::current();
     let replayer = BlockReplayer::new(handle, cache, rpc, CHAIN_ID);
     let mut runner = BacktestRunner::new(replayer, pm, GasConfig::default());
 
     let result = runner.run_block(block);
-    assert!(result.is_ok(), "run_block should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "run_block should succeed: {:?}",
+        result.err()
+    );
 
     let (opps, _stats, _gas) = result.unwrap();
     eprintln!("Block {block}: {} opportunities detected", opps.len());

@@ -1,4 +1,3 @@
-
 mod cli;
 mod commands;
 mod display;
@@ -34,11 +33,13 @@ async fn main() -> anyhow::Result<()> {
     setup_logging(cli.verbose, cli.quiet);
 
     let mut config = match &cli.config {
-        Some(path) => Config::load_or_default(path),
+        // Explicit --config: a missing file is still a fallback to defaults
+        // (logged), but a malformed file is a hard error.
+        Some(path) => Config::load_or_default(path)?,
         None => {
             let default_path = "mev-scout.toml";
             if std::path::Path::new(default_path).exists() {
-                Config::load_or_default(default_path)
+                Config::load_or_default(default_path)?
             } else {
                 Config::default()
             }

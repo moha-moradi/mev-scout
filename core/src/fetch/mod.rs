@@ -1,2 +1,2 @@
 pub mod fetcher;
-pub use fetcher::{Fetcher, FetchSummary, FetchTiming};
+pub use fetcher::{FetchSummary, FetchTiming, Fetcher};

@@ -175,9 +175,10 @@ impl Database for CachedRpcDb {
                     .insert(info.code_hash, address);
             }
 
-            let code = info.code.clone().or_else(|| {
-                self.cache_state.codes.get(&info.code_hash).cloned()
-            });
+            let code = info
+                .code
+                .clone()
+                .or_else(|| self.cache_state.codes.get(&info.code_hash).cloned());
 
             let full_info = AccountInfo {
                 nonce: info.nonce,
@@ -199,9 +200,7 @@ impl Database for CachedRpcDb {
                 )
                 .map_err(DbError)?;
 
-            self.cache_state
-                .accounts
-                .insert(address, full_info.clone());
+            self.cache_state.accounts.insert(address, full_info.clone());
             Ok(Some(full_info))
         } else {
             Ok(None)
@@ -340,7 +339,10 @@ impl CachedRpcDb {
 
     /// Fetch account state (nonce, balance, bytecode) via the depth-unlimited
     /// RPC methods — no archive node required.
-    fn account_via_rpc(&self, address: Address) -> Result<(u64, U256, B256, Option<Bytecode>), DbError> {
+    fn account_via_rpc(
+        &self,
+        address: Address,
+    ) -> Result<(u64, U256, B256, Option<Bytecode>), DbError> {
         let (nonce, balance, code) = self
             .block_on_rpc(self.rpc.get_account(address, self.block_number))
             .map_err(DbError)?;
