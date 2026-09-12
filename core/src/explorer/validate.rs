@@ -1,14 +1,14 @@
 //! Cross-validation harness — realized MEV (explorer ground truth) vs
-//! opportunity detections (`run`/`live`), plan §11.
+//! opportunity detections (`run`/`live`).
 //!
-//! Matching tiers (§11.1.1, never merged):
+//! Matching tiers (never merged):
 //! - **T1 exact** — same `canonical_id` (+ block within match window).
 //! - **T2 overlap** — ≥1 pool in common + same profit/token direction + block
 //!   within window.
 //! - **T3 block-level** — any op of the same kind in the same block (ceiling).
 //!
-//! Headline recall = T1 ∪ T2. USD-weighted recall is the primary metric
-//! (§11.1.3). Misses are attributed to the disjoint M1–M8 taxonomy (§11.1.2)
+//! Headline recall = T1 ∪ T2. USD-weighted recall is the primary metric.
+//! Misses are attributed to the disjoint M1–M8 taxonomy using
 //! using `rejected_candidates` + pool-coverage facts; windows without
 //! rejection capture degrade to `unknown-coverage`, never silently M3/M5.
 
@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::explorer::store::{ExplorerStore, MevOpRow, OpportunityRow, RejectedRow};
 use crate::types::ChainName;
 
-/// Kind mapping opportunity strategy → realized kind (§3 taxonomy).
+/// Kind mapping opportunity strategy → realized kind (taxonomy).
 fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
     match strategy {
         "TwoHopArb" | "MultiHopArb" => Some("arb_atomic"),
@@ -118,7 +118,7 @@ pub struct MatchRecord {
     pub canonical_id: Option<String>,
     /// Blocks of separation (live pending skew) — 0 for run backtests.
     pub block_distance: i64,
-    /// 1:N / N:1 race marker (§11.1.1 item 3): matches sharing this op.
+    /// 1:N / N:1 race marker: matches sharing this op.
     pub one_to_many: bool,
 }
 
@@ -172,7 +172,7 @@ impl TierRecall {
     }
 }
 
-/// Threshold-sweep point (§11.1.3).
+/// Threshold-sweep point.
 #[derive(Debug, Clone, Serialize)]
 pub struct SweepPoint {
     pub min_usd: f64,
@@ -180,7 +180,7 @@ pub struct SweepPoint {
     pub usd_recall: f64,
 }
 
-/// Full validation report (§11.1).
+/// Full validation report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ValidationReport {
     pub chain: String,
@@ -195,7 +195,7 @@ pub struct ValidationReport {
     pub per_kind: Vec<(String, TierRecall)>,
     pub matches: Vec<MatchRecord>,
     /// Scanner opportunities with no realized op in-window (precision signal,
-    /// §11.1: candidate false positives OR outcompeted/unprofitable — tagged
+    /// candidate false positives OR outcompeted/unprofitable — tagged
     /// separately, never merged).
     pub precision_signal_count: u64,
     /// Blocks the scanner covered but the explorer saw nothing of the kind.
@@ -203,7 +203,7 @@ pub struct ValidationReport {
     /// Realized-op pools absent from the opportunity pool set (M1 evidence).
     pub missing_pools: Vec<String>,
     /// Whether rejection capture was present for the window (drives
-    /// `unknown-coverage` vs M3/M5 disambiguation, §9.3).
+    /// `unknown-coverage` vs M3/M5 disambiguation).
     pub rejections_recorded: bool,
 }
 
@@ -409,7 +409,7 @@ pub fn compute_validation(
                     });
                 }
                 None => {
-                    // Miss — attribute M1–M8 (§11.1.2, first match wins).
+                    // Miss — attribute M1–M8 (first match wins).
                     let cause = attribute_miss(
                         ev,
                         &rejections,
@@ -440,7 +440,7 @@ pub fn compute_validation(
                 recall.matched_t3 += 1;
             }
         }
-        // Patch 1:N markers (§11.1.1 item 3 — races are signal, never deduped).
+        // Patch 1:N markers (races are signal, never deduped).
         for m in matches.iter_mut().filter(|m| &m.kind == kind) {
             if let Some(&n) = matches_per_opp
                 .iter()
@@ -455,7 +455,7 @@ pub fn compute_validation(
     }
 
     // Precision signal: scanner opportunities never matched to a realized op
-    // (§11.1 — candidate false positives or outcompeted; reported, not judged).
+    // (candidate false positives or outcompeted; reported, not judged).
     let precision_signal_count = opportunities.len() as u64 - matched_opp.len() as u64;
 
     // Missing pools: realized-op pools absent from the scanner's pool set (M1).
@@ -470,7 +470,7 @@ pub fn compute_validation(
         v
     };
 
-    // Threshold sweep over USD-weighted recall (§11.1.3).
+    // Threshold sweep over USD-weighted recall.
     let mut threshold_sweep_points: Vec<SweepPoint> = Vec::new();
     if threshold_sweep {
         for min_usd in [0.0, 1.0, 10.0, 100.0, 1_000.0, 10_000.0] {
@@ -527,7 +527,7 @@ pub fn compute_validation(
     })
 }
 
-/// M1–M8 attribution (§11.1.2): first match wins, disjoint.
+/// M1–M8 attribution: first match wins, disjoint.
 enum MissCause {
     M1,
     M2,
@@ -618,7 +618,7 @@ fn attribute_miss(
     }
 }
 
-/// Render the report as terminal text (§10 `validate`).
+/// Render the report as terminal text.
 pub fn render_validation_report(report: &ValidationReport) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -682,7 +682,7 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
 
     let miss = report.miss_distribution();
     let _ = writeln!(out);
-    let _ = writeln!(out, "  Miss taxonomy (M1–M8, §11.1.2):");
+    let _ = writeln!(out, "  Miss taxonomy (M1–M8):");
     let _ = writeln!(out, "    M1 pool-gap:            {:>5}", miss.m1_pool_gap);
     let _ = writeln!(out, "    M2 venue-gap:           {:>5}", miss.m2_venue_gap);
     let _ = writeln!(

@@ -1,5 +1,5 @@
 use super::BALANCER_POOL_REGISTERED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHits};
 use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
@@ -41,12 +41,12 @@ pub(crate) async fn scan_balancer_batch(
                     pool_id.copy_from_slice(topics[1].as_slice());
                     let pool_addr = Address::from_slice(&topics[2][12..32]);
                     let creation_block = log.block_number.unwrap_or(0);
-                    pool_hits.entry(pool_addr).or_insert((
-                        DexType::Balancer,
-                        Some(pool_id),
-                        None,
-                        creation_block,
-                    ));
+                    pool_hits.entry(pool_addr).or_insert(PoolHit {
+                        dex_type: DexType::Balancer,
+                        pool_id: Some(pool_id),
+                        tokens: None,
+                        first_seen_block: creation_block,
+                    });
                     factory_pools.entry(pool_addr).or_insert(
                         DiscoveredPool::new(
                             pool_addr,

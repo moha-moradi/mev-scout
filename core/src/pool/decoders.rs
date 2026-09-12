@@ -56,8 +56,8 @@ pub static FLUID_SWAP_TOPIC: LazyLock<B256> =
 
 /// Metric V2 pool: Swap(address sender, address recipient, bool exactInput,
 /// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)
-/// (plan §3.4 signature — topic digest computed from the string, on-chain
-/// verification deferred like Q6/Q10/Q11).
+/// (swap-event signature — topic digest computed from the signature string;
+/// verifying the produced topic on-chain is deferred).
 pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Swap(address,address,bool,int128,int128,int16,uint104)"));
 
@@ -399,7 +399,7 @@ pub struct MetricSwapDecoded {
 
 /// Attempt to decode a Metric V2 Swap event from an executed log.
 ///
-/// Event (plan §3.4): `Swap(address sender, address recipient, bool exactInput,
+/// Event: `Swap(address sender, address recipient, bool exactInput,
 /// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104
 /// newPositionInBin)` — sender/recipient assumed indexed (topics[1..2]); data
 /// = [exactInput (32B), amount0Delta (32B), amount1Delta (32B), newTick (32B),

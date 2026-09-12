@@ -226,7 +226,7 @@ pub struct GasConfig {
     /// `base_fee * 150%` multiplier. Set by `BacktestRunner` before each
     /// block based on recent blocks' effective gas prices.
     pub percentile_gas_price: Option<u128>,
-    /// Observed-gasUsed calibration (#7): rolling per-`(dex_type, hop_count)`
+    /// Observed-gasUsed calibration: rolling per-`(dex_type, hop_count)`
     /// averages of actual transaction gas, refreshed by `BacktestRunner`
     /// before each block. Detectors blend these into their per-opportunity
     /// gas estimates; empty by default (purely analytic estimates).

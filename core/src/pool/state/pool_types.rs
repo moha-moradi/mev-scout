@@ -377,7 +377,7 @@ impl FluidPoolState {
 /// Runtime state for a Metric V2 pool (oracle-anchored tick/bin AMM).
 ///
 /// Bin bounds derive from a per-pool `IPriceProvider` oracle mid-price stored
-/// as Q64.64 — not reproducible from swap logs alone (Q12). We track the
+/// as Q64.64 — not reproducible from swap logs alone. We track the
 /// last observed tick / active-bin position from the custom Swap event for
 /// state visibility; quoting stays disabled until the oracle ABI is verified.
 #[derive(Debug, Clone)]

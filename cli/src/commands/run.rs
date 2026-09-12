@@ -187,9 +187,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
         opportunities: all_opportunities.clone(),
     };
 
-    // Results layer (§9.2): persist into the explorer opportunities table.
+    // Results layer: persist into the explorer opportunities table.
     persist_opportunities_to_explorer(config, validation_result.chain_name, &run_id, &results_file);
-    // Rejection capture (§9.3) when --record-rejections.
+    // Rejection capture when --record-rejections.
     let rejections = runner.take_rejections();
     persist_rejections_to_explorer(config, validation_result.chain_name, &run_id, &rejections);
 

@@ -1,13 +1,13 @@
-//! Explorer store — SQLite persistence for realized-MEV facts (plan §9).
+//! Explorer store — SQLite persistence for realized-MEV facts.
 //!
 //! Separate database file from the scanner cache (`explorer_{chain}.sqlite`)
 //! so backfill writes never contend with replay-path reads. WAL mode,
 //! single-writer, batched transactions. Schema is Postgres-portable.
 //!
 //! Layers:
-//! - forensic facts: `blocks`, `txs`, `transfers`, `swaps`, `mev_ops` (§9.1)
-//! - results layer: `opportunities` fed from `ResultsFile` (§9.2)
-//! - rejection capture: `rejected_candidates` (§9.3)
+//! - forensic facts: `blocks`, `txs`, `transfers`, `swaps`, `mev_ops`
+//! - results layer: `opportunities` fed from `ResultsFile`
+//! - rejection capture: `rejected_candidates`
 //! - checkpointing: `sync_state` + `blocks_classified` (gap-safe resume)
 
 use std::path::Path;
@@ -544,7 +544,7 @@ impl ExplorerStore {
         }
     }
 
-    /// Purge `transfers` older than `keep_blocks` behind head (retention §9.4).
+    /// Purge `transfers` older than `keep_blocks` behind head (retention).
     pub fn prune_transfers(&self, before_block: u64) -> anyhow::Result<usize> {
         let n = self.conn.execute(
             "DELETE FROM transfers WHERE block_number < ?1",
@@ -553,7 +553,7 @@ impl ExplorerStore {
         Ok(n)
     }
 
-    // ── results layer (§9.2) ────────────────────────────────────────────
+    // ── results layer ──────────────────────────────────────────────────
 
     /// Insert one opportunity row from a `ResultsFile` entry.
     #[allow(clippy::too_many_arguments)]
@@ -1104,7 +1104,7 @@ impl ExplorerStore {
         Ok(n as u64)
     }
 
-    /// Insert an address label (classifier growth loop, §8.3).
+    /// Insert an address label (classifier growth loop).
     pub fn upsert_label(
         &self,
         address: Address,
@@ -1148,7 +1148,7 @@ impl ExplorerStore {
         Ok(out)
     }
 
-    // ── rejection capture (§9.3) ────────────────────────────────────────
+    // ── rejection capture ──────────────────────────────────────────────
 
     /// Insert one rejected-candidate row (run_id/chain stamped here).
     #[allow(clippy::too_many_arguments)]
@@ -1227,7 +1227,7 @@ impl ExplorerStore {
     }
 
     /// True when the window has any rejection rows (drives the
-    /// `unknown-coverage` degradation in `validate`, §9.3/§11.1.2).
+    /// `unknown-coverage` degradation in `validate`).
     pub fn has_rejections(&self, chain: &str, from_block: u64, to_block: u64) -> bool {
         self.conn
             .query_row(
@@ -1240,7 +1240,7 @@ impl ExplorerStore {
             .unwrap_or(false)
     }
 
-    // ── reporting additions (§10) ───────────────────────────────────────
+    // ── reporting additions ────────────────────────────────────────────
 
     /// Whole-window overview stats (`stats` header block).
     pub fn stats_overview(&self, since_ts: u64) -> anyhow::Result<OverviewRow> {
@@ -1329,7 +1329,7 @@ impl ExplorerStore {
         Ok(out)
     }
 
-    /// Store `show --trace` verification results on the op's details (§10).
+    /// Store `show --trace` verification results on the op's details.
     pub fn mark_trace_verified(
         &self,
         tx_hash: &str,
@@ -1356,7 +1356,7 @@ impl ExplorerStore {
     }
 
     /// Label a searcher automatically after a confirmed classifier hit
-    /// (growth loop, §8.3): address → label with `source = classifier`.
+    /// (growth loop): address → label with `source = classifier`.
     pub fn label_searcher_auto(&self, address: Address, block: u64) -> anyhow::Result<()> {
         let addr = format!("{address:#x}");
         let exists: Option<i64> = self
@@ -1426,7 +1426,7 @@ pub struct OpportunityRow {
     pub tx_hash: Option<String>,
 }
 
-/// One rejected-candidate row (`rejected_candidates` table, §9.3).
+/// One rejected-candidate row (`rejected_candidates` table).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedRow {
     pub block_number: u64,

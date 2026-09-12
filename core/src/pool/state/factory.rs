@@ -25,17 +25,33 @@ use crate::pool::state::pool_types::{
     UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };
 use crate::rpc::{BlockRef, RpcClient};
-/// Snapshot of pool metadata captured before spawning refresh tasks
-/// (address, dex type, pool id, tick spacing, vault, factory, decimal).
-type PoolMeta = (
-    Address,
-    DexType,
-    Option<[u8; 32]>,
-    i32,
-    Option<Address>,
-    bool,
-    Option<u8>,
-);
+/// Snapshot of pool metadata captured before spawning refresh tasks.
+#[derive(Clone, Copy)]
+struct PoolMeta {
+    address: Address,
+    dex_type: DexType,
+    pool_id: Option<[u8; 32]>,
+    tick_spacing: i32,
+    factory: Option<Address>,
+    needs_init: bool,
+    balancer_pool_type: Option<u8>,
+}
+
+impl PoolMeta {
+    /// Default snapshot with the common `needs_init` case and empty metadata;
+    /// construction sites override the fields they carry.
+    fn defaults() -> Self {
+        PoolMeta {
+            address: Address::ZERO,
+            dex_type: DexType::UniswapV2,
+            pool_id: None,
+            tick_spacing: 0,
+            factory: None,
+            needs_init: true,
+            balancer_pool_type: None,
+        }
+    }
+}
 pub enum PoolInitResult {
     V2Reserves {
         reserve0: u128,
@@ -172,114 +188,105 @@ impl PoolManager {
         let vault = self.balancer_vault;
         let pool_meta: Vec<PoolMeta> = pool_addrs
             .iter()
-            .map(|addr| match self.pools.get(addr) {
-                Some(PoolState::UniswapV2(s)) => (
-                    *addr,
-                    DexType::UniswapV2,
-                    None,
-                    0,
-                    s.info.factory,
-                    true,
-                    None,
-                ),
-                Some(PoolState::UniswapV3(state)) => (
-                    *addr,
-                    DexType::UniswapV3,
-                    None,
-                    state.info.tick_spacing.unwrap_or(60) as i32,
-                    None,
-                    true,
-                    None,
-                ),
-                Some(PoolState::UniswapV4(state)) => (
-                    *addr,
-                    DexType::UniswapV4,
-                    None,
-                    state.info.tick_spacing.unwrap_or(60) as i32,
-                    None,
-                    true,
-                    None,
-                ),
-                Some(PoolState::PancakeInfinity(state)) => (
-                    *addr,
-                    DexType::PancakeInfinity,
-                    state.info.pool_id,
-                    state.info.tick_spacing.unwrap_or(60) as i32,
-                    state.info.factory,
-                    true,
-                    None,
-                ),
-                Some(PoolState::Curve(s))
-                    if s.info.dex_type == DexType::Solidly
-                        || s.info.dex_type == DexType::Camelot =>
-                {
-                    (*addr, s.info.dex_type, None, 0, s.info.factory, true, None)
-                }
-                Some(PoolState::Curve(_)) => (*addr, DexType::Curve, None, 0, None, true, None),
-                Some(PoolState::Balancer(b)) => (
-                    *addr,
-                    DexType::Balancer,
-                    None,
-                    0,
-                    None,
-                    true,
-                    b.info.balancer_pool_type,
-                ),
-                Some(PoolState::TraderJoeLB(s)) => (
-                    *addr,
-                    DexType::TraderJoeLB,
-                    None,
-                    0i32,
-                    s.info.factory,
-                    true,
-                    None,
-                ),
-                Some(PoolState::Pendle(s)) => (
-                    *addr,
-                    DexType::Pendle,
-                    None,
-                    0i32,
-                    s.info.factory,
-                    true,
-                    None,
-                ),
-                // Metric/Fluid are log-only flow-tracking pools; fetch_pool_state
-                // returns None for them, so skip init RPC tasks entirely.
-                Some(PoolState::Metric(s)) => (
-                    *addr,
-                    DexType::Metric,
-                    None,
-                    0i32,
-                    s.info.factory,
-                    false,
-                    None,
-                ),
-                Some(PoolState::Fluid(s)) => (
-                    *addr,
-                    DexType::Fluid,
-                    None,
-                    0i32,
-                    s.info.factory,
-                    false,
-                    None,
-                ),
-                None => (*addr, DexType::UniswapV2, None, 0, None, false, None),
+            .map(|addr| {
+                let m = match self.pools.get(addr) {
+                    Some(PoolState::UniswapV2(s)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::UniswapV2,
+                        factory: s.info.factory,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::UniswapV3(state)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::UniswapV3,
+                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::UniswapV4(state)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::UniswapV4,
+                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::PancakeInfinity(state)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::PancakeInfinity,
+                        pool_id: state.info.pool_id,
+                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
+                        factory: state.info.factory,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::Curve(s))
+                        if s.info.dex_type == DexType::Solidly
+                            || s.info.dex_type == DexType::Camelot =>
+                    {
+                        PoolMeta {
+                            address: *addr,
+                            dex_type: s.info.dex_type,
+                            factory: s.info.factory,
+                            ..PoolMeta::defaults()
+                        }
+                    }
+                    Some(PoolState::Curve(_)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::Curve,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::Balancer(b)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::Balancer,
+                        balancer_pool_type: b.info.balancer_pool_type,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::TraderJoeLB(s)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::TraderJoeLB,
+                        factory: s.info.factory,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::Pendle(s)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::Pendle,
+                        factory: s.info.factory,
+                        ..PoolMeta::defaults()
+                    },
+                    // Metric/Fluid are log-only flow-tracking pools; fetch_pool_state
+                    // returns None for them, so skip init RPC tasks entirely.
+                    Some(PoolState::Metric(s)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::Metric,
+                        factory: s.info.factory,
+                        needs_init: false,
+                        ..PoolMeta::defaults()
+                    },
+                    Some(PoolState::Fluid(s)) => PoolMeta {
+                        address: *addr,
+                        dex_type: DexType::Fluid,
+                        factory: s.info.factory,
+                        needs_init: false,
+                        ..PoolMeta::defaults()
+                    },
+                    None => PoolMeta {
+                        address: *addr,
+                        ..PoolMeta::defaults()
+                    },
+                };
+                m
             })
             .collect();
 
         let tasks: Vec<_> = pool_meta
             .iter()
-            .filter(|(_, _, _, _, _, needs_init, _)| *needs_init)
-            .map(
-                |(addr, dt, pool_id, tick_spacing, factory, _, balancer_pool_type)| {
-                    let rpc = rpc.clone();
-                    let sem = Arc::clone(&semaphore);
-                    let addr = *addr;
-                    let dt = *dt;
-                    let pool_id = *pool_id;
-                    let tick_spacing = *tick_spacing;
-                    let factory = *factory;
-                    let balancer_pool_type = *balancer_pool_type;
+            .filter(|m| m.needs_init)
+            .map(|meta| {
+                let rpc = rpc.clone();
+                let sem = Arc::clone(&semaphore);
+                let addr = meta.address;
+                let dt = meta.dex_type;
+                let pool_id = meta.pool_id;
+                let tick_spacing = meta.tick_spacing;
+                let factory = meta.factory;
+                let balancer_pool_type = meta.balancer_pool_type;
                     let pre_fetched = self.pools.get(&addr).and_then(|ps| match ps {
                         PoolState::Curve(s) => s.info.underlying_tokens.clone(),
                         PoolState::Balancer(s) => s.info.underlying_tokens.clone(),
@@ -1395,7 +1402,8 @@ impl PoolManager {
             .ok()?;
 
         // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
-        // Tuple with ABIEncoderV2: 8 fields ?� 32 bytes = 256 bytes
+        // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
+        // Tuple with ABIEncoderV2: 8 fields × 32 bytes = 256 bytes
         if result.len() < 64 {
             return None;
         }
@@ -1608,10 +1616,10 @@ impl PoolManager {
                 _ => (BalancerPoolVariant::Other, None, None),
             }
         } else if !weights.is_empty() {
-            // Has normalized weights �?� Weighted pool
+            // Has normalized weights → Weighted pool
             (BalancerPoolVariant::Weighted, None, None)
         } else {
-            // No weights �?� try amplification parameter to detect Stable pool
+            // No weights → try amplification parameter to detect Stable pool
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&GET_AMPLIFICATION_PARAMETER);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {

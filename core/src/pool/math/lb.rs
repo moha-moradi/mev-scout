@@ -11,7 +11,7 @@
 //!   - `lb_output_amount`: quote a swap within the active bin
 //!   - `lb_max_output`: maximum output draining the active bin
 
-use super::consts::BPS_DENOMINATOR;
+use super::consts::{BPS_DENOMINATOR, Q64_SHIFT};
 use alloy::primitives::U256;
 
 /// Compute the price of bin `active_id` relative to bin 0.
@@ -23,14 +23,14 @@ use alloy::primitives::U256;
 /// For `active_id` values up to ~100,000, this provides sufficient precision.
 pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
     if active_id == 0 {
-        return 1u128 << 64;
+        return 1u128 << Q64_SHIFT;
     }
     // Q64.64: 1.0 = 2^64
     let base_num = BPS_DENOMINATOR + bin_step as u128;
     let scale = BPS_DENOMINATOR;
-    let mut result: u128 = 1u128 << 64;
+    let mut result: u128 = 1u128 << Q64_SHIFT;
     // base in Q64.64
-    let mut base: u128 = (base_num << 64) / scale;
+    let mut base: u128 = (base_num << Q64_SHIFT) / scale;
     let mut exp = active_id;
     while exp > 0 {
         if exp & 1 == 1 {

@@ -27,14 +27,21 @@ use alloy::primitives::{Address, U256};
 /// Grace window after which a persistence entry is pruned when its
 /// opportunity stops appearing.
 const PERSISTENCE_GRACE_BLOCKS: u64 = 5;
-/// Confidence floor for long-persisting opportunities (#10).
+/// Confidence floor for long-persisting opportunities.
 const PERSISTENCE_MIN_CONFIDENCE: f64 = 0.05;
 /// Per-step decay applied to confidence for each consecutive block an
-/// opportunity persists (#10): fresh gaps score 1.0, stale gaps decay.
+/// opportunity persists: fresh gaps score 1.0, stale gaps decay.
 const PERSISTENCE_DECAY: f64 = 0.75;
 
-/// Map key tracking one opportunity's cross-block persistence (#10).
-type PersistenceKey = (Strategy, Address, Address, Address, Address);
+/// Map key tracking one opportunity's cross-block persistence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct PersistenceKey {
+    strategy: Strategy,
+    pool_a: Address,
+    pool_b: Address,
+    token_in: Address,
+    token_out: Address,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct PersistInfo {
@@ -64,16 +71,16 @@ pub struct BacktestRunner {
     min_profit_wei: u64,
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     max_candidates_per_tx: usize,
-    /// Cross-block opportunity persistence used as a competitiveness proxy (#10):
+    /// Cross-block opportunity persistence used as a competitiveness proxy:
     /// opportunities persisting many consecutive blocks get decaying confidence.
     opp_persistence: HashMap<PersistenceKey, PersistInfo>,
-    /// Whether persistence-based confidence scoring is applied (#10).
+    /// Whether persistence-based confidence scoring is applied.
     persistence_scoring: bool,
-    /// Observed-gasUsed calibration buckets (#7), recorded during replay and
+    /// Observed-gasUsed calibration buckets, recorded during replay and
     /// snapshotted into `gas_config.calibration` before each block.
     gas_calibration: GasCalibration,
     /// Whether rejected candidates are buffered for the explorer's
-    /// `rejected_candidates` table (§9.3). Opt-in via `with_record_rejections`.
+    /// `rejected_candidates` table. Opt-in via `with_record_rejections`.
     record_rejections: bool,
     /// Rejected-candidate buffer drained by the CLI via `take_rejections`.
     pending_rejections: Vec<crate::explorer::RejectedCandidate>,
@@ -140,7 +147,7 @@ impl BacktestRunner {
         self
     }
 
-    /// Buffer rejected candidates with their filter reason (§9.3). Opt-in —
+    /// Buffer rejected candidates with their filter reason. Opt-in —
     /// off by default to bound write volume; recommended ON for windows later
     /// fed to `explorer validate`.
     pub fn with_record_rejections(mut self, enabled: bool) -> Self {
@@ -153,7 +160,7 @@ impl BacktestRunner {
         std::mem::take(&mut self.pending_rejections)
     }
 
-    /// Gas/min-profit filters with optional rejection recording (§9.3).
+    /// Gas/min-profit filters with optional rejection recording.
     /// Replaces bare `retain` calls so the scanner's negative space is
     /// observable — a true coverage gap (M7) stays distinguishable from a
     /// filtered candidate (M3/M4/M5).
@@ -580,7 +587,7 @@ impl BacktestRunner {
                     }
                 }
 
-                // Learn taxed tokens from this tx (#9), then apply its log
+                // Learn taxed tokens from this tx, then apply its log
                 // updates to pool state — both AFTER detection.
                 pm.learn_taxes_from_tx(&tx.logs);
                 pm.update_from_logs(&tx.logs);
@@ -846,7 +853,7 @@ impl BacktestRunner {
         ))
     }
 
-    /// Update cross-block persistence state and stamp confidence scores (#10).
+    /// Update cross-block persistence state and stamp confidence scores.
     ///
     /// An opportunity seen in the immediately preceding block extends its
     /// streak; anything else starts a fresh one. Confidence decays geometrically
@@ -862,13 +869,13 @@ impl BacktestRunner {
         map.retain(|_, info| block_num <= info.last_block + PERSISTENCE_GRACE_BLOCKS);
 
         for opp in opps.iter_mut() {
-            let key = (
-                opp.strategy,
-                opp.pool_a,
-                opp.pool_b,
-                opp.token_in,
-                opp.token_out,
-            );
+            let key = PersistenceKey {
+                strategy: opp.strategy,
+                pool_a: opp.pool_a,
+                pool_b: opp.pool_b,
+                token_in: opp.token_in,
+                token_out: opp.token_out,
+            };
             let blocks_seen = match map.get_mut(&key) {
                 Some(info) if info.last_block == block_num => {
                     // Same-block duplicate (e.g. both scan directions): keep streak.
@@ -971,7 +978,7 @@ impl BacktestRunner {
                 }
             }
         }
-        // H8 Phase 1+3: capture pending block and run mempool detection
+        // Capture pending block and run mempool detection
         if self.capture_pending {
             let rpc = self.replayer.rpc().clone();
             if let Some(capture) = tokio::task::block_in_place(|| {
@@ -985,7 +992,7 @@ impl BacktestRunner {
                 if let Some(last) = all_stats.last_mut() {
                     last.pending_tx_count = capture.tx_count;
                 }
-                // H8 Phase 3: run pool-state-based arb detection on pending state
+                // Run pool-state-based arb detection on pending state
                 let pending_opps = detect_pending_opportunities(
                     &self.pool_manager,
                     self.gas_config,

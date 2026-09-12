@@ -52,8 +52,8 @@ pub mod topics {
     pub static FLUID_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
 
-    /// Metric V2 pool Swap event (plan §3.4 signature; digest computed from
-    /// the string, on-chain verification deferred like Q6/Q10/Q11).
+    /// Metric V2 pool Swap event (swap-event signature; digest computed from
+    /// the signature string; verifying the produced topic on-chain is deferred).
     pub static METRIC_SWAP: LazyLock<B256> =
         LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
 

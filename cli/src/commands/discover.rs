@@ -722,7 +722,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
                 }
                 DexType::Balancer | DexType::Curve => {
                     if let Some(ref tokens) = p.underlying_tokens {
-                        let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                        let syms: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
                         println!("  {dex}  {}  [{}]{}", p.address, syms.join(", "), tvl_note);
                     } else {
                         println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);

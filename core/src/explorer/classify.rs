@@ -1,4 +1,4 @@
-//! Per-block realized-MEV classifier (plan §8.1).
+//! Per-block realized-MEV classifier.
 //!
 //! Input: one settled block (header + ordered txs with receipts, tx senders)
 //! decoded into swap/transfer/liquidation/JIT facts. Output: `Vec<MevEvent>`
@@ -113,20 +113,24 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
 
         // Participant scope: sender + receiver-side contracts (searcher
-        // attribution per plan: "EOA sender (or its deployed contract)").
+        // attribution: "EOA sender (or its deployed contract)").
         let mut candidates: Vec<Address> = vec![tx.from];
         if let Some(to) = tx.to {
             candidates.push(to);
         }
-        // Addresses with ≥2 swap participations via transfers also qualify
-        for (addr, _) in tx
-            .transfers
-            .iter()
-            .map(|t| (t.from, ()))
-            .chain(tx.transfers.iter().map(|t| (t.to, ())))
-        {
-            let _ = addr;
+        // Addresses with ≥2 swap participations via transfers also qualify.
+        let mut participation: std::collections::HashMap<Address, usize> =
+            std::collections::HashMap::new();
+        for t in &tx.transfers {
+            *participation.entry(t.from).or_insert(0) += 1;
+            *participation.entry(t.to).or_insert(0) += 1;
         }
+        let qualified: Vec<Address> = participation
+            .into_iter()
+            .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
+            .map(|(addr, _)| addr)
+            .collect();
+        candidates.extend(qualified);
 
         let candidate = candidates
             .iter()
@@ -269,7 +273,7 @@ fn opposite_dir(a: &SwapLeg, b: &SwapLeg) -> bool {
         && a.token_out == b.token_in
 }
 
-/// Classic realized-sandwich detection (plan §3/§8.1 pass 4): one attacker
+/// Classic realized-sandwich detection (pass 4): one attacker
 /// opens a position on a pool (front-run), a **third-party** same-direction
 /// swap (the victim) lands between it and the attacker's closing opposite-
 /// direction swap (back-run). Victims are any EOA, not just one bundled in
@@ -355,7 +359,7 @@ fn fold_sandwich(
     walk: &SandwichWalk,
 ) -> MevEvent {
     // Profit = back-run output − front-run input, netted in the profit token
-    // (the token both legs trade against), plan §8.2.
+    // (the token both legs trade against).
     let profit = back.amount_out.saturating_sub(front.amount_in);
     let gas_cost_wei = input
         .txs
@@ -407,7 +411,7 @@ fn fold_sandwich(
 }
 
 /// JIT pairing: same pool, same owner, same tick range, Mint before Burn,
-/// same block (plan §8.1 pass 5).
+/// same block (pass 5).
 fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
     let mints: Vec<JitFact> = input
         .txs

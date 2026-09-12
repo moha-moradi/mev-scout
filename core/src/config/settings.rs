@@ -82,14 +82,14 @@ pub struct OutputConfig {
     pub db_path: String,
 }
 
-/// Explorer sub-config (plan §10): `[explorer]` TOML section.
+/// Explorer sub-config: `[explorer]` TOML section.
 /// All fields optional — defaults keep existing config files valid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExplorerConfig {
     /// Explorer SQLite database path (forensic layer). Empty = derived per chain.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub db_path: String,
-    /// Confirmation lag before a block is indexed (§5.2: default 6 ≈ 12s on Polygon).
+    /// Confirmation lag before a block is indexed (default 6 ≈ 12s on Polygon).
     #[serde(default = "default_explorer_confirmations")]
     pub confirmations: u64,
     /// Live-mode polling interval in milliseconds.

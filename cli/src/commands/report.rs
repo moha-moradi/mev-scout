@@ -51,7 +51,7 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         opportunities,
     };
 
-    // Weekly-report explorer section (plan §11.1/Phase 5): when the explorer
+    // Weekly-report explorer section (phase 5 of report rendering): when the explorer
     // store has data overlapping this run, append recall/miss metrics.
     let explorer_section = explorer_validation_section(
         config,
@@ -111,7 +111,7 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
 }
 
 /// Explorer cross-validation section for the weekly report: computes the
-/// §11 report over the run's block window when the store has realized data.
+/// Explorer cross-validation report over the run's block window when the store has realized data.
 /// Failures here are logged and the section is skipped — the report still
 /// renders — but a broken store must not vanish silently.
 fn explorer_validation_section(

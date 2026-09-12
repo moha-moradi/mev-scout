@@ -1,6 +1,7 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
 use alloy::primitives::{Address, U256, U512};
+use std::cmp;
 
 /// Percentage multiplier for +1% adjustment (101/100).
 const PCT_101: u128 = 101;
@@ -10,7 +11,11 @@ const PCT_99: u128 = 99;
 const PCT_102: u128 = 102;
 /// Percentage multiplier for -2% adjustment (98/100).
 const PCT_98: u128 = 98;
-use std::cmp;
+
+/// Basis points that make up 100% — fee denominator for constant-product pools.
+const BPS_FEE_DENOM: u64 = 10_000;
+/// Parts per million that make up 100% — fee denominator for concentrated-liquidity pools.
+const PPM_FEE_DENOM: u64 = 1_000_000;
 
 use crate::pool::math::balancer as balancer_math;
 use crate::pool::math::curve as curve_math;
@@ -142,7 +147,7 @@ impl TwoHopArbDetector {
 
         let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
-        // Fee-on-transfer filter (#9): the simulation assumes the full quote is
+        // Fee-on-transfer filter: the simulation assumes the full quote is
         // received, but sell-tax tokens take a cut on transfer — producing
         // phantom opportunities. Exclude known and dynamically-learned FOT tokens.
         if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
@@ -825,8 +830,6 @@ fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
         _ => None,
     }
 }
-const BPS_FEE_DENOM: u64 = 10_000;
-const PPM_FEE_DENOM: u64 = 1_000_000;
 
 /// Combine first-pool breakpoints (already in input-x space) with second-pool
 /// thresholds inverted through the monotone first-pool quote into x-space.
@@ -885,7 +888,7 @@ fn invert_monotone_quote(
 /// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
 /// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
 ///
-/// When the observed-gas calibration (#7) has enough samples for this shape,
+/// When the observed-gas calibration has enough samples for this shape,
 /// the structural estimate is replaced by the calibrated observation (clamped).
 fn estimate_gas_for_two_hop(
     pool_a: &PoolState,

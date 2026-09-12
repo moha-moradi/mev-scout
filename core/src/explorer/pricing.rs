@@ -1,4 +1,4 @@
-//! USD pricing for the explorer (plan §8.5).
+//! USD pricing for the explorer.
 //!
 //! - **Live**: CoinGecko simple/price (chain-aware asset ids), cached hourly
 //!   in the explorer `prices` table.
@@ -21,7 +21,7 @@ pub struct TokenUsd {
     pub decimals: u32,
 }
 
-/// Chain-aware CoinGecko asset id for the native token (plan §8.5).
+/// Chain-aware CoinGecko asset id for the native token.
 pub fn native_asset_id(chain: crate::types::ChainName) -> &'static str {
     match chain {
         crate::types::ChainName::Polygon => "matic-network",
@@ -34,7 +34,7 @@ pub fn native_asset_id(chain: crate::types::ChainName) -> &'static str {
     }
 }
 
-/// DefiLlama coins-API chain prefix (plan §8.5).
+/// DefiLlama coins-API chain prefix.
 fn llama_chain_prefix(chain: crate::types::ChainName) -> &'static str {
     match chain {
         crate::types::ChainName::Polygon => "polygon",

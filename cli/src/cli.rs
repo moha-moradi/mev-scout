@@ -70,7 +70,7 @@ pub enum Command {
     Explorer(ExplorerArgs),
 }
 
-/// Explorer subcommand group (plan §10).
+/// Explorer subcommand group.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
     /// Probe every configured provider: latest block, bulk receipts, traces.
@@ -287,7 +287,7 @@ pub struct RunArgs {
     #[arg(long = "batch-rpc", help_heading = "RPC")]
     pub batch_rpc: bool,
 
-    /// Record rejected candidates (§9.3) into the explorer store for
+    /// Record rejected candidates into the explorer store for
     /// false-negative attribution in `explorer validate`. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
@@ -516,7 +516,7 @@ pub struct LiveArgs {
     )]
     pub poll_interval_ms: u64,
 
-    /// Record rejected candidates (§9.3) into the explorer store for
+    /// Record rejected candidates into the explorer store for
     /// false-negative attribution in `explorer validate`. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,

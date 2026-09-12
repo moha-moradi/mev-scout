@@ -1,7 +1,7 @@
 //! Multi-hop arbitrage detection — finds profitable swap cycles across connected pools.
 //!
 //! Candidate cycles are discovered with Bellman–Ford negative-cycle detection on a
-//! `-log(exchange_rate)` token graph (#5) instead of enumerating all BFS paths up to
+//! `-log(exchange_rate)` token graph instead of enumerating all BFS paths up to
 //! depth 4: work is bounded by O(V·E · rounds) rather than branching-factor^depth.
 //! Each discovered cycle is then priced through the standard V2/V3 AMM quote engine
 //! with a deterministic segment-wise optimizer (no stochastic restarts).
@@ -27,7 +27,7 @@ const MAX_V3_BREAKPOINTS_PER_POOL: usize = 24;
 /// (inversion requires binary-search probes through the prefix quote, so the
 /// total count is capped independently of the per-pool cap).
 const MAX_N_HOP_BREAKPOINTS: usize = 16;
-/// Cap on distinct negative cycles emitted per detection pass (#5). Bounds the
+/// Cap on distinct negative cycles emitted per detection pass. Bounds the
 /// ban-and-retry loop on adversarially dense graphs.
 const MAX_NEGATIVE_CYCLES: usize = 16;
 /// Hard cap on ban-and-retry attempts even when cycles keep being found.
@@ -42,7 +42,7 @@ const RELAX_EPS: f64 = 1e-12;
 
 /// Detects multi-hop arbitrage opportunities across V2/V3/Curve/Balancer pool paths.
 ///
-/// Cycles are found by Bellman–Ford relaxation over the token graph (#5), then
+/// Cycles are found by Bellman–Ford relaxation over the token graph, then
 /// validated and priced numerically. Maintains a per-block dedup set so the same
 /// persistent path is not re-reported across multiple transactions.
 pub struct MultiHopArbDetector {
@@ -105,7 +105,7 @@ impl MultiHopArbDetector {
     // #5: Negative-cycle discovery on a -log(exchange_rate) token graph
     // ------------------------------------------------------------------
 
-    /// Find profitable candidate cycles via Bellman–Ford (#5).
+    /// Find profitable candidate cycles via Bellman–Ford.
     ///
     /// Nodes are tokens; each pool contributes two directed edges weighted by
     /// `-ln(marginal_exchange_rate)`. A cycle can only be profitable if its edge
@@ -297,7 +297,7 @@ impl MultiHopArbDetector {
             info_b.token0
         };
 
-        // Fee-on-transfer filter (#9): quotes assume full output received; sell-tax
+        // Fee-on-transfer filter: quotes assume full output received; sell-tax
         // tokens produce phantom opportunities. Exclude known and dynamically
         // learned FOT tokens.
         if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
@@ -617,7 +617,7 @@ fn normalize_rotation(path: &mut [Address]) {
 
 /// Optimistic marginal exchange rate (output per input at zero trade size).
 ///
-/// Used exclusively by the negative-cycle filter (#5): the marginal rate is the
+/// Used exclusively by the negative-cycle filter: the marginal rate is the
 /// BEST achievable rate for every pool type (larger trades only move prices
 /// against the trader), so using it as the edge weight can only produce false
 /// positives — never missed cycles. Curve/Balancer use balance-ratio spot

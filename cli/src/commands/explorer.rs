@@ -1,4 +1,4 @@
-//! `mev-scout explorer` subcommands (plan §10):
+//! `mev-scout explorer` subcommands:
 //! doctor, index, live, stats, top, show, explain, validate, export.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -593,7 +593,7 @@ pub async fn cmd_explain(config: &Config, tx_hash: &str) -> anyhow::Result<()> {
     // M-taxonomy via the validate engine on a 1-block window.
     let report = validate::compute_validation(&store, chain, block, block, 0, None, false)?;
     let miss = report.miss_distribution();
-    println!("  inferred cause (per §11.1.2):");
+    println!("  inferred cause (per attribution taxonomy):");
     println!(
         "    M1 pool-gap: {} | M3 threshold: {} | M4 gas: {} | M5 quote: {} | M6 competition: {} | M7 coverage: {}",
         miss.m1_pool_gap,

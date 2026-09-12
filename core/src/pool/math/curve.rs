@@ -1,7 +1,8 @@
 //! Curve AMM math: StableSwap (V1) and CryptoSwap (V2) quoting functions.
 
 use super::consts::{
-    NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS, PPM_DENOMINATOR, WEI_PER_ETHER,
+    NEWTON_CONVERGENCE_EPSILON, NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS,
+    PPM_DENOMINATOR, WEI_PER_ETHER,
 };
 use crate::pool::state::{CurvePoolState, CurvePoolVariant};
 use alloy::primitives::Address;
@@ -237,7 +238,7 @@ fn newton_cryptoswap_invariant(
 
         let f = k * d * d + ann * gamma * d - ann * gamma * sum;
         let deriv = 2.0 * k * d + ann * gamma;
-        if deriv.abs() < 1e-30 {
+        if deriv.abs() < NEWTON_CONVERGENCE_EPSILON {
             break;
         }
         let d_next = d - f / deriv;
@@ -292,7 +293,7 @@ fn newton_cryptoswap_output(
     for _ in 0..NEWTON_OUTPUT_ITERATIONS {
         let f = k * x * x + k * b * x + c_term;
         let deriv = 2.0 * k * x + k * b;
-        if deriv.abs() < 1e-30 {
+        if deriv.abs() < NEWTON_CONVERGENCE_EPSILON {
             break;
         }
         let x_next = x - f / deriv;

@@ -67,11 +67,11 @@ pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
 
 // ── Metric V2 ────────────────────────────────────────────────────────
 
-/// Metric V2 pool Swap event (plan §3.4 signature): `Swap(address sender,
+/// Metric V2 pool Swap event (swap-event signature): `Swap(address sender,
 /// address recipient, bool exactInput, int128 amount0Delta, int128 amount1Delta,
 /// int16 newTick, uint104 newPositionInBin)` with sender/recipient assumed
-/// indexed. Topic digest computed from the signature string; on-chain
-/// verification deferred (same class as Q6/Q10/Q11).
+/// indexed. Topic digest computed from the signature string; verifying the
+/// produced topic on-chain is deferred.
 pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
 
@@ -644,7 +644,7 @@ pub fn decode_fluid_swap(log: &Log) -> Option<TradeEvent> {
 
 /// Decode a Metric V2 pool Swap event log.
 ///
-/// Event layout (plan §3.4): topics = [sig, sender, recipient]; data = 5 words
+/// Event layout: topics = [sig, sender, recipient]; data = 5 words
 /// [exactInput, int128 amount0Delta, int128 amount1Delta, int16 newTick,
 /// uint104 newPositionInBin]. Like V3, one delta leg is negative — report
 /// magnitudes, larger as amount_in.

@@ -101,8 +101,8 @@ pub async fn discover_via_geckoterminal(
     }
 }
 
-/// Curated per-DEX slug priority list (DEX_COVERAGE_PLAN Phase 2.2), mirroring
-/// the §2 volume ranks per chain.
+/// Curated per-DEX slug priority list, mirroring
+/// the volume ranks per chain.
 ///
 /// Slugs are GeckoTerminal dex ids (verified against
 /// `api.geckoterminal.com/api/v2/networks/{n}/dexes` on 2026-09-09). They gate

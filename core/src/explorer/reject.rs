@@ -1,4 +1,4 @@
-//! Rejection capture — the scanner's negative space (plan §9.3).
+//! Rejection capture — the scanner's negative space.
 //!
 //! Cross-validation of false negatives is only explainable if the candidates
 //! the scanner rejected are observable. When `--record-rejections` is enabled,
@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Why a candidate was rejected (plan §9.3 reason enum).
+/// Why a candidate was rejected (reason enum).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
     /// Pool for an edge is absent from `PoolManager` (M1).
@@ -45,7 +45,7 @@ impl RejectReason {
     }
 }
 
-/// One rejected scanner candidate (§9.3 schema minus run_id/chain, which the
+/// One rejected scanner candidate (schema minus run_id/chain, which the
 /// persistence layer stamps at insert time).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedCandidate {

@@ -903,7 +903,7 @@ impl RpcClient {
         }
     }
 
-    /// On-demand per-tx trace via `debug_traceTransaction` (plan §12):
+    /// On-demand per-tx trace via `debug_traceTransaction`:
     /// prestateTracer in diffMode returns exact pre/post state deltas for the
     /// transaction — used only by `explorer show <TX> --trace` for exact
     /// profit recomputation. Single-tx, negligible cost; never in backfill.

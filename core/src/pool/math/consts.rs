@@ -25,6 +25,9 @@ pub const NEWTON_OUTPUT_ITERATIONS: i32 = 64;
 // Pool math thresholds
 pub const MAX_V2_RESERVE_RATIO: u128 = 100;
 pub const Q128_SHIFT: u32 = 128; // Q128.128 fixed-point shift (V3 fee growth)
+pub const Q96_SHIFT: u32 = 96; // Q96 fixed-point shift (V3 sqrt-price)
+pub const Q64_SHIFT: u32 = 64; // Q64.64 fixed-point shift (LB / Curve L452)
+pub const NEWTON_CONVERGENCE_EPSILON: f64 = 1e-30; // Newton derivative-floor for stable-swap solvers
 pub const MIN_DAMPING_PERMILLE: u128 = 200;
 pub const MAX_EXTRACTION_NUMERATOR: u128 = 999;
 pub const BALANCER_FEE_ETHER_DIVISOR: u128 = 1_000_000_000_000;

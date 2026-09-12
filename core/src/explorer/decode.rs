@@ -307,7 +307,7 @@ pub const TOKEN1_SENTINEL: Address = Address::new([0xE1u8; 20]);
 
 /// Decode a liquidation fact via the per-protocol event registry.
 /// Aave-style `LiquidationCall` and Compound V3 `Absorb` are covered; the
-/// registry is intentionally not one hardcoded topic (plan §8.4).
+/// registry is intentionally not one hardcoded topic.
 pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
     let topic0 = *log.topics.first()?;
     if topic0 == *AAVE_V3_LIQUIDATION_CALL_TOPIC {

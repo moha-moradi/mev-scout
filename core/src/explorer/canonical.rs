@@ -11,7 +11,7 @@
 //! - liquidation: borrower+liquidator pair rather than asset pair
 //! - jit: pool + tick range
 //!
-//! Note (§11.1.1): T1 exact matching via these strings is *aspirational* —
+//! Note: T1 exact matching via these strings is *aspirational* —
 //! opportunity canonical IDs come from simulation, realized IDs from flows,
 //! and they rarely coincide. `validate` must still report at T2/T3 tiers.
 

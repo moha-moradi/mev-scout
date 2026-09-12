@@ -1,4 +1,4 @@
-//! Profit accounting — the explorer's core primitive (plan §8.2).
+//! Profit accounting — the explorer's core primitive.
 //!
 //! Builds per-address per-token balance deltas from a tx's ERC-20 Transfer
 //! stream (+ native value), identifies the searcher (EOA sender or its
@@ -20,7 +20,7 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::types::TransferFact;
 
 /// Known wrapped-native / stable token set for profit-token priority.
-/// Priority order (plan §8.2.4): USDC → USDT → DAI → wrapped native → WETH.
+/// Priority order: USDC → USDT → DAI → wrapped native → WETH.
 #[derive(Debug, Clone)]
 pub struct ProfitTokenPolicy {
     /// Addresses in strict priority order (already chain-resolved).

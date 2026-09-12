@@ -1,5 +1,5 @@
 use super::LB_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHits};
 use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
@@ -39,12 +39,12 @@ pub(crate) async fn scan_trader_joe_batch(
                         let token0 = Address::from_slice(&topics[2][12..32]);
                         let token1 = Address::from_slice(&topics[3][12..32]);
                         let creation_block = log.block_number.unwrap_or(0);
-                        pool_hits.entry(lb_pair).or_insert((
-                            DexType::TraderJoeLB,
-                            None,
-                            None,
-                            creation_block,
-                        ));
+                        pool_hits.entry(lb_pair).or_insert(PoolHit {
+                            dex_type: DexType::TraderJoeLB,
+                            pool_id: None,
+                            tokens: None,
+                            first_seen_block: creation_block,
+                        });
                         factory_pools.entry(lb_pair).or_insert(
                             DiscoveredPool::new(
                                 lb_pair,

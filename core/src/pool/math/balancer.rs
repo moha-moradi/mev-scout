@@ -63,16 +63,28 @@ pub fn balancer_output_amount(
         return None;
     }
 
-    let ratio_f64 = numerator.as_limbs()[0] as f64 / denominator.as_limbs()[0] as f64;
-    let exp = w_in.as_limbs()[0] as f64 / w_out.as_limbs()[0] as f64;
+    // U256 → f64 across all four 64-bit limbs: reading only `as_limbs()[0]`
+    // truncates any reserve > 2^64 and silently misquotes the ratio.
+    let ratio_f64 = u256_as_f64(&numerator) / u256_as_f64(&denominator);
+    let exp = u256_as_f64(&w_in) / u256_as_f64(&w_out);
     let reduction = ratio_f64.powf(exp);
 
-    let output_f64 = r_out.as_limbs()[0] as f64 * (1.0 - reduction);
+    let output_f64 = u256_as_f64(&r_out) * (1.0 - reduction);
     if output_f64 <= 0.0 {
         return None;
     }
 
     Some(output_f64 as u128)
+}
+
+/// Convert a U256 to f64 using all limbs; precision loss is acceptable here
+/// because the value feeds a price-ratio estimate, not anything exact.
+fn u256_as_f64(v: &U256) -> f64 {
+    let limbs = v.as_limbs();
+    (limbs[0] as f64)
+        + (limbs[1] as f64) * 2f64.powi(64)
+        + (limbs[2] as f64) * 2f64.powi(128)
+        + (limbs[3] as f64) * 2f64.powi(192)
 }
 
 /// Balancer Stable pool output amount using the StableSwap invariant.

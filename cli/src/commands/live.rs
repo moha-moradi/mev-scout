@@ -105,7 +105,7 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // run-context bundle — introduced in W4
+#[allow(clippy::too_many_arguments)] // run-context bundle
 async fn run_once(
     config: &Config,
     validation: &ValidationResult,
@@ -113,7 +113,7 @@ async fn run_once(
     provider_configs: &[(String, Option<f64>, bool)],
     cache: &SqliteStore,
     pool_addresses: &[Address],
-    _args: &LiveArgs,
+    args: &LiveArgs,
     gas_config: GasConfig,
 ) -> anyhow::Result<()> {
     let tip = rpc
@@ -151,7 +151,7 @@ async fn run_once(
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
         .with_proximity_window(config.backtest.proximity_window)
         .with_min_profit_wei(config.backtest.min_profit_wei)
-        .with_record_rejections(_args.record_rejections);
+        .with_record_rejections(args.record_rejections);
 
     let prev_block = tip.saturating_sub(1);
     if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
@@ -233,7 +233,7 @@ async fn run_once(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // run-context bundle — introduced in W4
+#[allow(clippy::too_many_arguments)] // run-context bundle
 async fn run_loop(
     config: &Config,
     validation: &ValidationResult,

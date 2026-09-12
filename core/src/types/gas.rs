@@ -1,4 +1,4 @@
-//! Observed-gas calibration (#7): rolling averages of actual transaction
+//! Observed-gas calibration: rolling averages of actual transaction
 //! `gasUsed` bucketed by dominant DEX type and pool count, used to replace
 //! static per-pool gas constants in opportunity gas estimation.
 

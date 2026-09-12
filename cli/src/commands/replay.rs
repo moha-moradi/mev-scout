@@ -132,7 +132,7 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
                                 .name
                                 .as_deref()
                                 .map(String::from)
-                                .unwrap_or_else(|| format!("{}", info.address));
+                                .unwrap_or_else(|| info.address.to_string());
                             format!("{} — {}", name, event_type)
                         })
                     })

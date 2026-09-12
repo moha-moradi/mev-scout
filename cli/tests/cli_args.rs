@@ -318,7 +318,7 @@ fn config_file_block_range_fields_are_ignored_cli_only() {
     );
 }
 
-// ── Config file loading behavior (verified real behavior: silent fallback) ──
+// ── Config file loading behavior (missing file → defaults; parse error → fail) ──
 
 #[test]
 fn missing_config_file_falls_back_to_default() {
@@ -336,19 +336,19 @@ fn missing_config_file_falls_back_to_default() {
 }
 
 #[test]
-fn broken_toml_config_file_falls_back_to_default() {
+fn broken_toml_config_file_is_rejected() {
     let ws = temp_ws("args_cfg_broken");
     let broken = ws.join("broken.toml");
     std::fs::write(&broken, "not valid toml [[[").unwrap();
     let out = run(&ws, &["-f", broken.to_str().unwrap(), "config"]);
-    expect_ok(
+    expect_fail(
         &out,
-        "config with broken TOML (documented fallback to default)",
+        "config with broken TOML should fail (not silently fall back to default)",
     );
     assert!(
-        out.stdout.contains("chain = \"polygon\""),
-        "fallback default config should resolve the default chain, got:\n{}",
-        out.stdout
+        out.stderr.contains("parse") || out.stderr.contains("error"),
+        "stderr should explain the parse failure, got:\n{}",
+        out.stderr
     );
 }
 

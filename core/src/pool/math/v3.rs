@@ -5,7 +5,9 @@ use std::sync::Mutex;
 
 use alloy::primitives::{U256, U512};
 
-use super::consts::{LIQUIDITY_FRACTION_DENOM, PPM_DENOMINATOR, SQRT_RATIO_CACHE_CAPACITY};
+use super::consts::{
+    LIQUIDITY_FRACTION_DENOM, PPM_DENOMINATOR, Q96_SHIFT, SQRT_RATIO_CACHE_CAPACITY,
+};
 use crate::pool::state::UniswapV3PoolState;
 
 const MIN_TICK: i32 = -887272;
@@ -123,6 +125,7 @@ fn compute_sqrt_ratio_at_tick(tick: i32) -> U256 {
         ratio = U256::MAX / ratio;
     }
     // Convert from Q128 to Q96 (shift right by 32, round up)
+    // 1.0 = 1 << Q96_SHIFT in Q96
     let shifted = ratio >> 32;
     if (ratio & U256::from(0xffffffffu64)).is_zero() {
         shifted
@@ -145,7 +148,7 @@ fn get_amount_0_delta(
     if low.is_zero() {
         return None;
     }
-    let numerator1 = U256::from(liquidity) << 96;
+    let numerator1 = U256::from(liquidity) << Q96_SHIFT;
     let numerator2 = high - low;
     let intermediate = mul_div(numerator1, numerator2, high)?;
     if round_up {
@@ -167,7 +170,7 @@ fn get_amount_1_delta(
         (sqrt_ratio_a_x96, sqrt_ratio_b_x96)
     };
     let numerator = U256::from(liquidity) * (high - low);
-    let denominator = U256::from(1u128 << 96);
+    let denominator = U256::from(1u128 << Q96_SHIFT);
     if round_up {
         mul_div_round_up(numerator, U256::from(1u64), denominator)
     } else {
@@ -185,7 +188,7 @@ fn get_next_sqrt_price_from_input(
         return None;
     }
     if zero_for_one {
-        let numerator1 = U256::from(liquidity) << 96;
+        let numerator1 = U256::from(liquidity) << Q96_SHIFT;
         let numerator2 = amount_in * sqrt_price_x96;
         let denominator = numerator1 + numerator2;
         if denominator <= numerator1 {
@@ -193,7 +196,7 @@ fn get_next_sqrt_price_from_input(
         }
         mul_div(numerator1, sqrt_price_x96, denominator)
     } else {
-        let amount_in_ratio = mul_div(amount_in, U256::from(1u128 << 96), U256::from(liquidity))?;
+        let amount_in_ratio = mul_div(amount_in, U256::from(1u128 << Q96_SHIFT), U256::from(liquidity))?;
         if amount_in_ratio.is_zero() {
             return None;
         }
@@ -227,7 +230,7 @@ fn compute_swap_step(
     }
     .unwrap_or(U256::ZERO);
 
-    let fee_on_max = mul_div_round_up(max_in, U256::from(fee as u64), U256::from(1_000_000u64))
+    let fee_on_max = mul_div_round_up(max_in, U256::from(fee as u64), U256::from(PPM_DENOMINATOR))
         .unwrap_or(U256::ZERO);
     let total_max_cost = max_in + fee_on_max;
 
@@ -253,7 +256,7 @@ fn compute_swap_step(
     } else {
         let remaining = amount_remaining;
         let fee_amount =
-            mul_div_round_up(remaining, U256::from(fee as u64), U256::from(1_000_000u64))
+            mul_div_round_up(remaining, U256::from(fee as u64), U256::from(PPM_DENOMINATOR))
                 .unwrap_or(U256::ZERO);
         let amount_after_fee = remaining - fee_amount.min(remaining);
 

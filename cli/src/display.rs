@@ -33,7 +33,7 @@ pub fn print_startup_plan(result: &validation::ValidationResult, config: &Config
 }
 
 /// Persist run/live results into the explorer store's `opportunities` table
-/// (plan §9.2/Phase 1: the results layer feeds `explorer validate`). The
+/// (the results layer feeds `explorer validate`). The
 /// execution history lives only in SQLite; failures here warn only.
 pub fn persist_opportunities_to_explorer(
     config: &Config,
@@ -85,7 +85,7 @@ pub fn persist_opportunities_to_explorer(
     }
 }
 
-/// Persist drained runner rejections into the explorer store (§9.3).
+/// Persist drained runner rejections into the explorer store.
 /// Only called when `--record-rejections` is enabled.
 pub fn persist_rejections_to_explorer(
     config: &Config,
@@ -119,7 +119,7 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
             let info = ps.info();
             if let Some(ref tokens) = info.underlying_tokens {
                 if tokens.len() > 2 {
-                    let syms: Vec<String> = tokens.iter().map(|t| format!("{}", t)).collect();
+                    let syms: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
                     return format!("{} ({})", info.address, syms.join("/"));
                 }
             }
@@ -134,9 +134,9 @@ fn pool_name(pm: &PoolManager, addr: &Address) -> String {
                     .unwrap_or(info.dex_type.to_string());
                 return format!("{dex} {}/{}", t0, t1);
             }
-            format!("{}", addr)
+            addr.to_string()
         })
-        .unwrap_or_else(|| format!("{}", addr))
+        .unwrap_or_else(|| addr.to_string())
 }
 
 pub fn render_results_table(
@@ -169,17 +169,17 @@ pub fn render_results_table(
                 pool_name(pm, &opp.pool_b)
             };
             let mut row = vec![
-                format!("{}", opp.block_number),
-                format!("{}", opp.tx_index),
-                format!("{}", opp.strategy),
+                opp.block_number.to_string(),
+                opp.tx_index.to_string(),
+                opp.strategy.to_string(),
                 if name_b.is_empty() {
                     name_a
                 } else {
                     format!("{} / {}", name_a, name_b)
                 },
-                format!("{}", opp.input_amount),
-                format!("{}", opp.expected_profit),
-                format!("{}", opp.gas_cost_wei),
+                opp.input_amount.to_string(),
+                opp.expected_profit.to_string(),
+                opp.gas_cost_wei.to_string(),
             ];
             if has_confidence {
                 row.push(
@@ -205,12 +205,12 @@ pub fn render_results_table(
 
         for opp in all_opportunities {
             let mut row = vec![
-                format!("{}", opp.block_number),
-                format!("{}", opp.tx_index),
-                format!("{}", opp.strategy),
-                format!("{}", opp.input_amount),
-                format!("{}", opp.expected_profit),
-                format!("{}", opp.gas_cost_wei),
+                opp.block_number.to_string(),
+                opp.tx_index.to_string(),
+                opp.strategy.to_string(),
+                opp.input_amount.to_string(),
+                opp.expected_profit.to_string(),
+                opp.gas_cost_wei.to_string(),
             ];
             if has_confidence {
                 row.push(
@@ -245,31 +245,31 @@ pub fn render_block_summary_table(summaries: &[BlockReplayStats]) {
         total_pending += s.pending_tx_count;
         if has_pending {
             table.add_row(vec![
-                format!("{}", s.block_number),
-                format!("{}", s.total_tx_count),
-                format!("{}", s.dex_tx_count),
-                format!("{}", s.pending_tx_count),
+                s.block_number.to_string(),
+                s.total_tx_count.to_string(),
+                s.dex_tx_count.to_string(),
+                s.pending_tx_count.to_string(),
             ]);
         } else {
             table.add_row(vec![
-                format!("{}", s.block_number),
-                format!("{}", s.total_tx_count),
-                format!("{}", s.dex_tx_count),
+                s.block_number.to_string(),
+                s.total_tx_count.to_string(),
+                s.dex_tx_count.to_string(),
             ]);
         }
     }
     if has_pending {
         table.add_row(vec![
             "Total".to_string(),
-            format!("{}", total_tx),
-            format!("{}", total_dex),
-            format!("{}", total_pending),
+            total_tx.to_string(),
+            total_dex.to_string(),
+            total_pending.to_string(),
         ]);
     } else {
         table.add_row(vec![
             "Total".to_string(),
-            format!("{}", total_tx),
-            format!("{}", total_dex),
+            total_tx.to_string(),
+            total_dex.to_string(),
         ]);
     }
     println!("\nBlock Summary");

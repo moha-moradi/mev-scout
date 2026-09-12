@@ -408,7 +408,7 @@ mod tests {
             .contains(&"0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6"));
     }
 
-    /// Phase 1.3 / 1.4 V3-family factories (DEX_COVERAGE_PLAN.md), pinned so a
+    /// V3-family factories pinned so a
     /// silent removal from the effective default list surfaces in CI. Both are
     /// verified RamsesV3Factory deployments (canonical UniV3 `PoolCreated`
     /// topic); RamsesX on Polygon, Pharaoh V3 on Avalanche.
@@ -449,7 +449,7 @@ mod tests {
         }
     }
 
-    /// Fluid DEX factory (Phase 3.2) pinned so silent removals surface in CI.
+    /// Fluid DEX factory pinned so silent removals surface in CI.
     #[test]
     fn fluid_factory_present() {
         assert!(ChainName::Ethereum
@@ -459,7 +459,7 @@ mod tests {
         assert!(ChainName::Base.default_fluid_factories().is_empty());
     }
 
-    /// Coverage-plan LB and Curve factories (Phases 1.5/1.7/3.5), pinned so silent
+    /// LB and Curve factories pinned so silent
     /// removals from the effective default lists surface in CI.
     #[test]
     fn coverage_plan_lb_and_curve_factories_present() {
@@ -472,7 +472,7 @@ mod tests {
         assert!(ChainName::Polygon
             .default_curve_factories()
             .contains(&"0x1764ee18e8B3ccA4787249Ceb249356192594585"));
-        // Lista DEX SmartSwap (Curve-like stableswap) — Phase 3.7.
+        // Lista DEX SmartSwap (Curve-like stableswap).
         assert!(ChainName::Ethereum
             .default_curve_factories()
             .contains(&"0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6"));

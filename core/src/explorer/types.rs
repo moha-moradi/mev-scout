@@ -7,7 +7,7 @@
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
-/// MEV pattern kinds in scope (taxonomy §3 of the unified plan).
+/// MEV pattern kinds in scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MevKind {
     /// Single tx whose token-flow graph closes a cycle ending in the start token.

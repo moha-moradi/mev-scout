@@ -1,10 +1,10 @@
-//! Explorer ingest — block/receipt fetch, decode, classify, persist (§7).
+//! Explorer ingest — block/receipt fetch, decode, classify, persist.
 //!
 //! Consumes the same `get_block_and_receipts_batch` path the scanner uses,
 //! decodes logs into explorer facts, runs the classifier, and persists into
 //! the explorer store. Idempotent per block (checkpoints in
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
-//! lag applied before indexing (§5.2).
+//! lag applied before indexing.
 
 use std::collections::HashMap;
 
@@ -23,11 +23,11 @@ use crate::types::ChainName;
 pub struct IngestConfig {
     pub chain: ChainName,
     pub chain_id: u64,
-    /// Blocks of lag behind head before indexing (§5.2: default 6 ≈ 12s on Polygon).
+    /// Blocks of lag behind head before indexing (default 6 ≈ 12s on Polygon).
     pub confirmations: u64,
     /// Wrapped-native token from chain config (wrap-noise filter).
     pub wrapped_native: Address,
-    /// Profit-token priority from chain config (§8.2.4).
+    /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
 }
 
@@ -49,7 +49,7 @@ impl IngestConfig {
     }
 }
 
-/// Profit-token priority: USDC → USDT → DAI → wrapped native (§8.2.4).
+/// Profit-token priority: USDC → USDT → DAI → wrapped native.
 /// Canonical addresses from `known_tokens.json`; chain-specific via
 /// `wrapped_native`. Unknown-chain long-tail falls through to the
 /// largest-delta fallback in `select_profit_token`.

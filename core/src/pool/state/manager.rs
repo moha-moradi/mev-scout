@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// Relative shortfall between a swap's declared amount and what the token
-/// contract actually transferred beyond which the token is flagged taxed (#9).
+/// contract actually transferred beyond which the token is flagged taxed.
 /// Well above any modeled DEX fee, so only off-invariant shortfalls trip it.
 const TAX_SHORTFALL_MARGIN: f64 = 0.05;
 /// Declared amounts below this are ignored when checking tax shortfalls
@@ -22,8 +22,15 @@ const MIN_TAX_CHECK_AMOUNT: u128 = 1_000;
 
 /// Actual ERC20 transfer totals per (pool, token), split by direction.
 type TransferTotals = HashMap<(Address, Address), u128>;
-/// One swap's declared amounts: (pool, token_in, amount_in, token_out, amount_out).
-type SwapDeclaration = (Address, Option<Address>, u128, Option<Address>, u128);
+/// One swap's declared amounts as seen in the event log.
+#[derive(Clone, Copy)]
+struct SwapDeclaration {
+    pool: Address,
+    token_in: Option<Address>,
+    amount_in: u128,
+    token_out: Option<Address>,
+    amount_out: u128,
+}
 
 /// Detection scan scope for incremental arbitrage scanning.
 ///
@@ -69,7 +76,7 @@ pub struct PoolManager {
     /// Pools whose state changed since the last `take_dirty_pools()` call.
     /// Used to restrict per-transaction detection to affected pairs only.
     pub(crate) dirty_pools: HashSet<Address>,
-    /// Tokens learned to be transfer-taxed at runtime (#9): declared swap
+    /// Tokens learned to be transfer-taxed at runtime: declared swap
     /// amounts exceeded what the ERC20 contract actually moved. Session-only.
     pub(crate) dynamic_fot: HashSet<Address>,
     /// Address of the wrapped native token (WMATIC/WETH/WBNB) per chain.
@@ -308,7 +315,7 @@ impl PoolManager {
         self.dynamic_fot.insert(token);
     }
 
-    /// Learn taxed tokens from one transaction's logs (#9).
+    /// Learn taxed tokens from one transaction's logs.
     ///
     /// Correlates each swap event's *declared* amounts with what the involved
     /// ERC20 contracts actually transferred to/from the pool in the same
@@ -367,20 +374,20 @@ impl PoolManager {
                 let amt0_out = u128_from_be_bytes(&log.data[64..96]);
                 let amt1_out = u128_from_be_bytes(&log.data[96..128]);
                 // One row per token: its own input and output declarations.
-                declarations.push((
-                    log.address,
-                    Some(info.token0),
-                    amt0_in,
-                    Some(info.token0),
-                    amt0_out,
-                ));
-                declarations.push((
-                    log.address,
-                    Some(info.token1),
-                    amt1_in,
-                    Some(info.token1),
-                    amt1_out,
-                ));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: Some(info.token0),
+                    amount_in: amt0_in,
+                    token_out: Some(info.token0),
+                    amount_out: amt0_out,
+                });
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: Some(info.token1),
+                    amount_in: amt1_in,
+                    token_out: Some(info.token1),
+                    amount_out: amt1_out,
+                });
                 continue;
             }
             if topic0 == decoders::V3_SWAP_TOPIC {
@@ -401,7 +408,13 @@ impl PoolManager {
                 } else {
                     (Some(info.token0), 0)
                 };
-                declarations.push((log.address, tin, din, tout, dout));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: tin,
+                    amount_in: din,
+                    token_out: tout,
+                    amount_out: dout,
+                });
                 continue;
             }
             if topic0 == decoders::CURVE_TOKEN_EXCHANGE_TOPIC
@@ -420,26 +433,26 @@ impl PoolManager {
                         .find(|(_, &i)| i as u128 == idx)
                         .map(|(t, _)| *t)
                 };
-                declarations.push((
-                    log.address,
-                    token_at(d.coin_sold),
-                    d.amount_sold,
-                    token_at(d.coin_bought),
-                    d.amount_bought,
-                ));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: token_at(d.coin_sold),
+                    amount_in: d.amount_sold,
+                    token_out: token_at(d.coin_bought),
+                    amount_out: d.amount_bought,
+                });
                 continue;
             }
             if topic0 == decoders::BALANCER_SWAP_TOPIC {
                 let Some(d) = decoders::decode_balancer_swap(log) else {
                     continue;
                 };
-                declarations.push((
-                    log.address,
-                    Some(d.token_in),
-                    d.amount_in,
-                    Some(d.token_out),
-                    d.amount_out,
-                ));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: Some(d.token_in),
+                    amount_in: d.amount_in,
+                    token_out: Some(d.token_out),
+                    amount_out: d.amount_out,
+                });
                 continue;
             }
             if topic0 == *decoders::LB_SWAP_TOPIC {
@@ -456,13 +469,13 @@ impl PoolManager {
                     } else {
                         continue;
                     };
-                declarations.push((
-                    log.address,
-                    Some(token_in),
-                    d.amount_in,
-                    Some(token_out),
-                    d.amount_out,
-                ));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: Some(token_in),
+                    amount_in: d.amount_in,
+                    token_out: Some(token_out),
+                    amount_out: d.amount_out,
+                });
                 continue;
             }
             if topic0 == *decoders::PENDLE_SWAP_TOPIC {
@@ -475,27 +488,27 @@ impl PoolManager {
                 let (pt, sy) = (state.pt_address, state.sy_address);
                 // Net PT out: SY paid in, PT received out (and vice versa).
                 let (tin, tout) = if d.is_net_pt_out { (sy, pt) } else { (pt, sy) };
-                declarations.push((
-                    log.address,
-                    Some(tin),
-                    d.amount_in,
-                    Some(tout),
-                    d.amount_out,
-                ));
+                declarations.push(SwapDeclaration {
+                    pool: log.address,
+                    token_in: Some(tin),
+                    amount_in: d.amount_in,
+                    token_out: Some(tout),
+                    amount_out: d.amount_out,
+                });
             }
         }
 
-        for (pool, tin, din, tout, dout) in declarations {
-            if din >= MIN_TAX_CHECK_AMOUNT {
-                if let Some(t) = tin {
-                    let actual = incoming.get(&(pool, t)).copied().unwrap_or(0);
-                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, din);
+        for decl in declarations {
+            if decl.amount_in >= MIN_TAX_CHECK_AMOUNT {
+                if let Some(t) = decl.token_in {
+                    let actual = incoming.get(&(decl.pool, t)).copied().unwrap_or(0);
+                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, decl.amount_in);
                 }
             }
-            if dout >= MIN_TAX_CHECK_AMOUNT {
-                if let Some(t) = tout {
-                    let actual = outgoing.get(&(pool, t)).copied().unwrap_or(0);
-                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, dout);
+            if decl.amount_out >= MIN_TAX_CHECK_AMOUNT {
+                if let Some(t) = decl.token_out {
+                    let actual = outgoing.get(&(decl.pool, t)).copied().unwrap_or(0);
+                    Self::flag_if_shortfall(&mut self.dynamic_fot, t, actual, decl.amount_out);
                 }
             }
         }

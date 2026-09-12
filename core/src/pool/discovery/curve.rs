@@ -1,4 +1,4 @@
-use super::{DiscoveredPool, DiscoveryConfig, PoolHits};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHits};
 use super::{CURVE_POOL_ADDED_TOPIC, CURVE_POOL_DEPLOYED_TOPIC};
 use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
@@ -59,12 +59,12 @@ pub(crate) async fn scan_curve_batch(
                         Address::from_slice(&data.data[12..32])
                     };
                     let creation_block = log.block_number.unwrap_or(0);
-                    pool_hits.entry(pool_addr).or_insert((
-                        DexType::Curve,
-                        None,
-                        None,
-                        creation_block,
-                    ));
+                    pool_hits.entry(pool_addr).or_insert(PoolHit {
+                        dex_type: DexType::Curve,
+                        pool_id: None,
+                        tokens: None,
+                        first_seen_block: creation_block,
+                    });
                     factory_pools.entry(pool_addr).or_insert(
                         DiscoveredPool::new(
                             pool_addr,

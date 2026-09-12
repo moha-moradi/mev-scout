@@ -1,4 +1,4 @@
-// Reserved for the `explorer` command (docs/EXPLORER_UNIFIED_PLAN.md §4.1/§11).
+// Reserved for the `explorer` command.
 // No caller exists today; kept intentionally so cross-run aggregation can be
 // wired up without re-adding the module.
 #![allow(dead_code)]
