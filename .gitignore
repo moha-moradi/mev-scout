@@ -10,3 +10,8 @@ tmp_output.txt
 /mev-scout.toml
 /mev-scout-arbitrum.toml
 /mev-scout.base.toml
+
+# API job logs/data + frontend build output
+/api_data/
+/web/dist/
+/web/node_modules/

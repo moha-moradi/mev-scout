@@ -1025,6 +1025,32 @@ impl ExplorerStore {
         Ok(out)
     }
 
+    /// Distinct run_ids in the `opportunities` table with per-run
+    /// aggregates (count, first/last timestamps), newest first. Includes
+    /// `live_*` runs that have no manifest — powers the run-id dropdowns.
+    pub fn opportunity_run_summaries(&self) -> anyhow::Result<Vec<OpportunityRunSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, COUNT(*), MIN(timestamp), MAX(timestamp)
+             FROM opportunities
+             WHERE run_id IS NOT NULL
+             GROUP BY run_id
+             ORDER BY MAX(timestamp) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(OpportunityRunSummary {
+                run_id: r.get(0)?,
+                count: r.get::<_, i64>(1)? as u64,
+                first_ts: r.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+                last_ts: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Blocks where the scanner recorded opportunities (M7 coverage check).
     pub fn opportunity_blocks(
         &self,
@@ -1461,6 +1487,15 @@ pub struct OpportunityRow {
     pub detection_path: Option<String>,
     pub canonical_id: Option<String>,
     pub tx_hash: Option<String>,
+}
+
+/// Per-run aggregate over the `opportunities` table (`/api/opportunities/runs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpportunityRunSummary {
+    pub run_id: String,
+    pub count: u64,
+    pub first_ts: Option<u64>,
+    pub last_ts: Option<u64>,
 }
 
 /// One rejected-candidate row (`rejected_candidates` table).

@@ -76,6 +76,83 @@ impl super::SqliteStore {
         Ok(pools)
     }
 
+    /// SQL-level filter/sort over `pool_info` for the pools page.
+    ///
+    /// `q` matches address/symbol/dex substring; `dex` exact-matches
+    /// `dex_name`; `token` matches either token symbol; `min_tvl` keeps
+    /// pools with `tvl_usd >= min_tvl` (nulls excluded). Sorting is by
+    /// `tvl_usd | volume_usd_24h | creation_block`, asc/desc. Discovery can
+    /// yield 1000+ rows, so this must be SQL — never a Vec slice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pools_filtered(
+        &self,
+        q: Option<&str>,
+        dex: Option<&str>,
+        token: Option<&str>,
+        min_tvl: Option<f64>,
+        sort_by: Option<&str>,
+        order_desc: bool,
+        limit: u64,
+    ) -> anyhow::Result<Vec<PoolInfo>> {
+        let conn = self.conn();
+        let mut where_clauses: Vec<String> = Vec::new();
+        if let Some(q) = q {
+            if !q.is_empty() {
+                let like = format!("%{}%", q.to_ascii_lowercase());
+                where_clauses.push(format!(
+                    "(LOWER(HEX(address)) LIKE '{like}' OR LOWER(COALESCE(token0_symbol,'')) LIKE '{like}' \
+                     OR LOWER(COALESCE(token1_symbol,'')) LIKE '{like}' OR LOWER(COALESCE(dex_name,'')) LIKE '{like}')",
+                    like = like.replace('\'', "''")
+                ));
+            }
+        }
+        if let Some(dex) = dex {
+            if !dex.is_empty() {
+                where_clauses.push(format!(
+                    "LOWER(COALESCE(dex_name,'')) = '{}'",
+                    dex.to_ascii_lowercase().replace('\'', "''")
+                ));
+            }
+        }
+        if let Some(token) = token {
+            if !token.is_empty() {
+                let like = format!("%{}%", token.to_ascii_lowercase());
+                where_clauses.push(format!(
+                    "(LOWER(COALESCE(token0_symbol,'')) LIKE '{like}' OR LOWER(COALESCE(token1_symbol,'')) LIKE '{like}')",
+                    like = like.replace('\'', "''")
+                ));
+            }
+        }
+        if let Some(min) = min_tvl {
+            where_clauses.push(format!("tvl_usd IS NOT NULL AND tvl_usd >= {min}"));
+        }
+        let sort_col = match sort_by {
+            Some("volume_usd_24h") | Some("volume") => "volume_usd_24h",
+            Some("creation_block") | Some("creation") => "creation_block",
+            _ => "tvl_usd",
+        };
+        let order = if order_desc { "DESC" } else { "ASC" };
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+        // NULLs always last regardless of direction.
+        let sql = format!(
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
+             FROM pool_info {where_sql}
+             ORDER BY {sort_col} IS NULL, {sort_col} {order}
+             LIMIT {limit}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut pools = Vec::new();
+        while let Some(row) = rows.next()? {
+            pools.push(super::row_to_pool_info(row)?);
+        }
+        Ok(pools)
+    }
+
     /// Earliest `creation_block` seen per pool factory — the "first-observed-block
     /// cache" used by the panel-discovery start-block guard (DEX_COVERAGE_PLAN
     /// Phase 2.5). Remote-sourced pools carry `creation_block == 0`, so those are
