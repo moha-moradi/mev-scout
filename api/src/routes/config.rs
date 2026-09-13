@@ -16,8 +16,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use mev_scout_core::config::settings::ExplorerConfig;
 use mev_scout_core::config::validation;
-use mev_scout_core::config::{BacktestConfig, Config, ExplorerConfig, GasConfig, OutputConfig};
+use mev_scout_core::config::{BacktestConfig, Config, GasConfig, OutputConfig};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::SharedState;

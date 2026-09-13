@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         Some(p) => p.clone(),
         None => {
             let exe = std::env::current_exe()?;
-            let parent = exe.parent().unwrap_or_else(|| PathBuf::from("."));
+            let parent = exe.parent().map(|p| p.to_path_buf()).unwrap_or_default();
             let exe_name = if cfg!(windows) { "mev-scout.exe" } else { "mev-scout" };
             parent.join(exe_name)
         }
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
     // Static frontend: /assets/* (hashed, immutable) + SPA fallback.
     let web_dir = args.web_dir.clone();
     let index_file = web_dir.join("index.html");
-    let serve_assets = ServeDir::new(&web_dir).not_fallback_service(ServeFile::new(&index_file));
+    let serve_assets = ServeDir::new(&web_dir).not_found_service(ServeFile::new(&index_file));
 
     let app = Router::new()
         .merge(routes::api_router())

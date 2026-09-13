@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{ApiError, ApiResult};
-use crate::jobs::{JobInfo, JobManager, ProgressEvent};
+use crate::jobs::{JobInfo, ProgressEvent};
 use crate::state::SharedState;
 
 pub fn router() -> Router<SharedState> {
@@ -164,14 +164,17 @@ async fn job_progress(
                 ApiError::internal(e)
             }
         })?;
-    let out = progress.map(|p: ProgressEvent| ProgressResponse {
-        stage: p.stage,
-        done: p.done,
-        total: p.total,
-        run_id: p.run_id,
-        ops: p.ops,
-        elapsed_ms: p.elapsed_ms,
-        pct: p.pct(),
+    let out = progress.map(|p: ProgressEvent| {
+        let pct = p.pct();
+        ProgressResponse {
+            stage: p.stage,
+            done: p.done,
+            total: p.total,
+            run_id: p.run_id,
+            ops: p.ops,
+            elapsed_ms: p.elapsed_ms,
+            pct,
+        }
     });
     Ok(Json(out))
 }
@@ -204,6 +207,3 @@ async fn job_stop(
         .map_err(ApiError::internal)?;
     Ok(Json(info))
 }
-
-// JobManager re-export for tests / doc links.
-pub use JobManager as _JobManager;

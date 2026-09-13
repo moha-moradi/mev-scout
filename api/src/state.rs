@@ -34,12 +34,7 @@ pub fn check_db_status(path: &Path, probe_table: &str) -> DbStatus {
     if !path.exists() {
         return DbStatus::Missing;
     }
-    let open = if path.ends_with("explorer") {
-        Connection::open(path)
-    } else {
-        Connection::open(path)
-    };
-    match open {
+    match Connection::open(path) {
         Ok(conn) => match conn.query_row(
             &format!("SELECT 1 FROM sqlite_master WHERE type='table' AND name='{probe_table}'"),
             [],
@@ -136,10 +131,6 @@ pub fn open_read_only_or_empty(path: &Path) -> anyhow::Result<Connection> {
     } else {
         // In-memory placeholder with the explorer schema so queries on a
         // missing DB return empty sets rather than "no such table" errors.
-        let store = mev_scout_core::explorer::store::ExplorerStore::open_in_memory()?;
-        // ExplorerStore owns its connection; re-open a plain read-only view
-        // is not possible, so keep a second in-memory connection initialized
-        // with the same schema.
         let conn = Connection::open_in_memory()?;
         let schema = include_str!("explorer_schema.sql");
         conn.execute_batch(schema)?;

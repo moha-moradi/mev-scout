@@ -6,8 +6,8 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use mev_scout_core::cache::RunManifest;
-use mev_scout_core::explorer::store::MevOpportunity;
 use mev_scout_core::explorer::validate::ValidationReport;
+use mev_scout_core::types::MevOpportunity;
 
 use crate::error::{ApiError, ApiResult};
 use crate::pagination::{paginate, Paginated};
