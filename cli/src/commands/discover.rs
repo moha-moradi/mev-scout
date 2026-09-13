@@ -176,51 +176,8 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let rpc = setup.rpc;
 
     // ── Block range — not needed for pure remote mode ──
-    let range = config.range_spec();
-    let (from, to) = if is_remote_only {
-        match range {
-            Ok(mode) => {
-                let resolver = RangeResolver::new(rpc.clone());
-                let resolved = resolver.resolve(&mode.resolve()).await?;
-                (resolved.start_block, resolved.end_block)
-            }
-            Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("no block range specified") {
-                    // Remote-only: no window needed; keep tip for health checks.
-                    (0u64, rpc.get_block_number().await.unwrap_or(0))
-                } else {
-                    anyhow::bail!("{}", e);
-                }
-            }
-        }
-    } else {
-        match range {
-            Ok(mode) => {
-                let resolver = RangeResolver::new(rpc.clone());
-                let resolved = resolver.resolve(&mode.resolve()).await?;
-                (resolved.start_block, resolved.end_block)
-            }
-            Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("no block range specified") {
-                    let from = chain_config.pool_discovery_start_block
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "no block range specified and no pool_discovery_start_block configured for chain '{chain_name}' \
-                             (use --days, --blocks, --block, or --from-block/--to-block)"
-                        ))?;
-                    let to = rpc.get_block_number().await?;
-                    tracing::info!(
-                        "No block range specified. Using pool_discovery_start_block ({}) from config.",
-                        from
-                    );
-                    (from, to)
-                } else {
-                    anyhow::bail!("{}", e);
-                }
-            }
-        }
-    };
+    let (from, to) =
+        resolve_scan_window(&rpc, config, &chain_config, chain_name, is_remote_only).await?;
 
     // ── Open cache once and reuse ──
     let cache_path = config.effective_db_path(&chain_name);
@@ -234,425 +191,52 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     // ── Phase 2.5 start-block guard ──
-    // Warn whenever the configured pool_discovery_start_block is later than the
-    // earliest pool-creation block previously observed for a factory: pools
-    // deployed in between are silently never indexed by the forward scan.
-    if !is_remote_only {
-        match cache.earliest_creation_block_by_factory() {
-            Ok(by_factory) => {
-                for (factory, first_block) in by_factory {
-                    if let Some(cfg_start) = chain_config.pool_discovery_start_block {
-                        if cfg_start > first_block {
-                            tracing::warn!(
-                                "pool_discovery_start_block ({cfg_start}) is later than the first \
-                                 observed pool-creation block ({first_block}) for factory {factory} \
-                                 — pools deployed in between are never indexed"
-                            );
-                        }
-                    }
-                }
-            }
-            Err(e) => tracing::debug!("start-block guard query failed: {e:#}"),
-        }
-    }
+    warn_start_block_guard(&cache, &chain_config, is_remote_only);
 
     // ── Phase 5.1: Incremental mode — override from_block from cache (RPC-only) ──
-    let (from, to) = if args.incremental && !is_remote_only {
-        match cache.max_creation_block() {
-            Ok(Some(max_block)) if max_block > 0 => {
-                let new_from = max_block + 1;
-                if new_from > to {
-                    if !args.json {
-                        println!("  Incremental mode: cache is up-to-date (max block {}). No scan needed.", max_block);
-                    }
-                    return Ok(());
-                }
-                if !args.json {
-                    println!(
-                        "  Incremental mode: scanning from block {} (cache max: {})",
-                        new_from, max_block
-                    );
-                }
-                tracing::info!(
-                    "Incremental scan: cache max_block={}, scanning {} → {}",
-                    max_block,
-                    new_from,
-                    to
-                );
-                (new_from, to)
-            }
-            Ok(_) => {
-                if !args.json {
-                    println!("  Incremental mode: no cached pools found, running full scan.");
-                }
-                (from, to)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Incremental mode: failed to query cache: {e:#}. Running full scan."
-                );
-                (from, to)
-            }
-        }
-    } else {
-        (from, to)
+    let (from, to) = match incremental_window(&cache, args, from, to, is_remote_only)? {
+        ScanWindow::Resolved { from, to } => (from, to),
+        ScanWindow::UpToDate => return Ok(()),
     };
 
-    if !args.json {
-        println!();
-        println!("  Pool Discovery");
-        println!("  Chain:       {}", chain_name);
-        if is_remote_only {
-            println!("  Sources:     remote aggregators: GeckoTerminal + DexScreener (on-chain scan skipped)");
-        } else if is_hybrid {
-            println!("  Block range: {}–{}", from, to);
-            println!("  Sources:     hybrid (on-chain + remote aggregator union)");
-        } else if args.enrich {
-            println!("  Block range: {}–{}", from, to);
-            println!("  Sources:     on-chain + remote enrichment");
-        } else {
-            println!("  Block range: {}–{}", from, to);
-            println!("  Sources:     on-chain events (factory logs)");
-        }
-        if should_fetch_remote {
-            let tvl_note = min_tvl_opt
-                .map(|v| format!(" min-tvl ${v:.0}"))
-                .unwrap_or_default();
-            println!(
-                "  Remote:      GeckoTerminal + DexScreener, cap {}{}",
-                args.max_pools, tvl_note
-            );
-        }
-        println!();
-    }
-
-    // Progress bar: only meaningful for on-chain scan
-    let total_blocks = if is_remote_only {
-        1
-    } else {
-        to.saturating_sub(from) + 1
+    // ── Mode flags steering all human-readable output ──
+    let mode = OutputMode {
+        json: args.json,
+        remote_only: is_remote_only,
+        hybrid: is_hybrid,
+        enrich: args.enrich,
     };
-    let _pb = if !is_remote_only {
-        let pb = ProgressBar::new(total_blocks);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("  [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
-                .progress_chars("=> "),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-    // Tick closure for discover_and_cache (increment once per batch)
-    let tick = || {
-        if let Some(ref pb) = _pb {
-            pb.inc(1);
-        }
-    };
-
-    let mut all_pools: Vec<DiscoveredPool> = Vec::new();
-    let mut all_active_blocks = HashSet::new();
+    print_discovery_banner(mode, chain_name, from, to, args);
 
     // ── Phase 1: On-chain event scan discovery (unless --source remote) ──
-    if !is_remote_only {
-        // ── Factory address resolution ──
-        let vault = chain_config
-            .balancer_vault
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-        let registry = chain_config
-            .curve_registry
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-        let curve_factories: Vec<Address> = pick_factories(
-            chain_config
-                .curve_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            chain_name.default_curve_factories(),
-        );
+    let (all_pools, all_active_blocks) = if is_remote_only {
+        (Vec::new(), HashSet::new())
+    } else {
+        let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
+        factories.log_summary(mode.json);
+        let disc_config = factories.discovery_config(config, args, &token_cache, &cache);
+        scan_onchain(&rpc, &cache, from, to, &disc_config).await?
+    };
 
-        let v2_factories: Vec<Address> = pick_factories(
-            chain_config
-                .uniswap_v2_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            chain_name.default_uniswap_v2_factories(),
-        );
-        let v3_factories: Vec<Address> = pick_factories(
-            chain_config
-                .uniswap_v3_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            chain_name.default_uniswap_v3_factories(),
-        );
-        let solidly_factories: Vec<Address> = pick_factories(
-            chain_config
-                .solidly_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            &chain_name.default_solidly_factories(),
-        );
-        let camelot_factories: Vec<Address> = pick_factories(
-            chain_config
-                .camelot_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            &chain_name.default_camelot_factories(),
-        );
-
-        let v4_pool_manager: Option<Address> = chain_config
-            .v4_pool_manager
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-
-        let infinity_cl_pool_manager: Option<Address> = chain_config
-            .infinity_cl_pool_manager
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-
-        let trader_joe_factories: Vec<Address> = pick_factories(
-            chain_config
-                .trader_joe_factories
-                .as_ref()
-                .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-                .unwrap_or_default(),
-            &chain_name.default_trader_joe_factories(),
-        );
-
-        let pendle_factory: Option<Address> = chain_config
-            .pendle_factory
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-        let metric_factory: Option<Address> = chain_config
-            .metric_factory
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-        let fluid_factory: Option<Address> = chain_config
-            .fluid_factory
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-
-        if !args.json
-            && (!v2_factories.is_empty()
-                || !v3_factories.is_empty()
-                || vault.is_some()
-                || registry.is_some()
-                || !solidly_factories.is_empty()
-                || !camelot_factories.is_empty())
-        {
-            tracing::info!(
-                "Factories: {} V2, {} V3, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
-                v2_factories.len(),
-                v3_factories.len(),
-                solidly_factories.len(),
-                camelot_factories.len(),
-                vault.is_some(),
-                registry.is_some()
-            );
-        }
-
-        let disc_config = DiscoveryConfig {
-            batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, args.batch_size),
-            v2_fee_override: chain_config.uniswap_v2_default_fee,
-            balancer_vault: vault,
-            v2_factories: if v2_factories.is_empty() {
-                None
-            } else {
-                Some(v2_factories.as_slice())
-            },
-            v3_factories: if v3_factories.is_empty() {
-                None
-            } else {
-                Some(v3_factories.as_slice())
-            },
-            curve_registry: registry,
-            curve_factories: if curve_factories.is_empty() {
-                None
-            } else {
-                Some(curve_factories.as_slice())
-            },
-            solidly_factories: if solidly_factories.is_empty() {
-                None
-            } else {
-                Some(solidly_factories.as_slice())
-            },
-            camelot_factories: if camelot_factories.is_empty() {
-                None
-            } else {
-                Some(camelot_factories.as_slice())
-            },
-            solidly_fee_bps: args.solidly_fee_bps,
-            v4_pool_manager,
-            infinity_cl_pool_manager,
-            trader_joe_factories: if trader_joe_factories.is_empty() {
-                None
-            } else {
-                Some(trader_joe_factories.as_slice())
-            },
-            pendle_factory,
-            metric_factory,
-            fluid_factory,
-            rpc_concurrency: args.rpc_concurrency,
-            token_cache: Some(&token_cache),
-            pool_cache: Some(&cache),
-        };
-
-        match mev_scout_core::pool::discovery::discover_and_cache(
-            &rpc,
-            &cache,
-            from,
-            to,
-            &disc_config,
-            Some(&tick),
-        )
-        .await
-        {
-            Ok((pools, active_blocks)) => {
-                tracing::info!(
-                    "On-chain: found {} pools in {} active blocks",
-                    pools.len(),
-                    active_blocks.len()
-                );
-                all_pools.extend(pools);
-                all_active_blocks.extend(active_blocks);
-            }
-            Err(e) => eprintln!("  On-chain pool discovery failed: {e:#}"),
-        }
-        if let Some(pb) = _pb {
-            pb.finish_and_clear();
-        }
-    }
-
-    // ── Phase 2: Remote sourcing (aggregator fallback ladder) ──
-    let mut remote_pools: Vec<DiscoveredPool> = Vec::new();
-    if should_fetch_remote {
-        remote_pools = fetch_remote(&chain_name, max_pools_opt, min_tvl_opt, !args.json).await;
-        if remote_pools.is_empty() && (is_remote_only || is_hybrid) {
-            if !args.json {
-                eprintln!("  Warning: all remote sources returned 0 pools — falling back to RPC-only results");
-            }
-            tracing::warn!("Remote sources returned 0 pools — falling back to RPC-only results");
-        }
-    }
-
-    // ── Phase 3: Dedup by address with field-level merge ──
-    let mut pools: Vec<DiscoveredPool> = dedup_by_address(all_pools);
-
-    // Merge remote according to --source semantics
-    if is_remote_only {
-        // Remote-only: replace (or extend if we had no on-chain). Deduplicate remote internally.
-        pools = dedup_by_address(remote_pools);
-    } else if is_hybrid {
-        // Hybrid: union with dedup
-        pools = remote_src::merge_pools(pools, remote_pools);
-    } else if args.enrich && !remote_pools.is_empty() {
-        // Onchain+enrich: attach tvl/volume/symbols where missing, do not add new addresses
-        enrich_from_remote(&mut pools, &remote_pools);
-    }
+    // ── Phases 2+3: remote sourcing + dedup/merge by --source semantics ──
+    let mut pools = collect_remote_and_merge(
+        all_pools,
+        chain_name,
+        max_pools_opt,
+        min_tvl_opt,
+        should_fetch_remote,
+        mode,
+    )
+    .await;
 
     // ── Phase 3.5: Resolve missing metadata on remote-sourced CL pools (opt-in) ──
-    //
-    // Remote aggregators don't expose fee/tickSpacing, which breaks quote math
-    // for concentrated-liquidity pools. One Multicall3 eth_call resolves ~25
-    // pools; results are persisted below and never re-fetched. Gated behind
-    // --resolve-remote-metadata so offline/remote-only workflows stay RPC-free.
     if args.resolve_remote_metadata && !pools.is_empty() {
-        let targets: Vec<Address> = pools
-            .iter()
-            .filter(|p| {
-                p.dex_type == DexType::UniswapV3
-                    && !p.address.is_zero()
-                    && (p.fee == 0 || p.tick_spacing.is_none())
-            })
-            .map(|p| p.address)
-            .collect();
-        if targets.is_empty() {
-            tracing::info!("Remote metadata resolution: 0 candidate pools need RPC");
-        } else {
-            match mev_scout_core::rpc::multicall::resolve_pool_metadata(
-                &rpc,
-                &targets,
-                args.rpc_concurrency,
-            )
-            .await
-            {
-                Ok(resolved) => {
-                    let mut filled = 0usize;
-                    for p in pools.iter_mut() {
-                        let Some(m) = resolved.get(&p.address) else {
-                            continue;
-                        };
-                        let before = (p.token0, p.token1, p.fee, p.tick_spacing);
-                        if p.token0.is_zero() {
-                            if let Some(t) = m.token0 {
-                                p.token0 = t;
-                            }
-                        }
-                        if p.token1.is_zero() {
-                            if let Some(t) = m.token1 {
-                                p.token1 = t;
-                            }
-                        }
-                        if p.fee == 0 {
-                            if let Some(f) = m.fee {
-                                p.fee = f;
-                            }
-                        }
-                        if p.tick_spacing.is_none() {
-                            p.tick_spacing = m.tick_spacing;
-                        }
-                        if (p.token0, p.token1, p.fee, p.tick_spacing) != before {
-                            filled += 1;
-                        }
-                    }
-                    tracing::info!(
-                        "Remote metadata resolution: updated {} of {} candidate pool(s)",
-                        filled,
-                        targets.len()
-                    );
-                    if !args.json {
-                        println!(
-                            "  Metadata resolution: updated {} of {} CL pool(s) via Multicall3",
-                            filled,
-                            targets.len()
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Remote metadata resolution failed: {e:#}");
-                }
-            }
-        }
+        resolve_cl_metadata(&rpc, &mut pools, args.rpc_concurrency, mode).await;
     }
 
     // ── Phase 5.2: Pool health check (applies to all sources — remote TVL can be stale) ──
     if args.health_check && !pools.is_empty() {
-        let before = pools.len();
-        let balancer_vault = chain_config
-            .balancer_vault
-            .as_ref()
-            .and_then(|s| s.parse::<Address>().ok());
-        let (checked, removed) = mev_scout_core::pool::discovery::health_check_pools(
-            &rpc,
-            pools,
-            args.rpc_concurrency,
-            balancer_vault,
-        )
-        .await;
-        pools = checked;
-        if removed > 0 && !args.json {
-            println!(
-                "  Health check: removed {} drained/paused pools ({} remaining)",
-                removed,
-                before - removed
-            );
-        }
+        pools = run_health_check(&rpc, pools, &chain_config, args.rpc_concurrency, mode).await;
     }
 
     // ── Phase 5.3: Persist the merged universe ──
@@ -671,93 +255,592 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     }
 
     // ── Phase 4: Display & cache ──
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&pools)?);
-    } else {
-        for p in &pools {
-            let dex = p.dex_name.as_deref().unwrap_or(match p.dex_type {
-                DexType::UniswapV2 => "V2",
-                DexType::UniswapV3 => "V3",
-                DexType::UniswapV4 => "V4",
-                _ => "Pool",
-            });
-            let t0 = p.token0_symbol.as_deref().unwrap_or("???");
-            let t1 = p.token1_symbol.as_deref().unwrap_or("???");
-            let tvl_note = p
-                .tvl_usd
-                .map(|v| format!(" tvl=${:.0}", v))
-                .unwrap_or_default();
-            match p.dex_type {
-                DexType::UniswapV2 => {
-                    println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
-                }
-                DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity => {
-                    println!(
-                        "  {dex}  {}  {}/{}  fee={}  tickSpacing={}{}",
-                        p.address,
-                        t0,
-                        t1,
-                        p.fee,
-                        p.tick_spacing.unwrap_or(0),
-                        tvl_note
-                    );
-                }
-                DexType::Solidly | DexType::Camelot => {
-                    let stable = p
-                        .is_stable
-                        .map(|s| if s { " stable" } else { "" })
-                        .unwrap_or("");
-                    println!("  {dex}{stable}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
-                }
-                DexType::Balancer | DexType::Curve => {
-                    if let Some(ref tokens) = p.underlying_tokens {
-                        let syms: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
-                        println!("  {dex}  {}  [{}]{}", p.address, syms.join(", "), tvl_note);
-                    } else {
-                        println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
-                    }
-                }
-                DexType::TraderJoeLB => {
-                    println!(
-                        "  {dex}  {}  {}/{}  binStep={}{}",
-                        p.address,
-                        t0,
-                        t1,
-                        p.bin_step.unwrap_or(0),
-                        tvl_note
-                    );
-                }
-                DexType::Pendle => {
-                    println!(
-                        "  {dex}  {}  {}/{}  maturity={}{}",
-                        p.address,
-                        t0,
-                        t1,
-                        p.maturity_timestamp.unwrap_or(0),
-                        tvl_note
-                    );
-                }
-                DexType::Metric | DexType::Fluid => {
-                    println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
-                }
-            }
-        }
-        println!();
-        if is_remote_only {
-            println!("  Found {} pool(s) via remote sources", pools.len());
-        } else {
-            println!(
-                "  Found {} pool(s) in {} active blocks",
+    print_discovered_pools(&pools, mode, all_active_blocks.len())?;
+
+    Ok(())
+}
+
+/// Mode flags that steer every human-readable line of the `discover` flow.
+#[derive(Clone, Copy)]
+struct OutputMode {
+    json: bool,
+    remote_only: bool,
+    hybrid: bool,
+    enrich: bool,
+}
+
+/// Phase 1: on-chain factory/event scan with a batch progress bar. Returns the
+/// discovered pools and their activity blocks; a failed scan degrades to an
+/// empty result (the run continues with remote/cache sources).
+async fn scan_onchain(
+    rpc: &mev_scout_core::rpc::RpcClient,
+    cache: &SqliteStore,
+    from: u64,
+    to: u64,
+    disc_config: &DiscoveryConfig<'_>,
+) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
+    let pb = ProgressBar::new(to.saturating_sub(from) + 1);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("  [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
+            .progress_chars("=> "),
+    );
+    let tick = || pb.inc(1);
+    let result = mev_scout_core::pool::discovery::discover_and_cache(
+        rpc,
+        cache,
+        from,
+        to,
+        disc_config,
+        Some(&tick),
+    )
+    .await;
+    pb.finish_and_clear();
+    match result {
+        Ok((pools, active_blocks)) => {
+            tracing::info!(
+                "On-chain: found {} pools in {} active blocks",
                 pools.len(),
-                all_active_blocks.len()
+                active_blocks.len()
             );
-            if (is_hybrid || args.enrich) && !pools.is_empty() {
-                let enriched = pools.iter().filter(|p| p.tvl_usd.is_some()).count();
-                println!("  Enriched: {} pool(s) with TVL metadata", enriched);
+            Ok((pools, active_blocks))
+        }
+        Err(e) => {
+            eprintln!("  On-chain pool discovery failed: {e:#}");
+            Ok((Vec::new(), HashSet::new()))
+        }
+    }
+}
+
+/// Phases 2+3: remote aggregator fallback ladder (when enabled), then dedup
+/// and merge into the on-chain results per `--source` semantics (replace for
+/// remote-only, union for hybrid, field-enrichment for `--enrich`).
+async fn collect_remote_and_merge(
+    all_pools: Vec<DiscoveredPool>,
+    chain_name: ChainName,
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+    should_fetch_remote: bool,
+    mode: OutputMode,
+) -> Vec<DiscoveredPool> {
+    let mut remote_pools: Vec<DiscoveredPool> = Vec::new();
+    if should_fetch_remote {
+        remote_pools = fetch_remote(&chain_name, max_pools, min_tvl, !mode.json).await;
+        if remote_pools.is_empty() && (mode.remote_only || mode.hybrid) {
+            if !mode.json {
+                eprintln!("  Warning: all remote sources returned 0 pools — falling back to RPC-only results");
             }
+            tracing::warn!("Remote sources returned 0 pools — falling back to RPC-only results");
         }
     }
 
+    let mut pools: Vec<DiscoveredPool> = dedup_by_address(all_pools);
+    if mode.remote_only {
+        // Remote-only: replace (or extend if we had no on-chain). Deduplicate remote internally.
+        pools = dedup_by_address(remote_pools);
+    } else if mode.hybrid {
+        // Hybrid: union with dedup
+        pools = remote_src::merge_pools(pools, remote_pools);
+    } else if mode.enrich && !remote_pools.is_empty() {
+        // Onchain+enrich: attach tvl/volume/symbols where missing, do not add new addresses
+        enrich_from_remote(&mut pools, &remote_pools);
+    }
+    pools
+}
+
+/// Outcome of the incremental-window override (Phase 5.1).
+enum ScanWindow {
+    Resolved {
+        from: u64,
+        to: u64,
+    },
+    /// Cache already covers the range — nothing to scan.
+    UpToDate,
+}
+
+/// Resolve the scan block range, tolerating a missing spec: remote-only mode
+/// needs no window (keeps the tip for health checks), on-chain modes fall
+/// back to the chain's configured `pool_discovery_start_block`.
+async fn resolve_scan_window(
+    rpc: &mev_scout_core::rpc::RpcClient,
+    config: &Config,
+    chain_config: &mev_scout_core::config::ChainConfig,
+    chain_name: ChainName,
+    is_remote_only: bool,
+) -> anyhow::Result<(u64, u64)> {
+    match config.range_spec() {
+        Ok(mode) => {
+            let resolver = RangeResolver::new(rpc.clone());
+            let resolved = resolver.resolve(&mode.resolve()).await?;
+            Ok((resolved.start_block, resolved.end_block))
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            if !err_msg.contains("no block range specified") {
+                anyhow::bail!("{}", e);
+            }
+            if is_remote_only {
+                // Remote-only: no window needed; keep tip for health checks.
+                Ok((0u64, rpc.get_block_number().await.unwrap_or(0)))
+            } else {
+                let from = chain_config.pool_discovery_start_block.ok_or_else(|| anyhow::anyhow!(
+                    "no block range specified and no pool_discovery_start_block configured for chain '{chain_name}' \
+                     (use --days, --blocks, --block, or --from-block/--to-block)"
+                ))?;
+                let to = rpc.get_block_number().await?;
+                tracing::info!(
+                    "No block range specified. Using pool_discovery_start_block ({}) from config.",
+                    from
+                );
+                Ok((from, to))
+            }
+        }
+    }
+}
+
+/// Phase 2.5 guard: warn when the configured `pool_discovery_start_block` is
+/// later than the earliest observed pool-creation block for any factory —
+/// pools deployed in between are silently never indexed by the forward scan.
+fn warn_start_block_guard(
+    cache: &SqliteStore,
+    chain_config: &mev_scout_core::config::ChainConfig,
+    is_remote_only: bool,
+) {
+    if is_remote_only {
+        return;
+    }
+    match cache.earliest_creation_block_by_factory() {
+        Ok(by_factory) => {
+            for (factory, first_block) in by_factory {
+                if let Some(cfg_start) = chain_config.pool_discovery_start_block {
+                    if cfg_start > first_block {
+                        tracing::warn!(
+                            "pool_discovery_start_block ({cfg_start}) is later than the first \
+                             observed pool-creation block ({first_block}) for factory {factory} \
+                             — pools deployed in between are never indexed"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => tracing::debug!("start-block guard query failed: {e:#}"),
+    }
+}
+
+/// Phase 5.1: incremental mode overrides `from` with `max(cached creation
+/// block) + 1` so repeat runs only scan new blocks.
+fn incremental_window(
+    cache: &SqliteStore,
+    args: &DiscoverArgs,
+    from: u64,
+    to: u64,
+    is_remote_only: bool,
+) -> anyhow::Result<ScanWindow> {
+    if !args.incremental || is_remote_only {
+        return Ok(ScanWindow::Resolved { from, to });
+    }
+    match cache.max_creation_block() {
+        Ok(Some(max_block)) if max_block > 0 => {
+            let new_from = max_block + 1;
+            if new_from > to {
+                if !args.json {
+                    println!(
+                        "  Incremental mode: cache is up-to-date (max block {}). No scan needed.",
+                        max_block
+                    );
+                }
+                return Ok(ScanWindow::UpToDate);
+            }
+            if !args.json {
+                println!(
+                    "  Incremental mode: scanning from block {} (cache max: {})",
+                    new_from, max_block
+                );
+            }
+            tracing::info!(
+                "Incremental scan: cache max_block={}, scanning {} → {}",
+                max_block,
+                new_from,
+                to
+            );
+            Ok(ScanWindow::Resolved { from: new_from, to })
+        }
+        Ok(_) => {
+            if !args.json {
+                println!("  Incremental mode: no cached pools found, running full scan.");
+            }
+            Ok(ScanWindow::Resolved { from, to })
+        }
+        Err(e) => {
+            tracing::warn!("Incremental mode: failed to query cache: {e:#}. Running full scan.");
+            Ok(ScanWindow::Resolved { from, to })
+        }
+    }
+}
+
+fn print_discovery_banner(
+    mode: OutputMode,
+    chain_name: ChainName,
+    from: u64,
+    to: u64,
+    args: &DiscoverArgs,
+) {
+    if mode.json {
+        return;
+    }
+    println!();
+    println!("  Pool Discovery");
+    println!("  Chain:       {}", chain_name);
+    if mode.remote_only {
+        println!("  Sources:     remote aggregators: GeckoTerminal + DexScreener (on-chain scan skipped)");
+    } else if mode.hybrid {
+        println!("  Block range: {}–{}", from, to);
+        println!("  Sources:     hybrid (on-chain + remote aggregator union)");
+    } else if mode.enrich {
+        println!("  Block range: {}–{}", from, to);
+        println!("  Sources:     on-chain + remote enrichment");
+    } else {
+        println!("  Block range: {}–{}", from, to);
+        println!("  Sources:     on-chain events (factory logs)");
+    }
+    if mode.remote_only || mode.hybrid || mode.enrich {
+        let tvl_note = if args.min_tvl > 0.0 {
+            format!(" min-tvl ${:.0}", args.min_tvl)
+        } else {
+            String::new()
+        };
+        println!(
+            "  Remote:      GeckoTerminal + DexScreener, cap {}{}",
+            args.max_pools, tvl_note
+        );
+    }
+    println!();
+}
+
+/// Factory addresses resolved from chain config overlaid with chain defaults.
+/// Owns the vectors so [`Self::discovery_config`] can hand out borrowed slices.
+struct ResolvedFactories {
+    vault: Option<Address>,
+    registry: Option<Address>,
+    curve_factories: Vec<Address>,
+    v2_factories: Vec<Address>,
+    v3_factories: Vec<Address>,
+    solidly_factories: Vec<Address>,
+    camelot_factories: Vec<Address>,
+    v4_pool_manager: Option<Address>,
+    infinity_cl_pool_manager: Option<Address>,
+    trader_joe_factories: Vec<Address>,
+    pendle_factory: Option<Address>,
+    metric_factory: Option<Address>,
+    fluid_factory: Option<Address>,
+    v2_fee_override: Option<u32>,
+}
+
+fn parse_opt(s: &Option<String>) -> Option<Address> {
+    s.as_ref().and_then(|v| v.parse::<Address>().ok())
+}
+
+fn parse_list(configured: &Option<Vec<String>>, defaults: &[&'static str]) -> Vec<Address> {
+    pick_factories(
+        configured
+            .as_ref()
+            .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
+            .unwrap_or_default(),
+        defaults,
+    )
+}
+
+impl ResolvedFactories {
+    fn from_chain_config(
+        chain_config: &mev_scout_core::config::ChainConfig,
+        chain_name: ChainName,
+    ) -> Self {
+        ResolvedFactories {
+            vault: parse_opt(&chain_config.balancer_vault),
+            registry: parse_opt(&chain_config.curve_registry),
+            curve_factories: parse_list(
+                &chain_config.curve_factories,
+                chain_name.default_curve_factories(),
+            ),
+            v2_factories: parse_list(
+                &chain_config.uniswap_v2_factories,
+                chain_name.default_uniswap_v2_factories(),
+            ),
+            v3_factories: parse_list(
+                &chain_config.uniswap_v3_factories,
+                chain_name.default_uniswap_v3_factories(),
+            ),
+            solidly_factories: parse_list(
+                &chain_config.solidly_factories,
+                &chain_name.default_solidly_factories(),
+            ),
+            camelot_factories: parse_list(
+                &chain_config.camelot_factories,
+                &chain_name.default_camelot_factories(),
+            ),
+            v4_pool_manager: parse_opt(&chain_config.v4_pool_manager),
+            infinity_cl_pool_manager: parse_opt(&chain_config.infinity_cl_pool_manager),
+            trader_joe_factories: parse_list(
+                &chain_config.trader_joe_factories,
+                &chain_name.default_trader_joe_factories(),
+            ),
+            pendle_factory: parse_opt(&chain_config.pendle_factory),
+            metric_factory: parse_opt(&chain_config.metric_factory),
+            fluid_factory: parse_opt(&chain_config.fluid_factory),
+            v2_fee_override: chain_config.uniswap_v2_default_fee,
+        }
+    }
+
+    fn discovery_config<'a>(
+        &'a self,
+        config: &Config,
+        args: &DiscoverArgs,
+        token_cache: &'a TokenCache,
+        cache: &'a SqliteStore,
+    ) -> DiscoveryConfig<'a> {
+        let slices = |v: &'a Vec<Address>| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.as_slice())
+            }
+        };
+        DiscoveryConfig {
+            batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, args.batch_size),
+            v2_fee_override: self.v2_fee_override,
+            balancer_vault: self.vault,
+            v2_factories: slices(&self.v2_factories),
+            v3_factories: slices(&self.v3_factories),
+            curve_registry: self.registry,
+            curve_factories: slices(&self.curve_factories),
+            solidly_factories: slices(&self.solidly_factories),
+            camelot_factories: slices(&self.camelot_factories),
+            solidly_fee_bps: args.solidly_fee_bps,
+            v4_pool_manager: self.v4_pool_manager,
+            infinity_cl_pool_manager: self.infinity_cl_pool_manager,
+            trader_joe_factories: slices(&self.trader_joe_factories),
+            pendle_factory: self.pendle_factory,
+            metric_factory: self.metric_factory,
+            fluid_factory: self.fluid_factory,
+            rpc_concurrency: args.rpc_concurrency,
+            token_cache: Some(token_cache),
+            pool_cache: Some(cache),
+        }
+    }
+
+    fn log_summary(&self, json: bool) {
+        if json
+            || (self.v2_factories.is_empty()
+                && self.v3_factories.is_empty()
+                && self.vault.is_none()
+                && self.registry.is_none()
+                && self.solidly_factories.is_empty()
+                && self.camelot_factories.is_empty())
+        {
+            return;
+        }
+        tracing::info!(
+            "Factories: {} V2, {} V3, {} Solidly, {} Camelot, Balancer: {}, Curve: {}",
+            self.v2_factories.len(),
+            self.v3_factories.len(),
+            self.solidly_factories.len(),
+            self.camelot_factories.len(),
+            self.vault.is_some(),
+            self.registry.is_some()
+        );
+    }
+}
+
+/// Phase 3.5: fill missing token/fee/tickSpacing metadata on remote-sourced
+/// CL pools via one Multicall3 round.
+async fn resolve_cl_metadata(
+    rpc: &mev_scout_core::rpc::RpcClient,
+    pools: &mut [DiscoveredPool],
+    concurrency: usize,
+    mode: OutputMode,
+) {
+    let targets: Vec<Address> = pools
+        .iter()
+        .filter(|p| {
+            p.dex_type == DexType::UniswapV3
+                && !p.address.is_zero()
+                && (p.fee == 0 || p.tick_spacing.is_none())
+        })
+        .map(|p| p.address)
+        .collect();
+    if targets.is_empty() {
+        tracing::info!("Remote metadata resolution: 0 candidate pools need RPC");
+        return;
+    }
+    match mev_scout_core::rpc::multicall::resolve_pool_metadata(rpc, &targets, concurrency).await {
+        Ok(resolved) => {
+            let mut filled = 0usize;
+            for p in pools.iter_mut() {
+                let Some(m) = resolved.get(&p.address) else {
+                    continue;
+                };
+                let before = (p.token0, p.token1, p.fee, p.tick_spacing);
+                if p.token0.is_zero() {
+                    if let Some(t) = m.token0 {
+                        p.token0 = t;
+                    }
+                }
+                if p.token1.is_zero() {
+                    if let Some(t) = m.token1 {
+                        p.token1 = t;
+                    }
+                }
+                if p.fee == 0 {
+                    if let Some(f) = m.fee {
+                        p.fee = f;
+                    }
+                }
+                if p.tick_spacing.is_none() {
+                    p.tick_spacing = m.tick_spacing;
+                }
+                if (p.token0, p.token1, p.fee, p.tick_spacing) != before {
+                    filled += 1;
+                }
+            }
+            tracing::info!(
+                "Remote metadata resolution: updated {} of {} candidate pool(s)",
+                filled,
+                targets.len()
+            );
+            if !mode.json {
+                println!(
+                    "  Metadata resolution: updated {} of {} CL pool(s) via Multicall3",
+                    filled,
+                    targets.len()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!("Remote metadata resolution failed: {e:#}");
+        }
+    }
+}
+
+/// Phase 5.2: drop drained/paused pools by probing live pool state.
+async fn run_health_check(
+    rpc: &mev_scout_core::rpc::RpcClient,
+    pools: Vec<DiscoveredPool>,
+    chain_config: &mev_scout_core::config::ChainConfig,
+    concurrency: usize,
+    mode: OutputMode,
+) -> Vec<DiscoveredPool> {
+    let before = pools.len();
+    let balancer_vault = parse_opt(&chain_config.balancer_vault);
+    let (checked, removed) = mev_scout_core::pool::discovery::health_check_pools(
+        rpc,
+        pools,
+        concurrency,
+        balancer_vault,
+    )
+    .await;
+    if removed > 0 && !mode.json {
+        println!(
+            "  Health check: removed {} drained/paused pools ({} remaining)",
+            removed,
+            before - removed
+        );
+    }
+    checked
+}
+
+/// Phase 4: render the discovered pool list (JSON passthrough or per-DEX
+/// table lines), then the summary footer.
+fn print_discovered_pools(
+    pools: &[DiscoveredPool],
+    mode: OutputMode,
+    active_blocks: usize,
+) -> anyhow::Result<()> {
+    if mode.json {
+        println!("{}", serde_json::to_string_pretty(pools)?);
+        return Ok(());
+    }
+    for p in pools {
+        let dex = p.dex_name.as_deref().unwrap_or(match p.dex_type {
+            DexType::UniswapV2 => "V2",
+            DexType::UniswapV3 => "V3",
+            DexType::UniswapV4 => "V4",
+            _ => "Pool",
+        });
+        let t0 = p.token0_symbol.as_deref().unwrap_or("???");
+        let t1 = p.token1_symbol.as_deref().unwrap_or("???");
+        let tvl_note = p
+            .tvl_usd
+            .map(|v| format!(" tvl=${:.0}", v))
+            .unwrap_or_default();
+        match p.dex_type {
+            DexType::UniswapV2 => {
+                println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
+            }
+            DexType::UniswapV3 | DexType::UniswapV4 | DexType::PancakeInfinity => {
+                println!(
+                    "  {dex}  {}  {}/{}  fee={}  tickSpacing={}{}",
+                    p.address,
+                    t0,
+                    t1,
+                    p.fee,
+                    p.tick_spacing.unwrap_or(0),
+                    tvl_note
+                );
+            }
+            DexType::Solidly | DexType::Camelot => {
+                let stable = p
+                    .is_stable
+                    .map(|s| if s { " stable" } else { "" })
+                    .unwrap_or("");
+                println!("  {dex}{stable}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
+            }
+            DexType::Balancer | DexType::Curve => {
+                if let Some(ref tokens) = p.underlying_tokens {
+                    let syms: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
+                    println!("  {dex}  {}  [{}]{}", p.address, syms.join(", "), tvl_note);
+                } else {
+                    println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
+                }
+            }
+            DexType::TraderJoeLB => {
+                println!(
+                    "  {dex}  {}  {}/{}  binStep={}{}",
+                    p.address,
+                    t0,
+                    t1,
+                    p.bin_step.unwrap_or(0),
+                    tvl_note
+                );
+            }
+            DexType::Pendle => {
+                println!(
+                    "  {dex}  {}  {}/{}  maturity={}{}",
+                    p.address,
+                    t0,
+                    t1,
+                    p.maturity_timestamp.unwrap_or(0),
+                    tvl_note
+                );
+            }
+            DexType::Metric | DexType::Fluid => {
+                println!("  {dex}  {}  {}/{}{}", p.address, t0, t1, tvl_note);
+            }
+        }
+    }
+    println!();
+    if mode.remote_only {
+        println!("  Found {} pool(s) via remote sources", pools.len());
+    } else {
+        println!(
+            "  Found {} pool(s) in {} active blocks",
+            pools.len(),
+            active_blocks
+        );
+        if (mode.hybrid || mode.enrich) && !pools.is_empty() {
+            let enriched = pools.iter().filter(|p| p.tvl_usd.is_some()).count();
+            println!("  Enriched: {} pool(s) with TVL metadata", enriched);
+        }
+    }
     Ok(())
 }
 

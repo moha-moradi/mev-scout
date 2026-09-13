@@ -1,9 +1,8 @@
 use super::scan_factory_creation_events_pinned;
 use super::V2_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 
 /// V2 activity: per-pool Pair contracts emit Swap/Sync from the pool address.
@@ -15,13 +14,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-pub(crate) async fn scan_v2_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_v2_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     if let Some(factories) = config.v2_factories {
         let fee = config.v2_fee_override.unwrap_or(30);
         return scan_factory_creation_events_pinned(

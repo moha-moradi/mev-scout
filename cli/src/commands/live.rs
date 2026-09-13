@@ -46,8 +46,6 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
     let validation = validation::validate_live(config).context("invalid configuration")?;
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
-    let provider_configs = setup.provider_configs;
-    let rpc = setup.rpc;
     let cache = SqliteStore::open(config.effective_db_path(&validation.chain_name))?;
 
     let pool_addresses: Vec<Address> = cache
@@ -77,149 +75,223 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         mode_label, args.poll_interval_ms
     );
 
+    let mut ctx = LiveContext::new(
+        config,
+        &validation,
+        setup,
+        cache,
+        pool_addresses,
+        args,
+        gas_config,
+    )
+    .await?;
+
     if args.r#loop {
-        run_loop(
-            config,
-            &validation,
-            &rpc,
-            &provider_configs,
-            &cache,
-            &pool_addresses,
-            args,
-            gas_config,
-            deadline,
-        )
-        .await
+        run_loop(&mut ctx, deadline).await
     } else {
-        run_once(
-            config,
-            &validation,
-            &rpc,
-            &provider_configs,
-            &cache,
-            &pool_addresses,
-            args,
-            gas_config,
-        )
-        .await
+        run_once(&mut ctx).await
     }
 }
 
-#[allow(clippy::too_many_arguments)] // run-context bundle
-async fn run_once(
-    config: &Config,
-    validation: &ValidationResult,
-    rpc: &mev_scout_core::rpc::RpcClient,
-    provider_configs: &[ProviderConfig],
-    cache: &SqliteStore,
-    pool_addresses: &[Address],
-    args: &LiveArgs,
-    gas_config: GasConfig,
-) -> anyhow::Result<()> {
-    let tip = rpc
-        .get_block_number()
-        .await
-        .context("failed to get chain tip")?;
-    println!("Latest block: {}", tip);
+/// Session state shared by both `live` modes: RPC plumbing, pool bootstrap,
+/// and the backtest runner are built once here so `run_once`/`run_loop` stay
+/// thin orchestration over the same context (no 9-positional-parameter
+/// signatures, no duplicated setup blocks).
+struct LiveContext<'a> {
+    config: &'a Config,
+    validation: &'a ValidationResult,
+    rpc: mev_scout_core::rpc::RpcClient,
+    provider_configs: Vec<ProviderConfig>,
+    cache: SqliteStore,
+    pool_addresses: Vec<Address>,
+    args: &'a LiveArgs,
+    runner: BacktestRunner,
+    /// Chain tip captured at context construction.
+    tip: u64,
+}
 
-    let mut pool_manager = PoolManager::new();
-    pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
-    pool_manager.set_concurrency_limit(provider_configs.len() as u32);
-    pool_manager.set_use_latest(true);
-    if let Some(vault_str) = &validation.chain_config.balancer_vault {
-        if let Ok(vault_addr) = vault_str.parse::<Address>() {
-            pool_manager = pool_manager.with_balancer_vault(vault_addr);
+impl<'a> LiveContext<'a> {
+    async fn new(
+        config: &'a Config,
+        validation: &'a ValidationResult,
+        setup: crate::rpc_setup::RpcSetup,
+        cache: SqliteStore,
+        pool_addresses: Vec<Address>,
+        args: &'a LiveArgs,
+        gas_config: GasConfig,
+    ) -> anyhow::Result<LiveContext<'a>> {
+        let crate::rpc_setup::RpcSetup {
+            rpc,
+            provider_configs,
+        } = setup;
+        let tip = rpc
+            .get_block_number()
+            .await
+            .context("failed to get chain tip")?;
+
+        let mut pool_manager = PoolManager::new();
+        pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
+        pool_manager.set_concurrency_limit(provider_configs.len() as u32);
+        pool_manager.set_use_latest(true);
+        if let Some(vault_str) = &validation.chain_config.balancer_vault {
+            if let Ok(vault_addr) = vault_str.parse::<Address>() {
+                pool_manager = pool_manager.with_balancer_vault(vault_addr);
+            }
+        }
+        if let Some(native_str) = &validation.chain_config.wrapped_native_token {
+            if let Ok(native_addr) = native_str.parse::<Address>() {
+                pool_manager = pool_manager.with_wrapped_native(native_addr);
+            }
+        }
+        if !validation.strategies.is_empty() {
+            BacktestRunner::init_pools(
+                &mut pool_manager,
+                &rpc,
+                tip.saturating_sub(1),
+                Some(&cache),
+            )
+            .await;
+        }
+
+        let replayer = BlockReplayer::new(
+            tokio::runtime::Handle::current(),
+            cache.clone(),
+            rpc.clone(),
+            validation.chain_config.chain_id,
+        );
+        let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
+            .with_proximity_window(config.backtest.proximity_window)
+            .with_min_profit_wei(config.backtest.min_profit_wei)
+            .with_record_rejections(args.record_rejections);
+
+        if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
+            if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
+                runner
+                    .prefetch_aave_reserves(aave_pool, tip.saturating_sub(1))
+                    .await;
+            }
+        }
+
+        Ok(LiveContext {
+            config,
+            validation,
+            rpc,
+            provider_configs,
+            cache,
+            pool_addresses,
+            args,
+            runner,
+            tip,
+        })
+    }
+
+    /// Fetch `resolved`'s blocks into the cache (relevant-only when the pool
+    /// set is already known, full-range otherwise).
+    async fn fetch_blocks(&self, resolved: &ResolvedRange) -> anyhow::Result<()> {
+        let mut fetcher = Fetcher::new(self.rpc.clone(), self.cache.clone());
+        fetcher = fetcher.with_parallelism(self.provider_configs.len());
+        if !self.pool_addresses.is_empty() {
+            fetcher
+                .fetch_relevant(resolved, &self.pool_addresses, None::<&fn()>)
+                .await
+                .map(|_| ())
+        } else {
+            fetcher
+                .fetch_range(resolved, None::<&fn()>)
+                .await
+                .map(|_| ())
         }
     }
-    if let Some(native_str) = &validation.chain_config.wrapped_native_token {
-        if let Ok(native_addr) = native_str.parse::<Address>() {
-            pool_manager = pool_manager.with_wrapped_native(native_addr);
+
+    /// Backtest `resolved` at the RPC-detected state horizon.
+    async fn run_blocks(
+        &mut self,
+        resolved: &ResolvedRange,
+    ) -> anyhow::Result<(
+        Vec<mev_scout_core::types::MevOpportunity>,
+        Vec<mev_scout_core::pipeline::BlockReplayStats>,
+    )> {
+        let state_horizon = self.rpc.detect_state_horizon(resolved.end_block).await;
+        let (opps, stats, _modes) = self.runner.run_range_hybrid(resolved, state_horizon)?;
+        Ok((opps, stats))
+    }
+
+    /// Persist a pass to SQLite (manifest) and the explorer store
+    /// (opportunities + rejections).
+    fn persist_results(
+        &mut self,
+        resolved: &ResolvedRange,
+        opps: &[mev_scout_core::types::MevOpportunity],
+    ) {
+        let run_id = format!("live_{}", epoch_secs());
+        let results_file = ResultsFile {
+            run_id: run_id.clone(),
+            chain: self.validation.chain_name.to_string(),
+            start_block: resolved.start_block,
+            end_block: resolved.end_block,
+            range_mode: "live".to_string(),
+            strategies: self
+                .validation
+                .strategies
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            flash_loan_provider: self.validation.flash_loan_provider.to_string(),
+            resolved_at: epoch_secs(),
+            created_at: epoch_secs(),
+            opportunities: opps.to_vec(),
+        };
+        // Execution history lives only in SQLite: manifest in the cache
+        // store's `run_manifests`, opportunities/rejections in the explorer
+        // store.
+        let manifest = RunManifest {
+            run_id: run_id.clone(),
+            chain: self.validation.chain_name.to_string(),
+            start_block: resolved.start_block,
+            end_block: resolved.end_block,
+            resolved_at: epoch_secs(),
+            range_mode: "live".to_string(),
+            strategies: results_file.strategies.clone(),
+            flash_loan_provider: results_file.flash_loan_provider.clone(),
+        };
+        if let Err(e) = self.cache.put_manifest(&manifest) {
+            tracing::warn!("run-manifest persist failed: {e}");
         }
+        persist_opportunities_to_explorer(
+            self.config,
+            self.validation.chain_name,
+            &run_id,
+            &results_file,
+        );
+        let rejections = self.runner.take_rejections();
+        persist_rejections_to_explorer(
+            self.config,
+            self.validation.chain_name,
+            &run_id,
+            &rejections,
+        );
     }
+}
 
-    if !validation.strategies.is_empty() {
-        let prev_block = tip.saturating_sub(1);
-        BacktestRunner::init_pools(&mut pool_manager, rpc, prev_block, Some(cache)).await;
-    }
+async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
+    let tip = ctx.tip;
+    println!("Latest block: {tip}");
 
-    let replayer = BlockReplayer::new(
-        tokio::runtime::Handle::current(),
-        cache.clone(),
-        rpc.clone(),
-        validation.chain_config.chain_id,
-    );
-    let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(config.backtest.proximity_window)
-        .with_min_profit_wei(config.backtest.min_profit_wei)
-        .with_record_rejections(args.record_rejections);
-
-    let prev_block = tip.saturating_sub(1);
-    if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
-        if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
-            runner.prefetch_aave_reserves(aave_pool, prev_block).await;
-        }
-    }
-
-    let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
-    fetcher = fetcher.with_parallelism(provider_configs.len());
     let resolved = ResolvedRange {
         start_block: tip,
         end_block: tip,
         block_count: 1,
         mode: RangeMode::Single(tip),
     };
-    if !pool_addresses.is_empty() {
-        fetcher
-            .fetch_relevant(&resolved, pool_addresses, None::<&fn()>)
-            .await?;
-    } else {
-        fetcher.fetch_range(&resolved, None::<&fn()>).await?;
-    }
-
-    let state_horizon = rpc.detect_state_horizon(tip).await;
-    let (opps, stats, _modes) = runner.run_range_hybrid(&resolved, state_horizon)?;
-
-    let run_id = format!("live_{}", epoch_secs());
-    let results_file = ResultsFile {
-        run_id: run_id.clone(),
-        chain: validation.chain_name.to_string(),
-        start_block: tip,
-        end_block: tip,
-        range_mode: "live".to_string(),
-        strategies: validation
-            .strategies
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        flash_loan_provider: validation.flash_loan_provider.to_string(),
-        resolved_at: epoch_secs(),
-        created_at: epoch_secs(),
-        opportunities: opps.clone(),
-    };
-    // Execution history lives only in SQLite: manifest in the cache store's
-    // `run_manifests`, opportunities/rejections in the explorer store.
-    let manifest = RunManifest {
-        run_id: run_id.clone(),
-        chain: validation.chain_name.to_string(),
-        start_block: tip,
-        end_block: tip,
-        resolved_at: epoch_secs(),
-        range_mode: "live".to_string(),
-        strategies: results_file.strategies.clone(),
-        flash_loan_provider: results_file.flash_loan_provider.clone(),
-    };
-    if let Err(e) = cache.put_manifest(&manifest) {
-        tracing::warn!("run-manifest persist failed: {e}");
-    }
-    persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
-    let rejections = runner.take_rejections();
-    persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
+    ctx.fetch_blocks(&resolved).await?;
+    let (opps, stats) = ctx.run_blocks(&resolved).await?;
+    ctx.persist_results(&resolved, &opps);
 
     println!("\nBlock {} — {} opportunity(ies) detected", tip, opps.len());
     if opps.is_empty() {
         println!("No MEV opportunities in this block.");
     } else {
-        render_results_table(&opps, Some(runner.pool_manager()));
+        render_results_table(&opps, Some(ctx.runner.pool_manager()));
     }
 
     if !stats.is_empty() {
@@ -233,61 +305,8 @@ async fn run_once(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)] // run-context bundle
-async fn run_loop(
-    config: &Config,
-    validation: &ValidationResult,
-    rpc: &mev_scout_core::rpc::RpcClient,
-    provider_configs: &[ProviderConfig],
-    cache: &SqliteStore,
-    pool_addresses: &[Address],
-    args: &LiveArgs,
-    gas_config: GasConfig,
-    deadline: Option<Instant>,
-) -> anyhow::Result<()> {
-    let mut pool_manager = PoolManager::new();
-    pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
-    pool_manager.set_concurrency_limit(provider_configs.len() as u32);
-    pool_manager.set_use_latest(true);
-    if let Some(vault_str) = &validation.chain_config.balancer_vault {
-        if let Ok(vault_addr) = vault_str.parse::<Address>() {
-            pool_manager = pool_manager.with_balancer_vault(vault_addr);
-        }
-    }
-    if let Some(native_str) = &validation.chain_config.wrapped_native_token {
-        if let Ok(native_addr) = native_str.parse::<Address>() {
-            pool_manager = pool_manager.with_wrapped_native(native_addr);
-        }
-    }
-
-    let tip = rpc
-        .get_block_number()
-        .await
-        .context("failed to get chain tip")?;
-    if !validation.strategies.is_empty() {
-        let prev_block = tip.saturating_sub(1);
-        BacktestRunner::init_pools(&mut pool_manager, rpc, prev_block, Some(cache)).await;
-    }
-
-    let replayer = BlockReplayer::new(
-        tokio::runtime::Handle::current(),
-        cache.clone(),
-        rpc.clone(),
-        validation.chain_config.chain_id,
-    );
-    let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(config.backtest.proximity_window)
-        .with_min_profit_wei(config.backtest.min_profit_wei)
-        .with_record_rejections(args.record_rejections);
-
-    let prev_block = tip.saturating_sub(1);
-    if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
-        if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
-            runner.prefetch_aave_reserves(aave_pool, prev_block).await;
-        }
-    }
-
-    let mut last_block = tip;
+async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyhow::Result<()> {
+    let mut last_block = ctx.tip;
     println!("Starting from block {} — Ctrl+C to stop\n", last_block);
 
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
@@ -297,7 +316,7 @@ async fn run_loop(
     let mut total_opportunities: usize = 0;
 
     loop {
-        tokio::time::sleep(Duration::from_millis(args.poll_interval_ms)).await;
+        tokio::time::sleep(Duration::from_millis(ctx.args.poll_interval_ms)).await;
 
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
@@ -305,7 +324,7 @@ async fn run_loop(
             }
         }
 
-        let current_tip = match rpc.get_block_number().await {
+        let current_tip = match ctx.rpc.get_block_number().await {
             Ok(n) => n,
             Err(e) => {
                 consecutive_failures += 1;
@@ -329,9 +348,6 @@ async fn run_loop(
         }
 
         let from_block = last_block + 1;
-
-        let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
-        fetcher = fetcher.with_parallelism(provider_configs.len());
         let resolved = ResolvedRange {
             start_block: from_block,
             end_block: current_tip,
@@ -339,14 +355,7 @@ async fn run_loop(
             mode: RangeMode::Range(from_block, current_tip),
         };
 
-        let fetch_result = if !pool_addresses.is_empty() {
-            fetcher
-                .fetch_relevant(&resolved, pool_addresses, None::<&fn()>)
-                .await
-        } else {
-            fetcher.fetch_range(&resolved, None::<&fn()>).await
-        };
-        if let Err(e) = fetch_result {
+        if let Err(e) = ctx.fetch_blocks(&resolved).await {
             consecutive_failures += 1;
             tracing::warn!(
                 "Fetch failed for blocks {}–{} ({}/{}): {} — will retry same range",
@@ -364,8 +373,7 @@ async fn run_loop(
             continue;
         }
 
-        let state_horizon = rpc.detect_state_horizon(current_tip).await;
-        let (opps, stats, _modes) = match runner.run_range_hybrid(&resolved, state_horizon) {
+        let (opps, stats) = match ctx.run_blocks(&resolved).await {
             Ok(r) => r,
             Err(e) => {
                 consecutive_failures += 1;
@@ -400,46 +408,11 @@ async fn run_loop(
                 current_tip,
                 opps.len(),
             );
-            render_results_table(&opps, Some(runner.pool_manager()));
+            render_results_table(&opps, Some(ctx.runner.pool_manager()));
         }
 
-        let run_id = format!("live_{}", epoch_secs());
-        let results_file = ResultsFile {
-            run_id: run_id.clone(),
-            chain: validation.chain_name.to_string(),
-            start_block: resolved.start_block,
-            end_block: resolved.end_block,
-            range_mode: "live".to_string(),
-            strategies: validation
-                .strategies
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            flash_loan_provider: validation.flash_loan_provider.to_string(),
-            resolved_at: epoch_secs(),
-            created_at: epoch_secs(),
-            opportunities: opps.clone(),
-        };
-        // Execution history lives only in SQLite: manifest in the cache
-        // store's `run_manifests`, opportunities in the explorer store.
-        let manifest = RunManifest {
-            run_id: run_id.clone(),
-            chain: validation.chain_name.to_string(),
-            start_block: resolved.start_block,
-            end_block: resolved.end_block,
-            resolved_at: epoch_secs(),
-            range_mode: "live".to_string(),
-            strategies: results_file.strategies.clone(),
-            flash_loan_provider: results_file.flash_loan_provider.clone(),
-        };
-        if let Err(e) = cache.put_manifest(&manifest) {
-            tracing::warn!("run-manifest persist failed: {e}");
-        }
-        persist_opportunities_to_explorer(config, validation.chain_name, &run_id, &results_file);
-        let rejections = runner.take_rejections();
-        persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
-
-        runner.advance_to(current_tip);
+        ctx.persist_results(&resolved, &opps);
+        ctx.runner.advance_to(current_tip);
         last_block = current_tip;
         blocks_processed += resolved.block_count;
         total_txs_scanned += txs_scanned;

@@ -1,9 +1,8 @@
 use super::scan_factory_creation_events_pinned;
 use super::METRIC_POOL_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 
 /// Metric V2 activity: per-pool contracts emit Swap from the pool address.
@@ -20,13 +19,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
 /// poolId)`: tokens in topics[1..3], pool address + poolId in the data words.
 /// The pool's fee is not exposed by the event (quoting is disabled for Metric
 /// anyway until the oracle ABI is verified), so it stays 0.
-pub(crate) async fn scan_metric_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_metric_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     if let Some(factories) = config.metric_factory {
         let factories = std::slice::from_ref(&factories);
         return scan_factory_creation_events_pinned(

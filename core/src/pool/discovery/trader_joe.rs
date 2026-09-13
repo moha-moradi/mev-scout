@@ -1,8 +1,7 @@
 use super::LB_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
@@ -17,13 +16,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-pub(crate) async fn scan_trader_joe_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_trader_joe_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     let mut out = ScanBatchResult::default();
     if let Some(factories) = config.trader_joe_factories {
         for &factory in factories {

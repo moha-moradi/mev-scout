@@ -440,7 +440,10 @@ impl BacktestRunner {
             LiquidationDetector::new(block_num).with_reserve_cache(self.aave_reserve_cache.clone());
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
-        let pool_manager = std::mem::take(&mut self.pool_manager);
+        let mut pool_manager = std::mem::take(&mut self.pool_manager);
+        // W4.8: record the pre-state of pools this block touches so a failure
+        // can be rolled back with `undo()` — replaces the per-block full clone.
+        pool_manager.begin_undo();
         let pool_manager = RefCell::new(pool_manager);
 
         // Shared cell bridging TxData.from from filter closure to on_tx closure
@@ -457,7 +460,7 @@ impl BacktestRunner {
         self.gas_config.calibration = self.gas_calibration.snapshot();
         let gas_calibration = RefCell::new(std::mem::take(&mut self.gas_calibration));
 
-        self.replayer.replay_each_filtered(
+        let replay_result = self.replayer.replay_each_filtered(
             block_num,
             |tx, receipt_logs| {
                 *current_tx_from.borrow_mut() = Some(tx.from);
@@ -619,7 +622,14 @@ impl BacktestRunner {
 
                 Ok(())
             },
-        )?;
+        );
+
+        // W4.8: always hand the taken pool_manager and gas_calibration back to
+        // self (even on error) so the caller can roll the block back with
+        // PoolManager::undo(); recording started in run_block stays active.
+        self.pool_manager = pool_manager.into_inner();
+        self.gas_calibration = gas_calibration.into_inner();
+        replay_result?;
 
         // Filter: drop opportunities where expected profit doesn't cover gas
         self.retain_with_rejections(&mut all_opportunities, block_num);
@@ -656,8 +666,6 @@ impl BacktestRunner {
                 opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
             }
         }
-        self.pool_manager = pool_manager.into_inner();
-        self.gas_calibration = gas_calibration.into_inner();
         self.last_processed_block = block_num;
 
         // #10: persistence-based confidence scoring across blocks
@@ -725,6 +733,9 @@ impl BacktestRunner {
         let mut dex_tx_count = 0usize;
         // Dirty pools touched by earlier transactions (incremental scanning)
         let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
+        // W4.8: record pre-state of pools this sync mutates so a failure can
+        // be rolled back by the caller with `PoolManager::undo()`.
+        self.pool_manager.begin_undo();
         // #7: refresh detector-visible calibration before scanning the block
         self.gas_config.calibration = self.gas_calibration.snapshot();
 
@@ -955,12 +966,12 @@ impl BacktestRunner {
                 self.gas_config.percentile_gas_price = gas_dist.percentile(p);
             }
 
-            // H5: Checkpoint pool state before running the block.
-            // On failure, the pool_manager inside run_block is consumed/lost,
-            // so we restore from this checkpoint to prevent state divergence.
-            let checkpoint = self.pool_manager.clone();
+            // H5: W4.8 — `run_block` begins an undo log on the pool manager;
+            // success ends it, failure rolls the block back in place (no
+            // full-manager checkpoint clone per block anymore).
             match self.run_block(block_num) {
                 Ok((opps, stats, block_prices)) => {
+                    self.pool_manager.end_undo();
                     tracing::info!(
                         "Block {} done: {} opportunities ({} txs)",
                         block_num,
@@ -987,9 +998,9 @@ impl BacktestRunner {
                     all_stats.push(stats);
                 }
                 Err(e) => {
-                    // Restore pool state to the pre-block checkpoint so
+                    // Roll pool state back to the pre-block checkpoint so
                     // subsequent blocks use correct, non-diverged state.
-                    self.pool_manager = checkpoint;
+                    self.pool_manager.undo();
                     tracing::error!("Block {} failed: {:?}", block_num, e);
                 }
             }
@@ -1097,11 +1108,13 @@ impl BacktestRunner {
                 self.gas_config.percentile_gas_price = gas_dist.percentile(p);
             }
 
-            let checkpoint = self.pool_manager.clone();
-
+            // H5 (W4.8): `run_block`/`sync_block_from_logs` begin an undo log;
+            // success ends it, failure rolls the block back in place instead
+            // of deep-cloning the whole manager every block.
             if use_full {
                 match self.run_block(block_num) {
                     Ok((opps, stats, block_prices)) => {
+                        self.pool_manager.end_undo();
                         tracing::info!(
                             "Block {} done (full-replay): {} opportunities ({} txs)",
                             block_num,
@@ -1126,7 +1139,7 @@ impl BacktestRunner {
                         all_modes.push(mode);
                     }
                     Err(e) => {
-                        self.pool_manager = checkpoint.clone();
+                        self.pool_manager.undo();
                         tracing::warn!(
                             "Block {} full-replay failed ({}), falling back to log-only: {:?}",
                             block_num,
@@ -1135,6 +1148,7 @@ impl BacktestRunner {
                         );
                         match self.sync_block_from_logs(block_num) {
                             Ok((opps, stats, _)) => {
+                                self.pool_manager.end_undo();
                                 tracing::info!(
                                     "Block {} done (log-only fallback): {} opportunities",
                                     block_num,
@@ -1145,7 +1159,7 @@ impl BacktestRunner {
                                 all_modes.push(BlockMode::LogOnly);
                             }
                             Err(e2) => {
-                                self.pool_manager = checkpoint.clone();
+                                self.pool_manager.undo();
                                 tracing::error!(
                                     "Block {} log-only also failed: {:?}",
                                     block_num,
@@ -1158,6 +1172,7 @@ impl BacktestRunner {
             } else {
                 match self.sync_block_from_logs(block_num) {
                     Ok((opps, stats, _)) => {
+                        self.pool_manager.end_undo();
                         tracing::info!(
                             "Block {} done (log-only): {} opportunities",
                             block_num,
@@ -1168,7 +1183,7 @@ impl BacktestRunner {
                         all_modes.push(mode);
                     }
                     Err(e) => {
-                        self.pool_manager = checkpoint;
+                        self.pool_manager.undo();
                         tracing::error!("Block {} log-only failed: {:?}", block_num, e);
                     }
                 }

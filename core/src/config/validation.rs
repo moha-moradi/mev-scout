@@ -3,7 +3,7 @@
 use crate::config::defaults::ChainConfig;
 use crate::config::settings::Config;
 use crate::error::ConfigError;
-use crate::types::{ChainName, FlashLoanProvider, GasModel, OutputFormat, RangeMode, Strategy};
+use crate::types::{ChainName, FlashLoanProvider, GasModel, RangeMode, Strategy};
 
 /// Resolved configuration returned by successful validation.
 ///
@@ -254,11 +254,7 @@ pub fn validate_and_resolve_for(
 ) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config
-        .backtest
-        .flash_loan_provider
-        .parse()
-        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+    let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
     // Forced providers need a chain-specific contract address; Auto picks
     // per-opportunity and needs none. The match is exhaustive, so adding a
@@ -289,8 +285,7 @@ pub fn validate_and_resolve_for(
     }
 
     let strategies: Vec<Strategy> = if check_strategies {
-        Strategy::from_comma_list(&config.backtest.strategies)
-            .map_err(|e| ConfigError::Validation(e.to_string()))?
+        config.backtest.strategies.clone()
     } else {
         Vec::new()
     };
@@ -304,17 +299,7 @@ pub fn validate_and_resolve_for(
         validate_rpc_urls(&config.rpc.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config
-        .gas
-        .gas_model
-        .parse()
-        .map_err(|e: String| ConfigError::Validation(e.to_string()))?;
-
-    let _: OutputFormat = config
-        .output
-        .output
-        .parse()
-        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+    let gas_model = config.gas.gas_model;
 
     if !(21_000..=30_000_000).contains(&config.gas.gas_limit) {
         return Err(ConfigError::InvalidValue {
@@ -360,14 +345,9 @@ pub fn validate_and_resolve_for(
 pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
 
-    let provider: FlashLoanProvider = config
-        .backtest
-        .flash_loan_provider
-        .parse()
-        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+    let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
-    let strategies: Vec<Strategy> = Strategy::from_comma_list(&config.backtest.strategies)
-        .map_err(|e| ConfigError::Validation(e.to_string()))?;
+    let strategies: Vec<Strategy> = config.backtest.strategies.clone();
 
     if let Some(url) = &config.rpc.rpc_url {
         validate_rpc_url(url)?;
@@ -376,11 +356,7 @@ pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, C
         validate_rpc_urls(&config.rpc.rpc_urls)?;
     }
 
-    let gas_model: GasModel = config
-        .gas
-        .gas_model
-        .parse()
-        .map_err(|e: String| ConfigError::Validation(e.to_string()))?;
+    let gas_model = config.gas.gas_model;
 
     Ok(ValidationResult {
         chain_name,

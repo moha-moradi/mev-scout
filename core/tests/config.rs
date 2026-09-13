@@ -5,7 +5,9 @@ use mev_scout_core::config::{
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::DiscoveredPool;
 use mev_scout_core::pool::state::PoolInfo;
-use mev_scout_core::types::{ChainName, MevOpportunity, ResultsFile, Strategy};
+use mev_scout_core::types::{
+    ChainName, GasModel, MevOpportunity, OutputFormat, ResultsFile, Strategy,
+};
 
 /// ── Test 6: ResultsFile JSON roundtrip ──────────────────────────────────────
 #[test]
@@ -84,14 +86,17 @@ fn test_cli_override_merging() {
     config.merge_cli(&overrides).unwrap();
 
     assert_eq!(config.chain, ChainName::Avalanche);
-    assert_eq!(config.backtest.strategies, "two_hop_arb,sandwich");
-    assert_eq!(config.gas.gas_model, "p90");
+    assert_eq!(
+        config.backtest.strategies,
+        vec![Strategy::TwoHopArb, Strategy::Sandwich]
+    );
+    assert_eq!(config.gas.gas_model, GasModel::Distribution(90));
     assert_eq!(config.backtest.proximity_window, 5);
 
     // Unset fields keep defaults
     assert_eq!(config.gas.gas_limit, 200_000);
     assert_eq!(config.gas.priority_fee_gwei, 0.0);
-    assert_eq!(config.output.output, "table");
+    assert_eq!(config.output.output, OutputFormat::Table);
 }
 
 /// ── Test 9: Discover V3 pools synthetic (topic verification) ───────────────
@@ -151,17 +156,17 @@ fn test_config_builder() {
     let config = ConfigBuilder::default()
         .with_chain(ChainName::Ethereum)
         .with_output(OutputConfig {
-            output: "json".into(),
+            output: OutputFormat::Json,
             ..OutputConfig::default()
         })
         .build();
 
     assert_eq!(config.chain, ChainName::Ethereum);
-    assert_eq!(config.output.output, "json");
+    assert_eq!(config.output.output, OutputFormat::Json);
 
     // Unset fields keep defaults
     assert_eq!(config.gas.gas_limit, 200_000);
-    assert_eq!(config.backtest.strategies, "all");
+    assert_eq!(config.backtest.strategies, Strategy::all().to_vec());
     assert!(config.rpc.rpc_url.is_none());
     assert!(config.days.is_none());
     assert!(config.from_block.is_none());

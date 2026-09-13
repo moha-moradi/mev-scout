@@ -114,11 +114,33 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &ScanArgs, out: &str) {
-    let items: Vec<_> = if args.limit > 0 {
-        trades.iter().take(args.limit).collect()
+/// One printable column: table header, csv header, and a cell extractor
+/// shared by both formats (W3.7 — single printer for all scan kinds).
+struct Column<'a, T> {
+    header: &'a str,
+    csv_header: &'a str,
+    cell: fn(&T) -> String,
+}
+
+fn col<'a, T>(header: &'a str, csv_header: &'a str, cell: fn(&T) -> String) -> Column<'a, T> {
+    Column {
+        header,
+        csv_header,
+        cell,
+    }
+}
+
+fn print_events<T: serde::Serialize>(
+    all: &[T],
+    args: &ScanArgs,
+    out: &str,
+    label: &str,
+    columns: &[Column<'_, T>],
+) {
+    let items: Vec<&T> = if args.limit > 0 {
+        all.iter().take(args.limit).collect()
     } else {
-        trades.iter().collect()
+        all.iter().collect()
     };
 
     match out {
@@ -126,43 +148,58 @@ fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &Sca
             println!("{}", serde_json::to_string_pretty(&items).unwrap());
         }
         "csv" => {
-            println!("block,tx_hash,pool,dex_type,amount_in,amount_out");
+            println!(
+                "{}",
+                columns
+                    .iter()
+                    .map(|c| c.csv_header)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
             for t in &items {
                 println!(
-                    "{},{},{:?},{},{},{}",
-                    t.block, t.tx_hash, t.pool, t.dex_type, t.amount_in, t.amount_out,
+                    "{}",
+                    columns
+                        .iter()
+                        .map(|c| (c.cell)(t))
+                        .collect::<Vec<_>>()
+                        .join(",")
                 );
             }
         }
         _ => {
             let mut table = Table::new();
-            table.set_header(vec![
-                "Block",
-                "TX Hash",
-                "Pool",
-                "DEX",
-                "Amount In",
-                "Amount Out",
-            ]);
+            table.set_header(columns.iter().map(|c| c.header));
             for t in &items {
-                table.add_row(vec![
-                    t.block.to_string(),
-                    format!("{:?}", t.tx_hash),
-                    format!("{:?}", t.pool),
-                    t.dex_type.clone(),
-                    t.amount_in.to_string(),
-                    t.amount_out.to_string(),
-                ]);
+                table.add_row(columns.iter().map(|c| (c.cell)(t)));
             }
             println!("{table}");
             println!();
             println!(
-                "  {} trade(s) found (showing {})",
-                trades.len(),
+                "  {} {}(s) found (showing {})",
+                all.len(),
+                label,
                 items.len()
             );
         }
     }
+}
+
+fn print_trades(trades: &[mev_scout_core::chain::events::TradeEvent], args: &ScanArgs, out: &str) {
+    print_events(
+        trades,
+        args,
+        out,
+        "trade",
+        &[
+            col("Block", "block", |t: &_| t.block.to_string()),
+            col("TX Hash", "tx_hash", |t| format!("{:?}", t.tx_hash)),
+            col("Pool", "pool", |t| format!("{:?}", t.pool)),
+            col("DEX", "dex_type", |t| t.dex_type.clone()),
+            col("Amount In", "amount_in", |t| t.amount_in.to_string()),
+            col("Amount Out", "amount_out", |t| t.amount_out.to_string()),
+        ],
+    );
 }
 
 fn print_transfers(
@@ -170,47 +207,20 @@ fn print_transfers(
     args: &ScanArgs,
     out: &str,
 ) {
-    let items: Vec<_> = if args.limit > 0 {
-        transfers.iter().take(args.limit).collect()
-    } else {
-        transfers.iter().collect()
-    };
-
-    match out {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&items).unwrap());
-        }
-        "csv" => {
-            println!("block,tx_hash,token,from,to,value");
-            for t in &items {
-                println!(
-                    "{},{},{:?},{:?},{:?},{}",
-                    t.block, t.tx_hash, t.token, t.from, t.to, t.value,
-                );
-            }
-        }
-        _ => {
-            let mut table = Table::new();
-            table.set_header(vec!["Block", "TX Hash", "Token", "From", "To", "Value"]);
-            for t in &items {
-                table.add_row(vec![
-                    t.block.to_string(),
-                    format!("{:?}", t.tx_hash),
-                    format!("{:?}", t.token),
-                    format!("{:?}", t.from),
-                    format!("{:?}", t.to),
-                    t.value.to_string(),
-                ]);
-            }
-            println!("{table}");
-            println!();
-            println!(
-                "  {} transfer(s) found (showing {})",
-                transfers.len(),
-                items.len()
-            );
-        }
-    }
+    print_events(
+        transfers,
+        args,
+        out,
+        "transfer",
+        &[
+            col("Block", "block", |t: &_| t.block.to_string()),
+            col("TX Hash", "tx_hash", |t| format!("{:?}", t.tx_hash)),
+            col("Token", "token", |t| format!("{:?}", t.token)),
+            col("From", "from", |t| format!("{:?}", t.from)),
+            col("To", "to", |t| format!("{:?}", t.to)),
+            col("Value", "value", |t| t.value.to_string()),
+        ],
+    );
 }
 
 fn print_flash_loans(
@@ -218,54 +228,22 @@ fn print_flash_loans(
     args: &ScanArgs,
     out: &str,
 ) {
-    let items: Vec<_> = if args.limit > 0 {
-        loans.iter().take(args.limit).collect()
-    } else {
-        loans.iter().collect()
-    };
-
-    match out {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&items).unwrap());
-        }
-        "csv" => {
-            println!("block,tx_hash,protocol,token,amount,fee");
-            for t in &items {
-                println!(
-                    "{},{},{},{:?},{},{}",
-                    t.block,
-                    t.tx_hash,
-                    t.protocol,
-                    t.token,
-                    t.amount,
-                    t.fee.map(|f| f.to_string()).unwrap_or_default(),
-                );
-            }
-        }
-        _ => {
-            let mut table = Table::new();
-            table.set_header(vec![
-                "Block", "TX Hash", "Protocol", "Token", "Amount", "Fee",
-            ]);
-            for t in &items {
-                table.add_row(vec![
-                    t.block.to_string(),
-                    format!("{:?}", t.tx_hash),
-                    t.protocol.clone(),
-                    format!("{:?}", t.token),
-                    t.amount.to_string(),
-                    t.fee.map(|f| f.to_string()).unwrap_or_else(|| "-".into()),
-                ]);
-            }
-            println!("{table}");
-            println!();
-            println!(
-                "  {} flash loan(s) found (showing {})",
-                loans.len(),
-                items.len()
-            );
-        }
-    }
+    print_events(
+        loans,
+        args,
+        out,
+        "flash loan",
+        &[
+            col("Block", "block", |t: &_| t.block.to_string()),
+            col("TX Hash", "tx_hash", |t| format!("{:?}", t.tx_hash)),
+            col("Protocol", "protocol", |t| t.protocol.clone()),
+            col("Token", "token", |t| format!("{:?}", t.token)),
+            col("Amount", "amount", |t| t.amount.to_string()),
+            col("Fee", "fee", |t| {
+                t.fee.map(|f| f.to_string()).unwrap_or_else(|| "-".into())
+            }),
+        ],
+    );
 }
 
 fn print_liquidations(
@@ -273,63 +251,26 @@ fn print_liquidations(
     args: &ScanArgs,
     out: &str,
 ) {
-    let items: Vec<_> = if args.limit > 0 {
-        liqs.iter().take(args.limit).collect()
-    } else {
-        liqs.iter().collect()
-    };
-
-    match out {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&items).unwrap());
-        }
-        "csv" => {
-            println!(
-                "block,tx_hash,protocol,user,liquidator,collateral,debt_amount,collateral_amount"
-            );
-            for t in &items {
-                println!(
-                    "{},{},{},{:?},{:?},{:?},{},{}",
-                    t.block,
-                    t.tx_hash,
-                    t.protocol,
-                    t.user,
-                    t.liquidator,
-                    t.collateral_asset,
-                    t.debt_to_cover,
-                    t.collateral_amount,
-                );
-            }
-        }
-        _ => {
-            let mut table = Table::new();
-            table.set_header(vec![
-                "Block",
-                "TX Hash",
-                "Protocol",
-                "User",
-                "Liquidator",
-                "Collateral",
-                "Debt",
-            ]);
-            for t in &items {
-                table.add_row(vec![
-                    t.block.to_string(),
-                    format!("{:?}", t.tx_hash),
-                    t.protocol.clone(),
-                    format!("{:?}", t.user),
-                    format!("{:?}", t.liquidator),
-                    format!("{:?}", t.collateral_asset),
-                    t.debt_to_cover.to_string(),
-                ]);
-            }
-            println!("{table}");
-            println!();
-            println!(
-                "  {} liquidation(s) found (showing {})",
-                liqs.len(),
-                items.len()
-            );
-        }
-    }
+    print_events(
+        liqs,
+        args,
+        out,
+        "liquidation",
+        &[
+            col("Block", "block", |t: &_| t.block.to_string()),
+            col("TX Hash", "tx_hash", |t| format!("{:?}", t.tx_hash)),
+            col("Protocol", "protocol", |t| t.protocol.clone()),
+            col("User", "user", |t| format!("{:?}", t.user)),
+            col("Liquidator", "liquidator", |t| {
+                format!("{:?}", t.liquidator)
+            }),
+            col("Collateral", "collateral", |t| {
+                format!("{:?}", t.collateral_asset)
+            }),
+            col("Debt", "debt_amount", |t| t.debt_to_cover.to_string()),
+            col("Collateral Amount", "collateral_amount", |t| {
+                t.collateral_amount.to_string()
+            }),
+        ],
+    );
 }

@@ -104,6 +104,32 @@ pub struct PoolManager {
     /// a numeric block. Served by any full node (no archive requirement) — used
     /// by live mode. Backtest/replay keep numeric blocks for historical state.
     pub(crate) use_latest: bool,
+    /// Active block-level undo log (W4.8). `Some` while a mutating block is
+    /// being processed; replaces the old "deep-clone the whole manager per
+    /// block" checkpoint with pre-state captures of only the touched pools.
+    undo: Option<UndoLog>,
+}
+
+/// Pre-mutation state recorded for a single block (see
+/// [`PoolManager::begin_undo`]).
+///
+/// On a failed block, [`PoolManager::undo`] re-inserts the captured pool
+/// states, removes pools added during the block, and restores the small
+/// auxiliary sets — everything the previous full-manager checkpoint restored,
+/// but at the cost of cloning only pools the block actually touched.
+#[derive(Debug, Default)]
+struct UndoLog {
+    /// Pool state from before its first mutation in the block.
+    previous: HashMap<Address, PoolState>,
+    /// Pool addresses first inserted during the block (removed on undo).
+    added: Vec<Address>,
+    /// `dirty_pools` as it was when recording began.
+    dirty_before: Option<HashSet<Address>>,
+    /// `dynamic_fot` as it was when recording began.
+    fot_before: Option<HashSet<Address>>,
+    /// Token index snapshot, captured only if `add_pool` replaced an
+    /// existing pool (would otherwise duplicate index entries).
+    token_index_before: Option<HashMap<Address, Vec<Address>>>,
 }
 
 impl PoolManager {
@@ -125,7 +151,80 @@ impl PoolManager {
             token_max_pairs: HashMap::new(),
             concurrency_limit: 1,
             use_latest: false,
+            undo: None,
         }
+    }
+
+    /// Start recording an undo log for the current block (W4.8).
+    ///
+    /// While recording is active, every pool mutation funneled through
+    /// [`PoolManager::pool_mut`] or [`PoolManager::add_pool`] captures the
+    /// pool's pre-state once. The caller finishes a block with either
+    /// [`PoolManager::end_undo`] (keep changes) or [`PoolManager::undo`]
+    /// (roll back to this point). Replaces the per-block full `PoolManager`
+    /// clone in the backtest hot loop.
+    pub fn begin_undo(&mut self) {
+        self.undo = Some(UndoLog {
+            dirty_before: Some(self.dirty_pools.clone()),
+            fot_before: Some(self.dynamic_fot.clone()),
+            ..UndoLog::default()
+        });
+    }
+
+    /// Stop recording and keep the block's changes.
+    pub fn end_undo(&mut self) {
+        self.undo = None;
+    }
+
+    /// Roll all recorded pool mutations back to the state captured by
+    /// `begin_undo`, then stop recording.
+    pub fn undo(&mut self) {
+        let Some(mut log) = self.undo.take() else {
+            return;
+        };
+        for (addr, state) in std::mem::take(&mut log.previous) {
+            self.pools.insert(addr, state);
+        }
+        for addr in std::mem::take(&mut log.added) {
+            self.pools.remove(&addr);
+            self.known_set.remove(&addr);
+            for pool_list in self.token_index.values_mut() {
+                pool_list.retain(|p| *p != addr);
+            }
+        }
+        if let Some(ti) = log.token_index_before {
+            self.token_index = ti;
+        }
+        if let Some(dirty) = log.dirty_before {
+            self.dirty_pools = dirty;
+        }
+        if let Some(fot) = log.fot_before {
+            self.dynamic_fot = fot;
+        }
+        *self.pairs_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Record the pre-state of `addr` if undo recording is active and this is
+    /// its first touch in the block.
+    fn undo_record_pool(&mut self, addr: Address) {
+        let Some(log) = self.undo.as_mut() else {
+            return;
+        };
+        if log.added.contains(&addr) {
+            return;
+        }
+        if let Some(state) = self.pools.get(&addr) {
+            log.previous.entry(addr).or_insert_with(|| state.clone());
+        }
+    }
+
+    /// Get a mutable pool reference with undo recording (apply.rs chokepoint).
+    ///
+    /// Records the pool's pre-state before handing out `&mut`, so a failed
+    /// block can be rolled back without a full-manager checkpoint clone.
+    pub(crate) fn pool_mut(&mut self, address: &Address) -> Option<&mut PoolState> {
+        self.undo_record_pool(*address);
+        self.pools.get_mut(address)
     }
 
     /// Set the maximum number of pool pairs per token for arbitrage pair computation.
@@ -160,6 +259,23 @@ impl PoolManager {
     pub fn add_pool(&mut self, state: PoolState) {
         let addr = state.address();
         let info = state.info().clone();
+        if let Some(log) = self.undo.as_mut() {
+            match self.pools.get(&addr) {
+                Some(prev) => {
+                    // Re-adding an existing pool also re-pushes token index
+                    // entries; capture the index once so undo can reset it.
+                    if log.token_index_before.is_none() {
+                        log.token_index_before = Some(self.token_index.clone());
+                    }
+                    log.previous.entry(addr).or_insert_with(|| prev.clone());
+                }
+                None => {
+                    if !log.added.contains(&addr) {
+                        log.added.push(addr);
+                    }
+                }
+            }
+        }
         self.known_set.insert(addr);
         self.pools.insert(addr, state);
         if !info.token0.is_zero() {
@@ -691,6 +807,7 @@ impl Clone for PoolManager {
             token_max_pairs: self.token_max_pairs.clone(),
             concurrency_limit: self.concurrency_limit,
             use_latest: self.use_latest,
+            undo: None,
         }
     }
 }
@@ -727,7 +844,7 @@ pub fn check_dedup_key(
 }
 
 #[cfg(test)]
-mod tax_learning_tests {
+mod manager_tests {
     use super::*;
     use crate::data::ExecutedLog;
     use crate::pool::state::pool_types::UniswapV2PoolState;
@@ -893,5 +1010,95 @@ mod tax_learning_tests {
         let logs = vec![swap(50_000, 10_000)];
         pm.learn_taxes_from_tx(&logs);
         assert!(pm.is_taxed_token(&T_OUT));
+    }
+
+    #[test]
+    fn undo_rolls_back_pool_mutations_additions_and_aux_state() {
+        let mut pm = fixture();
+        const NEW_POOL: Address = address!("ff000000000000000000000000000000000000f1");
+
+        pm.mark_dirty_pool(POOL);
+        pm.begin_undo();
+
+        // In-place mutation through the apply.rs chokepoint.
+        {
+            let Some(PoolState::UniswapV2(s)) = pm.pool_mut(&POOL) else {
+                panic!("fixture is a V2 pool");
+            };
+            s.reserve0 = 5;
+        }
+        // A pool added during the failed "block".
+        pm.add_pool(PoolState::UniswapV2(UniswapV2PoolState {
+            info: crate::pool::state::PoolInfo {
+                address: NEW_POOL,
+                token0: T_IN,
+                token1: T_OUT,
+                fee: 30,
+                dex_type: crate::dex_type::DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: 7,
+            reserve1: 7,
+        }));
+        pm.flag_taxed_token(T_OUT);
+        assert_eq!(pm.take_dirty_pools().len(), 1);
+
+        pm.undo();
+
+        let Some(PoolState::UniswapV2(s)) = pm.get(&POOL) else {
+            panic!("fixture is a V2 pool");
+        };
+        assert_eq!(s.reserve0, 1_000_000, "pre-block reserve restored");
+        assert!(pm.get(&NEW_POOL).is_none(), "added pool removed on undo");
+        assert!(!pm.known_set.contains(&NEW_POOL));
+        assert_eq!(
+            pm.token_index[&T_IN]
+                .iter()
+                .filter(|p| **p == NEW_POOL)
+                .count(),
+            0,
+            "token index cleaned up"
+        );
+        assert!(!pm.is_taxed_token(&T_OUT), "learned tax flag rolled back");
+        assert!(pm.dirty_pools.contains(&POOL), "dirty set restored");
+    }
+
+    #[test]
+    fn end_undo_keeps_changes_and_next_cycle_restores_them() {
+        let mut pm = fixture();
+        pm.begin_undo();
+        {
+            let Some(PoolState::UniswapV2(s)) = pm.pool_mut(&POOL) else {
+                panic!("fixture is a V2 pool");
+            };
+            s.reserve0 = 42;
+        }
+        pm.end_undo();
+
+        let Some(PoolState::UniswapV2(s)) = pm.get(&POOL) else {
+            panic!("fixture is a V2 pool");
+        };
+        assert_eq!(s.reserve0, 42, "committed change persists");
+
+        // A second block records from the new baseline.
+        pm.begin_undo();
+        {
+            let Some(PoolState::UniswapV2(s)) = pm.pool_mut(&POOL) else {
+                panic!("fixture is a V2 pool");
+            };
+            s.reserve0 = 7;
+        }
+        pm.undo();
+        let Some(PoolState::UniswapV2(s)) = pm.get(&POOL) else {
+            panic!("fixture is a V2 pool");
+        };
+        assert_eq!(s.reserve0, 42, "second undo restores to this block's start");
+    }
+
+    #[test]
+    fn undo_without_begin_is_noop() {
+        let mut pm = fixture();
+        pm.undo();
+        assert!(pm.get(&POOL).is_some());
     }
 }

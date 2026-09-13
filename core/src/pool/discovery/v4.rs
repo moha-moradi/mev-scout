@@ -1,8 +1,7 @@
 use super::V4_INITIALIZE_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
@@ -27,13 +26,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-pub(crate) async fn scan_v4_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_v4_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     let mut out = ScanBatchResult::default();
     if let Some(pool_manager) = config.v4_pool_manager {
         let filter = Filter::new()

@@ -22,7 +22,7 @@ impl PoolManager {
         amount0_out: u128,
         amount1_out: u128,
     ) {
-        if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::UniswapV2(state)) = self.pool_mut(address) {
             state.reserve0 = state
                 .reserve0
                 .wrapping_add(amount0_in)
@@ -41,7 +41,7 @@ impl PoolManager {
 
     /// Update a V2 pool's reserves from a Sync event (authoritative override).
     pub fn apply_v2_sync(&mut self, address: &Address, reserve0: u128, reserve1: u128) {
-        if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::UniswapV2(state)) = self.pool_mut(address) {
             state.reserve0 = reserve0;
             state.reserve1 = reserve1;
         }
@@ -63,7 +63,7 @@ impl PoolManager {
         amount1: i128,
     ) {
         // V3 and V4 pools share the same swap logic
-        match self.pools.get_mut(address) {
+        match self.pool_mut(address) {
             Some(PoolState::UniswapV3(state))
             | Some(PoolState::UniswapV4(state))
             | Some(PoolState::PancakeInfinity(state)) => {
@@ -103,7 +103,7 @@ impl PoolManager {
         tick_upper: i32,
         amount: i128,
     ) {
-        match self.pools.get_mut(address) {
+        match self.pool_mut(address) {
             Some(PoolState::UniswapV3(state))
             | Some(PoolState::UniswapV4(state))
             | Some(PoolState::PancakeInfinity(state)) => {
@@ -122,7 +122,7 @@ impl PoolManager {
     // Solidly/Camelot stable pools are stored as CurvePoolState but emit V2-style events.
     // Duplicated match arms are consolidated into this shared helper.
     fn try_apply_v2_to_curve(&mut self, address: &Address, update: impl FnOnce(&mut [u128])) {
-        if let Some(PoolState::Curve(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::Curve(state)) = self.pool_mut(address) {
             if state.balances.len() >= 2 {
                 update(&mut state.balances);
             }
@@ -265,7 +265,7 @@ impl PoolManager {
             return;
         }
         if let Some(decoded) = decoders::decode_curve_swap(log) {
-            if let Some(PoolState::Curve(state)) = self.pools.get_mut(&log.address) {
+            if let Some(PoolState::Curve(state)) = self.pool_mut(&log.address) {
                 let coin_sold = decoded.coin_sold as usize;
                 let coin_bought = decoded.coin_bought as usize;
                 if coin_sold < state.balances.len() && coin_bought < state.balances.len() {
@@ -283,7 +283,7 @@ impl PoolManager {
             return;
         }
         if let Some(decoded) = decoders::decode_balancer_swap(log) {
-            if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&log.address) {
+            if let Some(PoolState::Balancer(state)) = self.pool_mut(&log.address) {
                 let idx_in = state.token_index.get(&decoded.token_in);
                 let idx_out = state.token_index.get(&decoded.token_out);
                 if let (Some(&i_in), Some(&i_out)) = (idx_in, idx_out) {
@@ -307,7 +307,7 @@ impl PoolManager {
         amount_in: u128,
         amount_out: u128,
     ) {
-        if let Some(PoolState::TraderJoeLB(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::TraderJoeLB(state)) = self.pool_mut(address) {
             if token_in == state.info.token0 {
                 // Swapping token0 (X) for token1 (Y): X increases, Y decreases
                 state.reserve_x = state.reserve_x.saturating_add(amount_in);
@@ -328,7 +328,7 @@ impl PoolManager {
         amount_in: u128,
         amount_out: u128,
     ) {
-        if let Some(PoolState::Pendle(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::Pendle(state)) = self.pool_mut(address) {
             if is_net_pt_out {
                 // User receives PT: SY goes in, PT comes out
                 // total_sy += amount_in, total_pt -= amount_out
@@ -410,7 +410,7 @@ impl PoolManager {
         amount_in: u128,
         amount_out: u128,
     ) {
-        if let Some(PoolState::Fluid(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::Fluid(state)) = self.pool_mut(address) {
             state.last_swap0to1 = swap0to1;
             state.last_amount_in = amount_in;
             state.last_amount_out = amount_out;
@@ -419,7 +419,7 @@ impl PoolManager {
 
     /// Update a Metric V2 pool's last-observed tick / bin position.
     pub fn apply_metric_swap(&mut self, address: &Address, new_tick: i16, position_in_bin: u128) {
-        if let Some(PoolState::Metric(state)) = self.pools.get_mut(address) {
+        if let Some(PoolState::Metric(state)) = self.pool_mut(address) {
             state.tick = new_tick;
             state.position_in_bin = position_in_bin;
         }

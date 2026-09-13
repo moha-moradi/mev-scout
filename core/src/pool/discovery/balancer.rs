@@ -1,5 +1,5 @@
 use super::BALANCER_POOL_REGISTERED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use crate::pool::selectors::BALANCER_GET_POOL;
@@ -32,13 +32,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-pub(crate) async fn scan_balancer_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_balancer_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     let mut out = ScanBatchResult::default();
     if let Some(vault) = config.balancer_vault {
         let filter = Filter::new()

@@ -6,15 +6,13 @@ use std::cmp;
 
 use crate::pool::math::balancer as balancer_math;
 use crate::pool::math::curve as curve_math;
-use crate::pool::math::v3::{estimate_v3_swap_gas, max_v3_tradeable_amount, quote_v3_exact_in};
 use crate::pool::math::{
-    constant_product_output_amount, optimal_two_hop_arb, optimal_two_hop_arb_generic,
-    optimal_two_hop_arb_segmented, quote_exact_in, v3_breakpoints, FeeTier, PoolQuote,
-    TwoHopArbResult,
+    optimal_two_hop_arb, optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented,
+    quote_exact_in, PoolQuote, TwoHopArbResult,
 };
 use crate::pool::state::{
-    calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, ScanScope,
-    UniswapV2PoolState,
+    calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, QuoteKind,
+    ScanScope,
 };
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
@@ -180,12 +178,10 @@ impl TwoHopArbDetector {
 
 /// Compute the optimal two-hop arbitrage result between any two pools that share a token.
 ///
-/// Supports all pool type combinations:
-/// - UniswapV2 ↔ UniswapV2
-/// - UniswapV3 ↔ UniswapV3
-/// - UniswapV2 ↔ UniswapV3 (both directions)
-/// - Curve ↔ Curve
-/// - Balancer ↔ Balancer
+/// Supports all pool type combinations — quoting and the piecewise/closed-form
+/// path selection are dispatched per pool through the [`PoolState`] quoting
+/// registry (see `pool/state/quoting.rs`), so a new DEX needs one math file
+/// plus one arm in that registry instead of a combination match here.
 ///
 /// Returns `None` if the pool types are not supported or no profitable path exists.
 pub fn quote_path(
@@ -194,149 +190,55 @@ pub fn quote_path(
     shared_token: Address,
 ) -> Option<TwoHopArbResult> {
     let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
-    match (pool_a, pool_b) {
-        (PoolState::UniswapV2(a), PoolState::UniswapV2(b)) => {
-            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
+
+    match (pool_a.quote_kind(), pool_b.quote_kind()) {
+        // Unsupported pool types (LB/Pendle/Metric/Fluid for two-hop) — no path.
+        (QuoteKind::Unsupported, _) | (_, QuoteKind::Unsupported) => None,
+        // Two constant-product legs — analytic closed form.
+        (QuoteKind::ConstantProduct, QuoteKind::ConstantProduct) => {
+            let (a_in, a_out) = pool_a.reserve_pair(shared_token, true)?;
+            let (b_in, b_out) = pool_b.reserve_pair(shared_token, false)?;
             optimal_two_hop_arb(
                 PoolQuote {
-                    reserve_in: r_a_other,
-                    reserve_out: r_a_shared,
-                    fee: fee_a,
+                    reserve_in: a_in,
+                    reserve_out: a_out,
+                    fee: pool_a.info().fee_tier(),
                 },
                 PoolQuote {
-                    reserve_in: r_b_in,
-                    reserve_out: r_b_out,
-                    fee: fee_b,
+                    reserve_in: b_in,
+                    reserve_out: b_out,
+                    fee: pool_b.info().fee_tier(),
                 },
             )
         }
-        (PoolState::UniswapV3(a), PoolState::UniswapV3(b)) => {
-            let zero_a = shared_token == a.info.token1;
-            let zero_b = shared_token == b.info.token0;
-            let max_input = cmp::max(
-                max_v3_tradeable_amount(a, zero_a),
-                max_v3_tradeable_amount(b, zero_b),
-            );
-            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
+        // At least one concentrated-liquidity leg — segment the input domain
+        // at tick-band crossings before maximizing.
+        (QuoteKind::Piecewise, _) | (_, QuoteKind::Piecewise) => {
+            let max_input = match (pool_a.quote_kind(), pool_b.quote_kind()) {
+                (QuoteKind::Piecewise, QuoteKind::Piecewise) => {
+                    cmp::max(pool_a.max_input(token_in)?, pool_b.max_input(shared_token)?)
+                }
+                (QuoteKind::Piecewise, QuoteKind::ConstantProduct) => {
+                    pool_b.sell_reserve(token_out)?
+                }
+                _ => pool_a.max_input(token_in)?,
+            };
+            let quote_a = |x: u128| pool_a.quote_dir(x, token_in, shared_token);
+            let quote_b = |x: u128| pool_b.quote_dir(x, shared_token, token_out);
+            let a_bp = pool_a.seg_breakpoints(max_input, token_in, MAX_V3_BREAKPOINTS_PER_POOL);
             let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
-            let breakpoints = compose_path_breakpoints(
-                v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL),
-                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
-                &quote_a,
-                max_input,
-            );
+            let b_bp = pool_b.seg_breakpoints(mid_max, shared_token, MAX_V3_BREAKPOINTS_PER_POOL);
+            let breakpoints = compose_path_breakpoints(a_bp, b_bp, &quote_a, max_input);
             optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
         }
-        (PoolState::UniswapV2(a), PoolState::UniswapV3(b)) => {
-            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let zero_b = shared_token == b.info.token0;
-            let max_input = r_a_other;
-            let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
-            let breakpoints = compose_path_breakpoints(
-                Vec::new(),
-                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
-                &quote_a,
-                max_input,
-            );
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        (PoolState::UniswapV3(a), PoolState::UniswapV2(b)) => {
-            let zero_a = shared_token == a.info.token1;
-            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let max_input = r_b_out;
-            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
-            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        (PoolState::Curve(a), PoolState::Curve(b)) => {
-            let max_input = a.balances[*a.token_index.get(&token_in)?];
-            let quote_a = |x: u128| curve_output_amount(x, a, token_in, shared_token);
-            let quote_b = |x: u128| curve_output_amount(x, b, shared_token, token_out);
+        // Concave invariant pools (Curve/Balancer) with any non-piecewise leg —
+        // golden-section maximization.
+        _ => {
+            let max_input = pool_a.max_input(token_in)?;
+            let quote_a = |x: u128| pool_a.quote_dir(x, token_in, shared_token);
+            let quote_b = |x: u128| pool_b.quote_dir(x, shared_token, token_out);
             optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
         }
-        (PoolState::Balancer(a), PoolState::Balancer(b)) => {
-            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
-            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
-            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
-        }
-        (PoolState::Curve(a), PoolState::UniswapV2(b)) => {
-            let max_input = a.balances[*a.token_index.get(&token_in)?];
-            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let quote_a = |x: u128| curve_output_amount(x, a, token_in, shared_token);
-            let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
-        }
-        (PoolState::UniswapV2(a), PoolState::Curve(b)) => {
-            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| curve_output_amount(x, b, shared_token, token_out);
-            optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
-        }
-        (PoolState::Curve(a), PoolState::UniswapV3(b)) => {
-            let max_input = a.balances[*a.token_index.get(&token_in)?];
-            let zero_b = shared_token == b.info.token0;
-            let quote_a = |x: u128| curve_output_amount(x, a, token_in, shared_token);
-            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
-            let breakpoints = compose_path_breakpoints(
-                Vec::new(),
-                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
-                &quote_a,
-                max_input,
-            );
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        (PoolState::UniswapV3(a), PoolState::Curve(b)) => {
-            let zero_a = shared_token == a.info.token1;
-            let max_input = max_v3_tradeable_amount(a, zero_a);
-            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| curve_output_amount(x, b, shared_token, token_out);
-            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        (PoolState::Balancer(a), PoolState::UniswapV2(b)) => {
-            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
-            let (r_b_in, r_b_out, fee_b) = v2_reserves(b, shared_token, false)?;
-            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
-            let quote_b = |x: u128| constant_product_output_amount(x, r_b_in, r_b_out, fee_b);
-            optimal_two_hop_arb_generic(max_input, &quote_a, &quote_b)
-        }
-        (PoolState::UniswapV2(a), PoolState::Balancer(b)) => {
-            let (r_a_other, r_a_shared, fee_a) = v2_reserves(a, shared_token, true)?;
-            let quote_a = |x: u128| constant_product_output_amount(x, r_a_other, r_a_shared, fee_a);
-            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
-            optimal_two_hop_arb_generic(r_a_other, &quote_a, &quote_b)
-        }
-        (PoolState::Balancer(a), PoolState::UniswapV3(b)) => {
-            let max_input = *a.balances.get(*a.token_index.get(&token_in)?)?;
-            let zero_b = shared_token == b.info.token0;
-            let quote_a = |x: u128| balancer_quote_exact_in(x, a, token_in, shared_token);
-            let quote_b = |x: u128| quote_v3_exact_in(b, x, zero_b);
-            let mid_max = quote_a(max_input).unwrap_or(u128::MAX);
-            let breakpoints = compose_path_breakpoints(
-                Vec::new(),
-                v3_breakpoints(b, zero_b, mid_max, MAX_V3_BREAKPOINTS_PER_POOL),
-                &quote_a,
-                max_input,
-            );
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        (PoolState::UniswapV3(a), PoolState::Balancer(b)) => {
-            let zero_a = shared_token == a.info.token1;
-            let max_input = max_v3_tradeable_amount(a, zero_a);
-            let quote_a = |x: u128| quote_v3_exact_in(a, x, zero_a);
-            let quote_b = |x: u128| balancer_quote_exact_in(x, b, shared_token, token_out);
-            let breakpoints = v3_breakpoints(a, zero_a, max_input, MAX_V3_BREAKPOINTS_PER_POOL);
-            optimal_two_hop_arb_segmented(max_input, &breakpoints, &quote_a, &quote_b)
-        }
-        // Unsupported type combinations
-        _ => None,
     }
 }
 
@@ -365,91 +267,8 @@ fn two_hop_profit_at(
 ) -> Option<u128> {
     let (token_in, token_out) = arb_tokens(pool_a, pool_b, shared_token)?;
 
-    let intermediate = match pool_a {
-        PoolState::UniswapV2(a) => {
-            let (r_a_other, r_a_shared, fee) = v2_reserves(a, shared_token, true)?;
-            constant_product_output_amount(input_amount, r_a_other, r_a_shared, fee)?
-        }
-        PoolState::UniswapV3(a) => {
-            let zero_a = shared_token == a.info.token1;
-            quote_v3_exact_in(a, input_amount, zero_a)?
-        }
-        PoolState::UniswapV4(a) => {
-            let zero_a = shared_token == a.info.token1;
-            quote_v3_exact_in(a, input_amount, zero_a)?
-        }
-        PoolState::PancakeInfinity(a) => {
-            let zero_a = shared_token == a.info.token1;
-            quote_v3_exact_in(a, input_amount, zero_a)?
-        }
-        PoolState::Curve(a) => curve_output_amount(input_amount, a, token_in, shared_token)?,
-        PoolState::Balancer(a) => balancer_quote_exact_in(input_amount, a, token_in, shared_token)?,
-        PoolState::TraderJoeLB(a) => {
-            let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
-                (a.reserve_y, a.reserve_x)
-            } else if a.info.token1 == shared_token {
-                (a.reserve_x, a.reserve_y)
-            } else {
-                return None;
-            };
-            constant_product_output_amount(input_amount, r_a_other, r_a_shared, a.info.fee_tier())?
-        }
-        PoolState::Pendle(a) => {
-            let (r_a_other, r_a_shared) = if a.info.token0 == shared_token {
-                (a.total_sy, a.total_pt)
-            } else if a.info.token1 == shared_token {
-                (a.total_pt, a.total_sy)
-            } else {
-                return None;
-            };
-            constant_product_output_amount(input_amount, r_a_other, r_a_shared, FeeTier::Free)?
-        }
-        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
-    };
-
-    let output = match pool_b {
-        PoolState::UniswapV2(b) => {
-            let (r_b_in, r_b_out, fee) = v2_reserves(b, shared_token, false)?;
-            constant_product_output_amount(intermediate, r_b_in, r_b_out, fee)?
-        }
-        PoolState::UniswapV3(b) => {
-            let zero_b = shared_token == b.info.token0;
-            quote_v3_exact_in(b, intermediate, zero_b)?
-        }
-        PoolState::UniswapV4(b) => {
-            let zero_b = shared_token == b.info.token0;
-            quote_v3_exact_in(b, intermediate, zero_b)?
-        }
-        PoolState::PancakeInfinity(b) => {
-            let zero_b = shared_token == b.info.token0;
-            quote_v3_exact_in(b, intermediate, zero_b)?
-        }
-        PoolState::Curve(b) => curve_output_amount(intermediate, b, shared_token, token_out)?,
-        PoolState::Balancer(b) => {
-            balancer_quote_exact_in(intermediate, b, shared_token, token_out)?
-        }
-        PoolState::TraderJoeLB(b) => {
-            let (r_b_in, r_b_out) = if b.info.token0 == shared_token {
-                (b.reserve_x, b.reserve_y)
-            } else if b.info.token1 == shared_token {
-                (b.reserve_y, b.reserve_x)
-            } else {
-                return None;
-            };
-            constant_product_output_amount(intermediate, r_b_in, r_b_out, b.info.fee_tier())?
-        }
-        PoolState::Pendle(b) => {
-            let (r_b_in, r_b_out) = if b.info.token0 == shared_token {
-                (b.total_pt, b.total_sy)
-            } else if b.info.token1 == shared_token {
-                (b.total_sy, b.total_pt)
-            } else {
-                return None;
-            };
-            constant_product_output_amount(intermediate, r_b_in, r_b_out, FeeTier::Free)?
-        }
-        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
-    };
+    let intermediate = pool_a.quote_dir(input_amount, token_in, shared_token)?;
+    let output = pool_b.quote_dir(intermediate, shared_token, token_out)?;
 
     (output > input_amount).then(|| output - input_amount)
 }
@@ -560,35 +379,7 @@ fn estimate_arb_pair_profit(
     token_in: Address,
     token_out: Address,
 ) -> Option<u128> {
-    let max_input = match pool_a {
-        PoolState::Curve(c) => c.balances[*c.token_index.get(&token_in)?],
-        PoolState::Balancer(b) => b.balances[*b.token_index.get(&token_in)?],
-        PoolState::UniswapV2(v2) => {
-            if v2.info.token0 == token_in {
-                v2.reserve0
-            } else {
-                v2.reserve1
-            }
-        }
-        PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, v3.info.token0 == token_in),
-        PoolState::UniswapV4(v4) => max_v3_tradeable_amount(v4, v4.info.token0 == token_in),
-        PoolState::PancakeInfinity(v4) => max_v3_tradeable_amount(v4, v4.info.token0 == token_in),
-        PoolState::TraderJoeLB(lb) => {
-            if lb.info.token0 == token_in {
-                lb.reserve_x
-            } else {
-                lb.reserve_y
-            }
-        }
-        PoolState::Pendle(p) => {
-            if p.info.token0 == token_in {
-                p.total_pt
-            } else {
-                p.total_sy
-            }
-        }
-        PoolState::Metric(_) | PoolState::Fluid(_) => return None,
-    };
+    let max_input = pool_a.max_input(token_in)?;
     let test_input = (max_input / 1000).max(1);
 
     let intermediate = quote_exact_in(pool_a, token_in, shared_token, test_input)?;
@@ -615,38 +406,6 @@ pub fn balancer_quote_exact_in(
     token_out: Address,
 ) -> Option<u128> {
     balancer_math::balancer_quote_exact_in(amount_in, pool, token_in, token_out)
-}
-
-/// Extract V2 pool reserves for a given direction relative to `shared_token`.
-/// `buy_side = true`  → returns (reserve_other, reserve_shared, fee) where
-///                        reserve_shared is what we receive (the bridge token).
-/// `buy_side = false` → returns (reserve_shared, reserve_other, fee) where
-///                        reserve_shared is what we give (the bridge token).
-fn v2_reserves(
-    pool: &UniswapV2PoolState,
-    shared_token: Address,
-    buy_side: bool,
-) -> Option<(u128, u128, FeeTier)> {
-    let fee = pool.info.fee_tier();
-    if buy_side {
-        // We give the other token, receive shared_token
-        if pool.info.token0 == shared_token {
-            Some((pool.reserve1, pool.reserve0, fee))
-        } else if pool.info.token1 == shared_token {
-            Some((pool.reserve0, pool.reserve1, fee))
-        } else {
-            None
-        }
-    } else {
-        // We give shared_token, receive the other token
-        if pool.info.token0 == shared_token {
-            Some((pool.reserve0, pool.reserve1, fee))
-        } else if pool.info.token1 == shared_token {
-            Some((pool.reserve1, pool.reserve0, fee))
-        } else {
-            None
-        }
-    }
 }
 
 /// Safety margin applied on top of the combined-fee break-even in the spot
@@ -828,20 +587,12 @@ fn estimate_gas_for_two_hop(
     let base_overhead = 40_000u64;
     let calldata = calldata_gas_estimate(2);
 
-    let a_gas = match pool_a {
-        PoolState::UniswapV3(v3) => {
-            let zero_for_one = shared_token == v3.info.token1;
-            estimate_v3_swap_gas(v3, zero_for_one)
-        }
-        other => other.gas_estimate(),
+    let a_gas = {
+        let (t0, t1) = pool_a.token_pair();
+        let token_in = if t0 == shared_token { t1 } else { t0 };
+        pool_a.swap_gas_estimate(token_in)
     };
-    let b_gas = match pool_b {
-        PoolState::UniswapV3(v3) => {
-            let zero_for_one = shared_token == v3.info.token0;
-            estimate_v3_swap_gas(v3, zero_for_one)
-        }
-        other => other.gas_estimate(),
-    };
+    let b_gas = pool_b.swap_gas_estimate(shared_token);
 
     let analytic = base_overhead + calldata + a_gas + b_gas + flash_loan_gas;
 

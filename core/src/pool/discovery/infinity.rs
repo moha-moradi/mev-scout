@@ -1,8 +1,7 @@
 use super::INF_CL_INITIALIZE_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
@@ -32,13 +31,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
 /// synthetic pool address is its first 20 bytes, same scheme as V4). The
 /// remaining indexed topics carry currency0/currency1; non-indexed data is
 /// `hooks, fee, parameters, sqrtPriceX96, tick` (5 ABI-padded words).
-pub(crate) async fn scan_infinity_cl_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_infinity_cl_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     let mut out = ScanBatchResult::default();
     if let Some(pool_manager) = config.infinity_cl_pool_manager {
         let filter = Filter::new()

@@ -48,10 +48,11 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
-    /// Acquire the SQLite connection mutex guard.
-    /// Recovers from a poisoned mutex (a panic while locked must not
-    /// cascade — the connection itself remains usable).
-    pub fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    /// Acquire the SQLite connection mutex guard (cache-internal only: a
+    /// leaked guard could be held across an `.await`; every query belongs in a
+    /// store method instead). Recovers from a poisoned mutex (a panic while
+    /// locked must not cascade — the connection itself remains usable).
+    pub(super) fn conn(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

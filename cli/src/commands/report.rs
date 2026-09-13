@@ -36,7 +36,7 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         .with_context(|| format!("failed to open explorer db '{explorer_db}'"))?;
     let opportunities = store.opportunities_by_run(&run_id)?;
 
-    let output_format: OutputFormat = config.output.output.parse().unwrap_or(OutputFormat::Table);
+    let output_format = config.output.output;
 
     let results_file = ResultsFile {
         run_id: manifest.run_id.clone(),

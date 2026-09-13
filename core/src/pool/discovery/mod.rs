@@ -59,71 +59,71 @@ impl PoolHitCandidate {
     }
 }
 
-pub static V2_PAIR_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static V2_PAIR_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PairCreated(address,address,address,uint256)"));
 
-pub static V3_POOL_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static V3_POOL_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolCreated(address,address,uint24,int24,address)"));
 
-pub static BALANCER_POOL_REGISTERED_TOPIC: LazyLock<B256> =
+pub(crate) static BALANCER_POOL_REGISTERED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolRegistered(bytes32,address,uint8)"));
 
-pub static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> =
+pub(crate) static CURVE_POOL_ADDED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolAdded(address,uint256)"));
 
 // CurveStableswapFactoryNG pool-creation event — `PoolDeployed(address pool)`.
-pub static CURVE_POOL_DEPLOYED_TOPIC: LazyLock<B256> =
+pub(crate) static CURVE_POOL_DEPLOYED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolDeployed(address)"));
 
 // Solidly-style PairCreated (bool stable, address pair) — Velodrome, Aerodrome, Equalizer, Thena
-pub static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PairCreated(address,address,bool,address)"));
 
 // Camelot PairCreated (address pair, uint256 fee, bool stable)
-pub static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PairCreated(address,address,address,uint256,bool)"));
 
 // Uniswap V4 Initialize event from singleton PoolManager
-pub static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+pub(crate) static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"Initialize(bytes32 indexed id,Address indexed currency0,Address indexed currency1,uint24 fee,int24 tickSpacing,Address hooks)")
 });
 
 // Pancake Infinity CL Initialize event from singleton CLPoolManager:
 // `Initialize(bytes32 indexed id,address indexed currency0,address indexed currency1,address hooks,uint24 fee,bytes32 parameters,uint160 sqrtPriceX96,int24 tick)`
-pub static INF_CL_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+pub(crate) static INF_CL_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"Initialize(bytes32,address,address,address,uint24,bytes32,uint160,int24)")
 });
 
 // Trader Joe V2 LB PairCreated event
-pub static LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static LB_PAIR_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"LBPairCreated(address,address,address,uint256,address[])"));
 
 // Pendle Finance NewMarket event
-pub static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> =
+pub(crate) static PENDLE_NEW_MARKET_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"NewMarket(address,address,uint256)"));
 
 // Algebra (QuickSwap V3) Pool creation event — `Pool(address,address,address)` with two indexed tokens.
 // Unlike canonical Uniswap V3 `PoolCreated(address,address,uint24,int24,address)`.
-pub static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static ALGEBRA_POOL_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Pool(address,address,address)"));
 
 // Aerodrome Slipstream / Velodrome V3 CL pool creation event —
 // `PoolCreated(address,address,int24,address)` (token0, token1, tickSpacing indexed; pool in data).
 // Bespoke topic, not canonical Uniswap V3 nor Algebra.
-pub static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static SLIPSTREAM_POOL_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolCreated(address,address,int24,address)"));
 
 // Metric V2 pool creation — `PoolCreated(address indexed token0,
 // address indexed token1, address indexed priceProvider, address pool,
 // bytes32 poolId)` (digest computed from the signature string; verifying the
 // produced topic on-chain is deferred).
-pub static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> =
+pub(crate) static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PoolCreated(address,address,address,address,bytes32)"));
 
 // Fluid DEX pool deployment — `LogDexDeployed(address indexed dex, uint256
 // indexed dexId)` (verified against Instadapp/fluid-contracts-public
 // factory/main.sol). Token metadata is fetched later via token0()/token1().
-pub static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
+pub(crate) static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"LogDexDeployed(address,uint256)"));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -702,6 +702,18 @@ impl ScanBatchResult {
     }
 }
 
+/// Shared inputs for one DEX's factory batch scan: the RPC/config plumbing
+/// every scanner needs plus the block range being scanned and the provider
+/// pin for this shard. Keeps `scan_*_batch` signatures to a single argument.
+#[derive(Clone, Copy)]
+pub(super) struct ScanContext<'a> {
+    pub(super) rpc: &'a RpcClient,
+    pub(super) config: &'a DiscoveryConfig<'a>,
+    pub(super) current: u64,
+    pub(super) batch_end: u64,
+    pub(super) provider_idx: Option<usize>,
+}
+
 /// Pins to a specific provider when `provider_idx` is `Some`.
 async fn scan_factory_creation_events_pinned(
     rpc: &RpcClient,
@@ -1011,91 +1023,26 @@ async fn discover_pools_shard(
         // afterwards; previously they serialized the whole batch on the
         // slowest provider.
         use futures::future::{join_all, BoxFuture};
+        let scan_ctx = ScanContext {
+            rpc,
+            config,
+            current,
+            batch_end,
+            provider_idx,
+        };
         let scanners: Vec<BoxFuture<'_, ScanBatchResult>> = vec![
-            Box::pin(v2::scan_v2_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(v3::scan_v3_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(balancer::scan_balancer_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(curve::scan_curve_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(solidly::scan_solidly_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(camelot::scan_camelot_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(trader_joe::scan_trader_joe_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(pendle::scan_pendle_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(v4::scan_v4_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(infinity::scan_infinity_cl_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(metric::scan_metric_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
-            Box::pin(fluid::scan_fluid_batch(
-                rpc,
-                config,
-                current,
-                batch_end,
-                provider_idx,
-            )),
+            Box::pin(v2::scan_v2_batch(&scan_ctx)),
+            Box::pin(v3::scan_v3_batch(&scan_ctx)),
+            Box::pin(balancer::scan_balancer_batch(&scan_ctx)),
+            Box::pin(curve::scan_curve_batch(&scan_ctx)),
+            Box::pin(solidly::scan_solidly_batch(&scan_ctx)),
+            Box::pin(camelot::scan_camelot_batch(&scan_ctx)),
+            Box::pin(trader_joe::scan_trader_joe_batch(&scan_ctx)),
+            Box::pin(pendle::scan_pendle_batch(&scan_ctx)),
+            Box::pin(v4::scan_v4_batch(&scan_ctx)),
+            Box::pin(infinity::scan_infinity_cl_batch(&scan_ctx)),
+            Box::pin(metric::scan_metric_batch(&scan_ctx)),
+            Box::pin(fluid::scan_fluid_batch(&scan_ctx)),
         ];
         let scanner_results = join_all(scanners).await;
         for result in scanner_results {
@@ -1386,7 +1333,7 @@ async fn discover_pools_shard(
     );
 
     // ── Phase 3: Build output ──
-    // Use a HashSet for O(1) dedup instead of O(n?�) linear scan
+    // Use a HashSet for O(1) dedup instead of O(n²) linear scan
     let mut resolved_addrs: HashSet<Address> = HashSet::new();
     let mut discovered_pools = Vec::new();
 

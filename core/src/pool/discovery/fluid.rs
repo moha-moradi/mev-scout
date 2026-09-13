@@ -1,9 +1,8 @@
 use super::scan_factory_creation_events_pinned;
 use super::FLUID_DEX_DEPLOYED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 
 /// Fluid DEX activity: per-pool contracts emit Swap from the pool address;
@@ -20,13 +19,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
 /// indexed dexId)` (verified against Instadapp/fluid-contracts-public
 /// factory/main.sol). The event carries only the pool address; token metadata
 /// is fetched later via the pool's `token0()`/`token1()` getters (Phase 2).
-pub(crate) async fn scan_fluid_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_fluid_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     if let Some(factories) = config.fluid_factory {
         let factories = std::slice::from_ref(&factories);
         return scan_factory_creation_events_pinned(

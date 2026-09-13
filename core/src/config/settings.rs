@@ -9,7 +9,7 @@ use super::defaults::{default_chains, ChainConfig};
 use super::validation::RangeSpec;
 use crate::error;
 
-use crate::types::{ChainName, FlashLoanProvider, RangeMode, Strategy};
+use crate::types::{ChainName, FlashLoanProvider, GasModel, OutputFormat, RangeMode, Strategy};
 
 // ── Sub-config structs ──────────────────────────────────────────────
 
@@ -34,9 +34,13 @@ pub struct RpcConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GasConfig {
-    /// Gas cost model: "historical_exact" or "fixed"
-    #[serde(default = "default_gas_model")]
-    pub gas_model: String,
+    /// Gas cost model
+    #[serde(
+        default = "default_gas_model",
+        deserialize_with = "de_gas_model",
+        serialize_with = "se_gas_model"
+    )]
+    pub gas_model: GasModel,
     /// Gas limit used for arb tx cost estimation
     #[serde(default = "default_gas_limit")]
     pub gas_limit: u64,
@@ -50,12 +54,19 @@ pub struct GasConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BacktestConfig {
-    /// Flash loan provider: "auto", "balancer", "aave", or "uniswap"
-    #[serde(default = "default_flash_loan_provider")]
-    pub flash_loan_provider: String,
-    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit,sandwich")
-    #[serde(default = "default_strategies")]
-    pub strategies: String,
+    /// Flash loan provider (case-insensitive; "auto" picks the cheapest)
+    #[serde(
+        default = "default_flash_loan_provider",
+        deserialize_with = "de_flash_loan_provider"
+    )]
+    pub flash_loan_provider: FlashLoanProvider,
+    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit,sandwich", "all")
+    #[serde(
+        default = "default_strategies",
+        deserialize_with = "de_strategy_list",
+        serialize_with = "se_strategy_list"
+    )]
+    pub strategies: Vec<Strategy>,
     /// Maximum number of pool pairs per token for two-hop arbitrage search
     #[serde(default = "default_max_pairs_per_token")]
     pub max_pairs_per_token: usize,
@@ -77,7 +88,7 @@ pub struct BacktestConfig {
 pub struct OutputConfig {
     /// Output format: "table", "json", or "csv"
     #[serde(default = "default_output_format")]
-    pub output: String,
+    pub output: OutputFormat,
     /// Directory for SQLite database file
     #[serde(default = "default_db_path")]
     pub db_path: String,
@@ -119,14 +130,14 @@ fn default_rps_limit() -> f64 {
 fn default_chain() -> ChainName {
     ChainName::Polygon
 }
-fn default_flash_loan_provider() -> String {
-    "auto".to_string()
+fn default_flash_loan_provider() -> FlashLoanProvider {
+    FlashLoanProvider::Auto
 }
-fn default_strategies() -> String {
-    "all".to_string()
+fn default_strategies() -> Vec<Strategy> {
+    Strategy::all().to_vec()
 }
-fn default_gas_model() -> String {
-    "historical_exact".to_string()
+fn default_gas_model() -> GasModel {
+    GasModel::default()
 }
 fn default_gas_limit() -> u64 {
     200_000
@@ -134,8 +145,54 @@ fn default_gas_limit() -> u64 {
 fn default_priority_fee_gwei() -> f64 {
     0.0
 }
-fn default_output_format() -> String {
-    "table".to_string()
+fn default_output_format() -> OutputFormat {
+    OutputFormat::Table
+}
+
+// ── Typed serde helpers (config strings reuse the enums' FromStr) ──
+
+fn de_gas_model<'de, D>(d: D) -> Result<GasModel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(d)?;
+    s.parse().map_err(serde::de::Error::custom)
+}
+
+fn se_gas_model<S>(model: &GasModel, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(&model.to_string())
+}
+
+fn de_flash_loan_provider<'de, D>(d: D) -> Result<FlashLoanProvider, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(d)?;
+    s.parse().map_err(serde::de::Error::custom)
+}
+
+fn de_strategy_list<'de, D>(d: D) -> Result<Vec<Strategy>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(d)?;
+    Strategy::from_comma_list(&s).map_err(serde::de::Error::custom)
+}
+
+fn se_strategy_list<S>(strategies: &[Strategy], s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str(
+        &strategies
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 fn default_db_path() -> String {
     String::new()
@@ -611,6 +668,20 @@ macro_rules! merge_opt {
             $cfg.$field = Some(v);
         }
     };
+    ($cfg:expr, $cli:expr, $field:ident, parse) => {
+        if let Some(ref v) = $cli.$field {
+            $cfg.$field = v.parse().map_err(|e| {
+                error::Error::Other(format!("invalid {} '{}': {e}", stringify!($field), v))
+            })?;
+        }
+    };
+    ($cfg:expr, $cli:expr, $field:ident, parse_list) => {
+        if let Some(ref v) = $cli.$field {
+            $cfg.$field = Strategy::from_comma_list(v).map_err(|e| {
+                error::Error::Other(format!("invalid {} '{}': {e}", stringify!($field), v))
+            })?;
+        }
+    };
 }
 
 // ── CliOverrides (mirrors Config structure) ─────────────────────────
@@ -760,15 +831,19 @@ impl Config {
             self,
             overrides,
             gas,
-            [(gas_model), (gas_limit, copy), (priority_fee_gwei, copy)]
+            [
+                (gas_model, parse),
+                (gas_limit, copy),
+                (priority_fee_gwei, copy)
+            ]
         );
         merge_sub!(
             self,
             overrides,
             backtest,
             [
-                (flash_loan_provider),
-                (strategies),
+                (flash_loan_provider, parse),
+                (strategies, parse_list),
                 (max_pairs_per_token, copy),
                 (proximity_window, copy),
                 (capture_pending, copy),
@@ -776,7 +851,7 @@ impl Config {
                 (max_candidates_per_tx, copy)
             ]
         );
-        merge_sub!(self, overrides, output, [(output), (db_path)]);
+        merge_sub!(self, overrides, output, [(output, parse), (db_path)]);
         merge_sub!(
             self,
             overrides,

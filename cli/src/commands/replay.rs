@@ -95,48 +95,36 @@ pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()
         );
 
         if args.analyze {
-            let interactions: Vec<String> =
-                r.logs
-                    .iter()
-                    .filter_map(|log| {
-                        pool_map.get(&log.address).map(|info| {
-                            let event_type = if log.topics.is_empty() {
-                                "Unknown"
-                            } else {
-                                let t0 = log.topics[0];
-                                if t0
-                                    == keccak256(
-                                        b"Swap(address,uint256,uint256,uint256,uint256,address)",
-                                    )
-                                {
-                                    "Swap"
-                                } else if t0 == keccak256(b"Sync(uint112,uint112)") {
-                                    "Sync"
-                                } else if t0 == keccak256(
-                                    b"Swap(address,address,int256,int256,uint160,uint128,int24)",
-                                ) {
-                                    "Swap"
-                                } else if t0 == keccak256(
-                                    b"Mint(address,address,int24,int24,uint128,uint256,uint256)",
-                                ) {
-                                    "Mint"
-                                } else if t0 == keccak256(
-                                    b"Burn(address,address,int24,int24,uint128,uint256,uint256)",
-                                ) {
-                                    "Burn"
-                                } else {
-                                    "Unknown"
-                                }
-                            };
-                            let name = info
-                                .name
-                                .as_deref()
-                                .map(String::from)
-                                .unwrap_or_else(|| info.address.to_string());
-                            format!("{} — {}", name, event_type)
-                        })
+            let t_swap_v2 = keccak256(b"Swap(address,uint256,uint256,uint256,uint256,address)");
+            let t_sync = keccak256(b"Sync(uint112,uint112)");
+            let t_swap_v3 = keccak256(b"Swap(address,address,int256,int256,uint160,uint128,int24)");
+            let t_mint = keccak256(b"Mint(address,address,int24,int24,uint128,uint256,uint256)");
+            let t_burn = keccak256(b"Burn(address,address,int24,int24,uint128,uint256,uint256)");
+            let interactions: Vec<String> = r
+                .logs
+                .iter()
+                .filter_map(|log| {
+                    pool_map.get(&log.address).map(|info| {
+                        let event_type = if log.topics.is_empty() {
+                            "Unknown"
+                        } else {
+                            match log.topics[0] {
+                                x if x == t_swap_v2 || x == t_swap_v3 => "Swap",
+                                x if x == t_sync => "Sync",
+                                x if x == t_mint => "Mint",
+                                x if x == t_burn => "Burn",
+                                _ => "Unknown",
+                            }
+                        };
+                        let name = info
+                            .name
+                            .as_deref()
+                            .map(String::from)
+                            .unwrap_or_else(|| info.address.to_string());
+                        format!("{} — {}", name, event_type)
                     })
-                    .collect();
+                })
+                .collect();
 
             if interactions.is_empty() {
                 println!("         (no DEX interactions)");

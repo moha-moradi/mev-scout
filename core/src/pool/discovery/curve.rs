@@ -1,4 +1,4 @@
-use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHitCandidate, ScanBatchResult};
+use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
 use super::{CURVE_POOL_ADDED_TOPIC, CURVE_POOL_DEPLOYED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
@@ -23,13 +23,14 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     }
 }
 
-pub(crate) async fn scan_curve_batch(
-    rpc: &RpcClient,
-    config: &DiscoveryConfig<'_>,
-    current: u64,
-    batch_end: u64,
-    provider_idx: Option<usize>,
-) -> ScanBatchResult {
+pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
+    let ScanContext {
+        rpc,
+        config,
+        current,
+        batch_end,
+        provider_idx,
+    } = *ctx;
     let mut out = ScanBatchResult::default();
     // Curve authorities: per-chain CurveStableswapFactoryNG deployments plus the
     // legacy mainnet registry. Older factories emit `PoolAdded(address indexed pool, uint256)`;

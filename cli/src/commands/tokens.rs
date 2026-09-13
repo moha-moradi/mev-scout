@@ -45,8 +45,9 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
     }
 
     // ── Display results ──
-    match config.output.output.as_str() {
-        "json" => {
+    use mev_scout_core::types::OutputFormat;
+    match config.output.output {
+        OutputFormat::Json => {
             let out: Vec<serde_json::Value> = entries
                 .iter()
                 .map(|(addr, symbol, dec)| {
@@ -59,14 +60,14 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
                 .collect();
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
-        "csv" => {
+        OutputFormat::Csv => {
             println!("address,symbol,decimals");
             for (addr, symbol, dec) in &entries {
                 let d = dec.map(|n| n.to_string()).unwrap_or_default();
                 println!("{addr},{symbol},{d}");
             }
         }
-        _ => {
+        OutputFormat::Table => {
             let mut table = Table::new();
             table.set_header(vec!["#", "Address", "Symbol", "Decimals"]);
             for (i, (addr, symbol, dec)) in entries.iter().enumerate() {

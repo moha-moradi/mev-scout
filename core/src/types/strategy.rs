@@ -330,3 +330,13 @@ pub enum OutputFormat {
     #[strum(serialize = "json")]
     Json,
 }
+
+impl OutputFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputFormat::Table => "table",
+            OutputFormat::Csv => "csv",
+            OutputFormat::Json => "json",
+        }
+    }
+}
