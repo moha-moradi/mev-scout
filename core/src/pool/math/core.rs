@@ -44,7 +44,7 @@ use super::balancer;
 use super::curve;
 use super::lb;
 use super::pendle;
-use super::v3::quote_v3_exact_in;
+use super::v3::{quote_v3_exact_in, V3Direction};
 
 /// Unified single-pool quoting dispatch.
 ///
@@ -71,26 +71,14 @@ pub fn quote_exact_in(
             };
             constant_product_output_amount(amount_in, reserve_in, reserve_out, v2.info.fee_tier())
         }
-        PoolState::UniswapV3(v3) => {
-            let zero_for_one = v3.info.token0 == token_in;
-            if !zero_for_one && v3.info.token1 != token_in {
+        // Concentrated-liquidity variants share the V3 quote engine, field
+        // layout, and token0/token1 direction convention.
+        PoolState::UniswapV3(v3) | PoolState::UniswapV4(v3) | PoolState::PancakeInfinity(v3) => {
+            let direction = V3Direction::for_input_token(token_in, v3.info.token0);
+            if direction == V3Direction::OneForZero && v3.info.token1 != token_in {
                 return None;
             }
-            quote_v3_exact_in(v3, amount_in, zero_for_one)
-        }
-        PoolState::UniswapV4(v4) => {
-            let zero_for_one = v4.info.token0 == token_in;
-            if !zero_for_one && v4.info.token1 != token_in {
-                return None;
-            }
-            quote_v3_exact_in(v4, amount_in, zero_for_one)
-        }
-        PoolState::PancakeInfinity(inf) => {
-            let zero_for_one = inf.info.token0 == token_in;
-            if !zero_for_one && inf.info.token1 != token_in {
-                return None;
-            }
-            quote_v3_exact_in(inf, amount_in, zero_for_one)
+            quote_v3_exact_in(v3, amount_in, direction)
         }
         PoolState::Curve(curve) => {
             if !curve.token_index.contains_key(&token_in)

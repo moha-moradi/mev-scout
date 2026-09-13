@@ -1,7 +1,7 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
 use super::arb_common;
-use alloy::primitives::{Address, U256, U512};
+use alloy::primitives::Address;
 use std::cmp;
 
 use crate::pool::math::balancer as balancer_math;
@@ -112,7 +112,7 @@ impl TwoHopArbDetector {
         // cycle rate cannot cover both pools' fees plus a safety margin), no
         // trade size can be profitable — skip the expensive optimizer entirely.
         // Eliminates ~90%+ of optimizer work at zero accuracy loss.
-        if !passes_spot_prefilter(pool_a, pool_b, shared_token) {
+        if !arb_common::passes_spot_prefilter(pool_a, pool_b, shared_token) {
             return None;
         }
 
@@ -153,7 +153,15 @@ impl TwoHopArbDetector {
             result.input_amount,
         );
 
-        let slippage = compute_slippage_profits(pool_a, pool_b, shared_token, result.input_amount);
+        let slippage = compute_slippage_profits(
+            pm,
+            pool_a,
+            pool_b,
+            shared_token,
+            token_in,
+            token_out,
+            result.input_amount,
+        );
 
         Some(arb_common::build_arb_opportunity(
             arb_common::ArbOpportunityInput {
@@ -242,18 +250,24 @@ pub fn quote_path(
     }
 }
 
-/// Compute profit at ±1% and ±2% slippage levels around the optimal input.
+/// Compute profit at ±1%/±2% slippage levels around the optimal input,
+/// normalized to native with the same C5 datapoint semantics as the profit
+/// itself (a slippage probe that cannot be priced is an absent datapoint).
 fn compute_slippage_profits(
+    pm: &PoolManager,
     pool_a: &PoolState,
     pool_b: &PoolState,
     shared_token: Address,
+    token_in: Address,
+    token_out: Address,
     optimal_input: u128,
 ) -> arb_common::SlippageProfits {
     arb_common::slippage_profits(optimal_input, |input| {
-        match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
-            Some(p) if p > 0 => Some(U256::from(p)),
-            _ => None,
-        }
+        two_hop_profit_at(pool_a, pool_b, shared_token, input)
+            .filter(|p| *p > 0)
+            .and_then(|p| {
+                arb_common::normalize_profit_native(pm, token_in, token_out, p, optimal_input)
+            })
     })
 }
 
@@ -406,141 +420,6 @@ pub fn balancer_quote_exact_in(
     token_out: Address,
 ) -> Option<u128> {
     balancer_math::balancer_quote_exact_in(amount_in, pool, token_in, token_out)
-}
-
-/// Safety margin applied on top of the combined-fee break-even in the spot
-/// pre-filter: +2 bps. Absorbs integer truncation so only provably aligned
-/// prices are skipped.
-const PREFILTER_SAFETY_NUM: u64 = 100_002;
-const PREFILTER_SAFETY_DEN: u64 = 100_000;
-
-/// Spot-price pre-filter: returns `false` only when the marginal cycle rate is
-/// *provably* below the fee break-even (plus safety margin), meaning no input
-/// size can be profitable and the numeric optimizer can be skipped entirely.
-///
-/// Compares the marginal spot price of `shared_token` quoted in each pool's
-/// other token: V2-style reserve ratios and V3 `sqrtRatioX96²`, in exact
-/// integer arithmetic. Returns `true` when either price is unavailable.
-fn passes_spot_prefilter(pool_a: &PoolState, pool_b: &PoolState, shared_token: Address) -> bool {
-    let (Some((cost_n, cost_d)), Some((yield_n, yield_d))) = (
-        marginal_price_fraction(pool_a, shared_token),
-        marginal_price_fraction(pool_b, shared_token),
-    ) else {
-        return true;
-    };
-    let (Some((fa_n, fa_d)), Some((fb_n, fb_d))) = (fee_fraction(pool_a), fee_fraction(pool_b))
-    else {
-        return true;
-    };
-
-    // Gross cycle rate = (yield_n·cost_d) / (yield_d·cost_n), scaled by the
-    // fee factors ((fa_d−fa_n)/fa_d)·((fb_d−fb_n)/fb_d). Require it to beat
-    // the safety ratio SAFETY_NUM/SAFETY_DEN:
-    //   yield_n·cost_d·(fa_d−fa_n)·(fb_d−fb_n)·SAFETY_DEN
-    //     > yield_d·cost_n·fa_d·fb_d·SAFETY_NUM
-    let lhs = U512::from(yield_n)
-        * U512::from(cost_d)
-        * U512::from(fa_d - fa_n.min(fa_d))
-        * U512::from(fb_d - fb_n.min(fb_d))
-        * U512::from(PREFILTER_SAFETY_DEN);
-    let rhs = U512::from(yield_d)
-        * U512::from(cost_n)
-        * U512::from(fa_d)
-        * U512::from(fb_d)
-        * U512::from(PREFILTER_SAFETY_NUM);
-    lhs > rhs
-}
-
-/// Marginal spot price of `shared_token` expressed in the pool's other token,
-/// as an exact fraction `(numerator, denominator)`:
-/// - V2-family: reserve ratio of the other token over the shared-token reserve
-/// - V3/V4: `sqrtPriceX96² / 2^192` (token1 per token0), pre-shifted by 2^64
-///   on both sides to keep cross-multiplications compact
-///
-/// Returns `None` for pool types without a local closed-form spot price; the
-/// caller then skips filtering for that pair.
-fn marginal_price_fraction(pool: &PoolState, shared_token: Address) -> Option<(U256, U256)> {
-    match pool {
-        PoolState::UniswapV2(v2) => {
-            if v2.reserve0 == 0 || v2.reserve1 == 0 {
-                return None;
-            }
-            if v2.info.token0 == shared_token {
-                Some((U256::from(v2.reserve1), U256::from(v2.reserve0)))
-            } else if v2.info.token1 == shared_token {
-                Some((U256::from(v2.reserve0), U256::from(v2.reserve1)))
-            } else {
-                None
-            }
-        }
-        PoolState::TraderJoeLB(lb) => {
-            if lb.reserve_x == 0 || lb.reserve_y == 0 {
-                return None;
-            }
-            if lb.info.token0 == shared_token {
-                Some((U256::from(lb.reserve_y), U256::from(lb.reserve_x)))
-            } else if lb.info.token1 == shared_token {
-                Some((U256::from(lb.reserve_x), U256::from(lb.reserve_y)))
-            } else {
-                None
-            }
-        }
-        PoolState::Pendle(p) => {
-            if p.total_pt == 0 || p.total_sy == 0 {
-                return None;
-            }
-            if p.info.token0 == shared_token {
-                Some((U256::from(p.total_sy), U256::from(p.total_pt)))
-            } else if p.info.token1 == shared_token {
-                Some((U256::from(p.total_pt), U256::from(p.total_sy)))
-            } else {
-                None
-            }
-        }
-        PoolState::UniswapV3(_) | PoolState::UniswapV4(_) => {
-            let (sqrt_price_x96, token0, token1) = match pool {
-                PoolState::UniswapV3(v3) => (v3.sqrt_price_x96, v3.info.token0, v3.info.token1),
-                PoolState::UniswapV4(v4) => (v4.sqrt_price_x96, v4.info.token0, v4.info.token1),
-                _ => unreachable!(),
-            };
-            // Guard against absurd prices (≥ 2^128 would overflow the compact
-            // fraction below); skip filtering instead.
-            if sqrt_price_x96.is_zero() || sqrt_price_x96 >= (U256::from(1u8) << 128usize) {
-                return None;
-            }
-            // p01 = sqrtP²/2^192, rescaled: numerator = sqrtP² >> 128 (< 2^128),
-            // denominator = 2^64 — relative truncation error ≤ 2^-64, ample for a filter.
-            let s = U512::from(sqrt_price_x96);
-            let sq = ((s * s) >> 128usize).to::<u128>();
-            if sq == 0 {
-                return None;
-            }
-            if token0 == shared_token {
-                Some((U256::from(sq), U256::from(1u128 << 64)))
-            } else if token1 == shared_token {
-                Some((U256::from(1u128 << 64), U256::from(sq)))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Pool fee as an exact fraction, unit resolved by the canonical
-/// [`FeeTier`] map (see [`PoolInfo::fee_tier`]). Pendle is simulated fee-free
-/// upstream. Returns `None` for pool types without a quoted fee.
-fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
-    let tier = match pool {
-        PoolState::UniswapV2(p) => p.info.fee_tier(),
-        PoolState::TraderJoeLB(p) => p.info.fee_tier(),
-        PoolState::UniswapV3(p) => p.info.fee_tier(),
-        PoolState::UniswapV4(p) => p.info.fee_tier(),
-        PoolState::Pendle(p) => p.info.fee_tier(),
-        _ => return None,
-    };
-    let (num, den) = tier.fraction();
-    Some((num as u64, den as u64))
 }
 
 /// Combine first-pool breakpoints (already in input-x space) with second-pool

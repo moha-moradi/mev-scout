@@ -132,7 +132,7 @@ impl<'a> LiveContext<'a> {
         let mut pool_manager = PoolManager::new();
         pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
         pool_manager.set_concurrency_limit(provider_configs.len() as u32);
-        pool_manager.set_use_latest(true);
+        pool_manager.use_latest();
         if let Some(vault_str) = &validation.chain_config.balancer_vault {
             if let Ok(vault_addr) = vault_str.parse::<Address>() {
                 pool_manager = pool_manager.with_balancer_vault(vault_addr);

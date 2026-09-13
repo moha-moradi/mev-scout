@@ -321,10 +321,11 @@ impl RpcClient {
 
     /// Get available **archive-capable** providers sorted by effective weight descending.
     ///
-    /// Used by `retry_call(..., true)` to route archive-dependent RPC calls
-    /// (`eth_getProof`, historical `eth_call`, `eth_getCode`, `eth_getStorageAt`,
-    /// `eth_getBalance`, `eth_getTransactionCount`) to providers that support them.
-    /// Non-archive providers are excluded — they are still alive for block/log workloads.
+    /// Used by `retry_call(ProviderScope::Archive)` to route archive-dependent
+    /// RPC calls (`eth_getProof`, historical `eth_call`, `eth_getCode`,
+    /// `eth_getStorageAt`, `eth_getBalance`, `eth_getTransactionCount`) to
+    /// providers that support them. Non-archive providers are excluded — they
+    /// are still alive for block/log workloads.
     async fn sorted_available_archive(&self) -> Vec<(usize, ProviderState)> {
         let provs = self.providers.lock().await;
         let mut available: Vec<(usize, ProviderState)> = provs
@@ -367,18 +368,34 @@ impl RpcClient {
             .unwrap_or_default();
         Some(shortest.min(std::time::Duration::from_secs(2)))
     }
+}
 
+/// Which provider pool an RPC call may route through — replaces the blind
+/// `archive_only: bool` parameter so a flipped literal at a call site can
+/// no longer silently misroute historical-state reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderScope {
+    /// Any alive provider: latest-tag calls, block/log/receipt fetches.
+    Any,
+    /// Archive-capable providers (falling back to full nodes for recent
+    /// state): historical `eth_call`, `eth_getStorageAt`, proofs.
+    Archive,
+    /// Providers that have confirmed historical-state capability
+    /// (replay state reads; no fallback to unconfirmed providers).
+    StateCapable,
+}
+
+impl RpcClient {
     /// Execute an RPC call with per-provider rate limiting, priority selection
     /// (fastest + highest RPS first), and health tracking with exponential-backoff cooldown.
     ///
-    /// When `archive_only` is true, only archive-capable providers are tried.
     /// Returns the first success or the last error if all providers fail.
-    async fn retry_call<F, Fut, T>(&self, f: F, archive_only: bool) -> anyhow::Result<T>
+    async fn retry_call<F, Fut, T>(&self, f: F, scope: ProviderScope) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        self.retry_call_impl(f, archive_only, false).await
+        self.retry_call_impl(f, scope).await
     }
 
     /// Like [`RpcClient::retry_call`], but routes through the state-capable
@@ -390,19 +407,20 @@ impl RpcClient {
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
-        self.retry_call_impl(f, false, true).await
+        self.retry_call_impl(f, ProviderScope::StateCapable).await
     }
 
     async fn retry_call_impl<F, Fut, T>(
         &self,
         f: F,
-        archive_only: bool,
-        state_req: bool,
+        scope: ProviderScope,
     ) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
+        let archive_only = matches!(scope, ProviderScope::Archive);
+        let state_req = matches!(scope, ProviderScope::StateCapable);
         // How many times to wait out a transient all-in-cooldown state before
         // giving up (each wait is capped at `MAX_COOLDOWN_WAIT`).
         const MAX_COOLDOWN_WAITS: u32 = 3;
@@ -748,7 +766,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -768,7 +786,7 @@ impl RpcClient {
                     .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
                 Ok(block.header.timestamp)
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -785,7 +803,7 @@ impl RpcClient {
                     .ok_or_else(|| anyhow::anyhow!("block {} not found", block_number))?;
                 Ok(block.header.hash)
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -804,7 +822,7 @@ impl RpcClient {
                         .map_err(|e| anyhow::anyhow!("{}", e))
                 }
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -949,7 +967,7 @@ impl RpcClient {
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 Ok(raw)
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -980,7 +998,7 @@ impl RpcClient {
 
                     serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
                 },
-                false,
+                ProviderScope::Any,
             )
             .await?;
 
@@ -1026,7 +1044,7 @@ impl RpcClient {
 
                     serde_json::from_value::<Block>(raw).map_err(|e| anyhow::anyhow!("{}", e))
                 },
-                false,
+                ProviderScope::Any,
             )
             .await?;
 
@@ -1062,7 +1080,7 @@ impl RpcClient {
                             anyhow::anyhow!("receipts not found for block {}", block_number)
                         })
                 },
-                false,
+                ProviderScope::Any,
             )
             .await?;
 
@@ -1079,7 +1097,7 @@ impl RpcClient {
     ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         self.retry_call(
             |provider| async move { Self::batch_rpc_call(provider, block_number).await },
-            false,
+            ProviderScope::Any,
         )
         .await
     }
@@ -1347,21 +1365,22 @@ impl RpcClient {
 
     /// Execute an `eth_call` at a specific block.
     async fn call_at(&self, to: Address, data: Bytes, block: BlockId) -> anyhow::Result<Bytes> {
-        self.call_at_with(to, data, block, true).await
+        self.call_at_with(to, data, block, ProviderScope::Archive).await
     }
 
     /// Execute an `eth_call` at a given block/tag, routing through the
-    /// archive-capable provider pool only when `archive_only` is true.
+    /// archive-capable provider pool when `scope` is [`ProviderScope::Archive`].
     ///
     /// The `latest` tag is served by any full node, so `call_latest` passes
-    /// `false` to avoid the "no archive-capable RPC provider" failure on
-    /// full-node-only setups. Numeric historical blocks still require archive.
+    /// [`ProviderScope::Any`] to avoid the "no archive-capable RPC provider"
+    /// failure on full-node-only setups. Numeric historical blocks still
+    /// require archive.
     async fn call_at_with(
         &self,
         to: Address,
         data: Bytes,
         block: BlockId,
-        archive_only: bool,
+        scope: ProviderScope,
     ) -> anyhow::Result<Bytes> {
         self.retry_call(
             |provider| {
@@ -1375,7 +1394,7 @@ impl RpcClient {
                         .map_err(|e| anyhow::anyhow!("{}", e))
                 }
             },
-            archive_only,
+            scope,
         )
         .await
     }
@@ -1395,7 +1414,7 @@ impl RpcClient {
     /// state is not needed. Avoids `historical state not available` errors
     /// from providers without full archive support.
     pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {
-        self.call_at_with(to, data, BlockNumberOrTag::Latest.into(), false)
+        self.call_at_with(to, data, BlockNumberOrTag::Latest.into(), ProviderScope::Any)
             .await
     }
 
@@ -1418,7 +1437,7 @@ impl RpcClient {
                     .await
                     .map_err(|e| anyhow::anyhow!("{}", e))
             },
-            false,
+            ProviderScope::Any,
         )
         .await
     }

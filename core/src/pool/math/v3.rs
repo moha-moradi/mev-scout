@@ -11,6 +11,32 @@ use crate::pool::state::UniswapV3PoolState;
 const MIN_TICK: i32 = -887272;
 const MAX_TICK: i32 = 887272;
 
+/// Direction of a concentrated-liquidity swap leg — replaces blind
+/// `zero_for_one: bool` parameters at every public quoting entry point so a
+/// flipped `true`/`false` at a call site can no longer silently invert a quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V3Direction {
+    /// token0 in, token1 out — price moves down toward lower ticks.
+    ZeroForOne,
+    /// token1 in, token0 out — price moves up toward higher ticks.
+    OneForZero,
+}
+
+impl V3Direction {
+    /// Direction implied by which pool token is the input side.
+    pub fn for_input_token(token_in: alloy::primitives::Address, token0: alloy::primitives::Address) -> Self {
+        if token_in == token0 {
+            Self::ZeroForOne
+        } else {
+            Self::OneForZero
+        }
+    }
+
+    pub fn is_zero_for_one(self) -> bool {
+        matches!(self, Self::ZeroForOne)
+    }
+}
+
 static MIN_SQRT_RATIO: std::sync::LazyLock<U256> =
     std::sync::LazyLock::new(|| get_sqrt_ratio_at_tick(MIN_TICK + 1));
 static MAX_SQRT_RATIO: std::sync::LazyLock<U256> =
@@ -180,11 +206,12 @@ fn get_next_sqrt_price_from_input(
     sqrt_price_x96: U256,
     liquidity: u128,
     amount_in: U256,
-    zero_for_one: bool,
+    direction: V3Direction,
 ) -> Option<U256> {
     if liquidity == 0 || amount_in.is_zero() {
         return None;
     }
+    let zero_for_one = direction.is_zero_for_one();
     if zero_for_one {
         let numerator1 = U256::from(liquidity) << Q96_SHIFT;
         let numerator2 = amount_in * sqrt_price_x96;
@@ -214,6 +241,9 @@ fn compute_swap_step(
     fee: FeeTier,
 ) -> (U256, U256, U256, U256) {
     let zero_for_one = sqrt_ratio_target_x96 < sqrt_ratio_current_x96;
+    let direction =
+        if zero_for_one { V3Direction::ZeroForOne } else { V3Direction::OneForZero };
+
 
     let max_in = if zero_for_one {
         get_amount_0_delta(
@@ -274,7 +304,7 @@ fn compute_swap_step(
             sqrt_ratio_current_x96,
             liquidity,
             amount_after_fee,
-            zero_for_one,
+            direction,
         )
         .unwrap_or(sqrt_ratio_current_x96);
 
@@ -292,8 +322,9 @@ fn compute_swap_step(
 fn find_next_initialized_tick(
     ticks: &BTreeMap<i32, i128>,
     current_tick: i32,
-    zero_for_one: bool,
+    direction: V3Direction,
 ) -> Option<i32> {
+    let zero_for_one = direction.is_zero_for_one();
     let mut best: Option<i32> = None;
     if zero_for_one {
         for (&t, &liq) in ticks {
@@ -331,8 +362,9 @@ fn find_next_initialized_tick(
 ///
 /// When only a synthetic boundary is available, the swap uses the full pool liquidity
 /// and the quoting loop will not attempt to cross it (no phantom liquidity beyond).
-fn get_swap_target(pool: &UniswapV3PoolState, zero_for_one: bool) -> (U256, bool) {
-    let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, zero_for_one);
+fn get_swap_target(pool: &UniswapV3PoolState, direction: V3Direction) -> (U256, bool) {
+    let zero_for_one = direction.is_zero_for_one();
+    let next_tick = find_next_initialized_tick(&pool.ticks, pool.tick, direction);
     match next_tick {
         Some(t) => {
             let r = get_sqrt_ratio_at_tick(t);
@@ -364,7 +396,7 @@ fn get_swap_target(pool: &UniswapV3PoolState, zero_for_one: bool) -> (U256, bool
 ///
 /// H7: V3 gas varies from ~80k (no tick crossing) to ~500k+ (many crossings),
 /// so direction-aware estimation is essential for accurate per-opportunity gas.
-pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u64 {
+pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, direction: V3Direction) -> u64 {
     const BASE_SWAP_GAS: u64 = 80_000;
     const PER_TICK_CROSSING_GAS: u64 = 25_000;
     const MAX_CROSSINGS: u64 = 20;
@@ -377,7 +409,7 @@ pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u6
     // Count initialized (non-zero liquidity net) ticks between current tick
     // and the end of the tick map in the swap direction. This gives an upper
     // bound on crossings for a full-range swap in that direction.
-    let crossings = if zero_for_one {
+    let crossings = if direction.is_zero_for_one() {
         pool.ticks
             .range(..pool.tick)
             .filter(|(_, &liq)| liq != 0)
@@ -397,18 +429,18 @@ pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, zero_for_one: bool) -> u6
 ///
 /// Returns the amount that would move the price exactly to the nearest
 /// initialized tick boundary (or tick_spacing boundary if no ticks known).
-pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, zero_for_one: bool) -> u128 {
+pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, direction: V3Direction) -> u128 {
     if pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
         return 0;
     }
 
-    let (target_sqrt, _) = get_swap_target(pool, zero_for_one);
+    let (target_sqrt, _) = get_swap_target(pool, direction);
 
     if target_sqrt == pool.sqrt_price_x96 {
         return pool.liquidity.saturating_div(LIQUIDITY_FRACTION_DENOM);
     }
 
-    let max_in = if zero_for_one {
+    let max_in = if direction.is_zero_for_one() {
         get_amount_0_delta(target_sqrt, pool.sqrt_price_x96, pool.liquidity, true)
     } else {
         get_amount_1_delta(pool.sqrt_price_x96, target_sqrt, pool.liquidity, true)
@@ -442,7 +474,7 @@ pub fn max_v3_tradeable_amount(pool: &UniswapV3PoolState, zero_for_one: bool) ->
 /// Returns at most `max_points` thresholds, ascending.
 pub fn v3_breakpoints(
     pool: &UniswapV3PoolState,
-    zero_for_one: bool,
+    direction: V3Direction,
     max_input: u128,
     max_points: usize,
 ) -> Vec<u128> {
@@ -462,7 +494,7 @@ pub fn v3_breakpoints(
             pool.info.tick_spacing,
             current_tick,
             sqrt_price,
-            zero_for_one,
+            direction,
         );
         if target_sqrt_price == sqrt_price {
             break;
@@ -490,13 +522,13 @@ pub fn v3_breakpoints(
         if !has_real_tick {
             break; // synthetic full-range target — no further known bands
         }
-        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+        let next_tick = find_next_initialized_tick(&pool.ticks, current_tick, direction);
         if cross_tick(
             &pool.ticks,
             &mut current_tick,
             &mut liquidity,
             next_tick,
-            zero_for_one,
+            direction,
         ) {
             break; // liquidity exhausted beyond this band
         }
@@ -524,8 +556,9 @@ fn cross_tick(
     current_tick: &mut i32,
     liquidity: &mut u128,
     next_tick: Option<i32>,
-    zero_for_one: bool,
+    direction: V3Direction,
 ) -> bool {
+    let zero_for_one = direction.is_zero_for_one();
     *current_tick = if zero_for_one {
         next_tick.unwrap_or(MIN_TICK)
     } else {
@@ -553,7 +586,7 @@ fn cross_tick(
 pub fn quote_v3_exact_in(
     pool: &UniswapV3PoolState,
     amount_in: u128,
-    zero_for_one: bool,
+    direction: V3Direction,
 ) -> Option<u128> {
     if amount_in == 0 || pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
         return None;
@@ -571,7 +604,7 @@ pub fn quote_v3_exact_in(
             pool.info.tick_spacing,
             current_tick,
             sqrt_price,
-            zero_for_one,
+            direction,
         );
 
         if target_sqrt_price == sqrt_price {
@@ -596,13 +629,13 @@ pub fn quote_v3_exact_in(
         }
 
         if next_sqrt_price == target_sqrt_price && has_real_tick {
-            let next = find_next_initialized_tick(&pool.ticks, current_tick, zero_for_one);
+            let next = find_next_initialized_tick(&pool.ticks, current_tick, direction);
             if cross_tick(
                 &pool.ticks,
                 &mut current_tick,
                 &mut liquidity,
                 next,
-                zero_for_one,
+                direction,
             ) {
                 break;
             }
@@ -635,9 +668,10 @@ fn get_swap_target_for_tick(
     _tick_spacing: Option<u32>,
     current_tick: i32,
     sqrt_price: U256,
-    zero_for_one: bool,
+    direction: V3Direction,
 ) -> (U256, bool) {
-    let next_tick = find_next_initialized_tick(ticks, current_tick, zero_for_one);
+    let zero_for_one = direction.is_zero_for_one();
+    let next_tick = find_next_initialized_tick(ticks, current_tick, direction);
     match next_tick {
         Some(t) => {
             let r = get_sqrt_ratio_at_tick(t);
@@ -718,7 +752,7 @@ mod tests {
 
         // Budget large enough to cross all three bands (~6e9 + ~9e9 + ~12e9 input)
         let budget = 50_000_000_000u128;
-        let bps = v3_breakpoints(&pool, false, budget, 10);
+        let bps = v3_breakpoints(&pool, V3Direction::OneForZero, budget, 10);
         assert_eq!(bps.len(), 3, "three initialized bands above tick 0");
         assert!(
             bps.windows(2).all(|w| w[0] < w[1]),
@@ -736,15 +770,23 @@ mod tests {
         let pool = test_pool(ticks);
 
         // Budget stops enumeration mid-way (first crossing alone needs ~3e9)
-        let bps = v3_breakpoints(&pool, false, 20_000_000_000, 10);
+        let bps = v3_breakpoints(&pool, V3Direction::OneForZero, 20_000_000_000, 10);
         assert!(!bps.is_empty());
         assert!(bps.iter().all(|&b| b < 20_000_000_000));
 
         // Point cap limits the result
-        let capped = v3_breakpoints(&pool, false, 50_000_000_000, 2);
+        let capped = v3_breakpoints(&pool, V3Direction::OneForZero, 50_000_000_000, 2);
         assert_eq!(capped.len(), 2);
 
         // No ticks → no breakpoints
-        assert!(v3_breakpoints(&test_pool(BTreeMap::new()), true, 1_000_000_000, 8).is_empty());
+        assert!(
+            v3_breakpoints(
+                &test_pool(BTreeMap::new()),
+                V3Direction::ZeroForOne,
+                1_000_000_000,
+                8
+            )
+            .is_empty()
+        );
     }
 }

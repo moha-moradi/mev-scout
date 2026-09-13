@@ -246,10 +246,16 @@ impl PoolManager {
         self.concurrency_limit = limit.max(1);
     }
 
-    /// Set whether pool-state init should query the `latest` block tag instead of
-    /// a numeric block (archive-free, for live mode).
-    pub fn set_use_latest(&mut self, use_latest: bool) {
-        self.use_latest = use_latest;
+    /// Query pool-state init at the `latest` block tag instead of a numeric
+    /// block (archive-free, for live mode).
+    pub fn use_latest(&mut self) {
+        self.use_latest = true;
+    }
+
+    /// Query pool-state init at numeric blocks (archive-capable mode, for
+    /// replay/backtest).
+    pub fn use_numeric_blocks(&mut self) {
+        self.use_latest = false;
     }
 
     /// Add a pool and update the token index.

@@ -5,7 +5,7 @@ use crate::pool::decoders::{
     decode_v3_mint_burn, decode_v3_swap, V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC,
 };
 use crate::pool::math::consts::PERCENT_DENOMINATOR;
-use crate::pool::math::v3::estimate_v3_swap_gas;
+use crate::pool::math::v3::{estimate_v3_swap_gas, V3Direction};
 use crate::pool::math::{constant_product_output_amount, quote_exact_in};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::types::MevOpportunity;
@@ -266,7 +266,8 @@ impl JitArbDetector {
             .get(&jit_pool)
             .map(|p| match p {
                 PoolState::UniswapV3(v3) => {
-                    estimate_v3_swap_gas(v3, true).max(estimate_v3_swap_gas(v3, false))
+                    estimate_v3_swap_gas(v3, V3Direction::ZeroForOne)
+                        .max(estimate_v3_swap_gas(v3, V3Direction::OneForZero))
                 }
                 other => other.gas_estimate(),
             })

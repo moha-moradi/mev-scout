@@ -9,7 +9,7 @@
 
 use super::pool_types::PoolState;
 use crate::pool::math::quote_exact_in;
-use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints};
+use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints, V3Direction};
 use alloy::primitives::Address;
 
 /// How a pool must be optimized inside a two-hop path.
@@ -68,7 +68,10 @@ impl PoolState {
                 token_in,
             ),
             PoolState::UniswapV3(p) | PoolState::UniswapV4(p) | PoolState::PancakeInfinity(p) => {
-                Some(max_v3_tradeable_amount(p, p.info.token0 == token_in))
+                Some(max_v3_tradeable_amount(
+                    p,
+                    V3Direction::for_input_token(token_in, p.info.token0),
+                ))
             }
             PoolState::Curve(p) => p.balances.get(*p.token_index.get(&token_in)?).copied(),
             PoolState::Balancer(p) => p.balances.get(*p.token_index.get(&token_in)?).copied(),
@@ -168,7 +171,12 @@ impl PoolState {
     ) -> Vec<u128> {
         match self {
             PoolState::UniswapV3(p) | PoolState::UniswapV4(p) | PoolState::PancakeInfinity(p) => {
-                v3_breakpoints(p, p.info.token0 == token_in, max_input, max_points)
+                v3_breakpoints(
+                    p,
+                    V3Direction::for_input_token(token_in, p.info.token0),
+                    max_input,
+                    max_points,
+                )
             }
             _ => Vec::new(),
         }
@@ -184,6 +192,59 @@ impl PoolState {
         (self.info().token0, self.info().token1)
     }
 
+    /// Quote `amount_in` of `token_in` through this pool and report the output
+    /// paired with the token that leaves the pool — the primitive cycle walks
+    /// use so a path never re-implements per-DEX token selection.
+    ///
+    /// Output comes from [`PoolState::quote_dir`]; multi-token pools quote into
+    /// their smallest non-input token index, while the exit token flips across
+    /// the pool's canonical `(token0, token1)` pair.
+    pub fn quote_walk(&self, token_in: Address, amount_in: u128) -> Option<(u128, Address)> {
+        let quote_out = match self {
+            PoolState::Curve(c) => *c.token_index.keys().filter(|k| **k != token_in).min()?,
+            PoolState::Balancer(b) => *b.token_index.keys().filter(|k| **k != token_in).min()?,
+            _ => {
+                let (t0, t1) = self.token_pair();
+                if t0 == token_in {
+                    t1
+                } else if t1 == token_in {
+                    t0
+                } else {
+                    return None;
+                }
+            }
+        };
+        let out = self.quote_dir(amount_in, token_in, quote_out)?;
+        let (t0, t1) = self.token_pair();
+        let next = if t0 == token_in { t1 } else { t0 };
+        Some((out, next))
+    }
+
+    /// Largest input any single leg can trade in its best direction — the
+    /// cycle-bound cap two- and multi-hop paths use to size their optimization
+    /// domain: reserve pools cap at the smaller side, V3-family takes the max
+    /// across directions, invariant pools at the largest balance.
+    pub fn max_cycle_input(&self) -> u128 {
+        match self {
+            PoolState::UniswapV2(v2) => std::cmp::min(v2.reserve0, v2.reserve1),
+            PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, V3Direction::ZeroForOne)
+                .max(max_v3_tradeable_amount(v3, V3Direction::OneForZero)),
+            PoolState::UniswapV4(v4) => {
+                max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
+                    .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero))
+            }
+            PoolState::PancakeInfinity(v4) => {
+                max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
+                    .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero))
+            }
+            PoolState::Curve(c) => c.balances.iter().fold(0u128, |a, &b| a.max(b)),
+            PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
+            PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
+            PoolState::Pendle(p) => std::cmp::min(p.total_pt, p.total_sy),
+            PoolState::Metric(_) | PoolState::Fluid(_) => 0,
+        }
+    }
+
     /// Direction-aware gas estimate for a swap spending `token_in`.
     ///
     /// V3-family pools use per-direction tick-crossing estimation; reserve and
@@ -192,7 +253,10 @@ impl PoolState {
         use crate::pool::math::v3::estimate_v3_swap_gas;
         match self {
             PoolState::UniswapV3(p) | PoolState::UniswapV4(p) | PoolState::PancakeInfinity(p) => {
-                estimate_v3_swap_gas(p, p.info.token0 == token_in)
+                estimate_v3_swap_gas(
+                    p,
+                    V3Direction::for_input_token(token_in, p.info.token0),
+                )
             }
             other => other.gas_estimate(),
         }

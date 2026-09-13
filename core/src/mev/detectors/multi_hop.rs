@@ -12,8 +12,8 @@ use alloy::primitives::{Address, U256};
 
 use super::arb_common;
 use crate::dex_type::DexType;
-use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints};
-use crate::pool::math::{constant_product_output_amount, optimal_on_segments, quote_exact_in};
+use crate::pool::math::v3::{v3_breakpoints, V3Direction};
+use crate::pool::math::optimal_on_segments;
 use crate::pool::state::{
     calldata_gas_estimate, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
 };
@@ -305,23 +305,16 @@ impl MultiHopArbDetector {
             return None;
         }
 
-        let max_input = Self::pool_max_input(pool_a);
+        // 2-pool cycles get the same exact-integer spot prefilter the
+        // analytical front-end uses: aligned marginal prices provably bound
+        // every trade size below break-even, so skip the optimizer entirely.
+        if path.len() == 2 && !arb_common::passes_spot_prefilter(pool_a, pool_b, first_shared) {
+            return None;
+        }
 
-        let quote_fn = |x: u128| -> Option<u128> {
-            let mut current = x;
-            let mut current_token = token_in;
-            for &addr in path {
-                let pool = pm.get(&addr)?;
-                current = Self::quote_single_pool(pool, current_token, current)?;
-                let info = pool.info();
-                current_token = if info.token0 == current_token {
-                    info.token1
-                } else {
-                    info.token0
-                };
-            }
-            Some(current)
-        };
+        let max_input = pool_a.max_cycle_input();
+
+        let quote_fn = |x: u128| Self::walk_quote(pm, path, token_in, x);
 
         // Deterministic segment-wise optimization (#6 generalization): brackets
         // the input domain at V3 tick-band crossings inverted into input space
@@ -352,37 +345,15 @@ impl MultiHopArbDetector {
         let (expected_profit, raw_profit) =
             arb_common::normalize_profit(pm, token_in, token_out, net_profit, input_amount);
 
-        // Compute slippage-adjusted profits
-        let eval_raw = |x: u128| -> Option<u128> {
-            let mut cur = x;
-            let mut cur_token = token_in;
-            for &addr in path {
-                let pool = pm.get(&addr)?;
-                cur = Self::quote_single_pool(pool, cur_token, cur)?;
-                let info = pool.info();
-                cur_token = if info.token0 == cur_token {
-                    info.token1
-                } else {
-                    info.token0
-                };
-            }
-            (cur > x).then(|| cur - x)
-        };
-        let normalize_slippage = |p: u128| -> Option<U256> {
-            if token_in == token_out {
-                Some(U256::from(p))
-            } else {
-                pm.normalize_to_native(token_out, p)
-                    .or_else(|| {
-                        let native_in = pm.normalize_to_native(token_in, input_amount)?;
-                        let native_out = pm.normalize_to_native(token_out, input_amount + p)?;
-                        native_out.checked_sub(native_in)
-                    })
-                    .map(U256::from)
-            }
-        };
+        // Compute slippage-adjusted profits: evaluate the same path walk at
+        // ±1%/±2% of the optimum, normalized to native with the shared C5
+        // datapoint semantics (an unpriceable probe is an absent datapoint).
         let slippage = arb_common::slippage_profits(input_amount, |x| {
-            eval_raw(x).and_then(normalize_slippage)
+            Self::walk_quote(pm, path, token_in, x)
+                .and_then(|out| (out > x).then(|| out - x))
+                .and_then(|p| {
+                    arb_common::normalize_profit_native(pm, token_in, token_out, p, input_amount)
+                })
         });
 
         Some(arb_common::build_arb_opportunity(
@@ -428,25 +399,12 @@ impl MultiHopArbDetector {
 
             if i > 0 {
                 if let PoolState::UniswapV3(v3) = pool {
-                    let zero_for_one = walk_token == pool.info().token0;
-                    let prefix = |x: u128| -> Option<u128> {
-                        let mut cur = x;
-                        let mut prefix_walk_token = token_in;
-                        for &prev_addr in &path[..i] {
-                            let prev_pool = pm.get(&prev_addr)?;
-                            cur = Self::quote_single_pool(prev_pool, prefix_walk_token, cur)?;
-                            let info = prev_pool.info();
-                            prefix_walk_token = if info.token0 == prefix_walk_token {
-                                info.token1
-                            } else {
-                                info.token0
-                            };
-                        }
-                        Some(cur)
-                    };
+                    let direction =
+                        V3Direction::for_input_token(walk_token, pool.info().token0);
+                    let prefix = |x: u128| Self::walk_quote(pm, &path[..i], token_in, x);
                     let mid_max = prefix(max_input).unwrap_or(0);
                     let thresholds =
-                        v3_breakpoints(v3, zero_for_one, mid_max, MAX_V3_BREAKPOINTS_PER_POOL);
+                        v3_breakpoints(v3, direction, mid_max, MAX_V3_BREAKPOINTS_PER_POOL);
                     for t in thresholds {
                         if out.len() >= MAX_N_HOP_BREAKPOINTS {
                             break;
@@ -474,64 +432,25 @@ impl MultiHopArbDetector {
         out
     }
 
-    fn pool_max_input(pool: &PoolState) -> u128 {
-        match pool {
-            PoolState::UniswapV2(v2) => std::cmp::min(v2.reserve0, v2.reserve1),
-            PoolState::UniswapV3(v3) => {
-                max_v3_tradeable_amount(v3, true).max(max_v3_tradeable_amount(v3, false))
-            }
-            PoolState::UniswapV4(v4) => {
-                max_v3_tradeable_amount(v4, true).max(max_v3_tradeable_amount(v4, false))
-            }
-            PoolState::PancakeInfinity(v4) => {
-                max_v3_tradeable_amount(v4, true).max(max_v3_tradeable_amount(v4, false))
-            }
-            PoolState::Curve(c) => c.balances.iter().fold(0u128, |a, &b| a.max(b)),
-            PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
-            PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
-            PoolState::Pendle(p) => std::cmp::min(p.total_pt, p.total_sy),
-            PoolState::Metric(_) | PoolState::Fluid(_) => 0,
+    /// Walk a (prefix of a) cycle path pool-by-pool, quoting each leg through
+    /// the [`PoolState`] quoting registry. Single source of truth shared by
+    /// the composed quote, the slippage probes, and prefix inversion — instead
+    /// of three copies of this loop.
+    fn walk_quote(
+        pm: &PoolManager,
+        path: &[Address],
+        token_in: Address,
+        amount: u128,
+    ) -> Option<u128> {
+        let mut current = amount;
+        let mut current_token = token_in;
+        for &addr in path {
+            let pool = pm.get(&addr)?;
+            let (out, next_token) = pool.quote_walk(current_token, current)?;
+            current = out;
+            current_token = next_token;
         }
-    }
-
-    fn quote_single_pool(pool: &PoolState, token_in: Address, amount_in: u128) -> Option<u128> {
-        match pool {
-            PoolState::UniswapV2(v2) => {
-                let (reserve_in, reserve_out) = if v2.info.token0 == token_in {
-                    (v2.reserve0, v2.reserve1)
-                } else if v2.info.token1 == token_in {
-                    (v2.reserve1, v2.reserve0)
-                } else {
-                    return None;
-                };
-                constant_product_output_amount(
-                    amount_in,
-                    reserve_in,
-                    reserve_out,
-                    v2.info.fee_tier(),
-                )
-            }
-            PoolState::Curve(curve) => {
-                let token_out = curve.token_index.keys().filter(|k| **k != token_in).min()?;
-                quote_exact_in(pool, token_in, *token_out, amount_in)
-            }
-            PoolState::Balancer(bal) => {
-                let token_out = *bal.token_index.keys().filter(|k| **k != token_in).min()?;
-                quote_exact_in(pool, token_in, token_out, amount_in)
-            }
-            _ => {
-                // For V3 and future pool types, use the unified dispatcher
-                // which determines token_out from the pool's second token
-                let token_out = if pool.info().token0 == token_in {
-                    pool.info().token1
-                } else if pool.info().token1 == token_in {
-                    pool.info().token0
-                } else {
-                    return None;
-                };
-                quote_exact_in(pool, token_in, token_out, amount_in)
-            }
-        }
+        Some(current)
     }
 }
 

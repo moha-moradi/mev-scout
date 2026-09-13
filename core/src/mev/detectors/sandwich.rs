@@ -9,7 +9,7 @@ use crate::pool::decoders::{
 use crate::pool::math::constant_product_output_amount;
 use crate::pool::math::consts::{PERCENT_DENOMINATOR, PPM_DENOMINATOR};
 use crate::pool::math::quote_exact_in;
-use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in};
+use crate::pool::math::v3::{estimate_v3_swap_gas, quote_v3_exact_in, V3Direction};
 use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState};
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
@@ -296,7 +296,14 @@ impl SandwichDetector {
                 };
                 constant_product_output_amount(front_in_adj, r_in, r_out, v2.info.fee_tier())?
             }
-            PoolState::UniswapV3(v3) => quote_v3_exact_in(v3, front_in_adj, front_dir_is_t0t1)?,
+            PoolState::UniswapV3(v3) => {
+                let direction = if front_dir_is_t0t1 {
+                    V3Direction::ZeroForOne
+                } else {
+                    V3Direction::OneForZero
+                };
+                quote_v3_exact_in(v3, front_in_adj, direction)?
+            }
             _ => {
                 let (ti, to) = if front_dir_is_t0t1 {
                     (token_in, token_out)
@@ -513,8 +520,16 @@ impl SandwichDetector {
                     .get(&front.pool)
                     .map(|p| match p {
                         PoolState::UniswapV3(v3) => {
-                            let front_dir = front.direction == SwapDirection::Token0ForToken1;
-                            let back_dir = back.direction == SwapDirection::Token0ForToken1;
+                            let front_dir = if front.direction == SwapDirection::Token0ForToken1 {
+                                V3Direction::ZeroForOne
+                            } else {
+                                V3Direction::OneForZero
+                            };
+                            let back_dir = if back.direction == SwapDirection::Token0ForToken1 {
+                                V3Direction::ZeroForOne
+                            } else {
+                                V3Direction::OneForZero
+                            };
                             estimate_v3_swap_gas(v3, front_dir)
                                 .saturating_add(estimate_v3_swap_gas(v3, back_dir))
                         }
