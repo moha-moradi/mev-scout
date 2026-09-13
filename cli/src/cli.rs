@@ -277,6 +277,14 @@ pub struct BlockRangeArgs {
     pub to_block: Option<u64>,
 }
 
+impl TryFrom<&BlockRangeArgs> for mev_scout_core::config::validation::RangeSpec {
+    type Error = mev_scout_core::error::ConfigError;
+
+    fn try_from(a: &BlockRangeArgs) -> Result<Self, Self::Error> {
+        Self::from_flags(a.days, a.blocks, a.block, a.from_block, a.to_block)
+    }
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct RunArgs {
     #[command(flatten)]

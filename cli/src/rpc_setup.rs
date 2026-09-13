@@ -14,10 +14,7 @@ pub async fn init_rpc(
 ) -> anyhow::Result<RpcSetup> {
     let provider_configs = config.effective_provider_configs(chain_name)?;
     let chain_id = chain_name.chain_id();
-    let rpc_refs: Vec<&str> = provider_configs
-        .iter()
-        .map(|p| p.url.as_str())
-        .collect();
+    let rpc_refs: Vec<&str> = provider_configs.iter().map(|p| p.url.as_str()).collect();
     let rpc = RpcClient::from_urls(&rpc_refs, chain_id)?;
     rpc.with_provider_rps(
         &provider_configs

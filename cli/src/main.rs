@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let overrides = overrides::build_overrides(&cli);
-    config.merge_cli(&overrides);
+    config.merge_cli(&overrides)?;
 
     commands::execute(&cli.command, &config).await
 }

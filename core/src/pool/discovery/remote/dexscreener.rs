@@ -12,12 +12,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use alloy::primitives::Address;
 use serde_json::Value;
 
-use crate::dex_type::DexType;
-
-use super::RemotePool;
+use super::{infer_dex_type, is_unsupported_dex, parse_addr, RemotePool};
 
 /// Per-chain profile: DexScreener chainId + hub token symbols to query.
 fn chain_profile(chain: &str) -> Option<(&'static str, &'static [&'static str])> {
@@ -84,7 +81,7 @@ impl DexScreenerClient {
                 self.base_url,
                 percent_encode(hub)
             );
-            match self.get_with_retry(&url).await {
+            match super::fetch_with_retry(&self.client, "DexScreener", &url).await {
                 Ok(resp) => {
                     merge_pairs(&resp, chain_id, min_tvl, &mut by_addr, &mut warned);
                 }
@@ -104,62 +101,6 @@ impl DexScreenerClient {
         });
         pools.truncate(limit);
         Ok(pools)
-    }
-
-    async fn get_with_retry(&self, url: &str) -> anyhow::Result<Value> {
-        const MAX_RETRIES: u32 = 3;
-        const BASE_DELAY_MS: u64 = 600;
-        let mut last_err = None;
-
-        for attempt in 0..MAX_RETRIES {
-            match self.client.get(url).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
-                        let json: Value = serde_json::from_str(&text).map_err(|e| {
-                            anyhow::anyhow!(
-                                "invalid JSON from DexScreener: {} — {}",
-                                e,
-                                &text[..text.len().min(500)]
-                            )
-                        })?;
-                        return Ok(json);
-                    }
-                    let body = resp.text().await.unwrap_or_default();
-                    let msg = format!(
-                        "HTTP {} from DexScreener: {}",
-                        status.as_u16(),
-                        &body[..body.len().min(300)]
-                    );
-                    if status.as_u16() == 429 && attempt + 1 < MAX_RETRIES {
-                        let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                        tracing::debug!(
-                            "DexScreener 429, retry {}/{MAX_RETRIES} after {delay}ms",
-                            attempt + 1
-                        );
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        last_err = Some(anyhow::anyhow!(msg));
-                        continue;
-                    }
-                    last_err = Some(anyhow::anyhow!(msg));
-                    break;
-                }
-                Err(e) => {
-                    let msg = format!("DexScreener request failed: {e:#}");
-                    let retryable = e.is_timeout() || e.is_connect();
-                    if retryable && attempt + 1 < MAX_RETRIES {
-                        let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        last_err = Some(anyhow::anyhow!(msg));
-                        continue;
-                    }
-                    last_err = Some(anyhow::anyhow!(msg));
-                    break;
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("DexScreener request failed")))
     }
 }
 
@@ -260,7 +201,8 @@ fn merge_pairs(
                     .collect()
             })
             .unwrap_or_default();
-        let dex_type = infer_dex_type(dex_name.as_deref(), &labels);
+        let label_hints: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let dex_type = infer_dex_type(dex_name.as_deref(), &label_hints);
         if let Some(ref name) = dex_name {
             if is_unsupported_dex(&name.to_ascii_lowercase()) {
                 if warned.insert(name.clone()) {
@@ -292,17 +234,6 @@ fn merge_pairs(
     }
 }
 
-fn parse_addr(s: &str) -> Option<Address> {
-    let s = s.trim();
-    let hex = s.trim_start_matches("0x").trim_start_matches("0X");
-    if hex.len() != 40 {
-        return None;
-    }
-    let mut bytes = [0u8; 20];
-    hex::decode_to_slice(hex, &mut bytes).ok()?;
-    Some(Address::from_slice(&bytes))
-}
-
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -316,81 +247,10 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Map DexScreener `dexId` (+ optional labels like ["v3"]) to our DexType.
-///
-/// Unknown DEXs default to V2-style AMM semantics; misclassified concentrated-
-/// liquidity pools fail state init later and are pruned rather than misquoted.
-fn infer_dex_type(dex_id: Option<&str>, labels: &[String]) -> DexType {
-    let id = dex_id.unwrap_or("").to_ascii_lowercase();
-    let label_hit = |needle: &str| {
-        labels
-            .iter()
-            .any(|l| l.to_ascii_lowercase().contains(needle))
-    };
-    if label_hit("v4") {
-        return DexType::UniswapV4;
-    }
-    if label_hit("v3") || label_hit("algebra") || label_hit("cl") || label_hit("slipstream") {
-        return DexType::UniswapV3;
-    }
-    if id.contains("algebra") {
-        return DexType::UniswapV3;
-    }
-    if id.contains("slipstream") {
-        return DexType::UniswapV3;
-    }
-    if id.contains("uniswap") || id.contains("quickswap") || id.contains("sushi") {
-        return DexType::UniswapV2;
-    }
-    if id.contains("pancakeswap") && id.contains("infinity") {
-        return DexType::PancakeInfinity;
-    }
-    if id.contains("camelot") {
-        return DexType::Camelot;
-    }
-    if id.contains("aerodrome")
-        || id.contains("velodrome")
-        || id.contains("solidly")
-        || id.contains("equalizer")
-        || id.contains("thena")
-    {
-        return DexType::Solidly;
-    }
-    if id.contains("curve") {
-        return DexType::Curve;
-    }
-    if id.contains("balancer") {
-        return DexType::Balancer;
-    }
-    if id.contains("pharaoh") && id.contains("dlmm") {
-        return DexType::TraderJoeLB;
-    }
-    if id.contains("traderjoe") || id.contains("lfj") {
-        return DexType::TraderJoeLB;
-    }
-    if id.contains("pendle") {
-        return DexType::Pendle;
-    }
-    if id.contains("metric") {
-        return DexType::Metric;
-    }
-    if id.contains("fluid") {
-        return DexType::Fluid;
-    }
-    DexType::UniswapV2
-}
-
-/// DEX ids with meaningful TVL but no decoder yet — importing them under a
-/// wrong `DexType` poisons pool state, so they are skipped (with a warning)
-/// until a decoder lands. Guarded before `infer_dex_type`.
-fn is_unsupported_dex(s: &str) -> bool {
-    const UNSUPPORTED: &[&str] = &["dodo", "woofi", "hashflow", "maverick", "ekubo"];
-    UNSUPPORTED.iter().any(|n| s.contains(n))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dex_type::DexType;
 
     fn pair(chain: &str, dex: &str, addr: &str, base: &str, quote: &str, tvl: f64) -> Value {
         serde_json::json!({
@@ -438,15 +298,12 @@ mod tests {
 
     #[test]
     fn test_infer_dex_type_labels_beat_defaults() {
-        assert_eq!(
-            infer_dex_type(Some("uniswap"), &["v3".to_string()]),
-            DexType::UniswapV3
-        );
+        assert_eq!(infer_dex_type(Some("uniswap"), &["v3"]), DexType::UniswapV3);
         assert_eq!(infer_dex_type(Some("camelot"), &[]), DexType::Camelot);
         assert_eq!(infer_dex_type(Some("aerodrome"), &[]), DexType::Solidly);
         assert_eq!(infer_dex_type(Some("velodrome"), &[]), DexType::Solidly);
         assert_eq!(
-            infer_dex_type(Some("aerodrome"), &["slipstream".to_string()]),
+            infer_dex_type(Some("aerodrome"), &["slipstream"]),
             DexType::UniswapV3
         );
         assert_eq!(
@@ -454,7 +311,7 @@ mod tests {
             DexType::UniswapV3
         );
         assert_eq!(
-            infer_dex_type(Some("velodrome"), &["v3".to_string()]),
+            infer_dex_type(Some("velodrome"), &["v3"]),
             DexType::UniswapV3
         );
         assert_eq!(infer_dex_type(Some("lfj"), &[]), DexType::TraderJoeLB);
@@ -494,7 +351,7 @@ mod tests {
     #[test]
     fn pancakeswap_infinity_maps_to_infinity() {
         assert_eq!(
-            infer_dex_type(Some("pancakeswap-infinity"), &["infinity".to_string()]),
+            infer_dex_type(Some("pancakeswap-infinity"), &["infinity"]),
             DexType::PancakeInfinity
         );
     }

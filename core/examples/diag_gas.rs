@@ -29,13 +29,10 @@ fn main() -> anyhow::Result<()> {
     let end: usize = env::args().nth(4).unwrap_or_else(|| "30".into()).parse()?;
 
     let config = Config::load(&toml)?;
-    let chain_name: mev_scout_core::types::ChainName = config.chain.parse()?;
+    let chain_name = config.chain;
     let chain_id = chain_name.chain_id();
     let provider_configs = config.effective_provider_configs(chain_name)?;
-    let urls: Vec<&str> = provider_configs
-        .iter()
-        .map(|p| p.url.as_str())
-        .collect();
+    let urls: Vec<&str> = provider_configs.iter().map(|p| p.url.as_str()).collect();
     let rpc = RpcClient::from_urls(&urls, chain_id)?;
 
     let rt = tokio::runtime::Runtime::new()?;

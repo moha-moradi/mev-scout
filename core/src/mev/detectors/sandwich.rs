@@ -595,7 +595,7 @@ impl SandwichDetector {
                     confidence: None,
                     sender: None,
                     tx_hash: None,
-                    detection_path: Some("replay".to_string()),
+                    detection_path: Some(crate::mev::detectors::REPLAY_PATH.to_string()),
                 });
             }
         }

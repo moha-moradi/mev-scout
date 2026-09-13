@@ -219,7 +219,7 @@ async fn run_once(
     if opps.is_empty() {
         println!("No MEV opportunities in this block.");
     } else {
-        render_results_table(&opps, Some(&runner.pool_manager));
+        render_results_table(&opps, Some(runner.pool_manager()));
     }
 
     if !stats.is_empty() {
@@ -400,7 +400,7 @@ async fn run_loop(
                 current_tip,
                 opps.len(),
             );
-            render_results_table(&opps, Some(&runner.pool_manager));
+            render_results_table(&opps, Some(runner.pool_manager()));
         }
 
         let run_id = format!("live_{}", epoch_secs());
@@ -439,7 +439,7 @@ async fn run_loop(
         let rejections = runner.take_rejections();
         persist_rejections_to_explorer(config, validation.chain_name, &run_id, &rejections);
 
-        runner.last_processed_block = current_tip;
+        runner.advance_to(current_tip);
         last_block = current_tip;
         blocks_processed += resolved.block_count;
         total_txs_scanned += txs_scanned;

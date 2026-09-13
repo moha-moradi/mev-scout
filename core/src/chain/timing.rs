@@ -9,6 +9,24 @@ pub struct ChainTimingParams {
     pub anchor_ts: i64,
 }
 
+/// Seconds per block for a chain (unrounded) — the single authoritative
+/// timing table. Consumers used to keep their own `chain_id → seconds`
+/// matches that disagreed with this one (Polygon 1.5s here vs 2s in the CLI,
+/// BSC 3s here vs 1s there); route every timing query through here.
+pub fn secs_per_block(chain: crate::types::ChainName) -> f64 {
+    chain_timing(&chain.to_string()).secs_per_block
+}
+
+/// Whole seconds per block, rounding up — safe for coarse estimates.
+pub fn block_time_secs(chain: crate::types::ChainName) -> u64 {
+    (secs_per_block(chain).ceil() as u64).max(1)
+}
+
+/// Blocks per day for a chain, from the same authoritative table.
+pub fn blocks_per_day(chain: crate::types::ChainName) -> u64 {
+    chain_timing(&chain.to_string()).blocks_per_day
+}
+
 pub fn chain_timing(chain: &str) -> ChainTimingParams {
     match chain.to_lowercase().as_str() {
         "ethereum" => ChainTimingParams {

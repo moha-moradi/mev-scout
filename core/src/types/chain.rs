@@ -42,6 +42,7 @@ impl ProviderEndpoint {
     strum::EnumString,
 )]
 #[strum(ascii_case_insensitive)]
+#[serde(rename_all = "lowercase")]
 pub enum ChainName {
     #[strum(serialize = "polygon")]
     Polygon,

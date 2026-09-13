@@ -201,7 +201,7 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
             all_opportunities.len(),
             elapsed.as_secs_f64()
         );
-        render_results_table(&all_opportunities, Some(&runner.pool_manager));
+        render_results_table(&all_opportunities, Some(runner.pool_manager()));
     }
 
     render_block_summary_table(&block_stats);

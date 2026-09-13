@@ -330,7 +330,7 @@ impl JitArbDetector {
             confidence: None,
             sender: None,
             tx_hash: None,
-            detection_path: Some("replay".to_string()),
+            detection_path: Some(crate::mev::detectors::REPLAY_PATH.to_string()),
         }
     }
 }
@@ -401,7 +401,7 @@ fn convert_to_shared_token(pm: &PoolManager, swap: &SwapEvent, shared: Address) 
                 reserve_out,
                 v2.info.fee_tier(),
             )
-                .unwrap_or(0)
+            .unwrap_or(0)
         }
         Some(pool) => quote_exact_in(pool, swap.token_in, shared, swap.amount_in).unwrap_or(0),
         _ => 0,

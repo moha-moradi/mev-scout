@@ -92,7 +92,7 @@ pub fn detect_pending_opportunities(
     // Label all as mempool-only
     for opp in &mut results {
         opp.mempool_only = true;
-        opp.detection_path = Some("pending".to_string());
+        opp.detection_path = Some(crate::mev::detectors::PENDING_PATH.to_string());
     }
 
     results

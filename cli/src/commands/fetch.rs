@@ -7,6 +7,7 @@ use crate::cli::FetchArgs;
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
+use mev_scout_core::config::validation::RangeSpec;
 use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::resolver::RangeResolver;
@@ -24,16 +25,9 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
 
     let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
 
-    let range_mode = match validation::resolve_block_range(
-        args.block_range.days,
-        args.block_range.blocks,
-        args.block_range.block,
-        args.block_range.from_block,
-        args.block_range.to_block,
-    ) {
-        Ok(r) => r,
-        Err(e) => anyhow::bail!("{e}"),
-    };
+    let range_mode = RangeSpec::try_from(&args.block_range)
+        .context("invalid block range")?
+        .resolve();
 
     let resolver = RangeResolver::new(rpc.clone());
     let resolved = resolver.resolve(&range_mode).await?;

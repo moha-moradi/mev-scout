@@ -380,21 +380,20 @@ impl ExplorerStore {
 
     /// Insert block header + txs + swaps + transfers + mev events in one
     /// transaction. Idempotent via OR IGNORE on natural keys.
-    #[allow(clippy::too_many_arguments)] // refactored into a facts bundle in W4
-    pub fn insert_block_facts(
-        &self,
-        block_number: u64,
-        block_hash: &B256,
-        ts: u64,
-        base_fee_gwei: Option<f64>,
-        tx_count: usize,
-        txs: &[TxRow],
-        swaps: &[SwapRow],
-        transfers: &[TransferRow],
-        events: &[MevEvent],
-        native_price_usd: Option<f64>,
-        token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
-    ) -> anyhow::Result<usize> {
+    pub fn insert_block_facts(&self, facts: BlockFactsInput<'_>) -> anyhow::Result<usize> {
+        let BlockFactsInput {
+            block_number,
+            block_hash,
+            ts,
+            base_fee_gwei,
+            tx_count,
+            txs,
+            swaps,
+            transfers,
+            events,
+            native_price_usd,
+            token_prices,
+        } = facts;
         let now = crate::utils::epoch_secs() as i64;
         let conn = &self.conn;
         conn.execute("BEGIN IMMEDIATE", [])?;
@@ -556,30 +555,29 @@ impl ExplorerStore {
     // ── results layer ──────────────────────────────────────────────────
 
     /// Insert one opportunity row from a `ResultsFile` entry.
-    #[allow(clippy::too_many_arguments)]
-    pub fn insert_opportunity(
-        &self,
-        run_id: &str,
-        chain: &str,
-        block_number: u64,
-        tx_index: Option<u64>,
-        strategy: &str,
-        pool_a: Option<Address>,
-        pool_b: Option<Address>,
-        token_in: Option<Address>,
-        token_out: Option<Address>,
-        input_amount: Option<U256>,
-        expected_profit: Option<U256>,
-        gas_cost_wei: Option<U256>,
-        path: Option<&str>,
-        timestamp: Option<u64>,
-        mempool_only: bool,
-        confidence: Option<&str>,
-        sender: Option<Address>,
-        tx_hash: Option<B256>,
-        detection_path: Option<&str>,
-        canonical_id: Option<&str>,
-    ) -> anyhow::Result<()> {
+    pub fn insert_opportunity(&self, row: OpportunityInput<'_>) -> anyhow::Result<()> {
+        let OpportunityInput {
+            run_id,
+            chain,
+            block_number,
+            tx_index,
+            strategy,
+            pool_a,
+            pool_b,
+            token_in,
+            token_out,
+            input_amount,
+            expected_profit,
+            gas_cost_wei,
+            path,
+            timestamp,
+            mempool_only,
+            confidence,
+            sender,
+            tx_hash,
+            detection_path,
+            canonical_id,
+        } = row;
         self.conn.execute(
             "INSERT INTO opportunities
                (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
@@ -1408,6 +1406,45 @@ pub struct TransferRow {
     pub amount: U256,
 }
 
+/// Everything a single indexed block contributes to the store.
+pub struct BlockFactsInput<'a> {
+    pub block_number: u64,
+    pub block_hash: &'a B256,
+    pub ts: u64,
+    pub base_fee_gwei: Option<f64>,
+    pub tx_count: usize,
+    pub txs: &'a [TxRow],
+    pub swaps: &'a [SwapRow],
+    pub transfers: &'a [TransferRow],
+    pub events: &'a [MevEvent],
+    pub native_price_usd: Option<f64>,
+    pub token_prices: &'a std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
+}
+
+/// One scanner opportunity row to insert (`opportunities` results table).
+pub struct OpportunityInput<'a> {
+    pub run_id: &'a str,
+    pub chain: &'a str,
+    pub block_number: u64,
+    pub tx_index: Option<u64>,
+    pub strategy: &'a str,
+    pub pool_a: Option<Address>,
+    pub pool_b: Option<Address>,
+    pub token_in: Option<Address>,
+    pub token_out: Option<Address>,
+    pub input_amount: Option<U256>,
+    pub expected_profit: Option<U256>,
+    pub gas_cost_wei: Option<U256>,
+    pub path: Option<&'a str>,
+    pub timestamp: Option<u64>,
+    pub mempool_only: bool,
+    pub confidence: Option<&'a str>,
+    pub sender: Option<Address>,
+    pub tx_hash: Option<B256>,
+    pub detection_path: Option<&'a str>,
+    pub canonical_id: Option<&'a str>,
+}
+
 /// One scanner opportunity row (`opportunities` table).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpportunityRow {
@@ -1598,19 +1635,21 @@ mod tests {
             },
         );
         let n = store
-            .insert_block_facts(
-                100,
-                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-                1_700_000_000,
-                Some(25.0),
-                5,
-                &[],
-                &[],
-                &[],
-                &[sample_event(100)],
-                Some(0.75),
-                &prices,
-            )
+            .insert_block_facts(BlockFactsInput {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[sample_event(100)],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
             .unwrap();
         assert_eq!(n, 1);
         assert!(store.block_classified(100).unwrap());
@@ -1656,35 +1695,39 @@ mod tests {
         arb_evt.ts = 1_700_000_200;
         arb_evt.kind = MevKind::ArbAtomic;
         let n = store
-            .insert_block_facts(
-                120,
-                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
-                1_700_000_100,
-                Some(25.0),
-                5,
-                &[],
-                &[],
-                &[],
-                &[sand_evt],
-                Some(0.75),
-                &prices,
-            )
+            .insert_block_facts(BlockFactsInput {
+                block_number: 120,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+                ),
+                ts: 1_700_000_100,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[sand_evt],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
             .unwrap();
         assert_eq!(n, 1);
         let n = store
-            .insert_block_facts(
-                121,
-                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
-                1_700_000_200,
-                Some(25.0),
-                5,
-                &[],
-                &[],
-                &[],
-                &[arb_evt],
-                Some(0.75),
-                &prices,
-            )
+            .insert_block_facts(BlockFactsInput {
+                block_number: 121,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"
+                ),
+                ts: 1_700_000_200,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[arb_evt],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
             .unwrap();
         assert_eq!(n, 1);
 

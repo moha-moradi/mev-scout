@@ -287,40 +287,37 @@ impl PoolManager {
                 let tick_spacing = meta.tick_spacing;
                 let factory = meta.factory;
                 let balancer_pool_type = meta.balancer_pool_type;
-                    let pre_fetched = self.pools.get(&addr).and_then(|ps| match ps {
-                        PoolState::Curve(s) => s.info.underlying_tokens.clone(),
-                        PoolState::Balancer(s) => s.info.underlying_tokens.clone(),
-                        _ => None,
-                    });
-                    async move {
-                        match sem.acquire_owned().await {
-                            Ok(_permit) => {}
-                            Err(e) => {
-                                tracing::warn!(
-                                    "pool-state semaphore closed; running unbounded: {e}"
-                                );
-                            }
+                let pre_fetched = self.pools.get(&addr).and_then(|ps| match ps {
+                    PoolState::Curve(s) => s.info.underlying_tokens.clone(),
+                    PoolState::Balancer(s) => s.info.underlying_tokens.clone(),
+                    _ => None,
+                });
+                async move {
+                    match sem.acquire_owned().await {
+                        Ok(_permit) => {}
+                        Err(e) => {
+                            tracing::warn!("pool-state semaphore closed; running unbounded: {e}");
                         }
-                        (
-                            addr,
-                            Self::fetch_pool_state(
-                                &rpc,
-                                addr,
-                                dt,
-                                pool_id,
-                                tick_spacing,
-                                vault,
-                                factory,
-                                br,
-                                balancer_pool_type,
-                                pre_fetched,
-                                cache,
-                            )
-                            .await,
-                        )
                     }
-                },
-            )
+                    (
+                        addr,
+                        Self::fetch_pool_state(
+                            &rpc,
+                            addr,
+                            dt,
+                            pool_id,
+                            tick_spacing,
+                            vault,
+                            factory,
+                            br,
+                            balancer_pool_type,
+                            pre_fetched,
+                            cache,
+                        )
+                        .await,
+                    )
+                }
+            })
             .collect();
 
         let results = join_all(tasks).await;

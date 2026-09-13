@@ -745,9 +745,10 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use alloy::primitives::address;
 
+    use super::*;
+    use crate::explorer::store::{BlockFactsInput, OpportunityInput};
+    use alloy::primitives::address;
     fn store_with_fixtures() -> ExplorerStore {
         use alloy::primitives::{address as addr, b256 as b256f, U256 as U256t};
         let store = ExplorerStore::open_in_memory().unwrap();
@@ -797,63 +798,63 @@ mod tests {
         let hash1 = b256f!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let hash2 = b256f!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         store
-            .insert_block_facts(
-                100,
-                &hash1,
-                1_700_000_000,
-                Some(25.0),
-                5,
-                &[],
-                &[],
-                &[],
-                &[e],
-                Some(1.0),
-                &prices,
-            )
+            .insert_block_facts(BlockFactsInput {
+                block_number: 100,
+                block_hash: &hash1,
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[e],
+                native_price_usd: Some(1.0),
+                token_prices: &prices,
+            })
             .unwrap();
         // Block 102: realized op on an unknown pool (M1) + scanner never there
         let e2 = ev(102, vec![pool_b], "ArbAtomic|other");
         store
-            .insert_block_facts(
-                102,
-                &hash2,
-                1_700_000_100,
-                Some(25.0),
-                5,
-                &[],
-                &[],
-                &[],
-                &[e2],
-                Some(1.0),
-                &prices,
-            )
+            .insert_block_facts(BlockFactsInput {
+                block_number: 102,
+                block_hash: &hash2,
+                ts: 1_700_000_100,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[e2],
+                native_price_usd: Some(1.0),
+                token_prices: &prices,
+            })
             .unwrap();
 
         store
-            .insert_opportunity(
-                "run_1",
-                "polygon",
-                100,
-                Some(1),
-                "TwoHopArb",
-                Some(pool_a),
-                None,
-                Some(addr!("4444000000000000000000000000000000000004")),
-                Some(addr!("5555000000000000000000000000000000000005")),
-                Some(U256t::from(1_000_000u64)),
-                Some(U256t::from(900_000u64)),
-                Some(U256t::from(50_000u64)),
-                None,
-                Some(1_700_000_000),
-                false,
-                Some("0.9"),
-                None,
-                None,
-                Some("replay"),
+            .insert_opportunity(OpportunityInput {
+                run_id: "run_1",
+                chain: "polygon",
+                block_number: 100,
+                tx_index: Some(1),
+                strategy: "TwoHopArb",
+                pool_a: Some(pool_a),
+                pool_b: None,
+                token_in: Some(addr!("4444000000000000000000000000000000000004")),
+                token_out: Some(addr!("5555000000000000000000000000000000000005")),
+                input_amount: Some(U256t::from(1_000_000u64)),
+                expected_profit: Some(U256t::from(900_000u64)),
+                gas_cost_wei: Some(U256t::from(50_000u64)),
+                path: None,
+                timestamp: Some(1_700_000_000),
+                mempool_only: false,
+                confidence: Some("0.9"),
+                sender: None,
+                tx_hash: Some(hash1),
+                detection_path: Some("replay"),
                 // T1 join key: must equal the explorer-side canonical form the
                 // store computed for the block-100 event (ArbAtomic|sorted pools).
-                Some(&format!("ArbAtomic|{pool_a:#x}")),
-            )
+                canonical_id: Some(&format!("ArbAtomic|{pool_a:#x}")),
+            })
             .unwrap();
         store
     }

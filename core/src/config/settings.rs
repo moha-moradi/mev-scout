@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{default_chains, ChainConfig};
+use super::validation::RangeSpec;
 use crate::error;
 
 use crate::types::{ChainName, FlashLoanProvider, RangeMode, Strategy};
@@ -115,8 +116,8 @@ fn default_explorer_checkpoint_every() -> u64 {
 fn default_rps_limit() -> f64 {
     0.0
 }
-fn default_chain() -> String {
-    "polygon".to_string()
+fn default_chain() -> ChainName {
+    ChainName::Polygon
 }
 fn default_flash_loan_provider() -> String {
     "auto".to_string()
@@ -216,7 +217,7 @@ impl Default for ExplorerConfig {
 pub struct Config {
     /// Target EVM chain name (e.g. "polygon", "ethereum")
     #[serde(default = "default_chain")]
-    pub chain: String,
+    pub chain: ChainName,
     /// Per-chain configuration overrides keyed by chain name
     #[serde(default)]
     pub chains: HashMap<String, ChainConfig>,
@@ -259,6 +260,18 @@ impl Config {
         } else {
             self.output.db_path.clone()
         }
+    }
+
+    /// Validate this config's block-range fields into a `RangeSpec`, owning
+    /// the "exactly one range flag" invariant once instead of at every caller.
+    pub fn range_spec(&self) -> error::Result<RangeSpec> {
+        Ok(RangeSpec::from_flags(
+            self.days,
+            self.blocks,
+            self.block,
+            self.from_block,
+            self.to_block,
+        )?)
     }
 }
 
@@ -485,10 +498,7 @@ impl Config {
     }
 
     /// Auto-calculate optimal `block_concurrency` from provider RPS limits.
-    pub fn effective_block_concurrency(
-        &self,
-        provider_configs: &[ProviderConfig],
-    ) -> usize {
+    pub fn effective_block_concurrency(&self, provider_configs: &[ProviderConfig]) -> usize {
         if let Some(bc) = self.rpc.block_concurrency {
             tracing::info!("block_concurrency: using explicit value {bc}");
             return bc;
@@ -681,21 +691,22 @@ macro_rules! merge_sub {
 ///
 /// ```
 /// use mev_scout_core::config::ConfigBuilder;
+/// use mev_scout_core::types::chain::ChainName;
 ///
 /// let config = ConfigBuilder::default()
-///     .with_chain("polygon")
+///     .with_chain(ChainName::Polygon)
 ///     .build();
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct ConfigBuilder {
-    chain: Option<String>,
+    chain: Option<ChainName>,
     output: Option<OutputConfig>,
 }
 
 impl ConfigBuilder {
-    /// Set the chain name (e.g. "polygon", "ethereum").
-    pub fn with_chain(mut self, chain: impl Into<String>) -> Self {
-        self.chain = Some(chain.into());
+    /// Set the chain (e.g. `ChainName::Polygon`).
+    pub fn with_chain(mut self, chain: ChainName) -> Self {
+        self.chain = Some(chain);
         self
     }
     /// Replace the output sub-config entirely.
@@ -718,13 +729,20 @@ impl ConfigBuilder {
 }
 
 impl Config {
-    pub fn merge_cli(&mut self, overrides: &CliOverrides) {
+    /// Merge CLI overrides into this config. A malformed `--chain` value is a
+    /// hard error rather than a silent no-op (previously a typo'd chain name
+    /// with an overridden value would silently keep the wrong chain).
+    pub fn merge_cli(&mut self, overrides: &CliOverrides) -> error::Result<()> {
         merge_opt!(self, overrides, days, copy_some);
         merge_opt!(self, overrides, blocks, copy_some);
         merge_opt!(self, overrides, block, copy_some);
         merge_opt!(self, overrides, from_block, copy_some);
         merge_opt!(self, overrides, to_block, copy_some);
-        merge_opt!(self, overrides, chain);
+        if let Some(chain) = &overrides.chain {
+            self.chain = chain
+                .parse()
+                .map_err(|e| error::Error::Other(format!("invalid --chain '{chain}': {e}")))?;
+        }
 
         merge_sub!(
             self,
@@ -770,6 +788,7 @@ impl Config {
                 (checkpoint_every, copy)
             ]
         );
+        Ok(())
     }
 }
 

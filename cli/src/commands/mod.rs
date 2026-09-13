@@ -137,22 +137,7 @@ impl CliCommand for ExplorerArgs {
             }
             ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
             ExplorerCommand::Explain(a) => cmd_explain(config, &a.tx_hash).await,
-            ExplorerCommand::Validate(a) => {
-                cmd_validate(
-                    config,
-                    a.since.as_deref(),
-                    a.match_window,
-                    if a.run.is_empty() {
-                        None
-                    } else {
-                        Some(a.run.clone())
-                    },
-                    a.threshold_sweep,
-                    a.emit_missing_pools,
-                    a.json,
-                )
-                .await
-            }
+            ExplorerCommand::Validate(a) => cmd_validate(config, a).await,
             ExplorerCommand::Export(a) => {
                 cmd_export(
                     config,

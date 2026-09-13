@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 
 use crate::explorer::classify::{self, BlockInput, TxInput};
 use crate::explorer::pricing::{self, TokenUsd};
-use crate::explorer::store::{ExplorerStore, SwapRow, TransferRow, TxRow};
+use crate::explorer::store::{BlockFactsInput, ExplorerStore, SwapRow, TransferRow, TxRow};
 use crate::explorer::types::MevEvent;
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
@@ -243,19 +243,19 @@ pub async fn index_block(
         }
     };
 
-    store.insert_block_facts(
+    store.insert_block_facts(BlockFactsInput {
         block_number,
-        &block_data.hash,
-        block_data.timestamp,
+        block_hash: &block_data.hash,
+        ts: block_data.timestamp,
         base_fee_gwei,
-        txs.len(),
-        &tx_rows,
-        &swap_rows,
-        &transfer_rows,
-        &events,
-        native_price,
-        &token_prices,
-    )?;
+        tx_count: txs.len(),
+        txs: &tx_rows,
+        swaps: &swap_rows,
+        transfers: &transfer_rows,
+        events: &events,
+        native_price_usd: native_price,
+        token_prices: &token_prices,
+    })?;
 
     Ok(IndexedBlock {
         block: block_number,

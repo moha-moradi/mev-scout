@@ -1,22 +1,30 @@
 use super::LB_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHits};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHit, PoolHitCandidate, ScanBatchResult};
 use crate::dex_type::DexType;
+use crate::pipeline::topics;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use std::collections::{HashMap, HashSet};
 
-#[allow(clippy::too_many_arguments)] // discovery plumbing — slimmed in W4
+/// Trader Joe / LFJ V2 activity: LBPair contracts are per-pool and emit their
+/// own Swap events.
+pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
+    let t0 = log.topics()[0];
+    if t0 == *topics::TRADER_JOE_LB_SWAP || t0 == *topics::TRADER_JOE_LB_SWAP_LEGACY {
+        Some(PoolHitCandidate::simple(DexType::TraderJoeLB))
+    } else {
+        None
+    }
+}
+
 pub(crate) async fn scan_trader_joe_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
     current: u64,
     batch_end: u64,
-    active_blocks: &mut HashSet<u64>,
-    pool_hits: &mut PoolHits,
-    factory_pools: &mut HashMap<Address, DiscoveredPool>,
     provider_idx: Option<usize>,
-) {
+) -> ScanBatchResult {
+    let mut out = ScanBatchResult::default();
     if let Some(factories) = config.trader_joe_factories {
         for &factory in factories {
             let filter = Filter::new()
@@ -28,7 +36,7 @@ pub(crate) async fn scan_trader_joe_batch(
                 Ok(logs) => {
                     for log in &logs {
                         if let Some(bn) = log.block_number {
-                            active_blocks.insert(bn);
+                            out.active_blocks.insert(bn);
                         }
                         let topics = log.topics();
                         let log_data = log.data();
@@ -39,13 +47,13 @@ pub(crate) async fn scan_trader_joe_batch(
                         let token0 = Address::from_slice(&topics[2][12..32]);
                         let token1 = Address::from_slice(&topics[3][12..32]);
                         let creation_block = log.block_number.unwrap_or(0);
-                        pool_hits.entry(lb_pair).or_insert(PoolHit {
+                        out.pool_hits.entry(lb_pair).or_insert(PoolHit {
                             dex_type: DexType::TraderJoeLB,
                             pool_id: None,
                             tokens: None,
                             first_seen_block: creation_block,
                         });
-                        factory_pools.entry(lb_pair).or_insert(
+                        out.factory_pools.entry(lb_pair).or_insert(
                             DiscoveredPool::new(
                                 lb_pair,
                                 token0,
@@ -66,4 +74,5 @@ pub(crate) async fn scan_trader_joe_batch(
             }
         }
     }
+    out
 }

@@ -1,16 +1,8 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
+use super::arb_common;
 use alloy::primitives::{Address, U256, U512};
 use std::cmp;
-
-/// Percentage multiplier for +1% adjustment (101/100).
-const PCT_101: u128 = 101;
-/// Percentage multiplier for -1% adjustment (99/100).
-const PCT_99: u128 = 99;
-/// Percentage multiplier for +2% adjustment (102/100).
-const PCT_102: u128 = 102;
-/// Percentage multiplier for -2% adjustment (98/100).
-const PCT_98: u128 = 98;
 
 use crate::pool::math::balancer as balancer_math;
 use crate::pool::math::curve as curve_math;
@@ -21,8 +13,8 @@ use crate::pool::math::{
     TwoHopArbResult,
 };
 use crate::pool::state::{
-    calldata_gas_estimate, check_dedup_key, BalancerPoolState, CurvePoolState, PoolManager,
-    PoolState, ScanScope, UniswapV2PoolState,
+    calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, ScanScope,
+    UniswapV2PoolState,
 };
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
@@ -81,36 +73,21 @@ impl TwoHopArbDetector {
             if !scope.contains_pair(&pair.pool_a, &pair.pool_b) {
                 continue;
             }
-            if let Some(opp) = Self::check_direction(
-                pool_manager,
-                pair.pool_a,
-                pair.pool_b,
-                pair.shared_token,
-                self.block_number,
-                tx_index,
-                timestamp,
-                base_fee_per_gas,
-                gas_config,
-            ) {
-                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
-                    opportunities.push(opp);
-                }
-            }
-            if let Some(opp) = Self::check_direction(
-                pool_manager,
-                pair.pool_b,
-                pair.pool_a,
-                pair.shared_token,
-                self.block_number,
-                tx_index,
-                timestamp,
-                base_fee_per_gas,
-                gas_config,
-            ) {
-                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
-                    opportunities.push(opp);
+            for (buy_pool, sell_pool) in [(pair.pool_a, pair.pool_b), (pair.pool_b, pair.pool_a)] {
+                if let Some(opp) = Self::check_direction(
+                    pool_manager,
+                    buy_pool,
+                    sell_pool,
+                    pair.shared_token,
+                    self.block_number,
+                    tx_index,
+                    timestamp,
+                    base_fee_per_gas,
+                    gas_config,
+                ) {
+                    if arb_common::dedup_arb(&mut self.seen, pool_manager, &opp) {
+                        opportunities.push(opp);
+                    }
                 }
             }
         }
@@ -146,7 +123,7 @@ impl TwoHopArbDetector {
         // Fee-on-transfer filter: the simulation assumes the full quote is
         // received, but sell-tax tokens take a cut on transfer — producing
         // phantom opportunities. Exclude known and dynamically-learned FOT tokens.
-        if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
+        if arb_common::is_fot_pair(pm, token_in, token_out) {
             return None;
         }
 
@@ -170,59 +147,34 @@ impl TwoHopArbDetector {
         let profit_after_fl = result.profit.saturating_sub(flash_fee);
 
         // Normalize profit to wrapped native token when token_in != token_out
-        let (expected_profit, raw_profit) = if token_in == token_out {
-            (U256::from(profit_after_fl), None)
-        } else {
-            let raw = U256::from(profit_after_fl);
-            // Convert output token profit to native using pool reserves.
-            // Falls back to: total_output_native - total_input_native when
-            // direct profit normalization is unavailable (C5).
-            let native_profit = pm
-                .normalize_to_native(token_out, profit_after_fl)
-                .or_else(|| {
-                    let total_input = result.input_amount;
-                    let total_output = total_input.saturating_add(profit_after_fl);
-                    let native_in = pm.normalize_to_native(token_in, total_input)?;
-                    let native_out = pm.normalize_to_native(token_out, total_output)?;
-                    native_out.checked_sub(native_in)
-                })
-                .unwrap_or(profit_after_fl);
-            (U256::from(native_profit), Some(raw))
-        };
-
-        let (profit_slippage_p1, profit_slippage_m1, profit_slippage_p2, profit_slippage_m2) =
-            compute_slippage_profits(pool_a, pool_b, shared_token, result.input_amount);
-
-        Some(MevOpportunity {
-            canonical_id: None,
-            block_number,
-            tx_index,
-            strategy: Strategy::TwoHopArb,
-            pool_a: buy_pool,
-            pool_b: sell_pool,
+        let (expected_profit, raw_profit) = arb_common::normalize_profit(
+            pm,
             token_in,
             token_out,
-            input_amount: U256::from(result.input_amount),
-            expected_profit,
-            raw_profit,
-            profit_slippage_p1,
-            profit_slippage_m1,
-            profit_slippage_p2,
-            profit_slippage_m2,
-            gas_cost_wei,
-            timestamp,
-            path: None,
-            tick_lower: None,
-            tick_upper: None,
-            liquidity_amount: None,
-            victim_tx_index: None,
-            backrun_tx_index: None,
-            mempool_only: false,
-            confidence: None,
-            sender: None,
-            tx_hash: None,
-            detection_path: Some("replay".to_string()),
-        })
+            profit_after_fl,
+            result.input_amount,
+        );
+
+        let slippage = compute_slippage_profits(pool_a, pool_b, shared_token, result.input_amount);
+
+        Some(arb_common::build_arb_opportunity(
+            arb_common::ArbOpportunityInput {
+                strategy: Strategy::TwoHopArb,
+                block_number,
+                tx_index,
+                timestamp,
+                pool_a: buy_pool,
+                pool_b: sell_pool,
+                token_in,
+                token_out,
+                input_amount: result.input_amount,
+                expected_profit,
+                raw_profit,
+                slippage,
+                gas_cost_wei,
+                path: None,
+            },
+        ))
     }
 }
 
@@ -394,20 +346,13 @@ fn compute_slippage_profits(
     pool_b: &PoolState,
     shared_token: Address,
     optimal_input: u128,
-) -> (Option<U256>, Option<U256>, Option<U256>, Option<U256>) {
-    if optimal_input == 0 {
-        return (None, None, None, None);
-    }
-    let eval = |input: u128| match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
-        Some(p) if p > 0 => Some(U256::from(p)),
-        _ => None,
-    };
-    (
-        eval(optimal_input.saturating_mul(PCT_101) / 100),
-        eval(optimal_input.saturating_mul(PCT_99) / 100),
-        eval(optimal_input.saturating_mul(PCT_102) / 100),
-        eval(optimal_input.saturating_mul(PCT_98) / 100),
-    )
+) -> arb_common::SlippageProfits {
+    arb_common::slippage_profits(optimal_input, |input| {
+        match two_hop_profit_at(pool_a, pool_b, shared_token, input) {
+            Some(p) if p > 0 => Some(U256::from(p)),
+            _ => None,
+        }
+    })
 }
 
 /// Compute the profit for a two-hop arbitrage at a fixed input amount.
@@ -857,37 +802,12 @@ fn compose_path_breakpoints(
         if m == 0 || m > mid_max {
             continue;
         }
-        if let Some(x) = invert_monotone_quote(quote_first, m, max_input) {
+        if let Some(x) = arb_common::invert_monotone_quote(quote_first, m, max_input) {
             out.push(x);
             inverted += 1;
         }
     }
     out
-}
-
-/// Smallest x in [1, max_input] whose monotone-increasing quote reaches `target`.
-fn invert_monotone_quote(
-    quote: &impl Fn(u128) -> Option<u128>,
-    target: u128,
-    max_input: u128,
-) -> Option<u128> {
-    if target == 0 {
-        return None;
-    }
-    if quote(max_input)? < target {
-        return None;
-    }
-    let mut lo = 1u128;
-    let mut hi = max_input;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if quote(mid).unwrap_or(0) >= target {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    Some(lo)
 }
 
 /// Estimate the gas limit for a two-hop arbitrage opportunity based on the
@@ -926,15 +846,10 @@ fn estimate_gas_for_two_hop(
     let analytic = base_overhead + calldata + a_gas + b_gas + flash_loan_gas;
 
     // #7: dominant DEX type buckets the observation; hop count is always 2 here.
-    let mut counts: std::collections::HashMap<crate::dex_type::DexType, usize> =
+    let mut dex_counts: std::collections::HashMap<crate::dex_type::DexType, usize> =
         std::collections::HashMap::new();
-    *counts.entry(pool_a.info().dex_type).or_default() += 1;
-    *counts.entry(pool_b.info().dex_type).or_default() += 1;
-    let dominant = counts
-        .iter()
-        .max_by_key(|(_, &c)| c)
-        .map(|(&d, _)| d)
-        .unwrap_or(pool_a.info().dex_type);
+    *dex_counts.entry(pool_a.info().dex_type).or_default() += 1;
+    *dex_counts.entry(pool_b.info().dex_type).or_default() += 1;
 
-    calibration.blended_gas_limit(dominant, 2, analytic)
+    arb_common::blend_gas_limit(calibration, &dex_counts, 2, analytic)
 }

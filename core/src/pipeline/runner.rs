@@ -62,7 +62,7 @@ struct PersistInfo {
 /// Swap/Sync events emitted during replay.
 pub struct BacktestRunner {
     replayer: BlockReplayer,
-    pub pool_manager: PoolManager,
+    pool_manager: PoolManager,
     gas_config: GasConfig,
     proximity_window: usize,
     aave_reserve_cache: AaveReserveCache,
@@ -84,7 +84,7 @@ pub struct BacktestRunner {
     record_rejections: bool,
     /// Rejected-candidate buffer drained by the CLI via `take_rejections`.
     pending_rejections: Vec<crate::explorer::RejectedCandidate>,
-    pub last_processed_block: u64,
+    last_processed_block: u64,
 }
 
 impl BacktestRunner {
@@ -158,6 +158,22 @@ impl BacktestRunner {
     /// Drain buffered rejected candidates (insert into the explorer store).
     pub fn take_rejections(&mut self) -> Vec<crate::explorer::RejectedCandidate> {
         std::mem::take(&mut self.pending_rejections)
+    }
+
+    /// Current pool-state snapshot, used by the CLI to render result tables.
+    pub fn pool_manager(&self) -> &PoolManager {
+        &self.pool_manager
+    }
+
+    /// Last block number processed by the runner.
+    pub fn last_processed_block(&self) -> u64 {
+        self.last_processed_block
+    }
+
+    /// Advance the runner's progress marker without re-processing blocks —
+    /// used by live mode to fast-forward past an already-indexed tip.
+    pub fn advance_to(&mut self, block: u64) {
+        self.last_processed_block = block;
     }
 
     /// Gas/min-profit filters with optional rejection recording.
@@ -632,7 +648,7 @@ impl BacktestRunner {
                 opp.victim_tx_index,
                 opp.backrun_tx_index,
             ));
-            opp.detection_path = Some("replay".to_string());
+            opp.detection_path = Some(crate::mev::detectors::REPLAY_PATH.to_string());
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }

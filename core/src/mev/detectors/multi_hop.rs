@@ -10,11 +10,12 @@ use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
+use super::arb_common;
 use crate::dex_type::DexType;
 use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints};
 use crate::pool::math::{constant_product_output_amount, optimal_on_segments, quote_exact_in};
 use crate::pool::state::{
-    calldata_gas_estimate, check_dedup_key, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
+    calldata_gas_estimate, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
 };
 use crate::types::gas::GasCalibrationSnapshot;
 use crate::types::MevOpportunity;
@@ -91,8 +92,7 @@ impl MultiHopArbDetector {
                 base_fee_per_gas,
                 gas_config,
             ) {
-                let key = (opp.pool_a, opp.pool_b, opp.token_in, opp.token_out);
-                if check_dedup_key(&mut self.seen, &key, pool_manager, opp.pool_a, opp.pool_b) {
+                if arb_common::dedup_arb(&mut self.seen, pool_manager, &opp) {
                     opportunities.push(opp);
                 }
             }
@@ -301,7 +301,7 @@ impl MultiHopArbDetector {
         // Fee-on-transfer filter: quotes assume full output received; sell-tax
         // tokens produce phantom opportunities. Exclude known and dynamically
         // learned FOT tokens.
-        if pm.is_taxed_token(&token_in) || pm.is_taxed_token(&token_out) {
+        if arb_common::is_fot_pair(pm, token_in, token_out) {
             return None;
         }
 
@@ -349,22 +349,8 @@ impl MultiHopArbDetector {
         let net_profit = gross_profit.saturating_sub(flash_fee);
 
         // Normalize profit to native when token_in != token_out (H6).
-        let (expected_profit, raw_profit) = if token_in == token_out {
-            (U256::from(net_profit), None)
-        } else {
-            let raw = U256::from(net_profit);
-            let native_profit = pm
-                .normalize_to_native(token_out, net_profit)
-                .or_else(|| {
-                    let total_input = input_amount;
-                    let total_output = total_input.saturating_add(net_profit);
-                    let native_in = pm.normalize_to_native(token_in, total_input)?;
-                    let native_out = pm.normalize_to_native(token_out, total_output)?;
-                    native_out.checked_sub(native_in)
-                })
-                .unwrap_or(net_profit);
-            (U256::from(native_profit), Some(raw))
-        };
+        let (expected_profit, raw_profit) =
+            arb_common::normalize_profit(pm, token_in, token_out, net_profit, input_amount);
 
         // Compute slippage-adjusted profits
         let eval_raw = |x: u128| -> Option<u128> {
@@ -395,57 +381,28 @@ impl MultiHopArbDetector {
                     .map(U256::from)
             }
         };
-        let p1 = if input_amount > 0 {
-            eval_raw(input_amount.saturating_mul(101) / 100).and_then(normalize_slippage)
-        } else {
-            None
-        };
-        let m1 = if input_amount > 0 {
-            eval_raw(input_amount.saturating_mul(99) / 100).and_then(normalize_slippage)
-        } else {
-            None
-        };
-        let p2 = if input_amount > 0 {
-            eval_raw(input_amount.saturating_mul(102) / 100).and_then(normalize_slippage)
-        } else {
-            None
-        };
-        let m2 = if input_amount > 0 {
-            eval_raw(input_amount.saturating_mul(98) / 100).and_then(normalize_slippage)
-        } else {
-            None
-        };
+        let slippage = arb_common::slippage_profits(input_amount, |x| {
+            eval_raw(x).and_then(normalize_slippage)
+        });
 
-        Some(MevOpportunity {
-            canonical_id: None,
-            block_number,
-            tx_index,
-            strategy: Strategy::MultiHopArb,
-            pool_a: path[0],
-            pool_b: path[path.len() - 1],
-            token_in,
-            token_out,
-            input_amount: U256::from(input_amount),
-            expected_profit,
-            raw_profit,
-            profit_slippage_p1: p1,
-            profit_slippage_m1: m1,
-            profit_slippage_p2: p2,
-            profit_slippage_m2: m2,
-            gas_cost_wei,
-            timestamp,
-            path: Some(path.to_vec()),
-            tick_lower: None,
-            tick_upper: None,
-            liquidity_amount: None,
-            victim_tx_index: None,
-            backrun_tx_index: None,
-            mempool_only: false,
-            confidence: None,
-            sender: None,
-            tx_hash: None,
-            detection_path: Some("replay".to_string()),
-        })
+        Some(arb_common::build_arb_opportunity(
+            arb_common::ArbOpportunityInput {
+                strategy: Strategy::MultiHopArb,
+                block_number,
+                tx_index,
+                timestamp,
+                pool_a: path[0],
+                pool_b: path[path.len() - 1],
+                token_in,
+                token_out,
+                input_amount,
+                expected_profit,
+                raw_profit,
+                slippage,
+                gas_cost_wei,
+                path: Some(path.to_vec()),
+            },
+        ))
     }
 
     /// Compose deterministic input-domain breakpoints for an N-hop path.
@@ -497,7 +454,7 @@ impl MultiHopArbDetector {
                         if t == 0 || t > mid_max {
                             continue;
                         }
-                        if let Some(x) = invert_monotone_quote(&prefix, t, max_input) {
+                        if let Some(x) = arb_common::invert_monotone_quote(&prefix, t, max_input) {
                             out.push(x);
                         }
                     }
@@ -576,31 +533,6 @@ impl MultiHopArbDetector {
             }
         }
     }
-}
-
-/// Smallest x in [1, max_input] whose monotone-increasing quote reaches `target`.
-fn invert_monotone_quote(
-    quote: &impl Fn(u128) -> Option<u128>,
-    target: u128,
-    max_input: u128,
-) -> Option<u128> {
-    if target == 0 {
-        return None;
-    }
-    if quote(max_input)? < target {
-        return None;
-    }
-    let mut lo = 1u128;
-    let mut hi = max_input;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if quote(mid).unwrap_or(0) >= target {
-            hi = mid;
-        } else {
-            lo = mid + 1;
-        }
-    }
-    Some(lo)
 }
 
 /// Rotate a cyclic pool path so it starts at the lexicographically smallest pool.
@@ -997,17 +929,7 @@ fn estimate_gas_for_multi_hop(
     // #7: when enough same-shape transactions have been observed, replace the
     // structural estimate with the calibrated observation clamped to ±100% of
     // the structural estimate (rejects outlier transactions).
-    let dominant = dominant_dex_type(&dex_counts);
-    calibration.blended_gas_limit(dominant, path.len(), total)
-}
-
-/// Most frequent DEX type among participating pools.
-fn dominant_dex_type(counts: &HashMap<DexType, usize>) -> DexType {
-    counts
-        .iter()
-        .max_by_key(|(_, &c)| c)
-        .map(|(&d, _)| d)
-        .unwrap_or(DexType::UniswapV2)
+    arb_common::blend_gas_limit(calibration, &dex_counts, path.len(), total)
 }
 
 #[cfg(test)]

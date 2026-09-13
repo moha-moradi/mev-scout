@@ -16,9 +16,178 @@ pub mod dexscreener;
 pub mod geckoterminal;
 
 use alloy::primitives::Address;
+use serde_json::Value;
 
 use crate::dex_type::DexType;
 use crate::pool::discovery::DiscoveredPool;
+
+// ── Shared remote helpers ───────────────────────────────────────────────
+// Canonical implementations shared by every remote source so retry policy,
+// address parsing, DEX classification and unsupported-DEX gating behave the
+// same regardless of which aggregator produced the pool.
+
+/// GET with bounded exponential-backoff retry (429 / 5xx / network errors).
+///
+/// Shared by every remote source so the retry policy stays identical;
+/// `source` names the provider in error and log messages.
+pub(crate) async fn fetch_with_retry(
+    client: &reqwest::Client,
+    source: &str,
+    url: &str,
+) -> anyhow::Result<Value> {
+    const MAX_RETRIES: u32 = 3;
+    const BASE_DELAY_MS: u64 = 600;
+    let mut last_err = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    let text = resp.text().await.unwrap_or_default();
+                    let json: Value = serde_json::from_str(&text).map_err(|e| {
+                        anyhow::anyhow!(
+                            "invalid JSON from {source}: {e} — {}",
+                            &text[..text.len().min(500)]
+                        )
+                    })?;
+                    return Ok(json);
+                }
+                let body = resp.text().await.unwrap_or_default();
+                let msg = format!(
+                    "HTTP {} from {source}: {}",
+                    status.as_u16(),
+                    &body[..body.len().min(300)]
+                );
+                let retryable = status.as_u16() == 429 || status.is_server_error();
+                if retryable && attempt + 1 < MAX_RETRIES {
+                    let delay = BASE_DELAY_MS * 2u64.pow(attempt);
+                    tracing::debug!(
+                        "{source} HTTP {}, retry {}/{} after {delay}ms",
+                        status.as_u16(),
+                        attempt + 1,
+                        MAX_RETRIES
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_err = Some(anyhow::anyhow!(msg));
+                    continue;
+                }
+                last_err = Some(anyhow::anyhow!(msg));
+                break;
+            }
+            Err(e) => {
+                let msg = format!("{source} request failed: {e:#}");
+                let retryable = e.is_timeout() || e.is_connect();
+                if retryable && attempt + 1 < MAX_RETRIES {
+                    let delay = BASE_DELAY_MS * 2u64.pow(attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    last_err = Some(anyhow::anyhow!(msg));
+                    continue;
+                }
+                last_err = Some(anyhow::anyhow!(msg));
+                break;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("{source} request failed")))
+}
+
+/// Parse a 20-byte hex address with optional `0x` prefix.
+pub(crate) fn parse_addr(s: &str) -> Option<Address> {
+    let s = s.trim();
+    let hex = s.trim_start_matches("0x").trim_start_matches("0X");
+    if hex.len() != 40 {
+        return None;
+    }
+    let mut bytes = [0u8; 20];
+    hex::decode_to_slice(hex, &mut bytes).ok()?;
+    Some(Address::from_slice(&bytes))
+}
+
+/// Canonical remote-source → DexType classifier.
+///
+/// Every remote source routes through this function so the same pool gets the
+/// same `DexType` regardless of which aggregator discovered it. Explicit
+/// concentrated-liquidity markers run before classic-AMM defaults: a CL pool
+/// mislabeled as V2 poisons its pool state and is later pruned as
+/// "uninitialized" instead of being quoted correctly.
+///
+/// `dex_id` is the source's dex identifier string; `label_hints` are optional
+/// free-text classifiers from sources that expose them (e.g. DexScreener
+/// `labels` / `types` arrays).
+pub fn infer_dex_type(dex_id: Option<&str>, label_hints: &[&str]) -> DexType {
+    let id = dex_id.unwrap_or("").to_ascii_lowercase();
+    let hints = label_hints.join(" ").to_ascii_lowercase();
+
+    // Source labels are the authoritative CL markers (DexScreener "v3"/"cl"/
+    // "algebra"/"slipstream"/"v4" types beat any dex-id default).
+    if hints.contains("v4") {
+        return DexType::UniswapV4;
+    }
+    if hints.contains("v3")
+        || hints.contains("cl")
+        || hints.contains("algebra")
+        || hints.contains("slipstream")
+    {
+        return DexType::UniswapV3;
+    }
+    // Dex-id level markers (GeckoTerminal network ids, DexScreener dex ids).
+    if id.contains("v4") {
+        return DexType::UniswapV4;
+    }
+    if id.contains("algebra") || id.contains("slipstream") || id.contains("v3") {
+        return DexType::UniswapV3;
+    }
+    if id.contains("pancakeswap") && id.contains("infinity") {
+        return DexType::PancakeInfinity;
+    }
+    if id.contains("pharaoh") && id.contains("dlmm") {
+        return DexType::TraderJoeLB;
+    }
+    if id.contains("velodrome")
+        || id.contains("aerodrome")
+        || id.contains("solidly")
+        || id.contains("equalizer")
+        || id.contains("thena")
+    {
+        return DexType::Solidly;
+    }
+    if id.contains("trader-joe")
+        || id.contains("traderjoe")
+        || id.contains("liquidity-book")
+        || id.contains("lfj")
+    {
+        return DexType::TraderJoeLB;
+    }
+    if id.contains("balancer") {
+        return DexType::Balancer;
+    }
+    if id.contains("curve") {
+        return DexType::Curve;
+    }
+    if id.contains("camelot") {
+        return DexType::Camelot;
+    }
+    if id.contains("pendle") {
+        return DexType::Pendle;
+    }
+    if id.contains("metric") {
+        return DexType::Metric;
+    }
+    if id.contains("fluid") {
+        return DexType::Fluid;
+    }
+    // Classic AMMs — plain Uniswap/QuickSwap/Sushi/PancakeSwap V2 pairs.
+    DexType::UniswapV2
+}
+
+/// DEX ids/labels with meaningful TVL but no decoder yet — importing them
+/// under a wrong `DexType` poisons pool state, so they are skipped (with a
+/// warning) until a decoder lands. Guarded before `infer_dex_type`.
+pub(crate) fn is_unsupported_dex(s: &str) -> bool {
+    const UNSUPPORTED: &[&str] = &["dodo", "woofi", "hashflow", "maverick", "ekubo"];
+    UNSUPPORTED.iter().any(|n| s.contains(n))
+}
 
 /// Pool metadata returned by a remote source.
 ///

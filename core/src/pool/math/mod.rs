@@ -24,10 +24,10 @@ pub use core::{
     optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented, quote_exact_in, PoolQuote,
     TwoHopArbResult,
 };
-pub use fee::{FeeTier, BPS_FEE_DENOM, PPM_FEE_DENOM};
 pub use curve::{
     curve_cryptoswap_output_amount, curve_output_amount, curve_stableswap_output_amount,
 };
+pub use fee::{FeeTier, BPS_FEE_DENOM, PPM_FEE_DENOM};
 pub use v3::{
     estimate_v3_swap_gas, get_sqrt_ratio_at_tick, max_v3_tradeable_amount, quote_v3_exact_in,
     v3_breakpoints,

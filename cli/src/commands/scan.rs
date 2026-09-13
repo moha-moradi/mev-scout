@@ -14,15 +14,7 @@ pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
     let rpc = setup.rpc;
 
     let resolver = mev_scout_core::resolver::RangeResolver::new(rpc.clone());
-    let resolved = resolver
-        .resolve(&validation::resolve_block_range(
-            config.days,
-            config.blocks,
-            config.block,
-            config.from_block,
-            config.to_block,
-        )?)
-        .await?;
+    let resolved = resolver.resolve(&config.range_spec()?.resolve()).await?;
     let from = resolved.start_block;
     let to = resolved.end_block;
 

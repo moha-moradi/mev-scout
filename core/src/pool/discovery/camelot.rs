@@ -1,30 +1,25 @@
 use super::scan_factory_creation_events_pinned;
 use super::CAMELOT_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig};
+use super::{DiscoveredPool, DiscoveryConfig, ScanBatchResult};
 use crate::dex_type::DexType;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::primitives::U256;
-use std::collections::{HashMap, HashSet};
 
 pub(crate) async fn scan_camelot_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
     current: u64,
     batch_end: u64,
-    active_blocks: &mut HashSet<u64>,
-    factory_pools: &mut HashMap<Address, DiscoveredPool>,
     provider_idx: Option<usize>,
-) {
+) -> ScanBatchResult {
     if let Some(factories) = config.camelot_factories {
-        scan_factory_creation_events_pinned(
+        return scan_factory_creation_events_pinned(
             rpc,
             factories,
             *CAMELOT_PAIR_CREATED_TOPIC,
             current,
             batch_end,
-            active_blocks,
-            factory_pools,
             provider_idx,
             |log| {
                 let log_data = log.data();
@@ -55,4 +50,5 @@ pub(crate) async fn scan_camelot_batch(
         )
         .await;
     }
+    ScanBatchResult::default()
 }

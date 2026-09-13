@@ -1,20 +1,40 @@
 use super::V4_INITIALIZE_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
 use crate::dex_type::DexType;
+use crate::pipeline::topics;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
-use std::collections::{HashMap, HashSet};
+
+/// V4 activity: swaps emit from the singleton PoolManager with a bytes32
+/// poolId in topics[1]; the synthetic pool key is the poolId's last 20 bytes.
+pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
+    if log.topics()[0] != *topics::V4_SWAP {
+        return None;
+    }
+    let t = log.topics();
+    if t.len() >= 2 {
+        let mut pool_id = [0u8; 32];
+        pool_id.copy_from_slice(t[1].as_slice());
+        let pool_key = Address::from_slice(&pool_id[12..32]);
+        Some(PoolHitCandidate {
+            pool_id: Some(pool_id),
+            addr_override: Some(pool_key),
+            ..PoolHitCandidate::simple(DexType::UniswapV4)
+        })
+    } else {
+        Some(PoolHitCandidate::simple(DexType::UniswapV4))
+    }
+}
 
 pub(crate) async fn scan_v4_batch(
     rpc: &RpcClient,
     config: &DiscoveryConfig<'_>,
     current: u64,
     batch_end: u64,
-    active_blocks: &mut HashSet<u64>,
-    factory_pools: &mut HashMap<Address, DiscoveredPool>,
     provider_idx: Option<usize>,
-) {
+) -> ScanBatchResult {
+    let mut out = ScanBatchResult::default();
     if let Some(pool_manager) = config.v4_pool_manager {
         let filter = Filter::new()
             .address(pool_manager)
@@ -25,7 +45,7 @@ pub(crate) async fn scan_v4_batch(
             Ok(logs) => {
                 for log in &logs {
                     if let Some(bn) = log.block_number {
-                        active_blocks.insert(bn);
+                        out.active_blocks.insert(bn);
                     }
                     let topics = log.topics();
                     let log_data = log.data();
@@ -50,7 +70,7 @@ pub(crate) async fn scan_v4_batch(
                     let hook_address = (!hook_address.is_zero()).then_some(hook_address);
                     let creation_block = log.block_number.unwrap_or(0);
                     let pool_addr = Address::from_slice(&topics[1][12..32]);
-                    factory_pools.entry(pool_addr).or_insert(
+                    out.factory_pools.entry(pool_addr).or_insert(
                         DiscoveredPool::new(
                             pool_addr,
                             token0,
@@ -70,4 +90,5 @@ pub(crate) async fn scan_v4_batch(
             }
         }
     }
+    out
 }

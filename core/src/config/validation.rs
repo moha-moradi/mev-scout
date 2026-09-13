@@ -22,10 +22,7 @@ pub struct ValidationResult {
 pub fn resolve_chain(
     config: &Config,
 ) -> std::result::Result<(ChainName, ChainConfig), ConfigError> {
-    let chain_name: ChainName = config
-        .chain
-        .parse()
-        .map_err(|e| ConfigError::Validation(format!("{e}")))?;
+    let chain_name = config.chain;
 
     let chain_config = config
         .chains
@@ -64,8 +61,117 @@ pub fn validate_rpc_urls(urls: &[String]) -> std::result::Result<(), ConfigError
     Ok(())
 }
 
+/// A mutually-exclusive block-range selection.
+///
+/// `BlockRangeArgs` (and the config-file equivalent) originally exposed five
+/// separate `Option` fields whose "exactly one required" invariant could not
+/// be expressed at the type level — every consumer passed all five to
+/// `resolve_block_range` and a forgot-one bug compiled fine. Constructing a
+/// `RangeSpec` owns that invariant: exactly one variant is produced per call,
+/// so downstream code has nothing left to get wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RangeSpec {
+    Days(u64),
+    Blocks(u64),
+    Block(u64),
+    FromTo(u64, u64),
+}
+
+impl RangeSpec {
+    /// Build from the individual range flags, enforcing the "exactly one
+    /// required" and coherence invariants.
+    pub fn from_flags(
+        days: Option<u64>,
+        blocks: Option<u64>,
+        block: Option<u64>,
+        from_block: Option<u64>,
+        to_block: Option<u64>,
+    ) -> std::result::Result<Self, ConfigError> {
+        let mut flags = Vec::new();
+        if days.is_some() {
+            flags.push("--days");
+        }
+        if blocks.is_some() {
+            flags.push("--blocks");
+        }
+        if block.is_some() {
+            flags.push("--block");
+        }
+        if from_block.is_some() || to_block.is_some() {
+            flags.push("--from-block/--to-block");
+        }
+
+        if flags.len() > 1 {
+            return Err(ConfigError::Validation(format!(
+                "{} cannot be used together.\n\
+                 Use exactly one of: --days, --blocks, --block, or --from-block/--to-block.",
+                flags.join(" and ")
+            )));
+        }
+
+        if (from_block.is_some() && to_block.is_none())
+            || (from_block.is_none() && to_block.is_some())
+        {
+            return Err(ConfigError::Validation(
+                "--from-block and --to-block must be used together.".to_string(),
+            ));
+        }
+
+        if let (Some(f), Some(t)) = (from_block, to_block) {
+            if t <= f {
+                return Err(ConfigError::Validation(format!(
+                    "--to-block ({t}) must be greater than --from-block ({f})."
+                )));
+            }
+            return Ok(Self::FromTo(f, t));
+        }
+
+        if let Some(d) = days {
+            if !(1..=365).contains(&d) {
+                return Err(ConfigError::Validation(
+                    "--days must be between 1 and 365.".to_string(),
+                ));
+            }
+            return Ok(Self::Days(d));
+        }
+
+        if let Some(b) = blocks {
+            if b < 1 {
+                return Err(ConfigError::Validation(
+                    "--blocks must be >= 1.".to_string(),
+                ));
+            }
+            return Ok(Self::Blocks(b));
+        }
+
+        if let Some(b) = block {
+            if b == 0 {
+                return Err(ConfigError::Validation("--block must be > 0.".to_string()));
+            }
+            return Ok(Self::Block(b));
+        }
+
+        Err(ConfigError::Validation(
+            "no block range specified.\n\
+             Use one of: --days, --blocks, --block, or --from-block + --to-block."
+                .to_string(),
+        ))
+    }
+
+    /// Convert into the runtime range mode. Infallible once constructed.
+    pub fn resolve(&self) -> RangeMode {
+        match *self {
+            Self::Days(d) => RangeMode::Days(d),
+            Self::Blocks(b) => RangeMode::Blocks(b),
+            Self::Block(b) => RangeMode::Single(b),
+            Self::FromTo(f, t) => RangeMode::Range(f, t),
+        }
+    }
+}
+
 /// Resolve a `RangeMode` from individual block range CLI arguments.
 /// Reusable across subcommands that accept `BlockRangeArgs`.
+/// Prefer constructing a [`RangeSpec`] once and calling [`RangeSpec::resolve`].
 pub fn resolve_block_range(
     days: Option<u64>,
     blocks: Option<u64>,
@@ -73,74 +179,7 @@ pub fn resolve_block_range(
     from_block: Option<u64>,
     to_block: Option<u64>,
 ) -> std::result::Result<RangeMode, ConfigError> {
-    let mut flags = Vec::new();
-    if days.is_some() {
-        flags.push("--days");
-    }
-    if blocks.is_some() {
-        flags.push("--blocks");
-    }
-    if block.is_some() {
-        flags.push("--block");
-    }
-    if from_block.is_some() || to_block.is_some() {
-        flags.push("--from-block/--to-block");
-    }
-
-    if flags.len() > 1 {
-        return Err(ConfigError::Validation(format!(
-            "{} cannot be used together.\n\
-             Use exactly one of: --days, --blocks, --block, or --from-block/--to-block.",
-            flags.join(" and ")
-        )));
-    }
-
-    if (from_block.is_some() && to_block.is_none()) || (from_block.is_none() && to_block.is_some())
-    {
-        return Err(ConfigError::Validation(
-            "--from-block and --to-block must be used together.".to_string(),
-        ));
-    }
-
-    if let (Some(f), Some(t)) = (from_block, to_block) {
-        if t <= f {
-            return Err(ConfigError::Validation(format!(
-                "--to-block ({t}) must be greater than --from-block ({f})."
-            )));
-        }
-        return Ok(RangeMode::Range(f, t));
-    }
-
-    if let Some(d) = days {
-        if !(1..=365).contains(&d) {
-            return Err(ConfigError::Validation(
-                "--days must be between 1 and 365.".to_string(),
-            ));
-        }
-        return Ok(RangeMode::Days(d));
-    }
-
-    if let Some(b) = blocks {
-        if b < 1 {
-            return Err(ConfigError::Validation(
-                "--blocks must be >= 1.".to_string(),
-            ));
-        }
-        return Ok(RangeMode::Blocks(b));
-    }
-
-    if let Some(b) = block {
-        if b == 0 {
-            return Err(ConfigError::Validation("--block must be > 0.".to_string()));
-        }
-        return Ok(RangeMode::Single(b));
-    }
-
-    Err(ConfigError::Validation(
-        "no block range specified.\n\
-         Use one of: --days, --blocks, --block, or --from-block + --to-block."
-            .to_string(),
-    ))
+    Ok(RangeSpec::from_flags(days, blocks, block, from_block, to_block)?.resolve())
 }
 
 fn check_range_conflicts(cfg: &Config) -> std::result::Result<RangeMode, ConfigError> {

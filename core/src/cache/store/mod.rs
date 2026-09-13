@@ -364,18 +364,29 @@ fn row_to_pool_info(row: &rusqlite::Row) -> anyhow::Result<PoolInfo> {
         .get::<_, Option<Vec<u8>>>(8)?
         .and_then(|bytes| (bytes.len() == 20).then(|| Address::from_slice(&bytes)));
     let is_stable = row.get::<_, Option<i64>>(9)?.map(|v| v != 0);
-    let underlying_tokens: Option<Vec<Address>> =
-        row.get::<_, Option<String>>(10)?.and_then(|json_str| {
-            let hexes: Vec<String> = serde_json::from_str(&json_str).ok()?;
-            let addrs: Vec<Address> = hexes
+    // JSON / hex decode failures propagate (schema drift) instead of silently
+    // dropping the underlying-tokens field.
+    let underlying_tokens: Option<Vec<Address>> = row
+        .get::<_, Option<String>>(10)?
+        .map(|json_str| -> anyhow::Result<Vec<Address>> {
+            let hexes: Vec<String> = serde_json::from_str(&json_str)?;
+            hexes
                 .iter()
-                .filter_map(|h| h.strip_prefix("0x").or(Some(h.as_str())))
-                .filter_map(|h| hex::decode(h).ok())
-                .filter(|b| b.len() == 20)
-                .map(|b| Address::from_slice(&b))
-                .collect();
-            (!addrs.is_empty()).then_some(addrs)
-        });
+                .map(|h| {
+                    let bytes = hex::decode(h.strip_prefix("0x").unwrap_or(h)).map_err(|e| {
+                        anyhow::anyhow!("pool_info holds non-hex address '{h}': {e}")
+                    })?;
+                    if bytes.len() != 20 {
+                        anyhow::bail!(
+                            "pool_info holds address of length {} (expected 20 bytes)",
+                            bytes.len()
+                        );
+                    }
+                    Ok(Address::from_slice(&bytes))
+                })
+                .collect()
+        })
+        .transpose()?;
     let balancer_pool_type = row.get::<_, Option<i64>>(11)?.map(|v| v as u8);
     let hook_address = row
         .get::<_, Option<Vec<u8>>>(12)?

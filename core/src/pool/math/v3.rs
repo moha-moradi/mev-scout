@@ -194,7 +194,11 @@ fn get_next_sqrt_price_from_input(
         }
         mul_div(numerator1, sqrt_price_x96, denominator)
     } else {
-        let amount_in_ratio = mul_div(amount_in, U256::from(1u128 << Q96_SHIFT), U256::from(liquidity))?;
+        let amount_in_ratio = mul_div(
+            amount_in,
+            U256::from(1u128 << Q96_SHIFT),
+            U256::from(liquidity),
+        )?;
         if amount_in_ratio.is_zero() {
             return None;
         }
@@ -229,9 +233,12 @@ fn compute_swap_step(
     .unwrap_or(U256::ZERO);
 
     let (fee_num, fee_den) = fee.fraction();
-    let fee_on_max =
-        mul_div_round_up(max_in, U256::from(fee_num as u64), U256::from(fee_den as u64))
-            .unwrap_or(U256::ZERO);
+    let fee_on_max = mul_div_round_up(
+        max_in,
+        U256::from(fee_num as u64),
+        U256::from(fee_den as u64),
+    )
+    .unwrap_or(U256::ZERO);
     let total_max_cost = max_in + fee_on_max;
 
     if amount_remaining >= total_max_cost {

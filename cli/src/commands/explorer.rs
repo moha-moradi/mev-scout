@@ -8,6 +8,7 @@ use alloy::primitives::{B256, U256};
 use anyhow::Context;
 use comfy_table::Table;
 
+use crate::cli::ValidateArgs;
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
@@ -224,7 +225,7 @@ pub async fn cmd_index(
         (Some(f), Some(t)) => (f, t),
         (None, None) => {
             let d = days.unwrap_or(30);
-            let blocks_per_day = 86_400 / block_time_secs(chain.chain_id()).max(1);
+            let blocks_per_day = mev_scout_core::chain::timing::blocks_per_day(chain);
             let n = d.saturating_mul(blocks_per_day).max(1);
             (head.saturating_sub(n), head)
         }
@@ -257,15 +258,6 @@ pub async fn cmd_index(
         config.effective_explorer_db_path(&chain),
     );
     Ok(())
-}
-
-fn block_time_secs(chain_id: u64) -> u64 {
-    match chain_id {
-        1 => 12,
-        137 | 43114 => 2,
-        56 | 42161 | 8453 | 10 => 1,
-        _ => 2,
-    }
 }
 
 // ── live feed (mev.zone-style, store tail) ──────────────────────────────
@@ -635,20 +627,25 @@ pub async fn cmd_explain(config: &Config, tx_hash: &str) -> anyhow::Result<()> {
 
 // ── validate ────────────────────────────────────────────────────────────
 
-pub async fn cmd_validate(
-    config: &Config,
-    since: Option<&str>,
-    match_window: u64,
-    run_ids: Option<Vec<String>>,
-    threshold_sweep: bool,
-    emit_missing_pools: bool,
-    json: bool,
-) -> anyhow::Result<()> {
+pub async fn cmd_validate(config: &Config, args: &ValidateArgs) -> anyhow::Result<()> {
+    let ValidateArgs {
+        since,
+        match_window,
+        run,
+        threshold_sweep,
+        emit_missing_pools,
+        json,
+    } = args;
+    let run_ids = if run.is_empty() {
+        None
+    } else {
+        Some(run.clone())
+    };
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
     let store = explorer_store(config, chain)?;
 
-    let ts = since_ts(since);
+    let ts = since_ts(since.as_deref());
     let (from_block, to_block) = block_window(&store, ts)?;
 
     let report = validate::compute_validation(
@@ -656,18 +653,18 @@ pub async fn cmd_validate(
         chain,
         from_block,
         to_block,
-        match_window,
+        *match_window,
         run_ids.as_deref(),
-        threshold_sweep,
+        *threshold_sweep,
     )?;
 
-    if json {
+    if *json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", validate::render_validation_report(&report));
     }
 
-    if emit_missing_pools && !report.missing_pools.is_empty() {
+    if *emit_missing_pools && !report.missing_pools.is_empty() {
         let path = "results/missing_pools.txt";
         std::fs::create_dir_all("results").ok();
         std::fs::write(path, report.missing_pools.join("\n"))?;

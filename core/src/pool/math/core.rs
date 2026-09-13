@@ -223,8 +223,7 @@ pub fn optimal_two_hop_arb(a: PoolQuote, b: PoolQuote) -> Option<TwoHopArbResult
     if d1.is_zero() {
         return None;
     }
-    let root =
-        isqrt_u512(da * na * db * nb) * isqrt_u512(ra_o * rb_o) * isqrt_u512(ra_i * rb_i);
+    let root = isqrt_u512(da * na * db * nb) * isqrt_u512(ra_o * rb_o) * isqrt_u512(ra_i * rb_i);
     if root <= d0 {
         return None; // marginal rate cannot cover fees — no profitable trade
     }
@@ -264,8 +263,7 @@ fn simulate_two_hop(input_amount: u128, a: PoolQuote, b: PoolQuote) -> Option<Tw
     let intermediate =
         constant_product_output_amount(input_amount, a.reserve_in, a.reserve_out, a.fee)?;
     // Swap 2: sell intermediate to pool B for token_out
-    let output =
-        constant_product_output_amount(intermediate, b.reserve_in, b.reserve_out, b.fee)?;
+    let output = constant_product_output_amount(intermediate, b.reserve_in, b.reserve_out, b.fee)?;
     if output <= input_amount {
         return None;
     }
@@ -580,11 +578,10 @@ mod tests {
 
     #[test]
     fn closed_form_no_profit_when_prices_aligned() {
-        assert!(optimal_two_hop_arb(
-            leg(1_000_000, 1_000_000, 30),
-            leg(1_000_000, 1_000_000, 30)
-        )
-        .is_none());
+        assert!(
+            optimal_two_hop_arb(leg(1_000_000, 1_000_000, 30), leg(1_000_000, 1_000_000, 30))
+                .is_none()
+        );
     }
 
     #[test]

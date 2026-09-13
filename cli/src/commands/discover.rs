@@ -176,17 +176,12 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
     let rpc = setup.rpc;
 
     // ── Block range — not needed for pure remote mode ──
+    let range = config.range_spec();
     let (from, to) = if is_remote_only {
-        match validation::resolve_block_range(
-            config.days,
-            config.blocks,
-            config.block,
-            config.from_block,
-            config.to_block,
-        ) {
+        match range {
             Ok(mode) => {
                 let resolver = RangeResolver::new(rpc.clone());
-                let resolved = resolver.resolve(&mode).await?;
+                let resolved = resolver.resolve(&mode.resolve()).await?;
                 (resolved.start_block, resolved.end_block)
             }
             Err(e) => {
@@ -200,16 +195,10 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
             }
         }
     } else {
-        match validation::resolve_block_range(
-            config.days,
-            config.blocks,
-            config.block,
-            config.from_block,
-            config.to_block,
-        ) {
+        match range {
             Ok(mode) => {
                 let resolver = RangeResolver::new(rpc.clone());
-                let resolved = resolver.resolve(&mode).await?;
+                let resolved = resolver.resolve(&mode.resolve()).await?;
                 (resolved.start_block, resolved.end_block)
             }
             Err(e) => {

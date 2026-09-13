@@ -46,10 +46,9 @@ impl FeeTier {
             };
         }
         match dex_type {
-            DexType::UniswapV2
-            | DexType::Solidly
-            | DexType::Camelot
-            | DexType::TraderJoeLB => FeeTier::Bps(raw_fee),
+            DexType::UniswapV2 | DexType::Solidly | DexType::Camelot | DexType::TraderJoeLB => {
+                FeeTier::Bps(raw_fee)
+            }
             DexType::UniswapV3
             | DexType::UniswapV4
             | DexType::PancakeInfinity
@@ -127,14 +126,8 @@ mod tests {
 
     #[test]
     fn zero_is_unset_except_pendle_free() {
-        assert_eq!(
-            FeeTier::from_raw(DexType::UniswapV2, 0),
-            FeeTier::Unset
-        );
-        assert_eq!(
-            FeeTier::from_raw(DexType::UniswapV3, 0),
-            FeeTier::Unset
-        );
+        assert_eq!(FeeTier::from_raw(DexType::UniswapV2, 0), FeeTier::Unset);
+        assert_eq!(FeeTier::from_raw(DexType::UniswapV3, 0), FeeTier::Unset);
         // Pendle's fee is baked into the AMM; raw 0 stays free.
         assert_eq!(FeeTier::from_raw(DexType::Pendle, 0), FeeTier::Free);
     }

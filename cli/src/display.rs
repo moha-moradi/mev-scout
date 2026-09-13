@@ -58,28 +58,30 @@ pub fn persist_opportunities_to_explorer(
                 .join(",")
         });
         let confidence_str = opp.confidence.map(|c| format!("{c:.2}"));
-        if let Err(e) = store.insert_opportunity(
-            run_id,
-            &results_file.chain,
-            opp.block_number,
-            Some(opp.tx_index as u64),
-            &opp.strategy.to_string(),
-            Some(opp.pool_a),
-            (opp.pool_b != Address::ZERO).then_some(opp.pool_b),
-            (!opp.token_in.is_zero()).then_some(opp.token_in),
-            (!opp.token_out.is_zero()).then_some(opp.token_out),
-            Some(opp.input_amount),
-            Some(opp.expected_profit),
-            Some(U256::from(opp.gas_cost_wei)),
-            opp.path.as_ref().and(path_str.as_deref()),
-            Some(opp.timestamp),
-            opp.mempool_only,
-            confidence_str.as_deref(),
-            opp.sender,
-            opp.tx_hash,
-            opp.detection_path.as_deref(),
-            opp.canonical_id.as_deref(),
-        ) {
+        if let Err(e) =
+            store.insert_opportunity(mev_scout_core::explorer::store::OpportunityInput {
+                run_id,
+                chain: &results_file.chain,
+                block_number: opp.block_number,
+                tx_index: Some(opp.tx_index as u64),
+                strategy: &opp.strategy.to_string(),
+                pool_a: Some(opp.pool_a),
+                pool_b: (opp.pool_b != Address::ZERO).then_some(opp.pool_b),
+                token_in: (!opp.token_in.is_zero()).then_some(opp.token_in),
+                token_out: (!opp.token_out.is_zero()).then_some(opp.token_out),
+                input_amount: Some(opp.input_amount),
+                expected_profit: Some(opp.expected_profit),
+                gas_cost_wei: Some(U256::from(opp.gas_cost_wei)),
+                path: path_str.as_deref(),
+                timestamp: Some(opp.timestamp),
+                mempool_only: opp.mempool_only,
+                confidence: confidence_str.as_deref(),
+                sender: opp.sender,
+                tx_hash: opp.tx_hash,
+                detection_path: opp.detection_path.as_deref(),
+                canonical_id: opp.canonical_id.as_deref(),
+            })
+        {
             tracing::warn!("opportunities-table insert failed: {e}");
         }
     }

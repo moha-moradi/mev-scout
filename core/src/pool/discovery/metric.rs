@@ -1,10 +1,19 @@
 use super::scan_factory_creation_events_pinned;
 use super::METRIC_POOL_CREATED_TOPIC;
-use super::{DiscoveredPool, DiscoveryConfig};
+use super::{DiscoveredPool, DiscoveryConfig, PoolHitCandidate, ScanBatchResult};
 use crate::dex_type::DexType;
+use crate::pipeline::topics;
 use crate::rpc::RpcClient;
 use alloy::primitives::Address;
-use std::collections::{HashMap, HashSet};
+
+/// Metric V2 activity: per-pool contracts emit Swap from the pool address.
+pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
+    if log.topics()[0] == *topics::METRIC_SWAP {
+        Some(PoolHitCandidate::simple(DexType::Metric))
+    } else {
+        None
+    }
+}
 
 /// Metric V2 factory scan — `PoolCreated(address indexed token0, address
 /// indexed token1, address indexed priceProvider, address pool, bytes32
@@ -16,20 +25,16 @@ pub(crate) async fn scan_metric_batch(
     config: &DiscoveryConfig<'_>,
     current: u64,
     batch_end: u64,
-    active_blocks: &mut HashSet<u64>,
-    factory_pools: &mut HashMap<Address, DiscoveredPool>,
     provider_idx: Option<usize>,
-) {
+) -> ScanBatchResult {
     if let Some(factories) = config.metric_factory {
         let factories = std::slice::from_ref(&factories);
-        scan_factory_creation_events_pinned(
+        return scan_factory_creation_events_pinned(
             rpc,
             factories,
             *METRIC_POOL_CREATED_TOPIC,
             current,
             batch_end,
-            active_blocks,
-            factory_pools,
             provider_idx,
             |log| {
                 let log_data = log.data();
@@ -57,4 +62,5 @@ pub(crate) async fn scan_metric_batch(
         )
         .await;
     }
+    ScanBatchResult::default()
 }

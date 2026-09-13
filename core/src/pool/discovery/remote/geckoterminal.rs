@@ -15,9 +15,7 @@ use std::time::Duration;
 use alloy::primitives::Address;
 use serde_json::Value;
 
-use crate::dex_type::DexType;
-
-use super::RemotePool;
+use super::{fetch_with_retry, infer_dex_type, is_unsupported_dex, parse_addr, RemotePool};
 
 /// Map chain name (our internal) → GeckoTerminal network slug.
 ///
@@ -79,7 +77,7 @@ impl GeckoTerminalClient {
                 self.base_url, network, page
             );
 
-            let resp = self.get_with_retry(&url).await?;
+            let resp = fetch_with_retry(&self.client, "GeckoTerminal", &url).await?;
             let batch = parse_geckoterminal_response(&resp, min_tvl)?;
 
             let empty = batch.is_empty();
@@ -146,7 +144,7 @@ impl GeckoTerminalClient {
                 self.base_url, network, dex, page
             );
 
-            let resp = self.get_with_retry(&url).await?;
+            let resp = fetch_with_retry(&self.client, "GeckoTerminal", &url).await?;
             let batch = parse_gecko_response_inner(&resp, min_tvl, Some(dex))?;
 
             let empty = batch.is_empty();
@@ -198,7 +196,7 @@ impl GeckoTerminalClient {
                 "{}/api/v2/networks/{network}/dexes?page={page}",
                 self.base_url
             );
-            let resp = self.get_with_retry(&url).await?;
+            let resp = fetch_with_retry(&self.client, "GeckoTerminal", &url).await?;
             let batch: Vec<String> = resp
                 .get("data")
                 .and_then(|v| v.as_array())
@@ -217,64 +215,6 @@ impl GeckoTerminalClient {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         Ok(dexes)
-    }
-
-    async fn get_with_retry(&self, url: &str) -> anyhow::Result<Value> {
-        const MAX_RETRIES: u32 = 3;
-        const BASE_DELAY_MS: u64 = 600;
-        let mut last_err = None;
-
-        for attempt in 0..MAX_RETRIES {
-            match self.client.get(url).send().await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        let text = resp.text().await.unwrap_or_default();
-                        let json: Value = serde_json::from_str(&text).map_err(|e| {
-                            anyhow::anyhow!(
-                                "invalid JSON from GeckoTerminal: {} — {}",
-                                e,
-                                &text[..text.len().min(500)]
-                            )
-                        })?;
-                        return Ok(json);
-                    }
-                    let body = resp.text().await.unwrap_or_default();
-                    let msg = format!(
-                        "HTTP {} from GeckoTerminal: {}",
-                        status.as_u16(),
-                        &body[..body.len().min(300)]
-                    );
-                    if status.as_u16() == 429 && attempt + 1 < MAX_RETRIES {
-                        let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                        tracing::debug!(
-                            "GeckoTerminal 429, retry {}/{} after {}ms",
-                            attempt + 1,
-                            MAX_RETRIES,
-                            delay
-                        );
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        last_err = Some(anyhow::anyhow!(msg));
-                        continue;
-                    }
-                    last_err = Some(anyhow::anyhow!(msg));
-                    break;
-                }
-                Err(e) => {
-                    let msg = format!("GeckoTerminal request failed: {:#}", e);
-                    let retryable = e.is_timeout() || e.is_connect() || msg.contains("429");
-                    if retryable && attempt + 1 < MAX_RETRIES {
-                        let delay = BASE_DELAY_MS * 2u64.pow(attempt);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        last_err = Some(anyhow::anyhow!(msg));
-                        continue;
-                    }
-                    last_err = Some(anyhow::anyhow!(msg));
-                    break;
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("GeckoTerminal request failed")))
     }
 }
 
@@ -395,7 +335,7 @@ fn parse_gecko_response_inner(
             }
             continue;
         }
-        let dex_type = infer_dex_type(Some(&dex_label));
+        let dex_type = infer_dex_type(Some(&dex_label), &[]);
 
         out.push(RemotePool {
             address,
@@ -495,75 +435,10 @@ fn extract_hex(s: &str) -> Option<&str> {
     }
 }
 
-fn parse_addr(s: &str) -> Option<Address> {
-    let s = s.trim();
-    let hex = s.trim_start_matches("0x").trim_start_matches("0X");
-    if hex.len() != 40 {
-        return None;
-    }
-    let mut bytes = [0u8; 20];
-    hex::decode_to_slice(hex, &mut bytes).ok()?;
-    Some(Address::from_slice(&bytes))
-}
-
-/// Map a GeckoTerminal dex id/label to a `DexType`.
-///
-/// Ordering matters: specific labels (Algebra, PancakeSwap V3, ...) must be
-/// checked before generic substrings so e.g. `quickswap-algebra` resolves to
-/// concentrated-liquidity V3 instead of the blind QuickSwap→V2 fallback that
-/// used to poison remote CL pools.
-pub fn infer_dex_type(dex: Option<&str>) -> DexType {
-    let s = dex.unwrap_or("").to_ascii_lowercase();
-    match s.as_str() {
-        _ if s.contains("algebra") => DexType::UniswapV3,
-        _ if s.contains("uniswap") && s.contains("v4") => DexType::UniswapV4,
-        _ if s.contains("uniswap") && s.contains("v3") => DexType::UniswapV3,
-        _ if s.contains("pancakeswap") && s.contains("v3") => DexType::UniswapV3,
-        _ if s.contains("pancakeswap") && s.contains("infinity") => DexType::PancakeInfinity,
-        _ if s.contains("pharaoh") && s.contains("v3") => DexType::UniswapV3,
-        // Velodrome V3 / Aerodrome Slipstream are concentrated-liquidity (V3);
-        // classic Velodrome/Aerodrome v1/v2 pairs are Solidly-style.
-        _ if s.contains("velodrome") || s.contains("aerodrome") || s.contains("slipstream") => {
-            if s.contains("v3") || s.contains("slipstream") {
-                DexType::UniswapV3
-            } else {
-                DexType::Solidly
-            }
-        }
-        _ if s.contains("solidly") => DexType::Solidly,
-        _ if s.contains("pendle") => DexType::Pendle,
-        _ if s.contains("pharaoh") && s.contains("dlmm") => DexType::TraderJoeLB,
-        _ if s.contains("trader-joe")
-            || s.contains("traderjoe")
-            || s.contains("liquidity-book")
-            || s.contains("lfj") =>
-        {
-            DexType::TraderJoeLB
-        }
-        _ if s.contains("balancer") => DexType::Balancer,
-        _ if s.contains("curve") => DexType::Curve,
-        _ if s.contains("camelot") => DexType::Camelot,
-        _ if s.contains("metric") => DexType::Metric,
-        _ if s.contains("fluid") => DexType::Fluid,
-        // Classic AMMs: plain QuickSwap / SushiSwap / PancakeSwap V2 pairs.
-        _ if s == "quickswap" || s.starts_with("quickswap-") => DexType::UniswapV2,
-        _ if s.contains("sushi") => DexType::UniswapV2,
-        _ if s.contains("pancakeswap") => DexType::UniswapV2,
-        _ => DexType::UniswapV2,
-    }
-}
-
-/// DEX labels with meaningful TVL but no decoder yet — importing them under a
-/// wrong `DexType` poisons pool state, so they are skipped (with a warning)
-/// until a decoder lands. Guarded before `infer_dex_type`.
-pub(crate) fn is_unsupported_dex(s: &str) -> bool {
-    const UNSUPPORTED: &[&str] = &["dodo", "woofi", "hashflow", "maverick", "ekubo"];
-    UNSUPPORTED.iter().any(|n| s.contains(n))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dex_type::DexType;
     use serde_json::json;
 
     #[test]
@@ -756,36 +631,51 @@ mod tests {
     #[test]
     fn infer_dex_type_specific_labels_win_over_v2_fallback() {
         assert_eq!(
-            infer_dex_type(Some("quickswap-algebra")),
+            infer_dex_type(Some("quickswap-algebra"), &[]),
             DexType::UniswapV3
         );
-        assert_eq!(infer_dex_type(Some("algebra-integral")), DexType::UniswapV3);
-        assert_eq!(infer_dex_type(Some("quickswap")), DexType::UniswapV2);
-        assert_eq!(infer_dex_type(Some("uniswap-v3")), DexType::UniswapV3);
-        assert_eq!(infer_dex_type(Some("uniswap-v4")), DexType::UniswapV4);
-        assert_eq!(infer_dex_type(Some("pancakeswap-v3")), DexType::UniswapV3);
         assert_eq!(
-            infer_dex_type(Some("pancakeswap-infinity")),
+            infer_dex_type(Some("algebra-integral"), &[]),
+            DexType::UniswapV3
+        );
+        assert_eq!(infer_dex_type(Some("quickswap"), &[]), DexType::UniswapV2);
+        assert_eq!(infer_dex_type(Some("uniswap-v3"), &[]), DexType::UniswapV3);
+        assert_eq!(infer_dex_type(Some("uniswap-v4"), &[]), DexType::UniswapV4);
+        assert_eq!(
+            infer_dex_type(Some("pancakeswap-v3"), &[]),
+            DexType::UniswapV3
+        );
+        assert_eq!(
+            infer_dex_type(Some("pancakeswap-infinity"), &[]),
             DexType::PancakeInfinity
         );
         assert_eq!(
-            infer_dex_type(Some("pancakeswap-infinity-clmm-base")),
+            infer_dex_type(Some("pancakeswap-infinity-clmm-base"), &[]),
             DexType::PancakeInfinity
         );
-        assert_eq!(infer_dex_type(Some("trader-joe")), DexType::TraderJoeLB);
-        assert_eq!(infer_dex_type(Some("lfj")), DexType::TraderJoeLB);
-        assert_eq!(infer_dex_type(Some("pendle")), DexType::Pendle);
-        assert_eq!(infer_dex_type(Some("curve-dex")), DexType::Curve);
-        assert_eq!(infer_dex_type(Some("unknown-amm")), DexType::UniswapV2);
-        assert_eq!(infer_dex_type(Some("velodrome")), DexType::Solidly);
-        assert_eq!(infer_dex_type(Some("velodrome-v3")), DexType::UniswapV3);
-        assert_eq!(infer_dex_type(Some("aerodrome")), DexType::Solidly);
         assert_eq!(
-            infer_dex_type(Some("aerodrome-slipstream")),
+            infer_dex_type(Some("trader-joe"), &[]),
+            DexType::TraderJoeLB
+        );
+        assert_eq!(infer_dex_type(Some("lfj"), &[]), DexType::TraderJoeLB);
+        assert_eq!(infer_dex_type(Some("pendle"), &[]), DexType::Pendle);
+        assert_eq!(infer_dex_type(Some("curve-dex"), &[]), DexType::Curve);
+        assert_eq!(infer_dex_type(Some("unknown-amm"), &[]), DexType::UniswapV2);
+        assert_eq!(infer_dex_type(Some("velodrome"), &[]), DexType::Solidly);
+        assert_eq!(
+            infer_dex_type(Some("velodrome-v3"), &[]),
             DexType::UniswapV3
         );
-        assert_eq!(infer_dex_type(Some("pharaoh-v3")), DexType::UniswapV3);
-        assert_eq!(infer_dex_type(Some("pharaoh-dlmm")), DexType::TraderJoeLB);
+        assert_eq!(infer_dex_type(Some("aerodrome"), &[]), DexType::Solidly);
+        assert_eq!(
+            infer_dex_type(Some("aerodrome-slipstream"), &[]),
+            DexType::UniswapV3
+        );
+        assert_eq!(infer_dex_type(Some("pharaoh-v3"), &[]), DexType::UniswapV3);
+        assert_eq!(
+            infer_dex_type(Some("pharaoh-dlmm"), &[]),
+            DexType::TraderJoeLB
+        );
     }
 
     #[test]
