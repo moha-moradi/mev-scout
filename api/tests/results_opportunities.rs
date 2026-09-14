@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use common::{state_with_real_dbs, test_state, test_router};
 
 async fn get(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     uri: &str,
 ) -> (StatusCode, Value) {
     let resp = app
@@ -183,8 +183,8 @@ async fn opportunities_run_summaries_includes_live_without_manifest() {
     let live = runs.iter().find(|r| r["run_id"] == "live_1777").unwrap();
     assert_eq!(live["count"], 1);
     // live_1777 has no manifest row, but the summary must list it anyway.
-    let (_, res) = get(&app, "/api/results/live_1777").await;
-    assert_eq!(res.status() as u16, 404);
+    let (status, _) = get(&app, "/api/results/live_1777").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

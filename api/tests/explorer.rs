@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use common::{test_state, test_router};
 
 async fn get(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     uri: &str,
 ) -> (StatusCode, Value) {
     let resp = app

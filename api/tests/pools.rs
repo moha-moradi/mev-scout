@@ -11,7 +11,7 @@ use tower::ServiceExt;
 use common::{state_with_real_dbs, test_router};
 
 async fn get(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     uri: &str,
 ) -> (StatusCode, Value) {
     let resp = app
@@ -31,7 +31,7 @@ async fn get(
     (status, json)
 }
 
-async fn app() -> axum::Router<mev_scout_api::state::SharedState> {
+async fn app() -> axum::Router<()> {
     test_router(state_with_real_dbs().await)
 }
 

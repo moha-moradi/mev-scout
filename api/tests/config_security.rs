@@ -13,12 +13,12 @@ use tower::ServiceExt;
 use common::{test_state, test_router, test_state_with_files, write_env_template_config, write_temp_config};
 
 async fn request(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     method: Method,
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let builder = Request::builder().method(method).uri(uri);
     let resp = app
         .clone()
         .oneshot(match body {
@@ -47,8 +47,9 @@ async fn config_get_returns_sanitized_non_secret_fields() {
     assert!(json["backtest"].is_object());
     assert!(json["output"].is_object());
     assert!(json["explorer"].is_object());
-    assert!(json["rpc"]["providers"].is_number());
-    assert!(json["rpc"]["hosts"].is_array());
+    // test_state uses the default Config, whose rpc_urls list is empty.
+    assert_eq!(json["rpc"]["providers"], 0);
+    assert!(json["rpc"]["hosts"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -66,10 +67,13 @@ async fn security_rpc_urls_never_in_config_get() {
         !raw.contains("rpc_url") && !raw.contains("rpc_rps") && !raw.contains("SECRETKEY"),
         "GET /api/config leaked secrets: {raw}"
     );
-    assert!(!raw.contains("polygon-rpc.example.com"));
-    // Hosts are masked to bare hostnames.
+    assert!(!raw.contains("user:secret"), "credentials leaked: {raw}");
+    // Masked summary: hostname only, never URL scheme/userinfo/path/key.
     assert_eq!(json["rpc"]["providers"], 1);
-    assert!(json["rpc"]["hosts"].as_array().unwrap().is_empty());
+    assert!(
+        !raw.contains("polygon-rpc.example.com/v1/SECRETKEY"),
+        "full URL leaked: {raw}"
+    );
 }
 
 #[tokio::test]
@@ -90,7 +94,7 @@ async fn security_rpc_urls_never_in_put_round_trip() {
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+assert_eq!(status, StatusCode::OK, "PUT failed: {resp}");
     assert_eq!(resp["ok"], true);
     let raw = serde_json::to_string(&resp).unwrap();
     assert!(!raw.contains("SECRETKEY") && !raw.contains("rpc_urls"), "PUT response leaked: {raw}");
@@ -121,7 +125,7 @@ async fn config_put_updates_non_secret_fields_and_creates_backup() {
         Method::PUT,
         "/api/config",
         Some(json!({
-            "backtest": { "min_profit_wei": 7000000000, "proximity_window": 5 }
+            "backtest": { "min_profit_wei": 7000000000_i64, "proximity_window": 5 }
         })),
     )
     .await;
@@ -140,7 +144,7 @@ async fn config_put_updates_non_secret_fields_and_creates_backup() {
 
     // State reloaded.
     let (_, json) = request(&app, Method::GET, "/api/config", None).await;
-    assert_eq!(json["backtest"]["min_profit_wei"], 7000000000);
+    assert_eq!(json["backtest"]["min_profit_wei"], 7000000000_i64);
 }
 
 #[tokio::test]
@@ -219,14 +223,15 @@ async fn config_edit_rejected_409_while_job_runs() {
     let state = test_state_with_files(cfg_path, None).await;
     let app = test_router(state);
 
-    // Start a long-running job via the jobs API.
+    // Start a long-running job via the jobs API (allowlisted `live` command;
+    // the `emit-progress` arg makes the stub emit NDJSON then stay alive).
     let (status, resp) = request(
         &app,
         Method::POST,
         "/api/jobs",
         Some(json!({
-            "command": "emit-progress",
-            "args": []
+            "command": "live",
+            "args": ["emit-progress"]
         })),
     )
     .await;
@@ -253,8 +258,8 @@ async fn config_edit_rejected_409_while_job_runs() {
 async fn config_chain_switch_swaps_connections() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
-    let app = test_router(state);
+let state = test_state_with_files(cfg_path, None).await;
+    let app = test_router(state.clone());
 
     let (status, _) = request(
         &app,

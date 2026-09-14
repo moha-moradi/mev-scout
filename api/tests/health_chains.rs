@@ -7,9 +7,9 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use common::{empty_explorer_db, seeded_cache_db, state_with_conns, test_state, test_router};
+use common::{test_state, test_router};
 
-async fn get(app: &axum::Router<mev_scout_api::state::SharedState>, uri: &str) -> (StatusCode, Value) {
+async fn get(app: &axum::Router<()>, uri: &str) -> (StatusCode, Value) {
     let resp = app
         .clone()
         .oneshot(
@@ -89,7 +89,7 @@ async fn chains_returns_exactly_seven_with_correct_ids() {
 async fn missing_db_read_endpoints_return_empty_not_500() {
     // A state with empty in-memory DBs (schema present, no rows) and file
     // paths pointing at nonexistent files → graceful empty responses.
-    let state = common::state_with_conns(common::empty_explorer_db(), common::seeded_cache_db());
+    let state = common::state_with_conns(common::empty_explorer_db(), common::seeded_cache_db()).await;
     let app = test_router(state);
     for uri in [
         "/api/explorer/feed",

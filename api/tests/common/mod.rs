@@ -20,7 +20,7 @@ use mev_scout_core::types::ChainName;
 
 use mev_scout_api::jobs::JobManager;
 use mev_scout_api::state::{AppState, SharedState};
-use mev_scout_api::test_router;
+pub use mev_scout_api::test_router;
 
 const EXPLORER_SCHEMA: &str = include_str!("../../src/explorer_schema.sql");
 const CACHE_SCHEMA: &str = include_str!("../../src/cache_schema.sql");
@@ -29,7 +29,7 @@ const CACHE_SCHEMA: &str = include_str!("../../src/cache_schema.sql");
 /// The tempdir backing the job manager is leaked (forgotten) so the log
 /// dir outlives the helper for jobs tests.
 pub async fn test_state() -> SharedState {
-    state_with_conns(seeded_explorer_db(), seeded_cache_db())
+    state_with_conns(seeded_explorer_db(), seeded_cache_db()).await
 }
 
 /// Build a `SharedState` from explicit explorer/cache connections (used for
@@ -62,7 +62,11 @@ pub async fn test_state_with_files(
     config_path: PathBuf,
     binary: Option<PathBuf>,
 ) -> SharedState {
-let config = mev_scout_core::config::Config::load(&config_path.to_string_lossy())
+    // Children spawned by the job manager inherit this process's env; the
+    // test binary (also `CARGO_BIN_EXE_mev-scout-api`) enters stub mode.
+    std::env::set_var("MEV_SCOUT_STUB", "1");
+
+    let config = mev_scout_core::config::Config::load(&config_path.to_string_lossy())
         .unwrap_or_else(|_| mev_scout_core::config::Config::default());
 
     let explorer_conn = seeded_explorer_db();
@@ -124,7 +128,7 @@ pub async fn state_with_real_dbs() -> SharedState {
 }
 
 /// Build a router over the in-memory state (mounted at `/api`).
-pub async fn test_router_state() -> Router<SharedState> {
+pub async fn test_router_state() -> Router<()> {
     test_router(test_state().await)
 }
 
@@ -231,8 +235,10 @@ fn seed_cache_rows(conn: &Connection) {
 }
 
 /// Write a temp config file with known secrets and return its path.
-/// Includes `[chains.*]` sections for the chains the tests switch between
-/// (required by core validation's `resolve_chain`).
+/// Uses the flat key format of `mev-scout.example.toml` (sub-configs are
+/// `#[serde(flatten)]`ed, so `gas`/`backtest`/`output`/`rpc` fields live at
+/// the top level). Includes `[chains.*]` sections for the chains the tests
+/// switch between (required by core validation's `resolve_chain`).
 pub fn write_temp_config(dir: &Path, chain: &str) -> PathBuf {
     let path = dir.join("mev-scout.toml");
     std::fs::write(
@@ -240,6 +246,16 @@ pub fn write_temp_config(dir: &Path, chain: &str) -> PathBuf {
         format!(
             r#"
 chain = "{chain}"
+gas_model = "eip1559"
+gas_limit = 4000000
+priority_fee_gwei = 2.0
+strategies = "atomic,backrun"
+min_profit_wei = 1000000000
+output = "table"
+
+# Secret RPC config — MUST NOT be exposed via the API.
+rpc_urls = ["https://user:secret@polygon-rpc.example.com/v1/SECRETKEY"]
+rpc_rps = [10.0]
 
 [chains.polygon]
 chain_id = 137
@@ -250,24 +266,8 @@ chain_id = 42161
 [chains.bsc]
 chain_id = 56
 
-[gas]
-gas_model = "eip1559"
-gas_limit = 4000000
-priority_fee_gwei = 2.0
-
-[backtest]
-strategies = ["atomic", "backrun"]
-min_profit_wei = 1000000000
-
-[output]
-output = "both"
-
 [explorer]
 confirmations = 6
-
-# Secret RPC config — MUST NOT be exposed via the API.
-rpc_urls = ["https://user:secret@polygon-rpc.example.com/v1/SECRETKEY"]
-rpc_rps = [10.0]
 "#,
         )
     )
@@ -283,6 +283,7 @@ pub fn write_env_template_config(dir: &Path) -> PathBuf {
         &path,
         r#"
 chain = "polygon"
+rpc_urls = ["https://user:${POLYGON_RPC_KEY}@polygon-rpc.example.com/v1"]
 
 [chains.polygon]
 chain_id = 137
@@ -292,8 +293,6 @@ chain_id = 42161
 
 [chains.bsc]
 chain_id = 56
-
-rpc_urls = ["https://user:${POLYGON_RPC_KEY}@polygon-rpc.example.com/v1"]
 "#,
     )
     .unwrap();

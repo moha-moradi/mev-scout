@@ -20,7 +20,9 @@ pub fn api_router() -> Router<SharedState> {
 }
 
 /// Build a test/embedded router with the top-level `/api` index route.
-pub fn test_router(state: SharedState) -> Router<SharedState> {
+/// `with_state` provides the `SharedState`, yielding a `Router<()>` that
+/// implements `tower::Service` (required by `tower::ServiceExt::oneshot`).
+pub fn test_router(state: SharedState) -> Router<()> {
     Router::new()
         .route("/api", get(api_index))
         .merge(api_router())

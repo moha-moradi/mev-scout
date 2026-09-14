@@ -81,8 +81,12 @@ pub struct Job {
 }
 
 impl Job {
-    fn running(&self) -> bool {
-        self.info.status == JobStatus::Running
+    /// True while the child process has not yet exited. Reads the runtime
+    /// (updated by the exit watcher) rather than the creation-time
+    /// `info.status`, so a finished job stops blocking new spawns.
+    async fn running(&self) -> bool {
+        let rt = self.runtime.lock().await;
+        !rt.exited
     }
 }
 
@@ -103,8 +107,13 @@ impl JobManager {
     }
 
     /// True when a job is currently running (drives 409s and chain-switch locks).
-    pub fn has_running(&self) -> bool {
-        self.jobs.iter().any(Job::running)
+    pub async fn has_running(&self) -> bool {
+        for job in &self.jobs {
+            if job.running().await {
+                return true;
+            }
+        }
+        false
     }
 
     /// Spawn a new job. Caller must verify: no job running, command
@@ -118,7 +127,7 @@ impl JobManager {
         mut args: Vec<String>,
         timeout_secs: Option<u64>,
     ) -> anyhow::Result<String> {
-        if self.has_running() {
+        if self.has_running().await {
             anyhow::bail!("a job is already running");
         }
         let now = chrono::Utc::now();
@@ -239,7 +248,7 @@ impl JobManager {
             .iter()
             .find(|j| j.info.job_id == job_id)
             .ok_or_else(|| anyhow::anyhow!("unknown job '{job_id}'"))?;
-        if !job.running() {
+        if !job.running().await {
             anyhow::bail!("job '{job_id}' is not running");
         }
         let pid = job.runtime.lock().await.pid;
@@ -253,7 +262,7 @@ impl JobManager {
     /// Kill every running job (graceful shutdown).
     pub async fn kill_all(&mut self) {
         for job in &self.jobs {
-            if job.running() {
+            if job.running().await {
                 let mut g = job.runtime.lock().await;
                 g.stop_requested = true;
                 if let Some(pid) = g.pid {

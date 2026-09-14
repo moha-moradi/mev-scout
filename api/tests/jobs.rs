@@ -13,12 +13,12 @@ use tower::ServiceExt;
 use common::{test_state, test_state_with_files, test_router, write_temp_config};
 
 async fn request(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     method: Method,
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let builder = Request::builder().method(method).uri(uri);
     let resp = app
         .clone()
         .oneshot(match body {
@@ -37,18 +37,15 @@ async fn request(
 }
 
 /// A jobs-capable state: binary = this test's own executable (which runs the
-/// `MEV_SCOUT_STUB` mode), config = a temp file.
-async fn jobs_app() -> (axum::Router<mev_scout_api::state::SharedState>, usize) {
-    // Children spawned by the job manager inherit this process's env, so the
-    // test binary (also `CARGO_BIN_EXE_mev-scout-api`) enters stub mode.
-    std::env::set_var("MEV_SCOUT_STUB", "1");
+/// `MEV_SCOUT_STUB` mode via the harness env), config = a temp file.
+async fn jobs_app() -> (axum::Router<()>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
     let state = test_state_with_files(cfg_path, None).await;
     (test_router(state), 0)
 }
 
-async fn spawn(app: &axum::Router<mev_scout_api::state::SharedState>, cmd: &str, args: Vec<&str>) -> (StatusCode, Value) {
+async fn spawn(app: &axum::Router<()>, cmd: &str, args: Vec<&str>) -> (StatusCode, Value) {
     let args: Vec<String> = args.into_iter().map(str::to_string).collect();
     request(
         app,
@@ -59,16 +56,8 @@ async fn spawn(app: &axum::Router<mev_scout_api::state::SharedState>, cmd: &str,
     .await
 }
 
-async fn job_status(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
-    job_id: &str,
-) -> String {
-    let (_, json) = request(app, Method::GET, &format!("/api/jobs/{job_id}"), None).await;
-    json["status"].as_str().unwrap_or("").to_string()
-}
-
 async fn wait_for(
-    app: &axum::Router<mev_scout_api::state::SharedState>,
+    app: &axum::Router<()>,
     job_id: &str,
     target: &str,
     timeout_ms: u64,
@@ -129,7 +118,13 @@ async fn job_success_log_and_run_id() {
 
     // Log tail contains the stub's stdout line.
     let (_, log) = request(&app, Method::GET, &format!("/api/jobs/{job_id}/log"), None).await;
-    let text = log.as_array().unwrap().join("\n");
+    let text: Vec<&str> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.as_str())
+        .collect();
+    let text = text.join("\n");
     assert!(text.contains("hello from stub"), "log: {text}");
     assert!(text.contains("args=ok --flag"), "log: {text}");
 
@@ -149,7 +144,13 @@ async fn job_failure_sets_status_and_exit_code() {
 
     // stderr captured into the same log.
     let (_, log) = request(&app, Method::GET, &format!("/api/jobs/{job_id}/log"), None).await;
-    let text = log.as_array().unwrap().join("\n");
+    let text: Vec<&str> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.as_str())
+        .collect();
+    let text = text.join("\n");
     assert!(text.contains("boom"), "stderr missing: {text}");
 }
 
@@ -159,16 +160,25 @@ async fn job_progress_reports_stages_and_run_id() {
     let (_, resp) = spawn(&app, "live", vec!["emit-progress"]).await;
     let job_id = resp["job_id"].as_str().unwrap().to_string();
 
-    // Wait for the NDJSON events to be collected.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    let (status, progress) = request(
-        &app,
-        Method::GET,
-        &format!("/api/jobs/{job_id}/progress"),
-        None,
-    )
-    .await;
+    // Wait for the NDJSON events to be collected (polled: the parse happens
+    // in a background task feeding on the child's stdout).
+    let (status, progress) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (s, p) = request(
+                &app,
+                Method::GET,
+                &format!("/api/jobs/{job_id}/progress"),
+                None,
+            )
+            .await;
+            if p["stage"] == "detect" {
+                return (s, p);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("progress never reached 'detect'");
     assert_eq!(status, StatusCode::OK);
     let p = progress.as_object().unwrap();
     assert_eq!(p["stage"], "detect"); // last parsed event
