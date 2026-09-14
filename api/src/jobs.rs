@@ -1,7 +1,7 @@
 //! Job manager: spawn/kill/list CLI subprocess jobs, capture logs, parse
 //! NDJSON progress events. One running job at a time (single-job mutex).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,17 +33,6 @@ pub enum JobStatus {
     Finished,
     Failed,
     Killed,
-}
-
-impl JobStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            JobStatus::Running => "running",
-            JobStatus::Finished => "finished",
-            JobStatus::Failed => "failed",
-            JobStatus::Killed => "killed",
-        }
-    }
 }
 
 /// One NDJSON `--progress json` event parsed from the job log.
@@ -104,7 +93,7 @@ pub struct JobManager {
 }
 
 impl JobManager {
-    pub fn new(data_dir: &PathBuf) -> Self {
+    pub fn new(data_dir: &Path) -> Self {
         let log_dir = data_dir.join("logs");
         std::fs::create_dir_all(&log_dir).ok();
         JobManager {
@@ -123,8 +112,8 @@ impl JobManager {
     /// `--config` so UI edits apply to spawned runs.
     pub async fn spawn(
         &mut self,
-        binary: &PathBuf,
-        config_path: &PathBuf,
+        binary: &Path,
+        config_path: &Path,
         command: String,
         mut args: Vec<String>,
         timeout_secs: Option<u64>,
@@ -183,11 +172,18 @@ impl JobManager {
 
         // stdout/stderr line collectors: append to the log file, parse
         // `Run ID:` lines and NDJSON progress events along the way.
-        for stream in [stdout, stderr] {
+        {
             let rt = runtime.clone();
             let path = log_path.clone();
             tokio::spawn(async move {
-                collect_stream(stream, &path, rt).await;
+                collect_stream(stdout, &path, rt).await;
+            });
+        }
+        {
+            let rt = runtime.clone();
+            let path = log_path.clone();
+            tokio::spawn(async move {
+                collect_stream(stderr, &path, rt).await;
             });
         }
 
@@ -350,11 +346,10 @@ async fn wait_child(child: &mut tokio::process::Child, rt: &Arc<Mutex<JobRuntime
 
 /// Read a child stream line by line: append to the job log, extract the
 /// `Run ID:` link and NDJSON progress events.
-async fn collect_stream(
-    stream: tokio::process::ChildStdout,
-    log_path: &PathBuf,
-    runtime: Arc<Mutex<JobRuntime>>,
-) {
+async fn collect_stream<S>(stream: S, log_path: &PathBuf, runtime: Arc<Mutex<JobRuntime>>)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut reader = BufReader::new(stream);
     let mut line = String::new();

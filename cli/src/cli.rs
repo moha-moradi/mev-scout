@@ -299,6 +299,12 @@ pub struct RunArgs {
     /// false-negative attribution in `explorer validate`. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
+
+    /// Emit NDJSON stage-progress events to stdout for machine consumers
+    /// (web UI / API job monitor). Only "json" is supported; replaces the
+    /// indicative progress bar.
+    #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
+    pub progress: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -528,4 +534,15 @@ pub struct LiveArgs {
     /// false-negative attribution in `explorer validate`. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
+
+    /// Stop continuous polling after processing this many blocks
+    /// (requires --loop).
+    #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
+    pub max_blocks: Option<u64>,
+
+    /// Emit NDJSON stage-progress events to stdout for machine consumers
+    /// (web UI / API job monitor). Only "json" is supported; replaces the
+    /// indicative progress bar.
+    #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
+    pub progress: Option<String>,
 }

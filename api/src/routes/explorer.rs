@@ -445,6 +445,9 @@ async fn op_detail(
     State(state): State<SharedState>,
     Path(tx_hash): Path<String>,
 ) -> ApiResult<Json<ExplainResponse>> {
+    // Resolve the active chain first so no non-`Send` statement handle is
+    // held across an await point.
+    let chain = state.active_chain().await;
     let conn = state.explorer_conn.lock().await;
     let sql = "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                       confidence, canonical_id, profit_token, profit_amount, profit_usd,
@@ -459,7 +462,6 @@ async fn op_detail(
     }
     drop(stmt);
 
-    let chain = state.active_chain().await;
     let mut rejected = Vec::new();
     if let Some(first) = ops.first() {
         let from = first.block_number.saturating_sub(10);

@@ -93,7 +93,6 @@ async fn main() -> anyhow::Result<()> {
         config: tokio::sync::RwLock::new(config),
         config_path: args.config.clone(),
         binary_path,
-        data_dir: args.data_dir.clone(),
         explorer_db_path: tokio::sync::RwLock::new(explorer_path.clone()),
         cache_db_path: tokio::sync::RwLock::new(cache_path.clone()),
         explorer_conn: tokio::sync::Mutex::new(

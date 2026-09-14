@@ -946,9 +946,11 @@ impl BacktestRunner {
     pub fn run_range(
         &mut self,
         resolved: &ResolvedRange,
+        progress: Option<&dyn Fn(u64, u64)>,
     ) -> error::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
+        let mut processed: u64 = 0;
         // H10: Gas price distribution across recent blocks (sliding window of 50)
         let mut gas_dist = GasPriceDistribution::new(50);
         for block_num in resolved.start_block..=resolved.end_block {
@@ -1003,6 +1005,11 @@ impl BacktestRunner {
                     self.pool_manager.undo();
                     tracing::error!("Block {} failed: {:?}", block_num, e);
                 }
+            }
+            // Progress callback (block done, regardless of outcome).
+            processed += 1;
+            if let Some(cb) = progress {
+                cb(processed, resolved.block_count);
             }
         }
         // Capture pending block and run mempool detection
@@ -1061,10 +1068,12 @@ impl BacktestRunner {
         &mut self,
         resolved: &ResolvedRange,
         state_horizon: u64,
+        progress: Option<&dyn Fn(u64, u64)>,
     ) -> error::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>, Vec<BlockMode>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
         let mut all_modes = Vec::new();
+        let mut processed: u64 = 0;
         let mut gas_dist = GasPriceDistribution::new(50);
 
         let log_only_count =
@@ -1187,6 +1196,11 @@ impl BacktestRunner {
                         tracing::error!("Block {} log-only failed: {:?}", block_num, e);
                     }
                 }
+            }
+            // Progress callback (block done, regardless of outcome).
+            processed += 1;
+            if let Some(cb) = progress {
+                cb(processed, resolved.block_count);
             }
         }
 

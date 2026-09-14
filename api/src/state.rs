@@ -59,8 +59,6 @@ pub struct AppState {
     pub config_path: PathBuf,
     /// Path of the `mev-scout` CLI binary spawned by the job manager.
     pub binary_path: PathBuf,
-    /// Data directory for job logs.
-    pub data_dir: PathBuf,
     /// Active explorer DB path (derived from active chain; swapped on edit).
     pub explorer_db_path: RwLock<PathBuf>,
     /// Active scanner-cache DB path (derived from active chain; swapped on edit).
@@ -138,7 +136,7 @@ pub fn open_read_only_or_empty(path: &Path) -> anyhow::Result<Connection> {
     }
 }
 
-fn open_readonly_if_exists(path: &Path) -> anyhow::Result<Connection> {
+pub fn open_readonly_if_exists(path: &Path) -> anyhow::Result<Connection> {
     if path.exists() {
         Ok(Connection::open_with_flags(
             path,

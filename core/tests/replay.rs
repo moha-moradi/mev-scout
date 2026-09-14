@@ -234,7 +234,7 @@ async fn test_runner_run_range_multi_block() {
         mode: RangeMode::Range(1, 2),
     };
 
-    let (opps, stats) = runner.run_range(&resolved).unwrap();
+    let (opps, stats) = runner.run_range(&resolved, None).unwrap();
 
     assert!(!opps.is_empty(), "Should detect arb across blocks");
     assert_eq!(stats.len(), 2, "Stats from 2 blocks");

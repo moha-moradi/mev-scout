@@ -3,6 +3,8 @@ use mev_scout_core::utils::epoch_secs;
 
 use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cli::RunArgs;
 use crate::display::{
@@ -21,6 +23,11 @@ use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::types::{GasConfig, ResultsFile};
 
 pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
+    let progress_json = match args.progress.as_deref() {
+        None => false,
+        Some("json") => true,
+        Some(other) => anyhow::bail!("unsupported --progress format '{other}' (only 'json')"),
+    };
     let validation_result =
         validation::validate_and_resolve(config).context("invalid configuration")?;
     print_startup_plan(&validation_result, config);
@@ -55,6 +62,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     cache.put_manifest(&manifest)?;
 
     println!("Run ID: {}", run_id);
+    if progress_json {
+        println!("{}", serde_json::json!({ "stage": "resolve" }));
+    }
     println!("{}", resolved.summary());
     println!();
 
@@ -80,13 +90,31 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let bc = config.effective_block_concurrency(&provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
 
-    let pb = ProgressBar::new(resolved.block_count);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
-            .progress_chars("=> "),
-    );
-    let tick = || pb.inc(1);
+    let pb = if progress_json {
+        None
+    } else {
+        let pb = ProgressBar::new(resolved.block_count);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
+                .progress_chars("=> "),
+        );
+        Some(pb)
+    };
+    let fetch_total = resolved.block_count;
+    let fetch_done = Arc::new(AtomicU64::new(0));
+    let bar = pb.as_ref();
+    let tick = move || {
+        if progress_json {
+            let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+            println!(
+                "{}",
+                serde_json::json!({ "stage": "fetch", "done": d, "total": fetch_total })
+            );
+        } else if let Some(b) = bar {
+            b.inc(1);
+        }
+    };
 
     let fetch_summary = if !pool_addresses.is_empty() {
         fetcher
@@ -95,7 +123,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     } else {
         fetcher.fetch_range(&resolved, Some(&tick)).await?
     };
-    pb.finish_and_clear();
+    if let Some(b) = pb {
+        b.finish_and_clear();
+    }
 
     if fetch_summary.skipped > 0 {
         tracing::info!(
@@ -133,6 +163,9 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let prev_block = resolved.start_block.saturating_sub(1);
 
     if !validation_result.strategies.is_empty() {
+        if progress_json {
+            println!("{}", serde_json::json!({ "stage": "pool_init" }));
+        }
         BacktestRunner::init_pools(&mut pool_manager, &rpc, prev_block, Some(&cache)).await;
     }
 
@@ -169,8 +202,30 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     let start = std::time::Instant::now();
 
-    let (all_opportunities, block_stats) = runner.run_range(&resolved)?;
+    let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
+        Some(Box::new(|done, total| {
+            println!(
+                "{}",
+                serde_json::json!({ "stage": "detect", "done": done, "total": total })
+            );
+        }))
+    } else {
+        None
+    };
+    let (all_opportunities, block_stats) = runner.run_range(&resolved, detect_progress.as_deref())?;
     let elapsed = start.elapsed();
+
+    if progress_json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "stage": "complete",
+                "run_id": run_id,
+                "ops": all_opportunities.len(),
+                "elapsed_ms": elapsed.as_millis(),
+            })
+        );
+    }
 
     // Execution history lives only in SQLite: run metadata in the cache
     // store's `run_manifests`, opportunities/rejections in the explorer store.

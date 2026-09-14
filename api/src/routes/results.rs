@@ -3,7 +3,7 @@
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use mev_scout_core::cache::RunManifest;
 use mev_scout_core::explorer::validate::ValidationReport;
@@ -235,7 +235,7 @@ async fn result_validation(
         manifest.start_block,
         manifest.end_block,
         0,
-        Some(&[run_id.clone()]),
+        Some(std::slice::from_ref(&run_id)),
         false,
     )
     .map_err(ApiError::internal)?;
@@ -295,7 +295,6 @@ async fn result_pnl(
     let hour = mev_scout_core::utils::epoch_secs() / 3600;
     let mut rows = Vec::new();
     let mut gross_usd = 0.0;
-    let mut gas_usd = 0.0;
     let mut usd_known = false;
     for (token, (gross, gas)) in per_token {
         let usd = conn
@@ -306,14 +305,14 @@ async fn result_pnl(
                 |r| r.get::<_, f64>(0),
             )
             .ok();
-        let gross_val = if usd.is_some() {
-            gross_usd += gross * usd.unwrap();
-            usd_known = true;
-            Some(gross * usd.unwrap())
-        } else {
-            None
+        let gross_val = match usd {
+            Some(price) => {
+                gross_usd += gross * price;
+                usd_known = true;
+                Some(gross * price)
+            }
+            None => None,
         };
-        gas_usd += gas; // native wei; USD conversion needs native price — omitted when unknown
         rows.push(TokenPnl {
             token,
             gross: format_number(gross),

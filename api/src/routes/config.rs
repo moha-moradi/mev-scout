@@ -8,10 +8,10 @@
 //! `output.db_path` / `explorer.db_path`) re-resolves both DB connections.
 //! Edits are rejected (409) while a job is running.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::extract::State;
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -148,8 +148,7 @@ async fn put_config(
     // Validate the merged result with core validation before writing.
     let merged_toml = toml::to_string_pretty(&toml_value)
         .map_err(|e| ApiError::bad_request(format!("failed to serialize config: {e}")))?;
-    let mut merged_cfg: Config = merged_toml
-        .parse()
+    let mut merged_cfg: Config = toml::from_str(&merged_toml)
         .map_err(|e| ApiError::bad_request(format!("merged config failed to parse: {e}")))?;
     merged_cfg.expand_env_secrets();
     if let Err(e) = validation::validate_and_resolve_for(&merged_cfg, false) {
@@ -190,7 +189,7 @@ async fn put_config(
     }))
 }
 
-fn backup_path(path: &PathBuf) -> PathBuf {
+fn backup_path(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -201,8 +200,8 @@ fn backup_path(path: &PathBuf) -> PathBuf {
 /// Merge a typed section (already deserialized) into the raw TOML under
 /// `key`. Typed configs carry serde flatten rules; round-trip through
 /// `serde_json::Value` → `toml::Value` for the merge.
-fn merge_section<'a, T: Serialize>(
-    toml_value: &'a mut toml::Value,
+fn merge_section<T: Serialize>(
+    toml_value: &mut toml::Value,
     key: &str,
     section: &T,
 ) -> Result<(), ApiError> {

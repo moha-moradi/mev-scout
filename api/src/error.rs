@@ -51,4 +51,16 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+impl From<rusqlite::Error> for ApiError {
+    fn from(err: rusqlite::Error) -> Self {
+        ApiError::internal(anyhow::Error::from(err))
+    }
+}
+
+impl From<tokio::io::Error> for ApiError {
+    fn from(err: tokio::io::Error) -> Self {
+        ApiError::internal(anyhow::Error::from(err))
+    }
+}
+
 pub type ApiResult<T> = Result<T, ApiError>;

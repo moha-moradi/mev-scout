@@ -42,6 +42,14 @@ pub fn deadline_from(
 }
 
 pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
+    let progress_json = match args.progress.as_deref() {
+        None => false,
+        Some("json") => true,
+        Some(other) => anyhow::bail!("unsupported --progress format '{other}' (only 'json')"),
+    };
+    if args.max_blocks.is_some() && !args.r#loop {
+        anyhow::bail!("--max-blocks requires --loop");
+    }
     let deadline = deadline_from(args.r#loop, args.duration.as_deref(), Instant::now())?;
     let validation = validation::validate_live(config).context("invalid configuration")?;
 
@@ -85,6 +93,10 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         gas_config,
     )
     .await?;
+
+    if progress_json {
+        println!("{}", serde_json::json!({ "stage": "resolve" }));
+    }
 
     if args.r#loop {
         run_loop(&mut ctx, deadline).await
@@ -144,6 +156,9 @@ impl<'a> LiveContext<'a> {
             }
         }
         if !validation.strategies.is_empty() {
+            if args.progress.as_deref() == Some("json") {
+                println!("{}", serde_json::json!({ "stage": "pool_init" }));
+            }
             BacktestRunner::init_pools(
                 &mut pool_manager,
                 &rpc,
@@ -185,34 +200,36 @@ impl<'a> LiveContext<'a> {
         })
     }
 
-    /// Fetch `resolved`'s blocks into the cache (relevant-only when the pool
+/// Fetch `resolved`'s blocks into the cache (relevant-only when the pool
     /// set is already known, full-range otherwise).
-    async fn fetch_blocks(&self, resolved: &ResolvedRange) -> anyhow::Result<()> {
+    async fn fetch_blocks<F: Fn() + Sync>(
+        &self,
+        resolved: &ResolvedRange,
+        tick: Option<&F>,
+    ) -> anyhow::Result<()> {
         let mut fetcher = Fetcher::new(self.rpc.clone(), self.cache.clone());
         fetcher = fetcher.with_parallelism(self.provider_configs.len());
         if !self.pool_addresses.is_empty() {
             fetcher
-                .fetch_relevant(resolved, &self.pool_addresses, None::<&fn()>)
+                .fetch_relevant(resolved, &self.pool_addresses, tick)
                 .await
                 .map(|_| ())
         } else {
-            fetcher
-                .fetch_range(resolved, None::<&fn()>)
-                .await
-                .map(|_| ())
+            fetcher.fetch_range(resolved, tick).await.map(|_| ())
         }
     }
 
-    /// Backtest `resolved` at the RPC-detected state horizon.
+    /// Backtest the resolved snapshot at the RPC-detected state horizon.
     async fn run_blocks(
         &mut self,
         resolved: &ResolvedRange,
+        progress: Option<&dyn Fn(u64, u64)>,
     ) -> anyhow::Result<(
         Vec<mev_scout_core::types::MevOpportunity>,
         Vec<mev_scout_core::pipeline::BlockReplayStats>,
     )> {
         let state_horizon = self.rpc.detect_state_horizon(resolved.end_block).await;
-        let (opps, stats, _modes) = self.runner.run_range_hybrid(resolved, state_horizon)?;
+        let (opps, stats, _modes) = self.runner.run_range_hybrid(resolved, state_horizon, progress)?;
         Ok((opps, stats))
     }
 
@@ -222,10 +239,10 @@ impl<'a> LiveContext<'a> {
         &mut self,
         resolved: &ResolvedRange,
         opps: &[mev_scout_core::types::MevOpportunity],
+        run_id: &str,
     ) {
-        let run_id = format!("live_{}", epoch_secs());
         let results_file = ResultsFile {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             chain: self.validation.chain_name.to_string(),
             start_block: resolved.start_block,
             end_block: resolved.end_block,
@@ -245,7 +262,7 @@ impl<'a> LiveContext<'a> {
         // store's `run_manifests`, opportunities/rejections in the explorer
         // store.
         let manifest = RunManifest {
-            run_id: run_id.clone(),
+            run_id: run_id.to_string(),
             chain: self.validation.chain_name.to_string(),
             start_block: resolved.start_block,
             end_block: resolved.end_block,
@@ -260,21 +277,24 @@ impl<'a> LiveContext<'a> {
         persist_opportunities_to_explorer(
             self.config,
             self.validation.chain_name,
-            &run_id,
+            run_id,
             &results_file,
         );
         let rejections = self.runner.take_rejections();
         persist_rejections_to_explorer(
             self.config,
             self.validation.chain_name,
-            &run_id,
+            run_id,
             &rejections,
         );
     }
 }
 
 async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
+    let progress_json = ctx.args.progress.as_deref() == Some("json");
+    let run_id = format!("live_{}", epoch_secs());
     let tip = ctx.tip;
+    println!("Run ID: {run_id}");
     println!("Latest block: {tip}");
 
     let resolved = ResolvedRange {
@@ -283,9 +303,46 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
         block_count: 1,
         mode: RangeMode::Single(tip),
     };
-    ctx.fetch_blocks(&resolved).await?;
-    let (opps, stats) = ctx.run_blocks(&resolved).await?;
-    ctx.persist_results(&resolved, &opps);
+
+    let start = std::time::Instant::now();
+    let fetch_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let tick = move || {
+        if progress_json {
+            let d = fetch_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            println!(
+                "{}",
+                serde_json::json!({ "stage": "fetch", "done": d, "total": 1 })
+            );
+        }
+    };
+    ctx.fetch_blocks(&resolved, Some(&tick)).await?;
+    let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
+        Some(Box::new(|done, total| {
+            println!(
+                "{}",
+                serde_json::json!({ "stage": "detect", "done": done, "total": total })
+            );
+        }))
+    } else {
+        None
+    };
+    let (opps, stats) = ctx
+        .run_blocks(&resolved, detect_progress.as_deref())
+        .await?;
+    let elapsed = start.elapsed();
+    ctx.persist_results(&resolved, &opps, &run_id);
+
+    if progress_json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "stage": "complete",
+                "run_id": run_id,
+                "ops": opps.len(),
+                "elapsed_ms": elapsed.as_millis(),
+            })
+        );
+    }
 
     println!("\nBlock {} — {} opportunity(ies) detected", tip, opps.len());
     if opps.is_empty() {
@@ -306,6 +363,8 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
 }
 
 async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyhow::Result<()> {
+    let progress_json = ctx.args.progress.as_deref() == Some("json");
+    let max_blocks = ctx.args.max_blocks;
     let mut last_block = ctx.tip;
     println!("Starting from block {} — Ctrl+C to stop\n", last_block);
 
@@ -320,6 +379,11 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
 
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
+                break;
+            }
+        }
+        if let Some(mb) = max_blocks {
+            if blocks_processed >= mb {
                 break;
             }
         }
@@ -348,14 +412,29 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
         }
 
         let from_block = last_block + 1;
+        let block_count = current_tip - from_block + 1;
         let resolved = ResolvedRange {
             start_block: from_block,
             end_block: current_tip,
-            block_count: current_tip - from_block + 1,
+            block_count,
             mode: RangeMode::Range(from_block, current_tip),
         };
 
-        if let Err(e) = ctx.fetch_blocks(&resolved).await {
+        let run_id = format!("live_{}", epoch_secs());
+        println!("Run ID: {run_id}");
+        let pass_start = std::time::Instant::now();
+
+        let fetch_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let tick = move || {
+            if progress_json {
+                let d = fetch_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                println!(
+                    "{}",
+                    serde_json::json!({ "stage": "fetch", "done": d, "total": block_count })
+                );
+            }
+        };
+        if let Err(e) = ctx.fetch_blocks(&resolved, Some(&tick)).await {
             consecutive_failures += 1;
             tracing::warn!(
                 "Fetch failed for blocks {}–{} ({}/{}): {} — will retry same range",
@@ -373,7 +452,20 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
             continue;
         }
 
-        let (opps, stats) = match ctx.run_blocks(&resolved).await {
+        let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
+            Some(Box::new(move |done, total| {
+                println!(
+                    "{}",
+                    serde_json::json!({ "stage": "detect", "done": done, "total": total })
+                );
+            }))
+        } else {
+            None
+        };
+        let (opps, stats) = match ctx
+            .run_blocks(&resolved, detect_progress.as_deref())
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 consecutive_failures += 1;
@@ -393,6 +485,7 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
                 continue;
             }
         };
+        let pass_elapsed = pass_start.elapsed();
 
         let txs_scanned = stats.iter().map(|s| s.total_tx_count).sum::<usize>();
 
@@ -411,13 +504,29 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
             render_results_table(&opps, Some(ctx.runner.pool_manager()));
         }
 
-        ctx.persist_results(&resolved, &opps);
+        ctx.persist_results(&resolved, &opps, &run_id);
+        if progress_json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "stage": "complete",
+                    "run_id": run_id,
+                    "ops": opps.len(),
+                    "elapsed_ms": pass_elapsed.as_millis(),
+                })
+            );
+        }
         ctx.runner.advance_to(current_tip);
         last_block = current_tip;
         blocks_processed += resolved.block_count;
         total_txs_scanned += txs_scanned;
         total_opportunities += opps.len();
         consecutive_failures = 0;
+        if let Some(mb) = max_blocks {
+            if blocks_processed >= mb {
+                break;
+            }
+        }
     }
 
     println!();

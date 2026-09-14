@@ -40,7 +40,6 @@ async fn sync_state(State(state): State<SharedState>) -> ApiResult<Json<SyncResp
             },
         )
         .optional()
-        .map_err(crate::error::ApiError::internal)?
     };
     let cache_head = {
         let conn = state.cache_conn.lock().await;
@@ -67,9 +66,6 @@ trait OptionalRow {
 
 impl OptionalRow for rusqlite::Result<(u64, u64, Option<u64>)> {
     fn optional(self) -> Option<(u64, u64, Option<u64>)> {
-        match self {
-            Ok(v) => Some(v),
-            Err(_) => None,
-        }
+        self.ok()
     }
 }
