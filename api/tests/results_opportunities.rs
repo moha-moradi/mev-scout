@@ -62,7 +62,7 @@ async fn result_detail_returns_manifest_plus_opportunities() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["run_id"], "run_1");
     assert_eq!(json["chain"], "polygon");
-    assert_eq!(json["strategies"][0], "atomic");
+    assert_eq!(json["strategies"][0], "two_hop_arb");
     // Reconstructed MevOpportunity rows for run_1.
     let opps = json["opportunities"].as_array().unwrap();
     assert_eq!(opps.len(), 2);

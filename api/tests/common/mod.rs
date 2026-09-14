@@ -164,7 +164,7 @@ fn seed_explorer_rows(conn: &Connection) {
          VALUES
             (100, 0, '0xAAA', {now}, 'sandwich', '0xS1', '0xC1', 'high',
              'c0', '0xT1', '1000000000000000000', 1.5, 0.2, 1.3, '[]', '[]', '{{}}', 'det1', {now}),
-            (101, 1, '0xBBB', {now}, 'arb', '0xE2', '0xC2', 'medium',
+            (101, 1, '0xBBB', {now}, 'arb_atomic', '0xE2', '0xC2', 'medium',
              'c1', '0xT2', '500000000000000000', 0.8, 0.1, 0.7, '[]', '[]', '{{}}', 'det2', {now}),
             (202, 2, '0xCCC', {now}, 'liquidation', '0xS1', '0xC3', 'high',
              'c2', '0xT3', '250000000000000000', 2.0, 0.3, 1.7, '[]', '[]', '{{}}', 'det3', {now})
@@ -179,23 +179,45 @@ fn seed_explorer_rows(conn: &Connection) {
              path, \"timestamp\", mempool_only, confidence, sender, tx_hash,
              detection_path, canonical_id)
          VALUES
-            ('run_1', 'polygon', 100, 0, 'atomic', '0xP0', '0xP1',
-             '0xT1', '0xT2', '1000', '1200000000000000000', '21000',
-             '[{{}}]', {now}, 0, 'high', '0xS1', '0xTXT1', 'atomic', NULL),
-            ('run_1', 'polygon', 101, 1, 'atomic', '0xP1', '0xP2',
-             '0xT3', '0xT4', '2000', '800000000000000000', '21000',
-             '[{{}}]', {now}, 0, 'medium', '0xS2', '0xTXT2', 'atomic', NULL),
-            ('live_1777', 'polygon', 202, 2, 'jito', '0xP2', '0xP3',
-             '0xT5', '0xT6', '3000', '600000000000000000', '21000',
-             '[{{}}]', {now}, 0, 'high', '0xS3', '0xTXT3', 'jit', NULL)
+            ('run_1', 'polygon', 100, 0, 'two_hop_arb',
+             '0x00000000000000000000000000000000000000b0',
+             '0x00000000000000000000000000000000000000b1',
+             '0x00000000000000000000000000000000000000a0',
+             '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359',
+             '1000', '1200000000000000000', '21000',
+             NULL, {now}, 0, 'high',
+             '0x00000000000000000000000000000000000000e1',
+             '0x1111111111111111111111111111111111111111111111111111111111111111',
+             'atomic', NULL),
+            ('run_1', 'polygon', 101, 1, 'two_hop_arb',
+             '0x00000000000000000000000000000000000000b2',
+             '0x00000000000000000000000000000000000000b3',
+             '0x00000000000000000000000000000000000000a1',
+             '0x00000000000000000000000000000000000000c2',
+             '2000', '800000000000000000', '21000',
+             NULL, {now}, 0, 'medium',
+             '0x00000000000000000000000000000000000000e2',
+             '0x2222222222222222222222222222222222222222222222222222222222222222',
+             'atomic', NULL),
+            ('live_1777', 'polygon', 202, 2, 'jit',
+             '0x00000000000000000000000000000000000000b4',
+             '0x00000000000000000000000000000000000000b5',
+             '0x00000000000000000000000000000000000000a2',
+             '0x00000000000000000000000000000000000000c3',
+             '3000', '600000000000000000', '21000',
+             NULL, {now}, 0, 'high',
+             '0x00000000000000000000000000000000000000e3',
+             '0x3333333333333333333333333333333333333333333333333333333333333333',
+             'jit', NULL)
         "
     ))
     .unwrap();
 
-    // A prices row so PnL can attempt USD conversion.
+    // A prices row so PnL can attempt USD conversion (token matches the
+    // run_1 first-row token_out).
     let hour = now / 3600;
     conn.execute(
-        "INSERT INTO prices (hour, token, usd, source) VALUES (?1, '0x4946a0c4c3d5b8c8aef0d17e9feb2e92e5a6da7', 3.0, 'test')",
+        "INSERT INTO prices (hour, token, usd, source) VALUES (?1, '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', 3.0, 'test')",
         rusqlite::params![hour],
     )
     .unwrap();
@@ -207,8 +229,8 @@ fn seed_cache_rows(conn: &Connection) {
         "INSERT INTO run_manifests
             (run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider)
          VALUES
-            ('run_1', 'polygon', 100, 101, 1700000000, 'Range', 'atomic,backrun', 'aave-v3'),
-            ('run_2', 'polygon', 200, 202, 1699999999, 'Range', 'atomic', 'aave-v3')
+            ('run_1', 'polygon', 100, 101, 1700000000, 'Range', 'two_hop_arb,jit', 'auto'),
+            ('run_2', 'polygon', 200, 202, 1699999999, 'Range', 'two_hop_arb', 'auto')
         ",
     )
     .unwrap();
@@ -220,13 +242,22 @@ fn seed_cache_rows(conn: &Connection) {
              hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol,
              token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d)
          VALUES
-            (X'01', X'02', X'03', 3000, 0, 60, 100,
+            (X'0000000000000000000000000000000000000001',
+             X'0000000000000000000000000000000000000002',
+             X'0000000000000000000000000000000000000003',
+             3000, 0, 60, 100,
              NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL,
              'uniswap-v3', 'WETH', 'USDC', 500000.0, 10000.0, 200000.0),
-            (X'04', X'05', X'06', 500, 0, 1, 200,
+            (X'0000000000000000000000000000000000000004',
+             X'0000000000000000000000000000000000000005',
+             X'0000000000000000000000000000000000000006',
+             500, 0, 1, 200,
              NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL,
              'pancakeswap', 'USDC', 'USDT', 300000.0, 8000.0, 90000.0),
-            (X'07', X'08', X'09', 100, 1, NULL, 300,
+            (X'0000000000000000000000000000000000000007',
+             X'0000000000000000000000000000000000000008',
+             X'0000000000000000000000000000000000000009',
+             100, 1, NULL, 300,
              NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL,
              'balancer', 'DAI', 'USDC', NULL, NULL, NULL)
         ",
@@ -246,10 +277,10 @@ pub fn write_temp_config(dir: &Path, chain: &str) -> PathBuf {
         format!(
             r#"
 chain = "{chain}"
-gas_model = "eip1559"
+gas_model = "historical_exact"
 gas_limit = 4000000
 priority_fee_gwei = 2.0
-strategies = "atomic,backrun"
+strategies = "two_hop_arb,jit"
 min_profit_wei = 1000000000
 output = "table"
 
@@ -268,8 +299,8 @@ chain_id = 56
 
 [explorer]
 confirmations = 6
-"#,
-        )
+"#
+        ),
     )
     .unwrap();
     path
@@ -293,6 +324,9 @@ chain_id = 42161
 
 [chains.bsc]
 chain_id = 56
+
+[explorer]
+confirmations = 6
 "#,
     )
     .unwrap();

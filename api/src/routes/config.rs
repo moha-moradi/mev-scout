@@ -228,10 +228,13 @@ fn merge_flattened<T: Serialize>(
     let obj = json.as_object().ok_or_else(|| {
         ApiError::bad_request("section must serialize to a table".to_string())
     })?;
+    let Some(root) = toml_value.as_table_mut() else {
+        return Err(ApiError::bad_request("config root is not a table".to_string()));
+    };
     for (key, nested) in obj {
         let as_toml = json_to_toml(nested)
             .map_err(|e| ApiError::bad_request(format!("section conversion failed: {e}")))?;
-        toml_value[key] = as_toml;
+        root.insert(key.clone(), as_toml);
     }
     Ok(())
 }
@@ -251,7 +254,11 @@ fn merge_section<T: Serialize>(
     }
     let as_toml = json_to_toml(&json)
         .map_err(|e| ApiError::bad_request(format!("section conversion failed: {e}")))?;
-    toml_value[key] = as_toml;
+    if let Some(root) = toml_value.as_table_mut() {
+        root.insert(key.to_string(), as_toml);
+    } else {
+        return Err(ApiError::bad_request("config root is not a table".to_string()));
+    }
     Ok(())
 }
 

@@ -224,10 +224,11 @@ async fn result_validation(
     let covered = blocks_total > 0 && blocks_indexed == blocks_total;
 
     // compute_validation needs an ExplorerStore handle; open a temporary
-    // read handle over the same file (it opens read-write, which is fine
-    // locally and matches the CLI's usage).
-    let explorer_path = state.explorer_db_path.read().await.clone();
-    let store = mev_scout_core::explorer::store::ExplorerStore::open(&explorer_path)
+    // read handle over the same file via the missing-DB-safe helper (it
+    // opens read-write, which is fine locally and matches the CLI's usage).
+    let store = state
+        .open_explorer_store_if_exists()
+        .await
         .map_err(ApiError::internal)?;
     let report = mev_scout_core::explorer::validate::compute_validation(
         &store,

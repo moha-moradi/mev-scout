@@ -80,13 +80,16 @@ async fn stats_returns_by_kind_and_daily() {
     let app = test_router(test_state().await);
     let (status, json) = get(&app, "/api/explorer/stats?since=all").await;
     assert_eq!(status, StatusCode::OK);
-    let by_kind = json["by_kind"].as_array().unwrap();
+    let mut by_kind = json["by_kind"].as_array().unwrap().clone();
     assert!(!by_kind.is_empty());
-    // Kinds present: sandwich, arb, liquidation.
-    let kinds: Vec<&str> = by_kind.iter().map(|r| r["label"].as_str().unwrap()).collect();
-    assert!(kinds.contains(&"sandwich"));
-    assert!(kinds.contains(&"arb"));
-    assert!(kinds.contains(&"liquidation"));
+    // Kinds present: sandwich, arb_atomic, liquidation.
+    let kinds: Vec<String> = by_kind
+        .iter_mut()
+        .map(|r| r["label"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert!(kinds.contains(&"sandwich".to_string()));
+    assert!(kinds.contains(&"arb_atomic".to_string()));
+    assert!(kinds.contains(&"liquidation".to_string()));
     assert!(json["daily"].is_array());
 }
 
@@ -170,9 +173,9 @@ async fn ops_range_and_kind_filters() {
     let (_, json) = get(&app, "/api/explorer/ops?from=100&to=101").await;
     assert_eq!(json["total"], 2);
 
-    let (_, json) = get(&app, "/api/explorer/ops?kinds=arb").await;
+    let (_, json) = get(&app, "/api/explorer/ops?kinds=arb_atomic").await;
     assert_eq!(json["total"], 1);
-    assert_eq!(json["items"][0]["kind"], "arb");
+    assert_eq!(json["items"][0]["kind"], "arb_atomic");
 
     let (_, json) = get(&app, "/api/explorer/ops?q=0xC3").await;
     assert_eq!(json["total"], 1);

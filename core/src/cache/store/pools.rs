@@ -83,6 +83,50 @@ impl super::SqliteStore {
     /// pools with `tvl_usd >= min_tvl` (nulls excluded). Sorting is by
     /// `tvl_usd | volume_usd_24h | creation_block`, asc/desc. Discovery can
     /// yield 1000+ rows, so this must be SQL — never a Vec slice.
+    ///
+    /// Returns the filtered page plus the total row count matching the
+    /// same filters (before pagination), so callers can build
+    /// `Paginated { total, items }` without fetching every row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn pools_filtered_paged(
+        &self,
+        q: Option<&str>,
+        dex: Option<&str>,
+        token: Option<&str>,
+        min_tvl: Option<f64>,
+        sort_by: Option<&str>,
+        order_desc: bool,
+        offset: u64,
+        limit: u64,
+    ) -> anyhow::Result<(Vec<PoolInfo>, u64)> {
+        let conn = self.conn();
+        let where_sql = Self::pools_where_clause(q, dex, token, min_tvl);
+
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM pool_info {where_sql}"),
+            [],
+            |r| r.get(0),
+        )?;
+
+        let sort_col = Self::pools_sort_col(sort_by);
+        let order = if order_desc { "DESC" } else { "ASC" };
+        // NULLs always last regardless of direction.
+        let sql = format!(
+            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
+             FROM pool_info {where_sql}
+             ORDER BY {sort_col} IS NULL, {sort_col} {order}
+             LIMIT {limit} OFFSET {offset}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query([])?;
+        let mut pools = Vec::new();
+        while let Some(row) = rows.next()? {
+            pools.push(super::row_to_pool_info(row)?);
+        }
+        Ok((pools, total.max(0) as u64))
+    }
+
+    /// Legacy un-paged variant: returns the first `limit` filtered rows.
     #[allow(clippy::too_many_arguments)]
     pub fn pools_filtered(
         &self,
@@ -94,7 +138,17 @@ impl super::SqliteStore {
         order_desc: bool,
         limit: u64,
     ) -> anyhow::Result<Vec<PoolInfo>> {
-        let conn = self.conn();
+        Ok(self
+            .pools_filtered_paged(q, dex, token, min_tvl, sort_by, order_desc, 0, limit)?
+            .0)
+    }
+
+    fn pools_where_clause(
+        q: Option<&str>,
+        dex: Option<&str>,
+        token: Option<&str>,
+        min_tvl: Option<f64>,
+    ) -> String {
         let mut where_clauses: Vec<String> = Vec::new();
         if let Some(q) = q {
             if !q.is_empty() {
@@ -126,31 +180,19 @@ impl super::SqliteStore {
         if let Some(min) = min_tvl {
             where_clauses.push(format!("tvl_usd IS NOT NULL AND tvl_usd >= {min}"));
         }
-        let sort_col = match sort_by {
-            Some("volume_usd_24h") | Some("volume") => "volume_usd_24h",
-            Some("creation_block") | Some("creation") => "creation_block",
-            _ => "tvl_usd",
-        };
-        let order = if order_desc { "DESC" } else { "ASC" };
-        let where_sql = if where_clauses.is_empty() {
+        if where_clauses.is_empty() {
             String::new()
         } else {
             format!("WHERE {}", where_clauses.join(" AND "))
-        };
-        // NULLs always last regardless of direction.
-        let sql = format!(
-            "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
-             FROM pool_info {where_sql}
-             ORDER BY {sort_col} IS NULL, {sort_col} {order}
-             LIMIT {limit}"
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query([])?;
-        let mut pools = Vec::new();
-        while let Some(row) = rows.next()? {
-            pools.push(super::row_to_pool_info(row)?);
         }
-        Ok(pools)
+    }
+
+    fn pools_sort_col(sort_by: Option<&str>) -> &'static str {
+        match sort_by {
+            Some("volume_usd_24h") | Some("volume") => "volume_usd_24h",
+            Some("creation_block") | Some("creation") => "creation_block",
+            _ => "tvl_usd",
+        }
     }
 
     /// Earliest `creation_block` seen per pool factory — the "first-observed-block

@@ -104,10 +104,13 @@ async fn main() -> anyhow::Result<()> {
         version: env!("CARGO_PKG_VERSION"),
     });
 
-    // Static frontend: /assets/* (hashed, immutable) + SPA fallback.
+    // Static frontend: /assets/* (hashed, immutable) + SPA fallback for
+    // client-side routes. `ServeDir` handles real files; anything else
+    // under / (non-/api) falls back to index.html so React Router owns
+    // deep links like /results/run_1.
     let web_dir = args.web_dir.clone();
     let index_file = web_dir.join("index.html");
-    let serve_assets = ServeDir::new(&web_dir).not_found_service(ServeFile::new(&index_file));
+    let serve_assets = ServeDir::new(&web_dir).fallback(ServeFile::new(&index_file));
 
     let app = Router::new()
         .merge(routes::api_router())
@@ -172,10 +175,7 @@ async fn stub_main() -> anyhow::Result<()> {
     let rest: Vec<String> = args.collect();
 
     match command.as_str() {
-        c if matches!(
-            c,
-            "run" | "live" | "discover" | "tokens" | "scan" | "report" | "explorer index"
-        ) => {
+        "run" | "live" | "discover" | "tokens" | "scan" | "report" | "explorer index" => {
             if rest.iter().any(|a| a == "emit-progress") {
                 // Emits a Run ID + NDJSON `--progress json` events, then
                 // stays alive until killed (progress + stop tests).

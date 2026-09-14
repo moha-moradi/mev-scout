@@ -154,3 +154,31 @@ pub fn open_readonly_if_exists(path: &Path) -> anyhow::Result<Connection> {
 }
 
 pub type SharedState = Arc<AppState>;
+
+impl AppState {
+    /// Open the cache DB through `SqliteStore` only when the file exists.
+    /// `SqliteStore::open` creates a fresh DB when missing, which would
+    /// fabricate empty stores on read-only endpoints — degrade to an error
+    /// the routes translate to empty results instead.
+    pub async fn open_cache_store_if_exists(
+        &self,
+    ) -> anyhow::Result<mev_scout_core::cache::SqliteStore> {
+        let path = self.cache_db_path.read().await.clone();
+        if !path.exists() {
+            anyhow::bail!("cache DB not found at {}", path.display());
+        }
+        mev_scout_core::cache::SqliteStore::open(&path)
+    }
+
+    /// Open the explorer DB through `ExplorerStore` only when the file exists.
+    /// Same missing-file guard as [`Self::open_cache_store_if_exists`].
+    pub async fn open_explorer_store_if_exists(
+        &self,
+    ) -> anyhow::Result<mev_scout_core::explorer::store::ExplorerStore> {
+        let path = self.explorer_db_path.read().await.clone();
+        if !path.exists() {
+            anyhow::bail!("explorer DB not found at {}", path.display());
+        }
+        mev_scout_core::explorer::store::ExplorerStore::open(&path)
+    }
+}

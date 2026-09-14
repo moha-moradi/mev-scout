@@ -7,13 +7,15 @@ use crate::error::{ApiError, ApiResult};
 use crate::state::SharedState;
 
 /// Reconstructed `MevOpportunity` list for a run (same reconstruction
-/// `cli report` uses).
+/// `cli report` uses). Missing explorer DB yields an empty list (a store
+/// open would fabricate a fresh DB).
 pub async fn opportunities_by_run(
     state: &SharedState,
     run_id: &str,
 ) -> ApiResult<Vec<mev_scout_core::types::MevOpportunity>> {
-    let path = state.explorer_db_path.read().await.clone();
-    let store = mev_scout_core::explorer::store::ExplorerStore::open(&path)
+    let store = state
+        .open_explorer_store_if_exists()
+        .await
         .map_err(ApiError::internal)?;
     store
         .opportunities_by_run(run_id)

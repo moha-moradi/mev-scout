@@ -8,7 +8,7 @@ use serde::Deserialize;
 use mev_scout_core::pool::state::PoolInfo;
 
 use crate::error::ApiResult;
-use crate::pagination::{paginate, Paginated};
+use crate::pagination::Paginated;
 use crate::state::SharedState;
 
 pub fn router() -> Router<SharedState> {
@@ -35,22 +35,29 @@ async fn pools(
     let offset = q.offset.unwrap_or(0);
     let order_desc = matches!(q.order.as_deref(), None | Some("desc"));
 
-    // pools_filtered is a SqliteStore method; open a temporary store over
-    // the cache DB file (it owns its connection).
-    let path = state.cache_db_path.read().await.clone();
-    let store = mev_scout_core::cache::SqliteStore::open(&path)
-        .map_err(crate::error::ApiError::internal)?;
-    let all = store
-        .pools_filtered(
-            q.q.as_deref(),
-            q.dex.as_deref(),
-            q.token.as_deref(),
-            q.min_tvl,
-            q.sort.as_deref(),
-            order_desc,
-            offset.saturating_add(limit).max(limit),
-        )
-        .map_err(crate::error::ApiError::internal)?;
+    // pools_filtered_paged is a SqliteStore method; open a temporary store
+    // over the cache DB file (it owns its connection). Missing DB degrades
+    // to an empty page (store open would fabricate one).
+    let (items, total) = match state.open_cache_store_if_exists().await {
+        Ok(store) => store
+            .pools_filtered_paged(
+                q.q.as_deref(),
+                q.dex.as_deref(),
+                q.token.as_deref(),
+                q.min_tvl,
+                q.sort.as_deref(),
+                order_desc,
+                offset,
+                limit,
+            )
+            .map_err(crate::error::ApiError::internal)?,
+        Err(_) => (Vec::new(), 0),
+    };
 
-    Ok(Json(paginate(all, offset, limit)))
+    Ok(Json(Paginated {
+        items,
+        total,
+        offset,
+        limit,
+    }))
 }
