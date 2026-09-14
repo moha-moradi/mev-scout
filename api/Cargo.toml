@@ -3,6 +3,10 @@ name = "mev-scout-api"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "mev_scout_api"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mev-scout-api"
 path = "src/main.rs"

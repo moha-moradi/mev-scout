@@ -1,0 +1,301 @@
+//! Shared test harness for the mev-scout-api integration tests.
+//!
+//! Two styles of `AppState`:
+//! - [`test_state`] — in-memory DB connections (used by routes that read
+//!   through `state.explorer_conn` / `state.cache_conn` directly).
+//! - [`state_with_real_dbs`] — real temp **files** on disk (used by routes
+//!   that open a fresh `ExplorerStore` / `SqliteStore` via the DB path:
+//!   `/api/pools`, `/api/results/:id`, `/api/results/:id/validation`,
+//!   `/api/results/:id/pnl`).
+
+#![allow(dead_code)]
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use axum::Router;
+use rusqlite::Connection;
+
+use mev_scout_core::types::ChainName;
+
+use mev_scout_api::jobs::JobManager;
+use mev_scout_api::state::{AppState, SharedState};
+use mev_scout_api::test_router;
+
+const EXPLORER_SCHEMA: &str = include_str!("../../src/explorer_schema.sql");
+const CACHE_SCHEMA: &str = include_str!("../../src/cache_schema.sql");
+
+/// Build a `SharedState` with in-memory explorer + cache DBs (seeded).
+/// The tempdir backing the job manager is leaked (forgotten) so the log
+/// dir outlives the helper for jobs tests.
+pub async fn test_state() -> SharedState {
+    state_with_conns(seeded_explorer_db(), seeded_cache_db())
+}
+
+/// Build a `SharedState` from explicit explorer/cache connections (used for
+/// missing-DB and empty-result tests).
+pub async fn state_with_conns(explorer_conn: Connection, cache_conn: Connection) -> SharedState {
+    let data_dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    let mut config = mev_scout_core::config::Config::default();
+    config.chain = ChainName::Polygon;
+    config.config_path = None;
+    Arc::new(AppState {
+        config: tokio::sync::RwLock::new(config),
+        config_path: PathBuf::from("mev-scout.toml"),
+        binary_path: PathBuf::from("target/debug/mev-scout"),
+        explorer_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-explorer.sqlite")),
+        cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
+        explorer_conn: tokio::sync::Mutex::new(explorer_conn),
+        cache_conn: tokio::sync::Mutex::new(cache_conn),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
+            data_dir.path(),
+        ))),
+        started_at: std::time::Instant::now(),
+        version: "test",
+    })
+}
+
+/// Build a `SharedState` whose config is loaded from a real temp file (for
+/// `PUT /api/config` round-trip tests) and which points at a binary the job
+/// manager can actually spawn (defaults to this test crate's own binary).
+pub async fn test_state_with_files(
+    config_path: PathBuf,
+    binary: Option<PathBuf>,
+) -> SharedState {
+let config = mev_scout_core::config::Config::load(&config_path.to_string_lossy())
+        .unwrap_or_else(|_| mev_scout_core::config::Config::default());
+
+    let explorer_conn = seeded_explorer_db();
+    let cache_conn = seeded_cache_db();
+    let data_dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    Arc::new(AppState {
+        config: tokio::sync::RwLock::new(config),
+        config_path: config_path.clone(),
+        binary_path: binary.unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mev-scout-api"))),
+        explorer_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-explorer.sqlite")),
+        cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
+        explorer_conn: tokio::sync::Mutex::new(explorer_conn),
+        cache_conn: tokio::sync::Mutex::new(cache_conn),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
+            data_dir.path(),
+        ))),
+        started_at: std::time::Instant::now(),
+        version: "test",
+    })
+}
+
+/// Build a `SharedState` backed by real temp DB **files** seeded with the
+/// same rows as the in-memory variants. Needed by routes that open a fresh
+/// store over the DB path (`pools`, `results/:id`, `validation`, `pnl`).
+pub async fn state_with_real_dbs() -> SharedState {
+    let dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
+    let explorer_path = dir.path().join("explorer-polygon.sqlite");
+    let cache_path = dir.path().join("polygon-mev-scout.sqlite");
+
+    {
+        let conn = Connection::open(&explorer_path).unwrap();
+        conn.execute_batch(EXPLORER_SCHEMA).unwrap();
+        seed_explorer_rows(&conn);
+    }
+    {
+        let conn = Connection::open(&cache_path).unwrap();
+        conn.execute_batch(CACHE_SCHEMA).unwrap();
+        seed_cache_rows(&conn);
+    }
+
+    let mut config = mev_scout_core::config::Config::default();
+    config.chain = ChainName::Polygon;
+    config.config_path = None;
+
+    Arc::new(AppState {
+        config: tokio::sync::RwLock::new(config),
+        config_path: PathBuf::from("mev-scout.toml"),
+        binary_path: PathBuf::from("target/debug/mev-scout"),
+        explorer_db_path: tokio::sync::RwLock::new(explorer_path.clone()),
+        cache_db_path: tokio::sync::RwLock::new(cache_path.clone()),
+        explorer_conn: tokio::sync::Mutex::new(seeded_explorer_db()),
+        cache_conn: tokio::sync::Mutex::new(seeded_cache_db()),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
+            dir.path(),
+        ))),
+        started_at: std::time::Instant::now(),
+        version: "test",
+    })
+}
+
+/// Build a router over the in-memory state (mounted at `/api`).
+pub async fn test_router_state() -> Router<SharedState> {
+    test_router(test_state().await)
+}
+
+pub fn seeded_explorer_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(EXPLORER_SCHEMA).unwrap();
+    seed_explorer_rows(&conn);
+    conn
+}
+
+pub fn seeded_cache_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(CACHE_SCHEMA).unwrap();
+    seed_cache_rows(&conn);
+    conn
+}
+
+pub fn empty_explorer_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(EXPLORER_SCHEMA).unwrap();
+    conn
+}
+
+/// Minimal rows so read endpoints return non-empty results.
+fn seed_explorer_rows(conn: &Connection) {
+    let now = mev_scout_core::utils::epoch_secs();
+
+    conn.execute_batch(&format!(
+        "INSERT INTO mev_ops
+            (block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+             canonical_id, profit_token, profit_amount, profit_usd, gas_cost_usd,
+             net_profit_usd, route_json, victim_hashes, details_json, detector, created_at)
+         VALUES
+            (100, 0, '0xAAA', {now}, 'sandwich', '0xS1', '0xC1', 'high',
+             'c0', '0xT1', '1000000000000000000', 1.5, 0.2, 1.3, '[]', '[]', '{{}}', 'det1', {now}),
+            (101, 1, '0xBBB', {now}, 'arb', '0xE2', '0xC2', 'medium',
+             'c1', '0xT2', '500000000000000000', 0.8, 0.1, 0.7, '[]', '[]', '{{}}', 'det2', {now}),
+            (202, 2, '0xCCC', {now}, 'liquidation', '0xS1', '0xC3', 'high',
+             'c2', '0xT3', '250000000000000000', 2.0, 0.3, 1.7, '[]', '[]', '{{}}', 'det3', {now})
+        "
+    ))
+    .unwrap();
+
+    conn.execute_batch(&format!(
+        "INSERT INTO opportunities
+            (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
+             token_in, token_out, input_amount, expected_profit, gas_cost_wei,
+             path, \"timestamp\", mempool_only, confidence, sender, tx_hash,
+             detection_path, canonical_id)
+         VALUES
+            ('run_1', 'polygon', 100, 0, 'atomic', '0xP0', '0xP1',
+             '0xT1', '0xT2', '1000', '1200000000000000000', '21000',
+             '[{{}}]', {now}, 0, 'high', '0xS1', '0xTXT1', 'atomic', NULL),
+            ('run_1', 'polygon', 101, 1, 'atomic', '0xP1', '0xP2',
+             '0xT3', '0xT4', '2000', '800000000000000000', '21000',
+             '[{{}}]', {now}, 0, 'medium', '0xS2', '0xTXT2', 'atomic', NULL),
+            ('live_1777', 'polygon', 202, 2, 'jito', '0xP2', '0xP3',
+             '0xT5', '0xT6', '3000', '600000000000000000', '21000',
+             '[{{}}]', {now}, 0, 'high', '0xS3', '0xTXT3', 'jit', NULL)
+        "
+    ))
+    .unwrap();
+
+    // A prices row so PnL can attempt USD conversion.
+    let hour = now / 3600;
+    conn.execute(
+        "INSERT INTO prices (hour, token, usd, source) VALUES (?1, '0x4946a0c4c3d5b8c8aef0d17e9feb2e92e5a6da7', 3.0, 'test')",
+        rusqlite::params![hour],
+    )
+    .unwrap();
+}
+
+/// Minimal rows so results/runs/pools return non-empty results.
+fn seed_cache_rows(conn: &Connection) {
+    conn.execute_batch(
+        "INSERT INTO run_manifests
+            (run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, flash_loan_provider)
+         VALUES
+            ('run_1', 'polygon', 100, 101, 1700000000, 'Range', 'atomic,backrun', 'aave-v3'),
+            ('run_2', 'polygon', 200, 202, 1699999999, 'Range', 'atomic', 'aave-v3')
+        ",
+    )
+    .unwrap();
+
+    conn.execute_batch(
+        "INSERT INTO pool_info
+            (address, token0, token1, fee, dex_type, tick_spacing, creation_block,
+             pool_id, factory, is_stable, underlying_tokens, balancer_pool_type,
+             hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol,
+             token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d)
+         VALUES
+            (X'01', X'02', X'03', 3000, 0, 60, 100,
+             NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL,
+             'uniswap-v3', 'WETH', 'USDC', 500000.0, 10000.0, 200000.0),
+            (X'04', X'05', X'06', 500, 0, 1, 200,
+             NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL,
+             'pancakeswap', 'USDC', 'USDT', 300000.0, 8000.0, 90000.0),
+            (X'07', X'08', X'09', 100, 1, NULL, 300,
+             NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL,
+             'balancer', 'DAI', 'USDC', NULL, NULL, NULL)
+        ",
+    )
+    .unwrap();
+}
+
+/// Write a temp config file with known secrets and return its path.
+/// Includes `[chains.*]` sections for the chains the tests switch between
+/// (required by core validation's `resolve_chain`).
+pub fn write_temp_config(dir: &Path, chain: &str) -> PathBuf {
+    let path = dir.join("mev-scout.toml");
+    std::fs::write(
+        &path,
+        format!(
+            r#"
+chain = "{chain}"
+
+[chains.polygon]
+chain_id = 137
+
+[chains.arbitrum]
+chain_id = 42161
+
+[chains.bsc]
+chain_id = 56
+
+[gas]
+gas_model = "eip1559"
+gas_limit = 4000000
+priority_fee_gwei = 2.0
+
+[backtest]
+strategies = ["atomic", "backrun"]
+min_profit_wei = 1000000000
+
+[output]
+output = "both"
+
+[explorer]
+confirmations = 6
+
+# Secret RPC config — MUST NOT be exposed via the API.
+rpc_urls = ["https://user:secret@polygon-rpc.example.com/v1/SECRETKEY"]
+rpc_rps = [10.0]
+"#,
+        )
+    )
+    .unwrap();
+    path
+}
+
+/// A config file with a `${ENV_VAR}` placeholder in an RPC secret, for
+/// testing that `PUT /api/config` round-trips placeholders verbatim.
+pub fn write_env_template_config(dir: &Path) -> PathBuf {
+    let path = dir.join("mev-scout.toml");
+    std::fs::write(
+        &path,
+        r#"
+chain = "polygon"
+
+[chains.polygon]
+chain_id = 137
+
+[chains.arbitrum]
+chain_id = 42161
+
+[chains.bsc]
+chain_id = 56
+
+rpc_urls = ["https://user:${POLYGON_RPC_KEY}@polygon-rpc.example.com/v1"]
+"#,
+    )
+    .unwrap();
+    path
+}

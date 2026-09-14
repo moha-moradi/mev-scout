@@ -146,12 +146,17 @@ async fn put_config(
     }
 
     // Validate the merged result with core validation before writing.
+    // `validate_live` matches the editor's semantics: validate chain, RPC
+    // URLs, gas model, and strategies — but *skip* the block-range check,
+    // since ranges are CLI-only (`#[serde(skip)]` fields never appear in the
+    // TOML, so `validate_and_resolve_for` would always reject with "no block
+    // range specified").
     let merged_toml = toml::to_string_pretty(&toml_value)
         .map_err(|e| ApiError::bad_request(format!("failed to serialize config: {e}")))?;
     let mut merged_cfg: Config = toml::from_str(&merged_toml)
         .map_err(|e| ApiError::bad_request(format!("merged config failed to parse: {e}")))?;
     merged_cfg.expand_env_secrets();
-    if let Err(e) = validation::validate_and_resolve_for(&merged_cfg, false) {
+    if let Err(e) = validation::validate_live(&merged_cfg) {
         return Err(ApiError::bad_request(format!("invalid config: {e}")));
     }
 

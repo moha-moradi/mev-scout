@@ -1,21 +1,12 @@
 //! mev-scout API server — local-only web UI + API layer over the SQLite
 //! stores and the `mev-scout` CLI binary.
 
-mod error;
-mod jobs;
-mod pagination;
-mod read;
-mod routes;
-mod state;
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::routing::get;
-use axum::{Json, Router};
+use axum::Router;
 use clap::Parser;
+use mev_scout_api::{jobs, routes, state};
 use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -54,6 +45,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Test stub mode: when MEV_SCOUT_STUB=1, act as a fake `mev-scout` child
+    // process for the job-manager integration tests instead of starting the
+    // server. See the `stub_main` command table below.
+    if std::env::var("MEV_SCOUT_STUB") == Ok("1".to_string()) {
+        return stub_main().await;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -119,7 +117,6 @@ async fn main() -> anyhow::Result<()> {
         } else {
             CorsLayer::new()
         })
-        .route("/api", get(api_index))
         .with_state(state.clone());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -155,14 +152,61 @@ async fn shutdown_signal(state: SharedState) {
     state.job_manager.lock().await.kill_all().await;
 }
 
-async fn api_index() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "name": "mev-scout-api",
-            "endpoints": ["/api/health", "/api/chains", "/api/config", "/api/explorer/*",
-                          "/api/results/*", "/api/runs", "/api/opportunities*", "/api/pools",
-                          "/api/sync", "/api/jobs*"]
-        })),
-    )
+/// Fake `mev-scout` child used by the integration tests to exercise the job
+/// manager (spawn/stop/progress/log) without a real CLI binary. Invoked with
+/// the same argv shape the job manager builds:
+/// `binary --config <path> <command> [args...]`
+///
+/// The API only allows known commands (`run`, `live`, …); the stub accepts
+/// any allowlisted command and derives its *behavior* from marker args the
+/// tests pass (the real CLI ignores unknown flags the same way).
+async fn stub_main() -> anyhow::Result<()> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--config" {
+            let _ = args.next();
+            break;
+        }
+    }
+    let command = args.next().unwrap_or_default();
+    let rest: Vec<String> = args.collect();
+
+    match command.as_str() {
+        c if matches!(
+            c,
+            "run" | "live" | "discover" | "tokens" | "scan" | "report" | "explorer index"
+        ) => {
+            if rest.iter().any(|a| a == "emit-progress") {
+                // Emits a Run ID + NDJSON `--progress json` events, then
+                // stays alive until killed (progress + stop tests).
+                println!("Run ID: live_1700000001");
+                println!("{{\"stage\":\"resolve\"}}");
+                println!("{{\"stage\":\"fetch\",\"done\":5,\"total\":10}}");
+                println!("{{\"stage\":\"detect\",\"done\":8,\"total\":10}}");
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                }
+            } else if rest.iter().any(|a| a == "fail") {
+                // Exits 1 with a stderr message (failed-job tests).
+                eprintln!("stub failed: boom");
+                std::process::exit(1);
+            } else if rest.iter().any(|a| a == "sleep-secs") {
+                // Sleeps for the given seconds then exits 0.
+                let idx = rest.iter().position(|a| a == "sleep-secs").unwrap();
+                let secs: u64 = rest[idx + 1..].first().and_then(|s| s.parse().ok()).unwrap_or(1);
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+                println!("done sleeping {secs}s");
+                Ok(())
+            } else {
+                // Exits 0 immediately, printing a run id + args (spawn/log tests).
+                println!("hello from stub; args={}", rest.join(" "));
+                println!("Run ID: run_1700000000");
+                Ok(())
+            }
+        }
+        other => {
+            eprintln!("stub: unknown command '{other}'");
+            std::process::exit(2);
+        }
+    }
 }
