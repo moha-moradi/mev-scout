@@ -14,9 +14,10 @@ interface Props<T> {
   rows: T[];
   rowKey: (row: T) => string;
   empty?: string;
+  action?: React.ReactNode;
 }
 
-export default function DataTable<T>({ columns, rows, rowKey, empty }: Props<T>) {
+export default function DataTable<T>({ columns, rows, rowKey, empty, action }: Props<T>) {
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -47,8 +48,10 @@ export default function DataTable<T>({ columns, rows, rowKey, empty }: Props<T>)
 
   if (rows.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
-        {empty ?? "No data"}
+      <div className="rounded-xl border border-dashed border-zinc-800 p-10 text-center">
+        <div className="text-3xl text-zinc-700">∅</div>
+        <p className="mt-2 text-sm text-zinc-500">{empty ?? "No data"}</p>
+        {action && <div className="mt-4">{action}</div>}
       </div>
     );
   }

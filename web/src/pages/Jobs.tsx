@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type JobInfo } from "../api";
 import { usePolling } from "../hooks";
 import DataTable, { type Column } from "../components/DataTable";
@@ -117,7 +118,7 @@ export default function Jobs() {
                 setCommand(e.target.value);
                 setArgs(PRESETS[e.target.value].args.join(" "));
               }}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
             >
               {COMMANDS.map((c) => (
                 <option key={c} value={c}>{c}</option>
@@ -130,7 +131,7 @@ export default function Jobs() {
               value={args}
               onChange={(e) => setArgs(e.target.value)}
               placeholder="--blocks 10 --progress json"
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-xs outline-none focus:border-sky-600"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-xs outline-none focus:border-emerald-400"
             />
           </div>
           <div>
@@ -139,7 +140,7 @@ export default function Jobs() {
               value={timeoutSecs}
               onChange={(e) => setTimeoutSecs(e.target.value)}
               placeholder="optional"
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
             />
           </div>
         </div>
@@ -147,7 +148,7 @@ export default function Jobs() {
         <button
           onClick={create}
           disabled={starting}
-          className="mt-3 rounded-md bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:opacity-50"
+          className="mt-3 rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
         >
           {starting ? "Starting…" : "Create job"}
         </button>
@@ -158,6 +159,14 @@ export default function Jobs() {
         rows={jobs ?? []}
         rowKey={(r) => r.job_id}
         empty="No jobs yet."
+        action={
+          <Link
+            to="/run"
+            className="inline-block rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300"
+          >
+            Run a backtest
+          </Link>
+        }
       />
 
       {selectedJob && (

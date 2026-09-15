@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type JobInfo, type ProgressResponse, type RunDetail, type ValidationResponse, type PnlResponse, type SanitizedConfig } from "../api";
 import { usePolling } from "../hooks";
 import { useToast } from "../components/Toast";
@@ -6,6 +6,10 @@ import StageTimeline from "../components/StageTimeline";
 import LogViewer from "../components/LogViewer";
 import ValidationPanel, { tierBadge } from "../components/ValidationPanel";
 import PnlCard from "../components/PnlCard";
+import StatCard from "../components/StatCard";
+import TerminalPanel from "../components/TerminalPanel";
+
+const RunCharts = lazy(() => import("../components/RunCharts"));
 
 type RangeMode = "blocks" | "days" | "range";
 
@@ -139,7 +143,7 @@ export default function RunBacktest() {
             <select
               value={mode}
               onChange={(e) => setMode(e.target.value as RangeMode)}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
             >
               <option value="blocks">Last N blocks</option>
               <option value="days">Last N days</option>
@@ -154,7 +158,7 @@ export default function RunBacktest() {
                 min={1}
                 value={blocks}
                 onChange={(e) => setBlocks(e.target.value)}
-                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
               />
             </div>
           )}
@@ -167,7 +171,7 @@ export default function RunBacktest() {
                 max={365}
                 value={days}
                 onChange={(e) => setDays(e.target.value)}
-                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
               />
             </div>
           )}
@@ -180,7 +184,7 @@ export default function RunBacktest() {
                   min={1}
                   value={fromBlock}
                   onChange={(e) => setFromBlock(e.target.value)}
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
                 />
               </div>
               <div>
@@ -190,7 +194,7 @@ export default function RunBacktest() {
                   min={1}
                   value={toBlock}
                   onChange={(e) => setToBlock(e.target.value)}
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
                 />
               </div>
             </>
@@ -220,7 +224,7 @@ export default function RunBacktest() {
               type="checkbox"
               checked={recordRejections}
               onChange={(e) => setRecordRejections(e.target.checked)}
-              className="accent-sky-600"
+              className="accent-emerald-400"
             />
             record rejections
           </label>
@@ -230,7 +234,7 @@ export default function RunBacktest() {
           <button
             onClick={start}
             disabled={starting || jobRunning}
-            className="rounded-md bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {jobRunning ? "Running…" : starting ? "Starting…" : "Run backtest"}
           </button>
@@ -282,6 +286,22 @@ export default function RunBacktest() {
             />
           </div>
 
+          <RunDetailSummary detail={detail} />
+          <TerminalPanel
+            label="run summary"
+            lines={[
+              `mev-scout run --chain ${detail.chain} --from-block ${detail.start_block} --to-block ${detail.end_block}`,
+              `→ strategies: ${detail.strategies.join(", ")}`,
+              `→ flash loan provider: ${detail.flash_loan_provider}`,
+              `→ net P&L ${detail.opportunities.reduce((s, o) => s + Number(o.expected_profit) / 1e18, 0).toFixed(4)} ETH`,
+            ]}
+          />
+          <Suspense
+            fallback={<p className="text-xs text-zinc-500">Loading charts…</p>}
+          >
+            <RunCharts detail={detail} />
+          </Suspense>
+
           {validation && <ValidationPanel validation={validation} candidates={detail.opportunities} runId={runId ?? undefined} />}
           <PnlCard pnl={pnl} />
 
@@ -326,6 +346,41 @@ export default function RunBacktest() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function RunDetailSummary({ detail }: { detail: RunDetail }) {
+  const ops = detail.opportunities;
+  const totalEth = ops.reduce((s, o) => s + Number(o.expected_profit) / 1e18, 0);
+  const profitable = ops.filter((o) => Number(o.expected_profit) > 0).length;
+  const hitRate = ops.length > 0 ? (profitable / ops.length) * 100 : 0;
+
+  const blocks = [...new Set(ops.map((o) => o.block_number))].sort((a, b) => a - b);
+  let acc = 0;
+  let peak = 0;
+  let maxDd = 0;
+  blocks.forEach((b) => {
+    const sum = ops.filter((o) => o.block_number === b).reduce(
+      (s, o) => s + Number(o.expected_profit) / 1e18,
+      0,
+    );
+    acc += sum;
+    peak = Math.max(peak, acc);
+    if (peak > 0) maxDd = Math.max(maxDd, ((peak - acc) / peak) * 100);
+  });
+
+  return (
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <StatCard
+        label="Net P&L (ETH)"
+        value={totalEth.toFixed(6)}
+        sub={`${ops.length} opps in window`}
+        accent={totalEth >= 0 ? "good" : "bad"}
+      />
+      <StatCard label="Hit rate" value={`${hitRate.toFixed(1)}%`} sub="profitable opps" />
+      <StatCard label="Max drawdown" value={`${maxDd.toFixed(2)}%`} sub="peak to trough" accent="bad" />
+      <StatCard label="Strategy count" value={detail.strategies.length} sub="active strategies" />
     </div>
   );
 }

@@ -32,7 +32,7 @@ export default function LogViewer({ jobId, intervalMs = 2000, heightClass = "h-6
             type="checkbox"
             checked={autoScroll}
             onChange={(e) => setAutoScroll(e.target.checked)}
-            className="accent-sky-600"
+            className="accent-emerald-400"
           />
           auto-scroll
         </label>

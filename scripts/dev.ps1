@@ -33,7 +33,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
 function Run-Foreground($Name, $Args, $WorkDir) {
-  Write-Host "`n▶ $Name:" -ForegroundColor Cyan
+  Write-Host "`n▶ ${Name}:" -ForegroundColor Cyan
   Push-Location
   try {
     if ($WorkDir) { Set-Location $WorkDir }
@@ -62,9 +62,10 @@ if (-not $noApi) {
     "--web-dir", $webDir
   )
   if ($apiBinary) { $apiArgs += @("--binary", $apiBinary) }
+  $cargoArgs = @("run", "-p", "mev-scout-api", "--") + $apiArgs
   $jobs += Start-Process -FilePath "cargo" `
-    -ArgumentList @("run", "-p", "mev-scout-api", "--", @$apiArgs) `
-    -WorkingDirectory $root `-RedirectStandardOutput (Join-Path $env:TEMP "mev-scout-api-out.log") `
+    -ArgumentList $cargoArgs `
+    -WorkingDirectory $root -RedirectStandardOutput (Join-Path $env:TEMP "mev-scout-api-out.log") `
     -RedirectStandardError (Join-Path $env:TEMP "mev-scout-api-err.log") `
     -NoNewWindow -PassThru
 }

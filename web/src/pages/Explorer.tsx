@@ -153,7 +153,7 @@ export default function Explorer() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="filter hash / eoa / token"
-            className="ml-auto w-56 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-sky-600"
+            className="ml-auto w-56 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-emerald-400"
           />
         </div>
         <table className="w-full text-left text-sm">

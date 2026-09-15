@@ -359,13 +359,23 @@ export interface OpportunityRunSummary {
 
 export interface PoolInfo {
   address: string;
-  dex: string;
-  token_a: string;
-  token_b: string;
-  tvl_usd: number;
+  token0: string;
+  token1: string;
   fee: number;
-  created_at_block: number | null;
-  last_seen_block: number | null;
+  name: string | null;
+  /** dex type key, e.g. "uniswap_v2" */
+  type: string;
+  tick_spacing: number | null;
+  creation_block: number;
+  pool_id: string | null;
+  is_fot: boolean | null;
+  is_rebase: boolean | null;
+  dex_name: string | null;
+  token0_symbol: string | null;
+  token1_symbol: string | null;
+  tvl_usd?: number | null;
+  volume_usd_24h?: number | null;
+  volume_usd_30d?: number | null;
 }
 
 export interface FeedRow {

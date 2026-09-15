@@ -93,7 +93,7 @@ export default function Live() {
               type="checkbox"
               checked={loop}
               onChange={(e) => setLoop(e.target.checked)}
-              className="accent-sky-600"
+              className="accent-emerald-400"
             />
             --loop
           </label>
@@ -104,7 +104,7 @@ export default function Live() {
               disabled={!loop}
               onChange={(e) => setDuration(e.target.value)}
               placeholder={loop ? "e.g. 90s, 15m, 1h" : "requires --loop"}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600 disabled:opacity-50"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400 disabled:opacity-50"
             />
           </div>
           <div>
@@ -114,7 +114,7 @@ export default function Live() {
               disabled={!loop}
               onChange={(e) => setMaxBlocks(e.target.value)}
               placeholder={loop ? "stop after N blocks" : "requires --loop"}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600 disabled:opacity-50"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400 disabled:opacity-50"
             />
           </div>
           <div>
@@ -123,7 +123,7 @@ export default function Live() {
               type="number"
               value={pollInterval}
               onChange={(e) => setPollInterval(e.target.value)}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-sky-600"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-400"
             />
           </div>
         </div>
@@ -134,14 +134,14 @@ export default function Live() {
               type="checkbox"
               checked={recordRejections}
               onChange={(e) => setRecordRejections(e.target.checked)}
-              className="accent-sky-600"
+              className="accent-emerald-400"
             />
             record rejections
           </label>
           <button
             onClick={start}
             disabled={starting || jobRunning}
-            className="rounded-md bg-sky-700 px-4 py-2 text-sm font-medium text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {jobRunning ? "Running…" : starting ? "Starting…" : "Start live"}
           </button>

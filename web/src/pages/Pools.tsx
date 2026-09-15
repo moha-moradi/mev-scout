@@ -50,25 +50,35 @@ export default function Pools() {
       cell: (r) => <span className="font-mono text-xs text-zinc-300">{shortAddr(r.address)}</span>,
       sortValue: (r) => r.address,
     },
-    { key: "dex", header: "dex", cell: (r) => r.dex, sortValue: (r) => r.dex },
+    { key: "dex", header: "dex", cell: (r) => r.dex_name ?? r.type, sortValue: (r) => r.dex_name ?? r.type },
     {
-      key: "token_a",
+      key: "token0",
       header: "token A",
-      cell: (r) => <span className="font-mono text-xs text-zinc-400">{shortAddr(r.token_a)}</span>,
-      sortValue: (r) => r.token_a,
+      cell: (r) => (
+        <span className="font-mono text-xs text-zinc-400">
+          {r.token0_symbol ? `${r.token0_symbol} ` : ""}
+          {shortAddr(r.token0)}
+        </span>
+      ),
+      sortValue: (r) => r.token0,
     },
     {
-      key: "token_b",
+      key: "token1",
       header: "token B",
-      cell: (r) => <span className="font-mono text-xs text-zinc-400">{shortAddr(r.token_b)}</span>,
-      sortValue: (r) => r.token_b,
+      cell: (r) => (
+        <span className="font-mono text-xs text-zinc-400">
+          {r.token1_symbol ? `${r.token1_symbol} ` : ""}
+          {shortAddr(r.token1)}
+        </span>
+      ),
+      sortValue: (r) => r.token1,
     },
     {
       key: "tvl_usd",
       header: "TVL",
       align: "right",
-      cell: (r) => <span className="text-emerald-400">{fmtUsd(r.tvl_usd)}</span>,
-      sortValue: (r) => r.tvl_usd,
+      cell: (r) => (r.tvl_usd != null ? <span className="text-emerald-400">{fmtUsd(r.tvl_usd)}</span> : <span className="text-zinc-500">—</span>),
+      sortValue: (r) => r.tvl_usd ?? 0,
     },
     {
       key: "fee",
@@ -78,11 +88,13 @@ export default function Pools() {
       sortValue: (r) => r.fee,
     },
     {
-      key: "created_at_block",
+      key: "creation_block",
       header: "created",
       align: "right",
-      cell: (r) => <span className="tabular-nums text-zinc-400">{r.created_at_block ?? "—"}</span>,
-      sortValue: (r) => r.created_at_block ?? 0,
+      cell: (r) => (
+        <span className="tabular-nums text-zinc-400">{r.creation_block > 0 ? r.creation_block : "—"}</span>
+      ),
+      sortValue: (r) => r.creation_block,
     },
   ];
 
@@ -116,25 +128,25 @@ export default function Pools() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="search address"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
         />
         <input
           value={dex}
           onChange={(e) => setDex(e.target.value)}
           placeholder="dex"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
         />
         <input
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder="token"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
         />
         <input
           value={minTvl}
           onChange={(e) => setMinTvl(e.target.value)}
           placeholder="min TVL USD"
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
         />
         <select
           value={`${sort}:${order}`}
@@ -143,12 +155,12 @@ export default function Pools() {
             setSort(s);
             setOrder(o as "asc" | "desc");
           }}
-          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-sky-600"
+          className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
         >
           <option value="tvl_usd:desc">TVL ↓</option>
           <option value="tvl_usd:asc">TVL ↑</option>
-          <option value="fee:asc">fee ↑</option>
-          <option value="created_at_block:desc">newest</option>
+          <option value="volume_usd_24h:desc">24h volume ↓</option>
+          <option value="creation_block:desc">newest</option>
         </select>
       </div>
 
@@ -158,7 +170,16 @@ export default function Pools() {
           columns={columns}
           rows={rows}
           rowKey={(r) => r.address}
-          empty={loading ? "Loading…" : "No pools match the current filters."}
+          empty={loading ? "Loading…" : "No pools indexed."}
+          action={
+            <button
+              onClick={enrich}
+              disabled={enriching}
+              className="inline-block rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
+            >
+              {enriching ? "Starting…" : "Start indexer"}
+            </button>
+          }
         />
         <p className="mt-2 text-xs text-zinc-600">{data?.total ?? 0} total pools</p>
       </div>

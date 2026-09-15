@@ -50,7 +50,7 @@ export default function ChainSelector({ disabled }: Props) {
         disabled={jobRunning}
         onChange={(e) => void onSelect(e.target.value)}
         title={jobRunning ? "Disabled while a job runs" : "Active chain"}
-        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-sky-600 disabled:cursor-not-allowed disabled:opacity-50"
+        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {chains?.map((c) => (
           <option key={c.name} value={c.name}>
