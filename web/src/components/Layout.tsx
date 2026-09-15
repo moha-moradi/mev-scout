@@ -112,11 +112,12 @@ export default function Layout() {
             </div>
           </div>
         </header>
-        <main className="mx-auto max-w-7xl px-4 py-6 lg:px-8">
-          <div className="mb-4 text-[11px] uppercase tracking-wider text-zinc-600">
-            <span>{health?.chain ?? "…"}</span>
-            <span className="mx-1.5 text-zinc-700">/</span>
-            <span className="text-zinc-400">{current?.label ?? "…"}</span>
+        <main className="mx-auto w-full max-w-[1600px] px-4 py-6 lg:px-8">
+          <div className="mb-5 flex items-center gap-2 text-[11px] uppercase tracking-wider">
+            <span className="h-3 w-0.5 rounded-full bg-sky-400/80" />
+            <span className="text-zinc-500">{health?.chain ?? "…"}</span>
+            <span className="text-zinc-700">/</span>
+            <span className="text-zinc-300">{current?.label ?? "…"}</span>
           </div>
           <ErrorBoundary>
             <Outlet />

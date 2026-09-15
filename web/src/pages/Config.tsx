@@ -119,18 +119,24 @@ export default function ConfigPage() {
     setDirty(true);
   };
 
+  const knownKeys = new Set(STRATEGIES.map((s) => s.key));
   const activeStrategies = new Set(
     form.strategies
       .split(",")
       .map((s) => s.trim())
-      .filter(Boolean),
+      .filter((s) => knownKeys.has(s)),
   );
 
   function toggleStrategy(key: string) {
     const next = new Set(activeStrategies);
     if (next.has(key)) next.delete(key);
     else next.add(key);
-    set("strategies", next.size ? [...next].join(",") : "");
+    // Preserve unknown strategy keys from the saved config (e.g. multi_hop_arb).
+    const extras = form.strategies
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s && !knownKeys.has(s));
+    set("strategies", [...next, ...extras].join(",") || "");
   }
 
   const railJson = JSON.stringify(
@@ -250,30 +256,32 @@ export default function ConfigPage() {
                   key={s.key}
                   type="button"
                   onClick={() => toggleStrategy(s.key)}
-                  className={`rounded-lg border p-3 text-left transition-colors ${
+                  className={`rounded-lg border p-3.5 text-left transition-all ${
                     on
-                      ? "border-zinc-700 bg-zinc-900"
-                      : "border-zinc-800 bg-zinc-900/40 opacity-60"
+                      ? "border-sky-500/50 bg-zinc-900 shadow-[0_0_0_1px_rgba(56,189,248,0.12),0_0_24px_-8px_rgba(56,189,248,0.35)]"
+                      : "border-zinc-800/80 bg-zinc-900/30 opacity-55 hover:opacity-75"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${s.color}`}>
-                      {s.code}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-zinc-100">{s.name}</span>
+                      <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${s.color}`}>
+                        {s.code}
+                      </span>
+                    </div>
                     <span
-                      className={`relative h-4 w-7 rounded-full transition-colors ${
+                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
                         on ? "bg-emerald-400" : "bg-zinc-700"
                       }`}
                     >
                       <span
-                        className={`absolute top-0.5 h-3 w-3 rounded-full bg-black transition-all ${
-                          on ? "left-3.5" : "left-0.5"
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-black transition-all ${
+                          on ? "left-4" : "left-0.5"
                         }`}
                       />
                     </span>
                   </div>
-                  <div className="mt-2 text-sm font-medium text-zinc-200">{s.name}</div>
-                  <div className="mt-0.5 text-xs leading-relaxed text-zinc-500">{s.desc}</div>
+                  <div className="mt-2 text-xs leading-relaxed text-zinc-500">{s.desc}</div>
                 </button>
               );
             })}

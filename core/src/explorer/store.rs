@@ -61,6 +61,7 @@ pub struct FeedRow {
     pub kind: String,
     pub profit_token: Option<String>,
     pub profit_usd: Option<f64>,
+    pub gas_cost_usd: Option<f64>,
     pub net_profit_usd: Option<f64>,
     pub eoa: String,
     pub tx_hash: String,
@@ -622,8 +623,8 @@ impl ExplorerStore {
             format!("WHERE kind IN ({})", list.join(","))
         };
         let sql = format!(
-            "SELECT ts, block_number, kind, profit_token, profit_usd, net_profit_usd,
-                    eoa, tx_hash, route_json
+            "SELECT ts, block_number, kind, profit_token, profit_usd, gas_cost_usd,
+                    net_profit_usd, eoa, tx_hash, route_json
              FROM mev_ops {order}
              ORDER BY block_number DESC, tx_index DESC, id DESC LIMIT {limit}"
         );
@@ -1532,10 +1533,11 @@ fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
         kind: r.get(2)?,
         profit_token: r.get(3)?,
         profit_usd: r.get(4)?,
-        net_profit_usd: r.get(5)?,
-        eoa: r.get(6)?,
-        tx_hash: r.get(7)?,
-        route_json: r.get(8)?,
+        gas_cost_usd: r.get(5)?,
+        net_profit_usd: r.get(6)?,
+        eoa: r.get(7)?,
+        tx_hash: r.get(8)?,
+        route_json: r.get(9)?,
     })
 }
 
