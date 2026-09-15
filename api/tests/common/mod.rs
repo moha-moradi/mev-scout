@@ -36,9 +36,11 @@ pub async fn test_state() -> SharedState {
 /// missing-DB and empty-result tests).
 pub async fn state_with_conns(explorer_conn: Connection, cache_conn: Connection) -> SharedState {
     let data_dir = Box::leak(Box::new(tempfile::tempdir().expect("tempdir")));
-    let mut config = mev_scout_core::config::Config::default();
-    config.chain = ChainName::Polygon;
-    config.config_path = None;
+    let config = mev_scout_core::config::Config {
+        chain: ChainName::Polygon,
+        config_path: None,
+        ..Default::default()
+    };
     Arc::new(AppState {
         config: tokio::sync::RwLock::new(config),
         config_path: PathBuf::from("mev-scout.toml"),
@@ -107,9 +109,11 @@ pub async fn state_with_real_dbs() -> SharedState {
         seed_cache_rows(&conn);
     }
 
-    let mut config = mev_scout_core::config::Config::default();
-    config.chain = ChainName::Polygon;
-    config.config_path = None;
+    let config = mev_scout_core::config::Config {
+        chain: ChainName::Polygon,
+        config_path: None,
+        ..Default::default()
+    };
 
     Arc::new(AppState {
         config: tokio::sync::RwLock::new(config),

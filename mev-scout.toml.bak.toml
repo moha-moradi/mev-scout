@@ -1,0 +1,14 @@
+chain = "polygon"
+gas_limit = 200000
+gas_model = "historical_exact"
+output = "table"
+priority_fee_gwei = 2.5
+rpc_rps = [5]
+rpc_urls = ["https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy"]
+rps_limit = 5
+strategies = "all"
+
+[explorer]
+checkpoint_every = 500
+confirmations = 4
+poll_interval_ms = 2000

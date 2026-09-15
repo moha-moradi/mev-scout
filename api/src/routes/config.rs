@@ -164,6 +164,16 @@ async fn put_config(
         .map_err(|e| ApiError::bad_request(format!("failed to serialize config: {e}")))?;
     let mut merged_cfg: Config = toml::from_str(&merged_toml)
         .map_err(|e| ApiError::bad_request(format!("merged config failed to parse: {e}")))?;
+    // Config files commonly omit `[chains.*]` (built-in defaults are merged
+    // at load time by `Config::load_or_default`); do the same here so
+    // validation sees the resolved chain section instead of failing with
+    // "no [chains.<chain>] section found".
+    for (name, default_cfg) in mev_scout_core::config::default_chains() {
+        merged_cfg
+            .chains
+            .entry(name)
+            .or_insert(default_cfg);
+    }
     merged_cfg.expand_env_secrets();
     merged_cfg.blocks = Some(1);
     if let Err(e) = validation::validate_and_resolve_for(&merged_cfg, false) {

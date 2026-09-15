@@ -138,12 +138,15 @@ impl JobManager {
         }
         std::fs::write(&log_path, "")?;
 
-        // Child argv: binary --config <path> <command> <args...>
+        // Child argv: binary --config <path> <command words...> <args...>
+        // Multi-word allowlisted commands (e.g. `explorer index`) split
+        // into separate argv tokens; clap rejects the single-token form.
+        let command_words: Vec<String> = command.split_whitespace().map(String::from).collect();
         let mut full_args: Vec<String> = vec![
             "--config".to_string(),
             config_path.to_string_lossy().into_owned(),
-            command.clone(),
         ];
+        full_args.extend(command_words.iter().cloned());
         full_args.append(&mut args);
 
         let mut child = tokio::process::Command::new(binary)
@@ -163,7 +166,7 @@ impl JobManager {
         let info = JobInfo {
             job_id: job_id.clone(),
             command,
-            args: full_args[2..].to_vec(),
+            args: full_args[2 + command_words.len()..].to_vec(),
             status: JobStatus::Running,
             exit_code: None,
             run_id: None,

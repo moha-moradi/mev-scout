@@ -223,6 +223,34 @@ async fn job_detail_unknown_404_and_stop_non_running_409() {
 }
 
 #[tokio::test]
+async fn multi_word_command_splits_into_argv_tokens() {
+    let (app, _) = jobs_app().await;
+    // `explorer index` must reach the child as two argv tokens; the stub
+    // echoes its parsed command + args, failing with exit 2 otherwise.
+    let (status, resp) = spawn(&app, "explorer index", vec!["--from", "10", "--to", "20"]).await;
+    assert_eq!(status, StatusCode::OK);
+    let job_id = resp["job_id"].as_str().unwrap().to_string();
+    let info = wait_for(&app, &job_id, "finished", 5000).await;
+    assert_eq!(info["exit_code"], 0, "stub rejected the argv: {info}");
+    // JobInfo.args stores the args past the command words.
+    assert_eq!(
+        info["args"],
+        json!(["--from", "10", "--to", "20"]),
+        "args must exclude the command words: {info}"
+    );
+
+    let (_, log) = request(&app, Method::GET, &format!("/api/jobs/{job_id}/log"), None).await;
+    let text: Vec<&str> = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| l.as_str())
+        .collect();
+    let text = text.join("\n");
+    assert!(text.contains("args=--from 10 --to 20"), "log: {text}");
+}
+
+#[tokio::test]
 async fn jobs_list_returns_all() {
     let (app, _) = jobs_app().await;
     let (_, resp) = spawn(&app, "run", vec!["ok"]).await;

@@ -32,7 +32,6 @@ uniswap_v3_factories = [
   "0x512eb749541B7cf294be882D636218c84a5e9E5F",
 ]
 uniswap_v2_factories = [
-  "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",
   "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10",
 ]
 pool_discovery_start_block = 4200000
@@ -58,7 +57,6 @@ uniswap_v3_factories = [
 ]
 uniswap_v2_factories = [
   "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
-  "0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b",
   "0x28F5E6C71C7541b1C6523351AE331CcAfC443626", # ListaV2 (UniV2 fork)
 ]
 pool_discovery_start_block = 5063800
@@ -149,7 +147,7 @@ uniswap_v3_factories = [
   "0x548118C7E0B865C2CfA94D15EC86B666468ac758",
   "0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F",
 ]
-uniswap_v2_factories = ["0x9e5A52f57b3038F1B8EeE45F28b3C1960e1fC6b"]
+uniswap_v2_factories = []
 pool_discovery_start_block = 10827000
 wrapped_native_token = "0x4200000000000000000000000000000000000006"
 solidly_factories = ["0x420DD381b31aEf6683db6B902084cB0FFECe40Da"]

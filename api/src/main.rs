@@ -171,8 +171,16 @@ async fn stub_main() -> anyhow::Result<()> {
             break;
         }
     }
-    let command = args.next().unwrap_or_default();
-    let rest: Vec<String> = args.collect();
+    // Multi-word commands arrive as separate argv tokens (`explorer index`)
+    // but the stub matches on the combined string; normalize the first two
+    // tokens when they form a known command.
+    let first = args.next().unwrap_or_default();
+    let second = args.next().unwrap_or_default();
+    let (command, rest): (String, Vec<String>) = if first == "explorer" && second == "index" {
+        ("explorer index".to_string(), args.collect())
+    } else {
+        (first, std::iter::once(second).filter(|s| !s.is_empty()).chain(args).collect())
+    };
 
     match command.as_str() {
         "run" | "live" | "discover" | "tokens" | "scan" | "report" | "explorer index" => {
