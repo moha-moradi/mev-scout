@@ -1,50 +1,39 @@
 use anyhow::Context;
 use comfy_table::Table;
-use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
+use mev_scout_core::jobs::{job_tokens, TokensOpts};
 
 use crate::cli::TokensArgs;
+use crate::job_progress::NoopProgress;
 
 pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()> {
-    let (chain_name, _chain_config) =
-        validation::resolve_chain(config).context("failed to resolve chain")?;
-    let chain_id = chain_name.chain_id();
+    let _ = validation::resolve_chain(config).context("failed to resolve chain")?;
 
-    // ── Load token cache (SQLite + pre-populated known tokens) ──
-    let cache_path = config.effective_db_path(&chain_name);
-    let cache = SqliteStore::open(&cache_path)?;
-    let mut token_cache = TokenCache::warm(chain_id);
-    match TokenCache::load(&cache) {
-        Ok(persisted) => token_cache.merge(persisted),
-        Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
-    }
+    let opts = TokensOpts {
+        symbol: args.symbol.clone(),
+        decimals: args.decimals.map(u64::from),
+        limit: args.limit,
+    };
 
-    // Apply post-filters
-    let mut entries: Vec<(String, String, Option<i32>)> = token_cache
-        .entries()
-        .iter()
-        .map(|(addr, (symbol, decimals))| (format!("{addr}"), symbol.clone(), *decimals))
+    let outcome = job_tokens(
+        config,
+        &opts,
+        &NoopProgress,
+    )
+    .await?;
+
+    let entries: Vec<(String, String, Option<i32>)> = outcome
+        .entries
+        .into_iter()
+        .map(|e| (e.address, e.symbol, e.decimals))
         .collect();
-
-    if let Some(ref pattern) = args.symbol {
-        let pat = pattern.to_lowercase();
-        entries.retain(|(_, sym, _)| sym.to_lowercase().contains(&pat));
-    }
-    if let Some(dec) = args.decimals {
-        entries.retain(|(_, _, d)| *d == Some(dec as i32));
-    }
-
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-    entries.truncate(args.limit);
 
     if args.cache_only {
         println!("  Token cache: {} tokens", entries.len());
         return Ok(());
     }
 
-    // ── Display results ──
     use mev_scout_core::types::OutputFormat;
     match config.output.output {
         OutputFormat::Json => {
@@ -79,7 +68,6 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
             println!("  {table}");
             println!();
             println!("  {} token(s) found", entries.len());
-            println!("  (cached symbols; run 'discover' to add tokens from discovered pools)");
         }
     }
 

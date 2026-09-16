@@ -16,10 +16,10 @@ workspace = true
 
 [dependencies]
 mev-scout-core = { path = "../core" }
-mev-scout-cli = { path = "../cli" }
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.7", features = ["macros", "json"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+tokio-util = { workspace = true }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -31,6 +31,8 @@ anyhow.workspace = true
 thiserror = "1"
 toml = "0.8"
 url = "2"
+humantime = "2"
+alloy.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

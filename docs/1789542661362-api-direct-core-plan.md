@@ -1,5 +1,9 @@
 # Plan: Make API independent — jobs talk directly to core (drop CLI subprocess)
 
+**Status: done.** API jobs run in-process against `mev-scout-core` (no CLI
+subprocess). Shared `core::jobs` orchestration and `CancellationToken`
+job cancel are in place.
+
 ## Context
 
 - Current architecture: `web → api → mev-scout CLI (subprocess) → core`.

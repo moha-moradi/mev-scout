@@ -217,14 +217,14 @@ async fn config_put_rejects_invalid_value_with_400_and_writes_nothing() {
 
 #[tokio::test]
 async fn config_edit_rejected_409_while_job_runs() {
-    // Build a state pointing at a real stub binary + temp config.
+    // Build a state with a temp config (jobs use the in-process stub).
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
     let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
     // Start a long-running job via the jobs API (allowlisted `live` command;
-    // the `emit-progress` arg makes the stub emit NDJSON then stay alive).
+    // the `emit-progress` arg makes the stub emit progress then stay alive).
     let (status, resp) = request(
         &app,
         Method::POST,

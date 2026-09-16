@@ -1,9 +1,9 @@
 //! Job manager: each job runs in-process on its own OS thread with a
-//! dedicated multi-threaded tokio runtime, executing the CLI's command
-//! orchestration directly (no subprocess). One running job at a time
+//! dedicated multi-threaded tokio runtime, calling `mev-scout-core` job
+//! orchestration (no CLI subprocess). One running job at a time
 //! (single-job mutex). Job state is shared with the executor thread via
-//! [`JobShared`], which doubles as the [`JobProgress`] sink the CLI commands
-//! emit events/logs and cooperative cancellation through.
+//! [`JobShared`], which doubles as the [`JobProgress`] sink for typed
+//! stage events, log lines, and cooperative cancellation.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use mev_scout_cli::JobProgress;
+use mev_scout_core::progress::JobProgress;
 use serde::Serialize;
+use tokio_util::sync::CancellationToken;
 
-pub use mev_scout_cli::ProgressEvent;
+pub use mev_scout_core::progress::ProgressEvent;
 
 use crate::exec;
 
@@ -48,10 +49,10 @@ pub enum JobStatus {
 
 /// Runtime state shared between the `JobManager` (reads) and the job's
 /// executor thread (writes). Provides cooperative cancellation: commands
-/// abort on the next progress tick once `cancel` is set.
+/// abort on the next progress tick once the token is cancelled.
 #[derive(Debug)]
 pub struct JobShared {
-    cancel: AtomicBool,
+    cancel: CancellationToken,
     progress: Mutex<Option<ProgressEvent>>,
     log: Mutex<Vec<String>>,
     run_id: Mutex<Option<String>>,
@@ -65,7 +66,7 @@ pub struct JobShared {
 impl JobShared {
     fn new(log_file: std::fs::File) -> Arc<JobShared> {
         Arc::new(JobShared {
-            cancel: AtomicBool::new(false),
+            cancel: CancellationToken::new(),
             progress: Mutex::new(None),
             log: Mutex::new(Vec::new()),
             run_id: Mutex::new(None),
@@ -98,7 +99,10 @@ impl JobShared {
             ring.push(line.to_string());
         }
         if let Some(idx) = line.find("Run ID: ") {
-            let rest = line[idx + "Run ID: ".len()..].split_whitespace().next().unwrap_or("");
+            let rest = line[idx + "Run ID: ".len()..]
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
             if rest.starts_with("run_") || rest.starts_with("live_") {
                 let mut rid = self.run_id.lock().unwrap();
                 if rid.is_none() {
@@ -152,12 +156,9 @@ impl JobShared {
 
 impl JobProgress for JobShared {
     fn emit(&self, evt: ProgressEvent) {
-        *self.progress.lock().unwrap() = Some(evt.clone());
-        // Keep the log endpoint parity with the old subprocess model (raw
-        // NDJSON lines arrived in the child's stdout → log file).
-        if let Ok(line) = serde_json::to_string(&evt) {
-            self.append_log(&line);
-        }
+        // Typed progress is served via GET /progress; keep the log human-readable
+        // only (do not mirror stage events as NDJSON into the log ring).
+        *self.progress.lock().unwrap() = Some(evt);
     }
 
     fn log(&self, line: &str) {
@@ -165,7 +166,7 @@ impl JobProgress for JobShared {
     }
 
     fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
+        self.cancel.is_cancelled()
     }
 }
 
@@ -266,13 +267,12 @@ impl JobManager {
             rt.block_on(exec::run_job(&cfg, &command_words, &args, &th_shared));
         });
 
-        // Timeout watchdog: marks the job cancelled (cooperative) once the
-        // deadline elapses, whatever the command is doing.
+        // Timeout watchdog: cooperative cancel once the deadline elapses.
         if let Some(secs) = timeout_secs {
-            let wd = shared.clone();
+            let token = shared.cancel.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(secs));
-                wd.cancel.store(true, Ordering::Relaxed);
+                token.cancel();
             });
         }
 
@@ -289,7 +289,7 @@ impl JobManager {
         if !job.shared.running() {
             anyhow::bail!("job '{job_id}' is not running");
         }
-        job.shared.cancel.store(true, Ordering::Relaxed);
+        job.shared.cancel.cancel();
         Ok(())
     }
 
@@ -297,7 +297,7 @@ impl JobManager {
     pub async fn kill_all(&mut self) {
         for job in &self.jobs {
             if job.shared.running() {
-                job.shared.cancel.store(true, Ordering::Relaxed);
+                job.shared.cancel.cancel();
             }
         }
     }

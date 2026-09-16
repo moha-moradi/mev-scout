@@ -1,44 +1,218 @@
-//! In-process job execution: rebuild the CLI argv for a job, let clap parse
-//! it, then run the command through `commands::execute` with the API's
-//! [`JobShared`] as the progress sink — no subprocess.
+//! In-process job execution: argv/`--flag` parsing, config merge, and
+//! dispatch into [`mev_scout_core::jobs`]. No CLI binary or subprocess.
 //!
 //! Also hosts the `MEV_SCOUT_JOB_STUB=1` fake-job mode that the
 //! `/api/jobs*` integration tests use to exercise the manager
 //! (spawn/stop/progress/log) without a live RPC backend.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Context;
-use clap::Parser;
-use mev_scout_cli::cli::Cli;
-use mev_scout_cli::commands;
-use mev_scout_cli::JobProgress;
-use mev_scout_core::config::Config;
+use mev_scout_core::config::{CliOverrides, Config};
+use mev_scout_core::jobs::{
+    job_discover, job_index, job_live, job_report, job_run, job_scan, job_tokens, DiscoverOpts,
+    IndexOpts, LiveOpts, ReportOpts, RunOpts, ScanKind, ScanOpts, TokensOpts,
+};
+use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
 use crate::jobs::JobShared;
 
-/// Run a real job: parse argv, build config, dispatch the command.
+// ── argv parsing (the CLI's clap surface, interpreted locally) ──────────
+
+fn parse_flags(args: &[String]) -> HashMap<String, Vec<String>> {
+    let mut m: HashMap<String, Vec<String>> = HashMap::new();
+    let mut it = args.iter().peekable();
+    while let Some(a) = it.next() {
+        if let Some(rest) = a.strip_prefix("--") {
+            let (key, inline) = match rest.split_once('=') {
+                Some((k, v)) => (k.to_string(), Some(v.to_string())),
+                None => (rest.to_string(), None),
+            };
+            let mut vals = Vec::new();
+            if let Some(v) = inline {
+                vals.push(v);
+            } else {
+                while let Some(n) = it.peek() {
+                    if n.starts_with("--") {
+                        break;
+                    }
+                    vals.push(it.next().expect("peeked value").clone());
+                }
+            }
+            m.entry(key).or_default().extend(vals);
+        }
+    }
+    m
+}
+
+fn flag_str(f: &HashMap<String, Vec<String>>, key: &str) -> Option<String> {
+    f.get(key).and_then(|v| v.first().cloned())
+}
+
+fn flag_u64(f: &HashMap<String, Vec<String>>, key: &str) -> Option<u64> {
+    flag_str(f, key).and_then(|s| s.parse().ok())
+}
+
+fn flag_usize(f: &HashMap<String, Vec<String>>, key: &str) -> Option<usize> {
+    flag_str(f, key).and_then(|s| s.parse().ok())
+}
+
+fn flag_f64(f: &HashMap<String, Vec<String>>, key: &str) -> Option<f64> {
+    flag_str(f, key).and_then(|s| s.parse().ok())
+}
+
+fn flag_bool(f: &HashMap<String, Vec<String>>, key: &str) -> bool {
+    flag_str(f, key)
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(false)
+}
+
+fn overrides_from_flags(f: &HashMap<String, Vec<String>>, cmd: &str) -> CliOverrides {
+    let mut o = CliOverrides::default();
+    if matches!(cmd, "run" | "discover" | "scan") {
+        o.days = flag_u64(f, "days");
+        o.blocks = flag_u64(f, "blocks");
+        o.block = flag_u64(f, "block");
+        o.from_block = flag_u64(f, "from-block");
+        o.to_block = flag_u64(f, "to-block");
+    }
+    o
+}
+
+fn run_opts(f: &HashMap<String, Vec<String>>) -> RunOpts {
+    RunOpts {
+        batch_rpc: flag_bool(f, "batch-rpc"),
+        record_rejections: flag_bool(f, "record-rejections"),
+    }
+}
+
+fn live_opts(f: &HashMap<String, Vec<String>>) -> LiveOpts {
+    LiveOpts {
+        loop_enabled: flag_bool(f, "loop"),
+        duration: flag_str(f, "duration"),
+        poll_interval_ms: flag_u64(f, "poll-interval").unwrap_or(2000),
+        record_rejections: flag_bool(f, "record-rejections"),
+        max_blocks: flag_u64(f, "max-blocks"),
+    }
+}
+
+fn discover_opts(f: &HashMap<String, Vec<String>>) -> DiscoverOpts {
+    DiscoverOpts {
+        source: flag_str(f, "source").unwrap_or_else(|| "onchain".to_string()),
+        enrich: flag_bool(f, "enrich"),
+        min_tvl: flag_f64(f, "min-tvl").filter(|v| *v > 0.0),
+        max_pools: flag_usize(f, "max-pools").unwrap_or(1000),
+        batch_size: flag_u64(f, "batch-size").unwrap_or(500),
+        rpc_concurrency: flag_usize(f, "rpc-concurrency").unwrap_or(8),
+        incremental: flag_bool(f, "incremental"),
+        health_check: flag_str(f, "health-check").is_none_or(|v| v != "false"),
+        json: flag_bool(f, "json"),
+        solidly_fee_bps: flag_u64(f, "solidly-fee-bps"),
+        resolve_remote_metadata: flag_bool(f, "resolve-remote-metadata"),
+    }
+}
+
+fn scan_kind(s: &str) -> anyhow::Result<ScanKind> {
+    match s {
+        "trades" => Ok(ScanKind::Trades),
+        "transfers" => Ok(ScanKind::Transfers),
+        "flashloans" => Ok(ScanKind::Flashloans),
+        "liquidations" => Ok(ScanKind::Liquidations),
+        "labels" => Ok(ScanKind::Labels),
+        other => anyhow::bail!("unknown scan kind '{other}'"),
+    }
+}
+
+fn scan_opts(f: &HashMap<String, Vec<String>>) -> anyhow::Result<ScanOpts> {
+    let kind = scan_kind(&flag_str(f, "kind").unwrap_or_else(|| "trades".to_string()))?;
+    let addresses = f
+        .get("address")
+        .map(|v| {
+            v.iter()
+                .filter_map(|s| s.parse().ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|v: &Vec<alloy::primitives::Address>| !v.is_empty());
+    let min_value = flag_str(f, "min-value")
+        .and_then(|s| s.parse::<alloy::primitives::U256>().ok());
+    Ok(ScanOpts {
+        kind,
+        addresses,
+        batch_size: flag_u64(f, "batch-size").unwrap_or(500),
+        limit: flag_usize(f, "limit").unwrap_or(500),
+        min_value,
+    })
+}
+
+fn tokens_opts(f: &HashMap<String, Vec<String>>) -> TokensOpts {
+    TokensOpts {
+        symbol: flag_str(f, "symbol"),
+        decimals: flag_u64(f, "decimals"),
+        limit: flag_usize(f, "limit").unwrap_or(100),
+    }
+}
+
+fn report_opts(f: &HashMap<String, Vec<String>>) -> ReportOpts {
+    ReportOpts {
+        run_id: flag_str(f, "run-id"),
+    }
+}
+
+fn index_opts(f: &HashMap<String, Vec<String>>) -> IndexOpts {
+    IndexOpts {
+        from: flag_u64(f, "from"),
+        to: flag_u64(f, "to"),
+        days: flag_u64(f, "days"),
+        live: flag_bool(f, "live"),
+        duration: flag_str(f, "duration"),
+    }
+}
+
+// ── dispatch ────────────────────────────────────────────────────────────
+
 async fn run_request(
     config_path: &str,
     command_words: &[String],
     args: &[String],
     shared: &Arc<JobShared>,
 ) -> anyhow::Result<()> {
-    let mut argv: Vec<String> = vec!["mev-scout".to_string()];
-    argv.extend_from_slice(command_words);
-    argv.extend_from_slice(args);
+    let command = command_words.join(" ");
+    let flags = parse_flags(args);
 
-    let cli = Cli::try_parse_from(argv)
-        .map_err(|e| anyhow::anyhow!("job args failed to parse: {e}"))?;
+    let mut config = Config::load_or_default(config_path).context("failed to load config for job")?;
+    config
+        .merge_cli(&overrides_from_flags(&flags, &command))
+        .context("failed to apply job args to config")?;
 
-    let config = Config::load_or_default(config_path)
-        .context("failed to load config for job")?;
-
-    commands::execute(&cli.command, &config, shared.as_ref()).await
+    let progress: &dyn JobProgress = shared.as_ref();
+    match command.as_str() {
+        "run" => {
+            job_run(&config, &run_opts(&flags), progress).await?;
+        }
+        "live" => {
+            job_live(&config, &live_opts(&flags), progress).await?;
+        }
+        "discover" => {
+            job_discover(&config, &discover_opts(&flags), progress).await?;
+        }
+        "scan" => {
+            job_scan(&config, &scan_opts(&flags)?, progress).await?;
+        }
+        "tokens" => {
+            job_tokens(&config, &tokens_opts(&flags), progress).await?;
+        }
+        "report" => {
+            job_report(&config, &report_opts(&flags), progress).await?;
+        }
+        "explorer index" => {
+            job_index(&config, &index_opts(&flags), progress).await?;
+        }
+        other => anyhow::bail!("unsupported job command '{other}'"),
+    }
+    Ok(())
 }
 
-/// `MEV_SCOUT_JOB_STUB=1` fake job: behavior driven by marker args tests
-/// pass (the CLI being invoked is simulated, matching the old `stub_main`).
 async fn stub_job(
     command_words: &[String],
     args: &[String],
@@ -49,11 +223,9 @@ async fn stub_job(
     match command.as_str() {
         "run" | "live" | "discover" | "tokens" | "scan" | "report" | "explorer index" => {
             if rest.iter().any(|a| a == "emit-progress") {
-                // Emit a Run ID + stage events, then stay alive until
-                // cancelled (progress + stop tests).
                 shared.log("Run ID: live_1700000001");
-                shared.emit(mev_scout_cli::ProgressEvent::stage("resolve"));
-                shared.emit(mev_scout_cli::ProgressEvent {
+                shared.emit(ProgressEvent::stage("resolve"));
+                shared.emit(ProgressEvent {
                     stage: "fetch".to_string(),
                     done: Some(5),
                     total: Some(10),
@@ -61,7 +233,7 @@ async fn stub_job(
                     ops: None,
                     elapsed_ms: None,
                 });
-                shared.emit(mev_scout_cli::ProgressEvent {
+                shared.emit(ProgressEvent {
                     stage: "detect".to_string(),
                     done: Some(8),
                     total: Some(10),
@@ -97,8 +269,6 @@ async fn stub_job(
     }
 }
 
-/// Entry point called by the job thread inside its own runtime: run the
-/// command (or the stub), then resolve final status on [`JobShared`].
 pub(crate) async fn run_job(
     config_path: &str,
     command_words: &[String],

@@ -1,10 +1,11 @@
 # mev-scout — Architecture & CLI Command Guide
 
 An MEV opportunity scanner & backtester for EVM chains (primary target: Polygon).
-Two crates:
+Three host crates on one engine:
 
-- **`core/`** — `mev-scout-core`: all engine logic (fetching, replay, detection, caching).
-- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 11 subcommands. Parses args, loads config, dispatches to core.
+- **`core/`** — `mev-scout-core`: engine + stores + shared job orchestration.
+- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 11 subcommands. Parses args, loads config, presentation, dispatches to core.
+- **`api/`** — `mev-scout-api`: local-only HTTP API + web UI; jobs call core in-process (no CLI subprocess).
 
 ---
 
@@ -16,13 +17,19 @@ flowchart TB
         MAIN["main.rs<br/>parse args · load config · logging"]
         CLIDEF["cli.rs<br/>clap: 11 subcommands + BlockRange args"]
         DISPATCH["commands/mod.rs<br/>CliCommand trait → dispatch"]
-        UI["display.rs · overrides.rs · rpc_setup.rs<br/>tables · config merge · RPC init"]
+        UI["display.rs · overrides.rs<br/>tables · config merge"]
+    end
+
+    subgraph API["mev-scout-api (binary: mev-scout-api)"]
+        APIMAIN["main.rs · routes<br/>HTTP + static web UI"]
+        JOBS["jobs.rs · exec.rs<br/>in-process JobManager"]
     end
 
     subgraph CORE["mev-scout-core (library)"]
         direction TB
 
         subgraph ORCH["Orchestration"]
+            COREJOBS["jobs<br/>run · live · discover · scan · tokens · report · index"]
             PIPE["pipeline<br/>BacktestRunner · run_block / run_range(_hybrid)<br/>aggregate → metrics · gas model"]
         end
 
@@ -54,20 +61,22 @@ flowchart TB
             CFG["config<br/>TOML settings + validation"]
             TYPES["types<br/>MevOpportunity · Strategy · GasConfig · ResultsFile"]
             SIGS["sigs — 4byte signature resolver"]
-            MISC["data · error · dex_type · utils"]
+            MISC["data · error · dex_type · utils · progress"]
         end
     end
 
     MAIN --> CLIDEF --> DISPATCH
     DISPATCH --> UI
-    DISPATCH --> CFG
+    DISPATCH --> COREJOBS
+    APIMAIN --> JOBS --> COREJOBS
 
-    DISPATCH --> RESOLVER
-    DISPATCH --> FETCH
-    DISPATCH --> CHAIN
-    DISPATCH --> POOL
-    DISPATCH --> PIPE
-    DISPATCH --> EXPL
+    COREJOBS --> RESOLVER
+    COREJOBS --> FETCH
+    COREJOBS --> CHAIN
+    COREJOBS --> POOL
+    COREJOBS --> PIPE
+    COREJOBS --> EXPL
+    COREJOBS --> CFG
 
     RESOLVER --> RPC
     FETCH --> RPC
@@ -90,6 +99,7 @@ flowchart TB
 
 **Key relationships**
 
+- Both `CLI` and `API` are first-class hosts: `CLI → core` and `web → API → core`. Shared long-running flows live in `core::jobs`.
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
 - `cache` (SQLite) is the local-first backbone — fetch stores blocks there; replay and the runner read from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, log scans, and replay's on-demand state misses (via `CachedRpcDb`).

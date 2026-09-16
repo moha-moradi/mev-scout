@@ -1,127 +1,51 @@
-use anyhow::Context;
 use comfy_table::Table;
-use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
+use mev_scout_core::jobs::{job_scan, ScanKind, ScanOpts, ScanOutcome};
 
-use crate::cli::{ScanArgs, ScanKind};
+use crate::cli::{ScanArgs, ScanKind as CliScanKind};
 use crate::job_progress::JobProgress;
-use crate::rpc_setup::init_rpc;
 
 pub async fn cmd_scan(
     config: &Config,
     args: &ScanArgs,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    let _ = progress;
-    let (chain_name, _chain_config) =
-        validation::resolve_chain(config).context("failed to resolve chain")?;
-
-    let setup = init_rpc(config, chain_name, true).await?;
-    let rpc = setup.rpc;
-
-    let resolver = mev_scout_core::resolver::RangeResolver::new(rpc.clone());
-    let resolved = resolver.resolve(&config.range_spec()?.resolve()).await?;
-    let from = resolved.start_block;
-    let to = resolved.end_block;
-
-    let addresses: Option<Vec<alloy::primitives::Address>> = args
+    let kind = match args.kind {
+        CliScanKind::Trades => ScanKind::Trades,
+        CliScanKind::Transfers => ScanKind::Transfers,
+        CliScanKind::Flashloans => ScanKind::Flashloans,
+        CliScanKind::Liquidations => ScanKind::Liquidations,
+        CliScanKind::Labels => ScanKind::Labels,
+    };
+    let addresses = args
         .addresses
         .as_ref()
         .map(|a| a.iter().filter_map(|s| s.parse().ok()).collect())
         .filter(|v: &Vec<alloy::primitives::Address>| !v.is_empty());
+    let min_value = args
+        .min_value
+        .as_ref()
+        .and_then(|s| s.parse().ok());
 
-    let addrs_ref = addresses.as_deref();
+    let opts = ScanOpts {
+        kind,
+        addresses,
+        batch_size: args.batch_size,
+        limit: args.limit,
+        min_value,
+    };
 
-    match &args.kind {
-        ScanKind::Trades => {
-            let trades = mev_scout_core::chain::trades::scan_trades(
-                &rpc,
-                from,
-                to,
-                args.batch_size,
-                addrs_ref,
-            )
-            .await
-            .context("trade scan failed")?;
-            print_trades(&trades, args, config.output.output.as_str());
-        }
-        ScanKind::Transfers => {
-            let min_value = args
-                .min_value
-                .as_ref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(alloy::primitives::U256::ZERO);
-            let transfers = if min_value > alloy::primitives::U256::ZERO {
-                mev_scout_core::chain::transfers::scan_whale_transfers(
-                    &rpc,
-                    from,
-                    to,
-                    args.batch_size,
-                    min_value,
-                    addrs_ref,
-                )
-                .await
-                .context("whale transfer scan failed")?
-            } else {
-                mev_scout_core::chain::transfers::scan_transfers(
-                    &rpc,
-                    from,
-                    to,
-                    args.batch_size,
-                    addrs_ref,
-                )
-                .await
-                .context("transfer scan failed")?
-            };
-            print_transfers(&transfers, args, config.output.output.as_str());
-        }
-        ScanKind::Flashloans => {
-            let loans = mev_scout_core::chain::flashloans::scan_flash_loans(
-                &rpc,
-                from,
-                to,
-                args.batch_size,
-                addrs_ref,
-            )
-            .await
-            .context("flash loan scan failed")?;
-            print_flash_loans(&loans, args, config.output.output.as_str());
-        }
-        ScanKind::Liquidations => {
-            let liqs = mev_scout_core::chain::liquidations::scan_liquidations(
-                &rpc,
-                from,
-                to,
-                args.batch_size,
-                addrs_ref,
-            )
-            .await
-            .context("liquidation scan failed")?;
-            print_liquidations(&liqs, args, config.output.output.as_str());
-        }
-        ScanKind::Labels => {
-            let db = mev_scout_core::chain::labels::LabelDb::load();
-            if let Some(ref addrs) = args.addresses {
-                for addr in addrs {
-                    match db.get(addr) {
-                        Some(label) => println!("{addr} => {label}"),
-                        None => println!("{addr} => (unknown)"),
-                    }
-                }
-            } else {
-                println!(
-                    "  Loaded {} address labels (use --address to look up specific addresses)",
-                    db.len()
-                );
-            }
-        }
+    let out = config.output.output.as_str();
+    match job_scan(config, &opts, progress).await? {
+        ScanOutcome::Trades(trades) => print_trades(&trades, args, out),
+        ScanOutcome::Transfers(transfers) => print_transfers(&transfers, args, out),
+        ScanOutcome::Flashloans(loans) => print_flash_loans(&loans, args, out),
+        ScanOutcome::Liquidations(liqs) => print_liquidations(&liqs, args, out),
+        ScanOutcome::Labels(_) => {}
     }
-
     Ok(())
 }
 
-/// One printable column: table header, csv header, and a cell extractor
-/// shared by both formats (W3.7 — single printer for all scan kinds).
 struct Column<'a, T> {
     header: &'a str,
     csv_header: &'a str,

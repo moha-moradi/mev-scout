@@ -1,61 +1,12 @@
-//! Job progress plumbing shared by the CLI binary and embedding hosts (the
-//! API). Commands emit typed stage events through a [`JobProgress`] sink; the
-//! sink decides presentation (NDJSON to stdout, an indicatif bar, or a typed
-//! channel) and exposes cooperative cancellation.
+//! Job progress sinks for the CLI binary. The shared trait/event types live
+//! in `mev_scout_core::progress` (the API job runner implements the same
+//! trait over its own channels); here we pick a presentation sink per mode:
+//! `--progress json` → NDJSON on stdout, otherwise an indicatif bar.
 //!
 //! The CLI reads `--progress json` to choose a [`StdoutJsonProgress`] sink,
-//! falling back to [`BarProgress`]; embedding hosts implement the trait over
-//! their own channels.
+//! falling back to [`BarProgress`].
 
-use serde::{Deserialize, Serialize};
-
-/// One stage-progress event emitted by the commands.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressEvent {
-    pub stage: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ops: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub elapsed_ms: Option<u64>,
-}
-
-impl ProgressEvent {
-    pub fn stage(stage: &str) -> ProgressEvent {
-        ProgressEvent {
-            stage: stage.to_string(),
-            done: None,
-            total: None,
-            run_id: None,
-            ops: None,
-            elapsed_ms: None,
-        }
-    }
-
-    pub fn pct(&self) -> Option<f64> {
-        match (self.done, self.total) {
-            (Some(d), Some(t)) if t > 0 => Some(d as f64 / t as f64),
-            _ => None,
-        }
-    }
-}
-
-/// Progress sink injected into command orchestration. The plain CLI passes a
-/// presentation sink; the API passes a sink that records events + logs and
-/// honours cancellation.
-pub trait JobProgress: Send + Sync {
-    /// Consume a stage event.
-    fn emit(&self, evt: ProgressEvent);
-    /// Append a human-readable line to the job log.
-    fn log(&self, line: &str);
-    /// True once a cooperative stop has been requested.
-    fn cancelled(&self) -> bool;
-}
+pub use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
 /// Sink for the CLI's plain (non-`--progress json`) mode: a fetch-stage
 /// indicatif bar, other stages ignored.

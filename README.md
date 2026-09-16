@@ -24,14 +24,15 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml run --blocks 100
 ## Web UI
 
 The API serves the built frontend and exposes read endpoints over the
-SQLite stores plus job control (spawn/stop the `mev-scout` CLI for
-`run`, `live`, `discover`, `tokens`, `scan`, `report`,
-`explorer index`). Local-only by design: binds `127.0.0.1`, no auth.
+SQLite stores plus in-process job control (calls `mev-scout-core` directly
+for `run`, `live`, `discover`, `tokens`, `scan`, `report`,
+`explorer index` — no CLI subprocess). Local-only by design: binds
+`127.0.0.1`, no auth.
 
 ### One-time setup
 
 ```powershell
-cargo build -p mev-scout-cli -p mev-scout-api   # API spawns target\debug\mev-scout.exe
+cargo build -p mev-scout-api
 npm --prefix web install                        # node 20+
 npm --prefix web run build                      # -> web/dist (served by the API)
 ```

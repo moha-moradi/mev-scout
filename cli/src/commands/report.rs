@@ -1,41 +1,21 @@
-use anyhow::Context;
-use mev_scout_core::cache::SqliteStore;
-use mev_scout_core::config::{validation, Config};
+use mev_scout_core::config::Config;
 use mev_scout_core::explorer::store::ExplorerStore;
+use mev_scout_core::jobs::{job_report, ReportOpts};
 use mev_scout_core::types::{OutputFormat, ResultsFile};
 
 use crate::cli::ReportArgs;
 use crate::display::render_results_table;
+use crate::job_progress::NoopProgress;
 
 /// Re-render terminal tables for a recorded run. Execution history is read
 /// from SQLite only: run metadata from the cache store's `run_manifests`,
 /// opportunities from the explorer store's `opportunities` table.
 pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()> {
-    let (chain_name, _) = validation::resolve_chain(config).context("invalid configuration")?;
-
-    let cache_db = config.effective_db_path(&chain_name);
-    let cache = SqliteStore::open(&cache_db)
-        .with_context(|| format!("failed to open run-history db '{cache_db}'"))?;
-
-    let run_id = match &args.run_id {
-        Some(id) => id.clone(),
-        None => {
-            let latest = cache.latest_manifest()?.context(
-                "no runs recorded in the run-history db — execute `mev-scout run` first",
-            )?;
-            latest.run_id
-        }
+    let opts = ReportOpts {
+        run_id: args.run_id.clone(),
     };
-
-    let manifest = cache
-        .get_manifest(&run_id)?
-        .with_context(|| format!("run '{run_id}' not found in '{cache_db}'"))?;
-
-    let explorer_db = config.effective_explorer_db_path(&chain_name);
-    let store = ExplorerStore::open(&explorer_db)
-        .with_context(|| format!("failed to open explorer db '{explorer_db}'"))?;
-    let opportunities = store.opportunities_by_run(&run_id)?;
-
+    let outcome = job_report(config, &opts, &NoopProgress).await?;
+    let manifest = outcome.manifest;
     let output_format = config.output.output;
 
     let results_file = ResultsFile {
@@ -48,7 +28,7 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         flash_loan_provider: manifest.flash_loan_provider.clone(),
         resolved_at: manifest.resolved_at,
         created_at: manifest.resolved_at,
-        opportunities,
+        opportunities: outcome.opportunities,
     };
 
     // Weekly-report explorer section (phase 5 of report rendering): when the explorer

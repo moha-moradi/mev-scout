@@ -1,4 +1,7 @@
-use anyhow::Context;
+//! Pool discovery command (orchestration lives in `mev_scout_core::jobs`).
+
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,9 +11,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::{DiscoverArgs, DiscoverySource};
 use crate::job_progress::{JobProgress, ProgressEvent};
-use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
-use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::remote as remote_src;
@@ -152,117 +153,55 @@ pub async fn cmd_discover(
     args: &DiscoverArgs,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    let (chain_name, chain_config) =
-        validation::resolve_chain(config).context("failed to resolve chain configuration")?;
-    validation::validate_chain_config_addresses(&chain_config)
-        .context("chain configuration has invalid addresses")?;
-    let chain_id = chain_name.chain_id();
+    if args.batch_size > 5000 {
+        eprintln!(
+            "  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
+                   Free-tier endpoints (drpc, Ankr, CloudFlare) typically cap eth_getLogs at 5K–10K blocks. \
+                   Consider using --batch-size 2000 for best results.",
+            args.batch_size
+        );
+    }
 
     let is_remote_only = matches!(args.source, DiscoverySource::Remote);
     let is_hybrid = matches!(args.source, DiscoverySource::Hybrid);
-    let should_fetch_remote = is_remote_only || is_hybrid || args.enrich;
-
-    // min_tvl: 0 => no filter (keep parity with explorer dust)
-    let min_tvl_opt = if args.min_tvl > 0.0 {
-        Some(args.min_tvl)
-    } else {
-        None
-    };
-    let max_pools_opt = Some(args.max_pools);
-
-    if args.batch_size > 5000 {
-        eprintln!("  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
-                   Free-tier endpoints (drpc, Ankr, CloudFlare) typically cap eth_getLogs at 5K–10K blocks. \
-                   Consider using --batch-size 2000 for best results.", args.batch_size);
-    }
-
-    // RPC is required for on-chain legs and for health_check (even in remote-only mode).
-    // init_rpc will use public fallbacks if no URL is configured, so it never
-    // hard-fails just because user didn't set --rpc in remote mode.
-    let setup = init_rpc(config, chain_name, true).await?;
-    let rpc = setup.rpc;
-
-    // ── Block range — not needed for pure remote mode ──
-    let (from, to) =
-        resolve_scan_window(&rpc, config, &chain_config, chain_name, is_remote_only).await?;
-
-    // ── Open cache once and reuse ──
-    let cache_path = config.effective_db_path(&chain_name);
-    let cache = SqliteStore::open(&cache_path)?;
-
-    // ── Load token symbol cache (SQLite + pre-populated known tokens) ──
-    let mut token_cache = TokenCache::warm(chain_id);
-    match TokenCache::load(&cache) {
-        Ok(persisted) => token_cache.merge(persisted),
-        Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
-    }
-
-    // ── Phase 2.5 start-block guard ──
-    warn_start_block_guard(&cache, &chain_config, is_remote_only);
-
-    // ── Phase 5.1: Incremental mode — override from_block from cache (RPC-only) ──
-    let (from, to) = match incremental_window(&cache, args, from, to, is_remote_only)? {
-        ScanWindow::Resolved { from, to } => (from, to),
-        ScanWindow::UpToDate => return Ok(()),
+    let source = match args.source {
+        DiscoverySource::Onchain => "onchain",
+        DiscoverySource::Remote => "remote",
+        DiscoverySource::Hybrid => "hybrid",
     };
 
-    // ── Mode flags steering all human-readable output ──
+    let opts = mev_scout_core::jobs::DiscoverOpts {
+        source: source.to_string(),
+        enrich: args.enrich,
+        min_tvl: if args.min_tvl > 0.0 {
+            Some(args.min_tvl)
+        } else {
+            None
+        },
+        max_pools: args.max_pools,
+        batch_size: args.batch_size,
+        rpc_concurrency: args.rpc_concurrency,
+        incremental: args.incremental,
+        health_check: args.health_check,
+        json: args.json,
+        solidly_fee_bps: args.solidly_fee_bps.map(u64::from),
+        resolve_remote_metadata: args.resolve_remote_metadata,
+    };
+
+    let outcome = mev_scout_core::jobs::job_discover(config, &opts, progress).await?;
+
+    if outcome.pools_found == 0 && outcome.active_blocks == 0 && args.incremental && !is_remote_only
+    {
+        return Ok(());
+    }
+
     let mode = OutputMode {
         json: args.json,
         remote_only: is_remote_only,
         hybrid: is_hybrid,
         enrich: args.enrich,
     };
-    print_discovery_banner(mode, chain_name, from, to, args);
-
-    // ── Phase 1: On-chain event scan discovery (unless --source remote) ──
-    let (all_pools, all_active_blocks) = if is_remote_only {
-        (Vec::new(), HashSet::new())
-    } else {
-        let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
-        factories.log_summary(mode.json);
-        let disc_config = factories.discovery_config(config, args, &token_cache, &cache);
-        scan_onchain(&rpc, &cache, from, to, &disc_config, progress).await?
-    };
-
-    // ── Phases 2+3: remote sourcing + dedup/merge by --source semantics ──
-    let mut pools = collect_remote_and_merge(
-        all_pools,
-        chain_name,
-        max_pools_opt,
-        min_tvl_opt,
-        should_fetch_remote,
-        mode,
-    )
-    .await;
-
-    // ── Phase 3.5: Resolve missing metadata on remote-sourced CL pools (opt-in) ──
-    if args.resolve_remote_metadata && !pools.is_empty() {
-        resolve_cl_metadata(&rpc, &mut pools, args.rpc_concurrency, mode).await;
-    }
-
-    // ── Phase 5.2: Pool health check (applies to all sources — remote TVL can be stale) ──
-    if args.health_check && !pools.is_empty() {
-        pools = run_health_check(&rpc, pools, &chain_config, args.rpc_concurrency, mode).await;
-    }
-
-    // ── Phase 5.3: Persist the merged universe ──
-    //
-    // Remote/hybrid unions previously vanished between runs because only the
-    // core `discover_and_cache` path wrote to SQLite. Persisting here (after
-    // health check, cache-first merge per entry) makes incremental mode and
-    // downstream scans see the full universe.
-    let persisted = persist_universe(&cache, &pools);
-    if persisted > 0 {
-        if args.json {
-            tracing::info!("Persisted {persisted} pool(s) to {cache_path}");
-        } else {
-            println!("  Cached {persisted} pool(s) to {cache_path}");
-        }
-    }
-
-    // ── Phase 4: Display & cache ──
-    print_discovered_pools(&pools, mode, all_active_blocks.len())?;
+    print_discovered_pools(&outcome.pools, mode, outcome.active_blocks)?;
 
     Ok(())
 }

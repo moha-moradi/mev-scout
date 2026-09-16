@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::job_progress::JobProgress;
-
-// ── index (backfill + live indexing) ────────────────────────────────────
+use mev_scout_core::jobs::{job_index, IndexOpts};
 
 pub async fn cmd_index(
     config: &Config,
@@ -14,72 +13,14 @@ pub async fn cmd_index(
     duration: Option<&str>,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let chain = v.chain_name;
-    let setup = init_rpc(config, chain, true).await?;
-    let store = explorer_store(config, chain)?;
-    let cfg = ingest_config(config, chain)?;
-
-    if live {
-        let deadline = duration.map(parse_duration).transpose()?;
-        let stop = stop_flag_with_deadline(deadline);
-        let t0 = std::time::Instant::now();
-        let indexed = run_live(
-            &setup.rpc,
-            &store,
-            &cfg,
-            config.explorer.poll_interval_ms,
-            stop,
-        )
-        .await?;
-        progress.log(&format!(
-            "Live indexing done — {} blocks indexed, {} ops total in {:.1}s (db: {})",
-            indexed,
-            store.op_count_since(0)?,
-            t0.elapsed().as_secs_f64(),
-            config.effective_explorer_db_path(&chain),
-        ));
-        return Ok(());
-    }
-
-    // Historical backfill: resolve range.
-    let head = safe_head(&setup.rpc, &cfg).await?;
-    let (from, to) = match (from, to) {
-        (Some(f), Some(t)) => (f, t),
-        (None, None) => {
-            let d = days.unwrap_or(30);
-            let blocks_per_day = mev_scout_core::chain::timing::blocks_per_day(chain);
-            let n = d.saturating_mul(blocks_per_day).max(1);
-            (head.saturating_sub(n), head)
-        }
-        _ => anyhow::bail!("--from and --to must be used together (or use --days)"),
-    };
-    if to > head {
-        anyhow::bail!(
-            "--to {to} is beyond safe head {head} (head minus {} confirmations)",
-            cfg.confirmations
-        );
-    }
-
-    progress.log(&format!(
-        "Indexing blocks {from}-{to} ({} blocks) — {chain}",
-        to - from + 1
-    ));
-    let t0 = std::time::Instant::now();
-    let (blocks_done, ops) = backfill_range(
-        &setup.rpc,
-        &store,
-        &cfg,
+    let opts = IndexOpts {
         from,
         to,
-        config.explorer.checkpoint_every,
-    )
-    .await?;
-    progress.log(&format!(
-        "Indexed {blocks_done} blocks, {ops} ops in {:.1}s -> {}",
-        t0.elapsed().as_secs_f64(),
-        config.effective_explorer_db_path(&chain),
-    ));
+        days,
+        live,
+        duration: duration.map(String::from),
+    };
+    job_index(config, &opts, progress).await?;
     Ok(())
 }
 
@@ -101,7 +42,7 @@ pub async fn cmd_live_feed(
     };
     let deadline = duration.map(parse_duration).transpose()?;
 
-    let stop = stop_flag_with_deadline(deadline); // Ctrl+C handling
+    let stop = stop_flag_with_deadline(deadline);
     let t0 = std::time::Instant::now();
 
     println!(
@@ -119,7 +60,6 @@ pub async fn cmd_live_feed(
                 break;
             }
         }
-        // Drain new ops since the last poll (simple id-based tail).
         let total = store.op_count_since(0)?;
         if total > cursor {
             let take = (total - cursor).min(20) as usize;

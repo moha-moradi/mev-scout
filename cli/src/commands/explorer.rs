@@ -12,7 +12,7 @@ use crate::cli::ValidateArgs;
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
-use mev_scout_core::explorer::ingest::{backfill_range, run_live, safe_head, IngestConfig};
+use mev_scout_core::explorer::ingest::IngestConfig;
 use mev_scout_core::explorer::store::{ExplorerStore, MevOpRow};
 use mev_scout_core::explorer::validate;
 use mev_scout_core::explorer::MevKind;
@@ -25,6 +25,7 @@ fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerS
     ExplorerStore::open(config.effective_explorer_db_path(&chain))
 }
 
+#[allow(dead_code)]
 fn ingest_config(config: &Config, chain: ChainName) -> anyhow::Result<IngestConfig> {
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);

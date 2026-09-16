@@ -161,8 +161,7 @@ async fn job_progress_reports_stages_and_run_id() {
     let (_, resp) = spawn(&app, "live", vec!["emit-progress"]).await;
     let job_id = resp["job_id"].as_str().unwrap().to_string();
 
-    // Wait for the NDJSON events to be collected (polled: the parse happens
-    // in a background task feeding on the child's stdout).
+    // Wait until typed progress reaches the detect stage (polled via /progress).
     let (status, progress) = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let (s, p) = request(
@@ -182,7 +181,7 @@ async fn job_progress_reports_stages_and_run_id() {
     .expect("progress never reached 'detect'");
     assert_eq!(status, StatusCode::OK);
     let p = progress.as_object().unwrap();
-    assert_eq!(p["stage"], "detect"); // last parsed event
+    assert_eq!(p["stage"], "detect"); // latest emitted event
     assert_eq!(p["done"], 8);
     assert_eq!(p["total"], 10);
     assert!(p["pct"].as_f64().unwrap() > 0.7);
@@ -190,7 +189,7 @@ async fn job_progress_reports_stages_and_run_id() {
     let (_, info) = request(&app, Method::GET, &format!("/api/jobs/{job_id}"), None).await;
     assert_eq!(info["run_id"], "live_1700000001");
 
-    // Stop kills the long-running job.
+    // Stop requests cooperative cancellation.
     let (status, _) = request(&app, Method::POST, &format!("/api/jobs/{job_id}/stop"), None).await;
     assert_eq!(status, StatusCode::OK);
     let info = wait_for(&app, &job_id, "killed", 5000).await;
@@ -226,7 +225,7 @@ async fn job_detail_unknown_404_and_stop_non_running_409() {
 #[tokio::test]
 async fn multi_word_command_splits_into_argv_tokens() {
     let (app, _) = jobs_app().await;
-    // `explorer index` must reach the child as two argv tokens; the stub
+    // `explorer index` must reach the stub as a multi-word command; the stub
     // echoes its parsed command + args, failing with exit 2 otherwise.
     let (status, resp) = spawn(&app, "explorer index", vec!["--from", "10", "--to", "20"]).await;
     assert_eq!(status, StatusCode::OK);

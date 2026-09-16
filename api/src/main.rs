@@ -1,5 +1,5 @@
-//! mev-scout API server — local-only web UI + API layer over the SQLite
-//! stores and the `mev-scout` CLI command library (jobs run in-process).
+//! mev-scout API server — local-only web UI + HTTP layer over SQLite
+//! stores and in-process `mev-scout-core` job orchestration.
 
 use std::path::PathBuf;
 use std::sync::Arc;

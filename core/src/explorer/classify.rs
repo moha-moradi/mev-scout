@@ -697,14 +697,16 @@ mod tests {
     }
 
     #[test]
-    fn non_cycle_profitable_swap_is_unknown() {
+    fn non_cycle_profitable_swap_is_arb_likely() {
         let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ATK, 200),
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        let ev = classify_kind(&input, MevKind::Unknown);
+        // Single-hop profitable residuals are labeled arb (not Unknown) for
+        // live-feed parity with tip explorers (mevlive Type=Arbitrage).
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
         assert_eq!(ev.confidence, Confidence::Inferred);
         assert_eq!(ev.profit_token, Some(TOKA));
         assert_eq!(ev.profit_amount, Some(U256::from(200)));
