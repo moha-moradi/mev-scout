@@ -1,6 +1,7 @@
 //! ``explorer index`` - backfill + live indexing loop, and the live feed renderer.
 
 use super::*;
+use crate::job_progress::JobProgress;
 
 // ── index (backfill + live indexing) ────────────────────────────────────
 
@@ -11,6 +12,7 @@ pub async fn cmd_index(
     days: Option<u64>,
     live: bool,
     duration: Option<&str>,
+    progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
@@ -30,13 +32,13 @@ pub async fn cmd_index(
             stop,
         )
         .await?;
-        println!(
+        progress.log(&format!(
             "Live indexing done — {} blocks indexed, {} ops total in {:.1}s (db: {})",
             indexed,
             store.op_count_since(0)?,
             t0.elapsed().as_secs_f64(),
             config.effective_explorer_db_path(&chain),
-        );
+        ));
         return Ok(());
     }
 
@@ -59,10 +61,10 @@ pub async fn cmd_index(
         );
     }
 
-    println!(
+    progress.log(&format!(
         "Indexing blocks {from}-{to} ({} blocks) — {chain}",
         to - from + 1
-    );
+    ));
     let t0 = std::time::Instant::now();
     let (blocks_done, ops) = backfill_range(
         &setup.rpc,
@@ -73,11 +75,11 @@ pub async fn cmd_index(
         config.explorer.checkpoint_every,
     )
     .await?;
-    println!(
+    progress.log(&format!(
         "Indexed {blocks_done} blocks, {ops} ops in {:.1}s -> {}",
         t0.elapsed().as_secs_f64(),
         config.effective_explorer_db_path(&chain),
-    );
+    ));
     Ok(())
 }
 

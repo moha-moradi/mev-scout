@@ -44,7 +44,6 @@ pub async fn state_with_conns(explorer_conn: Connection, cache_conn: Connection)
     Arc::new(AppState {
         config: tokio::sync::RwLock::new(config),
         config_path: PathBuf::from("mev-scout.toml"),
-        binary_path: PathBuf::from("target/debug/mev-scout"),
         explorer_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-explorer.sqlite")),
         cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
         explorer_conn: tokio::sync::Mutex::new(explorer_conn),
@@ -58,15 +57,12 @@ pub async fn state_with_conns(explorer_conn: Connection, cache_conn: Connection)
 }
 
 /// Build a `SharedState` whose config is loaded from a real temp file (for
-/// `PUT /api/config` round-trip tests) and which points at a binary the job
-/// manager can actually spawn (defaults to this test crate's own binary).
-pub async fn test_state_with_files(
-    config_path: PathBuf,
-    binary: Option<PathBuf>,
-) -> SharedState {
-    // Children spawned by the job manager inherit this process's env; the
-    // test binary (also `CARGO_BIN_EXE_mev-scout-api`) enters stub mode.
-    std::env::set_var("MEV_SCOUT_STUB", "1");
+/// `PUT /api/config` round-trip tests). Jobs spawned under this state run in
+/// `MEV_SCOUT_JOB_STUB` mode (set here) so `/api/jobs*` tests exercise the
+/// manager without a live RPC backend.
+pub async fn test_state_with_files(config_path: PathBuf) -> SharedState {
+    // The job executor checks this env var to route to the in-process stub.
+    std::env::set_var("MEV_SCOUT_JOB_STUB", "1");
 
     let config = mev_scout_core::config::Config::load(&config_path.to_string_lossy())
         .unwrap_or_else(|_| mev_scout_core::config::Config::default());
@@ -77,7 +73,6 @@ pub async fn test_state_with_files(
     Arc::new(AppState {
         config: tokio::sync::RwLock::new(config),
         config_path: config_path.clone(),
-        binary_path: binary.unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_mev-scout-api"))),
         explorer_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-explorer.sqlite")),
         cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
         explorer_conn: tokio::sync::Mutex::new(explorer_conn),
@@ -118,7 +113,6 @@ pub async fn state_with_real_dbs() -> SharedState {
     Arc::new(AppState {
         config: tokio::sync::RwLock::new(config),
         config_path: PathBuf::from("mev-scout.toml"),
-        binary_path: PathBuf::from("target/debug/mev-scout"),
         explorer_db_path: tokio::sync::RwLock::new(explorer_path.clone()),
         cache_db_path: tokio::sync::RwLock::new(cache_path.clone()),
         explorer_conn: tokio::sync::Mutex::new(seeded_explorer_db()),

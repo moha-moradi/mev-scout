@@ -16,6 +16,9 @@ export function formatUsd(v: number | null | undefined, digits = 2): string {
   if (v == null || Number.isNaN(v)) return "—";
   const abs = Math.abs(v);
   if (abs > 0 && abs < 0.01) return `${v < 0 ? "−" : ""}≤ $0.01`;
+  if (abs >= 1_000_000_000) return `${v < 0 ? "−" : ""}$${(abs / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${v < 0 ? "−" : ""}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${v < 0 ? "−" : ""}$${(abs / 1_000).toFixed(1)}k`;
   const sign = v < 0 ? "−" : "";
   return `${sign}$${abs.toLocaleString(undefined, {
     minimumFractionDigits: digits,
@@ -89,6 +92,82 @@ export function addressExplorerUrl(chain: string | undefined, address: string): 
   if (!chain) return null;
   const base = EXPLORERS[chain.toLowerCase()];
   return base ? `${base}/address/${address}` : null;
+}
+
+/** Authoritative block timing — mirrors `core/src/chain/timing.rs`. */
+const CHAIN_TIMING: Record<
+  string,
+  { genesisTs: number; secsPerBlock: number; anchorBlock?: number; anchorTs?: number }
+> = {
+  ethereum: { genesisTs: 1_438_269_988, secsPerBlock: 12 },
+  polygon: {
+    genesisTs: 1_591_031_691,
+    secsPerBlock: 1.5,
+    anchorBlock: 91_370_547,
+    anchorTs: 1_785_760_841,
+  },
+  bsc: { genesisTs: 1_597_734_000, secsPerBlock: 3 },
+  avalanche: {
+    genesisTs: 1_600_641_600,
+    secsPerBlock: 2,
+    // Verified against live head on 2026-09-16 (block ≈ 95,407,426).
+    anchorBlock: 95_407_426,
+    anchorTs: 1_789_542_517,
+  },
+  arbitrum: { genesisTs: 1_630_812_600, secsPerBlock: 0.26 },
+  base: { genesisTs: 1_686_787_200, secsPerBlock: 2 },
+  optimism: { genesisTs: 1_631_808_000, secsPerBlock: 2 },
+};
+
+/** Estimate a unix timestamp (seconds) from a block number. */
+export function blockToUnix(chain: string | undefined, block: number): number | null {
+  if (!chain || !block || block <= 0) return null;
+  const t = CHAIN_TIMING[chain.toLowerCase()];
+  if (!t) return null;
+  if (t.anchorBlock && t.anchorTs) {
+    return Math.round(t.anchorTs + (block - t.anchorBlock) * t.secsPerBlock);
+  }
+  return Math.round(t.genesisTs + block * t.secsPerBlock);
+}
+
+/** Human creation label: `Sep 14, 2026 · #95,320,476`. */
+export function formatBlockCreated(chain: string | undefined, block: number): string {
+  if (!block || block <= 0) return "—";
+  const blockLabel = `#${block.toLocaleString()}`;
+  const ts = blockToUnix(chain, block);
+  if (ts == null) return blockLabel;
+  const d = new Date(ts * 1000);
+  if (Number.isNaN(d.getTime())) return blockLabel;
+  const date = d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  return `${date} · ${blockLabel}`;
+}
+
+/** `uniswap_v2` → `Uniswap V2`, `trader_joe_lb` → `Trader Joe LB`. */
+export function formatAmmType(typeKey: string | null | undefined): string {
+  if (!typeKey) return "—";
+  const map: Record<string, string> = {
+    uniswap_v2: "Uniswap V2",
+    uniswap_v3: "Uniswap V3",
+    uniswap_v4: "Uniswap V4",
+    trader_joe_lb: "Liquidity Book",
+    pancake_infinity: "Pancake Infinity",
+    solidly: "Solidly",
+    camelot: "Camelot",
+    curve: "Curve",
+    balancer: "Balancer",
+    pendle: "Pendle",
+    metric: "Metric",
+    fluid: "Fluid",
+  };
+  if (map[typeKey]) return map[typeKey];
+  return typeKey
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 /** Deterministic pastel from a hex string (for avatars / token chips). */

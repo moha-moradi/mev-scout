@@ -383,12 +383,14 @@ export interface FeedRow {
   block_number: number;
   kind: string;
   profit_token: string | null;
+  profit_amount?: string | null;
   profit_usd: number | null;
   gas_cost_usd: number | null;
   net_profit_usd: number | null;
   eoa: string;
   tx_hash: string;
   route_json: string | null;
+  native_price_usd?: number | null;
 }
 
 export interface StatsRow {

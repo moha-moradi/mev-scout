@@ -85,11 +85,38 @@ pub async fn fetch_native_price_coingecko(chain: crate::types::ChainName) -> any
     let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={id}&vs_currencies=usd");
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
         .build()?;
     let resp: HashMap<String, CoingeckoSimplePrice> = client.get(&url).send().await?.json().await?;
     resp.get(id)
         .and_then(|v| v.usd)
         .ok_or_else(|| anyhow::anyhow!("coingecko: no usd price for {id}"))
+}
+
+/// Live native price via DefiLlama current endpoint (CoinGecko fallback).
+pub async fn fetch_native_price_llama(
+    chain: crate::types::ChainName,
+    wrapped_native: Address,
+) -> anyhow::Result<f64> {
+    if wrapped_native.is_zero() {
+        anyhow::bail!("no wrapped-native for llama native price");
+    }
+    let prefix = llama_chain_prefix(chain);
+    let key = format!("{prefix}:{wrapped_native:#x}");
+    let url = format!(
+        "https://coins.llama.fi/prices/current/{}",
+        urlencode(&key)
+    );
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
+        .build()?;
+    let resp: LlamaResponse = client.get(&url).send().await?.json().await?;
+    resp.coins
+        .values()
+        .next()
+        .map(|c| c.price)
+        .ok_or_else(|| anyhow::anyhow!("llama: no price for {key}"))
 }
 
 #[derive(Deserialize)]
@@ -132,6 +159,7 @@ pub async fn fetch_prices_llama(
     );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
+        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
         .build()?;
     let resp: LlamaResponse = client.get(&url).send().await?.json().await?;
 

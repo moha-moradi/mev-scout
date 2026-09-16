@@ -44,13 +44,14 @@ export default function ChainSelector({ disabled }: Props) {
   }
 
   return (
-    <div className="relative inline-block">
+    <div className="relative inline-block w-full">
+      <span className="pointer-events-none absolute left-2.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-sky-400 shadow-[0_0_6px_rgba(56,189,248,0.9)]" />
       <select
         value={active}
         disabled={jobRunning}
         onChange={(e) => void onSelect(e.target.value)}
         title={jobRunning ? "Disabled while a job runs" : "Active chain"}
-        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-full appearance-none rounded-lg border border-zinc-800 bg-zinc-900/80 py-2 pl-6 pr-8 text-sm text-zinc-100 outline-none focus:border-sky-400/60 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {chains?.map((c) => (
           <option key={c.name} value={c.name}>
@@ -58,6 +59,7 @@ export default function ChainSelector({ disabled }: Props) {
           </option>
         ))}
       </select>
+      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500">▾</span>
       {jobRunning && (
         <span className="pointer-events-none absolute -right-1.5 -top-1.5 h-2 w-2 rounded-full bg-amber-400" />
       )}

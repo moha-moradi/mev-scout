@@ -1,11 +1,12 @@
 use alloy::primitives::Address;
 use anyhow::Context;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::cli::LiveArgs;
-use crate::display::{
-    persist_opportunities_to_explorer, persist_rejections_to_explorer, render_results_table,
-};
+use crate::display::{persist_opportunities_to_explorer, persist_rejections_to_explorer, render_results_table};
+use crate::job_progress::{JobProgress, ProgressEvent};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation::{self, ValidationResult};
@@ -41,12 +42,16 @@ pub fn deadline_from(
     }
 }
 
-pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
-    let progress_json = match args.progress.as_deref() {
-        None => false,
-        Some("json") => true,
-        Some(other) => anyhow::bail!("unsupported --progress format '{other}' (only 'json')"),
-    };
+pub async fn cmd_live(
+    config: &Config,
+    args: &LiveArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
+    if let Some(format) = args.progress.as_deref() {
+        if format != "json" {
+            anyhow::bail!("unsupported --progress format '{format}' (only 'json')");
+        }
+    }
     if args.max_blocks.is_some() && !args.r#loop {
         anyhow::bail!("--max-blocks requires --loop");
     }
@@ -73,15 +78,11 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         calibration: Default::default(),
     };
 
-    let mode_label = if args.r#loop {
-        "continuous"
-    } else {
-        "one-shot"
-    };
-    println!(
-        "Live mode ({}) — polling every {}ms",
-        mode_label, args.poll_interval_ms
-    );
+    let mode_label = if args.r#loop { "continuous" } else { "one-shot" };
+    progress.log(&format!(
+        "Live mode ({mode_label}) — polling every {}ms",
+        args.poll_interval_ms
+    ));
 
     let mut ctx = LiveContext::new(
         config,
@@ -91,12 +92,11 @@ pub async fn cmd_live(config: &Config, args: &LiveArgs) -> anyhow::Result<()> {
         pool_addresses,
         args,
         gas_config,
+        progress,
     )
     .await?;
 
-    if progress_json {
-        println!("{}", serde_json::json!({ "stage": "resolve" }));
-    }
+    progress.emit(ProgressEvent::stage("resolve"));
 
     if args.r#loop {
         run_loop(&mut ctx, deadline).await
@@ -117,12 +117,14 @@ struct LiveContext<'a> {
     cache: SqliteStore,
     pool_addresses: Vec<Address>,
     args: &'a LiveArgs,
+    progress: &'a dyn JobProgress,
     runner: BacktestRunner,
     /// Chain tip captured at context construction.
     tip: u64,
 }
 
 impl<'a> LiveContext<'a> {
+    #[allow(clippy::too_many_arguments)] // setup bundle = 7 fields + progress sink
     async fn new(
         config: &'a Config,
         validation: &'a ValidationResult,
@@ -131,6 +133,7 @@ impl<'a> LiveContext<'a> {
         pool_addresses: Vec<Address>,
         args: &'a LiveArgs,
         gas_config: GasConfig,
+        progress: &'a dyn JobProgress,
     ) -> anyhow::Result<LiveContext<'a>> {
         let crate::rpc_setup::RpcSetup {
             rpc,
@@ -156,9 +159,7 @@ impl<'a> LiveContext<'a> {
             }
         }
         if !validation.strategies.is_empty() {
-            if args.progress.as_deref() == Some("json") {
-                println!("{}", serde_json::json!({ "stage": "pool_init" }));
-            }
+            progress.emit(ProgressEvent::stage("pool_init"));
             BacktestRunner::init_pools(
                 &mut pool_manager,
                 &rpc,
@@ -195,14 +196,15 @@ impl<'a> LiveContext<'a> {
             cache,
             pool_addresses,
             args,
+            progress,
             runner,
             tip,
         })
     }
 
-/// Fetch `resolved`'s blocks into the cache (relevant-only when the pool
+    /// Fetch `resolved`'s blocks into the cache (relevant-only when the pool
     /// set is already known, full-range otherwise).
-    async fn fetch_blocks<F: Fn() + Sync>(
+    async fn fetch_blocks<F: Fn() -> bool + Sync>(
         &self,
         resolved: &ResolvedRange,
         tick: Option<&F>,
@@ -223,7 +225,7 @@ impl<'a> LiveContext<'a> {
     async fn run_blocks(
         &mut self,
         resolved: &ResolvedRange,
-        progress: Option<&dyn Fn(u64, u64)>,
+        progress: Option<&dyn Fn(u64, u64) -> bool>,
     ) -> anyhow::Result<(
         Vec<mev_scout_core::types::MevOpportunity>,
         Vec<mev_scout_core::pipeline::BlockReplayStats>,
@@ -291,11 +293,11 @@ impl<'a> LiveContext<'a> {
 }
 
 async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
-    let progress_json = ctx.args.progress.as_deref() == Some("json");
+    let progress = ctx.progress;
     let run_id = format!("live_{}", epoch_secs());
     let tip = ctx.tip;
-    println!("Run ID: {run_id}");
-    println!("Latest block: {tip}");
+    progress.log(&format!("Run ID: {run_id}"));
+    progress.log(&format!("Latest block: {tip}"));
 
     let resolved = ResolvedRange {
         start_block: tip,
@@ -305,68 +307,79 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<()> {
     };
 
     let start = std::time::Instant::now();
-    let fetch_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let fetch_done = Arc::new(AtomicU64::new(0));
     let tick = move || {
-        if progress_json {
-            let d = fetch_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            println!(
-                "{}",
-                serde_json::json!({ "stage": "fetch", "done": d, "total": 1 })
-            );
+        if progress.cancelled() {
+            return false;
         }
+        let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(1),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
     };
     ctx.fetch_blocks(&resolved, Some(&tick)).await?;
-    let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
-        Some(Box::new(|done, total| {
-            println!(
-                "{}",
-                serde_json::json!({ "stage": "detect", "done": done, "total": total })
-            );
-        }))
-    } else {
-        None
+    let detect_progress = move |done: u64, total: u64| {
+        if progress.cancelled() {
+            return false;
+        }
+        progress.emit(ProgressEvent {
+            stage: "detect".to_string(),
+            done: Some(done),
+            total: Some(total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
     };
     let (opps, stats) = ctx
-        .run_blocks(&resolved, detect_progress.as_deref())
+        .run_blocks(&resolved, Some(&detect_progress))
         .await?;
     let elapsed = start.elapsed();
     ctx.persist_results(&resolved, &opps, &run_id);
 
-    if progress_json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "stage": "complete",
-                "run_id": run_id,
-                "ops": opps.len(),
-                "elapsed_ms": elapsed.as_millis(),
-            })
-        );
-    }
+    progress.emit(ProgressEvent {
+        stage: "complete".to_string(),
+        done: None,
+        total: None,
+        run_id: Some(run_id.clone()),
+        ops: Some(opps.len() as u64),
+        elapsed_ms: Some(elapsed.as_millis() as u64),
+    });
 
-    println!("\nBlock {} — {} opportunity(ies) detected", tip, opps.len());
+    progress.log(&format!(
+        "\nBlock {} — {} opportunity(ies) detected",
+        tip,
+        opps.len()
+    ));
     if opps.is_empty() {
-        println!("No MEV opportunities in this block.");
+        progress.log("No MEV opportunities in this block.");
     } else {
         render_results_table(&opps, Some(ctx.runner.pool_manager()));
     }
 
     if !stats.is_empty() {
         let s = &stats[0];
-        println!(
+        progress.log(&format!(
             "  {} txs scanned, {} DEX, {} pending",
             s.total_tx_count, s.dex_tx_count, s.pending_tx_count,
-        );
+        ));
     }
 
     Ok(())
 }
 
 async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyhow::Result<()> {
-    let progress_json = ctx.args.progress.as_deref() == Some("json");
+    let progress = ctx.progress;
     let max_blocks = ctx.args.max_blocks;
     let mut last_block = ctx.tip;
-    println!("Starting from block {} — Ctrl+C to stop\n", last_block);
+    progress.log(&format!("Starting from block {} — Ctrl+C to stop\n", last_block));
 
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
     let mut consecutive_failures: u32 = 0;
@@ -377,6 +390,9 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
     loop {
         tokio::time::sleep(Duration::from_millis(ctx.args.poll_interval_ms)).await;
 
+        if progress.cancelled() {
+            break;
+        }
         if let Some(dl) = deadline {
             if Instant::now() >= dl {
                 break;
@@ -421,18 +437,24 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
         };
 
         let run_id = format!("live_{}", epoch_secs());
-        println!("Run ID: {run_id}");
+        progress.log(&format!("Run ID: {run_id}"));
         let pass_start = std::time::Instant::now();
 
-        let fetch_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let fetch_done = Arc::new(AtomicU64::new(0));
         let tick = move || {
-            if progress_json {
-                let d = fetch_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                println!(
-                    "{}",
-                    serde_json::json!({ "stage": "fetch", "done": d, "total": block_count })
-                );
+            if progress.cancelled() {
+                return false;
             }
+            let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+            progress.emit(ProgressEvent {
+                stage: "fetch".to_string(),
+                done: Some(d),
+                total: Some(block_count),
+                run_id: None,
+                ops: None,
+                elapsed_ms: None,
+            });
+            true
         };
         if let Err(e) = ctx.fetch_blocks(&resolved, Some(&tick)).await {
             consecutive_failures += 1;
@@ -452,18 +474,22 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
             continue;
         }
 
-        let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
-            Some(Box::new(move |done, total| {
-                println!(
-                    "{}",
-                    serde_json::json!({ "stage": "detect", "done": done, "total": total })
-                );
-            }))
-        } else {
-            None
+        let detect_progress = move |done: u64, total: u64| {
+            if progress.cancelled() {
+                return false;
+            }
+            progress.emit(ProgressEvent {
+                stage: "detect".to_string(),
+                done: Some(done),
+                total: Some(total),
+                run_id: None,
+                ops: None,
+                elapsed_ms: None,
+            });
+            true
         };
         let (opps, stats) = match ctx
-            .run_blocks(&resolved, detect_progress.as_deref())
+            .run_blocks(&resolved, Some(&detect_progress))
             .await
         {
             Ok(r) => r,
@@ -490,32 +516,29 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
         let txs_scanned = stats.iter().map(|s| s.total_tx_count).sum::<usize>();
 
         if opps.is_empty() {
-            println!(
+            progress.log(&format!(
                 "Block {}–{}: no opportunities ({} txs)",
                 from_block, current_tip, txs_scanned,
-            );
+            ));
         } else {
-            println!(
+            progress.log(&format!(
                 "Block {}–{}: {} opportunity(ies)",
                 from_block,
                 current_tip,
                 opps.len(),
-            );
+            ));
             render_results_table(&opps, Some(ctx.runner.pool_manager()));
         }
 
         ctx.persist_results(&resolved, &opps, &run_id);
-        if progress_json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "stage": "complete",
-                    "run_id": run_id,
-                    "ops": opps.len(),
-                    "elapsed_ms": pass_elapsed.as_millis(),
-                })
-            );
-        }
+        progress.emit(ProgressEvent {
+            stage: "complete".to_string(),
+            done: None,
+            total: None,
+            run_id: Some(run_id.clone()),
+            ops: Some(opps.len() as u64),
+            elapsed_ms: Some(pass_elapsed.as_millis() as u64),
+        });
         ctx.runner.advance_to(current_tip);
         last_block = current_tip;
         blocks_processed += resolved.block_count;
@@ -529,11 +552,11 @@ async fn run_loop(ctx: &mut LiveContext<'_>, deadline: Option<Instant>) -> anyho
         }
     }
 
-    println!();
-    println!("Session summary:");
-    println!("  Blocks processed: {}", blocks_processed);
-    println!("  Txs scanned:      {}", total_txs_scanned);
-    println!("  Opportunities:    {}", total_opportunities);
+    progress.log("");
+    progress.log("Session summary:");
+    progress.log(&format!("  Blocks processed: {}", blocks_processed));
+    progress.log(&format!("  Txs scanned:      {}", total_txs_scanned));
+    progress.log(&format!("  Opportunities:    {}", total_opportunities));
 
     Ok(())
 }

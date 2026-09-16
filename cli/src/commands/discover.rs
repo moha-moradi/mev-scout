@@ -1,10 +1,13 @@
 use anyhow::Context;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use alloy::primitives::Address;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::cli::{DiscoverArgs, DiscoverySource};
+use crate::job_progress::{JobProgress, ProgressEvent};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{SqliteStore, TokenCache};
 use mev_scout_core::config::validation;
@@ -144,7 +147,11 @@ fn persist_universe(cache: &SqliteStore, pools: &[DiscoveredPool]) -> usize {
     persisted
 }
 
-pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Result<()> {
+pub async fn cmd_discover(
+    config: &Config,
+    args: &DiscoverArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
     let (chain_name, chain_config) =
         validation::resolve_chain(config).context("failed to resolve chain configuration")?;
     validation::validate_chain_config_addresses(&chain_config)
@@ -215,7 +222,7 @@ pub async fn cmd_discover(config: &Config, args: &DiscoverArgs) -> anyhow::Resul
         let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
         factories.log_summary(mode.json);
         let disc_config = factories.discovery_config(config, args, &token_cache, &cache);
-        scan_onchain(&rpc, &cache, from, to, &disc_config).await?
+        scan_onchain(&rpc, &cache, from, to, &disc_config, progress).await?
     };
 
     // ── Phases 2+3: remote sourcing + dedup/merge by --source semantics ──
@@ -278,14 +285,25 @@ async fn scan_onchain(
     from: u64,
     to: u64,
     disc_config: &DiscoveryConfig<'_>,
+    progress: &dyn JobProgress,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
-    let pb = ProgressBar::new(to.saturating_sub(from) + 1);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("  [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
-            .progress_chars("=> "),
-    );
-    let tick = || pb.inc(1);
+    let total = to.saturating_sub(from) + 1;
+    let done = Arc::new(AtomicU64::new(0));
+    let tick = move || {
+        if progress.cancelled() {
+            return false;
+        }
+        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
+    };
     let result = mev_scout_core::pool::discovery::discover_and_cache(
         rpc,
         cache,
@@ -295,7 +313,6 @@ async fn scan_onchain(
         Some(&tick),
     )
     .await;
-    pb.finish_and_clear();
     match result {
         Ok((pools, active_blocks)) => {
             tracing::info!(
@@ -306,6 +323,11 @@ async fn scan_onchain(
             Ok((pools, active_blocks))
         }
         Err(e) => {
+            // A cooperative stop short-circuits to the caller; any other
+            // discovery failure degrades to the remote/cache fallback path.
+            if progress.cancelled() {
+                return Err(e);
+            }
             eprintln!("  On-chain pool discovery failed: {e:#}");
             Ok((Vec::new(), HashSet::new()))
         }

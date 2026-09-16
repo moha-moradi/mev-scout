@@ -1,13 +1,22 @@
-//! Job manager: spawn/kill/list CLI subprocess jobs, capture logs, parse
-//! NDJSON progress events. One running job at a time (single-job mutex).
+//! Job manager: each job runs in-process on its own OS thread with a
+//! dedicated multi-threaded tokio runtime, executing the CLI's command
+//! orchestration directly (no subprocess). One running job at a time
+//! (single-job mutex). Job state is shared with the executor thread via
+//! [`JobShared`], which doubles as the [`JobProgress`] sink the CLI commands
+//! emit events/logs and cooperative cancellation through.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use mev_scout_cli::JobProgress;
+use serde::Serialize;
+
+pub use mev_scout_cli::ProgressEvent;
+
+use crate::exec;
 
 /// Serializable job metadata returned by all `/api/jobs*` endpoints.
 #[derive(Debug, Clone, Serialize)]
@@ -17,8 +26,10 @@ pub struct JobInfo {
     pub args: Vec<String>,
     pub status: JobStatus,
     pub exit_code: Option<i32>,
-    /// Parsed from the child's `Run ID: …` stdout line, as soon as it appears.
+    /// Sniffed from the job's `Run ID: …` log line, as soon as it appears.
     pub run_id: Option<String>,
+    /// Kept for HTTP/UI compatibility (was the spawned child's PID; in-process
+    /// jobs have none).
     pub pid: Option<u32>,
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
@@ -35,59 +46,134 @@ pub enum JobStatus {
     Killed,
 }
 
-/// One NDJSON `--progress json` event parsed from the job log.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressEvent {
-    pub stage: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub done: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ops: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub elapsed_ms: Option<u64>,
+/// Runtime state shared between the `JobManager` (reads) and the job's
+/// executor thread (writes). Provides cooperative cancellation: commands
+/// abort on the next progress tick once `cancel` is set.
+#[derive(Debug)]
+pub struct JobShared {
+    cancel: AtomicBool,
+    progress: Mutex<Option<ProgressEvent>>,
+    log: Mutex<Vec<String>>,
+    run_id: Mutex<Option<String>>,
+    exit_code: Mutex<Option<i32>>,
+    finished_at: Mutex<Option<DateTime<Utc>>>,
+    exited: AtomicBool,
+    killed: AtomicBool,
+    log_file: Mutex<std::fs::File>,
 }
 
-impl ProgressEvent {
-    pub fn pct(&self) -> Option<f64> {
-        match (self.done, self.total) {
-            (Some(d), Some(t)) if t > 0 => Some(d as f64 / t as f64),
-            _ => None,
+impl JobShared {
+    fn new(log_file: std::fs::File) -> Arc<JobShared> {
+        Arc::new(JobShared {
+            cancel: AtomicBool::new(false),
+            progress: Mutex::new(None),
+            log: Mutex::new(Vec::new()),
+            run_id: Mutex::new(None),
+            exit_code: Mutex::new(None),
+            finished_at: Mutex::new(None),
+            exited: AtomicBool::new(false),
+            killed: AtomicBool::new(false),
+            log_file: Mutex::new(log_file),
+        })
+    }
+
+    /// Append one line to the in-memory ring buffer + the durable log file.
+    fn append_log(&self, line: &str) {
+        {
+            let mut f = match self.log_file.lock() {
+                Ok(f) => f,
+                Err(p) => p.into_inner(),
+            };
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+            let _ = f.flush();
         }
+        {
+            const MAX_LOG_LINES: usize = 2000;
+            let mut ring = self.log.lock().unwrap();
+            if ring.len() > MAX_LOG_LINES {
+                let excess = ring.len() - MAX_LOG_LINES;
+                ring.drain(0..excess);
+            }
+            ring.push(line.to_string());
+        }
+        if let Some(idx) = line.find("Run ID: ") {
+            let rest = line[idx + "Run ID: ".len()..].split_whitespace().next().unwrap_or("");
+            if rest.starts_with("run_") || rest.starts_with("live_") {
+                let mut rid = self.run_id.lock().unwrap();
+                if rid.is_none() {
+                    *rid = Some(rest.to_string());
+                }
+            }
+        }
+    }
+
+    /// Done: persist exit outcomes so `snapshot` can resolve the status.
+    pub(crate) fn finish(&self, exit_code: Option<i32>, killed: bool) {
+        *self.exit_code.lock().unwrap() = exit_code;
+        if killed {
+            self.killed.store(true, Ordering::Relaxed);
+        }
+        {
+            let mut fin = self.finished_at.lock().unwrap();
+            if fin.is_none() {
+                *fin = Some(Utc::now());
+            }
+        }
+        self.exited.store(true, Ordering::Relaxed);
+    }
+
+    fn running(&self) -> bool {
+        !self.exited.load(Ordering::Relaxed)
+    }
+
+    fn snapshot(&self, base: &JobInfo) -> JobInfo {
+        let run_id = self.run_id.lock().unwrap().clone();
+        let exit_code = *self.exit_code.lock().unwrap();
+        let finished_at = *self.finished_at.lock().unwrap();
+        let mut info = base.clone();
+        info.run_id = run_id;
+        info.exit_code = exit_code;
+        info.finished_at = finished_at;
+        info.status = if !self.running() {
+            if self.killed.load(Ordering::Relaxed) {
+                JobStatus::Killed
+            } else if exit_code == Some(0) {
+                JobStatus::Finished
+            } else {
+                JobStatus::Failed
+            }
+        } else {
+            JobStatus::Running
+        };
+        info
     }
 }
 
-/// Mutable runtime shared between the JobManager and the background
-/// monitor tasks (which must never hold the manager mutex across awaits).
-#[derive(Debug, Default)]
-struct JobRuntime {
-    pid: Option<u32>,
-    run_id: Option<String>,
-    progress: Option<ProgressEvent>,
-    stop_requested: bool,
-    exited: bool,
-    exit_code: Option<i32>,
-    finished_at: Option<DateTime<Utc>>,
+impl JobProgress for JobShared {
+    fn emit(&self, evt: ProgressEvent) {
+        *self.progress.lock().unwrap() = Some(evt.clone());
+        // Keep the log endpoint parity with the old subprocess model (raw
+        // NDJSON lines arrived in the child's stdout → log file).
+        if let Ok(line) = serde_json::to_string(&evt) {
+            self.append_log(&line);
+        }
+    }
+
+    fn log(&self, line: &str) {
+        self.append_log(line);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
 }
 
-/// One job: serializable info + the shared runtime the monitor updates.
+/// One job: immutable creation-time info + the shared runtime.
 #[derive(Clone)]
 pub struct Job {
     pub info: JobInfo,
-    runtime: Arc<Mutex<JobRuntime>>,
-}
-
-impl Job {
-    /// True while the child process has not yet exited. Reads the runtime
-    /// (updated by the exit watcher) rather than the creation-time
-    /// `info.status`, so a finished job stops blocking new spawns.
-    async fn running(&self) -> bool {
-        let rt = self.runtime.lock().await;
-        !rt.exited
-    }
+    shared: Arc<JobShared>,
 }
 
 /// Job registry. One running job at a time; history kept in memory only.
@@ -108,23 +194,18 @@ impl JobManager {
 
     /// True when a job is currently running (drives 409s and chain-switch locks).
     pub async fn has_running(&self) -> bool {
-        for job in &self.jobs {
-            if job.running().await {
-                return true;
-            }
-        }
-        false
+        self.jobs.iter().any(|j| j.shared.running())
     }
 
     /// Spawn a new job. Caller must verify: no job running, command
-    /// allowlisted, args sane. `config_path` is passed to the child via
-    /// `--config` so UI edits apply to spawned runs.
+    /// allowlisted, args sane. `config_path` is loaded by the job itself so
+    /// UI edits apply to spawned runs (same semantics as the old
+    /// `--config <path>` argv).
     pub async fn spawn(
         &mut self,
-        binary: &Path,
         config_path: &Path,
         command: String,
-        mut args: Vec<String>,
+        args: Vec<String>,
         timeout_secs: Option<u64>,
     ) -> anyhow::Result<String> {
         if self.has_running().await {
@@ -136,141 +217,87 @@ impl JobManager {
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&log_path, "")?;
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        let shared = JobShared::new(log_file);
 
-        // Child argv: binary --config <path> <command words...> <args...>
-        // Multi-word allowlisted commands (e.g. `explorer index`) split
-        // into separate argv tokens; clap rejects the single-token form.
+        // Multi-word allowlisted commands (e.g. `explorer index`) split into
+        // separate argv tokens (the CLI clap parser expects that shape).
         let command_words: Vec<String> = command.split_whitespace().map(String::from).collect();
-        let mut full_args: Vec<String> = vec![
-            "--config".to_string(),
-            config_path.to_string_lossy().into_owned(),
-        ];
-        full_args.extend(command_words.iter().cloned());
-        full_args.append(&mut args);
 
-        let mut child = tokio::process::Command::new(binary)
-            .args(&full_args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null())
-            .spawn()?;
-        let pid = child.id();
-        let stdout = child.stdout.take().expect("stdout piped");
-        let stderr = child.stderr.take().expect("stderr piped");
-
-        let runtime = Arc::new(Mutex::new(JobRuntime {
-            pid,
-            ..Default::default()
-        }));
         let info = JobInfo {
             job_id: job_id.clone(),
-            command,
-            args: full_args[2 + command_words.len()..].to_vec(),
+            command: command.clone(),
+            args: args.clone(),
             status: JobStatus::Running,
             exit_code: None,
             run_id: None,
-            pid,
+            pid: None,
             created_at: now,
             finished_at: None,
             log_path: log_path.to_string_lossy().into_owned(),
             timeout_secs,
         };
-        let job = Job {
+        self.jobs.push(Job {
             info,
-            runtime: runtime.clone(),
-        };
-        self.jobs.push(job);
+            shared: shared.clone(),
+        });
 
-        // stdout/stderr line collectors: append to the log file, parse
-        // `Run ID:` lines and NDJSON progress events along the way.
-        {
-            let rt = runtime.clone();
-            let path = log_path.clone();
-            tokio::spawn(async move {
-                collect_stream(stdout, &path, rt).await;
-            });
-        }
-        {
-            let rt = runtime.clone();
-            let path = log_path.clone();
-            tokio::spawn(async move {
-                collect_stream(stderr, &path, rt).await;
-            });
-        }
-
-        // Exit watcher: resolves status (finished/failed/killed) + timeout.
-        let rt = runtime.clone();
-        let jobs_len = self.jobs.len();
-        let _ = jobs_len;
-        tokio::spawn(async move {
-            let status = tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(timeout_secs.unwrap_or(u64::MAX / 4))) => {
-                    if timeout_secs.is_some() {
-                        if let Some(pid) = rt.lock().await.pid {
-                            kill_process_tree(pid).await;
-                        }
-                        let mut g = rt.lock().await;
-                        g.stop_requested = true;
-                        JobStatus::Killed
-                    } else {
-                        // u64::MAX sleep — unreachable; treat as wait.
-                        wait_child(&mut child, &rt).await
-                    }
-                }
-                code = child.wait() => {
-                    let code = code.ok().and_then(|c| c.code());
-                    let mut g = rt.lock().await;
-                    g.exited = true;
-                    g.exit_code = code;
-                    let killed = g.stop_requested;
-                    g.finished_at = Some(chrono::Utc::now());
-                    drop(g);
-                    if killed {
-                        JobStatus::Killed
-                    } else if code == Some(0) {
-                        JobStatus::Finished
-                    } else {
-                        JobStatus::Failed
-                    }
+        // Executor: one OS thread per job, each with its own multi-threaded
+        // tokio runtime (mirrors the CLI's `#[tokio::main]` so
+        // `block_in_place`-style replay code works identically in-process).
+        let cfg = config_path.to_string_lossy().into_owned();
+        let th_shared = shared.clone();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("mev-scout-job")
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    th_shared.log(&format!("failed to build job runtime: {e}"));
+                    th_shared.finish(Some(1), false);
+                    return;
                 }
             };
-            let mut g = rt.lock().await;
-            g.exited = true;
-            g.finished_at.get_or_insert_with(chrono::Utc::now);
-            drop(g);
-            let _ = status;
+            rt.block_on(exec::run_job(&cfg, &command_words, &args, &th_shared));
         });
+
+        // Timeout watchdog: marks the job cancelled (cooperative) once the
+        // deadline elapses, whatever the command is doing.
+        if let Some(secs) = timeout_secs {
+            let wd = shared.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(secs));
+                wd.cancel.store(true, Ordering::Relaxed);
+            });
+        }
+
         Ok(job_id)
     }
 
-    /// Stop a running job (kill the whole process tree).
+    /// Stop a running job by requesting cooperative cancellation.
     pub async fn stop(&mut self, job_id: &str) -> anyhow::Result<()> {
         let job = self
             .jobs
             .iter()
             .find(|j| j.info.job_id == job_id)
             .ok_or_else(|| anyhow::anyhow!("unknown job '{job_id}'"))?;
-        if !job.running().await {
+        if !job.shared.running() {
             anyhow::bail!("job '{job_id}' is not running");
         }
-        let pid = job.runtime.lock().await.pid;
-        job.runtime.lock().await.stop_requested = true;
-        if let Some(pid) = pid {
-            kill_process_tree(pid).await;
-        }
+        job.shared.cancel.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    /// Kill every running job (graceful shutdown).
+    /// Request cancellation for every running job (graceful shutdown).
     pub async fn kill_all(&mut self) {
         for job in &self.jobs {
-            if job.running().await {
-                let mut g = job.runtime.lock().await;
-                g.stop_requested = true;
-                if let Some(pid) = g.pid {
-                    kill_process_tree(pid).await;
-                }
+            if job.shared.running() {
+                job.shared.cancel.store(true, Ordering::Relaxed);
             }
         }
     }
@@ -285,142 +312,34 @@ impl JobManager {
     /// Snapshot of one job's info (merges runtime updates).
     pub async fn job_info(&self, job_id: &str) -> anyhow::Result<JobInfo> {
         let job = self.get(job_id)?;
-        Ok(self.snapshot(job).await)
-    }
-
-    async fn snapshot(&self, job: &Job) -> JobInfo {
-        let rt = job.runtime.lock().await;
-        let mut info = job.info.clone();
-        info.run_id = rt.run_id.clone();
-        info.exit_code = rt.exit_code;
-        info.finished_at = rt.finished_at;
-        info.pid = rt.pid;
-        if rt.exited {
-            let killed = rt.stop_requested;
-            info.status = if killed {
-                JobStatus::Killed
-            } else if rt.exit_code == Some(0) {
-                JobStatus::Finished
-            } else {
-                JobStatus::Failed
-            };
-        }
-        info
+        Ok(job.shared.snapshot(&job.info))
     }
 
     /// Snapshot list of all jobs (running + finished), newest last.
     pub async fn list(&self) -> Vec<JobInfo> {
-        let mut out = Vec::new();
-        for job in &self.jobs {
-            out.push(self.snapshot(job).await);
-        }
-        out
+        self.jobs
+            .iter()
+            .map(|j| j.shared.snapshot(&j.info))
+            .collect()
     }
 
-    /// Latest parsed progress event for a job (None without `--progress json`).
+    /// Latest emitted progress event for a job (None until its first event).
     pub async fn progress(&self, job_id: &str) -> anyhow::Result<Option<ProgressEvent>> {
         let job = self.get(job_id)?;
-        Ok(job.runtime.lock().await.progress.clone())
+        Ok(job.shared.progress.lock().unwrap().clone())
     }
 
-    /// Tail of a job's log file (whole file when `tail` is None).
+    /// Tail of a job's log (whole in-memory ring when `tail` is None).
     pub async fn log_tail(
         &self,
         job_id: &str,
         tail: Option<usize>,
     ) -> anyhow::Result<Vec<String>> {
         let job = self.get(job_id)?;
-        let content = tokio::fs::read_to_string(&job.info.log_path).await?;
-        let lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let ring = job.shared.log.lock().unwrap();
         match tail {
-            Some(n) => Ok(lines.into_iter().rev().take(n).rev().collect()),
-            None => Ok(lines),
+            Some(n) => Ok(ring.iter().rev().take(n).rev().cloned().collect()),
+            None => Ok(ring.clone()),
         }
     }
-}
-
-async fn wait_child(child: &mut tokio::process::Child, rt: &Arc<Mutex<JobRuntime>>) -> JobStatus {
-    let code = child.wait().await.ok().and_then(|c| c.code());
-    let mut g = rt.lock().await;
-    g.exited = true;
-    g.exit_code = code;
-    g.finished_at = Some(chrono::Utc::now());
-    let killed = g.stop_requested;
-    drop(g);
-    if killed {
-        JobStatus::Killed
-    } else if code == Some(0) {
-        JobStatus::Finished
-    } else {
-        JobStatus::Failed
-    }
-}
-
-/// Read a child stream line by line: append to the job log, extract the
-/// `Run ID:` link and NDJSON progress events.
-async fn collect_stream<S>(stream: S, log_path: &PathBuf, runtime: Arc<Mutex<JobRuntime>>)
-where
-    S: tokio::io::AsyncRead + Unpin,
-{
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let mut file = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .await;
-    loop {
-        line.clear();
-        match reader.read_line(&mut line).await {
-            Ok(0) => break,
-            Ok(_) => {
-                if let Ok(f) = file.as_mut() {
-                    use tokio::io::AsyncWriteExt;
-                    let _ = f.write_all(line.as_bytes()).await;
-                }
-                // Run-ID link: parse as soon as the line appears so the
-                // live monitor can start streaming opportunities.
-                if let Some(idx) = line.find("Run ID: ") {
-                    let rest = line[idx + "Run ID: ".len()..].trim();
-                    let candidate = rest.split_whitespace().next().unwrap_or("");
-                    if candidate.starts_with("run_") || candidate.starts_with("live_") {
-                        let mut g = runtime.lock().await;
-                        if g.run_id.is_none() {
-                            g.run_id = Some(candidate.to_string());
-                        }
-                    }
-                }
-                // NDJSON progress events (`--progress json`).
-                if line.starts_with('{') {
-                    if let Ok(evt) = serde_json::from_str::<ProgressEvent>(line.trim()) {
-                        if evt.stage.is_empty() {
-                            continue;
-                        }
-                        let mut g = runtime.lock().await;
-                        g.progress = Some(evt);
-                    }
-                }
-            }
-            Err(_) => break,
-        }
-    }
-}
-
-/// Kill a process and all its descendants. `Child::kill()` on Windows only
-/// kills the direct child, so use `taskkill /T /F` there.
-#[cfg(target_os = "windows")]
-pub async fn kill_process_tree(pid: u32) {
-    let _ = tokio::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .output()
-        .await;
-}
-
-#[cfg(not(target_os = "windows"))]
-pub async fn kill_process_tree(pid: u32) {
-    let _ = nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid as i32),
-        nix::sys::signal::Signal::SIGTERM,
-    );
 }

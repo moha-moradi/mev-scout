@@ -138,22 +138,28 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some());
 
         // ── Atomic arb ─────────────────────────────────────────────────
-        let arb_confirmed = tx.swaps.len() >= 2 && {
-            let edges: Vec<(Address, Address)> = tx
-                .swaps
-                .iter()
-                .filter(|s| s.token_in != Address::ZERO && s.token_out != Address::ZERO)
-                .map(|s| (s.token_in, s.token_out))
-                .collect();
-            is_closed_cycle(&edges)
-        };
+        let resolved_edges: Vec<(Address, Address)> = tx
+            .swaps
+            .iter()
+            .filter(|s| {
+                !has_unresolved_tokens(s)
+                    && s.token_in != decode::TOKEN0_SENTINEL
+                    && s.token_in != decode::TOKEN1_SENTINEL
+            })
+            .map(|s| (s.token_in, s.token_out))
+            .collect();
+        let arb_confirmed = resolved_edges.len() >= 2 && is_closed_cycle(&resolved_edges);
+        // Multi-hop with a positive residual is treated as arb for live-feed
+        // parity with tip explorers even when transfer attachment missed a leg.
+        // Single-hop residuals are also labeled arb (mevlive Type=Arbitrage).
+        let arb_likely = arb_confirmed || !tx.swaps.is_empty();
 
         if let Some(searcher) = candidate {
             if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
                 let amount = ledger.net(searcher, token);
                 let is_dust_or_wrap = amount.is_zero();
                 if !is_dust_or_wrap {
-                    let kind = if arb_confirmed {
+                    let kind = if arb_likely {
                         MevKind::ArbAtomic
                     } else {
                         MevKind::Unknown

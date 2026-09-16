@@ -53,11 +53,13 @@ pub fn chain_timing(chain: &str) -> ChainTimingParams {
             anchor_ts: 0,
         },
         "avalanche" | "avalanche_c" => ChainTimingParams {
-            genesis_ts: 1624402800,
+            // Avalanche C-Chain launch is not a simple genesis*block_time product;
+            // use a verified recent anchor (mev-scout live head @ 2026-09-16).
+            genesis_ts: 1600641600, // 2020-09-21 approx (C-Chain start era)
             secs_per_block: 2.0,
             blocks_per_day: 43200,
-            anchor_block: 0,
-            anchor_ts: 0,
+            anchor_block: 95_407_426,
+            anchor_ts: 1_789_542_517,
         },
         "arbitrum" => ChainTimingParams {
             genesis_ts: 1630812600,

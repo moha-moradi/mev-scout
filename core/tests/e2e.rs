@@ -272,7 +272,7 @@ async fn test_e2e_fetch_and_cache() {
     };
     eprintln!("  Fetching blocks {start}..{end}");
     let fetched = fetcher
-        .fetch_range(&range, Option::<&fn()>::None)
+        .fetch_range(&range, Option::<&fn() -> bool>::None)
         .await
         .unwrap();
     eprintln!("  Fetched {fetched:?}");

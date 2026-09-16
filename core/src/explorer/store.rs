@@ -60,12 +60,16 @@ pub struct FeedRow {
     pub block_number: u64,
     pub kind: String,
     pub profit_token: Option<String>,
+    pub profit_amount: Option<String>,
     pub profit_usd: Option<f64>,
     pub gas_cost_usd: Option<f64>,
     pub net_profit_usd: Option<f64>,
     pub eoa: String,
     pub tx_hash: String,
     pub route_json: Option<String>,
+    /// Spot USD for the chain native / wrapped-native (mevlive Price column).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_price_usd: Option<f64>,
 }
 
 pub struct ExplorerStore {
@@ -623,7 +627,7 @@ impl ExplorerStore {
             format!("WHERE kind IN ({})", list.join(","))
         };
         let sql = format!(
-            "SELECT ts, block_number, kind, profit_token, profit_usd, gas_cost_usd,
+            "SELECT ts, block_number, kind, profit_token, profit_amount, profit_usd, gas_cost_usd,
                     net_profit_usd, eoa, tx_hash, route_json
              FROM mev_ops {order}
              ORDER BY block_number DESC, tx_index DESC, id DESC LIMIT {limit}"
@@ -633,6 +637,10 @@ impl ExplorerStore {
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
+        }
+        let native = latest_native_price(&self.conn)?;
+        for row in &mut out {
+            row.native_price_usd = native;
         }
         Ok(out)
     }
@@ -1532,13 +1540,30 @@ fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
         block_number: r.get::<_, i64>(1)? as u64,
         kind: r.get(2)?,
         profit_token: r.get(3)?,
-        profit_usd: r.get(4)?,
-        gas_cost_usd: r.get(5)?,
-        net_profit_usd: r.get(6)?,
-        eoa: r.get(7)?,
-        tx_hash: r.get(8)?,
-        route_json: r.get(9)?,
+        profit_amount: r.get(4)?,
+        profit_usd: r.get(5)?,
+        gas_cost_usd: r.get(6)?,
+        net_profit_usd: r.get(7)?,
+        eoa: r.get(8)?,
+        tx_hash: r.get(9)?,
+        route_json: r.get(10)?,
+        native_price_usd: None,
     })
+}
+
+fn latest_native_price(conn: &rusqlite::Connection) -> anyhow::Result<Option<f64>> {
+    // Native keyed at 0x000…000 in the prices table.
+    let mut stmt = conn.prepare(
+        "SELECT usd FROM prices
+         WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
+         ORDER BY hour DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get::<_, f64>(0)?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn map_stats_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatsRow> {

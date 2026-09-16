@@ -1,5 +1,5 @@
 use super::scan_factory_creation_events_pinned;
-use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
+use super::{resolve_dex_name, DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use super::{ALGEBRA_POOL_CREATED_TOPIC, SLIPSTREAM_POOL_CREATED_TOPIC, V3_POOL_CREATED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
@@ -54,6 +54,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         Some(i32::from_be_bytes(ts_bytes))
                     };
                     let creation_block = log.block_number.unwrap_or(0);
+                    let factory = log.address();
                     Some((
                         pool_addr,
                         DiscoveredPool::new(
@@ -65,7 +66,8 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                             creation_block,
                         )
                         .with_tick_spacing(tick_spacing)
-                        .with_factory(Some(log.address())),
+                        .with_factory(Some(factory))
+                        .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV3"))),
                     ))
                 },
             )
@@ -96,6 +98,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         return None;
                     }
                     let creation_block = log.block_number.unwrap_or(0);
+                    let factory = log.address();
                     // fee / tickSpacing not in event; will be fetched via eth_call in Phase 2.
                     Some((
                         pool_addr,
@@ -107,8 +110,8 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                             DexType::UniswapV3,
                             creation_block,
                         )
-                        .with_factory(Some(log.address()))
-                        .with_dex_name(Some("QuickSwap Algebra".to_string())),
+                        .with_factory(Some(factory))
+                        .with_dex_name(Some(resolve_dex_name(Some(factory), "Algebra CL"))),
                     ))
                 },
             )
@@ -142,6 +145,7 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         return None;
                     }
                     let creation_block = log.block_number.unwrap_or(0);
+                    let factory = log.address();
                     // fee / liquidity not in event; CL pools expose slot0/liquidity so
                     // V3 state init applies, fee defaults to 0 (repaired via eth_call in Phase 2).
                     Some((
@@ -155,8 +159,8 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                             creation_block,
                         )
                         .with_tick_spacing(Some(tick_spacing))
-                        .with_factory(Some(log.address()))
-                        .with_dex_name(Some("Slipstream CL".to_string())),
+                        .with_factory(Some(factory))
+                        .with_dex_name(Some(resolve_dex_name(Some(factory), "Slipstream CL"))),
                     ))
                 },
             )

@@ -1,4 +1,4 @@
-use crate::cli::{BlockRangeArgs, Cli, Command};
+use crate::cli::{BlockRangeArgs, Command};
 use mev_scout_core::config::CliOverrides;
 
 fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
@@ -9,9 +9,9 @@ fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
     o.to_block = b.to_block;
 }
 
-pub fn build_overrides(cli: &Cli) -> CliOverrides {
+pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
     let mut o = CliOverrides::default();
-    match &cli.command {
+    match cmd {
         Command::Run(args) => {
             apply_block_range(&mut o, &args.block_range);
         }

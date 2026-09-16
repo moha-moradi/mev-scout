@@ -57,8 +57,6 @@ pub struct AppState {
     /// Path of the config file on disk (edits round-trip the raw TOML,
     /// never this expanded copy).
     pub config_path: PathBuf,
-    /// Path of the `mev-scout` CLI binary spawned by the job manager.
-    pub binary_path: PathBuf,
     /// Active explorer DB path (derived from active chain; swapped on edit).
     pub explorer_db_path: RwLock<PathBuf>,
     /// Active scanner-cache DB path (derived from active chain; swapped on edit).

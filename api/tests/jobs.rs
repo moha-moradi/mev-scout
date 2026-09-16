@@ -1,5 +1,6 @@
 //! Integration tests: `/api/jobs*` — command allowlist, spawn/stop/log,
-//! NDJSON progress parsing, and single-job mutex (409 while running).
+//! progress events, and single-job mutex (409 while running). Jobs run
+//! in-process against the `MEV_SCOUT_JOB_STUB` fake executor.
 
 mod common;
 
@@ -10,7 +11,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use common::{test_state, test_state_with_files, test_router, write_temp_config};
+use common::{test_state_with_files, test_router, write_temp_config};
 
 async fn request(
     app: &axum::Router<()>,
@@ -36,12 +37,12 @@ async fn request(
     (status, json)
 }
 
-/// A jobs-capable state: binary = this test's own executable (which runs the
-/// `MEV_SCOUT_STUB` mode via the harness env), config = a temp file.
+/// A jobs-capable state: config = a temp file, and jobs run against the
+/// `MEV_SCOUT_JOB_STUB` fake executor (set by the harness).
 async fn jobs_app() -> (axum::Router<()>, usize) {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
+    let state = test_state_with_files(cfg_path).await;
     (test_router(state), 0)
 }
 
@@ -265,12 +266,14 @@ async fn jobs_list_returns_all() {
     assert_eq!(arr[0]["status"], "finished");
 }
 
-/// The default `test_state`'s binary path is a stub; sanity-check that a
-/// missing binary yields a 500 (not a hang) on spawn.
+/// In-process jobs don't need a binary on disk; verify a basic spawn
+/// finishes successfully (no dependency on an external executable).
 #[tokio::test]
-async fn spawn_with_missing_binary_500() {
-    let state = test_state().await; // binary_path = target/debug/mev-scout (nonexistent)
-    let app = test_router(state);
-    let (status, _) = spawn(&app, "run", vec!["ok"]).await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+async fn in_process_job_runs_without_binary() {
+    let (app, _) = jobs_app().await;
+    let (status, resp) = spawn(&app, "run", vec!["ok"]).await;
+    assert_eq!(status, StatusCode::OK);
+    let job_id = resp["job_id"].as_str().unwrap().to_string();
+    let info = wait_for(&app, &job_id, "finished", 5000).await;
+    assert_eq!(info["exit_code"], 0);
 }

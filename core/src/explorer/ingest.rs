@@ -235,13 +235,24 @@ pub async fn index_block(
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 
-    let token_prices = match token_prices {
+    let mut token_prices = match token_prices {
         Some(p) => p,
         None => {
             let tokens = event_tokens(&events);
             warm_prices_for_tokens(cfg, &tokens, block_data.timestamp, store).await?
         }
     };
+    // Wrapped-native USD = CoinGecko native price (mevlive Price column parity).
+    if let Some(np) = native_price {
+        if !cfg.wrapped_native.is_zero() {
+            token_prices
+                .entry(cfg.wrapped_native)
+                .or_insert(TokenUsd {
+                    usd: np,
+                    decimals: 18,
+                });
+        }
+    }
 
     store.insert_block_facts(BlockFactsInput {
         block_number,
@@ -360,7 +371,7 @@ pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
     v
 }
 
-/// Native-token USD price with hourly store cache (CoinGecko live path).
+/// Native-token USD price with hourly store cache (CoinGecko, then Llama).
 pub async fn native_price_cached(
     cfg: &IngestConfig,
     store: &ExplorerStore,
@@ -371,15 +382,28 @@ pub async fn native_price_cached(
     if let Some((usd, _)) = store.price_at(marker, hour)? {
         return Ok(Some(usd));
     }
-    match pricing::fetch_native_price_coingecko(cfg.chain).await {
-        Ok(usd) => {
-            store.put_price(marker, hour, usd, "coingecko")?;
-            Ok(Some(usd))
-        }
+    let fetched = match pricing::fetch_native_price_coingecko(cfg.chain).await {
+        Ok(usd) => Some((usd, "coingecko")),
         Err(e) => {
-            warn!("native price fetch failed: {e}");
-            Ok(None)
+            warn!("native price coingecko failed: {e}");
+            match pricing::fetch_native_price_llama(cfg.chain, cfg.wrapped_native).await {
+                Ok(usd) => Some((usd, "llama")),
+                Err(e2) => {
+                    warn!("native price llama failed: {e2}");
+                    None
+                }
+            }
         }
+    };
+    if let Some((usd, source)) = fetched {
+        store.put_price(marker, hour, usd, source)?;
+        // Also cache under wrapped-native so profit_usd converts for WAVAX/WETH.
+        if !cfg.wrapped_native.is_zero() {
+            store.put_price(cfg.wrapped_native, hour, usd, source)?;
+        }
+        Ok(Some(usd))
+    } else {
+        Ok(None)
     }
 }
 
@@ -413,6 +437,10 @@ pub async fn backfill_range(
     Ok((blocks_done, ops_total))
 }
 
+/// When live mode is this far behind tip, skip the backlog and index near tip.
+/// Historical catch-up belongs in backfill; live feed should match tip explorers.
+const LIVE_MAX_LAG_BLOCKS: u64 = 256;
+
 /// Live streaming mode: follow head − confirmations, indexing each new block.
 /// Runs until `stop` is set; reorg-checked every 32 blocks.
 pub async fn run_live(
@@ -442,6 +470,19 @@ pub async fn run_live(
         };
 
         if safe >= next_block {
+            let lag = safe.saturating_sub(next_block).saturating_add(1);
+            if lag > LIVE_MAX_LAG_BLOCKS {
+                let skip_to = safe.saturating_sub(LIVE_MAX_LAG_BLOCKS.saturating_sub(1));
+                warn!(
+                    lag,
+                    from = next_block,
+                    to = skip_to,
+                    tip = safe,
+                    "live indexer far behind tip — skipping backlog to keep feed fresh"
+                );
+                next_block = skip_to;
+            }
+
             // Reorg check on the previous indexed block before continuing.
             since_reorg_check += 1;
             if since_reorg_check >= 32 {
@@ -452,12 +493,14 @@ pub async fn run_live(
                 since_reorg_check = 0;
             }
             let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-            for block in next_block..=safe {
+            // Cap work per poll so we stay near tip under RPC rate limits.
+            let batch_end = (next_block + LIVE_MAX_LAG_BLOCKS - 1).min(safe);
+            for block in next_block..=batch_end {
                 let indexed = index_block(rpc, store, cfg, block, native_price, None).await?;
                 indexed_total += indexed.ops as u64;
             }
-            store.set_sync_state(cfg.chain_id, safe, safe)?;
-            next_block = safe + 1;
+            store.set_sync_state(cfg.chain_id, safe, batch_end)?;
+            next_block = batch_end + 1;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;

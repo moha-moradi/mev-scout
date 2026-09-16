@@ -12,6 +12,8 @@ pub enum Error {
     Config(#[from] ConfigError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[error("job cancelled")]
+    Cancelled,
     #[error("{0}")]
     Other(String),
 }

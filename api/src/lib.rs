@@ -2,6 +2,7 @@
 //! integration tests in `tests/`.
 
 pub mod error;
+pub mod exec;
 pub mod jobs;
 pub mod pagination;
 pub mod read;

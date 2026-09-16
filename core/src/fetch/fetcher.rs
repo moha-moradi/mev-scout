@@ -131,7 +131,7 @@ impl Fetcher {
     /// 2. Distribute blocks across providers by effective weight
     /// 3. Fetch each shard's missing blocks with the pinned provider
     /// 4. Integrity check
-    pub async fn fetch_range<F: Fn() + Sync>(
+    pub async fn fetch_range<F: Fn() -> bool + Sync>(
         &self,
         range: &ResolvedRange,
         progress: Option<&F>,
@@ -204,7 +204,9 @@ impl Fetcher {
                     let mut sum = s.lock().await;
                     sum.fetched += n;
                     if let Some(tick) = progress {
-                        tick();
+                        if !tick() {
+                            return Err(anyhow::anyhow!("job cancelled"));
+                        }
                     }
                     Ok::<_, anyhow::Error>(())
                 });
@@ -270,7 +272,7 @@ impl Fetcher {
     /// When `provider_idx` is `Some`, uses `get_block_and_receipts_batch_for` to pin
     /// all RPC calls to that provider, eliminating cross-provider mutex contention.
     /// Falls back to `retry_call` on failure.
-    async fn fetch_contiguous_range<F: Fn() + Sync>(
+    async fn fetch_contiguous_range<F: Fn() -> bool + Sync>(
         &self,
         start: u64,
         end: u64,
@@ -336,7 +338,9 @@ impl Fetcher {
                 match tasks.next().await {
                     Some(Ok(())) => {
                         if let Some(tick) = progress {
-                            tick();
+                            if !tick() {
+                                return Err(anyhow::anyhow!("job cancelled"));
+                            }
                         }
                         completed += 1;
                     }
@@ -352,7 +356,9 @@ impl Fetcher {
             match result {
                 Ok(()) => {
                     if let Some(tick) = progress {
-                        tick();
+                        if !tick() {
+                            return Err(anyhow::anyhow!("job cancelled"));
+                        }
                     }
                     completed += 1;
                 }
@@ -365,7 +371,7 @@ impl Fetcher {
         Ok(completed)
     }
 
-    async fn fetch_contiguous_range_sequential<F: Fn() + Sync>(
+    async fn fetch_contiguous_range_sequential<F: Fn() -> bool + Sync>(
         &self,
         start: u64,
         end: u64,
@@ -420,14 +426,16 @@ impl Fetcher {
                 t.record(0.0, t_rpc, t_write, total);
             }
             if let Some(tick) = progress {
-                tick();
+                if !tick() {
+                    return Err(anyhow::anyhow!("job cancelled"));
+                }
             }
             fetched += 1;
         }
         Ok(fetched)
     }
 
-    pub async fn fetch_relevant<F: Fn() + Sync>(
+    pub async fn fetch_relevant<F: Fn() -> bool + Sync>(
         &self,
         range: &ResolvedRange,
         pool_addresses: &[Address],

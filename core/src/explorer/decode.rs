@@ -426,6 +426,56 @@ pub fn attach_swap_tokens(swaps: &mut [SwapFact], transfers: &[TransferFact]) {
         if !token_out.is_zero() {
             s.token_out = token_out;
         }
+
+        // Fallback: router/hop layouts sometimes emit the pool→recipient
+        // transfer slightly before the next Swap log. Accept nearest pool
+        // outflow within a short window when still unresolved.
+        if s.token_out.is_zero() || s.token_out == TOKEN0_SENTINEL || s.token_out == TOKEN1_SENTINEL {
+            let mut best: Option<(i64, Address)> = None;
+            for t in transfers {
+                let dist = (t.log_index as i64 - s.log_index as i64).abs();
+                if dist == 0 || dist > 24 {
+                    continue;
+                }
+                if t.from != s.pool {
+                    continue;
+                }
+                if t.token.is_zero() || t.token == s.token_in {
+                    continue;
+                }
+                match best {
+                    Some((d, _)) if d <= dist => {}
+                    _ => best = Some((dist, t.token)),
+                }
+            }
+            if let Some((_, tok)) = best {
+                s.token_out = tok;
+            }
+        }
+        if (s.token_in.is_zero() || s.token_in == TOKEN0_SENTINEL || s.token_in == TOKEN1_SENTINEL)
+            && !s.token_out.is_zero()
+        {
+            let mut best: Option<(i64, Address)> = None;
+            for t in transfers {
+                let dist = (t.log_index as i64 - s.log_index as i64).abs();
+                if dist == 0 || dist > 24 {
+                    continue;
+                }
+                if t.to != s.pool {
+                    continue;
+                }
+                if t.token.is_zero() || t.token == s.token_out {
+                    continue;
+                }
+                match best {
+                    Some((d, _)) if d <= dist => {}
+                    _ => best = Some((dist, t.token)),
+                }
+            }
+            if let Some((_, tok)) = best {
+                s.token_in = tok;
+            }
+        }
     }
 }
 

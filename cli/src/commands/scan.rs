@@ -4,9 +4,15 @@ use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 
 use crate::cli::{ScanArgs, ScanKind};
+use crate::job_progress::JobProgress;
 use crate::rpc_setup::init_rpc;
 
-pub async fn cmd_scan(config: &Config, args: &ScanArgs) -> anyhow::Result<()> {
+pub async fn cmd_scan(
+    config: &Config,
+    args: &ScanArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
+    let _ = progress;
     let (chain_name, _chain_config) =
         validation::resolve_chain(config).context("failed to resolve chain")?;
 

@@ -337,17 +337,22 @@ fn curated_dex_slugs(chain: &str) -> &'static [&'static str] {
             "velodrome",
             "curve_optimism",
         ],
+        // Ranked from DefiLlama Avalanche DEX daily volume (2026-09-16).
+        // GeckoTerminal slug ids; unknown slugs 404 and are skipped.
         "avalanche" => &[
-            "pharaoh-dlmm",        // #1
-            "pharaoh-exchange-v3", // #2
-            "traderjoe-v2-2-avalanche",
-            "blackhole-v3", // CLMM leg
-            "uniswap-v3-avalanche",
+            "pharaoh-exchange-v3",      // #1 Pharaoh V3
+            "pharaoh-dlmm",             // #2 Pharaoh DLMM
+            "uniswap-v3-avalanche",     // #3 Uniswap V3
+            "blackhole-v3",             // #4 Blackhole CLMM
+            "traderjoe-v2-2-avalanche", // #6 Joe V2.2 LB
+            "pangolin-v3",              // #9 Pangolin V3
             "uniswap-v4-avalanche",
-            "pangolin-v3",
-            "pharaoh-exchange",
-            "curve_avalanche",
             "traderjoe-v2-1-avalanche",
+            "traderjoe", // Joe V1 / LFJ classic
+            "pharaoh-exchange",
+            "blackhole-v2",
+            "curve_avalanche",
+            "pangolin",
         ],
         _ => &[],
     }

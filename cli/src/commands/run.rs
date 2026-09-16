@@ -2,7 +2,6 @@ use anyhow::Context;
 use mev_scout_core::utils::epoch_secs;
 
 use alloy::primitives::Address;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,6 +10,7 @@ use crate::display::{
     persist_opportunities_to_explorer, persist_rejections_to_explorer, print_startup_plan,
     render_block_summary_table, render_results_table,
 };
+use crate::job_progress::{JobProgress, ProgressEvent};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
@@ -22,12 +22,16 @@ use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::RangeResolver;
 use mev_scout_core::types::{GasConfig, ResultsFile};
 
-pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
-    let progress_json = match args.progress.as_deref() {
-        None => false,
-        Some("json") => true,
-        Some(other) => anyhow::bail!("unsupported --progress format '{other}' (only 'json')"),
-    };
+pub async fn cmd_run(
+    config: &Config,
+    args: &RunArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
+    if let Some(format) = args.progress.as_deref() {
+        if format != "json" {
+            anyhow::bail!("unsupported --progress format '{format}' (only 'json')");
+        }
+    }
     let validation_result =
         validation::validate_and_resolve(config).context("invalid configuration")?;
     print_startup_plan(&validation_result, config);
@@ -61,12 +65,10 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     };
     cache.put_manifest(&manifest)?;
 
-    println!("Run ID: {}", run_id);
-    if progress_json {
-        println!("{}", serde_json::json!({ "stage": "resolve" }));
-    }
-    println!("{}", resolved.summary());
-    println!();
+    progress.log(&format!("Run ID: {run_id}"));
+    progress.emit(ProgressEvent::stage("resolve"));
+    progress.log(&resolved.summary());
+    progress.log("");
 
     let pool_addresses: Vec<Address> = cache
         .list_discovered_pools()
@@ -90,30 +92,22 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let bc = config.effective_block_concurrency(&provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
 
-    let pb = if progress_json {
-        None
-    } else {
-        let pb = ProgressBar::new(resolved.block_count);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
-                .progress_chars("=> "),
-        );
-        Some(pb)
-    };
     let fetch_total = resolved.block_count;
     let fetch_done = Arc::new(AtomicU64::new(0));
-    let bar = pb.as_ref();
     let tick = move || {
-        if progress_json {
-            let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
-            println!(
-                "{}",
-                serde_json::json!({ "stage": "fetch", "done": d, "total": fetch_total })
-            );
-        } else if let Some(b) = bar {
-            b.inc(1);
+        if progress.cancelled() {
+            return false;
         }
+        let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(fetch_total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
     };
 
     let fetch_summary = if !pool_addresses.is_empty() {
@@ -123,9 +117,6 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     } else {
         fetcher.fetch_range(&resolved, Some(&tick)).await?
     };
-    if let Some(b) = pb {
-        b.finish_and_clear();
-    }
 
     if fetch_summary.skipped > 0 {
         tracing::info!(
@@ -163,9 +154,10 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let prev_block = resolved.start_block.saturating_sub(1);
 
     if !validation_result.strategies.is_empty() {
-        if progress_json {
-            println!("{}", serde_json::json!({ "stage": "pool_init" }));
+        if progress.cancelled() {
+            anyhow::bail!("job cancelled");
         }
+        progress.emit(ProgressEvent::stage("pool_init"));
         BacktestRunner::init_pools(&mut pool_manager, &rpc, prev_block, Some(&cache)).await;
     }
 
@@ -202,30 +194,32 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
 
     let start = std::time::Instant::now();
 
-    let detect_progress: Option<Box<dyn Fn(u64, u64)>> = if progress_json {
-        Some(Box::new(|done, total| {
-            println!(
-                "{}",
-                serde_json::json!({ "stage": "detect", "done": done, "total": total })
-            );
-        }))
-    } else {
-        None
+    let detect_progress = move |done: u64, total: u64| {
+        if progress.cancelled() {
+            return false;
+        }
+        progress.emit(ProgressEvent {
+            stage: "detect".to_string(),
+            done: Some(done),
+            total: Some(total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
     };
-    let (all_opportunities, block_stats) = runner.run_range(&resolved, detect_progress.as_deref())?;
+    let (all_opportunities, block_stats) =
+        runner.run_range(&resolved, Some(&detect_progress))?;
     let elapsed = start.elapsed();
 
-    if progress_json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "stage": "complete",
-                "run_id": run_id,
-                "ops": all_opportunities.len(),
-                "elapsed_ms": elapsed.as_millis(),
-            })
-        );
-    }
+    progress.emit(ProgressEvent {
+        stage: "complete".to_string(),
+        done: None,
+        total: None,
+        run_id: Some(run_id.clone()),
+        ops: Some(all_opportunities.len() as u64),
+        elapsed_ms: Some(elapsed.as_millis() as u64),
+    });
 
     // Execution history lives only in SQLite: run metadata in the cache
     // store's `run_manifests`, opportunities/rejections in the explorer store.
@@ -249,13 +243,13 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     persist_rejections_to_explorer(config, validation_result.chain_name, &run_id, &rejections);
 
     if all_opportunities.is_empty() {
-        println!("No MEV opportunities detected in the specified range.");
+        progress.log("No MEV opportunities detected in the specified range.");
     } else {
-        println!(
+        progress.log(&format!(
             "\nDetected {} MEV opportunity(ies) in {:.2}s:\n",
             all_opportunities.len(),
             elapsed.as_secs_f64()
-        );
+        ));
         render_results_table(&all_opportunities, Some(runner.pool_manager()));
     }
 
@@ -264,10 +258,10 @@ pub async fn cmd_run(config: &Config, args: &RunArgs) -> anyhow::Result<()> {
     let mempool_opps: usize = block_stats.iter().map(|s| s.mempool_opp_count).sum();
     if mempool_opps > 0 {
         let mempool_txs: usize = block_stats.iter().map(|s| s.pending_tx_count).sum();
-        println!(
+        progress.log(&format!(
             "  Mempool: {} pending txs, {} mempool-only opportunities visible",
             mempool_txs, mempool_opps,
-        );
+        ));
     }
 
     Ok(())

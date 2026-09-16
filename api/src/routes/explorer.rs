@@ -42,9 +42,17 @@ async fn feed(
 ) -> ApiResult<Json<Vec<FeedRow>>> {
     let limit = q.limit.unwrap_or(50).min(200) as usize;
     let kinds = parse_kinds(q.kinds.as_deref())?;
+    let chain = state.active_chain().await;
     let rows = {
         let conn = state.explorer_conn.lock().await;
         query_feed_tail(&conn, limit, &kinds)?
+    };
+    // Ensure Price column can render even before the indexer caches a quote.
+    let native = match rows.first().and_then(|r| r.native_price_usd) {
+        Some(v) => Some(v),
+        None => mev_scout_core::explorer::pricing::fetch_native_price_coingecko(chain)
+            .await
+            .ok(),
     };
     let min = q.min_profit_usd.unwrap_or(0.0);
     let out: Vec<FeedRow> = rows
@@ -57,6 +65,12 @@ async fn feed(
                 feed_row_matches(r, needle)
             }
             None => true,
+        })
+        .map(|mut r| {
+            if r.native_price_usd.is_none() {
+                r.native_price_usd = native;
+            }
+            r
         })
         .collect();
     Ok(Json(out))
@@ -87,7 +101,7 @@ fn query_feed_tail(
         format!("WHERE kind IN ({})", list.join(","))
     };
     let sql = format!(
-        "SELECT ts, block_number, kind, profit_token, profit_usd, gas_cost_usd,
+        "SELECT ts, block_number, kind, profit_token, profit_amount, profit_usd, gas_cost_usd,
                 net_profit_usd, eoa, tx_hash, route_json
          FROM mev_ops {order}
          ORDER BY block_number DESC, tx_index DESC, id DESC LIMIT {limit}"
@@ -98,6 +112,10 @@ fn query_feed_tail(
     for r in rows {
         out.push(r?);
     }
+    let native = latest_native_price(conn)?;
+    for row in &mut out {
+        row.native_price_usd = native;
+    }
     Ok(out)
 }
 
@@ -107,13 +125,29 @@ fn map_feed(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
         block_number: r.get::<_, i64>(1)? as u64,
         kind: r.get(2)?,
         profit_token: r.get(3)?,
-        profit_usd: r.get(4)?,
-        gas_cost_usd: r.get(5)?,
-        net_profit_usd: r.get(6)?,
-        eoa: r.get(7)?,
-        tx_hash: r.get(8)?,
-        route_json: r.get(9)?,
+        profit_amount: r.get(4)?,
+        profit_usd: r.get(5)?,
+        gas_cost_usd: r.get(6)?,
+        net_profit_usd: r.get(7)?,
+        eoa: r.get(8)?,
+        tx_hash: r.get(9)?,
+        route_json: r.get(10)?,
+        native_price_usd: None,
     })
+}
+
+fn latest_native_price(conn: &rusqlite::Connection) -> anyhow::Result<Option<f64>> {
+    let mut stmt = conn.prepare(
+        "SELECT usd FROM prices
+         WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
+         ORDER BY hour DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(row.get::<_, f64>(0)?))
+    } else {
+        Ok(None)
+    }
 }
 
 fn parse_kinds(s: Option<&str>) -> ApiResult<Vec<MevKind>> {

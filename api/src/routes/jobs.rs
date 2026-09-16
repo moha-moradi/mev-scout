@@ -62,7 +62,6 @@ async fn create_job(
         .lock()
         .await
         .spawn(
-            &state.binary_path,
             &state.config_path,
             cmd.to_string(),
             req.args,

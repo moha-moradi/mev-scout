@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 use comfy_table::Table;
 
 use mev_scout_core::config::validation;
@@ -41,50 +41,7 @@ pub fn persist_opportunities_to_explorer(
     run_id: &str,
     results_file: &ResultsFile,
 ) {
-    let store = match mev_scout_core::explorer::store::ExplorerStore::open(
-        config.effective_explorer_db_path(&chain),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("explorer store open failed (results layer skipped): {e}");
-            return;
-        }
-    };
-    for opp in &results_file.opportunities {
-        let path_str = opp.path.as_ref().map(|p| {
-            p.iter()
-                .map(|a| format!("{a:#x}"))
-                .collect::<Vec<_>>()
-                .join(",")
-        });
-        let confidence_str = opp.confidence.map(|c| format!("{c:.2}"));
-        if let Err(e) =
-            store.insert_opportunity(mev_scout_core::explorer::store::OpportunityInput {
-                run_id,
-                chain: &results_file.chain,
-                block_number: opp.block_number,
-                tx_index: Some(opp.tx_index as u64),
-                strategy: &opp.strategy.to_string(),
-                pool_a: Some(opp.pool_a),
-                pool_b: (opp.pool_b != Address::ZERO).then_some(opp.pool_b),
-                token_in: (!opp.token_in.is_zero()).then_some(opp.token_in),
-                token_out: (!opp.token_out.is_zero()).then_some(opp.token_out),
-                input_amount: Some(opp.input_amount),
-                expected_profit: Some(opp.expected_profit),
-                gas_cost_wei: Some(U256::from(opp.gas_cost_wei)),
-                path: path_str.as_deref(),
-                timestamp: Some(opp.timestamp),
-                mempool_only: opp.mempool_only,
-                confidence: confidence_str.as_deref(),
-                sender: opp.sender,
-                tx_hash: opp.tx_hash,
-                detection_path: opp.detection_path.as_deref(),
-                canonical_id: opp.canonical_id.as_deref(),
-            })
-        {
-            tracing::warn!("opportunities-table insert failed: {e}");
-        }
-    }
+    mev_scout_core::explorer::persist_opportunities_to_explorer(config, chain, run_id, results_file)
 }
 
 /// Persist drained runner rejections into the explorer store.
@@ -95,24 +52,7 @@ pub fn persist_rejections_to_explorer(
     run_id: &str,
     rejections: &[mev_scout_core::explorer::RejectedCandidate],
 ) {
-    if rejections.is_empty() {
-        return;
-    }
-    let store = match mev_scout_core::explorer::store::ExplorerStore::open(
-        config.effective_explorer_db_path(&chain),
-    ) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("explorer store open failed (rejections skipped): {e}");
-            return;
-        }
-    };
-    let chain_str = chain.to_string();
-    for r in rejections {
-        if let Err(e) = store.insert_rejected_candidate(run_id, &chain_str, r) {
-            tracing::warn!("rejected_candidates insert failed: {e}");
-        }
-    }
+    mev_scout_core::explorer::persist_rejections_to_explorer(config, chain, run_id, rejections)
 }
 
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {

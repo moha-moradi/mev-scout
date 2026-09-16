@@ -14,39 +14,38 @@ export function usePolling<T>(
   const [tick, setTick] = useState(0);
   const loaderRef = useRef(loader);
   loaderRef.current = loader;
-
-  const run = useCallback(() => {
-    let cancelled = false;
-    loaderRef
-      .current()
-      .then((d) => {
-        if (!cancelled) {
-          setData(d);
-          setError(null);
-        }
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) {
-          setError(e instanceof ApiError ? e.detail : String(e));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const genRef = useRef(0);
 
   useEffect(() => {
-    const cancel = run();
-    const id = setInterval(run, intervalMs);
+    const gen = ++genRef.current;
+    let alive = true;
+
+    const pull = () => {
+      loaderRef
+        .current()
+        .then((d) => {
+          if (!alive || gen !== genRef.current) return;
+          setData(d);
+          setError(null);
+        })
+        .catch((e: unknown) => {
+          if (!alive || gen !== genRef.current) return;
+          setError(e instanceof ApiError ? e.detail : String(e));
+        })
+        .finally(() => {
+          if (!alive || gen !== genRef.current) return;
+          setLoading(false);
+        });
+    };
+
+    pull();
+    const id = setInterval(pull, intervalMs);
     return () => {
-      cancel();
+      alive = false;
       clearInterval(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick, ...deps]);
+  }, [tick, intervalMs, ...deps]);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   return { data, loading, error, refresh };

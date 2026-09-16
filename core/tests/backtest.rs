@@ -181,7 +181,7 @@ async fn test_rpc_guided_backtest() {
             block_count: 1,
             mode: RangeMode::Single(block),
         };
-        match fetcher.fetch_range(&resolved_fetch, None::<&fn()>).await {
+        match fetcher.fetch_range(&resolved_fetch, None::<&fn() -> bool>).await {
             Ok(summary) => eprintln!(
                 "  Fetched block {block}: {} txs (elapsed {:.2}s)",
                 summary.total_blocks, summary.elapsed_secs
@@ -349,7 +349,7 @@ async fn test_synthetic_backtest_on_real_block() {
         block_count: 1,
         mode: RangeMode::Single(block),
     };
-    match fetcher.fetch_range(&resolved, None::<&fn()>).await {
+    match fetcher.fetch_range(&resolved, None::<&fn() -> bool>).await {
         Ok(s) => eprintln!("Fetched block {block}: {} blocks", s.total_blocks),
         Err(e) => {
             eprintln!("SKIP: fetch failed: {e}");

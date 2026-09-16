@@ -1,6 +1,6 @@
 use super::scan_factory_creation_events_pinned;
 use super::V2_PAIR_CREATED_TOPIC;
-use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
+use super::{resolve_dex_name, DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use alloy::primitives::Address;
@@ -41,6 +41,7 @@ pub(crate) async fn scan_v2_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                 let token0 = Address::from_slice(&topics[1][12..]);
                 let token1 = Address::from_slice(&topics[2][12..]);
                 let creation_block = log.block_number.unwrap_or(0);
+                let factory = log.address();
                 Some((
                     addr,
                     DiscoveredPool::new(
@@ -51,7 +52,8 @@ pub(crate) async fn scan_v2_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         DexType::UniswapV2,
                         creation_block,
                     )
-                    .with_factory(Some(log.address())),
+                    .with_factory(Some(factory))
+                    .with_dex_name(Some(resolve_dex_name(Some(factory), "UniswapV2"))),
                 ))
             },
         )

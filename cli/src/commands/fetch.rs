@@ -1,9 +1,11 @@
 use anyhow::Context;
 use mev_scout_core::utils::epoch_secs;
 
-use indicatif::{ProgressBar, ProgressStyle};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cli::FetchArgs;
+use crate::job_progress::{JobProgress, ProgressEvent};
 use crate::rpc_setup::init_rpc;
 use mev_scout_core::cache::{RunManifest, SqliteStore};
 use mev_scout_core::config::validation;
@@ -12,7 +14,11 @@ use mev_scout_core::config::Config;
 use mev_scout_core::fetch::Fetcher;
 use mev_scout_core::resolver::RangeResolver;
 
-pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> {
+pub async fn cmd_fetch(
+    config: &Config,
+    args: &FetchArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
     let (chain_name, _chain_config) =
         validation::resolve_chain(config).context("failed to resolve chain")?;
 
@@ -46,9 +52,9 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
     };
     cache.put_manifest(&manifest)?;
 
-    println!("Run ID: {}", run_id);
-    println!("{}", resolved.summary());
-    println!();
+    progress.log(&format!("Run ID: {run_id}"));
+    progress.log(&resolved.summary());
+    progress.log("");
 
     let mut fetcher = Fetcher::new(rpc, cache);
     fetcher = fetcher.with_parallelism(provider_configs.len());
@@ -74,16 +80,24 @@ pub async fn cmd_fetch(config: &Config, args: &FetchArgs) -> anyhow::Result<()> 
         tracing::info!("Signature resolution disabled (--no-sig-resolve)");
     }
 
-    let pb = ProgressBar::new(resolved.block_count);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")?
-            .progress_chars("=> "),
-    );
-
-    let tick = || pb.inc(1);
+    let fetch_total = resolved.block_count;
+    let fetch_done = Arc::new(AtomicU64::new(0));
+    let tick = move || {
+        if progress.cancelled() {
+            return false;
+        }
+        let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(fetch_total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
+    };
     let summary = fetcher.fetch_range(&resolved, Some(&tick)).await?;
-    pb.finish_and_clear();
 
     println!();
     println!("Fetch complete:");

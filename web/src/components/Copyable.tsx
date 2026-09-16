@@ -39,7 +39,7 @@ export default function Copyable({
       } ${className}`}
     >
       <span>{shortHex(value, head, tail)}</span>
-      <span className="text-[10px] text-zinc-600">{ok ? "copied" : ""}</span>
+      <span className="text-[10px] text-zinc-600">{ok ? "copied" : "copy"}</span>
     </button>
   );
 }

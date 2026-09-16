@@ -57,7 +57,7 @@ async fn security_rpc_urls_never_in_config_get() {
     // The harness config has `rpc_urls` set with a URL containing "SECRETKEY".
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
+    let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
     let (status, json) = request(&app, Method::GET, "/api/config", None).await;
@@ -80,7 +80,7 @@ async fn security_rpc_urls_never_in_config_get() {
 async fn security_rpc_urls_never_in_put_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
+    let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
     // PUT a config edit — the response must not echo secrets either.
@@ -117,7 +117,7 @@ assert_eq!(status, StatusCode::OK, "PUT failed: {resp}");
 async fn config_put_updates_non_secret_fields_and_creates_backup() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path.clone(), None).await;
+    let state = test_state_with_files(cfg_path.clone()).await;
     let app = test_router(state);
 
     let (status, resp) = request(
@@ -151,7 +151,7 @@ async fn config_put_updates_non_secret_fields_and_creates_backup() {
 async fn config_put_preserves_env_placeholders_verbatim() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_env_template_config(dir.path());
-    let state = test_state_with_files(cfg_path.clone(), None).await;
+    let state = test_state_with_files(cfg_path.clone()).await;
     let app = test_router(state);
 
     let (status, _) = request(
@@ -175,7 +175,7 @@ async fn config_put_preserves_env_placeholders_verbatim() {
 async fn config_put_rejects_unknown_chain_with_400() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
+    let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
     let (status, json) = request(
@@ -193,7 +193,7 @@ async fn config_put_rejects_unknown_chain_with_400() {
 async fn config_put_rejects_invalid_value_with_400_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path.clone(), None).await;
+    let state = test_state_with_files(cfg_path.clone()).await;
     let app = test_router(state);
 
     let before = std::fs::read_to_string(&cfg_path).unwrap();
@@ -220,7 +220,7 @@ async fn config_edit_rejected_409_while_job_runs() {
     // Build a state pointing at a real stub binary + temp config.
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-    let state = test_state_with_files(cfg_path, None).await;
+    let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
     // Start a long-running job via the jobs API (allowlisted `live` command;
@@ -258,7 +258,7 @@ async fn config_edit_rejected_409_while_job_runs() {
 async fn config_chain_switch_swaps_connections() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-let state = test_state_with_files(cfg_path, None).await;
+let state = test_state_with_files(cfg_path).await;
     let app = test_router(state.clone());
 
     let (status, _) = request(

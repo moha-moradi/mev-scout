@@ -946,7 +946,7 @@ impl BacktestRunner {
     pub fn run_range(
         &mut self,
         resolved: &ResolvedRange,
-        progress: Option<&dyn Fn(u64, u64)>,
+        progress: Option<&dyn Fn(u64, u64) -> bool>,
     ) -> error::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
@@ -1009,7 +1009,9 @@ impl BacktestRunner {
             // Progress callback (block done, regardless of outcome).
             processed += 1;
             if let Some(cb) = progress {
-                cb(processed, resolved.block_count);
+                if !cb(processed, resolved.block_count) {
+                    return Err(error::Error::Cancelled);
+                }
             }
         }
         // Capture pending block and run mempool detection
@@ -1068,7 +1070,7 @@ impl BacktestRunner {
         &mut self,
         resolved: &ResolvedRange,
         state_horizon: u64,
-        progress: Option<&dyn Fn(u64, u64)>,
+        progress: Option<&dyn Fn(u64, u64) -> bool>,
     ) -> error::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>, Vec<BlockMode>)> {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
@@ -1200,7 +1202,9 @@ impl BacktestRunner {
             // Progress callback (block done, regardless of outcome).
             processed += 1;
             if let Some(cb) = progress {
-                cb(processed, resolved.block_count);
+                if !cb(processed, resolved.block_count) {
+                    return Err(error::Error::Cancelled);
+                }
             }
         }
 

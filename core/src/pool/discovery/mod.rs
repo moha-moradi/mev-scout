@@ -777,12 +777,15 @@ mod infinity;
 mod metadata;
 mod metric;
 mod pendle;
+mod protocol_names;
 pub mod remote;
 mod solidly;
 mod trader_joe;
 mod v2;
 mod v3;
 mod v4;
+
+pub use protocol_names::{protocol_name_for_factory, resolve_dex_name};
 
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).
@@ -819,7 +822,7 @@ pub async fn discover_pools(
     from_block: u64,
     to_block: u64,
     config: &DiscoveryConfig<'_>,
-    on_batch: Option<&dyn Fn()>,
+    on_batch: Option<&dyn Fn() -> bool>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     // ── Auto-detect RPC eth_getLogs block range limit ──
     let effective_batch_size = probe_get_logs_limit(rpc, to_block, config.batch_size).await;
@@ -918,7 +921,9 @@ pub async fn discover_pools(
     }
 
     if let Some(ref f) = on_batch {
-        f();
+        if !f() {
+            anyhow::bail!("job cancelled");
+        }
     }
 
     let pools: Vec<DiscoveredPool> = factory_pools.into_values().collect();
@@ -932,7 +937,7 @@ async fn discover_pools_shard(
     to_block: u64,
     effective_batch_size: u64,
     config: &DiscoveryConfig<'_>,
-    on_batch: Option<&dyn Fn()>,
+    on_batch: Option<&dyn Fn() -> bool>,
     provider_idx: Option<usize>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let mut active_blocks = HashSet::new();
@@ -1056,7 +1061,9 @@ async fn discover_pools_shard(
         }
 
         if let Some(ref f) = on_batch {
-            f();
+            if !f() {
+                anyhow::bail!("job cancelled");
+            }
         }
 
         if batch_end == to_block {
@@ -1357,7 +1364,7 @@ async fn discover_pools_shard(
     // First, add all factory-discovered pools (they have creation_block, factory, etc.)
     for (_, mut dp) in factory_pools.drain() {
         if dp.dex_name.is_none() {
-            dp.dex_name = Some(dp.dex_type.to_string());
+            dp.dex_name = Some(resolve_dex_name(dp.factory, &dp.dex_type.to_string()));
         }
         dp.token0_symbol = symbol_results.get(&dp.token0).cloned();
         dp.token1_symbol = symbol_results.get(&dp.token1).cloned();
@@ -1410,7 +1417,7 @@ async fn discover_pools_shard(
                 .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
                 .with_pool_id(pool_id)
                 .with_underlying_tokens(underlying_tokens)
-                .with_dex_name(Some(dex_type.to_string()))
+                .with_dex_name(Some(resolve_dex_name(None, &dex_type.to_string())))
                 .with_token0_symbol(symbol_results.get(&token0).cloned())
                 .with_token1_symbol(symbol_results.get(&token1).cloned()),
         );
@@ -1437,7 +1444,7 @@ pub async fn discover_and_cache(
     from_block: u64,
     to_block: u64,
     config: &DiscoveryConfig<'_>,
-    on_batch: Option<&dyn Fn()>,
+    on_batch: Option<&dyn Fn() -> bool>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
     let (pools, active_blocks) =
         discover_pools(rpc, from_block, to_block, config, on_batch).await?;
