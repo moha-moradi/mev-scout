@@ -9,7 +9,9 @@ use crate::cache::{SqliteStore, TokenCache};
 use crate::config::validation;
 use crate::config::{ChainConfig, Config};
 use crate::pool::discovery::remote as remote_src;
-use crate::pool::discovery::{pick_factories, DiscoveredPool, DiscoveryConfig};
+use crate::pool::discovery::{
+    DiscoveredPool, DiscoveryConfig, DiscoveryRuntimeOpts, ResolvedFactories,
+};
 use crate::pool::state::PoolInfo;
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::resolver::RangeResolver;
@@ -58,20 +60,6 @@ pub struct DiscoverOutcome {
     pub pools: Vec<DiscoveredPool>,
 }
 
-
-fn parse_opt(s: &Option<String>) -> Option<Address> {
-    s.as_ref().and_then(|v| v.parse::<Address>().ok())
-}
-
-fn parse_list(configured: &Option<Vec<String>>, defaults: &[&'static str]) -> Vec<Address> {
-    pick_factories(
-        configured
-            .as_ref()
-            .map(|fs| fs.iter().filter_map(|s| s.parse().ok()).collect())
-            .unwrap_or_default(),
-        defaults,
-    )
-}
 
 async fn fetch_remote(chain_name: ChainName, max_pools: Option<usize>, min_tvl: Option<f64>) -> Vec<DiscoveredPool> {
     let slug = chain_name.to_string();
@@ -285,27 +273,13 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
         (Vec::new(), std::collections::HashSet::new())
     } else {
         let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
-        let disc_config = DiscoveryConfig {
+        let disc_config = factories.discovery_config(DiscoveryRuntimeOpts {
             batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, batch_size),
-            v2_fee_override: factories.v2_fee_override,
-            balancer_vault: factories.vault,
-            v2_factories: slices(&factories.v2_factories),
-            v3_factories: slices(&factories.v3_factories),
-            curve_registry: factories.registry,
-            curve_factories: slices(&factories.curve_factories),
-            solidly_factories: slices(&factories.solidly_factories),
-            camelot_factories: slices(&factories.camelot_factories),
             solidly_fee_bps: opts.solidly_fee_bps.map(|v| v as u32),
-            v4_pool_manager: factories.v4_pool_manager,
-            infinity_cl_pool_manager: factories.infinity_cl_pool_manager,
-            trader_joe_factories: slices(&factories.trader_joe_factories),
-            pendle_factory: factories.pendle_factory,
-            metric_factory: factories.metric_factory,
-            fluid_factory: factories.fluid_factory,
             rpc_concurrency,
             token_cache: Some(&token_cache),
             pool_cache: Some(&cache),
-        };
+        });
         scan_onchain(&rpc, &cache, from, to, &disc_config, progress).await?
     };
 
@@ -373,7 +347,7 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
             &rpc,
             pools,
             rpc_concurrency,
-            parse_opt(&chain_config.balancer_vault),
+            chain_config.balancer_vault,
         )
         .await;
         if removed > 0 {
@@ -405,70 +379,6 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
         remote_count,
         pools,
     })
-}
-
-fn slices(v: &[Address]) -> Option<&[Address]> {
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
-    }
-}
-
-struct ResolvedFactories {
-    vault: Option<Address>,
-    registry: Option<Address>,
-    curve_factories: Vec<Address>,
-    v2_factories: Vec<Address>,
-    v3_factories: Vec<Address>,
-    solidly_factories: Vec<Address>,
-    camelot_factories: Vec<Address>,
-    v4_pool_manager: Option<Address>,
-    infinity_cl_pool_manager: Option<Address>,
-    trader_joe_factories: Vec<Address>,
-    pendle_factory: Option<Address>,
-    metric_factory: Option<Address>,
-    fluid_factory: Option<Address>,
-    v2_fee_override: Option<u32>,
-}
-
-impl ResolvedFactories {
-    fn from_chain_config(chain_config: &ChainConfig, chain_name: ChainName) -> Self {
-        ResolvedFactories {
-            vault: parse_opt(&chain_config.balancer_vault),
-            registry: parse_opt(&chain_config.curve_registry),
-            curve_factories: parse_list(
-                &chain_config.curve_factories,
-                chain_name.default_curve_factories(),
-            ),
-            v2_factories: parse_list(
-                &chain_config.uniswap_v2_factories,
-                chain_name.default_uniswap_v2_factories(),
-            ),
-            v3_factories: parse_list(
-                &chain_config.uniswap_v3_factories,
-                chain_name.default_uniswap_v3_factories(),
-            ),
-            solidly_factories: parse_list(
-                &chain_config.solidly_factories,
-                &chain_name.default_solidly_factories(),
-            ),
-            camelot_factories: parse_list(
-                &chain_config.camelot_factories,
-                &chain_name.default_camelot_factories(),
-            ),
-            v4_pool_manager: parse_opt(&chain_config.v4_pool_manager),
-            infinity_cl_pool_manager: parse_opt(&chain_config.infinity_cl_pool_manager),
-            trader_joe_factories: parse_list(
-                &chain_config.trader_joe_factories,
-                &chain_name.default_trader_joe_factories(),
-            ),
-            pendle_factory: parse_opt(&chain_config.pendle_factory),
-            metric_factory: parse_opt(&chain_config.metric_factory),
-            fluid_factory: parse_opt(&chain_config.fluid_factory),
-            v2_fee_override: chain_config.uniswap_v2_default_fee,
-        }
-    }
 }
 
 async fn resolve_scan_window(

@@ -1,11 +1,35 @@
 # Clean Code Improvement Plan — mev-scout
 
-Status: Proposed
+Status: Largely complete (2026-09-17)
 Scope: `core/` and `cli/` (~25k LOC Rust, workspace with 2 crates)
 Method: Three parallel deep audits (error handling, duplication, architecture) + full `cargo clippy` run
-Date: 2026-09-11
+Date: 2026-09-11; last review 2026-09-17
 
 ---
+
+## Completion status (2026-09-17)
+
+| WS | Status | Notes |
+|---|---|---|
+| W1 | Done | Live keys out of tree; `mev-scout.toml` gitignored; example uses `${ENV_VAR}`. History purge still optional if repo is public. |
+| W2 | Done | Config load fails loudly; sig resolver distinguishes miss vs error; discovery degradation counted+warned; poisoned locks recover. |
+| W3 | Done | `arb_common` + `PoolState` quoting polymorphism; CLI scan printers parameterized. |
+| W4 | Done* | Concurrent scanners, `ScanContext`, explorer split, `ResolvedFactories`/`DiscoveryRuntimeOpts` in core, undo-log checkpoints. `discover_pools_shard` still larger than the aspirational 120-line target (orchestration blob). Remaining `too_many_arguments` allows are on DEX-specific opp builders / pool fetch. |
+| W5 | Done* | `FeeTier` accessor, `RangeSpec`, `PoolHit`, `ProviderScope`, `DetectionPath`, typed `ChainConfig` addresses, unified `infer_dex_type`. Fee still stored as `u32` in SQLite/`PoolInfo` for compatibility. |
+| W6 | Done* | CI + toolchain + workspace lints. `unwrap_used`/`expect_used` remain `allow` (ratchet; ~100 prod sites). |
+| W7 | Done | External plan-doc refs removed. |
+| W8 | Done | Shared test harness keeps intentional `dead_code` allow (subset-per-binary); fixtures use example config. |
+| W9 | Done | Latent branches, kind filter, live-feed stop flag, selectors, Balancer f64 limbs. |
+
+\*Asterisk = acceptance met for the critical items; a few aspirational follow-ups remain (see “Residual”).
+
+### Residual (non-blocking)
+
+- Shrink `discover_pools_shard` further / peel metadata merge into `metadata.rs`.
+- Param-object the remaining JIT / `fetch_pool_state` builders.
+- Ratchet `unwrap_used = "deny"` on prod crates.
+- Optional: store `FeeTier` at the type level in `PoolInfo` (requires DB migration story).
+- Optional: `git filter-repo` if publishing a repo that once contained live keys.
 
 ## Priorities at a glance
 

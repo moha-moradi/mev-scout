@@ -6,8 +6,8 @@ members = ["core", "cli", "api"]
 warnings = "deny"
 
 [workspace.lints.clippy]
-unwrap_used = "allow"  # ratchet later; currently ~61 sites across the tree
-expect_used = "allow"  # ratchet later; currently ~11 sites across the tree
+unwrap_used = "allow"  # ratchet: ~100 prod sites; CI still denies other warnings
+expect_used = "allow"  # ratchet: scoped #[allow] preferred when flipping to deny
 
 [workspace.dependencies]
 anyhow = "1"
@@ -30,6 +30,7 @@ alloy = { version = "2", features = [
     "reqwest-default-tls",
     "signers",
     "eips",
+    "serde",
 ] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 

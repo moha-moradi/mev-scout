@@ -36,15 +36,7 @@ pub fn native_asset_id(chain: crate::types::ChainName) -> &'static str {
 
 /// DefiLlama coins-API chain prefix.
 fn llama_chain_prefix(chain: crate::types::ChainName) -> &'static str {
-    match chain {
-        crate::types::ChainName::Polygon => "polygon",
-        crate::types::ChainName::Avalanche => "avax",
-        crate::types::ChainName::Bsc => "bsc",
-        crate::types::ChainName::Ethereum => "ethereum",
-        crate::types::ChainName::Arbitrum => "arbitrum",
-        crate::types::ChainName::Base => "base",
-        crate::types::ChainName::Optimism => "optimism",
-    }
+    crate::cache::llama_chain_prefix(chain)
 }
 
 /// Convert a raw token amount to USD given a price and decimals.

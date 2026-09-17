@@ -1,7 +1,7 @@
-//! Integration tests: `GET/PUT /api/config` — secret-safe edit round-trip,
-//! `${ENV_VAR}` placeholder preservation, `.bak.toml` backup, 400 on invalid,
-//! and the security requirement that `rpc_urls`/API keys never appear in any
-//! config response (GET and PUT flows).
+//! Integration tests: `GET/PUT /api/config` — disk-backed RPC edit, `${ENV_VAR}`
+//! placeholder preservation, `.bak.toml` backup, 400 on invalid, and the
+//! invariant that env-expanded secrets never appear in GET (raw disk strings
+//! and placeholders are returned instead). PUT responses never echo URLs.
 
 mod common;
 
@@ -10,7 +10,9 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use common::{test_state, test_router, test_state_with_files, write_env_template_config, write_temp_config};
+use common::{
+    test_router, test_state, test_state_with_files, write_env_template_config, write_temp_config,
+};
 
 async fn request(
     app: &axum::Router<()>,
@@ -47,14 +49,16 @@ async fn config_get_returns_sanitized_non_secret_fields() {
     assert!(json["backtest"].is_object());
     assert!(json["output"].is_object());
     assert!(json["explorer"].is_object());
-    // test_state uses the default Config, whose rpc_urls list is empty.
-    assert_eq!(json["rpc"]["providers"], 0);
-    assert!(json["rpc"]["hosts"].as_array().unwrap().is_empty());
+    assert!(json["rpc"]["urls"].is_array());
+    assert!(json["rpc"]["rps"].is_array());
+    assert!(json["rpc"]["hosts"].is_array());
+    assert!(json["rpc"]["providers"].is_number());
 }
 
 #[tokio::test]
-async fn security_rpc_urls_never_in_config_get() {
-    // The harness config has `rpc_urls` set with a URL containing "SECRETKEY".
+async fn config_get_returns_raw_disk_rpc_urls() {
+    // Disk has a literal SECRETKEY in the URL — GET exposes the raw disk
+    // string (local edit UX) but hosts stay hostname-only.
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
     let state = test_state_with_files(cfg_path).await;
@@ -62,28 +66,51 @@ async fn security_rpc_urls_never_in_config_get() {
 
     let (status, json) = request(&app, Method::GET, "/api/config", None).await;
     assert_eq!(status, StatusCode::OK);
-    let raw = serde_json::to_string(&json).unwrap();
-    assert!(
-        !raw.contains("rpc_url") && !raw.contains("rpc_rps") && !raw.contains("SECRETKEY"),
-        "GET /api/config leaked secrets: {raw}"
-    );
-    assert!(!raw.contains("user:secret"), "credentials leaked: {raw}");
-    // Masked summary: hostname only, never URL scheme/userinfo/path/key.
     assert_eq!(json["rpc"]["providers"], 1);
+    let urls = json["rpc"]["urls"].as_array().unwrap();
+    assert_eq!(urls.len(), 1);
     assert!(
-        !raw.contains("polygon-rpc.example.com/v1/SECRETKEY"),
-        "full URL leaked: {raw}"
+        urls[0].as_str().unwrap().contains("SECRETKEY"),
+        "expected raw disk URL: {urls:?}"
     );
+    let hosts = json["rpc"]["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0], "polygon-rpc.example.com");
+    // Path/key must not appear in hosts.
+    let hosts_raw = serde_json::to_string(hosts).unwrap();
+    assert!(!hosts_raw.contains("SECRETKEY"));
 }
 
 #[tokio::test]
-async fn security_rpc_urls_never_in_put_round_trip() {
+async fn config_get_never_returns_env_expanded_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_env_template_config(dir.path());
+    // Live key in the process env — must not appear in GET (raw placeholder only).
+    std::env::set_var("POLYGON_RPC_KEY", "LIVE_SECRET_VALUE_XYZ");
+    let state = test_state_with_files(cfg_path).await;
+    let app = test_router(state);
+
+    let (status, json) = request(&app, Method::GET, "/api/config", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let raw = serde_json::to_string(&json).unwrap();
+    assert!(
+        raw.contains("${POLYGON_RPC_KEY}"),
+        "GET should expose raw placeholder: {raw}"
+    );
+    assert!(
+        !raw.contains("LIVE_SECRET_VALUE_XYZ"),
+        "GET leaked env-expanded secret: {raw}"
+    );
+    std::env::remove_var("POLYGON_RPC_KEY");
+}
+
+#[tokio::test]
+async fn security_put_response_never_echoes_rpc_urls() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
     let state = test_state_with_files(cfg_path).await;
     let app = test_router(state);
 
-    // PUT a config edit — the response must not echo secrets either.
     let (status, resp) = request(
         &app,
         Method::PUT,
@@ -94,23 +121,56 @@ async fn security_rpc_urls_never_in_put_round_trip() {
         })),
     )
     .await;
-assert_eq!(status, StatusCode::OK, "PUT failed: {resp}");
+    assert_eq!(status, StatusCode::OK, "PUT failed: {resp}");
     assert_eq!(resp["ok"], true);
     let raw = serde_json::to_string(&resp).unwrap();
-    assert!(!raw.contains("SECRETKEY") && !raw.contains("rpc_urls"), "PUT response leaked: {raw}");
-
-    // And the rerun of GET after the edit must still be clean.
-    let (_, json) = request(&app, Method::GET, "/api/config", None).await;
-    let raw = serde_json::to_string(&json).unwrap();
     assert!(
-        !raw.contains("SECRETKEY") && !raw.contains("rpc_urls"),
-        "GET after PUT leaked secrets: {raw}"
+        !raw.contains("SECRETKEY") && !raw.contains("rpc_urls") && !raw.contains("rpc_url"),
+        "PUT response leaked: {raw}"
     );
 
-    // The on-disk file must still contain the secrets verbatim.
+    // On-disk secrets preserved when editing unrelated fields.
     let on_disk = std::fs::read_to_string(dir.path().join("mev-scout.toml")).unwrap();
     assert!(on_disk.contains("SECRETKEY"), "secrets lost from disk");
     assert!(on_disk.contains("rpc_urls"));
+}
+
+#[tokio::test]
+async fn config_put_rpc_urls_round_trip_and_hot_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = write_temp_config(dir.path(), "polygon");
+    let state = test_state_with_files(cfg_path.clone()).await;
+    let app = test_router(state.clone());
+
+    let new_url = "https://new-rpc.example.com/v2/${MY_RPC_KEY}";
+    let (status, resp) = request(
+        &app,
+        Method::PUT,
+        "/api/config",
+        Some(json!({
+            "rpc_urls": [new_url],
+            "rpc_rps": [12.5]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "PUT failed: {resp}");
+    let raw = serde_json::to_string(&resp).unwrap();
+    assert!(!raw.contains("rpc_urls") && !raw.contains(new_url));
+
+    let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(on_disk.contains("${MY_RPC_KEY}"), "placeholder lost: {on_disk}");
+    assert!(on_disk.contains("new-rpc.example.com"));
+
+    let (_, json) = request(&app, Method::GET, "/api/config", None).await;
+    assert_eq!(json["rpc"]["urls"][0], new_url);
+    assert_eq!(json["rpc"]["rps"][0], 12.5);
+    assert_eq!(json["rpc"]["hosts"][0], "new-rpc.example.com");
+
+    // In-memory config used by health reflects the new provider count.
+    let cfg = state.config.read().await;
+    assert_eq!(cfg.rpc.rpc_urls.len(), 1);
+    assert!(cfg.rpc.rpc_urls[0].contains("new-rpc.example.com"));
+    assert!(cfg.rpc.rpc_urls[0].contains("${MY_RPC_KEY}")); // unset env → verbatim
 }
 
 #[tokio::test]
@@ -140,7 +200,10 @@ async fn config_put_updates_non_secret_fields_and_creates_backup() {
     let bak = dir.path().join("mev-scout.toml.bak.toml");
     assert!(bak.exists(), ".bak.toml not created");
     let backup = std::fs::read_to_string(bak).unwrap();
-    assert!(backup.contains("min_profit_wei = 1000000000"), "backup holds pre-edit value");
+    assert!(
+        backup.contains("min_profit_wei = 1000000000"),
+        "backup holds pre-edit value"
+    );
 
     // State reloaded.
     let (_, json) = request(&app, Method::GET, "/api/config", None).await;
@@ -258,7 +321,7 @@ async fn config_edit_rejected_409_while_job_runs() {
 async fn config_chain_switch_swaps_connections() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = write_temp_config(dir.path(), "polygon");
-let state = test_state_with_files(cfg_path).await;
+    let state = test_state_with_files(cfg_path).await;
     let app = test_router(state.clone());
 
     let (status, _) = request(

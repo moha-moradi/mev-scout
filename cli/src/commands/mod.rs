@@ -68,8 +68,7 @@ impl CliCommand for ReportArgs {
 #[async_trait(?Send)]
 impl CliCommand for ReplayArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        let _ = progress;
-        cmd_replay(config, self).await
+        cmd_replay(config, self, progress).await
     }
 }
 

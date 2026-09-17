@@ -1,4 +1,6 @@
-#![allow(dead_code)] // shared harness: each integration-test crate uses a subset
+// Shared across multiple integration-test binaries; each binary only uses a
+// subset, so unused-item lint noise is expected here (not in production code).
+#![allow(dead_code)]
 use std::path::Path;
 
 use alloy::primitives::{address, Address, Bytes, B256, U256};

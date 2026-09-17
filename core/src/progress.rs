@@ -54,3 +54,14 @@ pub trait JobProgress: Send + Sync {
     /// True once a cooperative stop has been requested.
     fn cancelled(&self) -> bool;
 }
+
+/// Discarding sink for synchronous API handlers that only need the outcome.
+pub struct NoopProgress;
+
+impl JobProgress for NoopProgress {
+    fn emit(&self, _evt: ProgressEvent) {}
+    fn log(&self, _line: &str) {}
+    fn cancelled(&self) -> bool {
+        false
+    }
+}

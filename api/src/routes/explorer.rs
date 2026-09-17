@@ -24,6 +24,8 @@ pub fn router() -> Router<SharedState> {
         .route("/api/explorer/top", get(top))
         .route("/api/explorer/ops", get(ops))
         .route("/api/explorer/op/:tx_hash", get(op_detail))
+        .route("/api/explorer/doctor", get(doctor))
+        .route("/api/explorer/export", get(export_download))
 }
 
 #[derive(Deserialize)]
@@ -474,52 +476,162 @@ pub struct ExplainResponse {
     pub tx_hash: String,
     pub ops: Vec<MevOpRow>,
     pub rejected: Vec<RejectedRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct OpDetailQuery {
+    /// When true, run debug_traceTransaction (prestateTracer) and attach summary.
+    pub trace: Option<bool>,
 }
 
 async fn op_detail(
     State(state): State<SharedState>,
     Path(tx_hash): Path<String>,
+    Query(q): Query<OpDetailQuery>,
 ) -> ApiResult<Json<ExplainResponse>> {
-    // Resolve the active chain first so no non-`Send` statement handle is
-    // held across an await point.
     let chain = state.active_chain().await;
-    let conn = state.explorer_conn.lock().await;
-    let sql = "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
-                      confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                      gas_cost_usd, net_profit_usd, route_json, victim_hashes,
-                      details_json, detector, created_at
-               FROM mev_ops WHERE tx_hash = ?1 ORDER BY id";
-    let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(rusqlite::params![tx_hash], map_op)?;
-    let mut ops = Vec::new();
-    for r in rows {
-        ops.push(r?);
-    }
-    drop(stmt);
+    let want_trace = q.trace.unwrap_or(false);
 
-    let mut rejected = Vec::new();
-    if let Some(first) = ops.first() {
-        let from = first.block_number.saturating_sub(10);
-        let to = first.block_number.saturating_add(10);
-        let rsql = "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
-                           expected_profit, gas_cost_wei, reject_reason, detail
-                    FROM rejected_candidates
-                    WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
-                    ORDER BY block_number, tx_index";
-        let mut rstmt = conn.prepare(rsql)?;
-        let rows = rstmt.query_map(
-            rusqlite::params![chain.to_string(), from as i64, to as i64],
-            map_rejected,
-        )?;
+    // Keep the rusqlite MutexGuard inside this block so it cannot cross awaits.
+    let (ops, rejected) = {
+        let conn = state.explorer_conn.lock().await;
+        let sql = "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
+                          confidence, canonical_id, profit_token, profit_amount, profit_usd,
+                          gas_cost_usd, net_profit_usd, route_json, victim_hashes,
+                          details_json, detector, created_at
+                   FROM mev_ops WHERE tx_hash = ?1 ORDER BY id";
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map(rusqlite::params![tx_hash], map_op)?;
+        let mut ops = Vec::new();
         for r in rows {
-            rejected.push(r?);
+            ops.push(r?);
         }
+        drop(stmt);
+
+        let mut rejected = Vec::new();
+        if let Some(first) = ops.first() {
+            let from = first.block_number.saturating_sub(10);
+            let to = first.block_number.saturating_add(10);
+            let rsql = "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
+                               expected_profit, gas_cost_wei, reject_reason, detail
+                        FROM rejected_candidates
+                        WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
+                        ORDER BY block_number, tx_index";
+            let mut rstmt = conn.prepare(rsql)?;
+            let rows = rstmt.query_map(
+                rusqlite::params![chain.to_string(), from as i64, to as i64],
+                map_rejected,
+            )?;
+            for r in rows {
+                rejected.push(r?);
+            }
+        }
+        (ops, rejected)
+    };
+
+    let mut trace = None;
+    if want_trace {
+        let config = state.config.read().await.clone();
+        let tx_hash_clone = tx_hash.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(Err(anyhow::anyhow!("runtime: {e}")));
+                    return;
+                }
+            };
+            let result = rt.block_on(mev_scout_core::jobs::job_trace_op(
+                &config,
+                &tx_hash_clone,
+                &mev_scout_core::progress::NoopProgress,
+            ));
+            let _ = tx.send(result);
+        });
+        let outcome = rx
+            .await
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("trace worker dropped")))?
+            .map_err(ApiError::internal)?;
+        trace = Some(outcome.summary);
     }
+
     Ok(Json(ExplainResponse {
         tx_hash,
         ops,
         rejected,
+        trace,
     }))
+}
+
+async fn doctor(State(state): State<SharedState>) -> ApiResult<Json<mev_scout_core::jobs::DoctorOutcome>> {
+    let config = state.config.read().await.clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(anyhow::anyhow!("runtime: {e}")));
+                return;
+            }
+        };
+        let result = rt.block_on(mev_scout_core::jobs::job_doctor(
+            &config,
+            &mev_scout_core::progress::NoopProgress,
+        ));
+        let _ = tx.send(result);
+    });
+    let outcome = rx
+        .await
+        .map_err(|_| ApiError::internal(anyhow::anyhow!("doctor worker dropped")))?
+        .map_err(ApiError::internal)?;
+    Ok(Json(outcome))
+}
+
+#[derive(Deserialize)]
+pub struct ExportQuery {
+    pub format: Option<String>,
+    pub since: Option<String>,
+    pub kinds: Option<String>,
+}
+
+async fn export_download(
+    State(state): State<SharedState>,
+    Query(q): Query<ExportQuery>,
+) -> ApiResult<axum::response::Response> {
+    use axum::response::IntoResponse;
+    let config = state.config.read().await.clone();
+    let chain = config.chain;
+    let store = mev_scout_core::explorer::store::ExplorerStore::open(
+        config.effective_explorer_db_path(&chain),
+    )
+    .map_err(ApiError::internal)?;
+    let format = q.format.as_deref().unwrap_or("json");
+    let ops = mev_scout_core::jobs::collect_export_ops(
+        &store,
+        q.since.as_deref(),
+        q.kinds.as_deref(),
+    )
+    .map_err(ApiError::internal)?;
+    let (body, content_type) =
+        mev_scout_core::jobs::format_export_body(&ops, format).map_err(ApiError::internal)?;
+    let ext = if format == "csv" { "csv" } else { "json" };
+    let headers = [
+        (axum::http::header::CONTENT_TYPE, content_type),
+        (
+            axum::http::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"explorer_export.{ext}\""),
+        ),
+    ];
+    Ok((headers, body).into_response())
 }
 
 fn map_rejected(r: &rusqlite::Row<'_>) -> rusqlite::Result<RejectedRow> {

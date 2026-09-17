@@ -649,14 +649,15 @@ impl BacktestRunner {
         // Assign canonical dedup IDs (L9) to all opportunities
         for opp in &mut all_opportunities {
             opp.canonical_id = Some(crate::types::compute_canonical_id(
-                opp.strategy,
-                opp.block_number,
-                opp.pool_a,
-                opp.pool_b,
-                opp.token_in,
-                opp.token_out,
-                opp.victim_tx_index,
-                opp.backrun_tx_index,
+                crate::types::CanonicalIdParts {
+                    strategy: opp.strategy,
+                    pool_a: opp.pool_a,
+                    pool_b: opp.pool_b,
+                    token_in: opp.token_in,
+                    token_out: opp.token_out,
+                    victim_tx: opp.victim_tx_index,
+                    backrun_tx: opp.backrun_tx_index,
+                },
             ));
             opp.detection_path = Some(crate::mev::detectors::REPLAY_PATH.to_string());
             if opp.sender.is_none() {
@@ -842,16 +843,17 @@ impl BacktestRunner {
 
         for opp in &mut all_opportunities {
             opp.canonical_id = Some(crate::types::compute_canonical_id(
-                opp.strategy,
-                opp.block_number,
-                opp.pool_a,
-                opp.pool_b,
-                opp.token_in,
-                opp.token_out,
-                opp.victim_tx_index,
-                opp.backrun_tx_index,
+                crate::types::CanonicalIdParts {
+                    strategy: opp.strategy,
+                    pool_a: opp.pool_a,
+                    pool_b: opp.pool_b,
+                    token_in: opp.token_in,
+                    token_out: opp.token_out,
+                    victim_tx: opp.victim_tx_index,
+                    backrun_tx: opp.backrun_tx_index,
+                },
             ));
-            opp.detection_path = Some("log_only".to_string());
+            opp.detection_path = Some(crate::mev::detectors::DetectionPath::LogOnly.to_owned_string());
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }

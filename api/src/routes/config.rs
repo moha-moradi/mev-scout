@@ -1,12 +1,15 @@
-//! `GET/PUT /api/config` — sanitized config read + secret-safe edit.
+//! `GET/PUT /api/config` — config read + secret-aware edit.
 //!
-//! `GET` returns non-secret fields plus a masked RPC summary (hostnames only).
-//! `PUT` merges non-secret fields into the **raw TOML value** on disk (never
-//! the env-expanded in-memory `Config`, which would bake live API keys into
-//! the file), validates via core `validation::validate_and_resolve`,
-//! backs up to `{config}.bak.toml`, then writes. A changed `chain` (or
-//! `output.db_path` / `explorer.db_path`) re-resolves both DB connections.
-//! Edits are rejected (409) while a job is running.
+//! `GET` returns non-secret fields plus an RPC summary: masked hostnames and
+//! the **raw on-disk** `rpc_urls` / `rpc_rps` (unexpanded `${ENV}` placeholders).
+//! It never returns env-expanded in-memory URLs.
+//!
+//! `PUT` merges fields into the **raw TOML value** on disk (never the
+//! env-expanded in-memory `Config`, which would bake live API keys into the
+//! file), validates via core `validation::validate_and_resolve`, backs up to
+//! `{config}.bak.toml`, then writes and hot-reloads `AppState`. A changed
+//! `chain` (or `output.db_path` / `explorer.db_path`) re-resolves both DB
+//! connections. Edits are rejected (409) while a job is running.
 
 use std::path::{Path, PathBuf};
 
@@ -23,15 +26,19 @@ use mev_scout_core::config::{BacktestConfig, Config, GasConfig, OutputConfig};
 use crate::error::{ApiError, ApiResult};
 use crate::state::SharedState;
 
-/// Masked RPC summary — provider count + hostnames only, never URLs/keys.
+/// RPC summary for the Config UI: masked hosts plus raw disk URLs/RPS.
 #[derive(Serialize)]
 pub struct RpcSummary {
     pub providers: usize,
     pub hosts: Vec<String>,
+    /// Unexpanded `rpc_urls` from the TOML file (may contain `${ENV}`).
+    pub urls: Vec<String>,
+    /// On-disk `rpc_rps` (aligned with `urls` when set).
+    pub rps: Vec<f64>,
 }
 
-/// Config DTO safe for API serialization — strips `rpc_urls`, `rpc_rps`,
-/// `rpc_url`, `rps_limit`, `block_concurrency` and CLI-only fields.
+/// Config DTO for API serialization — strips CLI-only fields; RPC URLs are
+/// the raw disk strings, not env-expanded memory.
 #[derive(Serialize)]
 pub struct SanitizedConfig {
     pub chain: String,
@@ -47,39 +54,84 @@ pub fn router() -> Router<SharedState> {
         .route("/api/config", get(get_config).put(put_config))
 }
 
-fn rpc_summary(cfg: &Config) -> RpcSummary {
-    let mut urls: Vec<&str> = cfg.rpc.rpc_urls.iter().map(String::as_str).collect();
-    if let Some(u) = &cfg.rpc.rpc_url {
-        urls.push(u);
+/// Parse raw `rpc_urls` / `rpc_rps` from the config file without env expansion.
+fn read_raw_rpc(path: &Path) -> (Vec<String>, Vec<f64>) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return (Vec::new(), Vec::new());
+    };
+    let Ok(value) = raw.parse::<toml::Value>() else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(table) = value.as_table() else {
+        return (Vec::new(), Vec::new());
+    };
+
+    let mut urls = Vec::new();
+    if let Some(arr) = table.get("rpc_urls").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                urls.push(s.to_string());
+            }
+        }
     }
-    let hosts = urls
-        .iter()
+    // Legacy single URL — include for display if present and not already listed.
+    if let Some(s) = table.get("rpc_url").and_then(|v| v.as_str()) {
+        if !urls.iter().any(|u| u == s) {
+            urls.push(s.to_string());
+        }
+    }
+
+    let mut rps = Vec::new();
+    if let Some(arr) = table.get("rpc_rps").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(n) = item.as_float() {
+                rps.push(n);
+            } else if let Some(n) = item.as_integer() {
+                rps.push(n as f64);
+            }
+        }
+    }
+
+    (urls, rps)
+}
+
+fn hosts_from_urls(urls: &[String]) -> Vec<String> {
+    urls.iter()
         .filter_map(|u| url::Url::parse(u).ok())
         .filter_map(|u| match u.host_str() {
             Some(h) if !h.is_empty() => Some(h.to_string()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+fn rpc_summary_from_disk(path: &Path) -> RpcSummary {
+    let (urls, rps) = read_raw_rpc(path);
+    let hosts = hosts_from_urls(&urls);
     RpcSummary {
         providers: urls.len(),
         hosts,
+        urls,
+        rps,
     }
 }
 
 async fn get_config(State(state): State<SharedState>) -> ApiResult<Json<SanitizedConfig>> {
     let cfg = state.config.read().await;
+    let rpc = rpc_summary_from_disk(&state.config_path);
     Ok(Json(SanitizedConfig {
         chain: cfg.chain.to_string(),
         gas: cfg.gas.clone(),
         backtest: cfg.backtest.clone(),
         output: cfg.output.clone(),
         explorer: cfg.explorer.clone(),
-        rpc: rpc_summary(&cfg),
+        rpc,
     }))
 }
 
-/// `PUT /api/config` body: a partial set of non-secret fields. Absent fields
-/// keep their current on-disk values. Unknown fields are rejected.
+/// `PUT /api/config` body: a partial set of fields. Absent fields keep their
+/// current on-disk values. Unknown fields are rejected by serde deny if
+/// configured; otherwise ignored.
 #[derive(Deserialize)]
 pub struct ConfigEdit {
     pub chain: Option<String>,
@@ -87,6 +139,8 @@ pub struct ConfigEdit {
     pub backtest: Option<BacktestConfig>,
     pub output: Option<OutputConfig>,
     pub explorer: Option<ExplorerConfig>,
+    pub rpc_urls: Option<Vec<String>>,
+    pub rpc_rps: Option<Vec<f64>>,
 }
 
 #[derive(Serialize)]
@@ -125,8 +179,8 @@ async fn put_config(
     };
 
     // Merge each present section into the raw TOML. `gas`/`backtest`/
-    // `output` are `#[serde(flatten)]`ed in `Config`, so their fields live
-    // at the top level of the document (see `mev-scout.example.toml`) and
+    // `output`/`rpc_*` are `#[serde(flatten)]`ed in `Config`, so their fields
+    // live at the top level of the document (see `mev-scout.example.toml`) and
     // must be spliced flat. `explorer` is a named section → nested table.
     if let Some(chain) = &edit.chain {
         let parsed: mev_scout_core::types::ChainName = chain
@@ -152,6 +206,26 @@ async fn put_config(
     if let Some(explorer) = &edit.explorer {
         merge_section(&mut toml_value, "explorer", explorer)?;
     }
+    if let Some(urls) = &edit.rpc_urls {
+        let root = toml_value
+            .as_table_mut()
+            .ok_or_else(|| ApiError::bad_request("config root is not a table".to_string()))?;
+        let arr = toml::Value::Array(
+            urls.iter()
+                .map(|u| toml::Value::String(u.clone()))
+                .collect(),
+        );
+        root.insert("rpc_urls".to_string(), arr);
+        // Prefer the list form; drop legacy single URL so it cannot shadow.
+        root.remove("rpc_url");
+    }
+    if let Some(rps) = &edit.rpc_rps {
+        let root = toml_value
+            .as_table_mut()
+            .ok_or_else(|| ApiError::bad_request("config root is not a table".to_string()))?;
+        let arr = toml::Value::Array(rps.iter().map(|n| toml::Value::Float(*n)).collect());
+        root.insert("rpc_rps".to_string(), arr);
+    }
 
     // Validate the merged result with core validation before writing. The
     // editor gets the *full* bound checks (`validate_and_resolve_for`:
@@ -169,10 +243,7 @@ async fn put_config(
     // validation sees the resolved chain section instead of failing with
     // "no [chains.<chain>] section found".
     for (name, default_cfg) in mev_scout_core::config::default_chains() {
-        merged_cfg
-            .chains
-            .entry(name)
-            .or_insert(default_cfg);
+        merged_cfg.chains.entry(name).or_insert(default_cfg);
     }
     merged_cfg.expand_env_secrets();
     merged_cfg.blocks = Some(1);
@@ -235,9 +306,9 @@ fn merge_flattened<T: Serialize>(
     if json.is_null() {
         return Ok(());
     }
-    let obj = json.as_object().ok_or_else(|| {
-        ApiError::bad_request("section must serialize to a table".to_string())
-    })?;
+    let obj = json
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("section must serialize to a table".to_string()))?;
     let Some(root) = toml_value.as_table_mut() else {
         return Err(ApiError::bad_request("config root is not a table".to_string()));
     };

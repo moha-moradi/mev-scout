@@ -19,10 +19,8 @@ pub fn router() -> Router<SharedState> {
         .route("/api/jobs/:id/stop", post(job_stop))
 }
 
-/// Commands the API may spawn (user decision: critical + auxiliary +
-/// `explorer index`). Read-side `explorer` subcommands are served by API
-/// read endpoints instead; `fetch`/`replay`/`config`/`validate-pools` stay
-/// CLI-only.
+/// Commands the API may spawn. Full CLI surface is reachable via jobs;
+/// read-side explorer queries also have dedicated HTTP endpoints.
 pub const ALLOWED_COMMANDS: &[&str] = &[
     "run",
     "live",
@@ -30,7 +28,14 @@ pub const ALLOWED_COMMANDS: &[&str] = &[
     "tokens",
     "scan",
     "report",
+    "fetch",
+    "replay",
+    "validate-pools",
     "explorer index",
+    "explorer doctor",
+    "explorer export",
+    "explorer validate",
+    "explorer show",
 ];
 
 #[derive(Deserialize)]

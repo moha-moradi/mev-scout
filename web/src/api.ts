@@ -116,8 +116,38 @@ export const api = {
     q.set("limit", String(params.limit ?? 50));
     return request<Paginated<MevOpRow>>(`/explorer/ops?${q.toString()}`);
   },
-  explorerOp: (txHash: string) =>
-    request<ExplainResponse>(`/explorer/op/${encodeURIComponent(txHash)}`),
+  explorerOp: (txHash: string, trace?: boolean) =>
+    request<ExplainResponse>(
+      `/explorer/op/${encodeURIComponent(txHash)}${trace ? "?trace=true" : ""}`,
+    ),
+  explorerDoctor: () => request<DoctorOutcome>("/explorer/doctor"),
+  explorerExportDownload: async (params: { format?: string; since?: string; kinds?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.format) q.set("format", params.format);
+    if (params.since) q.set("since", params.since);
+    if (params.kinds) q.set("kinds", params.kinds);
+    const res = await fetch(`${BASE}/explorer/export?${q.toString()}`);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const body = (await res.json()) as { error?: string };
+        detail = body.error ?? detail;
+      } catch {
+        /* ignore */
+      }
+      throw new ApiError(res.status, detail);
+    }
+    const blob = await res.blob();
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    const match = /filename="?([^"]+)"?/.exec(cd);
+    const filename = match?.[1] ?? `explorer_export.${params.format === "csv" ? "csv" : "json"}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 // ─── API types (mirror rust DTOs) ───────────────────────────────────────
@@ -155,6 +185,10 @@ export interface SyncResponse {
 export interface RpcSummary {
   providers: number;
   hosts: string[];
+  /** Raw on-disk rpc_urls (may contain `${ENV}` placeholders). */
+  urls: string[];
+  /** On-disk rpc_rps aligned with urls when set. */
+  rps: number[];
 }
 
 export interface GasConfig {
@@ -201,6 +235,8 @@ export interface ConfigEdit {
   backtest?: Partial<BacktestConfig>;
   output?: Partial<OutputConfig>;
   explorer?: Partial<ExplorerConfig>;
+  rpc_urls?: string[];
+  rpc_rps?: number[];
 }
 
 export interface ConfigEditResponse {
@@ -455,6 +491,23 @@ export interface ExplainResponse {
   tx_hash: string;
   ops: MevOpRow[];
   rejected: RejectedRow[];
+  trace?: string | null;
+}
+
+export interface ProviderProbe {
+  url_shown: string;
+  latest: string;
+  archive: string;
+  bulk_receipts: string;
+  traces: string;
+  rps: number | null;
+}
+
+export interface DoctorOutcome {
+  chain: string;
+  chain_id: number;
+  providers: ProviderProbe[];
+  gate_ok: boolean;
 }
 
 export interface OppQuery {

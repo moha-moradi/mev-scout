@@ -99,15 +99,11 @@ impl<'a> LiveContext<'a> {
         pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
         pool_manager.set_concurrency_limit(provider_configs.len() as u32);
         pool_manager.use_latest();
-        if let Some(vault_str) = &validation.chain_config.balancer_vault {
-            if let Ok(vault_addr) = vault_str.parse::<Address>() {
-                pool_manager = pool_manager.with_balancer_vault(vault_addr);
-            }
+        if let Some(vault_addr) = validation.chain_config.balancer_vault {
+            pool_manager = pool_manager.with_balancer_vault(vault_addr);
         }
-        if let Some(native_str) = &validation.chain_config.wrapped_native_token {
-            if let Ok(native_addr) = native_str.parse::<Address>() {
-                pool_manager = pool_manager.with_wrapped_native(native_addr);
-            }
+        if let Some(native_addr) = validation.chain_config.wrapped_native_token {
+            pool_manager = pool_manager.with_wrapped_native(native_addr);
         }
         if !validation.strategies.is_empty() {
             progress.emit(ProgressEvent::stage("pool_init"));
@@ -131,12 +127,10 @@ impl<'a> LiveContext<'a> {
             .with_min_profit_wei(config.backtest.min_profit_wei)
             .with_record_rejections(record_rejections);
 
-        if let Some(aave_pool_str) = &validation.chain_config.aave_v3_pool {
-            if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
-                runner
-                    .prefetch_aave_reserves(aave_pool, tip.saturating_sub(1))
-                    .await;
-            }
+        if let Some(aave_pool) = validation.chain_config.aave_v3_pool {
+            runner
+                .prefetch_aave_reserves(aave_pool, tip.saturating_sub(1))
+                .await;
         }
 
         Ok(LiveContext {

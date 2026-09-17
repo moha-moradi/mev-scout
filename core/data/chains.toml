@@ -121,7 +121,6 @@ uniswap_v3_factories = [
 uniswap_v2_factories = [
   "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
   "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",
-  "0xB3e281E8c6c888A5BcBf1108E4aC13dA3F5B1c9",
 ]
 pool_discovery_start_block = 10008335
 wrapped_native_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"

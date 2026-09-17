@@ -8,7 +8,8 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:7600",
+        // scripts/dev.ps1 sets VITE_API_PORT when -port differs from 7600
+        target: `http://127.0.0.1:${process.env.VITE_API_PORT || "7600"}`,
         changeOrigin: true,
       },
     },

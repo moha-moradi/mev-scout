@@ -8,9 +8,13 @@
 //! All remote fetching is best-effort: a failing source logs a warning and
 //! is skipped. Discovery never hard-fails because the remote source is down.
 //!
-//! Note: DefiLlama's yields API was evaluated and removed — it identifies
-//! pools by UUID without on-chain contract addresses, so its entries cannot
-//! become usable `DiscoveredPool`s.
+//! Note: DefiLlama's yields API (`yields.llama.fi/pools`) was evaluated and
+//! intentionally **not** wired as a pool source. Live probes (2026-09) showed
+//! every row keyed by UUID with `poolTokenAddress` absent (~0% coverage) and
+//! no `0x` address inside the pool id — so entries cannot become usable
+//! `DiscoveredPool`s. DEX rows may list `underlyingTokens` + fee hints in
+//! `poolMeta`, but that is not a pool contract address. Use GeckoTerminal /
+//! DexScreener for remote pool discovery instead.
 
 pub mod dexscreener;
 pub mod geckoterminal;
@@ -538,5 +542,42 @@ mod tests {
             Some(&"uniswap-v4-ethereum")
         );
         assert!(curated_dex_slugs("zksync").is_empty());
+    }
+
+    /// Guard: DefiLlama yields-shaped rows without a resolvable pool contract
+    /// address must not be treated as discoverable pools.
+    #[test]
+    fn defillama_yields_rows_without_pool_address_are_undiscoverable() {
+        let fixture = serde_json::json!({
+            "data": [{
+                "pool": "fc9f488e-8183-416f-a61e-4e5c571d4395",
+                "chain": "Ethereum",
+                "project": "uniswap-v3",
+                "symbol": "WETH-USDT",
+                "tvlUsd": 111035005.0,
+                "poolMeta": "0.3%",
+                "underlyingTokens": [
+                    "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+                    "0xdac17f958d2ee523a2206206994597c13d831ec7"
+                ]
+            }]
+        });
+        let rows = fixture["data"].as_array().expect("data array");
+        let mut discoverable = 0usize;
+        for row in rows {
+            let pool_id = row.get("pool").and_then(|v| v.as_str()).unwrap_or("");
+            let pta = row
+                .get("poolTokenAddress")
+                .and_then(|v| v.as_str())
+                .and_then(parse_addr);
+            let id_addr = parse_addr(pool_id);
+            if pta.is_some() || id_addr.is_some() {
+                discoverable += 1;
+            }
+        }
+        assert_eq!(
+            discoverable, 0,
+            "yields UUID rows must not resolve to a pool contract address"
+        );
     }
 }

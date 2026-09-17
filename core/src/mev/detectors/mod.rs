@@ -7,12 +7,38 @@ pub mod multi_hop;
 pub mod sandwich;
 pub mod two_hop;
 
-/// Detection-path tag for opportunities found by replay/backtest — the
-/// string typeclassifying a detection source is a bare literal everywhere
-/// else, so both tags are centralized here.
-pub const REPLAY_PATH: &str = "replay";
+/// How an opportunity was detected — keeps the DB/`Option<String>` boundary
+/// as a stable string while call sites use a typed tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectionPath {
+    /// Full EVM replay / backtest (`run`).
+    Replay,
+    /// Pending-mempool capture.
+    Pending,
+    /// Log-only synthesis (`live` without full replay).
+    LogOnly,
+}
+
+impl DetectionPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Replay => "replay",
+            Self::Pending => "pending",
+            Self::LogOnly => "log_only",
+        }
+    }
+
+    pub fn to_owned_string(self) -> String {
+        self.as_str().to_string()
+    }
+}
+
+/// Detection-path tag for opportunities found by replay/backtest.
+pub const REPLAY_PATH: &str = DetectionPath::Replay.as_str();
 /// Detection-path tag for opportunities found on the (pending) mempool.
-pub const PENDING_PATH: &str = "pending";
+pub const PENDING_PATH: &str = DetectionPath::Pending.as_str();
+/// Detection-path tag for log-only synthesis in live mode.
+pub const LOG_ONLY_PATH: &str = DetectionPath::LogOnly.as_str();
 
 pub use jit::JitDetector;
 pub use jit_arb::JitArbDetector;

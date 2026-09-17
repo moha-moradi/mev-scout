@@ -69,6 +69,8 @@ export default function ConfigPage() {
   const [form, setForm] = useState<
     | {
         chain: string;
+        rpc_urls_text: string;
+        rpc_rps_text: string;
         flash_loan_provider: string;
         strategies: string;
         max_pairs_per_token: string;
@@ -91,6 +93,8 @@ export default function ConfigPage() {
     if (cfg && !form) {
       setForm({
         chain: cfg.chain,
+        rpc_urls_text: (cfg.rpc.urls ?? []).join("\n"),
+        rpc_rps_text: (cfg.rpc.rps ?? []).join(", "),
         flash_loan_provider: cfg.backtest.flash_loan_provider,
         strategies: cfg.backtest.strategies,
         max_pairs_per_token: String(cfg.backtest.max_pairs_per_token),
@@ -139,9 +143,29 @@ export default function ConfigPage() {
     set("strategies", [...next, ...extras].join(",") || "");
   }
 
+  function parseRpcUrls(): string[] {
+    return form.rpc_urls_text
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  function parseRpcRps(): number[] {
+    const text = form.rpc_rps_text.trim();
+    if (!text) return [];
+    return text
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n));
+  }
+
   const railJson = JSON.stringify(
     {
       chain: form.chain,
+      rpc_urls: parseRpcUrls(),
+      rpc_rps: parseRpcRps(),
       gas: {
         gas_model: form.gas_model,
         gas_limit: Number(form.gas_limit),
@@ -171,6 +195,12 @@ export default function ConfigPage() {
     if (!form) return;
     setSaving(true);
     try {
+      const rpc_urls = parseRpcUrls();
+      const rpc_rps = parseRpcRps();
+      if (rpc_rps.length > 0 && rpc_rps.length !== rpc_urls.length) {
+        toast("rpc_rps length must match rpc_urls (or leave RPS empty)", "error");
+        return;
+      }
       const gas: { gas_limit: number; priority_fee_gwei: number; gas_model?: string } = {
         gas_limit: Number(form.gas_limit),
         priority_fee_gwei: Number(form.priority_fee_gwei),
@@ -178,6 +208,8 @@ export default function ConfigPage() {
       if (form.gas_model !== activeCfg.gas.gas_model) gas.gas_model = form.gas_model;
       const res = await api.putConfig({
         chain: form.chain !== activeCfg.chain ? form.chain : undefined,
+        rpc_urls,
+        rpc_rps,
         gas,
         backtest: {
           flash_loan_provider: form.flash_loan_provider,
@@ -233,9 +265,41 @@ export default function ConfigPage() {
                 ))}
               </select>
             </Field>
-            <Field label="RPC providers (read-only, masked)">
-              <input value={`${cfg.rpc.providers} · ${cfg.rpc.hosts.join(", ")}`} readOnly className={`${inputCls} opacity-60`} />
+            <Field label="Hosts (derived)">
+              <input
+                value={
+                  cfg.rpc.hosts.length
+                    ? `${cfg.rpc.providers} · ${cfg.rpc.hosts.join(", ")}`
+                    : `${parseRpcUrls().length || 0} provider(s)`
+                }
+                readOnly
+                className={`${inputCls} opacity-60`}
+              />
             </Field>
+          </div>
+          <div className="mt-3 space-y-3">
+            <Field label="RPC URLs (one per line)">
+              <textarea
+                value={form.rpc_urls_text}
+                onChange={(e) => set("rpc_urls_text", e.target.value)}
+                rows={4}
+                placeholder={"https://….alchemy.com/v2/${ALCHEMY_API_KEY}\nhttps://public-rpc.example"}
+                className={`${inputCls} font-mono text-xs leading-relaxed`}
+              />
+            </Field>
+            <Field label="RPC RPS (optional, comma-separated, same order)">
+              <input
+                value={form.rpc_rps_text}
+                onChange={(e) => set("rpc_rps_text", e.target.value)}
+                placeholder="10, 10, 15"
+                className={inputCls}
+              />
+            </Field>
+            <p className="text-xs text-zinc-500">
+              Prefer <code className="text-zinc-400">{"${ENV_VAR}"}</code> placeholders — they stay
+              unexpanded on disk. Pasting a live key into a URL stores it in{" "}
+              <code className="text-zinc-400">mev-scout.toml</code> (visible in this local UI).
+            </p>
           </div>
         </SectionCard>
 

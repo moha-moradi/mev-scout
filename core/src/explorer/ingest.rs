@@ -35,8 +35,6 @@ impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
         let wrapped_native = chain_config
             .wrapped_native_token
-            .as_deref()
-            .and_then(|s| s.parse::<Address>().ok())
             .unwrap_or(Address::ZERO);
         let priority = build_profit_priority(chain, wrapped_native);
         IngestConfig {
@@ -323,7 +321,7 @@ pub async fn warm_prices_for_tokens(
         known
             .entries()
             .get(a)
-            .and_then(|(_, d)| d.map(|d| u32::try_from(d).unwrap_or(18)))
+            .and_then(|m| m.decimals.map(|d| u32::try_from(d).unwrap_or(18)))
     };
 
     let hour = pricing::hour_bucket(ts);

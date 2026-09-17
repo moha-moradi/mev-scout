@@ -72,56 +72,18 @@ pub async fn cmd_show(config: &Config, tx_hash: &str, trace: bool) -> anyhow::Re
     }
 
     if trace {
-        let setup = init_rpc(config, chain, true).await?;
-        let h: B256 = tx_hash.parse().context("invalid tx hash")?;
-        println!("\nTracing via debug_traceTransaction (prestateTracer diffMode)...");
-        match setup.rpc.debug_trace_transaction_prestatediff(h).await {
-            Ok(raw) => {
-                let note = summarize_prestatediff(&raw);
-                println!("  {note}");
-                store.mark_trace_verified(tx_hash, None, &note)?;
-                println!("  stored trace_verified on the op");
-            }
-            Err(e) => anyhow::bail!("trace failed (provider may lack debug_*): {e:#}"),
-        }
+        use crate::job_progress::NoopProgress;
+        use mev_scout_core::jobs::job_trace_op;
+        let _ = job_trace_op(config, tx_hash, &NoopProgress).await?;
     }
     Ok(())
 }
 
 /// Summarize a prestateDiff response: native balance deltas of accounts that
 /// appear in the post-state with a balance (exact verification primitive).
+#[allow(dead_code)]
 fn summarize_prestatediff(raw: &serde_json::Value) -> String {
-    let mut lines: Vec<String> = Vec::new();
-    let pre = raw.get("pre").and_then(|v| v.as_object());
-    let post = raw.get("post").and_then(|v| v.as_object());
-    if let (Some(pre), Some(post)) = (pre, post) {
-        for (addr, entry) in post {
-            let post_bal = entry
-                .get("balance")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<U256>().ok());
-            let pre_bal = pre
-                .get(addr)
-                .and_then(|e| e.get("balance"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<U256>().ok());
-            if let (Some(pb), Some(prb)) = (post_bal, pre_bal) {
-                let signed = pb.as_limbs()[0] as i128 + ((pb.as_limbs()[1] as i128) << 64)
-                    - prb.as_limbs()[0] as i128
-                    - ((prb.as_limbs()[1] as i128) << 64);
-                lines.push(format!(
-                    "  {} native delta {:.6}",
-                    short_addr(addr),
-                    signed as f64 / 1e18
-                ));
-            }
-        }
-    }
-    if lines.is_empty() {
-        "prestateDiff received (no top-level balance deltas parsed — see raw trace)".to_string()
-    } else {
-        format!("balance deltas:\n{}", lines.join("\n"))
-    }
+    mev_scout_core::jobs::summarize_prestatediff(raw)
 }
 
 pub async fn cmd_explain(config: &Config, tx_hash: &str) -> anyhow::Result<()> {
@@ -147,7 +109,17 @@ pub async fn cmd_explain(config: &Config, tx_hash: &str) -> anyhow::Result<()> {
     );
 
     // M-taxonomy via the validate engine on a 1-block window.
-    let report = validate::compute_validation(&store, chain, block, block, 0, None, false)?;
+    let report = validate::compute_validation(
+        &store,
+        validate::ValidationQuery {
+            chain,
+            from_block: block,
+            to_block: block,
+            match_window: 0,
+            run_filter: None,
+            threshold_sweep: false,
+        },
+    )?;
     let miss = report.miss_distribution();
     println!("  inferred cause (per attribution taxonomy):");
     println!(

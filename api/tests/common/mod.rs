@@ -282,7 +282,7 @@ strategies = "two_hop_arb,jit"
 min_profit_wei = 1000000000
 output = "table"
 
-# Secret RPC config — MUST NOT be exposed via the API.
+# Disk-backed RPC config — GET returns raw URLs for local UI editing.
 rpc_urls = ["https://user:secret@polygon-rpc.example.com/v1/SECRETKEY"]
 rpc_rps = [10.0]
 

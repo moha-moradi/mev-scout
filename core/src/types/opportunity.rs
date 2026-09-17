@@ -99,30 +99,31 @@ pub struct MevOpportunity {
     pub detection_path: Option<String>,
 }
 
+/// Key fields used to build a canonical opportunity dedup id.
+#[derive(Debug, Clone, Copy)]
+pub struct CanonicalIdParts {
+    pub strategy: Strategy,
+    pub pool_a: Address,
+    pub pool_b: Address,
+    pub token_in: Address,
+    pub token_out: Address,
+    pub victim_tx: Option<usize>,
+    pub backrun_tx: Option<usize>,
+}
+
 /// Build a canonical dedup string from the opportunity's key fields (L9).
-/// Exposed as a free function so the runner can assign IDs after collection.
-#[allow(clippy::too_many_arguments)] // key-field struct
-pub fn compute_canonical_id(
-    strategy: Strategy,
-    _block: u64,
-    pool_a: Address,
-    pool_b: Address,
-    token_in: Address,
-    token_out: Address,
-    victim_tx: Option<usize>,
-    backrun_tx: Option<usize>,
-) -> String {
-    match strategy {
+pub fn compute_canonical_id(parts: CanonicalIdParts) -> String {
+    match parts.strategy {
         Strategy::Sandwich => {
             format!(
                 "Sandwich|{:#x}|victim:{:?}|backrun:{:?}",
-                pool_a, victim_tx, backrun_tx
+                parts.pool_a, parts.victim_tx, parts.backrun_tx
             )
         }
         _ => {
             format!(
                 "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",
-                strategy, pool_a, pool_b, token_in, token_out,
+                parts.strategy, parts.pool_a, parts.pool_b, parts.token_in, parts.token_out,
             )
         }
     }

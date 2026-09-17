@@ -66,7 +66,8 @@ async fn chains(State(state): State<SharedState>) -> ApiResult<Json<Vec<ChainDto
             };
             let wrapped = cfg_chains
                 .get(&c.to_string())
-                .and_then(|cc| cc.wrapped_native_token.clone());
+                .and_then(|cc| cc.wrapped_native_token)
+                .map(|a| format!("{a:#x}"));
             ChainDto {
                 name: c.to_string(),
                 chain_id: c.chain_id(),

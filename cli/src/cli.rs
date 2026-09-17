@@ -50,9 +50,9 @@ pub enum Command {
     ValidatePools(ValidatePoolsArgs),
 
     /// Discover and cache token metadata.
-    /// Uses the bundled known-token list plus lazily resolved on-chain
-    /// metadata, and populates the token cache used by pool discovery
-    /// to avoid RPC symbol() calls.
+    /// Uses the bundled known-token list, SQLite cache, optional DefiLlama
+    /// coins (symbol/decimals) and CoinGecko contract (name/icon URL) via
+    /// `--enrich`. Populates the token cache used by pool discovery.
     Tokens(TokensArgs),
 
     /// Scan on-chain events (trades, transfers, flashloans, liquidations, labels).
@@ -452,9 +452,14 @@ pub struct TokensArgs {
     #[arg(long, default_value = "100", value_name = "N")]
     pub limit: usize,
 
-    /// Only populate SQLite cache, don't display results
+    /// Only populate / report cache size; skip detailed listing
     #[arg(long)]
     pub cache_only: bool,
+
+    /// Enrich missing fields via DefiLlama coins (symbol/decimals) and
+    /// CoinGecko contract API (name + icon URL). Offline by default.
+    #[arg(long)]
+    pub enrich: bool,
 }
 
 /// Event scan kind — determines which event topics to scan for.

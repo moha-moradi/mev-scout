@@ -6,6 +6,7 @@ import Live from "./pages/Live";
 import Explorer from "./pages/Explorer";
 import Pools from "./pages/Pools";
 import Jobs from "./pages/Jobs";
+import Tools from "./pages/Tools";
 import Results from "./pages/Results";
 import ConfigPage from "./pages/Config";
 
@@ -18,6 +19,7 @@ const router = createBrowserRouter([
       { path: "/live", element: <Live /> },
       { path: "/explorer", element: <Explorer /> },
       { path: "/pools", element: <Pools /> },
+      { path: "/tools", element: <Tools /> },
       { path: "/jobs", element: <Jobs /> },
       { path: "/results", element: <Results /> },
       { path: "/results/:runId", element: <Results /> },

@@ -2,6 +2,19 @@ use alloy::primitives::Address;
 
 use crate::pool::state::PoolInfo;
 
+/// Filter / sort / page parameters for pool listing queries.
+#[derive(Clone, Copy, Default)]
+pub struct PoolFilterQuery<'a> {
+    pub q: Option<&'a str>,
+    pub dex: Option<&'a str>,
+    pub token: Option<&'a str>,
+    pub min_tvl: Option<f64>,
+    pub sort_by: Option<&'a str>,
+    pub order_desc: bool,
+    pub offset: u64,
+    pub limit: u64,
+}
+
 impl super::SqliteStore {
     pub fn put_discovered_pool(&self, pool: &PoolInfo) -> anyhow::Result<()> {
         let conn = self.conn();
@@ -87,20 +100,12 @@ impl super::SqliteStore {
     /// Returns the filtered page plus the total row count matching the
     /// same filters (before pagination), so callers can build
     /// `Paginated { total, items }` without fetching every row.
-    #[allow(clippy::too_many_arguments)]
     pub fn pools_filtered_paged(
         &self,
-        q: Option<&str>,
-        dex: Option<&str>,
-        token: Option<&str>,
-        min_tvl: Option<f64>,
-        sort_by: Option<&str>,
-        order_desc: bool,
-        offset: u64,
-        limit: u64,
+        filter: PoolFilterQuery<'_>,
     ) -> anyhow::Result<(Vec<PoolInfo>, u64)> {
         let conn = self.conn();
-        let where_sql = Self::pools_where_clause(q, dex, token, min_tvl);
+        let where_sql = Self::pools_where_clause(filter.q, filter.dex, filter.token, filter.min_tvl);
 
         let total: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM pool_info {where_sql}"),
@@ -108,14 +113,15 @@ impl super::SqliteStore {
             |r| r.get(0),
         )?;
 
-        let sort_col = Self::pools_sort_col(sort_by);
-        let order = if order_desc { "DESC" } else { "ASC" };
+        let sort_col = Self::pools_sort_col(filter.sort_by);
+        let order = if filter.order_desc { "DESC" } else { "ASC" };
         // NULLs always last regardless of direction.
         let sql = format!(
             "SELECT address, token0, token1, fee, dex_type, tick_spacing, creation_block, pool_id, factory, is_stable, underlying_tokens, balancer_pool_type, hook_address, bin_step, maturity_timestamp, dex_name, token0_symbol, token1_symbol, tvl_usd, volume_usd_24h, volume_usd_30d
              FROM pool_info {where_sql}
              ORDER BY {sort_col} IS NULL, {sort_col} {order}
-             LIMIT {limit} OFFSET {offset}"
+             LIMIT {} OFFSET {}",
+            filter.limit, filter.offset
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query([])?;
@@ -127,19 +133,15 @@ impl super::SqliteStore {
     }
 
     /// Legacy un-paged variant: returns the first `limit` filtered rows.
-    #[allow(clippy::too_many_arguments)]
     pub fn pools_filtered(
         &self,
-        q: Option<&str>,
-        dex: Option<&str>,
-        token: Option<&str>,
-        min_tvl: Option<f64>,
-        sort_by: Option<&str>,
-        order_desc: bool,
-        limit: u64,
+        filter: PoolFilterQuery<'_>,
     ) -> anyhow::Result<Vec<PoolInfo>> {
         Ok(self
-            .pools_filtered_paged(q, dex, token, min_tvl, sort_by, order_desc, 0, limit)?
+            .pools_filtered_paged(PoolFilterQuery {
+                offset: 0,
+                ..filter
+            })?
             .0)
     }
 

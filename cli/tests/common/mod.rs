@@ -1,4 +1,6 @@
-#![allow(dead_code)] // shared harness: each integration-test crate uses a subset
+// Shared across multiple integration-test binaries; each binary only uses a
+// subset, so unused-item lint noise is expected here (not in production code).
+#![allow(dead_code)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -8,7 +10,7 @@ use std::time::{Duration, Instant};
 
 pub const BIN: &str = env!("CARGO_BIN_EXE_mev-scout");
 
-pub static RPC_MUTEX: Mutex<()> = Mutex::new(());
+static RPC_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Lock the RPC mutex, recovering from a poisoned lock (a panicking test
 /// while holding the lock must not kill every subsequent test).

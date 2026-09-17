@@ -1,11 +1,11 @@
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{job_report, ReportOpts};
+use mev_scout_core::progress::NoopProgress;
 use mev_scout_core::types::{OutputFormat, ResultsFile};
 
 use crate::cli::ReportArgs;
 use crate::display::render_results_table;
-use crate::job_progress::NoopProgress;
 
 /// Re-render terminal tables for a recorded run. Execution history is read
 /// from SQLite only: run metadata from the cache store's `run_manifests`,
@@ -14,6 +14,8 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
     let opts = ReportOpts {
         run_id: args.run_id.clone(),
     };
+    // Core's discarding sink: the CLI renders the payload itself, and JSON/CSV
+    // must stay machine-parseable (job_report also logs human-readable lines).
     let outcome = job_report(config, &opts, &NoopProgress).await?;
     let manifest = outcome.manifest;
     let output_format = config.output.output;
@@ -30,16 +32,6 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         created_at: manifest.resolved_at,
         opportunities: outcome.opportunities,
     };
-
-    // Weekly-report explorer section (phase 5 of report rendering): when the explorer
-    // store has data overlapping this run, append recall/miss metrics.
-    let explorer_section = explorer_validation_section(
-        config,
-        &results_file.chain,
-        results_file.start_block,
-        results_file.end_block,
-        &results_file.run_id,
-    );
 
     match output_format {
         OutputFormat::Table => {
@@ -61,6 +53,17 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
             } else {
                 render_results_table(&results_file.opportunities, None);
             }
+
+            // Explorer recall/miss metrics are human-readable; only append in table mode.
+            if let Some(section) = explorer_validation_section(
+                config,
+                &results_file.chain,
+                results_file.start_block,
+                results_file.end_block,
+                &results_file.run_id,
+            ) {
+                println!("\n{section}");
+            }
         }
         OutputFormat::Csv => {
             println!("block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence");
@@ -81,10 +84,6 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(&results_file)?);
         }
-    }
-
-    if let Some(section) = explorer_section {
-        println!("\n{section}");
     }
 
     Ok(())
@@ -128,14 +127,17 @@ fn explorer_validation_section(
     if empty {
         return None; // no realized data in-window yet
     }
+    let run_ids = [run_id.to_string()];
     match validate::compute_validation(
         &store,
-        chain,
-        start_block,
-        end_block,
-        0,
-        Some(&[run_id.to_string()]),
-        false,
+        validate::ValidationQuery {
+            chain,
+            from_block: start_block,
+            to_block: end_block,
+            match_window: 0,
+            run_filter: Some(&run_ids),
+            threshold_sweep: false,
+        },
     ) {
         Ok(report) => Some(validate::render_validation_report(&report)),
         Err(e) => {

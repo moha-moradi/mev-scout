@@ -1,164 +1,23 @@
-use std::collections::HashMap;
-
-use alloy::primitives::{keccak256, Address};
 use anyhow::Context;
 
 use crate::cli::ReplayArgs;
-use crate::rpc_setup::init_rpc;
-use mev_scout_core::cache::SqliteStore;
-use mev_scout_core::config::validation;
+use crate::job_progress::JobProgress;
 use mev_scout_core::config::Config;
-use mev_scout_core::pool::state::PoolInfo;
-use mev_scout_core::replay::BlockReplayer;
+use mev_scout_core::jobs::{job_replay, ReplayOpts};
 
-pub async fn cmd_replay(config: &Config, args: &ReplayArgs) -> anyhow::Result<()> {
-    let (chain_name, chain_config) = match validation::validate_replay(config) {
-        Ok(r) => r,
-        Err(e) => anyhow::bail!("{}", e),
+pub async fn cmd_replay(
+    config: &Config,
+    args: &ReplayArgs,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<()> {
+    let opts = ReplayOpts {
+        block: args.block,
+        tx_index: args.tx_index,
+        analyze: args.analyze,
     };
-
-    let setup = init_rpc(config, chain_name, true).await?;
-    let rpc = setup.rpc;
-    let cache = SqliteStore::open(config.effective_db_path(&chain_name))?;
-
-    let block_num = args.block;
-    let tx_index = args.tx_index.unwrap_or(usize::MAX);
-
-    if !cache.has_block(block_num)? {
-        anyhow::bail!(
-            "block {} is not cached (run `mev-scout fetch --block {}` first)",
-            block_num,
-            block_num
-        );
-    }
-
-    let pool_map: HashMap<Address, PoolInfo> = if args.analyze {
-        let mut map = HashMap::new();
-        if let Ok(pools) = cache.list_discovered_pools() {
-            for pool in pools {
-                map.insert(pool.address, pool);
-            }
-        }
-        tracing::info!("Loaded {} pools for DEX analysis", map.len());
-        map
-    } else {
-        HashMap::new()
-    };
-
-    let replayer = BlockReplayer::new(
-        tokio::runtime::Handle::current(),
-        cache,
-        rpc,
-        chain_config.chain_id,
-    );
-    let txs = replayer
-        .load_txs(block_num)
-        .with_context(|| format!("Failed to load txs for block {block_num}"))?;
-    let actual_count = txs.len();
-    let end_tx = tx_index.min(actual_count.saturating_sub(1));
-
-    println!(
-        "Replaying block {} on chain {} ({} txs, replaying 0..{})",
-        block_num, chain_name, actual_count, end_tx
-    );
-    println!();
-
-    let start = std::time::Instant::now();
-    let (_snapshot, results) = replayer
-        .replay_to(block_num, end_tx)
-        .with_context(|| format!("Replay failed for block {block_num}"))?;
-    let elapsed = start.elapsed();
-
-    println!(
-        "  {:<4} {:<66} {:<6} {:<8} receipt",
-        "idx", "tx_hash", "status", "gas_used",
-    );
-    println!("  {}", "─".repeat(100));
-
-    let mut matched = 0u64;
-    let mut total = 0u64;
-
-    for r in &results {
-        let status_str = if r.status { "ok" } else { "fail" };
-        let receipt_str = match &r.error {
-            None => {
-                matched += 1;
-                "✓".to_string()
-            }
-            Some(_) => "✗".to_string(),
-        };
-        total += 1;
-
-        println!(
-            "  {:<4} {:<66} {:<6} {:<8} {}",
-            r.index, r.tx_hash, status_str, r.gas_used, receipt_str
-        );
-
-        if args.analyze {
-            let t_swap_v2 = keccak256(b"Swap(address,uint256,uint256,uint256,uint256,address)");
-            let t_sync = keccak256(b"Sync(uint112,uint112)");
-            let t_swap_v3 = keccak256(b"Swap(address,address,int256,int256,uint160,uint128,int24)");
-            let t_mint = keccak256(b"Mint(address,address,int24,int24,uint128,uint256,uint256)");
-            let t_burn = keccak256(b"Burn(address,address,int24,int24,uint128,uint256,uint256)");
-            let interactions: Vec<String> = r
-                .logs
-                .iter()
-                .filter_map(|log| {
-                    pool_map.get(&log.address).map(|info| {
-                        let event_type = if log.topics.is_empty() {
-                            "Unknown"
-                        } else {
-                            match log.topics[0] {
-                                x if x == t_swap_v2 || x == t_swap_v3 => "Swap",
-                                x if x == t_sync => "Sync",
-                                x if x == t_mint => "Mint",
-                                x if x == t_burn => "Burn",
-                                _ => "Unknown",
-                            }
-                        };
-                        let name = info
-                            .name
-                            .as_deref()
-                            .map(String::from)
-                            .unwrap_or_else(|| info.address.to_string());
-                        format!("{} — {}", name, event_type)
-                    })
-                })
-                .collect();
-
-            if interactions.is_empty() {
-                println!("         (no DEX interactions)");
-            } else {
-                println!("         DEX interactions:");
-                for (j, line) in interactions.iter().enumerate() {
-                    let prefix = if j == interactions.len() - 1 {
-                        "         └ "
-                    } else {
-                        "         ├ "
-                    };
-                    println!("{}{}", prefix, line);
-                }
-            }
-        }
-    }
-
-    println!();
-    let pct = if total > 0 {
-        (matched as f64 / total as f64) * 100.0
-    } else {
-        100.0
-    };
-    println!(
-        "  Receipt verification: {}/{} match ({:.1}%) — {:.2}s",
-        matched,
-        total,
-        pct,
-        elapsed.as_secs_f64()
-    );
-
-    if pct < 99.0 {
-        tracing::warn!("Receipt match rate {:.1}% is below 99% threshold", pct);
-    }
-
+    let outcome = job_replay(config, &opts, progress)
+        .await
+        .context("replay job failed")?;
+    let _ = outcome;
     Ok(())
 }

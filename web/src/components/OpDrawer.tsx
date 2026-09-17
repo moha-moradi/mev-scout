@@ -85,6 +85,7 @@ export default function OpDrawer({ txHash, chain, onClose }: Props) {
   const [data, setData] = useState<ExplainResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [tracing, setTracing] = useState(false);
 
   useEffect(() => {
     if (!txHash) return;
@@ -97,6 +98,20 @@ export default function OpDrawer({ txHash, chain, onClose }: Props) {
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, [txHash]);
+
+  async function runTrace() {
+    if (!txHash) return;
+    setTracing(true);
+    setError(null);
+    try {
+      const res = await api.explorerOp(txHash, true);
+      setData(res);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTracing(false);
+    }
+  }
 
   const primary = data?.ops[0];
   const status = useMemo(() => (primary ? profitability(primary) : null), [primary]);
@@ -144,12 +159,22 @@ export default function OpDrawer({ txHash, chain, onClose }: Props) {
               )}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-md border border-zinc-800 px-2 py-1 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
-          >
-            ✕
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              disabled={tracing || loading}
+              onClick={() => void runTrace()}
+              className="rounded-md border border-sky-700/50 bg-sky-950/40 px-2.5 py-1 text-[11px] text-sky-300 hover:bg-sky-900/40 disabled:opacity-50"
+            >
+              {tracing ? "Tracing…" : data?.trace ? "Re-trace" : "Trace"}
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-md border border-zinc-800 px-2 py-1 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
@@ -158,6 +183,14 @@ export default function OpDrawer({ txHash, chain, onClose }: Props) {
 
           {data && primary && (
             <div className="space-y-6">
+              {data.trace && (
+                <section className="rounded-xl border border-sky-900/50 bg-sky-950/20 p-4">
+                  <h4 className="mb-2 text-[10px] uppercase tracking-wider text-sky-400">
+                    Trace verification
+                  </h4>
+                  <pre className="whitespace-pre-wrap font-mono text-[11px] text-zinc-300">{data.trace}</pre>
+                </section>
+              )}
               <div className="grid grid-cols-3 gap-2">
                 <Metric
                   label="Revenue"

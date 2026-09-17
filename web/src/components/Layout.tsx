@@ -10,6 +10,7 @@ const NAV = [
   { to: "/live", label: "Live Monitor", icon: "pulse" },
   { to: "/explorer", label: "Explorer", icon: "target" },
   { to: "/pools", label: "Pools", icon: "layers" },
+  { to: "/tools", label: "Tools", icon: "wrench" },
   { to: "/jobs", label: "Jobs", icon: "clock" },
   { to: "/results", label: "Results", icon: "report" },
   { to: "/config", label: "Config", icon: "sliders" },
@@ -70,6 +71,12 @@ function NavIcon({ name }: { name: (typeof NAV)[number]["icon"] }) {
         <svg {...common}>
           <circle cx="12" cy="12" r="8" />
           <path d="M12 8v5l3 2" />
+        </svg>
+      );
+    case "wrench":
+      return (
+        <svg {...common}>
+          <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4L15 12l-2.3-2.3 1.9-3.4z" />
         </svg>
       );
     case "report":

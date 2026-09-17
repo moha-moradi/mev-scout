@@ -40,16 +40,16 @@ async fn pools(
     // to an empty page (store open would fabricate one).
     let (items, total) = match state.open_cache_store_if_exists().await {
         Ok(store) => store
-            .pools_filtered_paged(
-                q.q.as_deref(),
-                q.dex.as_deref(),
-                q.token.as_deref(),
-                q.min_tvl,
-                q.sort.as_deref(),
+            .pools_filtered_paged(mev_scout_core::cache::PoolFilterQuery {
+                q: q.q.as_deref(),
+                dex: q.dex.as_deref(),
+                token: q.token.as_deref(),
+                min_tvl: q.min_tvl,
+                sort_by: q.sort.as_deref(),
                 order_desc,
                 offset,
                 limit,
-            )
+            })
             .map_err(crate::error::ApiError::internal)?,
         Err(_) => (Vec::new(), 0),
     };

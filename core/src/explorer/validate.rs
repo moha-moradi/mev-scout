@@ -240,21 +240,32 @@ impl ValidationReport {
     }
 }
 
+/// Inputs for [`compute_validation`].
+#[derive(Clone, Copy)]
+pub struct ValidationQuery<'a> {
+    pub chain: ChainName,
+    pub from_block: u64,
+    pub to_block: u64,
+    pub match_window: u64,
+    pub run_filter: Option<&'a [String]>,
+    pub threshold_sweep: bool,
+}
+
 /// Compute the full report for one window.
 ///
 /// `opportunities` = scanner side (from the store's `opportunities` table,
 /// loaded for `chain` in the window, filtered by optional run_ids).
 /// `ops` = realized ground truth from `mev_ops`.
-#[allow(clippy::too_many_arguments)]
 pub fn compute_validation(
     store: &ExplorerStore,
-    chain: ChainName,
-    from_block: u64,
-    to_block: u64,
-    match_window: u64,
-    run_filter: Option<&[String]>,
-    threshold_sweep: bool,
+    q: ValidationQuery<'_>,
 ) -> anyhow::Result<ValidationReport> {
+    let chain = q.chain;
+    let from_block = q.from_block;
+    let to_block = q.to_block;
+    let match_window = q.match_window;
+    let run_filter = q.run_filter;
+    let threshold_sweep = q.threshold_sweep;
     let chain_str = chain.to_string();
     let opportunities: Vec<OpportunityRow> = store
         .opportunities_in_range(&chain_str, from_block, to_block)?
@@ -540,7 +551,6 @@ enum MissCause {
     UnknownCoverage,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn attribute_miss(
     ev: &MevOpRow,
     rejections: &[RejectedRow],
@@ -864,12 +874,14 @@ mod tests {
         let store = store_with_fixtures();
         let report = compute_validation(
             &store,
-            crate::types::ChainName::Polygon,
-            90,
-            110,
-            0,
-            None,
-            false,
+            ValidationQuery {
+                chain: crate::types::ChainName::Polygon,
+                from_block: 90,
+                to_block: 110,
+                match_window: 0,
+                run_filter: None,
+                threshold_sweep: false,
+            },
         )
         .unwrap();
 
@@ -897,12 +909,14 @@ mod tests {
         let store = store_with_fixtures();
         let report = compute_validation(
             &store,
-            crate::types::ChainName::Polygon,
-            90,
-            110,
-            0,
-            None,
-            false,
+            ValidationQuery {
+                chain: crate::types::ChainName::Polygon,
+                from_block: 90,
+                to_block: 110,
+                match_window: 0,
+                run_filter: None,
+                threshold_sweep: false,
+            },
         )
         .unwrap();
         let (_, t) = report
@@ -919,12 +933,14 @@ mod tests {
         let store = store_with_fixtures();
         let report = compute_validation(
             &store,
-            crate::types::ChainName::Polygon,
-            90,
-            110,
-            0,
-            None,
-            true,
+            ValidationQuery {
+                chain: crate::types::ChainName::Polygon,
+                from_block: 90,
+                to_block: 110,
+                match_window: 0,
+                run_filter: None,
+                threshold_sweep: true,
+            },
         )
         .unwrap();
         let text = render_validation_report(&report);

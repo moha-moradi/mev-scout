@@ -1,60 +1,64 @@
 use std::collections::HashMap;
 
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
 /// Per-chain runtime parameters loaded from the configuration file.
+///
+/// Address-bearing fields are typed as [`Address`] so a typo'd hex string
+/// fails at config load (serde) instead of silently dropping a DEX venue.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub chain_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub balancer_vault: Option<String>,
+    pub balancer_vault: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aave_v3_pool: Option<String>,
+    pub aave_v3_pool: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uniswap_v3_factories: Option<Vec<String>>,
+    pub uniswap_v3_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uniswap_v2_factories: Option<Vec<String>>,
+    pub uniswap_v2_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub solidly_factories: Option<Vec<String>>,
+    pub solidly_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub camelot_factories: Option<Vec<String>>,
+    pub camelot_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_start_block: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_batch_size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wrapped_native_token: Option<String>,
+    pub wrapped_native_token: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v2_default_fee: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curve_registry: Option<String>,
+    pub curve_registry: Option<Address>,
     /// Curve stableswap factory contract addresses (CurveStableswapFactoryNG
     /// deployments emitting `PoolDeployed(address)`; older factories emit
     /// `PoolAdded(address,uint256)` — both are scanned).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub curve_factories: Option<Vec<String>>,
+    pub curve_factories: Option<Vec<Address>>,
     /// Uniswap V4 singleton PoolManager contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub v4_pool_manager: Option<String>,
+    pub v4_pool_manager: Option<Address>,
     /// Pancake Infinity singleton CLPoolManager contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub infinity_cl_pool_manager: Option<String>,
+    pub infinity_cl_pool_manager: Option<Address>,
     /// Trader Joe / LFJ V2 LB factory contract addresses (V2.1 + V2.2 can coexist).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         alias = "trader_joe_factory"
     )]
-    pub trader_joe_factories: Option<Vec<String>>,
+    pub trader_joe_factories: Option<Vec<Address>>,
     /// Pendle Finance factory contract address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pendle_factory: Option<String>,
+    pub pendle_factory: Option<Address>,
     /// Metric V2 AMM factory address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metric_factory: Option<String>,
+    pub metric_factory: Option<Address>,
     /// Fluid DEX factory address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fluid_factory: Option<String>,
+    pub fluid_factory: Option<Address>,
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
@@ -64,6 +68,7 @@ pub fn default_chains() -> HashMap<String, ChainConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloy::primitives::address;
 
     /// `chains.toml` must stay parseable — discovery silently degrades
     /// to defaults when chain entries fail to deserialize.
@@ -79,8 +84,8 @@ mod tests {
         let chains = default_chains();
         let bsc = &chains["bsc"];
         assert_eq!(
-            bsc.infinity_cl_pool_manager.as_deref(),
-            Some("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b")
+            bsc.infinity_cl_pool_manager,
+            Some(address!("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"))
         );
     }
 
@@ -89,18 +94,19 @@ mod tests {
         let chains = default_chains();
         let ethereum = &chains["ethereum"];
         assert_eq!(
-            ethereum.fluid_factory.as_deref(),
-            Some("0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085")
+            ethereum.fluid_factory,
+            Some(address!("0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085"))
         );
         assert_eq!(
-            ethereum.metric_factory.as_deref(),
-            Some("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C")
+            ethereum.metric_factory,
+            Some(address!("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"))
         );
     }
 
     #[test]
     fn metric_factory_wired_on_all_supported_chains() {
         let chains = default_chains();
+        let expected = address!("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C");
         for name in [
             "polygon",
             "avalanche",
@@ -112,8 +118,8 @@ mod tests {
         ] {
             let cfg = &chains[name];
             assert_eq!(
-                cfg.metric_factory.as_deref(),
-                Some("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"),
+                cfg.metric_factory,
+                Some(expected),
                 "{name} must wire the Metric V2 factory"
             );
         }

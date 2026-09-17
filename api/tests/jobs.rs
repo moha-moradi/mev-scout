@@ -79,9 +79,24 @@ async fn wait_for(
 }
 
 #[tokio::test]
-async fn command_allowlist_accepts_seven_rejects_others() {
+async fn command_allowlist_accepts_all_cli_jobs_rejects_others() {
     let (app, _) = jobs_app().await;
-    for allowed in ["run", "live", "discover", "tokens", "scan", "report", "explorer index"] {
+    for allowed in [
+        "run",
+        "live",
+        "discover",
+        "tokens",
+        "scan",
+        "report",
+        "fetch",
+        "replay",
+        "validate-pools",
+        "explorer index",
+        "explorer doctor",
+        "explorer export",
+        "explorer validate",
+        "explorer show",
+    ] {
         let (status, json) = spawn(&app, allowed, vec!["ok"]).await;
         assert!(
             status == StatusCode::OK || status == StatusCode::CONFLICT,
@@ -95,7 +110,7 @@ async fn command_allowlist_accepts_seven_rejects_others() {
     }
 
     let (app2, _) = jobs_app().await;
-    for denied in ["fetch", "replay", "validate-pools", "explorer stats", "evil", "rm -rf"] {
+    for denied in ["explorer stats", "evil", "rm -rf", "config"] {
         let (status, json) = spawn(&app2, denied, vec![]).await;
         assert_eq!(
             status,

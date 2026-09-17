@@ -12,6 +12,8 @@ pub mod manifests;
 pub mod pools;
 pub mod ticks;
 
+pub use pools::PoolFilterQuery;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -70,7 +72,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 10;
+    const SCHEMA_VERSION: u64 = 11;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -207,7 +209,9 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS token_symbols (
                 address    BLOB PRIMARY KEY,
                 symbol     TEXT NOT NULL,
-                decimals   INTEGER
+                decimals   INTEGER,
+                name       TEXT,
+                icon_url   TEXT
             );
             ",
         )?;
@@ -267,6 +271,9 @@ impl SqliteStore {
             "ALTER TABLE pool_info ADD COLUMN tvl_usd REAL",
             "ALTER TABLE pool_info ADD COLUMN volume_usd_24h REAL",
             "ALTER TABLE pool_info ADD COLUMN volume_usd_30d REAL",
+            // v11: token display metadata (name + icon URL from remote enrichers)
+            "ALTER TABLE token_symbols ADD COLUMN name TEXT",
+            "ALTER TABLE token_symbols ADD COLUMN icon_url TEXT",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {

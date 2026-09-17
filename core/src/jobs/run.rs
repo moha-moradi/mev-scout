@@ -122,15 +122,11 @@ pub async fn job_run(
     let mut pool_manager = PoolManager::new();
     pool_manager.set_max_pairs_per_token(config.backtest.max_pairs_per_token);
     pool_manager.set_concurrency_limit(provider_configs.len() as u32);
-    if let Some(vault_str) = &validation_result.chain_config.balancer_vault {
-        if let Ok(vault_addr) = vault_str.parse::<Address>() {
-            pool_manager = pool_manager.with_balancer_vault(vault_addr);
-        }
+    if let Some(vault_addr) = validation_result.chain_config.balancer_vault {
+        pool_manager = pool_manager.with_balancer_vault(vault_addr);
     }
-    if let Some(native_str) = &validation_result.chain_config.wrapped_native_token {
-        if let Ok(native_addr) = native_str.parse::<Address>() {
-            pool_manager = pool_manager.with_wrapped_native(native_addr);
-        }
+    if let Some(native_addr) = validation_result.chain_config.wrapped_native_token {
+        pool_manager = pool_manager.with_wrapped_native(native_addr);
     }
     let prev_block = resolved.start_block.saturating_sub(1);
 
@@ -165,12 +161,10 @@ pub async fn job_run(
         .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
         .with_record_rejections(opts.record_rejections);
 
-    if let Some(aave_pool_str) = &validation_result.chain_config.aave_v3_pool {
-        if let Ok(aave_pool) = aave_pool_str.parse::<Address>() {
-            runner
-                .prefetch_aave_reserves(aave_pool, prev_block)
-                .await;
-        }
+    if let Some(aave_pool) = validation_result.chain_config.aave_v3_pool {
+        runner
+            .prefetch_aave_reserves(aave_pool, prev_block)
+            .await;
     }
 
     let start = Instant::now();

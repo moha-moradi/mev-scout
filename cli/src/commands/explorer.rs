@@ -4,12 +4,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use alloy::primitives::{B256, U256};
 use anyhow::Context;
 use comfy_table::Table;
 
 use crate::cli::ValidateArgs;
-use crate::rpc_setup::init_rpc;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::ingest::IngestConfig;
@@ -61,10 +59,6 @@ fn short_addr(s: &str) -> String {
     } else {
         s.to_string()
     }
-}
-
-fn short_err(e: &anyhow::Error) -> String {
-    format!("{e:#}").chars().take(40).collect()
 }
 
 fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {

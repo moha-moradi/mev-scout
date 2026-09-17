@@ -6,7 +6,22 @@ import DataTable, { type Column } from "../components/DataTable";
 import LogViewer from "../components/LogViewer";
 import { useToast } from "../components/Toast";
 
-const COMMANDS = ["run", "live", "discover", "tokens", "scan", "report", "explorer index"];
+const COMMANDS = [
+  "run",
+  "live",
+  "discover",
+  "tokens",
+  "scan",
+  "report",
+  "fetch",
+  "replay",
+  "validate-pools",
+  "explorer index",
+  "explorer doctor",
+  "explorer export",
+  "explorer validate",
+  "explorer show",
+];
 const STATUS_CLASS: Record<string, string> = {
   running: "border-amber-700/60 bg-amber-950/40 text-amber-300",
   finished: "border-emerald-700/60 bg-emerald-950/40 text-emerald-300",
@@ -17,11 +32,18 @@ const STATUS_CLASS: Record<string, string> = {
 const PRESETS: Record<string, { args: string[]; hint: string }> = {
   run: { args: ["--blocks", "10", "--progress", "json"], hint: "last 10 blocks" },
   live: { args: ["--loop", "--duration", "2m", "--progress", "json"], hint: "2 minutes" },
-  discover: { args: ["--incremental"], hint: "resume from cached head" },
-  tokens: { args: [], hint: "token scanner (default window)" },
-  scan: { args: [], hint: "block scanner (default)" },
+  discover: { args: ["--incremental", "--source", "hybrid", "--enrich"], hint: "hybrid enrich" },
+  tokens: { args: [], hint: "token cache listing" },
+  scan: { args: ["--blocks", "50", "--kind", "trades"], hint: "trades scan" },
   report: { args: [], hint: "latest run" },
+  fetch: { args: ["--blocks", "10"], hint: "cache last 10 blocks" },
+  replay: { args: ["--block", "0", "--analyze"], hint: "set --block to a cached height" },
+  "validate-pools": { args: ["--days", "7", "--json"], hint: "gecko recall window" },
   "explorer index": { args: ["--live"], hint: "live indexing" },
+  "explorer doctor": { args: [], hint: "provider capability probe" },
+  "explorer export": { args: ["--format", "json", "--since", "7d"], hint: "write export file" },
+  "explorer validate": { args: ["--since", "7d", "--json"], hint: "realized vs scanner" },
+  "explorer show": { args: ["0x…", "--trace"], hint: "tx hash + optional --trace" },
 };
 
 function fmtTime(iso: string | null): string {

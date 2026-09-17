@@ -771,6 +771,7 @@ macro_rules! get_logs_pinned {
 mod balancer;
 mod camelot;
 mod curve;
+mod factories;
 mod fluid;
 mod health;
 mod infinity;
@@ -785,6 +786,7 @@ mod v2;
 mod v3;
 mod v4;
 
+pub use factories::{DiscoveryRuntimeOpts, ResolvedFactories};
 pub use protocol_names::{protocol_name_for_factory, resolve_dex_name};
 
 /// Unified pool discovery — scans both DEX activity events and factory

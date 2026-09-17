@@ -368,58 +368,11 @@ pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, C
     })
 }
 
-/// Validate that every address-bearing field in a `ChainConfig` parses as
-/// an [`Address`]. A single typo'd address previously silently dropped a
-/// DEX venue (factory lists were parsed with `.ok()`), turning the whole
-/// DEX family's discovery off without any signal.
-///
-/// Returns `Err(ConfigError::InvalidValue)` naming the offending field.
+/// Address fields on [`ChainConfig`] are typed as [`alloy::primitives::Address`],
+/// so invalid hex fails at TOML deserialize. Kept as a no-op hook so call sites
+/// that historically validated here continue to compile without a silent drop.
 pub fn validate_chain_config_addresses(
-    chain_config: &ChainConfig,
+    _chain_config: &ChainConfig,
 ) -> std::result::Result<(), ConfigError> {
-    use alloy::primitives::Address;
-
-    let mut checked: Vec<(&str, &String)> = Vec::new();
-    for (field, v) in [
-        ("balancer_vault", &chain_config.balancer_vault),
-        ("aave_v3_pool", &chain_config.aave_v3_pool),
-        ("curve_registry", &chain_config.curve_registry),
-        ("wrapped_native_token", &chain_config.wrapped_native_token),
-        ("v4_pool_manager", &chain_config.v4_pool_manager),
-        (
-            "infinity_cl_pool_manager",
-            &chain_config.infinity_cl_pool_manager,
-        ),
-        ("pendle_factory", &chain_config.pendle_factory),
-        ("metric_factory", &chain_config.metric_factory),
-        ("fluid_factory", &chain_config.fluid_factory),
-    ] {
-        if let Some(v) = v {
-            checked.push((field, v));
-        }
-    }
-    for (field, list) in [
-        ("uniswap_v3_factories", &chain_config.uniswap_v3_factories),
-        ("uniswap_v2_factories", &chain_config.uniswap_v2_factories),
-        ("solidly_factories", &chain_config.solidly_factories),
-        ("camelot_factories", &chain_config.camelot_factories),
-        ("curve_factories", &chain_config.curve_factories),
-        ("trader_joe_factories", &chain_config.trader_joe_factories),
-    ] {
-        if let Some(list) = list {
-            for addr in list {
-                checked.push((field, addr));
-            }
-        }
-    }
-
-    for (field, value) in checked {
-        if value.parse::<Address>().is_err() {
-            return Err(ConfigError::InvalidValue {
-                field: field.to_string(),
-                message: format!("'{value}' is not a valid EVM address"),
-            });
-        }
-    }
     Ok(())
 }

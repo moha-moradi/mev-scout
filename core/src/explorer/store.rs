@@ -1184,7 +1184,6 @@ impl ExplorerStore {
     // ── rejection capture ──────────────────────────────────────────────
 
     /// Insert one rejected-candidate row (run_id/chain stamped here).
-    #[allow(clippy::too_many_arguments)]
     pub fn insert_rejected_candidate(
         &self,
         run_id: &str,

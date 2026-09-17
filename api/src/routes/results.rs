@@ -232,12 +232,14 @@ async fn result_validation(
         .map_err(ApiError::internal)?;
     let report = mev_scout_core::explorer::validate::compute_validation(
         &store,
-        chain,
-        manifest.start_block,
-        manifest.end_block,
-        0,
-        Some(std::slice::from_ref(&run_id)),
-        false,
+        mev_scout_core::explorer::validate::ValidationQuery {
+            chain,
+            from_block: manifest.start_block,
+            to_block: manifest.end_block,
+            match_window: 0,
+            run_filter: Some(std::slice::from_ref(&run_id)),
+            threshold_sweep: false,
+        },
     )
     .map_err(ApiError::internal)?;
 
