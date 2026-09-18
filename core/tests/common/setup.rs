@@ -237,6 +237,7 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
             gas_limit: 100_000,
             max_fee_per_gas: 50_000_000_000,
             max_priority_fee_per_gas: None,
+            gas_price: None,
             nonce: i as u64,
             access_list: vec![],
             authorization_list: vec![],
@@ -247,6 +248,7 @@ pub fn prep_synthetic_cache(dir: &str, block_num: u64, tx_count: usize) -> Sqlit
             status: true,
             gas_used: 100_000,
             cumulative_gas_used: 100_000 * (i as u64 + 1),
+            effective_gas_price: None,
             logs: vec![],
             contract_address: None,
         });

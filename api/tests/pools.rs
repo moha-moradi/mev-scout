@@ -10,10 +10,7 @@ use tower::ServiceExt;
 
 use common::{state_with_real_dbs, test_router};
 
-async fn get(
-    app: &axum::Router<()>,
-    uri: &str,
-) -> (StatusCode, Value) {
+async fn get(app: &axum::Router<()>, uri: &str) -> (StatusCode, Value) {
     let resp = app
         .clone()
         .oneshot(
@@ -26,7 +23,9 @@ async fn get(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
 }
@@ -97,7 +96,7 @@ async fn pools_sort_by_tvl_asc_desc() {
     let items = json["items"].as_array().unwrap();
     assert_eq!(items[0]["dex_name"], "uniswap-v3"); // 500k
     assert_eq!(items[1]["dex_name"], "pancakeswap"); // 300k
-    // NULL tvl sorts last.
+                                                     // NULL tvl sorts last.
     assert_eq!(items[2]["dex_name"], "balancer");
 
     let (_, json) = get(&app, "/api/pools?sort=tvl_usd&order=asc").await;
@@ -147,5 +146,9 @@ async fn pools_null_tvl_handling() {
     assert!(balancer["tvl_usd"].is_null());
     // The API response still includes it so the UI can detect all-null TVL
     // and offer the "Enrich pools" action.
-    assert!(json["items"].as_array().unwrap().iter().any(|p| p["tvl_usd"].is_null()));
+    assert!(json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["tvl_usd"].is_null()));
 }

@@ -121,9 +121,8 @@ pub async fn job_doctor(
         });
     }
 
-    progress.log(
-        "Gate: Phase 0 requires at least one provider with latest + bulk-receipts support.",
-    );
+    progress
+        .log("Gate: Phase 0 requires at least one provider with latest + bulk-receipts support.");
     if gate_ok {
         progress.log("Gate: PASS");
     } else {

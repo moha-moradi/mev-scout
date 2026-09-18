@@ -19,6 +19,38 @@ use serde::{Deserialize, Serialize};
 use crate::explorer::types::{MevEvent, MevKind};
 use crate::types::{MevOpportunity, Strategy};
 
+/// Trace-based reconciliation record for one tx (`explorer show --trace`).
+///
+/// Measurement-only (Phase 0): compares the classifier's expected USD profit
+/// with the trace-observed native balance delta. Never feeds `classify_block`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceVerification {
+    /// Classifier-expected USD profit (sum over the tx's ops), if priced.
+    pub expected_profit_usd: Option<f64>,
+    /// Trace-observed native balance delta converted to USD (signed).
+    pub trace_profit_usd: Option<f64>,
+    /// `(expected − trace) / expected × 100`; > 0 = classifier over-estimate.
+    pub profit_error_pct: Option<f64>,
+    /// Raw trace native delta in wei, signed decimal string.
+    pub native_delta_wei: String,
+    pub note: String,
+}
+
+/// One persisted open concentrated-liquidity position (`jit_open_positions`).
+///
+/// Phase 5a-0/1.5: lets cross-block JIT detection survive live restarts. A row
+/// is inserted on a Mint and deleted when the matching Burn arrives (or pruned
+/// once `opened_block` falls outside the block-window cap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenPosition {
+    pub pool: Address,
+    pub owner: Address,
+    pub tick_lower: i32,
+    pub tick_upper: i32,
+    pub opened_block: u64,
+    pub liquidity: u128,
+}
+
 /// One persisted realized-MEV operation row (`mev_ops`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpRow {
@@ -74,6 +106,93 @@ pub struct FeedRow {
 
 pub struct ExplorerStore {
     conn: Connection,
+}
+
+/// Merge a set of key/value pairs into a `details` JSON string, preserving any
+/// existing fields (used for profit_tokens and FOT/approximate annotations).
+fn merge_details_json<const N: usize>(
+    details_json: &str,
+    pairs: [(&str, serde_json::Value); N],
+) -> String {
+    let mut d: serde_json::Value =
+        serde_json::from_str(details_json).unwrap_or(serde_json::json!({}));
+    if let Some(map) = d.as_object_mut() {
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v);
+        }
+    }
+    d.to_string()
+}
+
+/// Liquidation P&L (Phase 1.3): gross seized collateral value minus repaid
+/// debt value, both priced at persist time. Cross-asset liquidations are an
+/// approximation (liquidation bonus / market-sale slippage) and are marked
+/// `inferred` with `LIQ_BONUS_APPROX`; missing prices fall back to the
+/// collateral display amount with `MULTI_ASSET_PRICING`.
+fn liquidation_pnl(
+    ev: &MevEvent,
+    token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
+) -> (Option<f64>, &'static str, String) {
+    let parse_addr = |k: &str| {
+        ev.details
+            .get(k)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Address>().ok())
+    };
+    let parse_amt = |k: &str| {
+        ev.details
+            .get(k)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<U256>().ok())
+    };
+    let collateral_asset = parse_addr("collateral_asset");
+    let debt_asset = parse_addr("debt_asset");
+    let price_usd = |asset: Option<Address>, amount: Option<U256>| -> Option<f64> {
+        let (a, amt) = (asset?, amount?);
+        let p = token_prices.get(&a)?;
+        Some(crate::explorer::pricing::token_amount_to_usd(amt, p))
+    };
+    let collateral_usd = price_usd(collateral_asset, parse_amt("collateral_amount"));
+    let debt_usd = price_usd(debt_asset, parse_amt("debt_to_cover"));
+    let cross_asset = match (collateral_asset, debt_asset) {
+        (Some(c), Some(d)) => c != d && !c.is_zero() && !d.is_zero(),
+        _ => true,
+    };
+
+    let mut details = ev.details.clone();
+    let mut reasons = reason_list(&details);
+    details["profit_usd_method"] = serde_json::json!("collateral_usd_minus_debt_usd");
+    match (collateral_usd, debt_usd) {
+        (Some(c), Some(d)) => {
+            if cross_asset {
+                reasons.push("LIQ_BONUS_APPROX".to_string());
+                details["reasons"] = serde_json::json!(reasons);
+                (Some(c - d), "inferred", details.to_string())
+            } else {
+                details["reasons"] = serde_json::json!(reasons);
+                (Some(c - d), "exact", details.to_string())
+            }
+        }
+        _ => {
+            reasons.push("MULTI_ASSET_PRICING".to_string());
+            details["profit_usd_fallback"] = serde_json::json!("collateral_amount");
+            details["reasons"] = serde_json::json!(reasons);
+            (None, "inferred", details.to_string())
+        }
+    }
+}
+
+/// Existing `reasons` array from event details (empty when absent).
+fn reason_list(details: &serde_json::Value) -> Vec<String> {
+    details
+        .get("reasons")
+        .and_then(|r| r.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl ExplorerStore {
@@ -160,7 +279,7 @@ impl ExplorerStore {
               tx_hash TEXT NOT NULL,
               ts INTEGER NOT NULL,
               kind TEXT NOT NULL CHECK(kind IN
-                ('arb_atomic','sandwich','liquidation','jit','jit_arb','unknown')),
+                ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','unknown')),
               eoa TEXT NOT NULL,
               contract TEXT,
               confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
@@ -169,6 +288,7 @@ impl ExplorerStore {
               profit_amount TEXT,
               profit_usd REAL,
               gas_cost_usd REAL,
+              flashloan_fee_usd REAL,
               net_profit_usd REAL,
               route_json TEXT,
               victim_hashes TEXT,
@@ -211,6 +331,21 @@ impl ExplorerStore {
               classified_at INTEGER NOT NULL,
               event_count INTEGER NOT NULL
             );
+
+            -- Phase 5a-0: JIT open Mint positions, persisted so cross-block JIT
+            -- detection survives restarts. Feeder table for Phase 1.5; pruned by
+            -- opened_block block-window cap.
+            CREATE TABLE IF NOT EXISTS jit_open_positions(
+              pool TEXT NOT NULL,
+              owner TEXT NOT NULL,
+              tick_lower INTEGER NOT NULL,
+              tick_upper INTEGER NOT NULL,
+              opened_block INTEGER NOT NULL,
+              liquidity TEXT NOT NULL,
+              PRIMARY KEY(pool, owner, tick_lower, tick_upper)
+            );
+            CREATE INDEX IF NOT EXISTS jit_open_positions_prune
+              ON jit_open_positions(opened_block);
 
             CREATE TABLE IF NOT EXISTS opportunities(
               run_id TEXT,
@@ -264,6 +399,34 @@ impl ExplorerStore {
               ON rejected_candidates(reject_reason);
             ",
         )?;
+        // Phase 2.2 runtime migration for databases created before the
+        // flash-loan fee column existed.
+        Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
+        Ok(())
+    }
+
+    /// Add `column` to `table` when missing (idempotent, for existing DBs).
+    fn ensure_column(
+        conn: &rusqlite::Connection,
+        table: &str,
+        column: &str,
+        ty: &str,
+    ) -> anyhow::Result<()> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        let mut exists = false;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                exists = true;
+                break;
+            }
+        }
+        drop(rows);
+        drop(stmt);
+        if !exists {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
+        }
         Ok(())
     }
 
@@ -362,6 +525,10 @@ impl ExplorerStore {
         )?;
         self.conn.execute(
             "DELETE FROM blocks WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
+        self.conn.execute(
+            "DELETE FROM jit_open_positions WHERE opened_block >= ?1",
             [fork_block as i64],
         )?;
         Ok(())
@@ -476,29 +643,114 @@ impl ExplorerStore {
                 )?;
             }
 
+            let mut inserted = 0usize;
             for ev in events {
-                let profit_usd = match (ev.profit_token, ev.profit_amount) {
+                // Liquidation P&L (Phase 1.3): profit ≈ collateral_usd −
+                // debt_usd, valued at persist with hourly prices. Never
+                // subtract raw amounts when tokens differ.
+                let mut confidence = ev.confidence.as_str();
+                let mut details_json = ev.details.to_string();
+                let profit_usd = if ev.kind == MevKind::Liquidation {
+                    let (usd, conf, details) = liquidation_pnl(ev, token_prices);
+                    confidence = conf;
+                    details_json = details;
+                    usd
+                } else if !ev.profit_tokens.is_empty() {
+                    // Phase 2.3: USD-sum across every positive residual
+                    // (flash-netting already cleaned the ledger in 2.2) with
+                    // Phase 2.4 realized-rate fallback for unpriced tokens.
+                    let total = ev.profit_tokens.iter().fold(0.0f64, |acc, (tok, amt)| {
+                        acc + crate::explorer::pricing::amount_usd_realized(
+                            *tok,
+                            *amt,
+                            token_prices,
+                            &ev.details,
+                        )
+                        .unwrap_or(0.0)
+                    });
+                    if total > 0.0 {
+                        // Surface the residual list for forensic display.
+                        details_json = merge_details_json(
+                            &details_json,
+                            [(
+                                "profit_tokens",
+                                serde_json::json!(ev
+                                    .profit_tokens
+                                    .iter()
+                                    .map(|(tok, amt)| serde_json::json!({
+                                        "token": format!("{tok:#x}"),
+                                        "amount": amt.to_string(),
+                                    }))
+                                    .collect::<Vec<_>>()),
+                            )],
+                        );
+                        Some(total)
+                    } else {
+                        None
+                    }
+                } else {
+                    match (ev.profit_token, ev.profit_amount) {
+                        (Some(tok), Some(amt)) => crate::explorer::pricing::amount_usd_realized(
+                            tok,
+                            amt,
+                            token_prices,
+                            &ev.details,
+                        ),
+                        _ => None,
+                    }
+                };
+                // Phase 2.4: FOT / rebase profit tokens are flagged approximate
+                // (recorded amounts are distorted by the token mechanics).
+                if let Some(reason) = ev
+                    .profit_tokens
+                    .iter()
+                    .map(|(tok, _)| *tok)
+                    .chain(ev.profit_token)
+                    .find_map(|t| crate::explorer::pricing::approximate_token(&t))
+                {
+                    details_json = merge_details_json(
+                        &details_json,
+                        [
+                            ("usd_approximate", serde_json::json!(true)),
+                            ("approximate_reason", serde_json::json!(reason)),
+                        ],
+                    );
+                }
+                // Gas in USD via native price (gas wei → native → USD).
+                let gas_usd = native_price_usd
+                    .map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
+                // Flash-loan fee in USD via the borrowed token's price (2.2).
+                let flashloan_fee_usd = match (ev.flashloan_fee_token, ev.flashloan_fee_wei) {
                     (Some(tok), Some(amt)) => token_prices
                         .get(&tok)
                         .map(|p| crate::explorer::pricing::token_amount_to_usd(amt, p)),
                     _ => None,
                 };
-                // Gas in USD via native price (gas wei → native → USD).
-                let gas_usd = native_price_usd
-                    .map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
                 let net = match (profit_usd, gas_usd) {
-                    (Some(g), Some(gg)) => Some(g - gg),
+                    (Some(g), Some(gg)) => Some(g - gg - flashloan_fee_usd.unwrap_or(0.0)),
                     _ => None,
                 };
+                // Sandwich profitability gate (Phase 1.4): a sandwich whose
+                // extractable profit does not cover combined front+back gas
+                // (plus any flash-loan fee) is not a realized-MEV op. Drop it
+                // rather than persist a provably lossy record. Unowned-net
+                // (missing price) events are kept — the gate never guesses.
+                if ev.kind == MevKind::Sandwich {
+                    if let Some(n) = net {
+                        if n <= 0.0 {
+                            continue;
+                        }
+                    }
+                }
                 let canonical = crate::explorer::explorer_canonical_id(ev);
                 conn.execute(
                     "INSERT INTO mev_ops
                        (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                         confidence, canonical_id, profit_token, profit_amount,
-                        profit_usd, gas_cost_usd, net_profit_usd, route_json,
-                        victim_hashes, details_json, detector, created_at)
+                        profit_usd, gas_cost_usd, flashloan_fee_usd, net_profit_usd,
+                        route_json, victim_hashes, details_json, detector, created_at)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                            ?14, ?15, ?16, ?17, 'explorer', ?18)",
+                            ?14, ?15, ?16, ?17, ?18, 'explorer', ?19)",
                     rusqlite::params![
                         ev.block as i64,
                         ev.tx_index as i64,
@@ -507,12 +759,13 @@ impl ExplorerStore {
                         ev.kind.as_str(),
                         format!("{:#x}", ev.searcher),
                         ev.contract.map(|a| format!("{:#x}", a)),
-                        ev.confidence.as_str(),
+                        confidence,
                         canonical,
                         ev.profit_token.map(|a| format!("{:#x}", a)),
                         ev.profit_amount.map(|a| a.to_string()),
                         profit_usd,
                         gas_usd,
+                        flashloan_fee_usd,
                         net,
                         ev.details.get("route").map(|r| r.to_string()),
                         serde_json::to_string(
@@ -522,18 +775,19 @@ impl ExplorerStore {
                                 .collect::<Vec<_>>()
                         )
                         .ok(),
-                        Some(ev.details.to_string()),
+                        Some(details_json),
                         now,
                     ],
                 )?;
+                inserted += 1;
             }
 
             conn.execute(
                 "INSERT OR REPLACE INTO blocks_classified(block, classified_at, event_count)
                  VALUES(?1, ?2, ?3)",
-                rusqlite::params![block_number as i64, now, events.len() as i64],
+                rusqlite::params![block_number as i64, now, inserted as i64],
             )?;
-            Ok(events.len())
+            Ok(inserted)
         })();
 
         match result {
@@ -1127,6 +1381,93 @@ impl ExplorerStore {
         Ok(())
     }
 
+    /// Persist (or refresh) open JIT Mint positions (Phase 1.5).
+    pub fn record_jit_open(&self, positions: &[OpenPosition]) -> anyhow::Result<()> {
+        for p in positions {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO jit_open_positions
+                   (pool, owner, tick_lower, tick_upper, opened_block, liquidity)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    format!("{:#x}", p.pool),
+                    format!("{:#x}", p.owner),
+                    p.tick_lower as i64,
+                    p.tick_upper as i64,
+                    p.opened_block as i64,
+                    p.liquidity.to_string(),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Delete an open position once its exact-liquidity Burn is observed.
+    pub fn close_jit_position(
+        &self,
+        pool: Address,
+        owner: Address,
+        tick_lower: i32,
+        tick_upper: i32,
+    ) -> anyhow::Result<()> {
+        self.conn.execute(
+            "DELETE FROM jit_open_positions
+              WHERE pool = ?1 AND owner = ?2 AND tick_lower = ?3 AND tick_upper = ?4",
+            rusqlite::params![
+                format!("{:#x}", pool),
+                format!("{:#x}", owner),
+                tick_lower as i64,
+                tick_upper as i64,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Open positions still inside the block window (`opened_block >= min_block`).
+    pub fn open_positions(&self, min_block: u64) -> anyhow::Result<Vec<OpenPosition>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pool, owner, tick_lower, tick_upper, opened_block, liquidity
+               FROM jit_open_positions WHERE opened_block >= ?1",
+        )?;
+        let rows = stmt.query_map([min_block as i64], |r| {
+            let pool: String = r.get(0)?;
+            let owner: String = r.get(1)?;
+            let liq: String = r.get(5)?;
+            Ok((
+                pool,
+                owner,
+                r.get::<_, i64>(2)? as i32,
+                r.get::<_, i64>(3)? as i32,
+                r.get::<_, i64>(4)? as u64,
+                liq,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (pool, owner, tick_lower, tick_upper, opened_block, liq) = row?;
+            let (Ok(pool), Ok(owner)) = (pool.parse::<Address>(), owner.parse::<Address>()) else {
+                continue;
+            };
+            out.push(OpenPosition {
+                pool,
+                owner,
+                tick_lower,
+                tick_upper,
+                opened_block,
+                liquidity: liq.parse::<u128>().unwrap_or(0),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Prune positions older than the block window. Returns rows removed.
+    pub fn prune_jit_positions(&self, before_block: u64) -> anyhow::Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM jit_open_positions WHERE opened_block < ?1",
+            [before_block as i64],
+        )?;
+        Ok(n)
+    }
+
     /// Count of ops by kind since a timestamp (quick overview).
     pub fn op_count_since(&self, since_ts: u64) -> anyhow::Result<u64> {
         let n: i64 = self.conn.query_row(
@@ -1365,8 +1706,7 @@ impl ExplorerStore {
     pub fn mark_trace_verified(
         &self,
         tx_hash: &str,
-        trace_profit_usd: Option<f64>,
-        note: &str,
+        verification: &TraceVerification,
     ) -> anyhow::Result<()> {
         for op in self.ops_for_tx(tx_hash)? {
             let mut details: serde_json::Value = op
@@ -1375,10 +1715,20 @@ impl ExplorerStore {
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(serde_json::json!({}));
             details["trace_verified"] = serde_json::json!(true);
-            if let Some(usd) = trace_profit_usd {
+            if let Some(usd) = verification.trace_profit_usd {
                 details["trace_profit_usd"] = serde_json::json!(usd);
             }
-            details["trace_note"] = serde_json::json!(note);
+            if let Some(usd) = verification.expected_profit_usd {
+                details["expected_profit_usd"] = serde_json::json!(usd);
+            }
+            if let Some(pct) = verification.profit_error_pct {
+                details["profit_error_pct"] = serde_json::json!(pct);
+            }
+            if !verification.native_delta_wei.is_empty() {
+                details["trace_native_delta_wei"] =
+                    serde_json::json!(verification.native_delta_wei);
+            }
+            details["trace_note"] = serde_json::json!(verification.note);
             self.conn.execute(
                 "UPDATE mev_ops SET details_json = ?1 WHERE id = ?2",
                 rusqlite::params![details.to_string(), op.id],
@@ -1673,8 +2023,11 @@ mod tests {
             pools: vec![address!("3333000000000000000000000000000000000003")],
             profit_token: Some(address!("4444000000000000000000000000000000000004")),
             profit_amount: Some(U256::from(1_000_000u64)),
+            profit_tokens: vec![],
             profit_usd: None,
             gas_cost_wei: U256::from(100_000_000_000_000u64),
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
             confidence: Confidence::Exact,
             victim_hashes: vec![],
             victim_swap_size: None,
@@ -1736,6 +2089,347 @@ mod tests {
 
         store.unwind_from(100).unwrap();
         assert!(!store.block_classified(100).unwrap());
+    }
+
+    #[test]
+    fn multi_residual_profit_usd_sums_all_priced_tokens() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let tok_a = address!("4444000000000000000000000000000000000004"); // 6 decimals
+        let tok_b = address!("5555000000000000000000000000000000000005"); // 18 decimals
+        let mut ev = sample_event(200);
+        ev.profit_token = Some(tok_a);
+        ev.profit_amount = Some(U256::from(1_000_000u64)); // 1 token @0.5 = 0.5 USD
+        ev.profit_tokens = vec![
+            (tok_a, U256::from(1_000_000u64)),
+            (tok_b, U256::from(1_000_000_000_000_000_000u64)), // 1 token @2.0 = 2 USD
+        ];
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            tok_a,
+            crate::explorer::pricing::TokenUsd {
+                usd: 0.5,
+                decimals: 6,
+            },
+        );
+        prices.insert(
+            tok_b,
+            crate::explorer::pricing::TokenUsd {
+                usd: 2.0,
+                decimals: 18,
+            },
+        );
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 200,
+                block_hash: &b256!(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 1,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[ev],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
+            .unwrap();
+        let ops = store.ops_in_range(200, 200, &[]).unwrap();
+        assert_eq!(ops.len(), 1);
+        let expected = 0.5 + 2.0;
+        let profit_usd = ops[0].profit_usd.unwrap();
+        assert!((profit_usd - expected).abs() < 1e-6, "got {profit_usd}");
+        // Net subtracts gas (100_000_000_000_000 wei native @0.75 = 0.000075 USD).
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+        assert!(
+            (ops[0].net_profit_usd.unwrap() - (expected - gas_usd)).abs() < 1e-9,
+            "net got {}",
+            ops[0].net_profit_usd.unwrap()
+        );
+        // Display-primary pair is persisted unchanged.
+        assert_eq!(
+            ops[0].profit_token.as_deref(),
+            Some("0x4444000000000000000000000000000000000004")
+        );
+        assert_eq!(ops[0].profit_amount.as_deref(), Some("1000000"));
+        // Residual list surfaces in details for forensic display.
+        assert!(ops[0]
+            .details_json
+            .as_deref()
+            .unwrap_or("")
+            .contains("\"profit_tokens\""));
+    }
+
+    #[test]
+    fn fot_profit_token_flagged_approximate_and_realized_rate_falls_back() {
+        let usdt = address!("dac17f958d2ee523a2206206994597c13d831ec7"); // bundled FOT
+        let longtail = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4444000000000000000000000000000000000004");
+
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            usdt,
+            crate::explorer::pricing::TokenUsd {
+                usd: 0.99,
+                decimals: 6,
+            },
+        );
+        prices.insert(
+            usdc,
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut fot = sample_event(301);
+        fot.profit_token = Some(usdt);
+        fot.profit_amount = Some(U256::from(1_000_000u64));
+        // Unpriced profit token priced at the realized route rate (Phase 2.4):
+        // 1 longtail token sold for 2 USDC ⇒ each is worth 2 USD.
+        let mut realized = sample_event(302);
+        realized.profit_token = Some(longtail);
+        realized.profit_amount = Some(U256::from(500_000u64));
+        realized.details = serde_json::json!({
+            "route": [{
+                "pool": "0x3333",
+                "amm": "v2",
+                "token_in": format!("{longtail:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "amount_in": "1000000",
+                "amount_out": "2000000",
+            }]
+        });
+
+        for (block, ev) in [(301u64, fot), (302, realized)] {
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    ),
+                    ts: 1_700_000_000,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps: &[],
+                    transfers: &[],
+                    events: &[ev],
+                    native_price_usd: Some(0.75),
+                    token_prices: &prices,
+                })
+                .unwrap();
+        }
+
+        let ops = store.ops_in_range(301, 302, &[]).unwrap();
+        assert_eq!(ops.len(), 2);
+
+        let fot_row = &ops[0];
+        assert!(fot_row
+            .details_json
+            .as_deref()
+            .unwrap_or("")
+            .contains("\"usd_approximate\":true"));
+        assert!(fot_row
+            .details_json
+            .as_deref()
+            .unwrap_or("")
+            .contains("\"approximate_reason\":\"FOT\""));
+        // FOT still priced from the external feed.
+        assert!((fot_row.profit_usd.unwrap() - 0.99).abs() < 1e-6);
+
+        let realized_row = &ops[1];
+        // 0.5 longtail token × realized 2.0 USD/token = 1.0, minus gas.
+        let expected_profit = 1.0;
+        assert!(
+            (realized_row.profit_usd.unwrap() - expected_profit).abs() < 1e-6,
+            "got {}",
+            realized_row.profit_usd.unwrap()
+        );
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+        assert_eq!(
+            realized_row.net_profit_usd.unwrap(),
+            expected_profit - gas_usd
+        );
+    }
+
+    #[test]
+    fn jit_open_positions_roundtrip() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let pool = address!("3333000000000000000000000000000000000003");
+        let owner = address!("2222000000000000000000000000000000000002");
+        store
+            .record_jit_open(&[OpenPosition {
+                pool,
+                owner,
+                tick_lower: -100,
+                tick_upper: 100,
+                opened_block: 500,
+                liquidity: 1000,
+            }])
+            .unwrap();
+        store
+            .record_jit_open(&[OpenPosition {
+                pool,
+                owner,
+                tick_lower: -200,
+                tick_upper: 200,
+                opened_block: 10,
+                liquidity: 7,
+            }])
+            .unwrap();
+
+        let open = store.open_positions(100).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].liquidity, 1000);
+        assert_eq!(open[0].opened_block, 500);
+
+        store.close_jit_position(pool, owner, -100, 100).unwrap();
+        assert!(store
+            .open_positions(0)
+            .unwrap()
+            .iter()
+            .any(|p| p.tick_lower == -200));
+
+        assert_eq!(store.prune_jit_positions(100).unwrap(), 1);
+        assert!(store.open_positions(0).unwrap().is_empty());
+    }
+
+    fn liquidation_event(collateral: Address, debt: Address) -> MevEvent {
+        let mut ev = sample_event(1);
+        ev.kind = MevKind::Liquidation;
+        ev.profit_token = Some(collateral);
+        ev.profit_amount = Some(U256::from(500));
+        ev.details = serde_json::json!({
+            "collateral_asset": format!("{collateral:#x}"),
+            "debt_asset": format!("{debt:#x}"),
+            "collateral_amount": "500",
+            "debt_to_cover": "300",
+            "reconciled": true,
+            "reasons": [],
+        });
+        ev
+    }
+
+    #[test]
+    fn liquidation_pnl_cross_asset_is_inferred() {
+        let collateral = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let debt = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            collateral,
+            crate::explorer::pricing::TokenUsd {
+                usd: 2.0,
+                decimals: 0,
+            },
+        );
+        prices.insert(
+            debt,
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 0,
+            },
+        );
+        let ev = liquidation_event(collateral, debt);
+        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        // 500 * $2 − 300 * $1 = 700
+        assert!((usd.unwrap() - 700.0).abs() < 1e-9);
+        assert_eq!(conf, "inferred");
+        assert!(details.contains("LIQ_BONUS_APPROX"));
+    }
+
+    #[test]
+    fn liquidation_pnl_missing_price_falls_back() {
+        let collateral = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let debt = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let prices = std::collections::HashMap::new();
+        let ev = liquidation_event(collateral, debt);
+        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        assert!(usd.is_none());
+        assert_eq!(conf, "inferred");
+        assert!(details.contains("MULTI_ASSET_PRICING"));
+        assert!(details.contains("collateral_amount"));
+    }
+
+    #[test]
+    fn liquidation_pnl_same_asset_is_exact() {
+        let asset = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            asset,
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 0,
+            },
+        );
+        let ev = liquidation_event(asset, asset);
+        let (usd, conf, _) = liquidation_pnl(&ev, &prices);
+        assert!((usd.unwrap() - 200.0).abs() < 1e-9);
+        assert_eq!(conf, "exact");
+    }
+
+    #[test]
+    fn sandwich_loss_gate_skips_unprofitable() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            crate::explorer::pricing::TokenUsd {
+                usd: 0.5,
+                decimals: 6,
+            },
+        );
+        // Zero extractable profit cannot cover front+back gas → not realized MEV.
+        let mut loss = sample_event(130);
+        loss.kind = MevKind::Sandwich;
+        loss.profit_amount = Some(U256::ZERO);
+        loss.details = serde_json::json!({ "reason": "test" });
+        let n = store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 130,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"
+                ),
+                ts: 1_700_000_300,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[loss],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
+            .unwrap();
+        assert_eq!(n, 0);
+        assert!(store.ops_in_range(130, 130, &[]).unwrap().is_empty());
+        // ...but the block is still marked classified (0 persisted ops).
+        assert!(store.block_classified(130).unwrap());
+
+        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept.
+        let mut win = sample_event(131);
+        win.kind = MevKind::Sandwich;
+        let n = store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 131,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"
+                ),
+                ts: 1_700_000_400,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[win],
+                native_price_usd: Some(0.75),
+                token_prices: &prices,
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
     }
 
     #[test]

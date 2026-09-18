@@ -116,10 +116,7 @@ pub async fn enrich_from_llama(
 
     const CHUNK: usize = 40;
     for chunk in addresses.chunks(CHUNK) {
-        let keys: Vec<String> = chunk
-            .iter()
-            .map(|a| format!("{prefix}:{a:#x}"))
-            .collect();
+        let keys: Vec<String> = chunk.iter().map(|a| format!("{prefix}:{a:#x}")).collect();
         let joined = keys.join(",");
         let url = format!(
             "https://coins.llama.fi/prices/current/{}",
@@ -195,9 +192,7 @@ pub async fn enrich_from_coingecko(
     };
 
     for addr in addresses {
-        let url = format!(
-            "https://api.coingecko.com/api/v3/coins/{platform}/contract/{addr:#x}"
-        );
+        let url = format!("https://api.coingecko.com/api/v3/coins/{platform}/contract/{addr:#x}");
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
                 Ok(json) => {

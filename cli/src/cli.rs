@@ -229,6 +229,10 @@ pub struct ValidateArgs {
     #[arg(long = "emit-missing-pools")]
     pub emit_missing_pools: bool,
 
+    /// Export realized review candidates (inferred arb/unknown) to this CSV path
+    #[arg(long = "review-csv", value_name = "FILE")]
+    pub review_csv: Option<String>,
+
     /// Machine-readable JSON output
     #[arg(long)]
     pub json: bool,

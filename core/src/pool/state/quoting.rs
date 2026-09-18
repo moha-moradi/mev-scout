@@ -229,14 +229,10 @@ impl PoolState {
             PoolState::UniswapV2(v2) => std::cmp::min(v2.reserve0, v2.reserve1),
             PoolState::UniswapV3(v3) => max_v3_tradeable_amount(v3, V3Direction::ZeroForOne)
                 .max(max_v3_tradeable_amount(v3, V3Direction::OneForZero)),
-            PoolState::UniswapV4(v4) => {
-                max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
-                    .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero))
-            }
-            PoolState::PancakeInfinity(v4) => {
-                max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
-                    .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero))
-            }
+            PoolState::UniswapV4(v4) => max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
+                .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero)),
+            PoolState::PancakeInfinity(v4) => max_v3_tradeable_amount(v4, V3Direction::ZeroForOne)
+                .max(max_v3_tradeable_amount(v4, V3Direction::OneForZero)),
             PoolState::Curve(c) => c.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::Balancer(b) => b.balances.iter().fold(0u128, |a, &b| a.max(b)),
             PoolState::TraderJoeLB(lb) => std::cmp::min(lb.reserve_x, lb.reserve_y),
@@ -253,10 +249,7 @@ impl PoolState {
         use crate::pool::math::v3::estimate_v3_swap_gas;
         match self {
             PoolState::UniswapV3(p) | PoolState::UniswapV4(p) | PoolState::PancakeInfinity(p) => {
-                estimate_v3_swap_gas(
-                    p,
-                    V3Direction::for_input_token(token_in, p.info.token0),
-                )
+                estimate_v3_swap_gas(p, V3Direction::for_input_token(token_in, p.info.token0))
             }
             other => other.gas_estimate(),
         }

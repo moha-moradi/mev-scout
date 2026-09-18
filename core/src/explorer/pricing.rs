@@ -46,6 +46,70 @@ pub fn token_amount_to_usd(amount: U256, price: &TokenUsd) -> f64 {
     units * price.usd
 }
 
+/// Why a token's USD is only approximate (Phase 2.4): fee-on-transfer or
+/// rebase tokens distort recorded amounts, so their deltas are flagged.
+pub fn approximate_token(token: &Address) -> Option<&'static str> {
+    if crate::pool::state::pool_types::is_fee_on_transfer_token(token) {
+        return Some("FOT");
+    }
+    if crate::pool::state::pool_types::is_rebase_token(token) {
+        return Some("REBASE");
+    }
+    None
+}
+
+/// USD value of `amount` of `token`, preferring the external price and
+/// falling back to the on-chain realized rate implied by the event's route
+/// legs (Phase 2.4): a leg trading `token` against a priced counterpart
+/// prices `token` at the rate the searcher actually realized.
+///
+/// `details` is the event's `route`-bearing `details` JSON. Returns `None`
+/// when neither an external price nor a usable route leg exists.
+pub fn amount_usd_realized(
+    token: Address,
+    amount: U256,
+    token_prices: &HashMap<Address, TokenUsd>,
+    details: &serde_json::Value,
+) -> Option<f64> {
+    if let Some(p) = token_prices.get(&token) {
+        return Some(token_amount_to_usd(amount, p));
+    }
+    if amount.is_zero() {
+        return None;
+    }
+    let route = details.get("route")?.as_array()?;
+    for leg in route {
+        let token_in = as_address(leg.get("token_in")?)?;
+        let token_out = as_address(leg.get("token_out")?)?;
+        let amount_in = as_u256(leg.get("amount_in")?)?;
+        let amount_out = as_u256(leg.get("amount_out")?)?;
+        // Sold `amount_in` of `token` for a priced counterpart: value the same
+        // token amount at that realized rate.
+        if token_in == token && !amount_in.is_zero() {
+            if let Some(p) = token_prices.get(&token_out) {
+                let out_usd = token_amount_to_usd(amount_out, p);
+                return Some(out_usd * u256_to_f64(amount) / u256_to_f64(amount_in));
+            }
+        }
+        // Spent a priced counterpart to obtain `amount_out` of `token`.
+        if token_out == token && !amount_out.is_zero() {
+            if let Some(p) = token_prices.get(&token_in) {
+                let in_usd = token_amount_to_usd(amount_in, p);
+                return Some(in_usd * u256_to_f64(amount) / u256_to_f64(amount_out));
+            }
+        }
+    }
+    None
+}
+
+fn as_address(v: &serde_json::Value) -> Option<Address> {
+    v.as_str().and_then(|s| s.parse::<Address>().ok())
+}
+
+fn as_u256(v: &serde_json::Value) -> Option<U256> {
+    v.as_str().and_then(|s| s.parse::<U256>().ok())
+}
+
 /// Convert wei (18-decimals native) to USD.
 pub fn wei_to_usd(wei: U256, native_usd: f64) -> f64 {
     u256_to_f64(wei) / 1e18 * native_usd
@@ -95,10 +159,7 @@ pub async fn fetch_native_price_llama(
     }
     let prefix = llama_chain_prefix(chain);
     let key = format!("{prefix}:{wrapped_native:#x}");
-    let url = format!(
-        "https://coins.llama.fi/prices/current/{}",
-        urlencode(&key)
-    );
+    let url = format!("https://coins.llama.fi/prices/current/{}", urlencode(&key));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
@@ -196,6 +257,71 @@ mod tests {
                 < 1e-9
         );
         assert!((wei_to_usd(U256::from(1_000_000_000_000_000_000u64), 2.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn realized_rate_prices_unpriced_profit_token() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            usdc,
+            TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        let details = serde_json::json!({
+            "route": [{
+                "pool": "0x0000000000000000000000000000000000000000",
+                "token_in": format!("{token:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "amount_in": "1000000",
+                "amount_out": "2000000",
+            }]
+        });
+        // 1 token sold for 2 USDC → realized rate 2.0 USD/token; 0.5 token ⇒ 1.0.
+        let usd = amount_usd_realized(token, U256::from(500_000u64), &prices, &details).unwrap();
+        assert!((usd - 1.0).abs() < 1e-6, "got {usd}");
+        // Route leg where the profit token is the OUTPUT of a priced spend.
+        let details2 = serde_json::json!({
+            "route": [{
+                "pool": "0x0000000000000000000000000000000000000000",
+                "token_in": format!("{usdc:#x}"),
+                "token_out": format!("{token:#x}"),
+                "amount_in": "1000000",
+                "amount_out": "500000",
+            }]
+        });
+        let usd2 = amount_usd_realized(token, U256::from(250_000u64), &prices, &details2).unwrap();
+        assert!((usd2 - 0.5).abs() < 1e-6, "got {usd2}");
+        // External price always wins over the route-derived rate.
+        prices.insert(
+            token,
+            TokenUsd {
+                usd: 9.0,
+                decimals: 6,
+            },
+        );
+        let usd3 = amount_usd_realized(token, U256::from(1_000_000u64), &prices, &details).unwrap();
+        assert!((usd3 - 9.0).abs() < 1e-6, "got {usd3}");
+        // No priced counterpart and no route → None.
+        let other = address!("0b00000000000000000000000000000000000000");
+        assert!(amount_usd_realized(other, U256::from(1u64), &prices, &details).is_none());
+    }
+
+    #[test]
+    fn fot_and_rebase_tokens_flag_approximate() {
+        // USDT (0xdac1…) is in the bundled fee_on_transfer registry.
+        let usdt = address!("dac17f958d2ee523a2206206994597c13d831ec7");
+        assert_eq!(approximate_token(&usdt), Some("FOT"));
+        // stETH (0xae7a…) is in the rebase registry.
+        let steth = address!("ae7ab96520de3a18e5e111b5eaab095312d7fe84");
+        assert_eq!(approximate_token(&steth), Some("REBASE"));
+        assert_eq!(
+            approximate_token(&address!("4000000000000000000000000000000000000000")),
+            None
+        );
     }
 
     #[test]

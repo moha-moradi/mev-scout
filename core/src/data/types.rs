@@ -36,6 +36,9 @@ pub struct TxData {
     pub gas_limit: u64,
     pub max_fee_per_gas: u128,
     pub max_priority_fee_per_gas: Option<u128>,
+    /// Legacy gas price (type-0/1). `None` for EIP-1559/4844/7702 txs.
+    #[serde(default)]
+    pub gas_price: Option<u128>,
     pub nonce: u64,
     pub access_list: Vec<AccessListItem>,
     #[serde(default)]
@@ -68,6 +71,10 @@ pub struct ReceiptData {
     pub status: bool,
     pub gas_used: u64,
     pub cumulative_gas_used: u64,
+    /// `effectiveGasPrice` from the receipt (post-London). Preferred for gas
+    /// cost; `None` only if the node omitted it.
+    #[serde(default)]
+    pub effective_gas_price: Option<u128>,
     pub logs: Vec<LogData>,
     pub contract_address: Option<Address>,
 }

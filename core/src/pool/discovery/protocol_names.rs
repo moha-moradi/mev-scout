@@ -70,10 +70,7 @@ mod tests {
 
     #[test]
     fn resolve_falls_back_to_dex_type() {
-        assert_eq!(
-            resolve_dex_name(None, "UniswapV2"),
-            "UniswapV2"
-        );
+        assert_eq!(resolve_dex_name(None, "UniswapV2"), "UniswapV2");
         assert_eq!(
             resolve_dex_name(
                 Some(address!("0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10")),

@@ -48,9 +48,7 @@ pub async fn state_with_conns(explorer_conn: Connection, cache_conn: Connection)
         cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
         explorer_conn: tokio::sync::Mutex::new(explorer_conn),
         cache_conn: tokio::sync::Mutex::new(cache_conn),
-        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
-            data_dir.path(),
-        ))),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(data_dir.path()))),
         started_at: std::time::Instant::now(),
         version: "test",
     })
@@ -77,9 +75,7 @@ pub async fn test_state_with_files(config_path: PathBuf) -> SharedState {
         cache_db_path: tokio::sync::RwLock::new(PathBuf::from("nonexistent-cache.sqlite")),
         explorer_conn: tokio::sync::Mutex::new(explorer_conn),
         cache_conn: tokio::sync::Mutex::new(cache_conn),
-        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
-            data_dir.path(),
-        ))),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(data_dir.path()))),
         started_at: std::time::Instant::now(),
         version: "test",
     })
@@ -117,9 +113,7 @@ pub async fn state_with_real_dbs() -> SharedState {
         cache_db_path: tokio::sync::RwLock::new(cache_path.clone()),
         explorer_conn: tokio::sync::Mutex::new(seeded_explorer_db()),
         cache_conn: tokio::sync::Mutex::new(seeded_cache_db()),
-        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(
-            dir.path(),
-        ))),
+        job_manager: Arc::new(tokio::sync::Mutex::new(JobManager::new(dir.path()))),
         started_at: std::time::Instant::now(),
         version: "test",
     })

@@ -114,8 +114,7 @@ async fn opportunity_totals(
     state: &SharedState,
 ) -> anyhow::Result<std::collections::HashMap<String, (u64, Option<f64>)>> {
     let conn = state.explorer_conn.lock().await;
-    let mut stmt =
-        conn.prepare("SELECT run_id, COUNT(*) FROM opportunities GROUP BY run_id")?;
+    let mut stmt = conn.prepare("SELECT run_id, COUNT(*) FROM opportunities GROUP BY run_id")?;
     let rows = stmt.query_map([], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64))
     })?;

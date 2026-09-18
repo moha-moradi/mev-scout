@@ -149,6 +149,47 @@ pub struct TierRecall {
     pub usd_matched_t1: f64,
     pub usd_matched_t2: f64,
     pub misses: MissTaxonomy,
+    /// Ops with `Confidence::Inferred` (realized-side precision review queue).
+    pub inferred_ops: u64,
+    /// Ops reconciled against a trace (`trace_verified` in details).
+    pub trace_verified: u64,
+    /// Mean of `profit_error_pct` over trace-verified ops (classifier vs trace).
+    pub profit_error_mean: Option<f64>,
+    /// Median absolute deviation of `profit_error_pct` over trace-verified ops.
+    pub profit_error_mad: Option<f64>,
+}
+
+/// One realized-side precision review candidate (inferred arb / unknown).
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewCandidate {
+    pub block: u64,
+    pub tx_hash: String,
+    pub kind: String,
+    pub searcher: String,
+    pub confidence: String,
+    pub profit_usd: Option<f64>,
+    pub net_profit_usd: Option<f64>,
+}
+
+/// Arithmetic mean (empty ⇒ None).
+fn mean(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() {
+        return None;
+    }
+    Some(xs.iter().sum::<f64>() / xs.len() as f64)
+}
+
+/// Median absolute deviation about the median (empty ⇒ None).
+fn mad(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() {
+        return None;
+    }
+    let mut sorted = xs.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = sorted[sorted.len() / 2];
+    let mut dev: Vec<f64> = xs.iter().map(|x| (x - median).abs()).collect();
+    dev.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    Some(dev[dev.len() / 2])
 }
 
 impl TierRecall {
@@ -205,6 +246,13 @@ pub struct ValidationReport {
     /// Whether rejection capture was present for the window (drives
     /// `unknown-coverage` vs M3/M5 disambiguation).
     pub rejections_recorded: bool,
+    /// Realized inferred arb/unknown ops — the precision-review queue.
+    pub review_candidate_count: u64,
+    pub review_candidates: Vec<ReviewCandidate>,
+    /// Trace-reconciled ops and their `profit_error_pct` µ/MAD across kinds.
+    pub trace_verified_ops: u64,
+    pub profit_error_mean: Option<f64>,
+    pub profit_error_mad: Option<f64>,
 }
 
 impl ValidationReport {
@@ -332,6 +380,29 @@ pub fn compute_validation(
             .iter()
             .map(|o| o.net_profit_usd.or(o.profit_usd).unwrap_or(0.0))
             .sum();
+
+        // Realized-side precision + trace reconciliation (Phase 0).
+        let mut errors: Vec<f64> = Vec::new();
+        for ev in &kind_ops {
+            if ev.confidence == "inferred" {
+                recall.inferred_ops += 1;
+            }
+            if let Some(details) = ev.details_json.as_deref() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(details) {
+                    if v.get("trace_verified")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false)
+                    {
+                        if let Some(e) = v.get("profit_error_pct").and_then(|x| x.as_f64()) {
+                            errors.push(e);
+                        }
+                    }
+                }
+            }
+        }
+        recall.trace_verified = errors.len() as u64;
+        recall.profit_error_mean = mean(&errors);
+        recall.profit_error_mad = mad(&errors);
 
         // Count how many opportunities of the matching strategy exist (for N:1).
         let matching_strategy = |s: &str| strategy_to_kind(s) == Some(kind.as_str());
@@ -521,6 +592,38 @@ pub fn compute_validation(
     }
 
     let opportunity_runs = runs.into_iter().collect();
+
+    // Realized-side precision axis: inferred arb/unknown ops are the review
+    // queue (scanner-side `precision_signal_count` stays independent).
+    let review_candidates: Vec<ReviewCandidate> = ops
+        .iter()
+        .filter(|o| o.confidence == "inferred" && (o.kind == "arb_atomic" || o.kind == "unknown"))
+        .map(|o| ReviewCandidate {
+            block: o.block_number,
+            tx_hash: o.tx_hash.clone(),
+            kind: o.kind.clone(),
+            searcher: o.eoa.clone(),
+            confidence: o.confidence.clone(),
+            profit_usd: o.profit_usd,
+            net_profit_usd: o.net_profit_usd,
+        })
+        .collect();
+    let review_candidate_count = review_candidates.len() as u64;
+
+    // Aggregate trace reconciliation across kinds.
+    let trace_verified_ops: u64 = per_kind.iter().map(|(_, t)| t.trace_verified).sum();
+    let error_samples: Vec<f64> = ops
+        .iter()
+        .filter_map(|o| o.details_json.as_deref())
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .filter(|v| {
+            v.get("trace_verified")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+        })
+        .filter_map(|v| v.get("profit_error_pct").and_then(|x| x.as_f64()))
+        .collect();
+
     Ok(ValidationReport {
         chain: chain_str,
         from_block,
@@ -535,6 +638,11 @@ pub fn compute_validation(
         threshold_sweep: threshold_sweep_points,
         missing_pools,
         rejections_recorded,
+        review_candidate_count,
+        review_candidates,
+        trace_verified_ops,
+        profit_error_mean: mean(&error_samples),
+        profit_error_mad: mad(&error_samples),
     })
 }
 
@@ -689,6 +797,52 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
         "  Precision signal (unmatched opportunities): {}",
         report.precision_signal_count
     );
+    let _ = writeln!(
+        out,
+        "  Realized review queue (inferred arb/unknown): {}",
+        report.review_candidate_count
+    );
+
+    if report.trace_verified_ops > 0 {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "  Trace reconciliation (profit_error_pct, >0 = classifier over-estimate):"
+        );
+        let _ = writeln!(
+            out,
+            "    {:<12} {:>8} {:>10} {:>10}",
+            "kind", "n", "mean%", "MAD%"
+        );
+        for (kind, t) in report.per_kind.iter().filter(|(_, t)| t.trace_verified > 0) {
+            let _ = writeln!(
+                out,
+                "    {:<12} {:>8} {:>10} {:>10}",
+                kind,
+                t.trace_verified,
+                t.profit_error_mean
+                    .map(|m| format!("{m:.1}"))
+                    .unwrap_or_else(|| "-".into()),
+                t.profit_error_mad
+                    .map(|m| format!("{m:.1}"))
+                    .unwrap_or_else(|| "-".into()),
+            );
+        }
+        let _ = writeln!(
+            out,
+            "    {:<12} {:>8} {:>10} {:>10}",
+            "ALL",
+            report.trace_verified_ops,
+            report
+                .profit_error_mean
+                .map(|m| format!("{m:.1}"))
+                .unwrap_or_else(|| "-".into()),
+            report
+                .profit_error_mad
+                .map(|m| format!("{m:.1}"))
+                .unwrap_or_else(|| "-".into()),
+        );
+    }
 
     let miss = report.miss_distribution();
     let _ = writeln!(out);
@@ -778,8 +932,11 @@ mod tests {
                 pools: pools.clone(),
                 profit_token: Some(addr!("4444000000000000000000000000000000000004")),
                 profit_amount: Some(U256t::from(1_000_000u64)),
+                profit_tokens: vec![],
                 profit_usd: None,
                 gas_cost_wei: U256t::from(100_000_000_000_000u64),
+                flashloan_fee_wei: None,
+                flashloan_fee_token: None,
                 confidence: Confidence::Exact,
                 victim_hashes: vec![],
                 victim_swap_size: None,

@@ -26,7 +26,10 @@ pub async fn init_rpc(
     )
     .await;
     rpc.with_provider_archive(
-        &provider_configs.iter().map(|p| p.archive).collect::<Vec<_>>(),
+        &provider_configs
+            .iter()
+            .map(|p| p.archive)
+            .collect::<Vec<_>>(),
     )
     .await;
     if check_connection {

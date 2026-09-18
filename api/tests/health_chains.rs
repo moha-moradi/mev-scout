@@ -7,7 +7,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use common::{test_state, test_router};
+use common::{test_router, test_state};
 
 async fn get(app: &axum::Router<()>, uri: &str) -> (StatusCode, Value) {
     let resp = app
@@ -22,7 +22,9 @@ async fn get(app: &axum::Router<()>, uri: &str) -> (StatusCode, Value) {
         .await
         .unwrap();
     let status = resp.status();
-    let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
     (status, json)
 }
@@ -89,7 +91,8 @@ async fn chains_returns_exactly_seven_with_correct_ids() {
 async fn missing_db_read_endpoints_return_empty_not_500() {
     // A state with empty in-memory DBs (schema present, no rows) and file
     // paths pointing at nonexistent files → graceful empty responses.
-    let state = common::state_with_conns(common::empty_explorer_db(), common::seeded_cache_db()).await;
+    let state =
+        common::state_with_conns(common::empty_explorer_db(), common::seeded_cache_db()).await;
     let app = test_router(state);
     for uri in [
         "/api/explorer/feed",

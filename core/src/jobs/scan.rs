@@ -54,9 +54,10 @@ pub async fn job_scan(
 
     let outcome = match opts.kind {
         ScanKind::Trades => {
-            let trades = crate::chain::trades::scan_trades(&rpc, from, to, opts.batch_size, addrs_ref)
-                .await
-                .context("trade scan failed")?;
+            let trades =
+                crate::chain::trades::scan_trades(&rpc, from, to, opts.batch_size, addrs_ref)
+                    .await
+                    .context("trade scan failed")?;
             progress.log(&format!(
                 "trade scan: {} trade(s) in {from}-{to} (showing {})",
                 trades.len(),
@@ -68,7 +69,12 @@ pub async fn job_scan(
             let min_value = opts.min_value.unwrap_or(U256::ZERO);
             let transfers = if min_value > U256::ZERO {
                 crate::chain::transfers::scan_whale_transfers(
-                    &rpc, from, to, opts.batch_size, min_value, addrs_ref,
+                    &rpc,
+                    from,
+                    to,
+                    opts.batch_size,
+                    min_value,
+                    addrs_ref,
                 )
                 .await
                 .context("whale transfer scan failed")?
@@ -86,7 +92,11 @@ pub async fn job_scan(
         }
         ScanKind::Flashloans => {
             let loans = crate::chain::flashloans::scan_flash_loans(
-                &rpc, from, to, opts.batch_size, addrs_ref,
+                &rpc,
+                from,
+                to,
+                opts.batch_size,
+                addrs_ref,
             )
             .await
             .context("flash loan scan failed")?;
@@ -99,7 +109,11 @@ pub async fn job_scan(
         }
         ScanKind::Liquidations => {
             let liqs = crate::chain::liquidations::scan_liquidations(
-                &rpc, from, to, opts.batch_size, addrs_ref,
+                &rpc,
+                from,
+                to,
+                opts.batch_size,
+                addrs_ref,
             )
             .await
             .context("liquidation scan failed")?;

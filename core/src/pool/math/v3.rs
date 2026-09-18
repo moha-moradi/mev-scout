@@ -24,7 +24,10 @@ pub enum V3Direction {
 
 impl V3Direction {
     /// Direction implied by which pool token is the input side.
-    pub fn for_input_token(token_in: alloy::primitives::Address, token0: alloy::primitives::Address) -> Self {
+    pub fn for_input_token(
+        token_in: alloy::primitives::Address,
+        token0: alloy::primitives::Address,
+    ) -> Self {
         if token_in == token0 {
             Self::ZeroForOne
         } else {
@@ -241,9 +244,11 @@ fn compute_swap_step(
     fee: FeeTier,
 ) -> (U256, U256, U256, U256) {
     let zero_for_one = sqrt_ratio_target_x96 < sqrt_ratio_current_x96;
-    let direction =
-        if zero_for_one { V3Direction::ZeroForOne } else { V3Direction::OneForZero };
-
+    let direction = if zero_for_one {
+        V3Direction::ZeroForOne
+    } else {
+        V3Direction::OneForZero
+    };
 
     let max_in = if zero_for_one {
         get_amount_0_delta(
@@ -779,14 +784,12 @@ mod tests {
         assert_eq!(capped.len(), 2);
 
         // No ticks → no breakpoints
-        assert!(
-            v3_breakpoints(
-                &test_pool(BTreeMap::new()),
-                V3Direction::ZeroForOne,
-                1_000_000_000,
-                8
-            )
-            .is_empty()
-        );
+        assert!(v3_breakpoints(
+            &test_pool(BTreeMap::new()),
+            V3Direction::ZeroForOne,
+            1_000_000_000,
+            8
+        )
+        .is_empty());
     }
 }

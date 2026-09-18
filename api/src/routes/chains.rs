@@ -32,7 +32,10 @@ async fn chains(State(state): State<SharedState>) -> ApiResult<Json<Vec<ChainDto
     let explorer_base = std::path::PathBuf::from(cfg.effective_explorer_db_path(&cfg.chain));
     drop(cfg);
 
-    let cache_dir = cache_base.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+    let cache_dir = cache_base
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
     let explorer_dir = explorer_base
         .parent()
         .map(|p| p.to_path_buf())

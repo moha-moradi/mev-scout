@@ -74,10 +74,7 @@ impl ResolvedFactories {
     }
 
     /// Borrow slices into a [`DiscoveryConfig`] with the given runtime knobs.
-    pub fn discovery_config<'a>(
-        &'a self,
-        opts: DiscoveryRuntimeOpts<'a>,
-    ) -> DiscoveryConfig<'a> {
+    pub fn discovery_config<'a>(&'a self, opts: DiscoveryRuntimeOpts<'a>) -> DiscoveryConfig<'a> {
         let slices = |v: &'a [Address]| {
             if v.is_empty() {
                 None

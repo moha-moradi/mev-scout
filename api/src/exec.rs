@@ -149,14 +149,10 @@ fn scan_opts(f: &HashMap<String, Vec<String>>) -> anyhow::Result<ScanOpts> {
     let kind = scan_kind(&flag_str(f, "kind").unwrap_or_else(|| "trades".to_string()))?;
     let addresses = f
         .get("address")
-        .map(|v| {
-            v.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect::<Vec<_>>()
-        })
+        .map(|v| v.iter().filter_map(|s| s.parse().ok()).collect::<Vec<_>>())
         .filter(|v: &Vec<alloy::primitives::Address>| !v.is_empty());
-    let min_value = flag_str(f, "min-value")
-        .and_then(|s| s.parse::<alloy::primitives::U256>().ok());
+    let min_value =
+        flag_str(f, "min-value").and_then(|s| s.parse::<alloy::primitives::U256>().ok());
     Ok(ScanOpts {
         kind,
         addresses,
@@ -226,6 +222,7 @@ fn explorer_validate_opts(f: &HashMap<String, Vec<String>>) -> ExplorerValidateO
         run_ids: flag_list(f, "run"),
         threshold_sweep: flag_bool(f, "threshold-sweep"),
         emit_missing_pools: flag_bool(f, "emit-missing-pools"),
+        review_csv: flag_str(f, "review-csv"),
         json: flag_bool(f, "json"),
     }
 }
@@ -241,7 +238,8 @@ async fn run_request(
     let command = command_words.join(" ");
     let flags = parse_flags(args);
 
-    let mut config = Config::load_or_default(config_path).context("failed to load config for job")?;
+    let mut config =
+        Config::load_or_default(config_path).context("failed to load config for job")?;
     config
         .merge_cli(&overrides_from_flags(&flags, &command))
         .context("failed to apply job args to config")?;
@@ -388,8 +386,7 @@ pub(crate) async fn run_job(
     args: &[String],
     shared: &Arc<JobShared>,
 ) {
-    let result: anyhow::Result<()> = if std::env::var("MEV_SCOUT_JOB_STUB") == Ok("1".to_string())
-    {
+    let result: anyhow::Result<()> = if std::env::var("MEV_SCOUT_JOB_STUB") == Ok("1".to_string()) {
         stub_job(command_words, args, shared).await
     } else {
         run_request(config_path, command_words, args, shared).await

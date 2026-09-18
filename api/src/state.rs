@@ -111,6 +111,49 @@ impl AppState {
         *self.explorer_conn.lock().await = explorer_conn;
         Ok(())
     }
+
+    /// Reopen the explorer connection when the on-disk DB appeared after we
+    /// started with an in-memory placeholder (common: first `explorer index`
+    /// creates `cache/explorer-{chain}.sqlite` while the API still holds the
+    /// empty scratch DB opened at boot).
+    pub async fn ensure_explorer_conn(&self) -> anyhow::Result<()> {
+        let path = self.explorer_db_path.read().await.clone();
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut conn = self.explorer_conn.lock().await;
+        let file: String = conn
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE seq = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if file.is_empty() {
+            *conn = open_read_only_or_empty(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Same as [`Self::ensure_explorer_conn`] for the scanner-cache DB.
+    pub async fn ensure_cache_conn(&self) -> anyhow::Result<()> {
+        let path = self.cache_db_path.read().await.clone();
+        if !path.exists() {
+            return Ok(());
+        }
+        let mut conn = self.cache_conn.lock().await;
+        let file: String = conn
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE seq = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+        if file.is_empty() {
+            *conn = open_readonly_if_exists(&path)?;
+        }
+        Ok(())
+    }
 }
 
 /// Open a read-only connection when the file exists; otherwise return a
@@ -120,8 +163,7 @@ pub fn open_read_only_or_empty(path: &Path) -> anyhow::Result<Connection> {
     if path.exists() {
         let conn = Connection::open_with_flags(
             path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         Ok(conn)
     } else {

@@ -16,6 +16,7 @@ pub struct ExplorerValidateOpts {
     pub run_ids: Vec<String>,
     pub threshold_sweep: bool,
     pub emit_missing_pools: bool,
+    pub review_csv: Option<String>,
     pub json: bool,
 }
 
@@ -23,6 +24,7 @@ pub struct ExplorerValidateOpts {
 pub struct ExplorerValidateOutcome {
     pub report: ValidationReport,
     pub missing_pools_path: Option<String>,
+    pub review_csv_path: Option<String>,
 }
 
 fn since_ts(since: Option<&str>) -> u64 {
@@ -93,8 +95,37 @@ pub async fn job_explorer_validate(
         missing_pools_path = Some(path.to_string());
     }
 
+    let mut review_csv_path = None;
+    if let Some(path) = opts.review_csv.as_deref() {
+        let mut csv =
+            String::from("block,tx_hash,kind,searcher,confidence,profit_usd,net_profit_usd\n");
+        for c in &report.review_candidates {
+            let fu = c.profit_usd.map(|v| format!("{v:.6}")).unwrap_or_default();
+            let nu = c
+                .net_profit_usd
+                .map(|v| format!("{v:.6}"))
+                .unwrap_or_default();
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{}\n",
+                c.block, c.tx_hash, c.kind, c.searcher, c.confidence, fu, nu
+            ));
+        }
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).ok();
+            }
+        }
+        std::fs::write(path, csv)?;
+        progress.log(&format!(
+            "\nReview candidates ({}) written to {path}",
+            report.review_candidates.len()
+        ));
+        review_csv_path = Some(path.to_string());
+    }
+
     Ok(ExplorerValidateOutcome {
         report,
         missing_pools_path,
+        review_csv_path,
     })
 }

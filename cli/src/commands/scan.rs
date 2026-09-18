@@ -22,10 +22,7 @@ pub async fn cmd_scan(
         .as_ref()
         .map(|a| a.iter().filter_map(|s| s.parse().ok()).collect())
         .filter(|v: &Vec<alloy::primitives::Address>| !v.is_empty());
-    let min_value = args
-        .min_value
-        .as_ref()
-        .and_then(|s| s.parse().ok());
+    let min_value = args.min_value.as_ref().and_then(|s| s.parse().ok());
 
     let opts = ScanOpts {
         kind,

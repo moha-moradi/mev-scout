@@ -30,9 +30,9 @@ pub async fn job_report(
     let run_id = match &opts.run_id {
         Some(id) => id.clone(),
         None => {
-            let latest = cache
-                .latest_manifest()?
-                .context("no runs recorded in the run-history db — execute 'mev-scout run' first")?;
+            let latest = cache.latest_manifest()?.context(
+                "no runs recorded in the run-history db — execute 'mev-scout run' first",
+            )?;
             latest.run_id
         }
     };

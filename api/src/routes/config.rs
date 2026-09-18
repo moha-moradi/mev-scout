@@ -50,8 +50,7 @@ pub struct SanitizedConfig {
 }
 
 pub fn router() -> Router<SharedState> {
-    Router::new()
-        .route("/api/config", get(get_config).put(put_config))
+    Router::new().route("/api/config", get(get_config).put(put_config))
 }
 
 /// Parse raw `rpc_urls` / `rpc_rps` from the config file without env expansion.
@@ -189,10 +188,7 @@ async fn put_config(
         toml_value
             .as_table_mut()
             .ok_or_else(|| ApiError::bad_request("config root is not a table".to_string()))?
-            .insert(
-                "chain".to_string(),
-                toml::Value::String(parsed.to_string()),
-            );
+            .insert("chain".to_string(), toml::Value::String(parsed.to_string()));
     }
     if let Some(gas) = &edit.gas {
         merge_flattened(&mut toml_value, gas)?;
@@ -310,7 +306,9 @@ fn merge_flattened<T: Serialize>(
         .as_object()
         .ok_or_else(|| ApiError::bad_request("section must serialize to a table".to_string()))?;
     let Some(root) = toml_value.as_table_mut() else {
-        return Err(ApiError::bad_request("config root is not a table".to_string()));
+        return Err(ApiError::bad_request(
+            "config root is not a table".to_string(),
+        ));
     };
     for (key, nested) in obj {
         let as_toml = json_to_toml(nested)
@@ -338,7 +336,9 @@ fn merge_section<T: Serialize>(
     if let Some(root) = toml_value.as_table_mut() {
         root.insert(key.to_string(), as_toml);
     } else {
-        return Err(ApiError::bad_request("config root is not a table".to_string()));
+        return Err(ApiError::bad_request(
+            "config root is not a table".to_string(),
+        ));
     }
     Ok(())
 }

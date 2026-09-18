@@ -105,7 +105,8 @@ impl super::SqliteStore {
         filter: PoolFilterQuery<'_>,
     ) -> anyhow::Result<(Vec<PoolInfo>, u64)> {
         let conn = self.conn();
-        let where_sql = Self::pools_where_clause(filter.q, filter.dex, filter.token, filter.min_tvl);
+        let where_sql =
+            Self::pools_where_clause(filter.q, filter.dex, filter.token, filter.min_tvl);
 
         let total: i64 = conn.query_row(
             &format!("SELECT COUNT(*) FROM pool_info {where_sql}"),
@@ -133,10 +134,7 @@ impl super::SqliteStore {
     }
 
     /// Legacy un-paged variant: returns the first `limit` filtered rows.
-    pub fn pools_filtered(
-        &self,
-        filter: PoolFilterQuery<'_>,
-    ) -> anyhow::Result<Vec<PoolInfo>> {
+    pub fn pools_filtered(&self, filter: PoolFilterQuery<'_>) -> anyhow::Result<Vec<PoolInfo>> {
         Ok(self
             .pools_filtered_paged(PoolFilterQuery {
                 offset: 0,

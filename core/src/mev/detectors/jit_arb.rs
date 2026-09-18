@@ -265,10 +265,8 @@ impl JitArbDetector {
         let jit_pool_gas = pm
             .get(&jit_pool)
             .map(|p| match p {
-                PoolState::UniswapV3(v3) => {
-                    estimate_v3_swap_gas(v3, V3Direction::ZeroForOne)
-                        .max(estimate_v3_swap_gas(v3, V3Direction::OneForZero))
-                }
+                PoolState::UniswapV3(v3) => estimate_v3_swap_gas(v3, V3Direction::ZeroForOne)
+                    .max(estimate_v3_swap_gas(v3, V3Direction::OneForZero)),
                 other => other.gas_estimate(),
             })
             .unwrap_or(80_000);

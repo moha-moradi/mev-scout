@@ -39,8 +39,7 @@ pub use validate_pools::cmd_validate_pools;
 /// the returned future via their own `Runtime::block_on`.
 #[async_trait(?Send)]
 pub trait CliCommand {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress)
-        -> anyhow::Result<()>;
+    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()>;
 }
 
 #[async_trait(?Send)]
@@ -127,16 +126,25 @@ impl CliCommand for ExplorerArgs {
                 )
                 .await
             }
-            ExplorerCommand::LiveFeed(a) => cmd_live_feed(
-                config,
-                a.kinds.as_deref(),
-                a.min_profit_usd,
-                a.poll_interval_ms.unwrap_or(config.explorer.poll_interval_ms),
-                a.duration.as_deref(),
-            )
-            .await,
+            ExplorerCommand::LiveFeed(a) => {
+                cmd_live_feed(
+                    config,
+                    a.kinds.as_deref(),
+                    a.min_profit_usd,
+                    a.poll_interval_ms
+                        .unwrap_or(config.explorer.poll_interval_ms),
+                    a.duration.as_deref(),
+                )
+                .await
+            }
             ExplorerCommand::Stats(a) => {
-                cmd_stats(config, a.since.as_deref(), a.window.as_deref(), a.kind.as_deref()).await
+                cmd_stats(
+                    config,
+                    a.since.as_deref(),
+                    a.window.as_deref(),
+                    a.kind.as_deref(),
+                )
+                .await
             }
             ExplorerCommand::Top(a) => {
                 cmd_top(config, &a.by, &a.metric, a.since.as_deref(), a.limit).await

@@ -65,14 +65,8 @@ pub(super) fn normalize_profit(
         (U256::from(profit), None)
     } else {
         let raw = U256::from(profit);
-        let native_profit = normalize_profit_native(
-            pm,
-            token_in,
-            token_out,
-            profit,
-            input_amount,
-        )
-        .unwrap_or_else(|| U256::from(profit));
+        let native_profit = normalize_profit_native(pm, token_in, token_out, profit, input_amount)
+            .unwrap_or_else(|| U256::from(profit));
         (U256::from(native_profit), Some(raw))
     }
 }

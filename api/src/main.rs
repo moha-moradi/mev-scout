@@ -42,8 +42,7 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -51,9 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load config (falls back to defaults when the file does not exist).
     let config = Config::load_or_default(&args.config.to_string_lossy())?;
-    let cache_path = PathBuf::from(
-        config.effective_db_path(&config.chain),
-    );
+    let cache_path = PathBuf::from(config.effective_db_path(&config.chain));
     let explorer_path = PathBuf::from(config.effective_explorer_db_path(&config.chain));
 
     std::fs::create_dir_all(&args.data_dir)?;
@@ -63,9 +60,7 @@ async fn main() -> anyhow::Result<()> {
         config_path: args.config.clone(),
         explorer_db_path: tokio::sync::RwLock::new(explorer_path.clone()),
         cache_db_path: tokio::sync::RwLock::new(cache_path.clone()),
-        explorer_conn: tokio::sync::Mutex::new(
-            state::open_read_only_or_empty(&explorer_path)?,
-        ),
+        explorer_conn: tokio::sync::Mutex::new(state::open_read_only_or_empty(&explorer_path)?),
         cache_conn: tokio::sync::Mutex::new(state::open_readonly_if_exists(&cache_path)?),
         job_manager: Arc::new(tokio::sync::Mutex::new(jobs::JobManager::new(
             &args.data_dir,

@@ -853,7 +853,8 @@ impl BacktestRunner {
                     backrun_tx: opp.backrun_tx_index,
                 },
             ));
-            opp.detection_path = Some(crate::mev::detectors::DetectionPath::LogOnly.to_owned_string());
+            opp.detection_path =
+                Some(crate::mev::detectors::DetectionPath::LogOnly.to_owned_string());
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }

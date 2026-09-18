@@ -11,7 +11,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use common::{test_state_with_files, test_router, write_temp_config};
+use common::{test_router, test_state_with_files, write_temp_config};
 
 async fn request(
     app: &axum::Router<()>,
@@ -32,7 +32,9 @@ async fn request(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
 }
@@ -57,12 +59,7 @@ async fn spawn(app: &axum::Router<()>, cmd: &str, args: Vec<&str>) -> (StatusCod
     .await
 }
 
-async fn wait_for(
-    app: &axum::Router<()>,
-    job_id: &str,
-    target: &str,
-    timeout_ms: u64,
-) -> Value {
+async fn wait_for(app: &axum::Router<()>, job_id: &str, target: &str, timeout_ms: u64) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         let (_, json) = request(app, Method::GET, &format!("/api/jobs/{job_id}"), None).await;
@@ -145,7 +142,13 @@ async fn job_success_log_and_run_id() {
     assert!(text.contains("args=ok --flag"), "log: {text}");
 
     // Tail param slices from the end.
-    let (_, tail) = request(&app, Method::GET, &format!("/api/jobs/{job_id}/log?tail=1"), None).await;
+    let (_, tail) = request(
+        &app,
+        Method::GET,
+        &format!("/api/jobs/{job_id}/log?tail=1"),
+        None,
+    )
+    .await;
     assert_eq!(tail.as_array().unwrap().len(), 1);
 }
 
@@ -205,7 +208,13 @@ async fn job_progress_reports_stages_and_run_id() {
     assert_eq!(info["run_id"], "live_1700000001");
 
     // Stop requests cooperative cancellation.
-    let (status, _) = request(&app, Method::POST, &format!("/api/jobs/{job_id}/stop"), None).await;
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{job_id}/stop"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let info = wait_for(&app, &job_id, "killed", 5000).await;
     assert_eq!(info["status"], "killed");
@@ -222,7 +231,13 @@ async fn single_job_mutex_409_while_running() {
     assert_eq!(status, StatusCode::CONFLICT, "{json}");
     assert!(json["error"].as_str().unwrap().contains("already running"));
 
-    request(&app, Method::POST, &format!("/api/jobs/{job_id}/stop"), None).await;
+    request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{job_id}/stop"),
+        None,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
 

@@ -14,6 +14,11 @@ pub enum MevKind {
     ArbAtomic,
     /// Same sender opens + closes a position around a victim swap on one pool.
     Sandwich,
+    /// Searcher swap(s) execute before a victim swap they profit from (chain
+    /// reordering / mempool awareness), recorded per pool + victim anchor.
+    Frontrun,
+    /// Searcher swap(s) execute after a prior tx whose price move they harvest.
+    Backrun,
     /// Known liquidation event on a configured lending pool.
     Liquidation,
     /// Concentrated-liquidity Mint+Burn around swaps in one block (fee capture).
@@ -29,6 +34,8 @@ impl MevKind {
         match self {
             MevKind::ArbAtomic => "arb_atomic",
             MevKind::Sandwich => "sandwich",
+            MevKind::Frontrun => "frontrun",
+            MevKind::Backrun => "backrun",
             MevKind::Liquidation => "liquidation",
             MevKind::Jit => "jit",
             MevKind::JitArb => "jit_arb",
@@ -40,6 +47,8 @@ impl MevKind {
         match s {
             "arb_atomic" => Some(MevKind::ArbAtomic),
             "sandwich" => Some(MevKind::Sandwich),
+            "frontrun" => Some(MevKind::Frontrun),
+            "backrun" => Some(MevKind::Backrun),
             "liquidation" => Some(MevKind::Liquidation),
             "jit" => Some(MevKind::Jit),
             "jit_arb" => Some(MevKind::JitArb),
@@ -92,10 +101,18 @@ pub struct MevEvent {
     pub profit_token: Option<Address>,
     /// Net profit amount of `profit_token` (pre-gas), raw integer units.
     pub profit_amount: Option<U256>,
+    /// All positive post-netting residuals (Phase 2.3), `(token, net)` in
+    /// deterministic order. Persist USD-sums across these while
+    /// `profit_token`/`profit_amount` remain the display-primary pair.
+    pub profit_tokens: Vec<(Address, U256)>,
     /// USD value of the profit when pricing was available.
     pub profit_usd: Option<f64>,
     /// Gas cost in wei (gasUsed × effectiveGasPrice from the receipt).
     pub gas_cost_wei: U256,
+    /// Flash-loan fee in wei when the tx used a flash loan (Phase 2.2).
+    pub flashloan_fee_wei: Option<U256>,
+    /// Token the flash-loan fee is denominated in (units of `flashloan_fee_wei`).
+    pub flashloan_fee_token: Option<Address>,
     pub confidence: Confidence,
     /// Victim tx hashes (sandwiches).
     pub victim_hashes: Vec<B256>,
@@ -152,6 +169,9 @@ pub enum Amm {
     Solidly,
     Lb,
     Pendle,
+    /// Aggregator/DEX-router edge (0x, 1inch, Paraswap) with tokens carried
+    /// explicitly by the router event.
+    Aggregator,
 }
 
 impl Amm {
@@ -168,6 +188,7 @@ impl Amm {
             Amm::Solidly => "solidly",
             Amm::Lb => "lb",
             Amm::Pendle => "pendle",
+            Amm::Aggregator => "aggregator",
         }
     }
 }
@@ -184,6 +205,29 @@ pub struct SwapFact {
     pub token_out: Address,
     pub amount_in: U256,
     pub amount_out: U256,
+    /// Post-swap pool tick for concentrated-liquidity AMMs (V3/V4/Infinity),
+    /// used to validate JIT tick-range overlap. `None` for V2/Curve/Balancer.
+    pub tick: Option<i32>,
+}
+
+/// A decoded flash-loan fact (Aave V2/V3, Balancer V2, Uni V3).
+#[derive(Debug, Clone)]
+pub struct FlashLoanFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub protocol: &'static str,
+    /// Borrower/initiator of the loan.
+    pub initiator: Address,
+    pub token: Address,
+    pub amount: U256,
+    /// Fee in `token` units when the event carries it (Aave). Balancer/Uni V3
+    /// fees are computed per-pool and are `None` here.
+    pub fee: Option<U256>,
+    /// Recipient of the loan (V3/Uni V3); used for netting attribution.
+    pub recipient: Address,
+    /// Emitting provider contract (Aave pool / Balancer vault); used to detect
+    /// whether the repay leg is already present in the transfer stream.
+    pub provider: Address,
 }
 
 /// A decoded lending-protocol liquidation fact.

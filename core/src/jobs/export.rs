@@ -97,7 +97,10 @@ pub fn format_export_body(ops: &[MevOpRow], format: &str) -> anyhow::Result<(Str
     if format == "csv" {
         Ok((render_csv(ops), "text/csv".into()))
     } else {
-        Ok((serde_json::to_string_pretty(ops)?, "application/json".into()))
+        Ok((
+            serde_json::to_string_pretty(ops)?,
+            "application/json".into(),
+        ))
     }
 }
 
@@ -112,13 +115,10 @@ pub async fn job_export(
     let ops = collect_export_ops(&store, opts.since.as_deref(), opts.kinds.as_deref())?;
 
     let format = if opts.format == "csv" { "csv" } else { "json" };
-    let out_path = opts.out.clone().unwrap_or_else(|| {
-        format!(
-            "results/explorer_export_{}.{}",
-            epoch_secs(),
-            format
-        )
-    });
+    let out_path = opts
+        .out
+        .clone()
+        .unwrap_or_else(|| format!("results/explorer_export_{}.{}", epoch_secs(), format));
     if let Some(parent) = std::path::Path::new(&out_path).parent() {
         std::fs::create_dir_all(parent).ok();
     }

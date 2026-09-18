@@ -33,6 +33,26 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                     .unwrap_or(serde_json::json!(null))
             )
         }
+        crate::explorer::types::MevKind::Frontrun => {
+            format!(
+                "Frontrun|{:#x}|victim_tx:{}",
+                first_pool(&ev.pools),
+                ev.details
+                    .get("victim_tx_index")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(null))
+            )
+        }
+        crate::explorer::types::MevKind::Backrun => {
+            format!(
+                "Backrun|{:#x}|source_tx:{}",
+                first_pool(&ev.pools),
+                ev.details
+                    .get("source_tx_index")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(null))
+            )
+        }
         crate::explorer::types::MevKind::Liquidation => {
             format!(
                 "Liquidation|{:#x}|{:#x}",
@@ -89,8 +109,11 @@ mod tests {
             pools,
             profit_token: None,
             profit_amount: Some(U256::from(1)),
+            profit_tokens: vec![],
             profit_usd: None,
             gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
             confidence: Confidence::Exact,
             victim_hashes: vec![],
             victim_swap_size: None,

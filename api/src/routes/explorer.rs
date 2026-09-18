@@ -7,9 +7,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use mev_scout_core::explorer::store::{
-    FeedRow, MevOpRow, OverviewRow, RejectedRow, StatsRow,
-};
+use mev_scout_core::explorer::store::{FeedRow, MevOpRow, OverviewRow, RejectedRow, StatsRow};
 use mev_scout_core::explorer::types::MevKind;
 
 use crate::error::{ApiError, ApiResult};
@@ -42,6 +40,10 @@ async fn feed(
     State(state): State<SharedState>,
     Query(q): Query<FeedQuery>,
 ) -> ApiResult<Json<Vec<FeedRow>>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let limit = q.limit.unwrap_or(50).min(200) as usize;
     let kinds = parse_kinds(q.kinds.as_deref())?;
     let chain = state.active_chain().await;
@@ -59,13 +61,9 @@ async fn feed(
     let min = q.min_profit_usd.unwrap_or(0.0);
     let out: Vec<FeedRow> = rows
         .into_iter()
-        .filter(|r| {
-            r.net_profit_usd.unwrap_or(r.profit_usd.unwrap_or(0.0)) >= min
-        })
+        .filter(|r| r.net_profit_usd.unwrap_or(r.profit_usd.unwrap_or(0.0)) >= min)
         .filter(|r| match &q.q {
-            Some(needle) => {
-                feed_row_matches(r, needle)
-            }
+            Some(needle) => feed_row_matches(r, needle),
             None => true,
         })
         .map(|mut r| {
@@ -201,6 +199,10 @@ async fn stats(
     State(state): State<SharedState>,
     Query(q): Query<StatsQuery>,
 ) -> ApiResult<Json<StatsResponse>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let since = parse_since(q.since.as_deref())?;
     let conn = state.explorer_conn.lock().await;
     let by_kind = grouped_stats(&conn, "kind", since)?;
@@ -269,6 +271,10 @@ async fn overview(
     State(state): State<SharedState>,
     Query(q): Query<OverviewQuery>,
 ) -> ApiResult<Json<OverviewRow>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let since = parse_since(q.since.as_deref())?;
     let conn = state.explorer_conn.lock().await;
     let sql = format!(
@@ -307,6 +313,10 @@ async fn top(
     State(state): State<SharedState>,
     Query(q): Query<TopQuery>,
 ) -> ApiResult<Json<Vec<StatsRow>>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let since = parse_since(q.since.as_deref())?;
     let limit = q.limit.unwrap_or(20).min(100) as usize;
     let conn = state.explorer_conn.lock().await;
@@ -391,6 +401,10 @@ async fn ops(
     State(state): State<SharedState>,
     Query(q): Query<OpsQuery>,
 ) -> ApiResult<Json<Paginated<MevOpRow>>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let from = q.from.unwrap_or(0);
     let to = q.to.unwrap_or(u64::MAX / 4);
     let kinds = parse_kinds(q.kinds.as_deref())?;
@@ -491,6 +505,10 @@ async fn op_detail(
     Path(tx_hash): Path<String>,
     Query(q): Query<OpDetailQuery>,
 ) -> ApiResult<Json<ExplainResponse>> {
+    state
+        .ensure_explorer_conn()
+        .await
+        .map_err(ApiError::internal)?;
     let chain = state.active_chain().await;
     let want_trace = q.trace.unwrap_or(false);
 
@@ -514,7 +532,8 @@ async fn op_detail(
         if let Some(first) = ops.first() {
             let from = first.block_number.saturating_sub(10);
             let to = first.block_number.saturating_add(10);
-            let rsql = "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
+            let rsql =
+                "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
                                expected_profit, gas_cost_wei, reject_reason, detail
                         FROM rejected_candidates
                         WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
@@ -569,7 +588,9 @@ async fn op_detail(
     }))
 }
 
-async fn doctor(State(state): State<SharedState>) -> ApiResult<Json<mev_scout_core::jobs::DoctorOutcome>> {
+async fn doctor(
+    State(state): State<SharedState>,
+) -> ApiResult<Json<mev_scout_core::jobs::DoctorOutcome>> {
     let config = state.config.read().await.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
@@ -615,12 +636,9 @@ async fn export_download(
     )
     .map_err(ApiError::internal)?;
     let format = q.format.as_deref().unwrap_or("json");
-    let ops = mev_scout_core::jobs::collect_export_ops(
-        &store,
-        q.since.as_deref(),
-        q.kinds.as_deref(),
-    )
-    .map_err(ApiError::internal)?;
+    let ops =
+        mev_scout_core::jobs::collect_export_ops(&store, q.since.as_deref(), q.kinds.as_deref())
+            .map_err(ApiError::internal)?;
     let (body, content_type) =
         mev_scout_core::jobs::format_export_body(&ops, format).map_err(ApiError::internal)?;
     let ext = if format == "csv" { "csv" } else { "json" };
@@ -657,6 +675,8 @@ pub fn kind_map() -> HashMap<String, MevKind> {
     for k in [
         MevKind::ArbAtomic,
         MevKind::Sandwich,
+        MevKind::Frontrun,
+        MevKind::Backrun,
         MevKind::Liquidation,
         MevKind::Jit,
         MevKind::JitArb,

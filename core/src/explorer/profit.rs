@@ -101,12 +101,12 @@ impl DeltaLedger {
         alloy::primitives::I256::from_raw(p) - alloy::primitives::I256::from_raw(n)
     }
 
-    /// Tokens where the address holds a positive net delta.
+    /// Tokens where the address holds a strictly positive net delta.
     pub fn positive_tokens(&self, addr: Address) -> Vec<Address> {
         let mut out: Vec<Address> = self
             .pos
             .keys()
-            .filter(|(a, _)| *a == addr)
+            .filter(|(a, t)| *a == addr && self.net(addr, *t) > U256::ZERO)
             .map(|(_, t)| *t)
             .collect();
         out.sort();
@@ -149,25 +149,60 @@ pub fn select_profit_token(
     best.map(|(_, t)| t)
 }
 
-/// Atomic-arb cycle check: the swap sequence over (pool → token_in/token_out)
-/// forms a directed edge list; a closed walk starting/ending in the same token
-/// with the searcher's positive net delta confirms `arb_atomic`.
+/// Atomic-arb cycle check (§8.1): walk the directed graph formed by resolved
+/// swap edges (`token_in → token_out`) and report whether any closed walk
+/// returns to its start using ≥2 edges over ≥2 distinct pools.
 ///
-/// `edges` = (token_in, token_out) per swap in log order. Returns true when a
-/// closed walk exists covering ≥2 pools.
-pub fn is_closed_cycle(edges: &[(Address, Address)]) -> bool {
+/// Unlike a naive log-order chain, this tolerates interleaved multi-hop
+/// cycles. `edges` = `(token_in, token_out, pool)` per resolved swap.
+pub fn has_closed_cycle(edges: &[(Address, Address, Address)]) -> bool {
     if edges.len() < 2 {
         return false;
     }
-    let start = edges[0].0;
-    let mut cur = start;
-    for (tin, tout) in edges {
-        if *tin != cur {
-            return false; // not a connected chain in log order
+    let n = edges.len();
+    let mut used = vec![false; n];
+    for start_edge in 0..n {
+        if dfs_cycle(edges, start_edge, start_edge, &mut used, 0) {
+            return true;
         }
-        cur = *tout;
     }
-    cur == start
+    false
+}
+
+/// DFS from `start_edge` looking for a path back to the start token. The walk
+/// is closed only when it consumes ≥2 edges spanning ≥2 distinct pools.
+fn dfs_cycle(
+    edges: &[(Address, Address, Address)],
+    start_edge: usize,
+    cur_edge: usize,
+    used: &mut [bool],
+    depth: usize,
+) -> bool {
+    let (_, next, _) = edges[cur_edge];
+    let start = edges[start_edge].0;
+    used[cur_edge] = true;
+    let mut found = false;
+    if depth + 1 >= 2 && next == start {
+        // A closed walk of ≥2 edges; require ≥2 distinct pools among used edges.
+        let mut pools: Vec<Address> = edges
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| used[*i])
+            .map(|(_, e)| e.2)
+            .collect();
+        pools.sort();
+        pools.dedup();
+        found = pools.len() >= 2;
+    } else {
+        for e in 0..edges.len() {
+            if !used[e] && edges[e].0 == next && dfs_cycle(edges, start_edge, e, used, depth + 1) {
+                found = true;
+                break;
+            }
+        }
+    }
+    used[cur_edge] = false;
+    found
 }
 
 /// Net a flash-loan loop: if the searcher borrowed amount X of token T at the
@@ -238,9 +273,28 @@ mod tests {
     fn closed_cycle_detects() {
         let a = address!("1000000000000000000000000000000000000000");
         let b = address!("2000000000000000000000000000000000000000");
-        assert!(is_closed_cycle(&[(a, b), (b, a)]));
-        assert!(!is_closed_cycle(&[(a, b)]));
-        assert!(!is_closed_cycle(&[(a, b), (a, b)]));
+        let p1 = address!("3000000000000000000000000000000000000000");
+        let p2 = address!("3000000000000000000000000000000000000001");
+        assert!(has_closed_cycle(&[(a, b, p1), (b, a, p2)]));
+        assert!(!has_closed_cycle(&[(a, b, p1)]));
+        // Same pool round-trip is not an arb (needs ≥2 pools).
+        assert!(!has_closed_cycle(&[(a, b, p1), (b, a, p1)]));
+    }
+
+    #[test]
+    fn interleaved_cycle_detected() {
+        // Log order A->B (p1), A->C (p2), C->A (p2), B->A (p1): the cycle walk
+        // must tolerate the interleaving rather than requiring a chain.
+        let a = address!("1000000000000000000000000000000000000000");
+        let b = address!("2000000000000000000000000000000000000000");
+        let c = address!("3000000000000000000000000000000000000000");
+        let p1 = address!("4000000000000000000000000000000000000000");
+        let p2 = address!("4000000000000000000000000000000000000001");
+        let edges = vec![(a, b, p1), (a, c, p2), (c, a, p2), (b, a, p1)];
+        assert!(has_closed_cycle(&edges));
+        // Acyclic edge set (no path back to start) is rejected.
+        let no_cycle = vec![(a, b, p1), (b, c, p2)];
+        assert!(!has_closed_cycle(&no_cycle));
     }
 
     #[test]
@@ -257,5 +311,32 @@ mod tests {
             weth: W,
         };
         assert_eq!(select_profit_token(&ledger, me, &policy), Some(usdc));
+    }
+
+    #[test]
+    fn positive_tokens_lists_net_positives_only() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let pool = address!("2000000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let junk = address!("6000000000000000000000000000000000000000");
+        // junk: bought+resold (net zero) must not appear; a third token
+        // (received, never spent) must appear next to usdc.
+        let third = address!("7000000000000000000000000000000000000000");
+        let transfers = vec![
+            tf(0, junk, me, pool, 10),
+            tf(1, junk, pool, me, 10),
+            tf(2, usdc, pool, me, 7),
+            tf(3, third, pool, me, 42),
+        ];
+        let ledger = DeltaLedger::from_transfers(&transfers, W, (Address::ZERO, U256::ZERO));
+        let mut toks = ledger.positive_tokens(me);
+        toks.sort();
+        assert_eq!(
+            toks,
+            vec![usdc, third],
+            "zero-net and negative tokens excluded"
+        );
+        assert_eq!(ledger.net(me, junk), U256::ZERO);
+        assert_eq!(ledger.net(me, third), U256::from(42));
     }
 }

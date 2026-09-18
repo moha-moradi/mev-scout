@@ -72,7 +72,7 @@ impl SqliteStore {
     }
 
     /// Current schema version. Increment when adding a migration below.
-    const SCHEMA_VERSION: u64 = 11;
+    const SCHEMA_VERSION: u64 = 12;
 
     /// Create the SQLite schema if it does not exist.
     fn initialize_tables(&self) -> anyhow::Result<()> {
@@ -274,6 +274,10 @@ impl SqliteStore {
             // v11: token display metadata (name + icon URL from remote enrichers)
             "ALTER TABLE token_symbols ADD COLUMN name TEXT",
             "ALTER TABLE token_symbols ADD COLUMN icon_url TEXT",
+            // v12: real gas (Phase 2.1) — legacy tx gas price + receipt
+            // effectiveGasPrice so type-0 txs stop under-counting gas cost.
+            "ALTER TABLE transactions ADD COLUMN gas_price INTEGER",
+            "ALTER TABLE receipts ADD COLUMN effective_gas_price INTEGER",
         ];
 
         for (i, sql) in migrations.iter().enumerate() {

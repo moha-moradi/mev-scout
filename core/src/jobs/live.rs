@@ -8,9 +8,7 @@ use anyhow::Context;
 use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation::{self, ValidationResult};
 use crate::config::{Config, ProviderConfig};
-use crate::explorer::results::{
-    persist_opportunities_to_explorer, persist_rejections_to_explorer,
-};
+use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::fetch::Fetcher;
 use crate::pipeline::{BacktestRunner, BlockReplayStats};
 use crate::pool::state::PoolManager;
@@ -170,16 +168,12 @@ impl<'a> LiveContext<'a> {
     ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let state_horizon = self.rpc.detect_state_horizon(resolved.end_block).await;
         let (opps, stats, _modes) =
-            self.runner.run_range_hybrid(resolved, state_horizon, progress)?;
+            self.runner
+                .run_range_hybrid(resolved, state_horizon, progress)?;
         Ok((opps, stats))
     }
 
-    fn persist_results(
-        &mut self,
-        resolved: &ResolvedRange,
-        opps: &[MevOpportunity],
-        run_id: &str,
-    ) {
+    fn persist_results(&mut self, resolved: &ResolvedRange, opps: &[MevOpportunity], run_id: &str) {
         let chain_name = self.validation.chain_name;
         let results_file = ResultsFile {
             run_id: run_id.to_string(),
@@ -230,8 +224,9 @@ pub async fn job_live(
             if !opts.loop_enabled {
                 anyhow::bail!("--duration requires --loop");
             }
-            let dur = humantime::parse_duration(d)
-                .with_context(|| format!("invalid --duration '{d}' (expected e.g. 90s, 15m, 1h)"))?;
+            let dur = humantime::parse_duration(d).with_context(|| {
+                format!("invalid --duration '{d}' (expected e.g. 90s, 15m, 1h)")
+            })?;
             Some(Instant::now() + dur)
         }
         None => None,
@@ -262,13 +257,7 @@ pub async fn job_live(
     progress.emit(ProgressEvent::stage("resolve"));
 
     if opts.loop_enabled {
-        let summary = run_loop(
-            &mut ctx,
-            deadline,
-            opts.poll_interval_ms,
-            opts.max_blocks,
-        )
-        .await?;
+        let summary = run_loop(&mut ctx, deadline, opts.poll_interval_ms, opts.max_blocks).await?;
         Ok(LiveOutcome::Loop(summary))
     } else {
         let pass = run_once(&mut ctx).await?;
@@ -358,7 +347,9 @@ async fn run_loop(
 ) -> anyhow::Result<LiveLoopOutcome> {
     let progress = ctx.progress;
     let mut last_block = ctx.tip;
-    progress.log(&format!("Starting from block {last_block} — stop from the UI to halt\n"));
+    progress.log(&format!(
+        "Starting from block {last_block} — stop from the UI to halt\n"
+    ));
 
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
     let mut consecutive_failures: u32 = 0;
@@ -490,7 +481,10 @@ async fn run_loop(
         let pass_elapsed = pass_start.elapsed();
 
         if opps.is_empty() {
-            progress.log(&format!("Block {}–{}: no opportunities", from_block, current_tip));
+            progress.log(&format!(
+                "Block {}–{}: no opportunities",
+                from_block, current_tip
+            ));
         } else {
             progress.log(&format!(
                 "Block {}–{}: {} opportunity(ies)",

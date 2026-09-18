@@ -1,9 +1,7 @@
 use anyhow::Context;
 
 use crate::cli::RunArgs;
-use crate::display::{
-    print_startup_plan, render_block_summary_table, render_results_table,
-};
+use crate::display::{print_startup_plan, render_block_summary_table, render_results_table};
 use crate::job_progress::JobProgress;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;

@@ -330,11 +330,7 @@ impl JobManager {
     }
 
     /// Tail of a job's log (whole in-memory ring when `tail` is None).
-    pub async fn log_tail(
-        &self,
-        job_id: &str,
-        tail: Option<usize>,
-    ) -> anyhow::Result<Vec<String>> {
+    pub async fn log_tail(&self, job_id: &str, tail: Option<usize>) -> anyhow::Result<Vec<String>> {
         let job = self.get(job_id)?;
         let ring = job.shared.log.lock().unwrap();
         match tail {

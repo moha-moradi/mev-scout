@@ -72,8 +72,16 @@ impl super::SqliteStore {
         })?;
         let mut out = Vec::new();
         for r in rows {
-            let (run_id, chain, start_block, end_block, resolved_at, range_mode, strategies, provider) =
-                r?;
+            let (
+                run_id,
+                chain,
+                start_block,
+                end_block,
+                resolved_at,
+                range_mode,
+                strategies,
+                provider,
+            ) = r?;
             out.push(RunManifest {
                 run_id,
                 chain,

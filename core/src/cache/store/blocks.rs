@@ -61,12 +61,12 @@ impl super::SqliteStore {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             let mut tx_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, sig_hash, sig_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, sig_hash, sig_name, gas_price)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?;
             let mut rc_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address, effective_gas_price)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             let mut log_stmt = tx.prepare(
                 "INSERT OR REPLACE INTO logs (block_number, tx_index, log_index, address, topic0, topic1, topic2, topic3, data, erc20_amount, event_sig)
@@ -118,6 +118,7 @@ impl super::SqliteStore {
                         authorization_list_blob,
                         sig_hash,
                         sig_name,
+                        tx_data.gas_price.map(|v| v as i64),
                     ])?;
                 }
 
@@ -132,6 +133,7 @@ impl super::SqliteStore {
                         logs_blob,
                         r.contract_address
                             .map(|a| super::SqliteStore::addr_to_blob(&a)),
+                        r.effective_gas_price.map(|v| v as i64),
                     ])?;
                     for (log_index, log_entry) in r.logs.iter().enumerate() {
                         let amount = super::SqliteStore::decode_erc20_amount(log_entry);
@@ -200,8 +202,8 @@ impl super::SqliteStore {
     pub fn put_txs(&self, block_num: u64, txs: &[TxData]) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT OR REPLACE INTO transactions (hash, block_number, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, gas_price)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
         for tx in txs {
             let access_list_blob = super::SqliteStore::serialize_access_list(&tx.access_list)?;
@@ -221,6 +223,7 @@ impl super::SqliteStore {
                 tx.nonce as i64,
                 access_list_blob,
                 auth_blob,
+                tx.gas_price.map(|v| v as i64),
             ])?;
         }
         conn.execute(
@@ -236,7 +239,7 @@ impl super::SqliteStore {
             return Ok(None);
         }
         let mut stmt = conn.prepare(
-            "SELECT hash, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list
+            "SELECT hash, tx_index, tx_type, from_addr, to_addr, input, value, gas_limit, max_fee_per_gas, max_priority_fee_per_gas, nonce, access_list, authorization_list, gas_price
              FROM transactions WHERE block_number = ?1 ORDER BY tx_index",
         )?;
         let mut rows = stmt.query(rusqlite::params![block_num as i64])?;
@@ -263,6 +266,7 @@ impl super::SqliteStore {
                 gas_limit: row.get::<_, i64>(7)? as u64,
                 max_fee_per_gas: row.get::<_, i64>(8)? as u128,
                 max_priority_fee_per_gas: row.get::<_, Option<i64>>(9)?.map(|v| v as u128),
+                gas_price: row.get::<_, Option<i64>>(13)?.map(|v| v as u128),
                 nonce: row.get::<_, i64>(10)? as u64,
                 access_list,
                 authorization_list,
@@ -274,8 +278,8 @@ impl super::SqliteStore {
     pub fn put_receipts(&self, _block_num: u64, receipts: &[ReceiptData]) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT OR REPLACE INTO receipts (tx_hash, tx_index, status, gas_used, cumulative_gas_used, logs, contract_address, effective_gas_price)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for r in receipts {
             let logs_blob = super::SqliteStore::serialize(&r.logs)?;
@@ -288,6 +292,7 @@ impl super::SqliteStore {
                 logs_blob,
                 r.contract_address
                     .map(|a| super::SqliteStore::addr_to_blob(&a)),
+                r.effective_gas_price.map(|v| v as i64),
             ])?;
         }
         Ok(())
@@ -299,7 +304,7 @@ impl super::SqliteStore {
             return Ok(None);
         }
         let mut stmt = conn.prepare(
-            "SELECT r.tx_hash, r.tx_index, r.status, r.gas_used, r.cumulative_gas_used, r.logs, r.contract_address
+            "SELECT r.tx_hash, r.tx_index, r.status, r.gas_used, r.cumulative_gas_used, r.logs, r.contract_address, r.effective_gas_price
              FROM receipts r
              INNER JOIN transactions t ON t.hash = r.tx_hash
              WHERE t.block_number = ?1
@@ -316,6 +321,7 @@ impl super::SqliteStore {
                 status: row.get::<_, i64>(2)? != 0,
                 gas_used: row.get::<_, i64>(3)? as u64,
                 cumulative_gas_used: row.get::<_, i64>(4)? as u64,
+                effective_gas_price: row.get::<_, Option<i64>>(7)?.map(|v| v as u128),
                 logs,
                 contract_address: row
                     .get::<_, Option<Vec<u8>>>(6)?

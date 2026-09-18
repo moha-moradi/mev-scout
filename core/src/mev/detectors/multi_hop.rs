@@ -12,8 +12,8 @@ use alloy::primitives::{Address, U256};
 
 use super::arb_common;
 use crate::dex_type::DexType;
-use crate::pool::math::v3::{v3_breakpoints, V3Direction};
 use crate::pool::math::optimal_on_segments;
+use crate::pool::math::v3::{v3_breakpoints, V3Direction};
 use crate::pool::state::{
     calldata_gas_estimate, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
 };
@@ -399,8 +399,7 @@ impl MultiHopArbDetector {
 
             if i > 0 {
                 if let PoolState::UniswapV3(v3) = pool {
-                    let direction =
-                        V3Direction::for_input_token(walk_token, pool.info().token0);
+                    let direction = V3Direction::for_input_token(walk_token, pool.info().token0);
                     let prefix = |x: u128| Self::walk_quote(pm, &path[..i], token_in, x);
                     let mid_max = prefix(max_input).unwrap_or(0);
                     let thresholds =

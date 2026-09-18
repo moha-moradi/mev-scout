@@ -1,14 +1,18 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use alloy::primitives::Address;
 use anyhow::Context;
 
+use crate::cache::SqliteStore;
 use crate::config::validation;
 use crate::config::Config;
 use crate::explorer::ingest::{backfill_range, run_live, safe_head, IngestConfig};
 use crate::explorer::store::ExplorerStore;
 use crate::progress::JobProgress;
+use crate::types::ChainName;
 
 use super::rpc::init_rpc;
 
@@ -41,6 +45,11 @@ pub async fn job_index(
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
+    cfg.arb_likely_parity = config.explorer.arb_likely_parity;
+
+    // Phase 1.1: pool registry (pool → token0/token1) for swap-direction
+    // resolution. Missing/empty registry degrades to transfer pairing.
+    let pool_tokens = load_pool_registry(config, &chain);
 
     if opts.live {
         let stop = Arc::new(AtomicBool::new(false));
@@ -77,6 +86,7 @@ pub async fn job_index(
                 &setup.rpc,
                 &store,
                 &cfg,
+                &pool_tokens,
                 config.explorer.poll_interval_ms,
                 stop,
             )
@@ -120,6 +130,7 @@ pub async fn job_index(
         &setup.rpc,
         &store,
         &cfg,
+        &pool_tokens,
         from,
         to,
         config.explorer.checkpoint_every,
@@ -137,4 +148,25 @@ pub async fn job_index(
         elapsed,
         live: false,
     })
+}
+
+/// Load the pool → (token0, token1) registry from the scanner cache (Phase 1.1).
+/// Best-effort: an absent/locked cache yields an empty map and ingest degrades
+/// to transfer-pairing resolution.
+fn load_pool_registry(config: &Config, chain: &ChainName) -> HashMap<Address, (Address, Address)> {
+    let mut map = HashMap::new();
+    match SqliteStore::open(config.effective_db_path(chain)) {
+        Ok(cache) => match cache.list_discovered_pools() {
+            Ok(pools) => {
+                for p in pools {
+                    if !p.token0.is_zero() && !p.token1.is_zero() {
+                        map.insert(p.address, (p.token0, p.token1));
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("pool registry load failed: {e}"),
+        },
+        Err(e) => tracing::warn!("pool registry open failed: {e}"),
+    }
+    map
 }

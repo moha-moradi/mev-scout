@@ -99,6 +99,14 @@ pub static AAVE_V3_LIQUIDATION_CALL_TOPIC: LazyLock<B256> = LazyLock::new(|| {
 pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Absorb(address,address[],uint256[],uint256)"));
 
+// ── Compound V2 ─────────────────────────────────────────────────────
+
+/// Compound V2 cToken `LiquidateBorrow(address liquidator, address borrower,
+/// uint256 repayAmount, address cTokenCollateral, uint256 seizeTokens)`
+/// (`liquidator`/`borrower` indexed).
+pub static COMPOUND_V2_LIQUIDATE_BORROW_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LiquidateBorrow(address,address,uint256,address,uint256)"));
+
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 
 /// Velodrome V2/Aerodrome pool Swap topic (`Swap(address indexed sender,

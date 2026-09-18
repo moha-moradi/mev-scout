@@ -60,15 +60,19 @@ pub struct DiscoverOutcome {
     pub pools: Vec<DiscoveredPool>,
 }
 
-
-async fn fetch_remote(chain_name: ChainName, max_pools: Option<usize>, min_tvl: Option<f64>) -> Vec<DiscoveredPool> {
+async fn fetch_remote(
+    chain_name: ChainName,
+    max_pools: Option<usize>,
+    min_tvl: Option<f64>,
+) -> Vec<DiscoveredPool> {
     let slug = chain_name.to_string();
     remote_src::discover_via_remote(&slug, max_pools, min_tvl).await
 }
 
 /// Enrich missing TVL/volume/symbols on on-chain pools from remote entries.
 fn enrich_from_remote(pools: &mut [DiscoveredPool], remote: &[DiscoveredPool]) {
-    let by_addr: HashMap<Address, &DiscoveredPool> = remote.iter().map(|p| (p.address, p)).collect();
+    let by_addr: HashMap<Address, &DiscoveredPool> =
+        remote.iter().map(|p| (p.address, p)).collect();
     for p in pools.iter_mut() {
         if p.tvl_usd.is_none() {
             if let Some(r) = by_addr.get(&p.address) {
@@ -164,10 +168,9 @@ async fn scan_onchain(
         });
         true
     };
-    let result = crate::pool::discovery::discover_and_cache(
-        rpc, cache, from, to, disc_config, Some(&tick),
-    )
-    .await;
+    let result =
+        crate::pool::discovery::discover_and_cache(rpc, cache, from, to, disc_config, Some(&tick))
+            .await;
     match result {
         Ok((pools, active_blocks)) => {
             progress.log(&format!(
@@ -187,7 +190,11 @@ async fn scan_onchain(
     }
 }
 
-pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn JobProgress) -> anyhow::Result<DiscoverOutcome> {
+pub async fn job_discover(
+    config: &Config,
+    opts: &DiscoverOpts,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<DiscoverOutcome> {
     let (chain_name, chain_config) =
         validation::resolve_chain(config).context("failed to resolve chain configuration")?;
     validation::validate_chain_config_addresses(&chain_config)
@@ -212,7 +219,8 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
     let rpc = setup.rpc;
 
     // Block range — not needed for pure remote mode.
-    let (from, to) = resolve_scan_window(&rpc, config, &chain_config, chain_name, is_remote_only).await?;
+    let (from, to) =
+        resolve_scan_window(&rpc, config, &chain_config, chain_name, is_remote_only).await?;
 
     let cache_path = config.effective_db_path(&chain_name);
     let cache = SqliteStore::open(&cache_path)?;
@@ -248,9 +256,16 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
                     progress.log(&format!(
                         "Incremental mode: cache is up-to-date (max block {max_block}). No scan needed."
                     ));
-                    return Ok(DiscoverOutcome { pools_found: 0, active_blocks: 0, remote_count: 0, pools: Vec::new() });
+                    return Ok(DiscoverOutcome {
+                        pools_found: 0,
+                        active_blocks: 0,
+                        remote_count: 0,
+                        pools: Vec::new(),
+                    });
                 }
-                progress.log(&format!("Incremental mode: scanning from block {new_from} (cache max: {max_block})"));
+                progress.log(&format!(
+                    "Incremental mode: scanning from block {new_from} (cache max: {max_block})"
+                ));
                 (new_from, to)
             }
             Ok(_) => {
@@ -258,7 +273,9 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
                 (from, to)
             }
             Err(e) => {
-                tracing::warn!("Incremental mode: failed to query cache: {e:#}. Running full scan.");
+                tracing::warn!(
+                    "Incremental mode: failed to query cache: {e:#}. Running full scan."
+                );
                 (from, to)
             }
         }
@@ -266,7 +283,9 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
         (from, to)
     };
 
-    progress.log(&format!("Pool discovery — chain {chain_name}, sources: {source}, blocks {from}-{to} (json={json})"));
+    progress.log(&format!(
+        "Pool discovery — chain {chain_name}, sources: {source}, blocks {from}-{to} (json={json})"
+    ));
 
     // Phase 1: factory/event scan.
     let (all_pools, all_active_blocks) = if is_remote_only {
@@ -311,19 +330,29 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
             .map(|p| p.address)
             .collect();
         if !targets.is_empty() {
-            match crate::rpc::multicall::resolve_pool_metadata(&rpc, &targets, rpc_concurrency).await {
+            match crate::rpc::multicall::resolve_pool_metadata(&rpc, &targets, rpc_concurrency)
+                .await
+            {
                 Ok(resolved) => {
                     let mut filled = 0usize;
                     for p in pools.iter_mut() {
-                        let Some(m) = resolved.get(&p.address) else { continue };
+                        let Some(m) = resolved.get(&p.address) else {
+                            continue;
+                        };
                         if p.token0.is_zero() {
-                            if let Some(t) = m.token0 { p.token0 = t; }
+                            if let Some(t) = m.token0 {
+                                p.token0 = t;
+                            }
                         }
                         if p.token1.is_zero() {
-                            if let Some(t) = m.token1 { p.token1 = t; }
+                            if let Some(t) = m.token1 {
+                                p.token1 = t;
+                            }
                         }
                         if p.fee == 0 {
-                            if let Some(fee) = m.fee { p.fee = fee; }
+                            if let Some(fee) = m.fee {
+                                p.fee = fee;
+                            }
                         }
                         if p.tick_spacing.is_none() {
                             p.tick_spacing = m.tick_spacing;
@@ -371,7 +400,6 @@ pub async fn job_discover(config: &Config, opts: &DiscoverOpts, progress: &dyn J
         all_active_blocks.len(),
         remote_count,
     ));
-
 
     Ok(DiscoverOutcome {
         pools_found: pools.len(),

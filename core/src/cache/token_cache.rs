@@ -85,9 +85,8 @@ impl TokenCache {
         let conn = store.conn();
         // Prefer the enriched columns; fall back if a very old DB somehow
         // skipped migration (should not happen after SCHEMA_VERSION bump).
-        let mut stmt = conn.prepare(
-            "SELECT address, symbol, decimals, name, icon_url FROM token_symbols",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT address, symbol, decimals, name, icon_url FROM token_symbols")?;
 
         let rows = stmt.query_map([], |row| {
             let addr_bytes: Vec<u8> = row.get(0)?;
@@ -130,7 +129,10 @@ impl TokenCache {
 
         if let Some(w) = data.wrapped_native_by_chain.get(&chain_id.to_string()) {
             if let Ok(addr) = w.address.parse::<Address>() {
-                inner.insert(addr, CachedToken::symbol_only(w.symbol.clone(), Some(w.decimals)));
+                inner.insert(
+                    addr,
+                    CachedToken::symbol_only(w.symbol.clone(), Some(w.decimals)),
+                );
             }
         }
         if inner.is_empty() {

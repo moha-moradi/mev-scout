@@ -13,10 +13,16 @@ use tracing::{debug, warn};
 
 use crate::explorer::classify::{self, BlockInput, TxInput};
 use crate::explorer::pricing::{self, TokenUsd};
-use crate::explorer::store::{BlockFactsInput, ExplorerStore, SwapRow, TransferRow, TxRow};
-use crate::explorer::types::MevEvent;
+use crate::explorer::store::{
+    BlockFactsInput, ExplorerStore, OpenPosition, SwapRow, TransferRow, TxRow,
+};
+use crate::explorer::types::{MevEvent, MevKind};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
+
+/// JIT open-position window (Phase 1.5): positions opened more than this many
+/// blocks before the indexed block are pruned.
+pub const JIT_WINDOW_BLOCKS: u64 = 1_000;
 
 /// Ingester configuration.
 #[derive(Debug, Clone)]
@@ -29,13 +35,14 @@ pub struct IngestConfig {
     pub wrapped_native: Address,
     /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
+    /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default true until
+    /// the Phase-0 window gate passes; see `explorer.arb_likely_parity`.
+    pub arb_likely_parity: bool,
 }
 
 impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
-        let wrapped_native = chain_config
-            .wrapped_native_token
-            .unwrap_or(Address::ZERO);
+        let wrapped_native = chain_config.wrapped_native_token.unwrap_or(Address::ZERO);
         let priority = build_profit_priority(chain, wrapped_native);
         IngestConfig {
             chain,
@@ -43,6 +50,7 @@ impl IngestConfig {
             confirmations: 6,
             wrapped_native,
             profit_token_priority: priority,
+            arb_likely_parity: true,
         }
     }
 }
@@ -113,6 +121,7 @@ pub async fn index_block(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
     block_number: u64,
     native_price: Option<f64>,
     token_prices: Option<HashMap<Address, TokenUsd>>,
@@ -149,19 +158,27 @@ pub async fn index_block(
             continue; // failed txs carry no realized MEV
         }
 
-        let (transfers, swaps, liquidations, jit) =
-            classify::decode_tx_logs(tx.index, &receipt.logs);
+        let (transfers, swaps, liquidations, flashloans, jit) =
+            classify::decode_tx_logs(tx.index, &receipt.logs, pool_tokens);
         let jit_count = jit.len();
 
-        // Effective gas price: receipt has gasUsed; effective = base + priority.
-        // The scanner's receipt conversion does not carry effectiveGasPrice, so
-        // approximate as base_fee + max_priority when positive, else base_fee.
+        // Real gas (Phase 2.1): prefer the receipt's `effectiveGasPrice`, then
+        // the tx's legacy `gasPrice`, and only fall back to
+        // `base_fee + max_priority_fee` when the node omitted both.
         let max_priority_gwei = tx
             .max_priority_fee_per_gas
             .map(|p| p as f64 / 1e9)
             .unwrap_or(0.0);
-        let effective_gwei = base_fee_gwei.unwrap_or(0.0).max(0.0) + max_priority_gwei;
-        let priority_gwei = max_priority_gwei.min(effective_gwei);
+        let effective_gwei = receipt
+            .effective_gas_price
+            .or(tx.gas_price)
+            .map(|p| p as f64 / 1e9)
+            .unwrap_or_else(|| base_fee_gwei.unwrap_or(0.0).max(0.0) + max_priority_gwei);
+        let priority_gwei = if tx.max_priority_fee_per_gas.is_some() {
+            max_priority_gwei.min(effective_gwei)
+        } else {
+            (effective_gwei - base_fee_gwei.unwrap_or(0.0)).max(0.0)
+        };
 
         tx_rows.push(TxRow {
             hash: tx.hash,
@@ -213,10 +230,12 @@ pub async fn index_block(
             transfers,
             swaps,
             liquidations,
+            flashloans,
             jit,
         });
     }
 
+    let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
     let input = BlockInput {
         block: block_number,
         ts: block_data.timestamp,
@@ -226,10 +245,12 @@ pub async fn index_block(
             wrapped_native: cfg.wrapped_native,
             weth: cfg.wrapped_native,
         },
+        arb_likely_parity: cfg.arb_likely_parity,
+        open_positions,
         txs: tx_inputs,
     };
 
-    let mut events: Vec<MevEvent> = classify::classify_block(&input);
+    let mut events: Vec<MevEvent> = classify::filter_unresolved(classify::classify_block(&input));
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 
@@ -237,18 +258,16 @@ pub async fn index_block(
         Some(p) => p,
         None => {
             let tokens = event_tokens(&events);
-            warm_prices_for_tokens(cfg, &tokens, block_data.timestamp, store).await?
+            warm_prices_for_tokens(cfg, rpc, &tokens, block_data.timestamp, store).await?
         }
     };
     // Wrapped-native USD = CoinGecko native price (mevlive Price column parity).
     if let Some(np) = native_price {
         if !cfg.wrapped_native.is_zero() {
-            token_prices
-                .entry(cfg.wrapped_native)
-                .or_insert(TokenUsd {
-                    usd: np,
-                    decimals: 18,
-                });
+            token_prices.entry(cfg.wrapped_native).or_insert(TokenUsd {
+                usd: np,
+                decimals: 18,
+            });
         }
     }
 
@@ -266,11 +285,45 @@ pub async fn index_block(
         token_prices: &token_prices,
     })?;
 
+    persist_jit_positions(store, block_number, &input.txs)?;
+
     Ok(IndexedBlock {
         block: block_number,
         events: txs.len(),
         ops,
     })
+}
+
+/// Persist JIT open positions (Phase 1.5): record Mints not closed in the same
+/// block, delete rows for Burns, and prune positions outside the window.
+fn persist_jit_positions(
+    store: &ExplorerStore,
+    block_number: u64,
+    txs: &[TxInput],
+) -> anyhow::Result<()> {
+    let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
+    for t in txs {
+        let burned: std::collections::HashSet<_> =
+            t.jit.iter().filter(|j| !j.is_mint).map(key).collect();
+        for j in t.jit.iter().filter(|j| j.is_mint) {
+            if burned.contains(&key(j)) {
+                continue; // same-block JIT, not an open position
+            }
+            store.record_jit_open(&[OpenPosition {
+                pool: j.pool,
+                owner: j.owner,
+                tick_lower: j.tick_lower,
+                tick_upper: j.tick_upper,
+                opened_block: block_number,
+                liquidity: j.liquidity,
+            }])?;
+        }
+        for j in t.jit.iter().filter(|j| !j.is_mint) {
+            store.close_jit_position(j.pool, j.owner, j.tick_lower, j.tick_upper)?;
+        }
+    }
+    store.prune_jit_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    Ok(())
 }
 
 /// Effective chain head for indexing: head − confirmations.
@@ -309,6 +362,7 @@ pub async fn check_reorg(
 /// Outcome of a stats-window price fill.
 pub async fn warm_prices_for_tokens(
     cfg: &IngestConfig,
+    rpc: &RpcClient,
     tokens: &[Address],
     ts: u64,
     store: &ExplorerStore,
@@ -325,34 +379,66 @@ pub async fn warm_prices_for_tokens(
     };
 
     let hour = pricing::hour_bucket(ts);
+    // Priced tokens (store cache first, then llama), keyed by address.
+    let mut priced: Vec<(Address, f64)> = Vec::new();
     let mut missing: Vec<Address> = Vec::new();
     for t in tokens {
         if t.is_zero() || *t == crate::explorer::profit::NATIVE_MARKER {
             continue;
         }
         if let Some((usd, _)) = store.price_at(*t, hour)? {
-            if let Some(dec) = decimals_of(t) {
-                out.insert(*t, TokenUsd { usd, decimals: dec });
-                continue;
-            }
+            priced.push((*t, usd));
+        } else {
+            missing.push(*t);
         }
-        missing.push(*t);
     }
-    if missing.is_empty() {
-        return Ok(out);
-    }
-
-    match pricing::fetch_prices_llama(cfg.chain, ts, &missing).await {
-        Ok(prices) => {
-            for (addr, (usd, llama_dec)) in prices {
-                let dec = llama_dec.or_else(|| decimals_of(&addr));
-                if let Some(dec) = dec {
+    // Llama-reported decimals stay alongside the price for resolution below.
+    let mut llama_decimals: HashMap<Address, u32> = HashMap::new();
+    if !missing.is_empty() {
+        match pricing::fetch_prices_llama(cfg.chain, ts, &missing).await {
+            Ok(prices) => {
+                for (addr, (usd, llama_dec)) in prices {
                     store.put_price(addr, hour, usd, "llama")?;
-                    out.insert(addr, TokenUsd { usd, decimals: dec });
+                    priced.push((addr, usd));
+                    if let Some(d) = llama_dec {
+                        llama_decimals.insert(addr, d);
+                    }
                 }
             }
+            Err(e) => warn!("llama price fetch failed ({} tokens): {e}", missing.len()),
         }
-        Err(e) => warn!("llama price fetch failed ({} tokens): {e}", missing.len()),
+    }
+
+    // Resolve decimals: bundled cache → llama-reported decimals → on-chain
+    // ERC-20 decimals() via Multicall3 (Phase 2.4 long-tail fallback).
+    let mut need_onchain: Vec<Address> = Vec::new();
+    for (addr, usd) in &priced {
+        let dec = decimals_of(addr).or_else(|| llama_decimals.get(addr).copied());
+        match dec {
+            Some(d) => {
+                out.insert(
+                    *addr,
+                    TokenUsd {
+                        usd: *usd,
+                        decimals: d,
+                    },
+                );
+            }
+            None => need_onchain.push(*addr),
+        }
+    }
+    if !need_onchain.is_empty() {
+        let usd_of = |a: &Address| priced.iter().find(|(p, _)| p == a).map(|(_, u)| *u);
+        match crate::rpc::multicall::resolve_token_decimals(rpc, &need_onchain, 4).await {
+            Ok(decs) => {
+                for addr in need_onchain {
+                    if let (Some(d), Some(usd)) = (decs.get(&addr), usd_of(&addr)) {
+                        out.insert(addr, TokenUsd { usd, decimals: *d });
+                    }
+                }
+            }
+            Err(e) => warn!("on-chain decimals resolution failed: {e:#}"),
+        }
     }
     Ok(out)
 }
@@ -364,6 +450,19 @@ pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
         .filter_map(|e| e.profit_token)
         .filter(|t| !t.is_zero() && *t != crate::explorer::profit::NATIVE_MARKER)
         .collect();
+    // Liquidation P&L needs the repaid debt asset priced too (Phase 1.3).
+    for e in events.iter().filter(|e| e.kind == MevKind::Liquidation) {
+        if let Some(a) = e
+            .details
+            .get("debt_asset")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Address>().ok())
+        {
+            if !a.is_zero() {
+                v.push(a);
+            }
+        }
+    }
     v.sort();
     v.dedup();
     v
@@ -411,6 +510,7 @@ pub async fn backfill_range(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
     from: u64,
     to: u64,
     checkpoint_every: u64,
@@ -422,7 +522,7 @@ pub async fn backfill_range(
     let mut since_checkpoint: u64 = 0;
 
     for block in from..=to {
-        let indexed = index_block(rpc, store, cfg, block, native_price, None).await?;
+        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
         ops_total += indexed.ops as u64;
         blocks_done += 1;
         since_checkpoint += 1;
@@ -445,6 +545,7 @@ pub async fn run_live(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
     poll_ms: u64,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<u64> {
@@ -494,7 +595,8 @@ pub async fn run_live(
             // Cap work per poll so we stay near tip under RPC rate limits.
             let batch_end = (next_block + LIVE_MAX_LAG_BLOCKS - 1).min(safe);
             for block in next_block..=batch_end {
-                let indexed = index_block(rpc, store, cfg, block, native_price, None).await?;
+                let indexed =
+                    index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
                 indexed_total += indexed.ops as u64;
             }
             store.set_sync_state(cfg.chain_id, safe, batch_end)?;
@@ -546,8 +648,11 @@ mod tests {
             pools: vec![],
             profit_token: None,
             profit_amount: None,
+            profit_tokens: vec![],
             profit_usd: None,
             gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
             confidence: crate::explorer::types::Confidence::Exact,
             victim_hashes: vec![],
             victim_swap_size: None,

@@ -9,9 +9,7 @@ use serde::Serialize;
 use crate::cache::SqliteStore;
 use crate::config::validation;
 use crate::config::Config;
-use crate::pool::discovery::{
-    remote, DiscoveredPool, DiscoveryRuntimeOpts, ResolvedFactories,
-};
+use crate::pool::discovery::{remote, DiscoveredPool, DiscoveryRuntimeOpts, ResolvedFactories};
 use crate::progress::JobProgress;
 use crate::resolver::RangeResolver;
 use crate::rpc::recommended_get_logs_batch;

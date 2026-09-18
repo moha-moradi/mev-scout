@@ -24,6 +24,8 @@ const TOKEN0_SELECTOR: [u8; 4] = [0x0d, 0xfe, 0x16, 0x81];
 const TOKEN1_SELECTOR: [u8; 4] = [0xd2, 0x12, 0x20, 0xa7];
 const FEE_SELECTOR: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43];
 const TICK_SPACING_SELECTOR: [u8; 4] = [0x37, 0xcf, 0xda, 0xca];
+/// `decimals()` selector (ERC-20 metadata).
+const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 
 /// `aggregate3((address,bool,bytes)[])` selector (verified keccak256 prefix).
 const AGGREGATE3_SELECTOR: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
@@ -31,6 +33,9 @@ const AGGREGATE3_SELECTOR: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
 /// Pools per Multicall3 batch: 4 subcalls each keeps batches at ~100 subcalls,
 /// comfortably within public-RPC gas and response-size limits.
 const POOLS_PER_BATCH: usize = 25;
+
+/// Tokens per decimals batch: one `decimals()` subcall per token.
+const TOKENS_PER_BATCH: usize = 100;
 
 /// Resolved on-chain metadata for one concentrated-liquidity pool.
 #[derive(Debug, Clone, Default)]
@@ -269,6 +274,84 @@ pub async fn resolve_pool_metadata(
     Ok(out)
 }
 
+/// Decode a `decimals()` return word (`uint8` in the low byte) from a
+/// Multicall3 slot. Pure helper so the layout is unit-testable.
+fn decode_decimals_word(b: &[u8]) -> Option<u32> {
+    let w: [u8; 32] = b.get(..32)?.try_into().ok()?;
+    // Strict uint8: the high 31 bytes must be zero.
+    if w[..31].iter().all(|&x| x == 0) {
+        Some(u32::from(w[31]))
+    } else {
+        None
+    }
+}
+
+/// Resolve ERC-20 `decimals()` for a batch of token addresses using Multicall3.
+/// One `eth_call` per ~100 tokens (100 subcalls); reverted/non-token addresses
+/// yield no entry. Callers should only pass tokens whose decimals are genuinely
+/// unknown (Phase 2.4 long-tail price fallback).
+pub async fn resolve_token_decimals(
+    rpc: &RpcClient,
+    tokens: &[Address],
+    concurrency: usize,
+) -> anyhow::Result<HashMap<Address, u32>> {
+    if tokens.is_empty() {
+        return Ok(HashMap::new());
+    }
+    use futures::stream::{self, StreamExt};
+
+    let chunks: Vec<Vec<SubCall>> = tokens
+        .chunks(TOKENS_PER_BATCH)
+        .map(|group| {
+            group
+                .iter()
+                .map(|&t| SubCall {
+                    target: t,
+                    data: Bytes::copy_from_slice(&DECIMALS_SELECTOR),
+                })
+                .collect()
+        })
+        .collect();
+
+    tracing::info!(
+        "Multicall3: resolving decimals for {} token(s) via {} eth_call batch(es)",
+        tokens.len(),
+        chunks.len()
+    );
+
+    let results: Vec<Option<Vec<Option<Bytes>>>> = stream::iter(chunks)
+        .map(|calls| {
+            let rpc = rpc.clone();
+            async move {
+                match run_batch(&rpc, calls).await {
+                    Ok(ret) => Some(ret),
+                    Err(e) => {
+                        tracing::warn!("Multicall3 decimals batch failed: {e:#}");
+                        None
+                    }
+                }
+            }
+        })
+        .buffer_unordered(concurrency.max(1))
+        .collect()
+        .await;
+
+    let mut out = HashMap::with_capacity(tokens.len());
+    for (batch_tokens, slot) in tokens.chunks(TOKENS_PER_BATCH).zip(results) {
+        let Some(slots) = slot else {
+            continue; // whole batch failed — nothing to record
+        };
+        for (token, b) in batch_tokens.iter().zip(slots) {
+            if let Some(data) = b {
+                if let Some(dec) = decode_decimals_word(&data) {
+                    out.insert(*token, dec);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +449,29 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].as_ref().unwrap().as_ref(), &[0xab]);
         assert!(decoded[1].is_none());
+    }
+
+    #[test]
+    fn decode_decimals_word_roundtrip() {
+        // uint8 6 → high 31 bytes zero, low byte = 0x06
+        let mut w6 = [0u8; 32];
+        w6[31] = 6;
+        assert_eq!(decode_decimals_word(&w6), Some(6));
+
+        // uint8 18
+        let mut w18 = [0u8; 32];
+        w18[31] = 18;
+        assert_eq!(decode_decimals_word(&w18), Some(18));
+
+        // uint8 0 is valid per ERC-20 (non-standard but possible)
+        assert_eq!(decode_decimals_word(&[0u8; 32]), Some(0));
+
+        // Nonzero high bytes → reject
+        let mut wbad = [0u8; 32];
+        wbad[30] = 1;
+        assert_eq!(decode_decimals_word(&wbad), None);
+
+        // Short buffer → None
+        assert_eq!(decode_decimals_word(&[0u8; 16]), None);
     }
 }

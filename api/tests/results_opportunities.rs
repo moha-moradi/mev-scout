@@ -8,12 +8,9 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 
-use common::{state_with_real_dbs, test_state, test_router};
+use common::{state_with_real_dbs, test_router, test_state};
 
-async fn get(
-    app: &axum::Router<()>,
-    uri: &str,
-) -> (StatusCode, Value) {
+async fn get(app: &axum::Router<()>, uri: &str) -> (StatusCode, Value) {
     let resp = app
         .clone()
         .oneshot(
@@ -26,7 +23,9 @@ async fn get(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
 }

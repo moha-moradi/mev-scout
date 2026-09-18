@@ -122,10 +122,7 @@ fn seed_from_discovered_pools(store: &SqliteStore, token_cache: &mut TokenCache)
             if addr.is_zero() || token_cache.contains(&addr) {
                 continue;
             }
-            token_cache.upsert_meta(
-                addr,
-                CachedToken::symbol_only(String::new(), None),
-            );
+            token_cache.upsert_meta(addr, CachedToken::symbol_only(String::new(), None));
             seeded += 1;
         }
         if let Some(ref under) = pool.underlying_tokens {
@@ -133,10 +130,7 @@ fn seed_from_discovered_pools(store: &SqliteStore, token_cache: &mut TokenCache)
                 if addr.is_zero() || token_cache.contains(&addr) {
                     continue;
                 }
-                token_cache.upsert_meta(
-                    addr,
-                    CachedToken::symbol_only(String::new(), None),
-                );
+                token_cache.upsert_meta(addr, CachedToken::symbol_only(String::new(), None));
                 seeded += 1;
             }
         }

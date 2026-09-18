@@ -110,6 +110,16 @@ pub struct ExplorerConfig {
     /// Blocks per sync_state checkpoint during backfill.
     #[serde(default = "default_explorer_checkpoint_every")]
     pub checkpoint_every: u64,
+    /// Mevlive-parity `arb_atomic` fallback (Phase 1.2). When true, a profitable
+    /// non-cycle residual is still labeled arb. Flip to `false` only after the
+    /// Phase-0 measurement-window gate passes; changing it requires a
+    /// wipe-and-reindex of the measurement window.
+    #[serde(default = "default_true")]
+    pub arb_likely_parity: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_explorer_confirmations() -> u64 {
@@ -259,6 +269,7 @@ impl Default for ExplorerConfig {
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
             checkpoint_every: default_explorer_checkpoint_every(),
+            arb_likely_parity: true,
         }
     }
 }

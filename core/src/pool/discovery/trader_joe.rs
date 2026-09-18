@@ -1,5 +1,7 @@
 use super::LB_PAIR_CREATED_TOPIC;
-use super::{resolve_dex_name, DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
+use super::{
+    resolve_dex_name, DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext,
+};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use alloy::primitives::Address;

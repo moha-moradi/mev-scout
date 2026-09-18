@@ -33,7 +33,9 @@ async fn request(
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
 }
@@ -158,7 +160,10 @@ async fn config_put_rpc_urls_round_trip_and_hot_reload() {
     assert!(!raw.contains("rpc_urls") && !raw.contains(new_url));
 
     let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
-    assert!(on_disk.contains("${MY_RPC_KEY}"), "placeholder lost: {on_disk}");
+    assert!(
+        on_disk.contains("${MY_RPC_KEY}"),
+        "placeholder lost: {on_disk}"
+    );
     assert!(on_disk.contains("new-rpc.example.com"));
 
     let (_, json) = request(&app, Method::GET, "/api/config", None).await;
@@ -313,7 +318,13 @@ async fn config_edit_rejected_409_while_job_runs() {
     assert!(json["error"].as_str().unwrap().contains("job is running"));
 
     // Clean up.
-    request(&app, Method::POST, &format!("/api/jobs/{job_id}/stop"), None).await;
+    request(
+        &app,
+        Method::POST,
+        &format!("/api/jobs/{job_id}/stop"),
+        None,
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 }
 
@@ -336,12 +347,10 @@ async fn config_chain_switch_swaps_connections() {
     let (_, json) = request(&app, Method::GET, "/api/config", None).await;
     assert_eq!(json["chain"], "arbitrum");
     // Derived DB paths now point at arbitrum files.
-    assert!(
-        state
-            .cache_db_path
-            .read()
-            .await
-            .to_string_lossy()
-            .contains("arbitrum")
-    );
+    assert!(state
+        .cache_db_path
+        .read()
+        .await
+        .to_string_lossy()
+        .contains("arbitrum"));
 }

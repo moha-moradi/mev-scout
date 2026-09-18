@@ -23,6 +23,8 @@ pub struct SyncResponse {
 }
 
 async fn sync_state(State(state): State<SharedState>) -> ApiResult<Json<SyncResponse>> {
+    let _ = state.ensure_explorer_conn().await;
+    let _ = state.ensure_cache_conn().await;
     let chain = state.active_chain().await;
     let chain_id = chain.chain_id();
 

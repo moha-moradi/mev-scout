@@ -8,9 +8,7 @@ use anyhow::Context;
 use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation;
 use crate::config::Config;
-use crate::explorer::results::{
-    persist_opportunities_to_explorer, persist_rejections_to_explorer,
-};
+use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::fetch::Fetcher;
 use crate::pipeline::{BacktestRunner, BlockReplayStats};
 use crate::pool::state::PoolManager;
@@ -162,9 +160,7 @@ pub async fn job_run(
         .with_record_rejections(opts.record_rejections);
 
     if let Some(aave_pool) = validation_result.chain_config.aave_v3_pool {
-        runner
-            .prefetch_aave_reserves(aave_pool, prev_block)
-            .await;
+        runner.prefetch_aave_reserves(aave_pool, prev_block).await;
     }
 
     let start = Instant::now();

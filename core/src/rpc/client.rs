@@ -410,11 +410,7 @@ impl RpcClient {
         self.retry_call_impl(f, ProviderScope::StateCapable).await
     }
 
-    async fn retry_call_impl<F, Fut, T>(
-        &self,
-        f: F,
-        scope: ProviderScope,
-    ) -> anyhow::Result<T>
+    async fn retry_call_impl<F, Fut, T>(&self, f: F, scope: ProviderScope) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
@@ -1365,7 +1361,8 @@ impl RpcClient {
 
     /// Execute an `eth_call` at a specific block.
     async fn call_at(&self, to: Address, data: Bytes, block: BlockId) -> anyhow::Result<Bytes> {
-        self.call_at_with(to, data, block, ProviderScope::Archive).await
+        self.call_at_with(to, data, block, ProviderScope::Archive)
+            .await
     }
 
     /// Execute an `eth_call` at a given block/tag, routing through the
@@ -1414,8 +1411,13 @@ impl RpcClient {
     /// state is not needed. Avoids `historical state not available` errors
     /// from providers without full archive support.
     pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {
-        self.call_at_with(to, data, BlockNumberOrTag::Latest.into(), ProviderScope::Any)
-            .await
+        self.call_at_with(
+            to,
+            data,
+            BlockNumberOrTag::Latest.into(),
+            ProviderScope::Any,
+        )
+        .await
     }
 
     /// Fetch a single storage slot at the latest block via `eth_getStorageAt`.
@@ -1564,6 +1566,7 @@ fn alloy_tx_to_tx_data(tx: &AlloyTx, index: u64) -> TxData {
         gas_limit: tx.inner.gas_limit(),
         max_fee_per_gas: tx.inner.max_fee_per_gas(),
         max_priority_fee_per_gas: tx.inner.max_priority_fee_per_gas(),
+        gas_price: tx.inner.gas_price(),
         nonce: tx.inner.nonce(),
         access_list: tx
             .inner
@@ -1603,6 +1606,7 @@ fn alloy_receipt_to_receipt_data(receipt: &TransactionReceipt) -> ReceiptData {
         status: receipt.status(),
         gas_used: receipt.gas_used,
         cumulative_gas_used: receipt.inner.cumulative_gas_used(),
+        effective_gas_price: Some(receipt.effective_gas_price),
         logs: receipt
             .logs()
             .iter()

@@ -62,9 +62,7 @@ pub async fn job_replay(
     let tx_index = opts.tx_index.unwrap_or(usize::MAX);
 
     if !cache.has_block(block_num)? {
-        anyhow::bail!(
-            "block {block_num} is not cached (run fetch --block {block_num} first)"
-        );
+        anyhow::bail!("block {block_num} is not cached (run fetch --block {block_num} first)");
     }
 
     let pool_map: HashMap<Address, PoolInfo> = if opts.analyze {
