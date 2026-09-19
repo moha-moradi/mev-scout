@@ -17,11 +17,12 @@ pub async fn init_rpc(
     let provider_configs = config.effective_provider_configs(chain_name)?;
     let chain_id = chain_name.chain_id();
     let urls: Vec<&str> = provider_configs.iter().map(|p| p.url.as_str()).collect();
+    let rps_limit = config.effective_rpc(chain_name).rps_limit;
     let rpc = RpcClient::from_urls(&urls, chain_id)?;
     rpc.with_provider_rps(
         &provider_configs
             .iter()
-            .map(|p| p.rps.unwrap_or(config.rpc.rps_limit))
+            .map(|p| p.rps.unwrap_or(rps_limit))
             .collect::<Vec<_>>(),
     )
     .await;

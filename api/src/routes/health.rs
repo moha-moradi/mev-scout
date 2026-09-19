@@ -40,7 +40,8 @@ async fn health(State(state): State<SharedState>) -> ApiResult<Json<HealthRespon
     let explorer_path = state.explorer_db_path.read().await.clone();
     let cache_status = check_db_status(&cache_path, "run_manifests");
     let explorer_status = check_db_status(&explorer_path, "mev_ops");
-    let rpc_provider_count = cfg.rpc.rpc_urls.len() + usize::from(cfg.rpc.rpc_url.is_some());
+    let eff_rpc = cfg.effective_rpc(cfg.chain);
+    let rpc_provider_count = eff_rpc.rpc_urls.len() + usize::from(eff_rpc.rpc_url.is_some());
     drop(cfg);
 
     let jobs = state.job_manager.lock().await.list().await;

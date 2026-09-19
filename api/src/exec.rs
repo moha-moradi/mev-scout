@@ -223,6 +223,7 @@ fn explorer_validate_opts(f: &HashMap<String, Vec<String>>) -> ExplorerValidateO
         threshold_sweep: flag_bool(f, "threshold-sweep"),
         emit_missing_pools: flag_bool(f, "emit-missing-pools"),
         review_csv: flag_str(f, "review-csv"),
+        golden_causal: flag_bool(f, "golden-causal"),
         json: flag_bool(f, "json"),
     }
 }

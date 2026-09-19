@@ -17,6 +17,7 @@ pub struct ExplorerValidateOpts {
     pub threshold_sweep: bool,
     pub emit_missing_pools: bool,
     pub review_csv: Option<String>,
+    pub golden_causal: bool,
     pub json: bool,
 }
 
@@ -68,7 +69,7 @@ pub async fn job_explorer_validate(
     let ts = since_ts(opts.since.as_deref());
     let (from_block, to_block) = block_window(&store, ts)?;
 
-    let report = validate::compute_validation(
+    let mut report = validate::compute_validation(
         &store,
         validate::ValidationQuery {
             chain,
@@ -79,6 +80,10 @@ pub async fn job_explorer_validate(
             threshold_sweep: opts.threshold_sweep,
         },
     )?;
+
+    if opts.golden_causal {
+        report.causal_golden = Some(crate::explorer::score_embedded_causal_set());
+    }
 
     if opts.json {
         progress.log(&serde_json::to_string_pretty(&report)?);

@@ -85,8 +85,11 @@ explicit documented trade-off (see 1.2 gate for the arb_likely cliff).
 Establish ground truth so every later change has a before/after number.
 
 > **Status: code landed** (trace reconciliation, validate profit-error
-> aggregation + review queue, `--review-csv`). Remaining: 0.4 baseline run +
-> ARCHITECTURE.md §4.11 recipe; 0.5 labeled golden set.
+> aggregation + review queue, `--review-csv`; wipe+reindex recipe + baseline
+> template documented in ARCHITECTURE.md §4.11). **0.5 synthetic labeled set
+> done** (`explorer::golden` + `explorer validate --golden-causal`). Remaining:
+> **0.4 baseline run** (real numbers, needs RPC); chain-curated expansion of
+> the 0.5 set beyond the synthetic CI fixtures.
 
 1. **Trace reconciliation** (measurement only) — `core/src/jobs/trace.rs:86`
    stores a summary string and passes `trace_profit_usd = None`; nothing
@@ -143,11 +146,18 @@ checked into ARCHITECTURE.md (not into asserts).
   miss-taxonomy shifts away from “unresolved swap”.
 
 ### 1.2 Arbitrage — generalized cycle detection (§8.1)
-> **Status: code done.** `has_closed_cycle` (directed-graph DFS, ≥2 edges/≥2
-> distinct pools, edge-reuse guarded) replaces `is_closed_cycle`; `BlockInput`
-> carries `arb_likely_parity` (default true, from `explorer.arb_likely_parity`);
-> `filter_unresolved` is wired into `index_block`. Remaining: flow-ownership
-> (§7.1) separation of unrelated swap edges; ship-gate flip is a later data step.
+> **Status: code done** (incl. flow-ownership). `has_closed_cycle` (directed-graph
+> DFS, ≥2 edges/≥2 distinct pools, edge-reuse guarded) replaces `is_closed_cycle`;
+> `BlockInput` carries `arb_likely_parity` (default true, from
+> `explorer.arb_likely_parity`); `filter_unresolved` is wired into `index_block`.
+> **Flow-ownership (§7.1/§8.1) done:** `SwapFact.owner` is captured from the
+> inbound transfer funding each swap (`attach_swap_tokens`, decode); the arb
+> pass requires the closed cycle to be attributable to a single funder-owner
+> that is a searcher candidate of the tx — `Exact` otherwise `unknown`, with an
+> explicit unowned (recall) escape. Tests: `arb_cycle_single_flow_owner_is_exact`,
+> `arb_cycle_mixed_flow_owner_is_not_exact`,
+> `arb_cycle_owned_only_by_non_candidate_is_not_exact`.
+> Remaining: ship-gate flip of `arb_likely_parity` is a later data step.
 - `profit.rs:158` `is_closed_cycle` only detects a connected chain in log
   order. Add a proper directed-graph cycle walk over resolved swap edges
   (DFS from `edges[0].0`, returning to start, ≥2 pools) used by
@@ -226,15 +236,16 @@ checked into ARCHITECTURE.md (not into asserts).
 > **Status: done.** `SandwichWalk` carries `victims: Vec<SwapLeg>` (full victim
 > list + per-victim swap sizes); `fold_sandwich` now sums gas across front+back
 > txs and emits an `evidence` block (`same_pool`, `direction_match`,
-> `reverse_backrun`, `same_searcher`), `victim_execution` degradation
-> (`front_price`, `victim_price`, `degradation_pct`, logs-only, evidence gate
-> never classifies), and `REVERSE_DIRECTION`/`SAME_SEARCHER`/
-> `VICTIM_EXECUTION_DEGRADED` reasons. **Profitability gate:** `store.rs` drops
-> a `Sandwich` when net (`profit − gas − flashloan_fee`) ≤ 0 — never guesses on
-> missing prices (`None` net is kept). Tag-contract-mediated-legs on labeled
-> searchers is deferred (classify is store-free). Both negative tests
+> `reverse_backrun`, `same_searcher`, `contract_mediated`), `victim_execution`
+> degradation (`front_price`, `victim_price`, `degradation_pct`, logs-only,
+> evidence gate never classifies), and `REVERSE_DIRECTION`/`SAME_SEARCHER`/
+> `VICTIM_EXECUTION_DEGRADED`/`CONTRACT_MEDIATED` reasons. Contract mediation
+> is inferred from `tx.to` on front/back (store-free). **Profitability gate:**
+> `store.rs` drops a `Sandwich` when net (`profit − gas − flashloan_fee`) ≤ 0
+> — never guesses on missing prices (`None` net is kept). Both negative tests
 > (plain round-trip, victim-before-front) still hold; new store gate test
-> `sandwich_loss_gate_skips_unprofitable` covers drop + keep paths.
+> `sandwich_loss_gate_skips_unprofitable` covers drop + keep paths;
+> `sandwich_contract_mediated_legs_tagged` covers the contract tag.
 
 ### 1.5 JIT + JitArb — position-based + fee capture (§14/§15)
 - **Persist** open Mint positions in SQLite (not process memory) keyed
@@ -308,6 +319,9 @@ checked into ARCHITECTURE.md (not into asserts).
 ## Phase 2 — Profit accuracy
 
 ### 2.1 Real gas
+> **Status: done.** `ingest` prefers receipt `effective_gas_price`, then
+> legacy `gas_price`, then `base_fee + max_priority_fee`. RPC client + cache
+> store already carry both fields.
 - `ReceiptData` is built from alloy's `TransactionReceipt` at rpc/client.rs:1599,
   which already carries `effectiveGasPrice`; `TxData` at client.rs:1555 carries
   legacy `gasPrice`. Add both fields and prefer them over the
@@ -373,6 +387,9 @@ checked into ARCHITECTURE.md (not into asserts).
 > `positive_tokens_lists_net_positives_only`, `insert_and_query_roundtrip`.
 
 ### 2.4 Pricing
+> **Status: done.** Multicall3 decimals fallback in `ingest`;
+> `amount_usd_realized` prefers hourly price then on-chain realized rate;
+> `fot_tokens` / rebase registry mark `usd_approximate` at persist.
 - Decimals fallback via `erc20.decimals()` batch multicall
   (core/src/rpc/multicall.rs) for long-tail tokens.
 - Prefer the on-chain realized rate (stable leg of the route) as
@@ -419,7 +436,14 @@ persistable events.
 **Ship gate:** labeled golden set from Phase 0.5 — precision on backrun/
 frontrun positives/negatives acceptable before enabling in live feed defaults.
 
-> **Status: done.** `classify_backruns`/`classify_frontruns` added in
+> **Status: done** (synthetic ship gate). Embedded labeled set in
+> `explorer::golden` (2 positives + 4 negatives incl. sandwich exclusion);
+> `score_embedded_causal_set` + unit test; CLI
+> `explorer validate --golden-causal`; live-feed/API defaults exclude
+> `frontrun`/`backrun` (`--kinds all` to opt in). Chain-curated blocks still
+> pending RPC.
+>
+> `classify_backruns`/`classify_frontruns` added in
 > `classify.rs` (after sandwiches, before final sort), plus helpers
 > `CAUSAL_WINDOW_TXS=8`, `exec_price`, `price_better_by`, `price_worse_by`,
 > `pool_legs`, `tx_cycle_profit`.
@@ -474,6 +498,14 @@ frontrun positives/negatives acceptable before enabling in live feed defaults.
 - `unknown` gating from 1.2 reduces live-feed noise.
 - JIT open-position table must survive process restart (1.5 / 5a-0).
 
+> **Status: code done** for per-poll re-verify + confirmation override.
+> `verify_indexed_tip` (ingest.rs, after `check_reorg`) re-verifies the indexed
+> tip header on **every** live poll where the liveness gap applies
+> (`indexed_to < next_block`), falling back to header-hash compare + `unwind_from`
+> on mismatch; the heavier 32-block sweep is kept. Confirmations are per-chain
+> overridable (`mev-scout.toml`, default kept at 6). Live-mode E2E still requires
+> an RPC environment to exercise.
+
 ---
 
 ## Phase 5 — Cross-cutting plumbing & schema
@@ -517,6 +549,15 @@ Split so kinds can land before strategy passes.
   path; add profit-error aggregation per Phase 0.2; document in report.
 - `mod.rs` doc update: new passes + flash-loan netting + kind priority.
 
+> **Status: code done.** `flashloan_fee_usd` column lives on `mev_ops` (net =
+> profit_usd − gas_usd − flashloan_fee_usd; flash-loan fee USD via borrowed
+> token price, per 2.2). `core/src/explorer/mod.rs` now documents the pass
+> stack (ArbAtomic/Sandwich/Frontrun/Backrun/Jit), kind priority, gas +
+> flashloan netting, Phase 1.4 sandwich profitability gate, and the 1.2
+> flow-ownership exact/estimated rule. `validate.rs` profit-error aggregation
+> landed with Phase 0.2; `strategy_to_kind` documents no opportunity map for
+> backrun/frontrun; golden-set path wired via `--golden-causal`.
+
 ---
 
 ## Phase 6 — Regression fixtures & verification
@@ -524,6 +565,17 @@ Split so kinds can land before strategy passes.
 - **Golden-block end-to-end fixture**: hand-built receipt for one arb + one
   sandwich + one JIT; assert exact event kind, profit token/amount, gas, and the
   persisted `mev_ops` row.
+
+> **Status: golden fixture done.** `core/tests/explorer_golden.rs` builds one
+> block (tx0 atomic-arb cycle USDC→TOKA→USDC across two pools; tx1–tx3
+> three-EOA sandwich on one pool with swaps-only legs; tx4–tx5 JIT Mint(with
+> in-range swap)+exact Burn), runs `classify_block` → asserts exactly 3 events
+> of kind ArbAtomic/Sandwich/Jit (all `Exact`, searcher, profit token/amount,
+> summed front+back gas, victim hash), persists via
+> `ExplorerStore::insert_block_facts(BlockFactsInput{…})` with USDC @ $1 (6-dec)
+> and native @ $0.75, then asserts exactly 3 exact-confidence `mev_ops` rows
+> incl. canonical-ID prefixes (`ArbAtomic|`/`Sandwich|`/`Jit|`) and a
+> positive-net sandwich surviving the Phase 1.4 profitability gate.
 - Full unit coverage: interleaved 3-hop cycle (non-chain order) + no-cycle
   transfers ⇒ `unknown` not arb (§39); liquidation event/transfer mismatch +
   Absorb zero-collateral path + multi-asset pricing path; sandwich victim-impact
@@ -545,6 +597,11 @@ Split so kinds can land before strategy passes.
   - single-token profit (pre-2.3)
   - hourly pricing / FOT
   - Uni V3 Flash omitted or approximate (per 2.2 decision)
+
+> **Status: biases documented** in `ARCHITECTURE.md` §4.11 (Known biases table).
+> Golden arb/sandwich/JIT fixture + causal labeled set + unit coverage as above.
+> Phase 0.4 RPC baseline numbers and live-mode E2E remain environment-gated.
+
 - Verify per phase:
   ```bash
   cargo build

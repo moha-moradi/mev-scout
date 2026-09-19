@@ -1,7 +1,7 @@
 pub mod defaults;
 pub mod settings;
 pub mod validation;
-pub use defaults::{default_chains, ChainConfig};
+pub use defaults::{default_chains, merge_default_chains, ChainConfig};
 pub use settings::{
     BacktestConfig, BacktestOverrides, CliOverrides, Config, ConfigBuilder, GasConfig,
     GasOverrides, OutputConfig, OutputOverrides, ProviderConfig, RpcConfig, RpcOverrides,

@@ -20,6 +20,12 @@ use crate::explorer::store::{ExplorerStore, MevOpRow, OpportunityRow, RejectedRo
 use crate::types::ChainName;
 
 /// Kind mapping opportunity strategy → realized kind (taxonomy).
+///
+/// Note: scanner strategies do **not** map to `backrun` / `frontrun`. Those
+/// realized kinds are measured via the Phase 0.5 labeled golden set
+/// (`explorer::golden` / `explorer validate --golden-causal`), not via
+/// opportunity matching. Unmapped scanner strategies contribute only to
+/// `precision_signal_count`.
 fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
     match strategy {
         "TwoHopArb" | "MultiHopArb" => Some("arb_atomic"),
@@ -253,6 +259,9 @@ pub struct ValidationReport {
     pub trace_verified_ops: u64,
     pub profit_error_mean: Option<f64>,
     pub profit_error_mad: Option<f64>,
+    /// Optional Phase 0.5 causal labeled-set score (when `--golden-causal`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causal_golden: Option<crate::explorer::golden::GoldenSetScore>,
 }
 
 impl ValidationReport {
@@ -643,6 +652,7 @@ pub fn compute_validation(
         trace_verified_ops,
         profit_error_mean: mean(&error_samples),
         profit_error_mad: mad(&error_samples),
+        causal_golden: None,
     })
 }
 
@@ -802,6 +812,17 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
         "  Realized review queue (inferred arb/unknown): {}",
         report.review_candidate_count
     );
+
+    if let Some(g) = &report.causal_golden {
+        let _ = writeln!(out);
+        let _ = write!(out, "{}", g.render());
+        let gate = if g.passes(1.0, 1.0) {
+            "PASS"
+        } else {
+            "FAIL"
+        };
+        let _ = writeln!(out, "  Causal golden ship gate: {gate}");
+    }
 
     if report.trace_verified_ops > 0 {
         let _ = writeln!(out);

@@ -32,6 +32,10 @@ fn ingest_config(config: &Config, chain: ChainName) -> anyhow::Result<IngestConf
 }
 
 fn parse_kinds(s: &str) -> anyhow::Result<Vec<MevKind>> {
+    if s.eq_ignore_ascii_case("all") {
+        // Empty filter → feed_tail returns every kind.
+        return Ok(vec![]);
+    }
     let mut out = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         out.push(MevKind::parse(part).ok_or_else(|| anyhow::anyhow!("unknown kind '{part}'"))?);

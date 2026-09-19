@@ -56,6 +56,21 @@ impl MevKind {
             _ => None,
         }
     }
+
+    /// Live-feed default kinds (Phase 3 ship gate): exclude `Frontrun` /
+    /// `Backrun` until the labeled causal golden set is accepted for
+    /// production. Pass `--kinds all` (CLI) or include them explicitly to
+    /// opt in. Classification still emits both kinds into `mev_ops`.
+    pub fn live_feed_default_kinds() -> Vec<MevKind> {
+        vec![
+            MevKind::ArbAtomic,
+            MevKind::Sandwich,
+            MevKind::Liquidation,
+            MevKind::Jit,
+            MevKind::JitArb,
+            MevKind::Unknown,
+        ]
+    }
 }
 
 impl std::fmt::Display for MevKind {
@@ -208,6 +223,11 @@ pub struct SwapFact {
     /// Post-swap pool tick for concentrated-liquidity AMMs (V3/V4/Infinity),
     /// used to validate JIT tick-range overlap. `None` for V2/Curve/Balancer.
     pub tick: Option<i32>,
+    /// Flow-ownership attribution (§7.1/§8.1): the address that funded the
+    /// swap's input leg (the `from` of the nearest inbound transfer to the
+    /// pool before the swap log), when observable from the transfer stream.
+    /// `None` when no inbound leg is attributable. Transient — not persisted.
+    pub owner: Option<Address>,
 }
 
 /// A decoded flash-loan fact (Aave V2/V3, Balancer V2, Uni V3).

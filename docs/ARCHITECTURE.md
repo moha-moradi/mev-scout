@@ -477,6 +477,75 @@ flowchart TB
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
+#### Classifier-change replay recipe (wipe + reindex)
+
+Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows for
+the affected window, so before/after Phase numbers are only comparable after a
+replay. `index` is replay-safe (INSERT OR REPLACE, reorg-aware, idempotent), so
+the wipe is required only for classifier *semantics* changes, not plain re-indexes:
+
+```bash
+# 1) Wipe the affected window on the forensic DB (example: Polygon, from N).
+#    Remove classified ops + classified-block markers and rewind the checkpoint.
+sqlite3 explorer_polygon.sqlite \
+  "DELETE FROM mev_ops       WHERE block_number >= N;
+   DELETE FROM blocks_classified WHERE block >= N;
+   UPDATE sync_state SET indexed_to = N-1 WHERE chain_id = 137;"
+
+# 2) Reclassify from stored facts.
+mev-scout explorer index --from N --to M   # or --days D after the wipe above
+
+# 3) Re-run baseline validation + missing-pool report.
+mev-scout explorer validate --threshold-sweep --emit-missing-pools
+```
+
+#### Phase-0 baseline recipe and ship gates
+
+Fixed-window recipe (e.g. Polygon, last 7 days):
+
+```bash
+mev-scout explorer index --days 7
+mev-scout explorer validate --threshold-sweep --emit-missing-pools
+```
+
+Record the report on every phase merge (`cargo test` + clippy alone are not the
+gate). Numbers are data-dependent — tests assert report *shape* only:
+
+| Window | recall | USD-recall | miss-taxonomy | profit-error MAD | `arb_likely` parity |
+|---|---|---|---|---|---|
+| *(pending — run recipe above with RPC)* | — | — | — | — | `true` (default) |
+
+No working RPC credentials were available to fill real numbers: the avalanche
+endpoint committed in `mev-scout.toml` is revoked (connection reset; `explorer
+doctor` reports `latest=✗ archive=n/a traces=n/a`, Gate FAIL). Re-run the
+recipe locally with a valid key (plain URL or `${ENV_VAR}` placeholder) and
+paste validate output into the table before flipping `arb_likely_parity` or
+enabling causal kinds in live-feed defaults.
+
+Gates that depend on this table:
+- **Phase 1.2**: flip `explorer.arb_likely_parity=false` only when USD-recall drop
+  ≤ the agreed budget recorded here (or an explicit "precision over recall"
+  decision is written next to the numbers). No blind cliffs.
+- **Phase 3 ship gate**: labeled golden set (Phase 0.5) must show acceptable
+  backrun/frontrun precision before those kinds are enabled in live-feed defaults.
+  Synthetic CI set: `mev-scout explorer validate --golden-causal` (or
+  `cargo test -p mev-scout-core golden`). Live-feed / API feed default **excludes**
+  `frontrun`/`backrun`; pass `--kinds all` (or include them explicitly) to opt in.
+  Chain-curated labels remain a follow-up once an RPC baseline window is available.
+
+#### Known biases / methodology notes
+
+| Bias | Status | Notes |
+|---|---|---|
+| Historical `arb_likely` catch-all | Active (`arb_likely_parity=true` default) | Single-hop / non-cycle profitable residuals still label `arb_atomic` until the Phase-0 window gate flips the default. |
+| Logs-only Backrun / Frontrun | By design | Execution-price proxies ≠ REVM `profit(B\|before_A)` vs `profit(B\|after_A)`. `STATE_DELTA_MATCH` / `PROFIT_VERIFIED` are **not** REVM-verified. |
+| Gas | Mitigated (Phase 2.1) | Prefer receipt `effectiveGasPrice`, then legacy `gasPrice`; only fall back to `base_fee + priority`. |
+| Multi-token profit | Mitigated (Phase 2.3) | Persist sums USD across all positive residuals; `profit_token` remains display-primary. JIT fee-capture stays unit-reported (`profit_token=None`). |
+| Hourly pricing / FOT | Partial | Hourly token prices at persist; FOT/rebase tokens flagged `usd_approximate` in details. Long-tail decimals via Multicall3; realized-rate fallback for unpriced residuals. |
+| Uni V3 `Flash` | Deferred | Not netted as Aave-style flash loan (different callback repay semantics). |
+| Sandwich contract mediation | Logs-only | `tx.to` on front/back tags `contract_mediated`; store-backed labeled-searcher registry not required. |
+| JIT cross-block reorg | Known limitation | Exact-key + `>=` liquidity close; cannot restore a position whose Burn is unwound by a reorg. |
+
 ---
 
 ## 5. The engine core: how detection works

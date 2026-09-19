@@ -152,8 +152,9 @@ fn latest_native_price(conn: &rusqlite::Connection) -> anyhow::Result<Option<f64
 
 fn parse_kinds(s: Option<&str>) -> ApiResult<Vec<MevKind>> {
     match s {
-        None => Ok(vec![]),
-        Some("") => Ok(vec![]),
+        None => Ok(MevKind::live_feed_default_kinds()),
+        Some("") => Ok(MevKind::live_feed_default_kinds()),
+        Some(list) if list.eq_ignore_ascii_case("all") => Ok(vec![]),
         Some(list) => {
             let mut out = Vec::new();
             for part in list.split(',') {

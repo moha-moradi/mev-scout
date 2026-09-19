@@ -216,8 +216,11 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             })
             .map(|s| (s.token_in, s.token_out, s.pool))
             .collect();
-        // Exact only on a closed directed cycle spanning ≥2 pools (§8.1).
-        let arb_confirmed = resolved_edges.len() >= 2 && has_closed_cycle(&resolved_edges);
+        // Exact only on a closed directed cycle spanning ≥2 pools (§8.1)
+        // attributable to a single flow owner among the searcher's route (§7.1).
+        let arb_confirmed = resolved_edges.len() >= 2
+            && has_closed_cycle(&resolved_edges)
+            && flow_attributable(&tx.swaps, &candidates);
         // Mevlive-parity fallback: single-hop / unresolved profitable residuals
         // are labeled arb (mevlive Type=Arbitrage) while the parity flag holds.
         let arb_likely = arb_confirmed || (!tx.swaps.is_empty() && input.arb_likely_parity);
@@ -515,7 +518,15 @@ fn fold_sandwich(
     // Sum gas across the front-run and back-run txs (Phase 1.4).
     let mut gas_cost_wei = U256::ZERO;
     let mut seen = std::collections::HashSet::new();
+    let mut front_to: Option<Address> = None;
+    let mut back_to: Option<Address> = None;
     for t in &input.txs {
+        if t.tx_index == front.tx_index {
+            front_to = t.to;
+        }
+        if t.tx_index == back.tx_index {
+            back_to = t.to;
+        }
         if (t.tx_index == front.tx_index || t.tx_index == back.tx_index) && seen.insert(t.tx_index)
         {
             gas_cost_wei = gas_cost_wei.saturating_add(
@@ -524,6 +535,11 @@ fn fold_sandwich(
             );
         }
     }
+    // Contract-mediated legs (logs-only): either sandwich leg targets a
+    // contract (`tx.to`). Store-backed labeled-searcher enrichment is out of
+    // scope here — classify stays store-free.
+    let contract_mediated = front_to.is_some() || back_to.is_some();
+    let contract = front_to.or(back_to);
 
     // Logs-only victim degradation vs the front-run execution price
     // (`amount_out/amount_in`). Evidence only — never a classification gate.
@@ -552,6 +568,9 @@ fn fold_sandwich(
     if degradation_pct.is_some_and(|d| d > 0.0) {
         reasons.push("VICTIM_EXECUTION_DEGRADED");
     }
+    if contract_mediated {
+        reasons.push("CONTRACT_MEDIATED");
+    }
 
     MevEvent {
         block: input.block,
@@ -560,7 +579,7 @@ fn fold_sandwich(
         tx_hash: front.tx_hash,
         kind: MevKind::Sandwich,
         searcher: attacker,
-        contract: None,
+        contract,
         pools: vec![pool],
         profit_token: Some(front.token_in),
         profit_amount: Some(profit),
@@ -579,12 +598,14 @@ fn fold_sandwich(
                 "tx_hash": format!("{:#x}", front.tx_hash),
                 "amount_in": front.amount_in.to_string(),
                 "amount_out": front.amount_out.to_string(),
+                "to": front_to.map(|a| format!("{a:#x}")),
             },
             "back_run": {
                 "tx_index": back.tx_index,
                 "tx_hash": format!("{:#x}", back.tx_hash),
                 "amount_in": back.amount_in.to_string(),
                 "amount_out": back.amount_out.to_string(),
+                "to": back_to.map(|a| format!("{a:#x}")),
             },
             "backrun_tx_index": back.tx_index,
             "victims_seen": walk.victims.len(),
@@ -603,6 +624,7 @@ fn fold_sandwich(
                 "direction_match": true,
                 "reverse_backrun": reverse_backrun,
                 "same_searcher": true,
+                "contract_mediated": contract_mediated,
             },
             "victim_execution": {
                 "front_price": front_price,
@@ -710,8 +732,11 @@ fn tx_cycle_profit(input: &BlockInput, tx: &TxInput) -> Option<(Address, Address
         })
         .map(|s| (s.token_in, s.token_out, s.pool))
         .collect();
-    if resolved.len() < 2 || !has_closed_cycle(&resolved) {
-        return None; // "closed cycle; else rejected" (§24)
+    if resolved.len() < 2
+        || !has_closed_cycle(&resolved)
+        || !flow_attributable(&tx.swaps, &candidates)
+    {
+        return None; // "closed cycle; else rejected" (§24) + flow ownership (§7.1)
     }
     for searcher in candidates {
         if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
@@ -1217,6 +1242,33 @@ pub fn has_unresolved_tokens(s: &SwapFact) -> bool {
         || s.token_out == Address::ZERO
 }
 
+/// Phase 1.2 flow ownership (§7.1/§8.1): a closed cycle must be attributable
+/// to one searcher's route. Among direction-resolved swap legs, the distinct
+/// funder-owners must collapse to a single actor, and that actor must be one
+/// of the tx's searcher candidates. Fully-unattributed legs (no inbound
+/// transfer observable) cannot disprove ownership and pass (preserves recall
+/// for flash-mint / internal-balance flows); an unrelated actor's legs always
+/// fail.
+fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> bool {
+    let mut owner: Option<Address> = None;
+    for s in swaps {
+        if has_unresolved_tokens(s) {
+            continue;
+        }
+        let Some(o) = s.owner else {
+            continue;
+        };
+        match owner {
+            Some(cur) if cur != o => return false,
+            _ => owner = Some(o),
+        }
+    }
+    match owner {
+        None => true, // nothing to disprove
+        Some(o) => candidates.contains(&o),
+    }
+}
+
 /// Suppress `unknown` events whose swaps are entirely unresolved-direction
 /// or whose searcher candidate netted zero after netting — dedup guard for
 /// noisy blocks.
@@ -1304,6 +1356,21 @@ mod tests {
             amount_in: U256::from(ain),
             amount_out: U256::from(aout),
             tick: None,
+            owner: None,
+        }
+    }
+
+    fn swap_owned(
+        owner: Address,
+        pool: Address,
+        tin: Address,
+        tout: Address,
+        ain: u64,
+        aout: u64,
+    ) -> SwapFact {
+        SwapFact {
+            owner: Some(owner),
+            ..swap(pool, tin, tout, ain, aout)
         }
     }
 
@@ -1419,6 +1486,67 @@ mod tests {
         assert_eq!(ev.confidence, Confidence::Exact);
         assert_eq!(ev.pools, vec![POOL_A, POOL_B]);
         assert_eq!(ev.tx_index, 0);
+    }
+
+    #[test]
+    fn arb_cycle_single_flow_owner_is_exact() {
+        // Both legs funded by the searcher itself → attributable to its route
+        // (§7.1): cycle stays Exact.
+        let swaps = vec![
+            swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(ATK, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        assert_eq!(ev.confidence, Confidence::Exact);
+    }
+
+    #[test]
+    fn arb_cycle_mixed_flow_owner_is_not_exact() {
+        // The second leg of the closed cycle is funded by an unrelated actor
+        // inside the same tx — the cycle mixes routes and must NOT be Exact
+        // (§7.1/§8.1). The parity fallback still labels it arb/Inferred.
+        const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
+        let swaps = vec![
+            swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(OUTSIDER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        assert_eq!(ev.confidence, Confidence::Inferred, "cycle mixes unrelated owners");
+        assert_eq!(ev.searcher, ATK);
+    }
+
+    #[test]
+    fn arb_cycle_owned_only_by_non_candidate_is_not_exact() {
+        // A closed cycle whose legs are all funded by an address that is not a
+        // searcher candidate is not attributable to the route → not Exact.
+        const OUTSIDER: Address = address!("7000000000000000000000000000000000000012");
+        let swaps = vec![
+            swap_owned(OUTSIDER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(OUTSIDER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        assert_eq!(ev.confidence, Confidence::Inferred, "flow owner is not a candidate");
     }
 
     #[test]
@@ -2224,6 +2352,63 @@ mod tests {
             serde_json::json!(12.5)
         );
         assert_eq!(ev.gas_cost_wei, U256::from(6_000_000_000_000_000u64));
+        assert_eq!(
+            ev.details["evidence"]["contract_mediated"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn sandwich_contract_mediated_legs_tagged() {
+        let router = address!("9000000000000000000000000000000000000009");
+        let front = swap(POOL_A, USDC, TOKA, 100, 200);
+        let victim = swap(POOL_A, USDC, TOKA, 200, 350);
+        let back = swap(POOL_A, TOKA, USDC, 350, 195);
+        let mut t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![front],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        t0.to = Some(router);
+        let t1 = tx(
+            1,
+            VICTIM,
+            true,
+            vec![victim],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 200),
+                transfer(1, TOKA, POOL_A, VICTIM, 350),
+            ],
+        );
+        let mut t2 = tx(
+            2,
+            ATK,
+            true,
+            vec![back],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 350),
+                transfer(1, USDC, POOL_A, ATK, 195),
+            ],
+        );
+        t2.to = Some(router);
+        let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
+        assert_eq!(ev.contract, Some(router));
+        assert_eq!(
+            ev.details["evidence"]["contract_mediated"],
+            serde_json::json!(true)
+        );
+        let reasons: Vec<&str> = ev.details["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(reasons.contains(&"CONTRACT_MEDIATED"));
     }
 
     #[test]

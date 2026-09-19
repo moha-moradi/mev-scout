@@ -138,7 +138,8 @@ pub struct IndexArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct LiveFeedArgs {
-    /// Comma-separated kind filter (arb_atomic,sandwich,liquidation,jit,jit_arb,unknown)
+    /// Comma-separated kind filter. Default excludes frontrun/backrun (Phase 3
+    /// ship gate). Pass `all` to include every kind, or an explicit list.
     #[arg(long, value_name = "KINDS")]
     pub kinds: Option<String>,
 
@@ -232,6 +233,11 @@ pub struct ValidateArgs {
     /// Export realized review candidates (inferred arb/unknown) to this CSV path
     #[arg(long = "review-csv", value_name = "FILE")]
     pub review_csv: Option<String>,
+
+    /// Score the Phase 0.5 Backrun/Frontrun labeled golden set (no store needed
+    /// when used alone; attaches to the validation report when combined).
+    #[arg(long = "golden-causal")]
+    pub golden_causal: bool,
 
     /// Machine-readable JSON output
     #[arg(long)]

@@ -170,7 +170,7 @@ fn main() -> anyhow::Result<()> {
         rpc.with_provider_rps(
             &provider_configs
                 .iter()
-                .map(|p| p.rps.unwrap_or(config.rpc.rps_limit))
+                .map(|p| p.rps.unwrap_or(config.effective_rpc(chain_name).rps_limit))
                 .collect::<Vec<_>>(),
         )
         .await;

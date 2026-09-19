@@ -74,6 +74,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         amount_in: U256::ZERO,
         amount_out: U256::ZERO,
         tick: None,
+        owner: None,
     };
 
     if topic0 == V2_SWAP_TOPIC {
@@ -367,6 +368,7 @@ fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         amount_in: U256::ZERO,
         amount_out: U256::ZERO,
         tick: None,
+        owner: None,
     };
 
     // 1inch V4/V5: Swapped(sender, srcToken, dstToken, dstReceiver,
@@ -807,6 +809,9 @@ pub fn attach_swap_tokens(
         let mut token_out = Address::ZERO;
         let mut best_in: Option<i64> = None;
         let mut best_out: Option<i64> = None;
+        // Flow-ownership (§7.1): the funder of the input leg is the address
+        // that transferred the input token into the pool right before the swap.
+        let mut owner: Option<Address> = None;
         for t in transfers {
             let dist = t.log_index as i64 - s.log_index as i64;
             if dist < 0 && t.to == s.pool {
@@ -816,6 +821,7 @@ pub fn attach_swap_tokens(
                     _ => {
                         best_in = Some(dist.abs());
                         token_in = t.token;
+                        owner = Some(t.from);
                     }
                 }
             } else if dist > 0 && t.from == s.pool {
@@ -827,6 +833,9 @@ pub fn attach_swap_tokens(
                     }
                 }
             }
+        }
+        if s.owner.is_none() {
+            s.owner = owner;
         }
         if is_unresolved_token(s.token_in) && !token_in.is_zero() {
             s.token_in = token_in;
@@ -1092,6 +1101,9 @@ mod tests {
         );
         assert_eq!(s.token_in, tin);
         assert_eq!(s.token_out, tout);
+        // Flow ownership (§7.1): the funder of the input leg is the `from` of
+        // the nearest inbound transfer to the pool before the swap log.
+        assert_eq!(s.owner, Some(address!("4000000000000000000000000000000000000000")));
     }
 
     #[test]
@@ -1283,6 +1295,7 @@ mod tests {
                 amount_in: U256::from(ain),
                 amount_out: U256::from(aout),
                 tick: None,
+                owner: None,
             };
         // Same A→B flow on a single pool: the DEX edge wins.
         let mut edges = vec![

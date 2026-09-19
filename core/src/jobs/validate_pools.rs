@@ -111,7 +111,7 @@ pub async fn job_validate_pools(
 
     let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
     let disc_config = factories.discovery_config(DiscoveryRuntimeOpts {
-        batch_size: recommended_get_logs_batch(&config.rpc.rpc_urls, 500),
+        batch_size: recommended_get_logs_batch(&config.effective_rpc(chain_name).rpc_urls, 500),
         solidly_fee_bps: None,
         rpc_concurrency: 8,
         token_cache: None,

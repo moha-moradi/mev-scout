@@ -1068,13 +1068,22 @@ impl RpcClient {
         let receipts = self
             .retry_call(
                 |provider| async move {
-                    provider
-                        .get_block_receipts(alloy::eips::BlockId::number(block_number))
+                    let raw: Value = provider
+                        .client()
+                        .request(
+                            "eth_getBlockReceipts",
+                            (alloy::eips::BlockId::number(block_number),),
+                        )
                         .await
-                        .map_err(|e| anyhow::anyhow!("{}", e))?
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("receipts not found for block {}", block_number)
-                        })
+                        .map_err(|e| anyhow::anyhow!("{}", e))?;
+                    if raw.is_null() {
+                        anyhow::bail!("receipts not found for block {}", block_number);
+                    }
+                    let mut raw = raw;
+                    Self::clean_receipts(&mut raw);
+                    let receipts: Vec<TransactionReceipt> =
+                        serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+                    Ok(receipts)
                 },
                 ProviderScope::Any,
             )

@@ -65,6 +65,11 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Last-loaded RPC values for the currently selected chain. Save only writes
+  // a per-chain override when these actually differ from the editor — saves
+  // that touch gas/backtest/explorer alone don't freeze the global default
+  // into a per-chain copy.
+  const [loadedRpc, setLoadedRpc] = useState<{ urls: string[]; rps: number[] } | null>(null);
 
   const [form, setForm] = useState<
     | {
@@ -110,6 +115,7 @@ export default function ConfigPage() {
         poll_interval_ms: String(cfg.explorer.poll_interval_ms),
         checkpoint_every: String(cfg.explorer.checkpoint_every),
       });
+      setLoadedRpc({ urls: cfg.rpc.urls ?? [], rps: cfg.rpc.rps ?? [] });
     }
   }, [cfg, form]);
 
@@ -161,11 +167,38 @@ export default function ConfigPage() {
       .filter((n) => Number.isFinite(n));
   }
 
+  // Selecting a chain previews its effective RPC (per-chain override, else the
+  // global default) straight from disk — no active-chain switch required.
+  async function selectChain(name: string) {
+    set("chain", name);
+    try {
+      const c = await api.configForChain(name);
+      setForm((f) =>
+        f
+          ? {
+              ...f,
+              rpc_urls_text: (c.rpc.urls ?? []).join("\n"),
+              rpc_rps_text: (c.rpc.rps ?? []).join(", "),
+            }
+          : f,
+      );
+      setLoadedRpc({ urls: c.rpc.urls ?? [], rps: c.rpc.rps ?? [] });
+    } catch (e) {
+      toast(`Could not load RPC for ${name}: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }
+
+  const customRpcChains = Object.keys(cfg.per_chain_rpc ?? {}).sort();
+
   const railJson = JSON.stringify(
     {
       chain: form.chain,
-      rpc_urls: parseRpcUrls(),
-      rpc_rps: parseRpcRps(),
+      chain_rpc: {
+        [form.chain]: {
+          rpc_urls: parseRpcUrls(),
+          rpc_rps: parseRpcRps(),
+        },
+      },
       gas: {
         gas_model: form.gas_model,
         gas_limit: Number(form.gas_limit),
@@ -201,6 +234,10 @@ export default function ConfigPage() {
         toast("rpc_rps length must match rpc_urls (or leave RPS empty)", "error");
         return;
       }
+      const rpcChanged =
+        !loadedRpc ||
+        JSON.stringify({ u: rpc_urls, r: rpc_rps }) !==
+          JSON.stringify({ u: loadedRpc.urls, r: loadedRpc.rps });
       const gas: { gas_limit: number; priority_fee_gwei: number; gas_model?: string } = {
         gas_limit: Number(form.gas_limit),
         priority_fee_gwei: Number(form.priority_fee_gwei),
@@ -208,8 +245,7 @@ export default function ConfigPage() {
       if (form.gas_model !== activeCfg.gas.gas_model) gas.gas_model = form.gas_model;
       const res = await api.putConfig({
         chain: form.chain !== activeCfg.chain ? form.chain : undefined,
-        rpc_urls,
-        rpc_rps,
+        ...(rpcChanged ? { chain_rpc: { [form.chain]: { rpc_urls, rpc_rps } } } : {}),
         gas,
         backtest: {
           flash_loan_provider: form.flash_loan_provider,
@@ -259,7 +295,7 @@ export default function ConfigPage() {
         <SectionCard num="01" title="Chain & RPC">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Active chain">
-              <select value={form.chain} onChange={(e) => set("chain", e.target.value)} className={inputCls}>
+              <select value={form.chain} onChange={(e) => void selectChain(e.target.value)} className={inputCls}>
                 {chains?.map((c) => (
                   <option key={c.name} value={c.name}>{c.name}</option>
                 ))}
@@ -296,6 +332,11 @@ export default function ConfigPage() {
               />
             </Field>
             <p className="text-xs text-zinc-500">
+              RPCs below apply to <code className="text-zinc-400">{form.chain}</code> and are stored
+              per chain (<code className="text-zinc-400">[chains.{form.chain}.rpc]</code>).
+              {customRpcChains.length
+                ? ` Custom RPC already configured for: ${customRpcChains.join(", ")}.`
+                : " No per-chain overrides yet — these are the global default until you save."}{" "}
               Prefer <code className="text-zinc-400">{"${ENV_VAR}"}</code> placeholders — they stay
               unexpanded on disk. Pasting a live key into a URL stores it in{" "}
               <code className="text-zinc-400">mev-scout.toml</code> (visible in this local UI).

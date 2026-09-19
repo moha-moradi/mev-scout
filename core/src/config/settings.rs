@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::defaults::{default_chains, ChainConfig};
+use super::defaults::{default_chains, merge_default_chains, ChainConfig};
 use super::validation::RangeSpec;
 use crate::error;
 
@@ -454,6 +454,17 @@ impl Config {
         for u in &mut self.rpc.rpc_urls {
             *u = expand(u);
         }
+        // Per-chain overrides carry the same secret-bearing fields.
+        for chain_cfg in self.chains.values_mut() {
+            if let Some(rpc) = &mut chain_cfg.rpc {
+                if let Some(u) = &rpc.rpc_url {
+                    rpc.rpc_url = Some(expand(u));
+                }
+                for u in &mut rpc.rpc_urls {
+                    *u = expand(u);
+                }
+            }
+        }
     }
 
     /// Load a config file, falling back to defaults only when the file
@@ -473,10 +484,9 @@ impl Config {
                 }
             }
         };
-        let defaults = default_chains();
-        for (name, default_cfg) in defaults {
-            cfg.chains.entry(name).or_insert(default_cfg);
-        }
+        // Field-wise merge: a partial `[chains.<name>]` (RPC-only) must not
+        // wipe built-in pool_discovery_start_block / factories / vaults.
+        merge_default_chains(&mut cfg.chains);
         Ok(cfg)
     }
 
@@ -487,9 +497,37 @@ impl Config {
         cfg
     }
 
-    /// Resolved RPC URL list: user override(s) first, then public fallbacks for known chains.
-    pub fn effective_rpc_urls(&self) -> error::Result<Vec<String>> {
-        let urls = Self::merge_rpc_urls(&self.rpc.rpc_urls, &self.rpc.rpc_url);
+    /// Resolve the effective RPC config for a chain: the top-level (global
+    /// default) config with any `[chains.<name>.rpc]` override applied
+    /// field-wise. A per-chain value wins when set; unset fields fall back to
+    /// the global value. `rps_limit` / `block_concurrency` always come from the
+    /// global config.
+    pub fn effective_rpc(&self, chain: ChainName) -> RpcConfig {
+        let mut rpc = self.rpc.clone();
+        let Some(chain_rpc) = self
+            .chains
+            .get(chain.to_string().as_str())
+            .and_then(|c| c.rpc.as_ref())
+        else {
+            return rpc;
+        };
+        if let Some(url) = &chain_rpc.rpc_url {
+            rpc.rpc_url = Some(url.clone());
+        }
+        if !chain_rpc.rpc_urls.is_empty() {
+            rpc.rpc_urls = chain_rpc.rpc_urls.clone();
+        }
+        if !chain_rpc.rpc_rps.is_empty() {
+            rpc.rpc_rps = chain_rpc.rpc_rps.clone();
+        }
+        rpc
+    }
+
+    /// Resolved RPC URL list for a chain: user overrides (per-chain first,
+    /// then global) and no public fallbacks but the provider layer.
+    pub fn effective_rpc_urls(&self, chain: ChainName) -> error::Result<Vec<String>> {
+        let rpc = self.effective_rpc(chain);
+        let urls = Self::merge_rpc_urls(&rpc.rpc_urls, &rpc.rpc_url);
         if urls.is_empty() {
             return Err(error::Error::Other(
                 "No RPC URL provided. Use --rpc <URL>, --rpc-urls, or set rpc_url in config."
@@ -500,28 +538,31 @@ impl Config {
     }
 
     /// Human-readable RPC summary for the startup plan display.
-    fn effective_rpc_display(&self) -> String {
-        let user_count = self.rpc.rpc_urls.len() + if self.rpc.rpc_url.is_some() { 1 } else { 0 };
+    fn effective_rpc_display(&self, chain: ChainName) -> String {
+        let rpc = self.effective_rpc(chain);
+        let user_count = rpc.rpc_urls.len() + usize::from(rpc.rpc_url.is_some());
         if user_count > 0 {
-            format!("{} provider(s) configured", user_count)
+            format!("{user_count} provider(s) configured")
         } else {
             "No RPC configured — using public fallbacks".to_string()
         }
     }
 
-    /// Build full provider configs by merging user-supplied URLs with public fallbacks.
+    /// Build full provider configs by merging the chain-effective user URLs
+    /// with public fallbacks.
     pub fn effective_provider_configs(
         &self,
         chain_name: ChainName,
     ) -> error::Result<Vec<ProviderConfig>> {
-        let urls = self.effective_rpc_urls().unwrap_or_default();
+        let rpc = self.effective_rpc(chain_name);
+        let urls = Self::merge_rpc_urls(&rpc.rpc_urls, &rpc.rpc_url);
         if !urls.is_empty() {
             let public_endpoints = chain_name.public_rpc_endpoints();
             let result: Vec<ProviderConfig> = urls
                 .into_iter()
                 .enumerate()
                 .map(|(i, url)| {
-                    let rps = self.rpc.rpc_rps.get(i).copied();
+                    let rps = rpc.rpc_rps.get(i).copied();
                     if let Some(r) = rps {
                         let archive = public_endpoints
                             .iter()
@@ -538,7 +579,7 @@ impl Config {
                         .iter()
                         .find(|e| url.contains(e.url) || e.url.contains(&url))
                         .map(|e| (Some(e.default_rps), e.archive))
-                        .unwrap_or((Some(self.rpc.rps_limit), false));
+                        .unwrap_or((Some(rpc.rps_limit), false));
                     ProviderConfig {
                         url,
                         rps: default_rps,
@@ -565,9 +606,15 @@ impl Config {
         }
     }
 
-    /// Auto-calculate optimal `block_concurrency` from provider RPS limits.
-    pub fn effective_block_concurrency(&self, provider_configs: &[ProviderConfig]) -> usize {
-        if let Some(bc) = self.rpc.block_concurrency {
+    /// Auto-calculate optimal `block_concurrency` from the chain-effective
+    /// provider RPS limits.
+    pub fn effective_block_concurrency(
+        &self,
+        chain_name: ChainName,
+        provider_configs: &[ProviderConfig],
+    ) -> usize {
+        let rpc = self.effective_rpc(chain_name);
+        if let Some(bc) = rpc.block_concurrency {
             tracing::info!("block_concurrency: using explicit value {bc}");
             return bc;
         }
@@ -646,7 +693,7 @@ DB path:             {}
 "#,
             chain_name,
             chain_cfg.chain_id,
-            self.effective_rpc_display(),
+            self.effective_rpc_display(chain_name),
             range_mode,
             range_mode.resolve_description(),
             strat_list,

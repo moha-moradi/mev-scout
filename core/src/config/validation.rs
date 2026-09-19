@@ -61,6 +61,29 @@ pub fn validate_rpc_urls(urls: &[String]) -> std::result::Result<(), ConfigError
     Ok(())
 }
 
+/// Validate every per-chain `[chains.<name>.rpc]` override present in the
+/// config. Built-in defaults carry no override, so this only fires for URLs
+/// the user configured — catching a typo'd per-chain endpoint at load/validate
+/// time instead of at runtime.
+pub fn validate_chain_rpc_overrides(config: &Config) -> std::result::Result<(), ConfigError> {
+    for (name, chain_cfg) in &config.chains {
+        if let Some(rpc) = &chain_cfg.rpc {
+            if let Some(url) = &rpc.rpc_url {
+                validate_rpc_url(url).map_err(|e| {
+                    ConfigError::Validation(format!(
+                        "[chains.{name}.rpc] rpc_url: {}",
+                        e
+                    ))
+                })?;
+            }
+            validate_rpc_urls(&rpc.rpc_urls).map_err(|e| {
+                ConfigError::Validation(format!("[chains.{name}.rpc] {}", e))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// A mutually-exclusive block-range selection.
 ///
 /// `BlockRangeArgs` (and the config-file equivalent) originally exposed five
@@ -237,7 +260,9 @@ pub fn validate_replay(
         }
     }
 
-    if let Some(url) = &config.rpc.rpc_url {
+    validate_chain_rpc_overrides(config)?;
+    let rpc = config.effective_rpc(chain_name);
+    if let Some(url) = &rpc.rpc_url {
         validate_rpc_url(url)?;
     }
 
@@ -292,11 +317,13 @@ pub fn validate_and_resolve_for(
 
     let range_mode = check_range_conflicts(config)?;
 
-    if let Some(url) = &config.rpc.rpc_url {
+    validate_chain_rpc_overrides(config)?;
+    let rpc = config.effective_rpc(chain_name);
+    if let Some(url) = &rpc.rpc_url {
         validate_rpc_url(url)?;
     }
-    if !config.rpc.rpc_urls.is_empty() {
-        validate_rpc_urls(&config.rpc.rpc_urls)?;
+    if !rpc.rpc_urls.is_empty() {
+        validate_rpc_urls(&rpc.rpc_urls)?;
     }
 
     let gas_model = config.gas.gas_model;
@@ -311,7 +338,7 @@ pub fn validate_and_resolve_for(
         });
     }
 
-    if config.rpc.rps_limit > 10_000.0 {
+    if rpc.rps_limit > 10_000.0 {
         return Err(ConfigError::InvalidValue {
             field: "rps_limit".into(),
             message: format!("must be between 0 and 10,000, got {}", config.rpc.rps_limit),
@@ -349,11 +376,13 @@ pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, C
 
     let strategies: Vec<Strategy> = config.backtest.strategies.clone();
 
-    if let Some(url) = &config.rpc.rpc_url {
+    validate_chain_rpc_overrides(config)?;
+    let rpc = config.effective_rpc(chain_name);
+    if let Some(url) = &rpc.rpc_url {
         validate_rpc_url(url)?;
     }
-    if !config.rpc.rpc_urls.is_empty() {
-        validate_rpc_urls(&config.rpc.rpc_urls)?;
+    if !rpc.rpc_urls.is_empty() {
+        validate_rpc_urls(&rpc.rpc_urls)?;
     }
 
     let gas_model = config.gas.gas_model;

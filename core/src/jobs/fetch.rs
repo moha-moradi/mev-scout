@@ -78,7 +78,7 @@ pub async fn job_fetch(
     let mut fetcher = Fetcher::new(rpc, cache);
     fetcher = fetcher.with_parallelism(provider_configs.len());
     fetcher = fetcher.with_batch_rpc(opts.batch_rpc);
-    let bc = config.effective_block_concurrency(&provider_configs);
+    let bc = config.effective_block_concurrency(chain_name, &provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
     if !opts.no_sig_resolve {
         match crate::sigs::ensure_signature_db(None).await {

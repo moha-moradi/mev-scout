@@ -38,7 +38,8 @@ pub async fn cmd_live_feed(
     let store = explorer_store(config, chain)?;
     let kinds = match kinds {
         Some(s) => parse_kinds(s)?,
-        None => vec![],
+        // Phase 3 ship gate: default live feed excludes frontrun/backrun.
+        None => MevKind::live_feed_default_kinds(),
     };
     let deadline = duration.map(parse_duration).transpose()?;
 

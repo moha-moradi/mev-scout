@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
+use super::settings::RpcConfig;
+
 /// Per-chain runtime parameters loaded from the configuration file.
 ///
 /// Address-bearing fields are typed as [`Address`] so a typo'd hex string
@@ -10,6 +12,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChainConfig {
     pub chain_id: u64,
+    /// Per-chain RPC override (`[chains.<name>.rpc]`). When present, its
+    /// `rpc_url` / `rpc_urls` / `rpc_rps` win over the top-level (global
+    /// default) values for this chain; `rps_limit` / `block_concurrency`
+    /// stay global. Absent = use the top-level RPC config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc: Option<RpcConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balancer_vault: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,8 +69,64 @@ pub struct ChainConfig {
     pub fluid_factory: Option<Address>,
 }
 
+impl ChainConfig {
+    /// Fill unset `Option` fields from `defaults`, keeping user-provided values.
+    ///
+    /// A partial `[chains.<name>]` section (e.g. only `chain_id` + `rpc`) would
+    /// otherwise replace the whole built-in entry and drop
+    /// `pool_discovery_start_block`, factories, vaults, etc.
+    pub fn merge_defaults(&mut self, defaults: &ChainConfig) {
+        // `chain_id` is required on every section; keep the user's value.
+        macro_rules! fill {
+            ($($field:ident),+ $(,)?) => {
+                $(
+                    if self.$field.is_none() {
+                        self.$field = defaults.$field.clone();
+                    }
+                )+
+            };
+        }
+        fill!(
+            rpc,
+            balancer_vault,
+            aave_v3_pool,
+            uniswap_v3_factories,
+            uniswap_v2_factories,
+            solidly_factories,
+            camelot_factories,
+            pool_discovery_start_block,
+            pool_discovery_batch_size,
+            wrapped_native_token,
+            uniswap_v2_default_fee,
+            curve_registry,
+            curve_factories,
+            v4_pool_manager,
+            infinity_cl_pool_manager,
+            trader_joe_factories,
+            pendle_factory,
+            metric_factory,
+            fluid_factory,
+        );
+    }
+}
+
 pub fn default_chains() -> HashMap<String, ChainConfig> {
     toml::from_str(include_str!("../../data/chains.toml")).expect("invalid chains.toml")
+}
+
+/// Merge built-in chain defaults into `chains`: insert missing chains, and for
+/// chains already present fill only unset `Option` fields (user overrides win).
+pub fn merge_default_chains(chains: &mut HashMap<String, ChainConfig>) {
+    for (name, default_cfg) in default_chains() {
+        match chains.entry(name) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(default_cfg);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                e.get_mut().merge_defaults(&default_cfg);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,5 +187,62 @@ mod tests {
                 "{name} must wire the Metric V2 factory"
             );
         }
+    }
+
+    #[test]
+    fn merge_defaults_fills_unset_fields_keeps_overrides() {
+        let defaults = default_chains();
+        let poly_default = defaults["polygon"].clone();
+
+        let mut partial = ChainConfig {
+            chain_id: 137,
+            rpc: Some(super::super::settings::RpcConfig {
+                rpc_urls: vec!["https://example.invalid".into()],
+                ..Default::default()
+            }),
+            // Explicitly override one address; leave the rest unset.
+            balancer_vault: Some(address!("0x1111111111111111111111111111111111111111")),
+            ..Default::default()
+        };
+
+        partial.merge_defaults(&poly_default);
+
+        assert_eq!(
+            partial.pool_discovery_start_block,
+            poly_default.pool_discovery_start_block,
+            "unset pool_discovery_start_block must come from defaults"
+        );
+        assert_eq!(
+            partial.uniswap_v3_factories,
+            poly_default.uniswap_v3_factories
+        );
+        assert_eq!(
+            partial.balancer_vault,
+            Some(address!("0x1111111111111111111111111111111111111111")),
+            "user-provided vault must win"
+        );
+        assert_eq!(
+            partial.rpc.as_ref().unwrap().rpc_urls,
+            vec!["https://example.invalid".to_string()],
+            "user rpc must win"
+        );
+    }
+
+    #[test]
+    fn merge_default_chains_partial_polygon_keeps_start_block() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "polygon".to_string(),
+            ChainConfig {
+                chain_id: 137,
+                ..Default::default()
+            },
+        );
+        merge_default_chains(&mut chains);
+        assert_eq!(
+            chains["polygon"].pool_discovery_start_block,
+            Some(49_100_000)
+        );
+        assert!(chains.contains_key("ethereum"));
     }
 }

@@ -359,6 +359,32 @@ pub async fn check_reorg(
     }
 }
 
+/// Cheap per-poll reorg re-verify (Phase 4): a single header-only hash compare
+/// on the highest already-indexed block. Runs on every live poll, so a reorg of
+/// the indexed tip is caught before the indexer extends onto it; the heavier
+/// 32-block `check_reorg` sweep (block + receipts) stays to catch deeper forks.
+pub async fn verify_indexed_tip(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    block: u64,
+) -> anyhow::Result<Option<u64>> {
+    let Some(stored) = store.block_hash(block)? else {
+        return Ok(None);
+    };
+    match rpc.get_block_hash(block).await {
+        Ok(onchain) if stored != format!("{onchain:#x}") => {
+            warn!(block, "reorg detected via indexed-tip hash compare — unwinding");
+            store.unwind_from(block)?;
+            Ok(Some(block))
+        }
+        Ok(_) => Ok(None),
+        Err(e) => {
+            warn!(block, "indexed-tip reorg check failed: {e}");
+            Ok(None)
+        }
+    }
+}
+
 /// Outcome of a stats-window price fill.
 pub async fn warm_prices_for_tokens(
     cfg: &IngestConfig,
@@ -540,7 +566,8 @@ pub async fn backfill_range(
 const LIVE_MAX_LAG_BLOCKS: u64 = 256;
 
 /// Live streaming mode: follow head − confirmations, indexing each new block.
-/// Runs until `stop` is set; reorg-checked every 32 blocks.
+/// Runs until `stop` is set; the indexed tip is hash-verified on every poll
+/// (Phase 4) and a heavier reorg sweep runs every 32 blocks.
 pub async fn run_live(
     rpc: &RpcClient,
     store: &ExplorerStore,
@@ -580,6 +607,19 @@ pub async fn run_live(
                     "live indexer far behind tip — skipping backlog to keep feed fresh"
                 );
                 next_block = skip_to;
+            }
+
+            // Phase 4: cheap per-poll reorg re-verify on the last indexed block.
+            // Single header-only hash compare; unwinds before we extend the stored
+            // chain past a block whose hash already changed on-chain.
+            let indexed_to = store.get_indexed_to(cfg.chain_id)?;
+            if indexed_to > 0
+                && indexed_to < next_block
+                && verify_indexed_tip(rpc, store, indexed_to).await?.is_some()
+            {
+                // Reorg detected on the indexed tip — rewind the live loop's
+                // next block so the poll loop re-canonicalizes from the fork.
+                next_block = indexed_to;
             }
 
             // Reorg check on the previous indexed block before continuing.

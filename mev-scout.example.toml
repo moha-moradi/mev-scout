@@ -1,30 +1,26 @@
-# mev-scout example configuration
+# mev-scout configuration — public RPCs from chainlist (no API keys needed).
 #
-# Copy this file to `mev-scout.toml` and fill in your own endpoints.
-# Do NOT commit live API keys: reference them via `${ENV_VAR}` placeholders
-# (expanded at config load from the process environment) and export the
-# variables instead, e.g. in PowerShell:
-#   $env:ALCHEMY_API_KEY = "..."
-#   $env:DRPC_KEY        = "..."
-#   $env:GETBLOCK_KEY    = "..."
-#
-# Unset variables are kept verbatim, so a missing key fails loudly at the
-# provider instead of silently corrupting the URL.
+# Generated from mev-scout.example.toml with free public endpoints listed on
+# chainlist.org / the ethereum-lists/chains registry for every supported chain.
+# No `${ENV_VAR}` placeholders require exporting any key; every URL below is a
+# public, free-tier HTTPS endpoint.
 
 chain = "polygon"
 priority_fee_gwei = 30
 
+# Global (default) RPC endpoints — used for any chain without a per-chain
+# `[chains.<name>.rpc]` override below. These mirror polygon's public set.
 rpc_urls = [
-  "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
-  "https://lb.drpc.live/polygon/${DRPC_KEY}",
-  "https://shared.ap-southeast-1.getblock.io/${GETBLOCK_KEY}",
+  "https://polygon.drpc.org",
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://polygon.gateway.tenderly.co",
 ]
 
 # Per-provider RPS limits (matches rpc_urls order).
-rpc_rps = [10, 10, 15]
+rpc_rps = [1.0, 1.0, 0.8]
 
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
-rps_limit = 2
+rps_limit = 1
 
 # Default strategy set (comma-separated or "all")
 strategies = "all"
@@ -34,3 +30,88 @@ gas_model = "historical_exact"
 
 # Default output format: table | csv | json
 output = "table"
+
+# ── Per-chain public RPC overrides ─────────────────────────────────
+# Switching chains in the UI just works — every chain gets its own public
+# endpoints from chainlist. `rps_limit` / `block_concurrency` stay global.
+
+[chains.polygon]
+chain_id = 137
+
+[chains.polygon.rpc]
+rpc_urls = [
+  "https://polygon.drpc.org",
+  "https://polygon-bor-rpc.publicnode.com",
+  "https://polygon.gateway.tenderly.co",
+]
+rpc_rps = [1.0, 1.0, 0.8]
+
+[chains.avalanche]
+chain_id = 43114
+
+[chains.avalanche.rpc]
+rpc_urls = [
+  "https://api.avax.network/ext/bc/C/rpc",
+  "https://avalanche-c-chain-rpc.publicnode.com",
+]
+rpc_rps = [5.0, 1.0]
+
+[chains.bsc]
+chain_id = 56
+
+[chains.bsc.rpc]
+rpc_urls = [
+  "https://bsc-dataseed1.bnbchain.org",
+  "https://bsc-dataseed2.bnbchain.org",
+  "https://bsc-dataseed3.bnbchain.org",
+  "https://bsc-dataseed4.bnbchain.org",
+  "https://bsc-rpc.publicnode.com",
+]
+rpc_rps = [5.0, 5.0, 5.0, 5.0, 1.0]
+
+[chains.arbitrum]
+chain_id = 42161
+
+[chains.arbitrum.rpc]
+rpc_urls = [
+  "https://arb1.arbitrum.io/rpc",
+  "https://arbitrum-one-rpc.publicnode.com",
+]
+rpc_rps = [5.0, 1.0]
+
+[chains.base]
+chain_id = 8453
+
+[chains.base.rpc]
+rpc_urls = [
+  "https://mainnet.base.org",
+  "https://developer-access-mainnet.base.org",
+  "https://base.gateway.tenderly.co",
+  "https://base-rpc.publicnode.com",
+  "https://rpc.baseazul.dev",
+]
+rpc_rps = [5.0, 2.0, 0.8, 1.0, 1.0]
+
+[chains.ethereum]
+chain_id = 1
+
+[chains.ethereum.rpc]
+rpc_urls = [
+  "https://ethereum-rpc.publicnode.com",
+  "https://mainnet.gateway.tenderly.co",
+  "https://eth.drpc.org",
+  "https://rpc.mevblocker.io",
+]
+rpc_rps = [1.0, 0.8, 1.0, 1.0]
+
+[chains.optimism]
+chain_id = 10
+
+[chains.optimism.rpc]
+rpc_urls = [
+  "https://mainnet.optimism.io",
+  "https://optimism-rpc.publicnode.com",
+  "https://optimism.gateway.tenderly.co",
+  "https://optimism.drpc.org",
+]
+rpc_rps = [5.0, 1.0, 0.8, 1.0]

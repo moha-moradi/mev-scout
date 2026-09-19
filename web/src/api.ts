@@ -43,6 +43,8 @@ export const api = {
   chains: () => request<ChainDto[]>("/chains"),
   sync: () => request<SyncResponse>("/sync"),
   config: () => request<SanitizedConfig>("/config"),
+  configForChain: (chain: string) =>
+    request<SanitizedConfig>(`/config?chain=${encodeURIComponent(chain)}`),
   putConfig: (body: ConfigEdit) =>
     request<ConfigEditResponse>("/config", { method: "PUT", body: JSON.stringify(body) }),
 
@@ -227,6 +229,13 @@ export interface SanitizedConfig {
   output: OutputConfig;
   explorer: ExplorerConfig;
   rpc: RpcSummary;
+  /** Chains with `[chains.<name>.rpc]` overrides on disk (raw placeholders). */
+  per_chain_rpc: Record<string, RpcSummary>;
+}
+
+export interface ChainRpcEdit {
+  rpc_urls?: string[];
+  rpc_rps?: number[];
 }
 
 export interface ConfigEdit {
@@ -237,6 +246,8 @@ export interface ConfigEdit {
   explorer?: Partial<ExplorerConfig>;
   rpc_urls?: string[];
   rpc_rps?: number[];
+  /** Per-chain RPC overrides, written to `[chains.<name>.rpc]`. */
+  chain_rpc?: Record<string, ChainRpcEdit>;
 }
 
 export interface ConfigEditResponse {

@@ -1,8 +1,10 @@
 //! `GET/PUT /api/config` — config read + secret-aware edit.
 //!
 //! `GET` returns non-secret fields plus an RPC summary: masked hostnames and
-//! the **raw on-disk** `rpc_urls` / `rpc_rps` (unexpanded `${ENV}` placeholders).
-//! It never returns env-expanded in-memory URLs.
+//! the **raw on-disk** `rpc_urls` / `rpc_rps` (unexpanded `${ENV}` placeholders)
+//! for the active chain (or `?chain=` preview target). It never returns
+//! env-expanded in-memory URLs. Per-chain overrides under `[chains.<name>.rpc]`
+//! win over the top-level (global default) keys.
 //!
 //! `PUT` merges fields into the **raw TOML value** on disk (never the
 //! env-expanded in-memory `Config`, which would bake live API keys into the
@@ -11,8 +13,10 @@
 //! `chain` (or `output.db_path` / `explorer.db_path`) re-resolves both DB
 //! connections. Edits are rejected (409) while a job is running.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use axum::extract::Query;
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -38,7 +42,9 @@ pub struct RpcSummary {
 }
 
 /// Config DTO for API serialization — strips CLI-only fields; RPC URLs are
-/// the raw disk strings, not env-expanded memory.
+/// the raw disk strings, not env-expanded memory. `rpc` is the active chain's
+/// effective config; `per_chain_rpc` lists chains with `[chains.<name>.rpc]`
+/// overrides on disk.
 #[derive(Serialize)]
 pub struct SanitizedConfig {
     pub chain: String,
@@ -47,24 +53,21 @@ pub struct SanitizedConfig {
     pub output: OutputConfig,
     pub explorer: ExplorerConfig,
     pub rpc: RpcSummary,
+    pub per_chain_rpc: HashMap<String, RpcSummary>,
 }
 
 pub fn router() -> Router<SharedState> {
     Router::new().route("/api/config", get(get_config).put(put_config))
 }
 
-/// Parse raw `rpc_urls` / `rpc_rps` from the config file without env expansion.
-fn read_raw_rpc(path: &Path) -> (Vec<String>, Vec<f64>) {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return (Vec::new(), Vec::new());
-    };
-    let Ok(value) = raw.parse::<toml::Value>() else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(table) = value.as_table() else {
-        return (Vec::new(), Vec::new());
-    };
+/// Read the raw TOML document from disk. Never env-expands.
+fn raw_config_value(path: &Path) -> Option<toml::Value> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    raw.parse::<toml::Value>().ok()
+}
 
+/// Extract `rpc_urls` / `rpc_rps` (raw disk strings) from a single TOML table.
+fn rpc_arrays_from_table(table: &toml::Table) -> (Vec<String>, Vec<f64>) {
     let mut urls = Vec::new();
     if let Some(arr) = table.get("rpc_urls").and_then(|v| v.as_array()) {
         for item in arr {
@@ -94,6 +97,26 @@ fn read_raw_rpc(path: &Path) -> (Vec<String>, Vec<f64>) {
     (urls, rps)
 }
 
+/// Resolve the effective RPC arrays for a chain from the raw document: the
+/// `[chains.<chain>.rpc]` override when present, else the top-level
+/// (global default) keys.
+fn rpc_arrays_for_chain(value: Option<&toml::Value>, chain: &str) -> (Vec<String>, Vec<f64>) {
+    let Some(value) = value else {
+        return (Vec::new(), Vec::new());
+    };
+    let Some(root) = value.as_table() else {
+        return (Vec::new(), Vec::new());
+    };
+    let per_chain = root
+        .get("chains")
+        .and_then(|c| c.as_table())
+        .and_then(|t| t.get(chain))
+        .and_then(|c| c.as_table())
+        .and_then(|t| t.get("rpc"))
+        .and_then(|t| t.as_table());
+    rpc_arrays_from_table(per_chain.unwrap_or(root))
+}
+
 fn hosts_from_urls(urls: &[String]) -> Vec<String> {
     urls.iter()
         .filter_map(|u| url::Url::parse(u).ok())
@@ -104,8 +127,8 @@ fn hosts_from_urls(urls: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn rpc_summary_from_disk(path: &Path) -> RpcSummary {
-    let (urls, rps) = read_raw_rpc(path);
+fn rpc_summary_from_value(value: Option<&toml::Value>, chain: &str) -> RpcSummary {
+    let (urls, rps) = rpc_arrays_for_chain(value, chain);
     let hosts = hosts_from_urls(&urls);
     RpcSummary {
         providers: urls.len(),
@@ -115,9 +138,66 @@ fn rpc_summary_from_disk(path: &Path) -> RpcSummary {
     }
 }
 
-async fn get_config(State(state): State<SharedState>) -> ApiResult<Json<SanitizedConfig>> {
+/// Per-chain RPC overrides present on disk (`[chains.<name>.rpc]`), keyed by
+/// chain name. Used by the Config UI to flag chains with custom RPC config.
+fn per_chain_rpc_summaries(value: Option<&toml::Value>) -> HashMap<String, RpcSummary> {
+    let mut out = HashMap::new();
+    let Some(value) = value else {
+        return out;
+    };
+    let Some(root) = value.as_table() else {
+        return out;
+    };
+    let Some(chains) = root.get("chains").and_then(|c| c.as_table()) else {
+        return out;
+    };
+    for (name, entry) in chains {
+        let Some(rpc) = entry
+            .as_table()
+            .and_then(|t| t.get("rpc"))
+            .and_then(|r| r.as_table())
+        else {
+            continue;
+        };
+        let (urls, rps) = rpc_arrays_from_table(rpc);
+        if urls.is_empty() {
+            continue;
+        }
+        let hosts = hosts_from_urls(&urls);
+        out.insert(
+            name.clone(),
+            RpcSummary {
+                providers: urls.len(),
+                hosts,
+                urls,
+                rps,
+            },
+        );
+    }
+    out
+}
+
+async fn get_config(
+    State(state): State<SharedState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> ApiResult<Json<SanitizedConfig>> {
     let cfg = state.config.read().await;
-    let rpc = rpc_summary_from_disk(&state.config_path);
+
+    // `?chain=...` previews that chain's effective RPC for the Config UI
+    // editor without switching the active chain. A typo earns a 400 rather
+    // than a silent fallback to the active chain.
+    let preview_chain = match params.get("chain") {
+        Some(name) => Some(
+            name.parse::<mev_scout_core::types::ChainName>()
+                .map_err(|_| ApiError::bad_request(format!("unknown chain '{name}'")))?,
+        ),
+        None => None,
+    };
+    let chain = preview_chain.unwrap_or(cfg.chain).to_string();
+
+    let raw = raw_config_value(&state.config_path);
+    let rpc = rpc_summary_from_value(raw.as_ref(), &chain);
+    let per_chain_rpc = per_chain_rpc_summaries(raw.as_ref());
     Ok(Json(SanitizedConfig {
         chain: cfg.chain.to_string(),
         gas: cfg.gas.clone(),
@@ -125,12 +205,14 @@ async fn get_config(State(state): State<SharedState>) -> ApiResult<Json<Sanitize
         output: cfg.output.clone(),
         explorer: cfg.explorer.clone(),
         rpc,
+        per_chain_rpc,
     }))
 }
 
 /// `PUT /api/config` body: a partial set of fields. Absent fields keep their
-/// current on-disk values. Unknown fields are rejected by serde deny if
-/// configured; otherwise ignored.
+/// current on-disk values. `rpc_urls`/`rpc_rps` write the top-level (global
+/// default); `chain_rpc` writes per-chain `[chains.<name>.rpc]` overrides.
+/// Unknown fields are rejected by serde deny if configured; otherwise ignored.
 #[derive(Deserialize)]
 pub struct ConfigEdit {
     pub chain: Option<String>,
@@ -138,6 +220,16 @@ pub struct ConfigEdit {
     pub backtest: Option<BacktestConfig>,
     pub output: Option<OutputConfig>,
     pub explorer: Option<ExplorerConfig>,
+    pub rpc_urls: Option<Vec<String>>,
+    pub rpc_rps: Option<Vec<f64>>,
+    pub chain_rpc: Option<HashMap<String, ChainRpcEdit>>,
+}
+
+/// Per-chain RPC edits for `PUT /api/config`: `rpc_urls`/`rpc_rps` map to
+/// `[chains.<name>.rpc]` on disk. Absent fields leave the on-disk values in
+/// place.
+#[derive(Deserialize)]
+pub struct ChainRpcEdit {
     pub rpc_urls: Option<Vec<String>>,
     pub rpc_rps: Option<Vec<f64>>,
 }
@@ -222,6 +314,9 @@ async fn put_config(
         let arr = toml::Value::Array(rps.iter().map(|n| toml::Value::Float(*n)).collect());
         root.insert("rpc_rps".to_string(), arr);
     }
+    if let Some(chain_rpc) = &edit.chain_rpc {
+        merge_per_chain_rpc(&mut toml_value, chain_rpc)?;
+    }
 
     // Validate the merged result with core validation before writing. The
     // editor gets the *full* bound checks (`validate_and_resolve_for`:
@@ -234,13 +329,11 @@ async fn put_config(
         .map_err(|e| ApiError::bad_request(format!("failed to serialize config: {e}")))?;
     let mut merged_cfg: Config = toml::from_str(&merged_toml)
         .map_err(|e| ApiError::bad_request(format!("merged config failed to parse: {e}")))?;
-    // Config files commonly omit `[chains.*]` (built-in defaults are merged
-    // at load time by `Config::load_or_default`); do the same here so
-    // validation sees the resolved chain section instead of failing with
-    // "no [chains.<chain>] section found".
-    for (name, default_cfg) in mev_scout_core::config::default_chains() {
-        merged_cfg.chains.entry(name).or_insert(default_cfg);
-    }
+    // Config files commonly omit `[chains.*]` or only override RPC (built-in
+    // defaults are merged at load time by `Config::load_or_default`); do the
+    // same field-wise merge here so validation sees pool_discovery_start_block
+    // / factories and does not fail with "no [chains.<chain>] section found".
+    mev_scout_core::config::merge_default_chains(&mut merged_cfg.chains);
     merged_cfg.expand_env_secrets();
     merged_cfg.blocks = Some(1);
     if let Err(e) = validation::validate_and_resolve_for(&merged_cfg, false) {
@@ -287,6 +380,72 @@ fn backup_path(path: &Path) -> PathBuf {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "mev-scout.toml".to_string());
     path.with_file_name(name + ".bak.toml")
+}
+
+/// Merge per-chain RPC edits into `[chains.<name>.rpc]` of the raw TOML.
+///
+/// Pins each touched chain's real `chain_id` (`ChainConfig` requires it), so
+/// a fresh override for a chain with no existing `[chains.<name>]` section
+/// still re-parses. Only the edited keys are inserted — unrelated per-chain
+/// fields are never touched.
+fn merge_per_chain_rpc(
+    toml_value: &mut toml::Value,
+    edits: &HashMap<String, ChainRpcEdit>,
+) -> Result<(), ApiError> {
+    let root = toml_value
+        .as_table_mut()
+        .ok_or_else(|| ApiError::bad_request("config root is not a table".to_string()))?;
+    let chains = root
+        .entry("chains".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let Some(chains_table) = chains.as_table_mut() else {
+        return Err(ApiError::bad_request(
+            "config `chains` is not a table".to_string(),
+        ));
+    };
+
+    for (name, edit) in edits {
+        let parsed: mev_scout_core::types::ChainName = name
+            .parse()
+            .map_err(|_| ApiError::bad_request(format!("unknown chain '{name}'")))?;
+        let entry = chains_table
+            .entry(name.clone())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        let Some(entry_table) = entry.as_table_mut() else {
+            return Err(ApiError::bad_request(format!(
+                "[chains.{name}] is not a table"
+            )));
+        };
+        entry_table.insert(
+            "chain_id".to_string(),
+            toml::Value::Integer(parsed.chain_id() as i64),
+        );
+        let rpc_entry = entry_table
+            .entry("rpc".to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        let Some(rpc_table) = rpc_entry.as_table_mut() else {
+            return Err(ApiError::bad_request(format!(
+                "[chains.{name}.rpc] is not a table"
+            )));
+        };
+        if let Some(urls) = &edit.rpc_urls {
+            rpc_table.insert(
+                "rpc_urls".to_string(),
+                toml::Value::Array(
+                    urls.iter()
+                        .map(|u| toml::Value::String(u.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(rps) = &edit.rpc_rps {
+            rpc_table.insert(
+                "rpc_rps".to_string(),
+                toml::Value::Array(rps.iter().map(|n| toml::Value::Float(*n)).collect()),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Merge a typed `#[serde(flatten)]` section (already deserialized) into the

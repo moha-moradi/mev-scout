@@ -81,7 +81,7 @@ pub async fn job_run(
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
     fetcher = fetcher.with_parallelism(provider_configs.len());
     fetcher = fetcher.with_batch_rpc(opts.batch_rpc);
-    let bc = config.effective_block_concurrency(&provider_configs);
+    let bc = config.effective_block_concurrency(validation_result.chain_name, &provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
 
     let fetch_total = resolved.block_count;
