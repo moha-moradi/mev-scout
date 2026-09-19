@@ -3,6 +3,7 @@ import { api, type FeedRow, type HealthResponse, type JobInfo, type OverviewRow,
 import { usePolling } from "../hooks";
 import StatCard from "../components/StatCard";
 import OpDrawer from "../components/OpDrawer";
+import BlockReplayPanel from "../components/BlockReplayPanel";
 import Identicon from "../components/Identicon";
 import RoutePath from "../components/RoutePath";
 import { useToast } from "../components/Toast";
@@ -134,6 +135,11 @@ export default function Explorer() {
   const [q, setQ] = useState("");
   const toast = useToast();
   const [drawerTx, setDrawerTx] = useState<string | null>(null);
+  const [replayBlock, setReplayBlock] = useState<number | null>(null);
+  const [exportFormat, setExportFormat] = useState<"json" | "csv">("json");
+  const [exportSince, setExportSince] = useState("7d");
+  const [exporting, setExporting] = useState(false);
+  const [showExport, setShowExport] = useState(false);
 
   const { data: health } = usePolling<HealthResponse>(api.health, 10_000, []);
   const chain = health?.chain;
@@ -185,6 +191,19 @@ export default function Explorer() {
     }
   }
 
+  async function downloadExport() {
+    setExporting(true);
+    try {
+      await api.explorerExportDownload({ format: exportFormat, since: exportSince });
+      toast("Export downloaded.", "success");
+      setShowExport(false);
+    } catch (e) {
+      toast(`Export failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const rows = feed ?? [];
 
   return (
@@ -218,6 +237,13 @@ export default function Explorer() {
             ))}
           </div>
           <button
+            type="button"
+            onClick={() => setShowExport((v) => !v)}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            Export
+          </button>
+          <button
             onClick={toggleLiveIndex}
             disabled={mode === "past"}
             className={`rounded-md border px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -230,6 +256,43 @@ export default function Explorer() {
           </button>
         </div>
       </div>
+
+      {showExport && (
+        <div className="flex flex-wrap items-end gap-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">format</span>
+            <select
+              value={exportFormat}
+              onChange={(e) => setExportFormat(e.target.value as "json" | "csv")}
+              className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+            >
+              <option value="json">json</option>
+              <option value="csv">csv</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">since</span>
+            <select
+              value={exportSince}
+              onChange={(e) => setExportSince(e.target.value)}
+              className="rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+            >
+              <option value="all">all</option>
+              <option value="1d">1d</option>
+              <option value="7d">7d</option>
+              <option value="30d">30d</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={exporting}
+            onClick={() => void downloadExport()}
+            className="rounded-md bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
+          >
+            {exporting ? "Downloading…" : "Download"}
+          </button>
+        </div>
+      )}
 
       {mode === "past" && (
         <>
@@ -432,7 +495,17 @@ export default function Explorer() {
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-right font-mono text-xs tabular-nums text-zinc-500">
-                      {f.block_number.toLocaleString()}
+                      <button
+                        type="button"
+                        title="Open block · replay"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setReplayBlock(f.block_number);
+                        }}
+                        className="rounded px-1 text-sky-400/90 hover:bg-sky-950/40 hover:text-sky-300"
+                      >
+                        {f.block_number.toLocaleString()}
+                      </button>
                     </td>
                     <td className="px-3 py-2.5">
                       <span
@@ -452,6 +525,17 @@ export default function Explorer() {
       </div>
 
       <OpDrawer txHash={drawerTx} chain={chain} onClose={() => setDrawerTx(null)} />
+      {replayBlock != null && (
+        <BlockReplayPanel
+          block={replayBlock}
+          feedRows={rows}
+          onClose={() => setReplayBlock(null)}
+          onOpenTx={(tx) => {
+            setReplayBlock(null);
+            setDrawerTx(tx);
+          }}
+        />
+      )}
     </div>
   );
 }

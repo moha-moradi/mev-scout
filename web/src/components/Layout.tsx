@@ -10,7 +10,6 @@ const NAV = [
   { to: "/live", label: "Live Monitor", icon: "pulse" },
   { to: "/explorer", label: "Explorer", icon: "target" },
   { to: "/pools", label: "Pools", icon: "layers" },
-  { to: "/tools", label: "Tools", icon: "wrench" },
   { to: "/jobs", label: "Jobs", icon: "clock" },
   { to: "/results", label: "Results", icon: "report" },
   { to: "/config", label: "Config", icon: "sliders" },
@@ -73,12 +72,6 @@ function NavIcon({ name }: { name: (typeof NAV)[number]["icon"] }) {
           <path d="M12 8v5l3 2" />
         </svg>
       );
-    case "wrench":
-      return (
-        <svg {...common}>
-          <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4L15 12l-2.3-2.3 1.9-3.4z" />
-        </svg>
-      );
     case "report":
       return (
         <svg {...common}>
@@ -106,9 +99,10 @@ function useHead() {
 
 export default function Layout() {
   const location = useLocation();
-  const current = NAV.find(
-    (n) => (n.end && n.to === location.pathname) || (!n.end && location.pathname.startsWith(n.to)),
-  );
+  const current = NAV.find((n) => {
+    const end = "end" in n && n.end;
+    return (end && n.to === location.pathname) || (!end && location.pathname.startsWith(n.to));
+  });
   const { health, sync } = useHead();
   const running = health?.job_status.running;
   const head = sync?.explorer_head ?? sync?.cache_head;
@@ -140,7 +134,7 @@ export default function Layout() {
             <NavLink
               key={n.to}
               to={n.to}
-              end={n.end}
+              end={"end" in n ? n.end : undefined}
               className={({ isActive }) =>
                 `relative flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm transition-colors ${
                   isActive

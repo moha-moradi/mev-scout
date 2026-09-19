@@ -7,6 +7,7 @@ import ValidationPanel from "../components/ValidationPanel";
 import PnlCard from "../components/PnlCard";
 import StatCard from "../components/StatCard";
 import TerminalPanel from "../components/TerminalPanel";
+import { useToast } from "../components/Toast";
 
 const RunCharts = lazy(() => import("../components/RunCharts"));
 
@@ -97,12 +98,14 @@ export default function Results() {
 }
 
 function RunDetailCard({ runId }: { runId: string }) {
+  const toast = useToast();
+  const [validating, setValidating] = useState(false);
   const { data: detail } = usePolling<RunDetail | null>(
     () => api.result(runId).catch(() => null),
     10_000,
     [runId],
   );
-  const { data: validation } = usePolling<ValidationResponse | null>(
+  const { data: validation, refresh: refreshValidation } = usePolling<ValidationResponse | null>(
     () => api.resultValidation(runId).catch(() => null),
     10_000,
     [runId],
@@ -112,6 +115,23 @@ function RunDetailCard({ runId }: { runId: string }) {
     10_000,
     [runId],
   );
+
+  async function runValidate() {
+    setValidating(true);
+    try {
+      const res = await api.createJob("explorer validate", [
+        "--run",
+        runId,
+        "--json",
+      ]);
+      toast(`Validate job ${res.job_id.slice(0, 8)} started.`, "success");
+      setTimeout(() => refreshValidation(), 4_000);
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setValidating(false);
+    }
+  }
 
   if (!detail) return null;
 
@@ -180,7 +200,13 @@ function RunDetailCard({ runId }: { runId: string }) {
         ]}
       />
 
-      <ValidationPanel validation={validation} candidates={detail.opportunities} runId={detail.run_id} />
+      <ValidationPanel
+        validation={validation}
+        candidates={detail.opportunities}
+        runId={detail.run_id}
+        validating={validating}
+        onValidate={() => void runValidate()}
+      />
       <PnlCard pnl={pnl} />
 
       <div className="rounded-xl border border-zinc-800 overflow-x-auto">

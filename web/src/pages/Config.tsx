@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type SanitizedConfig, type ChainDto } from "../api";
+import { api, type SanitizedConfig, type ChainDto, type DoctorOutcome } from "../api";
 import { usePolling } from "../hooks";
 import { useToast } from "../components/Toast";
 import SectionCard from "../components/SectionCard";
@@ -65,6 +65,8 @@ export default function ConfigPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [doctor, setDoctor] = useState<DoctorOutcome | null>(null);
+  const [doctorLoading, setDoctorLoading] = useState(false);
   // Last-loaded RPC values for the currently selected chain. Save only writes
   // a per-chain override when these actually differ from the editor — saves
   // that touch gas/backtest/explorer alone don't freeze the global default
@@ -123,15 +125,16 @@ export default function ConfigPage() {
     return <p className="text-sm text-zinc-500">Loading config…</p>;
   }
   const activeCfg = cfg;
+  const live = form;
 
-  const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => {
+  const set = <K extends keyof typeof live>(k: K, v: (typeof live)[K]) => {
     setForm((f) => (f ? { ...f, [k]: v } : f));
     setDirty(true);
   };
 
   const knownKeys = new Set(STRATEGIES.map((s) => s.key));
   const activeStrategies = new Set(
-    form.strategies
+    live.strategies
       .split(",")
       .map((s) => s.trim())
       .filter((s) => knownKeys.has(s)),
@@ -142,7 +145,7 @@ export default function ConfigPage() {
     if (next.has(key)) next.delete(key);
     else next.add(key);
     // Preserve unknown strategy keys from the saved config (e.g. multi_hop_arb).
-    const extras = form.strategies
+    const extras = live.strategies
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s && !knownKeys.has(s));
@@ -150,14 +153,14 @@ export default function ConfigPage() {
   }
 
   function parseRpcUrls(): string[] {
-    return form.rpc_urls_text
+    return live.rpc_urls_text
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
   }
 
   function parseRpcRps(): number[] {
-    const text = form.rpc_rps_text.trim();
+    const text = live.rpc_rps_text.trim();
     if (!text) return [];
     return text
       .split(/[,\s]+/)
@@ -287,6 +290,19 @@ export default function ConfigPage() {
     }
   }
 
+  async function runDoctor() {
+    setDoctorLoading(true);
+    try {
+      const res = await api.explorerDoctor();
+      setDoctor(res);
+      toast(res.gate_ok ? "Doctor gate PASS" : "Doctor gate FAIL", res.gate_ok ? "success" : "error");
+    } catch (e) {
+      toast(`Doctor failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setDoctorLoading(false);
+    }
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
       <div className="space-y-6">
@@ -341,6 +357,59 @@ export default function ConfigPage() {
               unexpanded on disk. Pasting a live key into a URL stores it in{" "}
               <code className="text-zinc-400">mev-scout.toml</code> (visible in this local UI).
             </p>
+            <div className="mt-4 border-t border-zinc-800 pt-4">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-medium text-zinc-200">RPC doctor</h3>
+                  <p className="text-xs text-zinc-500">
+                    Probe providers: latest, archive, bulk receipts, traces.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={doctorLoading}
+                  onClick={() => void runDoctor()}
+                  className="rounded-md border border-sky-700/50 bg-sky-950/30 px-3 py-1.5 text-sm text-sky-300 hover:bg-sky-900/40 disabled:opacity-50"
+                >
+                  {doctorLoading ? "Probing…" : "Run doctor"}
+                </button>
+              </div>
+              {doctor && (
+                <div className="overflow-x-auto rounded-lg border border-zinc-800">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-zinc-950 text-zinc-500">
+                      <tr>
+                        <th className="px-3 py-2">provider</th>
+                        <th className="px-3 py-2">latest</th>
+                        <th className="px-3 py-2">archive</th>
+                        <th className="px-3 py-2">bulk</th>
+                        <th className="px-3 py-2">traces</th>
+                        <th className="px-3 py-2">rps</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {doctor.providers.map((p) => (
+                        <tr key={p.url_shown} className="border-t border-zinc-800/80 text-zinc-300">
+                          <td className="px-3 py-2 font-mono">{p.url_shown}</td>
+                          <td className="px-3 py-2">{p.latest}</td>
+                          <td className="px-3 py-2">{p.archive}</td>
+                          <td className="px-3 py-2">{p.bulk_receipts}</td>
+                          <td className="px-3 py-2">{p.traces}</td>
+                          <td className="px-3 py-2">{p.rps ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div
+                    className={`border-t border-zinc-800 px-3 py-2 text-sm ${
+                      doctor.gate_ok ? "text-emerald-400" : "text-rose-400"
+                    }`}
+                  >
+                    Gate: {doctor.gate_ok ? "PASS" : "FAIL"} · {doctor.chain} ({doctor.chain_id})
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </SectionCard>
 

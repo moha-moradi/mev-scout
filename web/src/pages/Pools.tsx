@@ -37,6 +37,14 @@ export default function Pools() {
   const toast = useToast();
   const [discovering, setDiscovering] = useState(false);
   const [showDiscover, setShowDiscover] = useState(true);
+  const [showMaintenance, setShowMaintenance] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [tokensBusy, setTokensBusy] = useState(false);
+  const [validateDays, setValidateDays] = useState("7");
+  const [validateSource, setValidateSource] = useState<"all" | "gecko">("all");
+  const [tokenSymbol, setTokenSymbol] = useState("");
+  const [tokenLimit, setTokenLimit] = useState("100");
+  const [tokenCacheOnly, setTokenCacheOnly] = useState(false);
 
   const { data: health } = usePolling<HealthResponse>(api.health, 15_000, []);
   const chain = health?.chain;
@@ -151,6 +159,35 @@ export default function Pools() {
     }
   }
 
+  async function runValidatePools() {
+    setValidating(true);
+    try {
+      const args = ["--days", validateDays || "7", "--source", validateSource, "--json"];
+      const res = await api.createJob("validate-pools", args);
+      toast(`Validate job ${res.job_id.slice(0, 8)} started.`, "success");
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  async function runTokensCache() {
+    setTokensBusy(true);
+    try {
+      const args: string[] = [];
+      if (tokenSymbol.trim()) args.push("--symbol", tokenSymbol.trim());
+      if (tokenLimit.trim()) args.push("--limit", tokenLimit.trim());
+      if (tokenCacheOnly) args.push("--cache-only");
+      const res = await api.createJob("tokens", args);
+      toast(`Tokens job ${res.job_id.slice(0, 8)} started.`, "success");
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setTokensBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -159,6 +196,13 @@ export default function Pools() {
           <Link to="/jobs" className="text-xs text-zinc-500 hover:text-zinc-300">
             job history →
           </Link>
+          <button
+            type="button"
+            onClick={() => setShowMaintenance((v) => !v)}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            {showMaintenance ? "Hide maintenance" : "Validate & tokens"}
+          </button>
           <button
             type="button"
             onClick={() => setShowDiscover((v) => !v)}
@@ -181,6 +225,93 @@ export default function Pools() {
             submitLabel="Start discovery"
             onSubmit={runDiscover}
           />
+        </div>
+      )}
+
+      {showMaintenance && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+            <h2 className="mb-1 text-sm font-medium text-zinc-200">Validate pools</h2>
+            <p className="mb-4 text-xs text-zinc-500">
+              Recall vs GeckoTerminal reference sets (
+              <span className="font-mono text-zinc-400">validate-pools</span>).
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-xs">
+                <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">days</span>
+                <input
+                  type="number"
+                  value={validateDays}
+                  onChange={(e) => setValidateDays(e.target.value)}
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+                />
+              </label>
+              <label className="block text-xs">
+                <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">source</span>
+                <select
+                  value={validateSource}
+                  onChange={(e) => setValidateSource(e.target.value as "all" | "gecko")}
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+                >
+                  <option value="all">all</option>
+                  <option value="gecko">gecko</option>
+                </select>
+              </label>
+            </div>
+            <button
+              type="button"
+              disabled={validating}
+              onClick={() => void runValidatePools()}
+              className="mt-3 rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
+            >
+              {validating ? "Starting…" : "Validate pools"}
+            </button>
+          </div>
+
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+            <h2 className="mb-1 text-sm font-medium text-zinc-200">Tokens cache</h2>
+            <p className="mb-4 text-xs text-zinc-500">
+              List / warm token metadata (
+              <span className="font-mono text-zinc-400">tokens</span>).
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-xs">
+                <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">symbol</span>
+                <input
+                  value={tokenSymbol}
+                  onChange={(e) => setTokenSymbol(e.target.value)}
+                  placeholder="optional filter"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+                />
+              </label>
+              <label className="block text-xs">
+                <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">limit</span>
+                <input
+                  type="number"
+                  value={tokenLimit}
+                  onChange={(e) => setTokenLimit(e.target.value)}
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+                />
+              </label>
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-sm text-zinc-300">
+              <input
+                type="checkbox"
+                checked={tokenCacheOnly}
+                onChange={(e) => setTokenCacheOnly(e.target.checked)}
+                className="accent-emerald-400"
+              />
+              cache-only
+            </label>
+            <button
+              type="button"
+              disabled={tokensBusy}
+              onClick={() => void runTokensCache()}
+              className="mt-3 rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
+            >
+              {tokensBusy ? "Starting…" : "Run tokens cache"}
+            </button>
+          </div>
         </div>
       )}
 

@@ -7,21 +7,39 @@ export function tierBadge(opp: MevOpportunity): "T1" | "T2" | "T3" | "missed" {
   return opp.details && (opp.details as { tier?: string }).tier
     ? ((opp.details as { tier: string }).tier as "T1" | "T2" | "T3")
     : opp.tx_index != null
-      ? "T1"
-      : "missed";
+    ? "T1"
+    : "missed";
 }
 
 interface Props {
   validation: ValidationResponse | null;
   candidates: MevOpportunity[];
   runId?: string;
+  onValidate?: () => void;
+  validating?: boolean;
 }
 
-export default function ValidationPanel({ validation, candidates, runId }: Props) {
+export default function ValidationPanel({
+  validation,
+  candidates,
+  runId,
+  onValidate,
+  validating,
+}: Props) {
   if (!validation) {
     return (
       <div className="rounded-xl border border-dashed border-zinc-800 p-6 text-center text-sm text-zinc-500">
-        Run not validated yet.
+        <p>Run not validated yet.</p>
+        {onValidate && (
+          <button
+            type="button"
+            disabled={validating}
+            onClick={onValidate}
+            className="mt-3 rounded-md border border-sky-700/50 bg-sky-950/30 px-3 py-1.5 text-xs text-sky-300 hover:bg-sky-900/40 disabled:opacity-50"
+          >
+            {validating ? "Starting…" : "Run explorer validate"}
+          </button>
+        )}
       </div>
     );
   }
@@ -44,12 +62,24 @@ export default function ValidationPanel({ validation, candidates, runId }: Props
 
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-medium text-zinc-200">Validation</h3>
-        <span className="text-xs text-zinc-500">
-          coverage {cov.blocks_indexed}/{cov.blocks_total} blocks
-          {cov.covered ? " ✓" : " (partial)"}
-        </span>
+        <div className="flex items-center gap-2">
+          {onValidate && (
+            <button
+              type="button"
+              disabled={validating}
+              onClick={onValidate}
+              className="rounded-md border border-sky-700/50 bg-sky-950/30 px-2.5 py-1 text-[11px] text-sky-300 hover:bg-sky-900/40 disabled:opacity-50"
+            >
+              {validating ? "Starting…" : "Re-run validate"}
+            </button>
+          )}
+          <span className="text-xs text-zinc-500">
+            coverage {cov.blocks_indexed}/{cov.blocks_total} blocks
+            {cov.covered ? " ✓" : " (partial)"}
+          </span>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {cards.map((c) => (

@@ -3,33 +3,9 @@ import { Link } from "react-router-dom";
 import { api, type JobInfo } from "../api";
 import { usePolling } from "../hooks";
 import DataTable, { type Column } from "../components/DataTable";
-import DiscoverForm from "../components/DiscoverForm";
 import LogViewer from "../components/LogViewer";
 import { useToast } from "../components/Toast";
-import {
-  buildDiscoverArgs,
-  DEFAULT_DISCOVER_STATE,
-  parseDiscoverArgs,
-  validateDiscoverState,
-  type DiscoverFormState,
-} from "../lib/discoverArgs";
 
-const COMMANDS = [
-  "run",
-  "live",
-  "discover",
-  "tokens",
-  "scan",
-  "report",
-  "fetch",
-  "replay",
-  "validate-pools",
-  "explorer index",
-  "explorer doctor",
-  "explorer export",
-  "explorer validate",
-  "explorer show",
-];
 const STATUS_CLASS: Record<string, string> = {
   running: "border-amber-700/60 bg-amber-950/40 text-amber-300",
   finished: "border-emerald-700/60 bg-emerald-950/40 text-emerald-300",
@@ -37,34 +13,16 @@ const STATUS_CLASS: Record<string, string> = {
   killed: "border-zinc-700 bg-zinc-900 text-zinc-400",
 };
 
-const PRESETS: Record<string, { args: string[]; hint: string }> = {
-  run: { args: ["--blocks", "10", "--progress", "json"], hint: "last 10 blocks" },
-  live: { args: ["--loop", "--duration", "2m", "--progress", "json"], hint: "2 minutes" },
-  discover: {
-    args: buildDiscoverArgs(DEFAULT_DISCOVER_STATE),
-    hint: "use the form below (mirrors CLI discover flags)",
-  },
-  tokens: { args: [], hint: "token cache listing" },
-  scan: { args: ["--blocks", "50", "--kind", "trades"], hint: "trades scan" },
-  report: { args: [], hint: "latest run" },
-  fetch: { args: ["--blocks", "10"], hint: "cache last 10 blocks" },
-  replay: { args: ["--block", "0", "--analyze"], hint: "set --block to a cached height" },
-  "validate-pools": { args: ["--days", "7", "--json"], hint: "gecko recall window" },
-  "explorer index": { args: ["--live"], hint: "live indexing" },
-  "explorer doctor": { args: [], hint: "provider capability probe" },
-  "explorer export": { args: ["--format", "json", "--since", "7d"], hint: "write export file" },
-  "explorer validate": { args: ["--since", "7d", "--json"], hint: "realized vs scanner" },
-  "explorer show": { args: ["0x…", "--trace"], hint: "tx hash + optional --trace" },
-};
+const SCAN_KINDS = ["trades", "transfers", "flashloans", "liquidations", "labels"] as const;
 
 function fmtTime(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
 
 export default function Jobs() {
-  const [command, setCommand] = useState("run");
-  const [args, setArgs] = useState(PRESETS.run.args.join(" "));
-  const [discoverState, setDiscoverState] = useState<DiscoverFormState>(DEFAULT_DISCOVER_STATE);
+  const [blocks, setBlocks] = useState("50");
+  const [kind, setKind] = useState<(typeof SCAN_KINDS)[number]>("trades");
+  const [address, setAddress] = useState("");
   const [timeoutSecs, setTimeoutSecs] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const toast = useToast();
@@ -72,8 +30,6 @@ export default function Jobs() {
 
   const { data: jobs, refresh } = usePolling<JobInfo[]>(api.jobs, 4000, []);
   const selectedJob = jobs?.find((j) => j.job_id === selected) ?? null;
-
-  const isDiscover = command === "discover";
 
   const columns: Column<JobInfo>[] = [
     {
@@ -120,27 +76,17 @@ export default function Jobs() {
     },
   ];
 
-  async function create() {
+  async function createScan() {
     setStarting(true);
     try {
-      let parsed: string[];
-      if (isDiscover) {
-        const err = validateDiscoverState(discoverState);
-        if (err) {
-          toast(err, "error");
-          setStarting(false);
-          return;
-        }
-        parsed = buildDiscoverArgs(discoverState);
-      } else {
-        parsed = args.split(/\s+/).filter(Boolean);
-      }
+      const args = ["--blocks", blocks || "50", "--kind", kind];
+      if (address.trim()) args.push("--address", address.trim());
       const res = await api.createJob(
-        command,
-        parsed,
+        "scan",
+        args,
         timeoutSecs ? Number(timeoutSecs) : undefined,
       );
-      toast(`Job ${res.job_id.slice(0, 8)} started.`, "success");
+      toast(`Scan job ${res.job_id.slice(0, 8)} started.`, "success");
       setSelected(res.job_id);
       refresh();
     } catch (e) {
@@ -152,79 +98,70 @@ export default function Jobs() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-zinc-100">Jobs</h1>
+      <div>
+        <h1 className="text-xl font-semibold text-zinc-100">Jobs</h1>
+        <p className="mt-1 text-sm text-zinc-500">
+          Job history and logs. Dedicated commands live on their pages; Event scan stays here as an
+          advanced RPC utility.
+        </p>
+      </div>
 
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <h2 className="mb-3 text-sm font-medium text-zinc-200">Launch command</h2>
+        <h2 className="mb-1 text-sm font-medium text-zinc-200">Event scan</h2>
+        <p className="mb-4 text-xs text-zinc-500">
+          RPC log scan: trades, transfers, flashloans, liquidations, labels (
+          <span className="font-mono text-zinc-400">scan</span>).
+        </p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">command</label>
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">blocks</span>
+            <input
+              type="number"
+              value={blocks}
+              onChange={(e) => setBlocks(e.target.value)}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+            />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">kind</span>
             <select
-              value={command}
-              onChange={(e) => {
-                const next = e.target.value;
-                setCommand(next);
-                const preset = PRESETS[next].args;
-                setArgs(preset.join(" "));
-                if (next === "discover") {
-                  setDiscoverState(parseDiscoverArgs(preset));
-                }
-              }}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+              value={kind}
+              onChange={(e) => setKind(e.target.value as (typeof SCAN_KINDS)[number])}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
             >
-              {COMMANDS.map((c) => (
-                <option key={c} value={c}>{c}</option>
+              {SCAN_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
               ))}
             </select>
-          </div>
-          {!isDiscover && (
-            <div className="lg:col-span-2">
-              <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">args</label>
-              <input
-                value={args}
-                onChange={(e) => setArgs(e.target.value)}
-                placeholder="--blocks 10 --progress json"
-                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-xs outline-none focus:border-emerald-400"
-              />
-            </div>
-          )}
-          <div>
-            <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">timeout (s)</label>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">address</span>
+            <input
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="optional"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 font-mono text-xs outline-none focus:border-emerald-400"
+            />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1.5 block uppercase tracking-wider text-zinc-500">timeout (s)</span>
             <input
               value={timeoutSecs}
               onChange={(e) => setTimeoutSecs(e.target.value)}
               placeholder="optional"
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
+              className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-2 text-sm outline-none focus:border-emerald-400"
             />
-          </div>
+          </label>
         </div>
-
-        {isDiscover ? (
-          <div className="mt-4 border-t border-zinc-800 pt-4">
-            <DiscoverForm
-              value={discoverState}
-              onChange={(state, nextArgs) => {
-                setDiscoverState(state);
-                setArgs(nextArgs.join(" "));
-              }}
-              hideSubmit
-              showArgPreview
-            />
-            <p className="mt-2 text-xs text-zinc-600">
-              Mirrors CLI: source, block range, enrich, min-tvl, max-pools, incremental, health-check,
-              batch-size, rpc-concurrency, solidly-fee-bps, resolve-remote-metadata, json.
-            </p>
-          </div>
-        ) : (
-          <p className="mt-2 text-xs text-zinc-600">Preset args: {PRESETS[command].hint}</p>
-        )}
-
         <button
-          onClick={create}
+          type="button"
+          onClick={() => void createScan()}
           disabled={starting}
           className="mt-3 rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
         >
-          {starting ? "Starting…" : isDiscover ? "Create discover job" : "Create job"}
+          {starting ? "Starting…" : "Launch scan"}
         </button>
       </div>
 

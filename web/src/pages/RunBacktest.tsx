@@ -55,6 +55,7 @@ export default function RunBacktest() {
   const [validation, setValidation] = useState<ValidationResponse | null>(null);
   const [pnl, setPnl] = useState<PnlResponse | null>(null);
   const [indexing, setIndexing] = useState(false);
+  const [validating, setValidating] = useState(false);
 
   const jobRunning = job?.status === "running";
   const jobDone = job !== null && !jobRunning && job.status !== "failed" && job.status !== "killed";
@@ -115,6 +116,22 @@ export default function RunBacktest() {
       toast(`Failed to start indexing: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
       setIndexing(false);
+    }
+  }
+
+  async function runValidate() {
+    if (!runId || validating) return;
+    setValidating(true);
+    try {
+      const res = await api.createJob("explorer validate", ["--run", runId, "--json"]);
+      toast(`Validate job ${res.job_id.slice(0, 8)} started.`, "success");
+      setTimeout(() => {
+        api.resultValidation(runId).then(setValidation).catch(() => undefined);
+      }, 4_000);
+    } catch (e) {
+      toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setValidating(false);
     }
   }
 
@@ -302,7 +319,13 @@ export default function RunBacktest() {
             <RunCharts detail={detail} />
           </Suspense>
 
-          {validation && <ValidationPanel validation={validation} candidates={detail.opportunities} runId={runId ?? undefined} />}
+          <ValidationPanel
+            validation={validation}
+            candidates={detail.opportunities}
+            runId={runId ?? undefined}
+            validating={validating}
+            onValidate={() => void runValidate()}
+          />
           <PnlCard pnl={pnl} />
 
           <div className="rounded-xl border border-zinc-800 overflow-x-auto">
