@@ -1,7 +1,7 @@
 //! Explorer store — SQLite persistence for realized-MEV facts.
 //!
 //! Separate database file from the scanner cache (`explorer_{chain}.sqlite`)
-//! so backfill writes never contend with replay-path reads. WAL mode,
+//! so live index writes never contend with replay-path reads. WAL mode,
 //! single-writer, batched transactions. Schema is Postgres-portable.
 //!
 //! Layers:

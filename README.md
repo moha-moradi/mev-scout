@@ -33,22 +33,61 @@ $env:GETBLOCK_KEY    = "..."
 Never commit live API keys. Unset placeholders stay literal and fail
 loudly at the provider.
 
-### 2. Run a backtest
+Chain (`chain = "polygon"`), RPC URLs, strategies, and listing format
+(`output = "table"|"csv"|"json"`) live in the TOML file — they are not CLI
+flags. Inspect the fully resolved config with:
 
 ```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml run --blocks 100
+cargo run -p mev-scout-cli -- --config mev-scout.toml config
 ```
 
-Other common commands:
+### 2. Typical pipeline
+
+Each step is a separate command. The first invocation shows the full
+`cargo run` form; later steps use the short `mev-scout` form (same config
+and CWD). Full flag coverage lives in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml discover --source hybrid
-cargo run -p mev-scout-cli -- --config mev-scout.toml live --loop
-cargo run -p mev-scout-cli -- --config mev-scout.toml explorer index --days 7
-cargo run -p mev-scout-cli -- --config mev-scout.toml explorer stats --since 7d
+# Discover pools (hybrid = on-chain factories ∪ GeckoTerminal/DexScreener)
+cargo run -p mev-scout-cli -- --config mev-scout.toml discover --source hybrid --days 30
+
+# Enrich token metadata (DefiLlama coins + CoinGecko name/icon)
+mev-scout tokens --enrich
+
+# Optional: warm the block cache before a large backtest
+mev-scout fetch --blocks 1000
+
+# Backtest the last 100 blocks → opportunities in the explorer store
+mev-scout run --blocks 100
+
+# Re-render the latest run offline
+mev-scout report
+
+# Index realized MEV near tip, then summarize
+mev-scout explorer index --duration 15m
+mev-scout explorer stats --since 7d
 ```
 
-See `docs/ARCHITECTURE.md` for the full command map.
+### 3. Command index
+
+| Command | Purpose | Details |
+|---|---|---|
+| `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
+| `discover` | Find pools (on-chain / remote / hybrid) | [§4.2](docs/ARCHITECTURE.md#42-discover--build-the-pool-universe) |
+| `validate-pools` | Audit discovery vs GeckoTerminal | [§4.3](docs/ARCHITECTURE.md#43-validate-pools--discovery-accuracy-audit) |
+| `tokens` | Populate / view token metadata cache | [§4.4](docs/ARCHITECTURE.md#44-tokens--token-metadata-cache) |
+| `fetch` | Pre-cache blocks only | [§4.5](docs/ARCHITECTURE.md#45-fetch--pre-cache-blocks-only) |
+| `run` | Full backtest → opportunities | [§4.6](docs/ARCHITECTURE.md#46-run--the-full-backtest) |
+| `live` | Stream tip blocks and detect | [§4.7](docs/ARCHITECTURE.md#47-live--real-time-streaming-detection) |
+| `replay` | Debug one cached block via revm | [§4.8](docs/ARCHITECTURE.md#48-replay--single-block-evm-debugger) |
+| `scan` | Raw event scans (trades, whales, …) | [§4.9](docs/ARCHITECTURE.md#49-scan--raw-on-chain-event-scans) |
+| `report` | Re-render a recorded run from SQLite | [§4.10](docs/ARCHITECTURE.md#410-report--re-render-saved-results) |
+| `explorer` | Realized-MEV forensics | [§4.11](docs/ARCHITECTURE.md#411-explorer--realized-mev-forensics) |
+
+Globals on every command: `-f/--config`, `--verbose`, `--quiet`. Block-range
+commands take exactly one of `--days`, `--blocks`, `--block`, or
+`--from-block/--to-block`.
 
 ## Layout
 
@@ -68,8 +107,9 @@ CoinGecko for name/icon URL).
 
 Copy `mev-scout.example.toml` to `mev-scout.toml` and reference API keys
 via `${ENV_VAR}` placeholders — never commit live keys. Print the fully
-resolved config with `mev-scout config`. CLI flags such as `--rpc-urls`
-override the TOML for a single invocation.
+resolved config with `mev-scout config`. Change chain, RPC URLs, or
+`output` in the TOML (or pass `-f` to pick a different file); those are
+not clap flags.
 
 ## Validation
 

@@ -530,39 +530,8 @@ pub async fn native_price_cached(
     }
 }
 
-/// Consecutive-range backfill worker: indexes `[from, to]` in order with
-/// per-block idempotency and periodic sync checkpointing. Returns ops indexed.
-pub async fn backfill_range(
-    rpc: &RpcClient,
-    store: &ExplorerStore,
-    cfg: &IngestConfig,
-    pool_tokens: &HashMap<Address, (Address, Address)>,
-    from: u64,
-    to: u64,
-    checkpoint_every: u64,
-) -> anyhow::Result<(u64, u64)> {
-    let ts_now = crate::utils::epoch_secs();
-    let native_price = native_price_cached(cfg, store, ts_now).await?;
-    let mut ops_total: u64 = 0;
-    let mut blocks_done: u64 = 0;
-    let mut since_checkpoint: u64 = 0;
-
-    for block in from..=to {
-        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
-        ops_total += indexed.ops as u64;
-        blocks_done += 1;
-        since_checkpoint += 1;
-        if since_checkpoint >= checkpoint_every {
-            store.set_sync_state(cfg.chain_id, to, block)?;
-            since_checkpoint = 0;
-        }
-    }
-    store.set_sync_state(cfg.chain_id, to, to)?;
-    Ok((blocks_done, ops_total))
-}
-
 /// When live mode is this far behind tip, skip the backlog and index near tip.
-/// Historical catch-up belongs in backfill; live feed should match tip explorers.
+/// Live feed should match tip explorers (no historical catch-up).
 const LIVE_MAX_LAG_BLOCKS: u64 = 256;
 
 /// Live streaming mode: follow head − confirmations, indexing each new block.

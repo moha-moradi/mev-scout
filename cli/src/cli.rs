@@ -30,7 +30,7 @@ pub enum Command {
     /// Pre-cache block data without running strategies
     Fetch(FetchArgs),
 
-    /// Re-render terminal tables from saved JSON
+    /// Re-render a recorded run from SQLite (run_manifests + explorer opportunities)
     Report(ReportArgs),
 
     /// Print the fully resolved config as TOML
@@ -77,7 +77,7 @@ pub enum ExplorerCommand {
     /// Prints the capability matrix; gates Phase 0.
     Doctor,
 
-    /// Backfill and/or stream-index blocks into the explorer store.
+    /// Stream-index tip blocks into the explorer store (live only).
     /// Idempotent, resumable, reorg-aware; classify-in-stream.
     Index(IndexArgs),
 
@@ -115,22 +115,6 @@ pub struct ExplorerArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
-    /// Range start block (with --to)
-    #[arg(long, value_name = "N")]
-    pub from: Option<u64>,
-
-    /// Range end block (with --from)
-    #[arg(long, value_name = "N")]
-    pub to: Option<u64>,
-
-    /// Backfill the last N days of blocks (default 30 when no range given)
-    #[arg(long, value_name = "N")]
-    pub days: Option<u64>,
-
-    /// Follow head − confirmations and index new blocks continuously
-    #[arg(long)]
-    pub live: bool,
-
     /// Stop live indexing after this duration (e.g. 90s, 15m, 1h)
     #[arg(long, value_name = "DURATION")]
     pub duration: Option<String>,

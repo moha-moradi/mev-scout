@@ -1,4 +1,4 @@
-//! ``explorer index`` - backfill + live indexing loop, and the live feed renderer.
+//! ``explorer index`` - live indexing loop, and the live feed renderer.
 
 use super::*;
 use crate::job_progress::JobProgress;
@@ -6,18 +6,10 @@ use mev_scout_core::jobs::{job_index, IndexOpts};
 
 pub async fn cmd_index(
     config: &Config,
-    from: Option<u64>,
-    to: Option<u64>,
-    days: Option<u64>,
-    live: bool,
     duration: Option<&str>,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
     let opts = IndexOpts {
-        from,
-        to,
-        days,
-        live,
         duration: duration.map(String::from),
     };
     job_index(config, &opts, progress).await?;
@@ -47,7 +39,7 @@ pub async fn cmd_live_feed(
     let t0 = std::time::Instant::now();
 
     println!(
-        "Explorer live feed — {chain} (tail of the indexed store; run `explorer index --live` alongside)"
+        "Explorer live feed — {chain} (tail of the indexed store; run `explorer index` alongside)"
     );
 
     let mut cursor = store.op_count_since(0)?;

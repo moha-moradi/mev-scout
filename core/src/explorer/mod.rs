@@ -1,6 +1,6 @@
 //! Realized-MEV explorer: forensic reconstruction of MEV actually extracted
 //! on-chain, from raw block/receipt data via RPC (logs-only, no traces in the
-//! backfill path).
+//! live index path).
 //!
 //! Conceptual split vs the rest of the crate: `mev::` detectors answer "what
 //! could be made" (opportunity simulation); `explorer::` answers "what was

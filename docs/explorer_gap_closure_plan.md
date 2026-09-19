@@ -64,10 +64,10 @@ affected window. Before/after Phase-0 numbers are only comparable after a
 reindex:
 
 ```bash
-# Preferred for forensic DB: wipe ops for the window and reclassify from stored
-# facts (blocks/txs/transfers/swaps) when that path exists; else:
-explorer index --from <N> --to <M>   # or --days N after clearing mev_ops /
-                                     # blocks_classified for that range
+# Preferred for forensic DB: wipe ops for the window, rewind sync_state, then
+# resume live indexing (no historical --from/--to/--days):
+# sqlite wipe … SET indexed_to = N-1 …
+explorer index --duration 1h
 explorer validate --threshold-sweep --emit-missing-pools
 ```
 
@@ -105,8 +105,8 @@ Establish ground truth so every later change has a before/after number.
 3. **Precision axis** — realized-side review queue: count `inferred` arb/unknown
    ops per kind as review candidates; keep scanner-side `precision_signal_count`
    as is. Optional `--review-csv` export.
-4. **Baseline run + doc** — fixed-window recipe (e.g. Polygon last 7d):
-   `explorer index --days 7` → `explorer validate --threshold-sweep
+4. **Baseline run + doc** — live-window recipe (e.g. Polygon):
+   `explorer index --duration 1h` → `explorer validate --threshold-sweep
    --emit-missing-pools`, record recall / USD-recall / miss-taxonomy / MAD.
    Document in ARCHITECTURE.md §4.11. No hardcoded number in tests
    (data-dependent); test only report shape.
@@ -127,7 +127,7 @@ checked into ARCHITECTURE.md (not into asserts).
 > **Status: done.** `attach_swap_tokens` now takes `pool_tokens: &HashMap<Address,
 > (Address, Address)>`, resolves sentinels from the registry (fallback to
 > transfer pairing); `job_index` loads `cache.db::pool_info` once per run and
-> threads it through `index_block`/`backfill_range`/`run_live`; V2+V3 registry
+> threads it through `index_block`/`run_live`; V2+V3 registry
 > unit tests added.
 - Pass pool token0/token1 (from `cache.db::pool_info`; already loaded in the
   live job via `SqliteStore`) into `attach_swap_tokens` (decode.rs:390).

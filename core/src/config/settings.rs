@@ -107,9 +107,6 @@ pub struct ExplorerConfig {
     /// Live-mode polling interval in milliseconds.
     #[serde(default = "default_explorer_poll_ms")]
     pub poll_interval_ms: u64,
-    /// Blocks per sync_state checkpoint during backfill.
-    #[serde(default = "default_explorer_checkpoint_every")]
-    pub checkpoint_every: u64,
     /// Mevlive-parity `arb_atomic` fallback (Phase 1.2). When true, a profitable
     /// non-cycle residual is still labeled arb. Flip to `false` only after the
     /// Phase-0 measurement-window gate passes; changing it requires a
@@ -127,9 +124,6 @@ fn default_explorer_confirmations() -> u64 {
 }
 fn default_explorer_poll_ms() -> u64 {
     2000
-}
-fn default_explorer_checkpoint_every() -> u64 {
-    500
 }
 
 // ── Default helpers ─────────────────────────────────────────────────
@@ -268,7 +262,6 @@ impl Default for ExplorerConfig {
             db_path: String::new(),
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
-            checkpoint_every: default_explorer_checkpoint_every(),
             arb_likely_parity: true,
         }
     }
@@ -785,7 +778,6 @@ pub struct ExplorerOverrides {
     pub db_path: Option<String>,
     pub confirmations: Option<u64>,
     pub poll_interval_ms: Option<u64>,
-    pub checkpoint_every: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -917,12 +909,7 @@ impl Config {
             self,
             overrides,
             explorer,
-            [
-                (db_path),
-                (confirmations, copy),
-                (poll_interval_ms, copy),
-                (checkpoint_every, copy)
-            ]
+            [(db_path), (confirmations, copy), (poll_interval_ms, copy)]
         );
         Ok(())
     }

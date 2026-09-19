@@ -115,16 +115,7 @@ impl CliCommand for ExplorerArgs {
         match &self.command {
             ExplorerCommand::Doctor => cmd_doctor(config).await,
             ExplorerCommand::Index(a) => {
-                cmd_index(
-                    config,
-                    a.from,
-                    a.to,
-                    a.days,
-                    a.live,
-                    a.duration.as_deref(),
-                    progress,
-                )
-                .await
+                cmd_index(config, a.duration.as_deref(), progress).await
             }
             ExplorerCommand::LiveFeed(a) => {
                 cmd_live_feed(
