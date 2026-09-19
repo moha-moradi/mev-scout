@@ -73,7 +73,7 @@ fn render_csv(ops: &[MevOpRow]) -> String {
     w
 }
 
-/// Collect filtered ops without writing — used by API download endpoint.
+/// Collect filtered ops without writing — used by `format_export_body` / CLI export.
 pub fn collect_export_ops(
     store: &ExplorerStore,
     since: Option<&str>,

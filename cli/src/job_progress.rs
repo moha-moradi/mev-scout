@@ -1,6 +1,5 @@
 //! Job progress sinks for the CLI binary. The shared trait/event types live
-//! in `mev_scout_core::progress` (the API job runner implements the same
-//! trait over its own channels); here we pick a presentation sink per mode:
+//! in `mev_scout_core::progress`; here we pick a presentation sink per mode:
 //! `--progress json` → NDJSON on stdout, otherwise an indicatif bar.
 //!
 //! The CLI reads `--progress json` to choose a [`StdoutJsonProgress`] sink,

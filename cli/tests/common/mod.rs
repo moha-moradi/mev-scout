@@ -111,7 +111,13 @@ pub fn temp_config(ws: &Path, extras: &[(&str, &str)]) -> PathBuf {
             }
         }
         if !replaced {
-            lines.push(format!("{key} = {value}"));
+            // Insert before the first `[table]` so flattened top-level keys
+            // (e.g. `db_path`) are not swallowed by the last `[chains.*]` section.
+            let insert_at = lines
+                .iter()
+                .position(|l| l.trim_start().starts_with('['))
+                .unwrap_or(lines.len());
+            lines.insert(insert_at, format!("{key} = {value}"));
         }
     }
     let out = ws.join("mev-scout.toml");

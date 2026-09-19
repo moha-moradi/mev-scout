@@ -1,6 +1,6 @@
 //! Persistence of scanner run results (opportunities + rejections) into the
-//! explorer store. Shared by the CLI (`run`/`live`) and the API jobs so the
-//! results layer (which feeds `explorer validate`) lives in one place.
+//! explorer store. Used by CLI `run`/`live` so the results layer (which feeds
+//! `explorer validate`) lives in one place.
 
 use alloy::primitives::{Address, U256};
 

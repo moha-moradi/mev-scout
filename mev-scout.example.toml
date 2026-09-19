@@ -32,8 +32,9 @@ gas_model = "historical_exact"
 output = "table"
 
 # ── Per-chain public RPC overrides ─────────────────────────────────
-# Switching chains in the UI just works — every chain gets its own public
-# endpoints from chainlist. `rps_limit` / `block_concurrency` stay global.
+# Switching chains via `--chain` / config just works — every chain gets its
+# own public endpoints from chainlist. `rps_limit` / `block_concurrency` stay
+# global.
 
 [chains.polygon]
 chain_id = 137

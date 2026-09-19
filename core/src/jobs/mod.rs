@@ -1,4 +1,4 @@
-//! Shared job orchestration for CLI and API hosts.
+//! Shared job orchestration for the CLI host.
 
 mod discover;
 mod doctor;

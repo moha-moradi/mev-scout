@@ -439,7 +439,7 @@ frontrun positives/negatives acceptable before enabling in live feed defaults.
 > **Status: done** (synthetic ship gate). Embedded labeled set in
 > `explorer::golden` (2 positives + 4 negatives incl. sandwich exclusion);
 > `score_embedded_causal_set` + unit test; CLI
-> `explorer validate --golden-causal`; live-feed/API defaults exclude
+> `explorer validate --golden-causal`; live-feed defaults exclude
 > `frontrun`/`backrun` (`--kinds all` to opt in). Chain-curated blocks still
 > pending RPC.
 >
@@ -528,9 +528,8 @@ Split so kinds can land before strategy passes.
   rebuild migration for existing DBs (or relax the CHECK).
 - `canonical.rs`: canonical ID branches for `Backrun`/`Frontrun` (pool +
   tx-index anchor, sandwich-style).
-- `api/src/routes/explorer.rs` `kind_map` (+ any kind filter / OpenAPI surface)
-  must accept the new kinds; update `api/tests/explorer.rs` when responses
-  change.
+- CLI `explorer` kind filters (`live-feed` / `stats` / `export`) must accept
+  the new kinds.
 
 > **Status: done.** `Backrun`/`Frontrun` added to `MevKind` (`as_str` /
 > `parse` → `"frontrun"`/`"backrun"`). `kind_order` now follows the precedence
@@ -538,9 +537,8 @@ Split so kinds can land before strategy passes.
 > Liquidation=6, Unknown=7. `mev_ops.kind` CHECK extended with the two kinds
 > (fresh `CREATE TABLE IF NOT EXISTS`; existing DBs rebuilt via the
 > wipe+reindex recipe). `canonical.rs` emits sandwich-style IDs
-> (`Frontrun|pool|victim_tx:N`, `Backrun|pool|source_tx:N`). `kind_map` in
-> `api/src/routes/explorer.rs` includes the new kinds. Verification: core +
-> `api/tests/explorer.rs` (14) pass, clippy clean.
+> (`Frontrun|pool|victim_tx:N`, `Backrun|pool|source_tx:N`). CLI kind filters
+> accept the new kinds. Verification: core tests pass, clippy clean.
 
 ### 5b — Remaining plumbing (with / after 2.2 and Phase 3)
 - `flashloan_fee_usd REAL` column per 2.2.
@@ -587,9 +585,7 @@ Split so kinds can land before strategy passes.
   deflation + fee recorded + column roundtrip + migration on a v0 schema;
   aggregator fill+swap dedup.
 - Run Phase 0.5 labeled set as an integration check for backrun/frontrun.
-- Update API tests when fields/kinds change (multi-token net may add columns —
-  schema migration note).
-- Document methodology + known biases in `ARCHITECTURE.md` §4.11 and update §6
+- Document methodology + known biases in `ARCHITECTURE.md` §3.11 and update §5
   artifacts:
   - historical arb catch-all (`arb_likely`)
   - logs-only backrun ≠ REVM `profit(B|before)` vs `profit(B|after)`
@@ -625,7 +621,7 @@ Split so kinds can land before strategy passes.
   → 1.5
   → 1.3 / 1.4
   → 1.6
-  → 5a-1 (kinds, CHECK, canonical, kind_order, API kind_map)
+  → 5a-1 (kinds, CHECK, canonical, kind_order, CLI kind filters)
   → 3 (backrun / frontrun / evidence; after 5a-1)
   → 2.3 / 2.4
   → 5b

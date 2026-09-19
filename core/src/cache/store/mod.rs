@@ -12,8 +12,6 @@ pub mod manifests;
 pub mod pools;
 pub mod ticks;
 
-pub use pools::PoolFilterQuery;
-
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 

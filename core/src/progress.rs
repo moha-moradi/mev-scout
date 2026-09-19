@@ -1,5 +1,4 @@
-//! Typed job-progress plumbing shared by every host of the engine: the CLI
-//! binary (presentation sinks) and the API job runner (recording sinks).
+//! Typed job-progress plumbing for the CLI host of the engine.
 //! Commands emit stage events through a [`JobProgress`] sink and honor
 //! cooperative cancellation via [`JobProgress::cancelled`].
 
@@ -7,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// One stage-progress event emitted by the engine's long-running paths.
 /// Fields mirror the historical NDJSON `--progress json` contract so the
-/// CLI/API JSON surface stays stable.
+/// CLI JSON surface stays stable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressEvent {
     pub stage: String,

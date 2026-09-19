@@ -310,9 +310,8 @@ pub struct RunArgs {
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
 
-    /// Emit NDJSON stage-progress events to stdout for machine consumers
-    /// (web UI / API job monitor). Only "json" is supported; replaces the
-    /// indicative progress bar.
+    /// Emit NDJSON stage-progress events to stdout for machine consumers.
+    /// Only "json" is supported; replaces the indicative progress bar.
     #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
     pub progress: Option<String>,
 }
@@ -555,9 +554,8 @@ pub struct LiveArgs {
     #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
     pub max_blocks: Option<u64>,
 
-    /// Emit NDJSON stage-progress events to stdout for machine consumers
-    /// (web UI / API job monitor). Only "json" is supported; replaces the
-    /// indicative progress bar.
+    /// Emit NDJSON stage-progress events to stdout for machine consumers.
+    /// Only "json" is supported; replaces the indicative progress bar.
     #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
     pub progress: Option<String>,
 }
