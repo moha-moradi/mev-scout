@@ -726,19 +726,18 @@ gate). Numbers are data-dependent — tests assert report *shape* only:
 
 | Window | recall | USD-recall | miss-taxonomy | profit-error MAD | `arb_likely` parity |
 |---|---|---|---|---|---|
-| *(pending — run recipe above with RPC)* | — | — | — | — | `true` (default) |
+| *(pending — run recipe above with RPC)* | — | — | — | — | `false` (default) |
 
 No working RPC credentials were available to fill real numbers: the avalanche
 endpoint committed in `mev-scout.toml` is revoked (connection reset; `explorer
 doctor` reports `latest=✗ archive=n/a traces=n/a`, Gate FAIL). Re-run the
 recipe locally with a valid key (plain URL or `${ENV_VAR}` placeholder) and
-paste validate output into the table before flipping `arb_likely_parity` or
-enabling causal kinds in live-feed defaults.
+paste validate output into the table. `arb_likely_parity` defaults to `false`
+(closed-cycle-only arb) to match the opportunity detection spec.
 
 Gates that depend on this table:
-- **Phase 1.2**: flip `explorer.arb_likely_parity=false` only when USD-recall drop
-  ≤ the agreed budget recorded here (or an explicit "precision over recall"
-  decision is written next to the numbers). No blind cliffs.
+- **Phase 1.2**: `explorer.arb_likely_parity=false` is the default (precision over
+  mevlive catch-all recall). Set `true` only for explicit mevlive-parity experiments.
 - **Phase 3 ship gate**: labeled golden set (Phase 0.5) must show acceptable
   backrun/frontrun precision before those kinds are enabled in live-feed defaults.
   Synthetic CI set: `mev-scout explorer validate --golden-causal` (or
@@ -750,7 +749,7 @@ Gates that depend on this table:
 
 | Bias | Status | Notes |
 |---|---|---|
-| Historical `arb_likely` catch-all | Active (`arb_likely_parity=true` default) | Single-hop / non-cycle profitable residuals still label `arb_atomic` until the Phase-0 window gate flips the default. |
+| Historical `arb_likely` catch-all | Off by default (`arb_likely_parity=false`) | Opt-in only; when true, single-hop profitable residuals label `arb_atomic` (mevlive Type=Arbitrage parity). |
 | Logs-only Backrun / Frontrun | By design | Execution-price proxies ≠ REVM `profit(B\|before_A)` vs `profit(B\|after_A)`. `STATE_DELTA_MATCH` / `PROFIT_VERIFIED` are **not** REVM-verified. |
 | Gas | Mitigated (Phase 2.1) | Prefer receipt `effectiveGasPrice`, then legacy `gasPrice`; only fall back to `base_fee + priority`. |
 | Multi-token profit | Mitigated (Phase 2.3) | Persist sums USD across all positive residuals; `profit_token` remains display-primary. JIT fee-capture stays unit-reported (`profit_token=None`). |

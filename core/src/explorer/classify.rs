@@ -230,6 +230,15 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 let amount = ledger.net(searcher, token);
                 let is_dust_or_wrap = amount.is_zero();
                 if !is_dust_or_wrap {
+                    // Spec §7.1 / §8.1: only emit when we have a confirmed cycle
+                    // (or mevlive parity catch-all), or a ≥3-entity transfer
+                    // cycle that Stage 3b may upgrade. Plain single-hop swaps
+                    // with a positive residual are NOT MEV — do not emit them
+                    // as Unknown (that polluted the live feed as fake arb/$).
+                    let transfer_cycle = has_transfer_cycle(searcher, &tx.transfers);
+                    if !arb_likely && !transfer_cycle {
+                        continue;
+                    }
                     // Phase 2.3: emit every positive residual so persist can
                     // USD-sum across them; the selected pair stays display-primary.
                     let profit_tokens: Vec<(Address, U256)> = ledger
@@ -1591,7 +1600,9 @@ mod tests {
     }
 
     #[test]
-    fn non_cycle_with_parity_off_is_unknown() {
+    fn non_cycle_with_parity_off_emits_nothing() {
+        // Spec §7.1: a single-hop profitable residual is not MEV. With parity
+        // off we must not emit Unknown (that used to flood the live feed).
         let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
@@ -1600,8 +1611,10 @@ mod tests {
         let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         input.arb_likely_parity = false;
         let events = classify_block(&input);
-        assert!(events.iter().any(|e| e.kind == MevKind::Unknown));
-        assert!(!events.iter().any(|e| e.kind == MevKind::ArbAtomic));
+        assert!(
+            events.is_empty(),
+            "expected no events for plain swap, got {events:?}"
+        );
     }
 
     #[test]
@@ -1634,19 +1647,21 @@ mod tests {
     }
 
     #[test]
-    fn two_entity_cycle_does_not_upgrade() {
+    fn two_entity_cycle_does_not_emit() {
         // ATK ↔ pool round trip is only a 2-entity cycle; with parity off the
-        // profitable residual stays Unknown.
+        // profitable residual is not MEV and must not be staged as Unknown.
         let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, USDC, POOL_A, ATK, 110),
+            transfer(1, TOKA, POOL_A, ATK, 200),
         ];
         let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         input.arb_likely_parity = false;
         let events = classify_block(&input);
-        assert!(events.iter().any(|e| e.kind == MevKind::Unknown));
-        assert!(!events.iter().any(|e| e.kind == MevKind::ArbAtomic));
+        assert!(
+            events.is_empty(),
+            "2-entity cycle must not emit, got {events:?}"
+        );
     }
 
     #[test]

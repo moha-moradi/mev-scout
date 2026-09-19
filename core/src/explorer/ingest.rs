@@ -35,8 +35,8 @@ pub struct IngestConfig {
     pub wrapped_native: Address,
     /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
-    /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default true until
-    /// the Phase-0 window gate passes; see `explorer.arb_likely_parity`.
+    /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default false —
+    /// only closed multi-pool cycles are labeled arb (spec §7.1 / §8.1).
     pub arb_likely_parity: bool,
 }
 
@@ -50,7 +50,7 @@ impl IngestConfig {
             confirmations: 6,
             wrapped_native,
             profit_token_priority: priority,
-            arb_likely_parity: true,
+            arb_likely_parity: false,
         }
     }
 }

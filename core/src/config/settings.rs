@@ -108,15 +108,15 @@ pub struct ExplorerConfig {
     #[serde(default = "default_explorer_poll_ms")]
     pub poll_interval_ms: u64,
     /// Mevlive-parity `arb_atomic` fallback (Phase 1.2). When true, a profitable
-    /// non-cycle residual is still labeled arb. Flip to `false` only after the
-    /// Phase-0 measurement-window gate passes; changing it requires a
-    /// wipe-and-reindex of the measurement window.
-    #[serde(default = "default_true")]
+    /// non-cycle residual is still labeled arb (can FP simple swaps as arb).
+    /// Default **false** so classification matches the closed-cycle + flow-
+    /// ownership rules in `mev_opportunity_detection_and_pnl_spec.md` §7.1.
+    #[serde(default = "default_false")]
     pub arb_likely_parity: bool,
 }
 
-fn default_true() -> bool {
-    true
+fn default_false() -> bool {
+    false
 }
 
 fn default_explorer_confirmations() -> u64 {
@@ -262,7 +262,7 @@ impl Default for ExplorerConfig {
             db_path: String::new(),
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
-            arb_likely_parity: true,
+            arb_likely_parity: false,
         }
     }
 }
