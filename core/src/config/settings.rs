@@ -391,6 +391,9 @@ impl Config {
         })?;
         cfg.expand_env_secrets();
         cfg.config_path = Some(PathBuf::from(path));
+        // Same field-wise merge as `load_or_default`: partial `[chains.<name>]`
+        // must not wipe built-in pool_discovery_start_block / factories / vaults.
+        merge_default_chains(&mut cfg.chains);
         Ok(cfg)
     }
 

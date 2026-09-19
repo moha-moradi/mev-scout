@@ -15,6 +15,7 @@ uniswap_v2_factories = [
   "0x9f3044f7f9fc8bc9ed615d54845b4577b833282d",
 ]
 pool_discovery_start_block = 49100000
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
 v4_pool_manager = "0x67366782805870060151383f4bbff9dab53e5cd6"
 curve_factories = ["0x1764ee18e8B3ccA4787249Ceb249356192594585"]
@@ -35,6 +36,7 @@ uniswap_v2_factories = [
   "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10",
 ]
 pool_discovery_start_block = 4200000
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"
 v4_pool_manager = "0x06380c0e0912312b5150364b9dc4542ba0dbbc85"
 # LFJ V2.1 (0x8e42f2...) + V2.2 (0xb43120...) LB factories both deployed on Avalanche.
@@ -60,6 +62,7 @@ uniswap_v2_factories = [
   "0x28F5E6C71C7541b1C6523351AE331CcAfC443626", # ListaV2 (UniV2 fork)
 ]
 pool_discovery_start_block = 5063800
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
 uniswap_v2_default_fee = 25
 v4_pool_manager = "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df"
@@ -78,6 +81,7 @@ balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
 uniswap_v3_factories = ["0x1F98431c8aD98523631AE4a59f267346ea31F984"]
 pool_discovery_start_block = 172000
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
 camelot_factories = ["0x6EcCab422D763aC031210895C81787E87B43A652"]
 v4_pool_manager = "0x360e68faccca8ca495c1b759fd9eee466db9fb32"
@@ -102,6 +106,7 @@ uniswap_v3_factories = [
   "0xaDe65c38CD4849aDBA595a4323a8C7DdfE89716a",
 ]
 pool_discovery_start_block = 96000
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x4200000000000000000000000000000000000006"
 solidly_factories = ["0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14"]
 v4_pool_manager = "0x498581ff718922c3f8e6a244956af099b2652b2b"
@@ -123,6 +128,7 @@ uniswap_v2_factories = [
   "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",
 ]
 pool_discovery_start_block = 10008335
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 curve_registry = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
 # Curve + Lista DEX SmartSwap (Curve-like stableswap) factory.
@@ -148,6 +154,7 @@ uniswap_v3_factories = [
 ]
 uniswap_v2_factories = []
 pool_discovery_start_block = 10827000
+pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x4200000000000000000000000000000000000006"
 solidly_factories = ["0x420DD381b31aEf6683db6B902084cB0FFECe40Da"]
 curve_factories = ["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"]

@@ -3,8 +3,16 @@ import { Link } from "react-router-dom";
 import { api, type JobInfo } from "../api";
 import { usePolling } from "../hooks";
 import DataTable, { type Column } from "../components/DataTable";
+import DiscoverForm from "../components/DiscoverForm";
 import LogViewer from "../components/LogViewer";
 import { useToast } from "../components/Toast";
+import {
+  buildDiscoverArgs,
+  DEFAULT_DISCOVER_STATE,
+  parseDiscoverArgs,
+  validateDiscoverState,
+  type DiscoverFormState,
+} from "../lib/discoverArgs";
 
 const COMMANDS = [
   "run",
@@ -32,7 +40,10 @@ const STATUS_CLASS: Record<string, string> = {
 const PRESETS: Record<string, { args: string[]; hint: string }> = {
   run: { args: ["--blocks", "10", "--progress", "json"], hint: "last 10 blocks" },
   live: { args: ["--loop", "--duration", "2m", "--progress", "json"], hint: "2 minutes" },
-  discover: { args: ["--incremental", "--source", "hybrid", "--enrich"], hint: "hybrid enrich" },
+  discover: {
+    args: buildDiscoverArgs(DEFAULT_DISCOVER_STATE),
+    hint: "use the form below (mirrors CLI discover flags)",
+  },
   tokens: { args: [], hint: "token cache listing" },
   scan: { args: ["--blocks", "50", "--kind", "trades"], hint: "trades scan" },
   report: { args: [], hint: "latest run" },
@@ -53,6 +64,7 @@ function fmtTime(iso: string | null): string {
 export default function Jobs() {
   const [command, setCommand] = useState("run");
   const [args, setArgs] = useState(PRESETS.run.args.join(" "));
+  const [discoverState, setDiscoverState] = useState<DiscoverFormState>(DEFAULT_DISCOVER_STATE);
   const [timeoutSecs, setTimeoutSecs] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const toast = useToast();
@@ -60,6 +72,8 @@ export default function Jobs() {
 
   const { data: jobs, refresh } = usePolling<JobInfo[]>(api.jobs, 4000, []);
   const selectedJob = jobs?.find((j) => j.job_id === selected) ?? null;
+
+  const isDiscover = command === "discover";
 
   const columns: Column<JobInfo>[] = [
     {
@@ -109,7 +123,18 @@ export default function Jobs() {
   async function create() {
     setStarting(true);
     try {
-      const parsed = args.split(/\s+/).filter(Boolean);
+      let parsed: string[];
+      if (isDiscover) {
+        const err = validateDiscoverState(discoverState);
+        if (err) {
+          toast(err, "error");
+          setStarting(false);
+          return;
+        }
+        parsed = buildDiscoverArgs(discoverState);
+      } else {
+        parsed = args.split(/\s+/).filter(Boolean);
+      }
       const res = await api.createJob(
         command,
         parsed,
@@ -137,8 +162,13 @@ export default function Jobs() {
             <select
               value={command}
               onChange={(e) => {
-                setCommand(e.target.value);
-                setArgs(PRESETS[e.target.value].args.join(" "));
+                const next = e.target.value;
+                setCommand(next);
+                const preset = PRESETS[next].args;
+                setArgs(preset.join(" "));
+                if (next === "discover") {
+                  setDiscoverState(parseDiscoverArgs(preset));
+                }
               }}
               className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 text-sm outline-none focus:border-emerald-400"
             >
@@ -147,15 +177,17 @@ export default function Jobs() {
               ))}
             </select>
           </div>
-          <div className="lg:col-span-2">
-            <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">args</label>
-            <input
-              value={args}
-              onChange={(e) => setArgs(e.target.value)}
-              placeholder="--blocks 10 --progress json"
-              className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-xs outline-none focus:border-emerald-400"
-            />
-          </div>
+          {!isDiscover && (
+            <div className="lg:col-span-2">
+              <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">args</label>
+              <input
+                value={args}
+                onChange={(e) => setArgs(e.target.value)}
+                placeholder="--blocks 10 --progress json"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-2 font-mono text-xs outline-none focus:border-emerald-400"
+              />
+            </div>
+          )}
           <div>
             <label className="mb-1.5 block text-xs uppercase tracking-wider text-zinc-500">timeout (s)</label>
             <input
@@ -166,13 +198,33 @@ export default function Jobs() {
             />
           </div>
         </div>
-        <p className="mt-2 text-xs text-zinc-600">Preset args: {PRESETS[command].hint}</p>
+
+        {isDiscover ? (
+          <div className="mt-4 border-t border-zinc-800 pt-4">
+            <DiscoverForm
+              value={discoverState}
+              onChange={(state, nextArgs) => {
+                setDiscoverState(state);
+                setArgs(nextArgs.join(" "));
+              }}
+              hideSubmit
+              showArgPreview
+            />
+            <p className="mt-2 text-xs text-zinc-600">
+              Mirrors CLI: source, block range, enrich, min-tvl, max-pools, incremental, health-check,
+              batch-size, rpc-concurrency, solidly-fee-bps, resolve-remote-metadata, json.
+            </p>
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-zinc-600">Preset args: {PRESETS[command].hint}</p>
+        )}
+
         <button
           onClick={create}
           disabled={starting}
           className="mt-3 rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
         >
-          {starting ? "Starting…" : "Create job"}
+          {starting ? "Starting…" : isDiscover ? "Create discover job" : "Create job"}
         </button>
       </div>
 

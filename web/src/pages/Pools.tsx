@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type HealthResponse, type PoolInfo } from "../api";
 import { usePolling } from "../hooks";
 import DataTable, { type Column } from "../components/DataTable";
 import Copyable from "../components/Copyable";
+import DiscoverForm from "../components/DiscoverForm";
 import { useToast } from "../components/Toast";
 import { formatAmmType, formatBlockCreated, formatUsd } from "../lib/format";
 
@@ -19,8 +21,6 @@ function protocolLabel(r: PoolInfo): string {
   const amm = formatAmmType(r.type);
   const name = (r.dex_name ?? "").trim();
   if (!name) return amm;
-  // On-chain discovery used to store the raw DexType Display ("UniswapV2") as
-  // dex_name — treat that as "no brand" and show the formatted AMM type.
   const normalized = name.replace(/\s+/g, "").toLowerCase();
   const ammNorm = amm.replace(/\s+/g, "").toLowerCase();
   if (normalized === ammNorm || normalized === r.type.replace(/_/g, "")) return amm;
@@ -35,7 +35,8 @@ export default function Pools() {
   const [sort, setSort] = useState("tvl_usd");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const toast = useToast();
-  const [enriching, setEnriching] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
+  const [showDiscover, setShowDiscover] = useState(true);
 
   const { data: health } = usePolling<HealthResponse>(api.health, 15_000, []);
   const chain = health?.chain;
@@ -137,25 +138,16 @@ export default function Pools() {
     },
   ];
 
-  async function enrich() {
-    setEnriching(true);
+  async function runDiscover(args: string[]) {
+    setDiscovering(true);
     try {
-      // hybrid = on-chain union + GeckoTerminal/DexScreener top pools (with TVL + real DEX names).
-      // DefiLlama is not used for pool lists (no contract addresses); it ranks DEXes for the
-      // curated Avalanche slug list on the backend.
-      const res = await api.createJob("discover", [
-        "--source",
-        "hybrid",
-        "--incremental",
-        "--enrich",
-        "--json",
-      ]);
-      toast(`Discovery+enrich job ${res.job_id.slice(0, 8)} started.`, "success");
+      const res = await api.createJob("discover", args);
+      toast(`Discover job ${res.job_id.slice(0, 8)} started.`, "success");
       setTimeout(() => refresh(), 4_000);
     } catch (e) {
       toast(`Failed: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
-      setEnriching(false);
+      setDiscovering(false);
     }
   }
 
@@ -163,21 +155,40 @@ export default function Pools() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-zinc-100">Pools</h1>
-        <button
-          onClick={enrich}
-          disabled={enriching}
-          className="rounded-md border border-sky-700 bg-sky-950/50 px-3 py-1.5 text-sm text-sky-300 hover:bg-sky-900/50 disabled:opacity-50"
-        >
-          {enriching ? "Starting…" : "Fetch top pools + enrich"}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link to="/jobs" className="text-xs text-zinc-500 hover:text-zinc-300">
+            job history →
+          </Link>
+          <button
+            type="button"
+            onClick={() => setShowDiscover((v) => !v)}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500"
+          >
+            {showDiscover ? "Hide discover" : "Discover pools"}
+          </button>
+        </div>
       </div>
+
+      {showDiscover && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+          <h2 className="mb-3 text-sm font-medium text-zinc-200">Pool discovery</h2>
+          <p className="mb-4 text-xs text-zinc-500">
+            Same flags as <span className="font-mono text-zinc-400">mev-scout discover</span>. Choose
+            source, block range (for onchain/hybrid), enrich, and advanced RPC options.
+          </p>
+          <DiscoverForm
+            submitting={discovering}
+            submitLabel="Start discovery"
+            onSubmit={runDiscover}
+          />
+        </div>
+      )}
 
       {tvlMissing && (
         <div className="rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-sm text-amber-200/90">
-          TVL is empty because these pools came from on-chain activity only (no remote metrics).
-          Click <span className="font-medium">Fetch top pools + enrich</span> to pull Avalanche top
-          DEXes (Pharaoh, LFJ, Blackhole, Pangolin, Uniswap…) from GeckoTerminal with TVL and
-          protocol names.
+          TVL is empty because these pools came from on-chain activity only. Run discovery with{" "}
+          <span className="font-medium">--source remote</span> or{" "}
+          <span className="font-medium">--enrich</span> to attach GeckoTerminal metrics.
         </div>
       )}
 
@@ -231,11 +242,14 @@ export default function Pools() {
           empty={loading ? "Loading…" : "No pools indexed."}
           action={
             <button
-              onClick={enrich}
-              disabled={enriching}
-              className="inline-block rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300 disabled:opacity-50"
+              type="button"
+              onClick={() => {
+                setShowDiscover(true);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              className="inline-block rounded-md bg-emerald-400 px-3 py-1.5 text-sm font-semibold text-black hover:bg-emerald-300"
             >
-              {enriching ? "Starting…" : "Fetch top pools"}
+              Discover pools
             </button>
           }
         />

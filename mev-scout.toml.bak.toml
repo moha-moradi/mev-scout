@@ -1,14 +1,129 @@
-chain = "polygon"
-gas_limit = 200000
+chain = "bsc"
 gas_model = "historical_exact"
 output = "table"
-priority_fee_gwei = 2.5
-rpc_rps = [5]
-rpc_urls = ["https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy"]
-rps_limit = 5
+priority_fee_gwei = 30
+rpc_rps = [
+    1.0,
+    1.0,
+    0.8,
+]
+rpc_urls = [
+    "https://polygon.drpc.org",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon.gateway.tenderly.co",
+]
+rps_limit = 1
 strategies = "all"
 
-[explorer]
-checkpoint_every = 500
-confirmations = 4
-poll_interval_ms = 2000
+[chains.arbitrum]
+chain_id = 42161
+
+[chains.arbitrum.rpc]
+rpc_rps = [
+    5.0,
+    1.0,
+]
+rpc_urls = [
+    "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one-rpc.publicnode.com",
+]
+
+[chains.avalanche]
+chain_id = 43114
+
+[chains.avalanche.rpc]
+rpc_rps = [
+    5.0,
+    1.0,
+]
+rpc_urls = [
+    "https://api.avax.network/ext/bc/C/rpc",
+    "https://avalanche-c-chain-rpc.publicnode.com",
+]
+
+[chains.base]
+chain_id = 8453
+
+[chains.base.rpc]
+rpc_rps = [
+    5.0,
+    2.0,
+    0.8,
+    1.0,
+    1.0,
+]
+rpc_urls = [
+    "https://mainnet.base.org",
+    "https://developer-access-mainnet.base.org",
+    "https://base.gateway.tenderly.co",
+    "https://base-rpc.publicnode.com",
+    "https://rpc.baseazul.dev",
+]
+
+[chains.bsc]
+chain_id = 56
+
+[chains.bsc.rpc]
+rpc_rps = [
+    5.0,
+    5.0,
+    5.0,
+    5.0,
+    1.0,
+]
+rpc_urls = [
+    "https://bsc-dataseed1.bnbchain.org",
+    "https://bsc-dataseed2.bnbchain.org",
+    "https://bsc-dataseed3.bnbchain.org",
+    "https://bsc-dataseed4.bnbchain.org",
+    "https://bsc-rpc.publicnode.com",
+]
+
+[chains.ethereum]
+chain_id = 1
+
+[chains.ethereum.rpc]
+rpc_rps = [
+    1.0,
+    0.8,
+    1.0,
+    1.0,
+]
+rpc_urls = [
+    "https://ethereum-rpc.publicnode.com",
+    "https://mainnet.gateway.tenderly.co",
+    "https://eth.drpc.org",
+    "https://rpc.mevblocker.io",
+]
+
+[chains.optimism]
+chain_id = 10
+
+[chains.optimism.rpc]
+rpc_rps = [
+    5.0,
+    1.0,
+    0.8,
+    1.0,
+]
+rpc_urls = [
+    "https://mainnet.optimism.io",
+    "https://optimism-rpc.publicnode.com",
+    "https://optimism.gateway.tenderly.co",
+    "https://optimism.drpc.org",
+]
+
+[chains.polygon]
+chain_id = 137
+
+[chains.polygon.rpc]
+rpc_rps = [
+    1.0,
+    1.0,
+    0.8,
+]
+rpc_urls = [
+    "https://polygon.drpc.org",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon.gateway.tenderly.co",
+]

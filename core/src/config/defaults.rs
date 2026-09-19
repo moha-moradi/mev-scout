@@ -32,6 +32,10 @@ pub struct ChainConfig {
     pub camelot_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_start_block: Option<u64>,
+    /// When no CLI block range is given, scan the last N blocks to tip
+    /// (preferred over `pool_discovery_start_block` for default discovery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_discovery_lookback_blocks: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool_discovery_batch_size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +99,7 @@ impl ChainConfig {
             solidly_factories,
             camelot_factories,
             pool_discovery_start_block,
+            pool_discovery_lookback_blocks,
             pool_discovery_batch_size,
             wrapped_native_token,
             uniswap_v2_default_fee,

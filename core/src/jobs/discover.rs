@@ -430,16 +430,31 @@ async fn resolve_scan_window(
             if is_remote_only {
                 Ok((0u64, rpc.get_block_number().await.unwrap_or(0)))
             } else {
-                let from = chain_config.pool_discovery_start_block.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "no block range specified and no pool_discovery_start_block configured for chain '{chain_name}'"
-                    )
-                })?;
                 let to = rpc.get_block_number().await?;
-                tracing::info!(
-                    "No block range specified. Using pool_discovery_start_block ({from}) from config."
-                );
-                Ok((from, to))
+                // Prefer a lookback window (last N blocks) over an absolute
+                // historical start — keeps default hybrid/on-chain discovery fast.
+                if let Some(lookback) = chain_config.pool_discovery_lookback_blocks {
+                    if lookback == 0 {
+                        anyhow::bail!(
+                            "pool_discovery_lookback_blocks must be >= 1 for chain '{chain_name}'"
+                        );
+                    }
+                    let from = to.saturating_sub(lookback.saturating_sub(1));
+                    tracing::info!(
+                        "No block range specified. Using last {lookback} blocks ({from}-{to}) for chain '{chain_name}'."
+                    );
+                    Ok((from, to))
+                } else if let Some(from) = chain_config.pool_discovery_start_block {
+                    tracing::info!(
+                        "No block range specified. Using pool_discovery_start_block ({from}) from config."
+                    );
+                    Ok((from, to))
+                } else {
+                    anyhow::bail!(
+                        "no block range specified and neither pool_discovery_lookback_blocks nor \
+                         pool_discovery_start_block configured for chain '{chain_name}'"
+                    )
+                }
             }
         }
     }

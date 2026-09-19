@@ -287,7 +287,7 @@ mev-scout discover --days 30 [--source onchain|remote|hybrid] [--enrich] [--incr
 flowchart TB
     A["resolve_chain + init_rpc<br/>+ open cache + warm TokenCache"] --> B{"--source"}
     B -- "remote" --> R["skip block range & on-chain scan"]
-    B -- "onchain / hybrid" --> C["resolve range<br/>(default: pool_discovery_start_block → tip)"]
+    B -- "onchain / hybrid" --> C["resolve range<br/>(default: last pool_discovery_lookback_blocks → tip)"]
     B -- "hybrid / remote" --> R2["remote leg (below)"]
     C --> D{"--incremental?"}
     D -- yes --> E["from = max cached creation_block + 1<br/>(skip if cache is current)"]
