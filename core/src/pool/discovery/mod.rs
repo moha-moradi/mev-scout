@@ -447,7 +447,7 @@ pub struct DiscoveryConfig<'a> {
 /// Unparseable default entries are silently dropped (they are compile-time
 /// constants; a parse failure is a data bug we don't want to crash discovery).
 ///
-/// Shared by the `discover` and `validate-pools` CLI commands, which build
+/// Shared by the `discover` CLI command, which builds
 /// their `DiscoveryConfig`s through this same selection.
 pub fn pick_factories(configured: Vec<Address>, defaults: &[&str]) -> Vec<Address> {
     if !configured.is_empty() {

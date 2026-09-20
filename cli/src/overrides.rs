@@ -15,22 +15,12 @@ pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
         Command::Run(args) => {
             apply_block_range(&mut o, &args.block_range);
         }
-        Command::Fetch(args) => {
-            apply_block_range(&mut o, &args.block_range);
-        }
-        Command::Replay(args) => {
-            o.block = Some(args.block);
-        }
         Command::Report(_) => {}
         Command::Config => {}
         Command::Discover(args) => {
             apply_block_range(&mut o, &args.block_range);
         }
         Command::Tokens(_) => {}
-        Command::ValidatePools(_) => {}
-        Command::Scan(args) => {
-            apply_block_range(&mut o, &args.block_range);
-        }
         Command::Live(_) => {}
         Command::Explorer(_) => {}
     }

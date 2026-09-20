@@ -55,10 +55,8 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml discover --source hybrid -
 # Enrich token metadata (DefiLlama coins + CoinGecko name/icon)
 mev-scout tokens --enrich
 
-# Optional: warm the block cache before a large backtest
-mev-scout fetch --blocks 1000
-
 # Backtest the last 100 blocks → opportunities in the explorer store
+# (fetches and caches blocks as part of the run)
 mev-scout run --blocks 100
 
 # Re-render the latest run offline
@@ -75,15 +73,11 @@ mev-scout explorer stats --since 7d
 |---|---|---|
 | `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
 | `discover` | Find pools (on-chain / remote / hybrid) | [§4.2](docs/ARCHITECTURE.md#42-discover--build-the-pool-universe) |
-| `validate-pools` | Audit discovery vs GeckoTerminal | [§4.3](docs/ARCHITECTURE.md#43-validate-pools--discovery-accuracy-audit) |
-| `tokens` | Populate / view token metadata cache | [§4.4](docs/ARCHITECTURE.md#44-tokens--token-metadata-cache) |
-| `fetch` | Pre-cache blocks only | [§4.5](docs/ARCHITECTURE.md#45-fetch--pre-cache-blocks-only) |
-| `run` | Full backtest → opportunities | [§4.6](docs/ARCHITECTURE.md#46-run--the-full-backtest) |
-| `live` | Stream tip blocks and detect | [§4.7](docs/ARCHITECTURE.md#47-live--real-time-streaming-detection) |
-| `replay` | Debug one cached block via revm | [§4.8](docs/ARCHITECTURE.md#48-replay--single-block-evm-debugger) |
-| `scan` | Raw event scans (trades, whales, …) | [§4.9](docs/ARCHITECTURE.md#49-scan--raw-on-chain-event-scans) |
-| `report` | Re-render a recorded run from SQLite | [§4.10](docs/ARCHITECTURE.md#410-report--re-render-saved-results) |
-| `explorer` | Realized-MEV forensics | [§4.11](docs/ARCHITECTURE.md#411-explorer--realized-mev-forensics) |
+| `tokens` | Populate / view token metadata cache | [§4.3](docs/ARCHITECTURE.md#43-tokens--token-metadata-cache) |
+| `run` | Full backtest → opportunities | [§4.4](docs/ARCHITECTURE.md#44-run--the-full-backtest) |
+| `live` | Stream tip blocks and detect | [§4.5](docs/ARCHITECTURE.md#45-live--real-time-streaming-detection) |
+| `report` | Re-render a recorded run from SQLite | [§4.6](docs/ARCHITECTURE.md#46-report--re-render-saved-results) |
+| `explorer` | Realized-MEV forensics (`index`, `stats`, `show`) | [§4.7](docs/ARCHITECTURE.md#47-explorer--realized-mev-forensics) |
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. Block-range
 commands take exactly one of `--days`, `--blocks`, `--block`, or
@@ -94,7 +88,7 @@ commands take exactly one of `--days`, `--blocks`, `--block`, or
 | Path | What it is |
 |---|---|
 | `core/` | Library: pool state, quoting, detectors, cache & explorer stores, config |
-| `cli/` | `mev-scout` binary — `run`, `live`, `discover`, `tokens`, `scan`, `report`, `explorer`, … |
+| `cli/` | `mev-scout` binary — `run`, `live`, `discover`, `tokens`, `report`, `explorer`, … |
 | `cache/` | SQLite DBs (per-chain scanner cache + explorer stores), gitignored |
 
 Pool discovery remotes are **GeckoTerminal + DexScreener** (plus on-chain

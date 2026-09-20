@@ -17,27 +17,36 @@ fn run(ws: &Path, args: &[&str]) -> TimedOutput {
     run_timed(&mut c, TEST_TIMEOUT).expect("spawn/wait failed")
 }
 
+fn help_lists_subcommand(stdout: &str, name: &str) -> bool {
+    stdout.lines().any(|l| {
+        let t = l.trim_start();
+        t == name || t.starts_with(&format!("{name} "))
+    })
+}
+
 #[test]
-fn help_lists_all_ten_commands() {
+fn help_lists_kept_commands() {
     let ws = temp_ws("args_help");
     let out = run(&ws, &["--help"]);
     expect_ok(&out, "mev-scout --help");
     for cmd in [
         "run",
-        "fetch",
         "report",
         "config",
-        "replay",
         "discover",
-        "validate-pools",
         "tokens",
-        "scan",
         "live",
         "explorer",
     ] {
         assert!(
-            out.stdout.contains(cmd),
+            help_lists_subcommand(&out.stdout, cmd),
             "--help output missing subcommand '{cmd}'"
+        );
+    }
+    for removed in ["fetch", "replay", "validate-pools", "scan"] {
+        assert!(
+            !help_lists_subcommand(&out.stdout, removed),
+            "--help still lists removed subcommand '{removed}'"
         );
     }
 }
@@ -47,15 +56,15 @@ fn explorer_help_lists_subcommands() {
     let ws = temp_ws("args_explorer_help");
     let out = run(&ws, &["explorer", "--help"]);
     expect_ok(&out, "explorer --help");
-    for sub in ["doctor", "index", "live", "stats", "top", "show"] {
+    for sub in ["index", "stats", "show"] {
         assert!(
-            out.stdout.contains(sub),
+            help_lists_subcommand(&out.stdout, sub),
             "explorer --help missing subcommand '{sub}'"
         );
     }
-    for removed in ["explain", "validate", "export"] {
+    for removed in ["doctor", "live-feed", "top", "explain", "validate", "export"] {
         assert!(
-            !out.stdout.contains(removed),
+            !help_lists_subcommand(&out.stdout, removed),
             "explorer --help still lists removed subcommand '{removed}'"
         );
     }
@@ -69,10 +78,10 @@ fn explorer_unknown_subcommand_fails() {
 }
 
 #[test]
-fn explorer_top_rejects_bad_dimension() {
-    let ws = temp_ws("args_explorer_top_bad");
-    let out = run(&ws, &["explorer", "top", "--by", "nonsense"]);
-    expect_fail(&out, "explorer top with bad --by");
+fn explorer_removed_top_subcommand_fails() {
+    let ws = temp_ws("args_explorer_top_removed");
+    let out = run(&ws, &["explorer", "top", "--by", "sender"]);
+    expect_fail(&out, "removed explorer top subcommand");
 }
 
 #[test]
@@ -88,27 +97,17 @@ fn run_without_block_range_fails_offline() {
 }
 
 #[test]
-fn fetch_without_block_range_fails_offline() {
-    let ws = temp_ws("args_fetch_norange");
+fn removed_fetch_subcommand_fails() {
+    let ws = temp_ws("args_fetch_removed");
     let out = run(&ws, &["fetch"]);
-    expect_fail(&out, "fetch without block range");
-    assert!(
-        out.combined().contains("no block range specified"),
-        "expected validation error, got:\n{}",
-        out.combined()
-    );
+    expect_fail(&out, "removed fetch subcommand");
 }
 
 #[test]
-fn scan_without_block_range_fails_offline() {
-    let ws = temp_ws("args_scan_norange");
+fn removed_scan_subcommand_fails() {
+    let ws = temp_ws("args_scan_removed");
     let out = run(&ws, &["scan"]);
-    expect_fail(&out, "scan without block range");
-    assert!(
-        out.combined().contains("no block range specified"),
-        "expected validation error, got:\n{}",
-        out.combined()
-    );
+    expect_fail(&out, "removed scan subcommand");
 }
 
 #[test]
@@ -134,15 +133,10 @@ fn block_zero_rejected_by_clap() {
 }
 
 #[test]
-fn replay_requires_block_flag() {
-    let ws = temp_ws("args_replay_noblock");
+fn removed_replay_subcommand_fails() {
+    let ws = temp_ws("args_replay_removed");
     let out = run(&ws, &["replay"]);
-    expect_fail(&out, "replay without --block");
-    assert!(
-        out.stderr.to_lowercase().contains("required") || out.stderr.contains("--block"),
-        "expected clap required-arg error, got: {}",
-        out.stderr
-    );
+    expect_fail(&out, "removed replay subcommand");
 }
 
 #[test]
@@ -260,20 +254,6 @@ fn days_and_blocks_conflict_rejected() {
     assert!(
         out.combined().contains("cannot be used together"),
         "expected explicit validation error, got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn replay_rejects_days() {
-    let ws = temp_ws("args_replay_days");
-    let out = run(&ws, &["replay", "--days", "1"]);
-    expect_fail(&out, "replay --days");
-    // Real behavior: ReplayArgs has no range flags, so clap rejects --days
-    // before the replay-specific validation.rs branch can be reached.
-    assert!(
-        out.combined().contains("unexpected argument '--days'"),
-        "expected clap rejection of --days for replay, got:\n{}",
         out.combined()
     );
 }
@@ -567,8 +547,31 @@ fn report_selects_explicit_run_id_offline() {
     let ws = temp_ws("args_report_pos");
     seed_report_fixture(&ws);
 
-    // explicit --run-id selects the older run
-    let cfg_path = make_cfg(&ws, &[("output", "\"json\"")]);
+    // Pin the scanner + explorer DB paths so the fixture and CLI agree.
+    let cache_db = ws
+        .join("cache/polygon-mev-scout.sqlite")
+        .to_str()
+        .unwrap()
+        .replace('\\', "/");
+    let explorer_db = ws
+        .join("cache/explorer-polygon.sqlite")
+        .to_str()
+        .unwrap()
+        .replace('\\', "/");
+
+    let write_cfg = |ws: &std::path::Path, extras: &[(&str, &str)]| -> String {
+        let path = make_cfg(ws, extras);
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "\n[explorer]\ndb_path = \"{explorer_db}\"").unwrap();
+        path
+    };
+
+    let cfg_path = write_cfg(
+        &ws,
+        &[("output", "\"json\""), ("db_path", &cache_db)],
+    );
     let out = run(
         &ws,
         &["-f", &cfg_path, "report", "--run-id", "run_1111111111"],
@@ -593,14 +596,14 @@ fn report_selects_explicit_run_id_offline() {
         "default selection must pick the latest run"
     );
 
-    // default table output (no output key in config → defaults to table)
-    let default_cfg = make_cfg(&ws, &[]);
+    // default table output
+    let default_cfg = write_cfg(&ws, &[("db_path", &cache_db)]);
     let out = run(&ws, &["-f", &default_cfg, "report"]);
     expect_ok(&out, "report default table output");
     assert!(out.stdout.contains("Run ID:"), "table output lacks Run ID");
 
     // csv output
-    let csv_cfg = make_cfg(&ws, &[("output", "\"csv\"")]);
+    let csv_cfg = write_cfg(&ws, &[("output", "\"csv\""), ("db_path", &cache_db)]);
     let out = run(&ws, &["-f", &csv_cfg, "report"]);
     expect_ok(&out, "report csv with opportunities");
     assert!(

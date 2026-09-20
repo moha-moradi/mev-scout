@@ -1,8 +1,6 @@
-//! ``explorer stats`` / ``explorer top`` - aggregate views over the explorer store.
+//! ``explorer stats`` — aggregate views over the explorer store.
 
 use super::*;
-
-// ── stats / top ─────────────────────────────────────────────────────────
 
 pub async fn cmd_stats(
     config: &Config,
@@ -123,30 +121,4 @@ fn print_stats_table(rows: &[mev_scout_core::explorer::store::StatsRow]) {
         ]);
     }
     println!("{table}");
-}
-
-pub async fn cmd_top(
-    config: &Config,
-    by: &str,
-    metric: &str,
-    since: Option<&str>,
-    limit: usize,
-) -> anyhow::Result<()> {
-    let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let chain = v.chain_name;
-    let store = explorer_store(config, chain)?;
-    let ts = since_ts(since);
-    let rows = match by {
-        "sender" => store.top_senders(ts, limit)?,
-        "token" => store.top_tokens(ts, limit)?,
-        "pool" => store.top_pools(ts, limit)?,
-        other => anyhow::bail!("unknown --by '{other}' (sender|token|pool)"),
-    };
-    let metric_col = if metric == "ops" { "ops" } else { "gross USD" };
-    println!(
-        "Explorer top — {chain} by {by} ({metric_col}) since={}",
-        since.unwrap_or("all")
-    );
-    print_stats_table(&rows);
-    Ok(())
 }

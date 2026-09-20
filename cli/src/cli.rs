@@ -27,27 +27,16 @@ pub enum Command {
     /// Execute the full backtest
     Run(RunArgs),
 
-    /// Pre-cache block data without running strategies
-    Fetch(FetchArgs),
-
     /// Re-render a recorded run from SQLite (run_manifests + explorer opportunities)
     Report(ReportArgs),
 
     /// Print the fully resolved config as TOML
     Config,
 
-    /// Replay a specific block for debugging
-    Replay(ReplayArgs),
-
     /// Discover pools from on-chain factory events and/or remote aggregators.
     /// Factory addresses are resolved from the chain config.
     /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
-
-    /// Validate pool-discovery accuracy against off-chain references
-    /// (GeckoTerminal). Reports recall per DEX,
-    /// false positives, field mismatches, and TVL/volume deltas.
-    ValidatePools(ValidatePoolsArgs),
 
     /// Discover and cache token metadata.
     /// Uses the bundled known-token list, SQLite cache, optional DefiLlama
@@ -55,40 +44,26 @@ pub enum Command {
     /// `--enrich`. Populates the token cache used by pool discovery.
     Tokens(TokensArgs),
 
-    /// Scan on-chain events (trades, transfers, flashloans, liquidations, labels).
-    /// Replaces the old Dune query system with direct RPC-based log scanning.
-    Scan(ScanArgs),
-
     /// Stream blocks in real-time, detecting MEV opportunities as they arrive.
     /// Processes new blocks via log-based pool state updates (arb strategies)
     /// with optional full EVM replay for complete detection.
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data (index, live feed, stats, leaderboards, op detail).
+    /// raw chain data (index, stats, op detail).
     Explorer(ExplorerArgs),
 }
 
 /// Explorer subcommand group.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
-    /// Probe every configured provider: latest block, bulk receipts, traces.
-    /// Prints the capability matrix; gates Phase 0.
-    Doctor,
-
     /// Stream-index tip blocks into the explorer store (live only).
     /// Idempotent, resumable, reorg-aware; classify-in-stream.
     Index(IndexArgs),
 
-    /// mev.zone-style live feed of realized ops (tail of the indexed store).
-    LiveFeed(LiveFeedArgs),
-
     /// Overview: op counts per kind, profit totals, daily breakdown, top
     /// searchers/pools. Pure SQL over the store.
     Stats(StatsArgs),
-
-    /// Leaderboards (senders / tokens / pools).
-    Top(TopArgs),
 
     /// Operation detail for a tx hash; --trace recomputes exact profit via
     /// debug_traceTransaction (prestateTracer diffMode).
@@ -109,31 +84,6 @@ pub struct IndexArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct LiveFeedArgs {
-    /// Comma-separated kind filter. Default excludes frontrun/backrun (Phase 3
-    /// ship gate) unless `[explorer].live_feed_kinds` is set. Pass `all` to
-    /// include every kind, or an explicit list.
-    #[arg(long, value_name = "KINDS")]
-    pub kinds: Option<String>,
-
-    /// Hide ops below this realized profit (default 0)
-    #[arg(long = "min-profit-usd", default_value = "0", value_name = "USD")]
-    pub min_profit_usd: f64,
-
-    /// Poll interval in milliseconds (default from [explorer] config)
-    #[arg(long = "poll-interval-ms", value_name = "MS")]
-    pub poll_interval_ms: Option<u64>,
-
-    /// Stop after this duration (e.g. 90s, 15m, 1h)
-    #[arg(long, value_name = "DURATION")]
-    pub duration: Option<String>,
-
-    /// Filter atomic arbs by shape: two_pool|triangular|multi_hop|transfer_cycle
-    #[arg(long = "arb-shape", value_name = "SHAPE")]
-    pub arb_shape: Option<String>,
-}
-
-#[derive(Args, Debug, Clone)]
 pub struct StatsArgs {
     /// Time window: 1d|7d|30d|all (default all)
     #[arg(long, value_name = "WINDOW")]
@@ -150,25 +100,6 @@ pub struct StatsArgs {
     /// Filter atomic arbs by shape: two_pool|triangular|multi_hop|transfer_cycle
     #[arg(long = "arb-shape", value_name = "SHAPE")]
     pub arb_shape: Option<String>,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct TopArgs {
-    /// Leaderboard dimension: sender|token|pool
-    #[arg(long, default_value = "sender")]
-    pub by: String,
-
-    /// Ranking metric: profit|ops
-    #[arg(long, default_value = "profit")]
-    pub metric: String,
-
-    /// Time window: 1d|7d|30d|all
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Rows to show (default 20)
-    #[arg(long, default_value = "20")]
-    pub limit: usize,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -233,36 +164,6 @@ pub struct RunArgs {
     /// Only "json" is supported; replaces the indicative progress bar.
     #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
     pub progress: Option<String>,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct FetchArgs {
-    #[command(flatten)]
-    pub block_range: BlockRangeArgs,
-
-    /// Enable JSON-RPC batching (send block+receipts in one HTTP POST).
-    /// Disabled by default — separate parallel requests often achieve better throughput.
-    #[arg(long = "batch-rpc")]
-    pub batch_rpc: bool,
-
-    /// Skip 4-byte signature resolution (much faster, no 4byte.directory API calls)
-    #[arg(long = "no-sig-resolve")]
-    pub no_sig_resolve: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ReplayArgs {
-    /// Block number to replay (required)
-    #[arg(long, required = true, value_name = "NUMBER")]
-    pub block: u64,
-
-    /// Replay up to this tx index (default: all)
-    #[arg(long, value_name = "INDEX")]
-    pub tx_index: Option<usize>,
-
-    /// Show DEX interaction analysis per transaction
-    #[arg(long)]
-    pub analyze: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -341,32 +242,6 @@ pub enum DiscoverySource {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct ValidatePoolsArgs {
-    /// Look-back window in days for the on-chain discovery leg (default 7).
-    #[arg(long, default_value = "7", value_name = "N")]
-    pub days: u64,
-
-    /// Reference sources to compare against: all, gecko.
-    #[arg(long, default_value = "all", value_name = "SOURCE")]
-    pub source: ValidationSource,
-
-    /// Output as machine-readable JSON instead of a table.
-    #[arg(long)]
-    pub json: bool,
-
-    /// Also write a markdown report to this path.
-    #[arg(long = "markdown-out", value_name = "PATH")]
-    pub markdown_out: Option<String>,
-}
-
-/// Reference source selection for validate-pools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum ValidationSource {
-    All,
-    Gecko,
-}
-
-#[derive(Args, Debug, Clone)]
 pub struct TokensArgs {
     /// Filter by symbol pattern (case-insensitive substring match)
     #[arg(long, value_name = "PATTERN")]
@@ -388,59 +263,6 @@ pub struct TokensArgs {
     /// CoinGecko contract API (name + icon URL). Offline by default.
     #[arg(long)]
     pub enrich: bool,
-}
-
-/// Event scan kind — determines which event topics to scan for.
-#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
-pub enum ScanKind {
-    /// DEX swap events (V2/V3/Algebra/Solidly/Curve)
-    Trades,
-    /// ERC-20 Transfer events (whale detection)
-    Transfers,
-    /// Flash loan events (Aave V2/V3, Balancer V2, Uniswap V3)
-    Flashloans,
-    /// Liquidation events (Aave V3, Compound V3)
-    Liquidations,
-    /// Address label lookup
-    Labels,
-}
-
-impl std::fmt::Display for ScanKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ScanKind::Trades => write!(f, "trades"),
-            ScanKind::Transfers => write!(f, "transfers"),
-            ScanKind::Flashloans => write!(f, "flashloans"),
-            ScanKind::Liquidations => write!(f, "liquidations"),
-            ScanKind::Labels => write!(f, "labels"),
-        }
-    }
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ScanArgs {
-    #[command(flatten)]
-    pub block_range: BlockRangeArgs,
-
-    /// What to scan for
-    #[arg(long, value_enum, default_value = "trades")]
-    pub kind: ScanKind,
-
-    /// Filter by contract address (reusable)
-    #[arg(long = "address", value_name = "ADDRESS")]
-    pub addresses: Option<Vec<String>>,
-
-    /// Maximum results to display (0 = unlimited)
-    #[arg(long, default_value = "500", value_name = "N")]
-    pub limit: usize,
-
-    /// Batch size for eth_getLogs requests (default: 500)
-    #[arg(long, default_value = "500", value_name = "N")]
-    pub batch_size: u64,
-
-    /// Minimum transfer value for whale detection (transfers only)
-    #[arg(long, value_name = "WEI")]
-    pub min_value: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]

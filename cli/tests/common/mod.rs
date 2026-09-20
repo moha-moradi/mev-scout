@@ -229,13 +229,12 @@ pub fn rpc_ready(ws: &Path) -> bool {
     c.args([
         "-f",
         cfg.to_str().unwrap(),
-        "scan",
-        "--kind",
-        "trades",
+        "discover",
+        "--source",
+        "onchain",
         "--blocks",
         "1",
-        "--limit",
-        "1",
+        "--json",
     ]);
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }

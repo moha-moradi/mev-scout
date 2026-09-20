@@ -1,13 +1,13 @@
 mod common;
 
 use common::{
-    ensure_gate_and_rpc, example_config_str, expect_ok, extract_json_array, make_cfg, rpc_lock,
-    run_timed, scout, HEAVY_TIMEOUT, NETWORK_TIMEOUT,
+    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, rpc_lock, run_timed, scout,
+    HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
 use std::time::Duration;
 
 #[test]
-fn data_foundation_pipeline_discover_tokens_fetch_scan() {
+fn data_foundation_pipeline_discover_tokens() {
     let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("dataf") else {
         return;
@@ -51,8 +51,6 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         assert!(p.get("dex_type").is_some(), "pool missing dex_type: {p}");
     }
 
-    // tokens on the SHARED pipeline db so the cache handoff between stages is
-    // real (scan uses no local db by design — it reads the chain live).
     let tokens_base_cfg = make_cfg(&ws, &[("db_path", db_s)]);
     let mut c = scout(&ws);
     c.args(["-f", &tokens_base_cfg, "tokens", "--cache-only"]);
@@ -93,49 +91,7 @@ fn data_foundation_pipeline_discover_tokens_fetch_scan() {
         "csv header line missing:\n{}",
         out.stdout
     );
-
-    let fetch_cfg = make_cfg(&ws, &[("db_path", db_s)]);
-    let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &fetch_cfg,
-        "fetch",
-        "--blocks",
-        "5",
-        "--no-sig-resolve",
-    ]);
-    let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("fetch spawn failed");
-    expect_ok(&out, "fetch 5 blocks");
-    assert!(
-        out.stdout.contains("Fetch complete:"),
-        "missing fetch summary:\n{}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("Total blocks: 5"),
-        "fetch should report Total blocks: 5\n{}",
-        out.stdout
-    );
-    assert!(db.exists(), "sqlite db should exist after fetch");
-
-    let scan_cfg = make_cfg(&ws, &[("output", "\"json\"")]);
-    let mut c = scout(&ws);
-    c.args([
-        "-f", &scan_cfg, "scan", "--kind", "trades", "--blocks", "5", "--limit", "20",
-    ]);
-    let out = run_timed(&mut c, NETWORK_TIMEOUT).expect("scan spawn failed");
-    expect_ok(&out, "scan trades 5 blocks json");
-    let events = extract_json_array(&out.stdout).expect("scan --output json should print array");
-    let items = events
-        .as_array()
-        .expect("scan --output json must be an array");
-    for e in items {
-        assert!(e.get("block").is_some(), "trade event missing block: {e}");
-        assert!(
-            e.get("tx_hash").is_some(),
-            "trade event missing tx_hash: {e}"
-        );
-    }
+    assert!(db.exists(), "sqlite db should exist after discover/tokens");
 }
 
 #[test]
@@ -177,40 +133,4 @@ fn discover_remote_tolerant_to_service_failures() {
     if let Some(entries) = pools.as_array() {
         eprintln!("remote discovery returned {} pools", entries.len());
     }
-}
-
-#[test]
-fn validate_pools_tolerant_to_reference_failures() {
-    let _guard = rpc_lock();
-    let Some(ws) = ensure_gate_and_rpc("dataf_vpools") else {
-        return;
-    };
-
-    let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &example_config_str(),
-        "validate-pools",
-        "--days",
-        "1",
-        "--json",
-    ]);
-    let out = match run_timed(&mut c, Duration::from_secs(300)) {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("WARN (tolerant): validate-pools timed out: {e}");
-            return;
-        }
-    };
-    if !out.success {
-        eprintln!(
-            "WARN (tolerant): validate-pools failed (reference service-side?)\n{}",
-            out.combined()
-        );
-        return;
-    }
-    assert!(
-        !out.stdout.trim().is_empty(),
-        "validate-pools success must produce output"
-    );
 }

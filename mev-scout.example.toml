@@ -38,10 +38,7 @@ output = "table"
 # global.
 
 # ── Explorer (realized-MEV forensic layer) ──────────────────────────
-# Uncomment to include frontrun/backrun in live-feed defaults once the
-# Phase 3 golden causal gate passes for your chain window.
 # [explorer]
-# live_feed_kinds = "arb_atomic,sandwich,liquidation,jit,jit_arb,unknown,frontrun,backrun"
 # arb_likely_parity = false
 # confirmations = 6
 

@@ -1,7 +1,4 @@
-use crate::cli::{
-    DiscoverArgs, ExplorerArgs, FetchArgs, LiveArgs, ReplayArgs, ReportArgs, RunArgs, ScanArgs,
-    TokensArgs, ValidatePoolsArgs,
-};
+use crate::cli::{DiscoverArgs, ExplorerArgs, LiveArgs, ReportArgs, RunArgs, TokensArgs};
 use crate::job_progress::JobProgress;
 use async_trait::async_trait;
 use mev_scout_core::config::Config;
@@ -9,26 +6,18 @@ use mev_scout_core::config::Config;
 mod config;
 mod discover;
 mod explorer;
-mod fetch;
 mod live;
-mod replay;
 mod report;
 mod run;
-mod scan;
 mod tokens;
-mod validate_pools;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_doctor, cmd_index, cmd_live_feed, cmd_show, cmd_stats, cmd_top};
-pub use fetch::cmd_fetch;
+pub use explorer::{cmd_index, cmd_show, cmd_stats};
 pub use live::cmd_live;
-pub use replay::cmd_replay;
 pub use report::cmd_report;
 pub use run::cmd_run;
-pub use scan::cmd_scan;
 pub use tokens::cmd_tokens;
-pub use validate_pools::cmd_validate_pools;
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
@@ -47,24 +36,10 @@ impl CliCommand for RunArgs {
 }
 
 #[async_trait(?Send)]
-impl CliCommand for FetchArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        cmd_fetch(config, self, progress).await
-    }
-}
-
-#[async_trait(?Send)]
 impl CliCommand for ReportArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         let _ = progress;
         cmd_report(config, self).await
-    }
-}
-
-#[async_trait(?Send)]
-impl CliCommand for ReplayArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        cmd_replay(config, self, progress).await
     }
 }
 
@@ -84,24 +59,9 @@ impl CliCommand for TokensArgs {
 }
 
 #[async_trait(?Send)]
-impl CliCommand for ScanArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        cmd_scan(config, self, progress).await
-    }
-}
-
-#[async_trait(?Send)]
 impl CliCommand for LiveArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         cmd_live(config, self, progress).await
-    }
-}
-
-#[async_trait(?Send)]
-impl CliCommand for ValidatePoolsArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        let _ = progress;
-        cmd_validate_pools(config, self).await
     }
 }
 
@@ -110,21 +70,8 @@ impl CliCommand for ExplorerArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         use crate::cli::ExplorerCommand;
         match &self.command {
-            ExplorerCommand::Doctor => cmd_doctor(config).await,
             ExplorerCommand::Index(a) => {
                 cmd_index(config, a.duration.as_deref(), progress).await
-            }
-            ExplorerCommand::LiveFeed(a) => {
-                cmd_live_feed(
-                    config,
-                    a.kinds.as_deref(),
-                    a.min_profit_usd,
-                    a.poll_interval_ms
-                        .unwrap_or(config.explorer.poll_interval_ms),
-                    a.duration.as_deref(),
-                    a.arb_shape.as_deref(),
-                )
-                .await
             }
             ExplorerCommand::Stats(a) => {
                 cmd_stats(
@@ -135,9 +82,6 @@ impl CliCommand for ExplorerArgs {
                     a.arb_shape.as_deref(),
                 )
                 .await
-            }
-            ExplorerCommand::Top(a) => {
-                cmd_top(config, &a.by, &a.metric, a.since.as_deref(), a.limit).await
             }
             ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
         }
@@ -153,15 +97,11 @@ pub async fn execute(
     use crate::cli::Command::*;
     match cmd {
         Run(a) => a.execute(config, progress).await,
-        Fetch(a) => a.execute(config, progress).await,
         Report(a) => a.execute(config, progress).await,
         Config => cmd_config(config).await,
-        Replay(a) => a.execute(config, progress).await,
         Discover(a) => a.execute(config, progress).await,
         Tokens(a) => a.execute(config, progress).await,
-        Scan(a) => a.execute(config, progress).await,
         Live(a) => a.execute(config, progress).await,
-        ValidatePools(a) => a.execute(config, progress).await,
         Explorer(a) => a.execute(config, progress).await,
     }
 }

@@ -47,7 +47,6 @@ run when the extras differ.
 - `make_cfg(ws, extras)` / `repo_config_str()` — config file from repo TOML.
 - `extract_json_array(s)` — ANSI-tolerant JSON array extraction (tracing INFO
   lines share the process stdout, so JSON output is rarely "pure").
-- `parse_receipt_match_pct(line)` — parse the replay match percentage.
 
 ## RPC URLs in tests (API-key hygiene)
 

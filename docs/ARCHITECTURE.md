@@ -4,7 +4,9 @@ An MEV opportunity scanner & backtester for EVM chains (primary target: Polygon)
 Two crates: one engine library and one CLI host:
 
 - **`core/`** — `mev-scout-core`: engine + stores + shared job orchestration.
-- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 11 subcommands. Parses args, loads config, presentation, dispatches to core.
+- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 7 top-level
+  subcommands (+ `explorer` nest). Parses args, loads config, presentation,
+  dispatches to core.
 
 ---
 
@@ -14,7 +16,7 @@ Two crates: one engine library and one CLI host:
 flowchart TB
     subgraph CLI["mev-scout-cli (binary: mev-scout)"]
         MAIN["main.rs<br/>parse args · load config · logging"]
-        CLIDEF["cli.rs<br/>clap: 11 subcommands + BlockRange args"]
+        CLIDEF["cli.rs<br/>clap: run live discover tokens report config explorer"]
         DISPATCH["commands/mod.rs<br/>CliCommand trait → dispatch"]
         UI["display.rs · overrides.rs<br/>tables · config merge"]
     end
@@ -23,7 +25,7 @@ flowchart TB
         direction TB
 
         subgraph ORCH["Orchestration"]
-            COREJOBS["jobs<br/>run · live · discover · scan · tokens · report · index"]
+            COREJOBS["jobs<br/>run · live · discover · tokens · report · index"]
             PIPE["pipeline<br/>BacktestRunner · run_block / run_range(_hybrid)<br/>aggregate → metrics · gas model"]
         end
 
@@ -41,10 +43,6 @@ flowchart TB
             FETCH["fetch<br/>Fetcher — parallel block+receipt download<br/>sharded across providers, gap refill"]
             RPC["rpc<br/>RpcClient — multi-provider<br/>weighted · rate-limited · Multicall3"]
             CACHE["cache<br/>SqliteStore — blocks, receipts, state,<br/>discovered pools, tokens, run manifests"]
-        end
-
-        subgraph SCAN["Event scanning"]
-            CHAIN["chain<br/>trades · transfers · flashloans<br/>liquidations · labels"]
         end
 
         subgraph EXPLORE["Realized-MEV explorer"]
@@ -65,7 +63,6 @@ flowchart TB
 
     COREJOBS --> RESOLVER
     COREJOBS --> FETCH
-    COREJOBS --> CHAIN
     COREJOBS --> POOL
     COREJOBS --> PIPE
     COREJOBS --> EXPL
@@ -84,7 +81,6 @@ flowchart TB
     POOL --> CACHE
     EXPL --> RPC
     COREJOBS -. "opportunities always;<br/>rejections if --record-rejections" .-> EXPL
-    CHAIN --> RPC
     CFG --> TYPES
     PIPE --> TYPES
     FETCH -.-> SIGS
@@ -94,8 +90,8 @@ flowchart TB
 
 - The CLI is the only host: `CLI → core`. Shared long-running flows live in `core::jobs`.
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
-- `cache` (SQLite) is the local-first backbone — fetch stores blocks there; replay and the runner read from it; pool discovery persists pools/tokens into it.
-- `rpc` fronts the chain for everything: fetching, `eth_call` pool state, log scans, and replay's on-demand state misses (via `CachedRpcDb`).
+- `cache` (SQLite) is the local-first backbone — `run`/`live` fetch blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
+- `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
 - `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`explorer_{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `run`/`live` always persist detected opportunities there (via in-memory `ResultsFile` DTO); `--record-rejections` also stores rejected candidates for miss attribution.
 
 ---
@@ -106,15 +102,11 @@ flowchart TB
 |---|---|---|---|
 | `run` | Full backtest → opportunities | yes (fetch + eth_call) | SQLite cache, explorer SQLite |
 | `live` | Stream new blocks, detect as they arrive | yes | SQLite cache, explorer SQLite |
-| `fetch` | Pre-cache blocks only (no detection) | yes | SQLite cache |
 | `discover` | Find pools (on-chain factories / aggregators) | yes (RPC and/or REST) | SQLite cache |
-| `validate-pools` | Measure discovery accuracy vs GeckoTerminal | yes (RPC + REST) | SQLite cache |
 | `tokens` | Populate / view token metadata cache | optional REST (`--enrich`) | SQLite `token_symbols` |
-| `scan` | Raw event scans (trades/whales/flashloans/liqs) | yes (getLogs only) | — |
-| `replay` | Debug a single block through revm | yes (fallback calls) | — |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Realized-MEV forensics (index/feed/stats/top/show) | yes (logs; optional traces) | Explorer SQLite store |
+| `explorer` | Realized-MEV forensics (`index` / `stats` / `show`) | yes (logs; optional traces) | Explorer SQLite store |
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -153,13 +145,12 @@ mev-scout config
 
 Prefer `${ENV_VAR}` placeholders in RPC URLs; export keys in the same shell.
 Unset placeholders stay literal and fail loudly at the provider. The listing
-format for `tokens`, `scan`, and `report` is the TOML `output` key. Exceptions
-that take their own JSON flag: `discover --json`, `validate-pools --json`.
+format for `tokens` and `report` is the TOML `output` key. Exception that
+takes its own JSON flag: `discover --json`.
 
 ### Block range (exactly one)
 
-`run`, `fetch`, `discover` (on-chain / hybrid), and `scan` require exactly one
-of:
+`run` and `discover` (on-chain / hybrid) require exactly one of:
 
 ```powershell
 mev-scout run --days 7
@@ -168,8 +159,7 @@ mev-scout run --block 65000000
 mev-scout run --from-block 65000000 --to-block 65000100
 ```
 
-`--days` is 1–365. `replay` takes `--block` only. `live` uses chain tip (no
-range flags).
+`--days` is 1–365. `live` uses chain tip (no range flags).
 
 ### Two SQLite stores
 
@@ -182,13 +172,13 @@ flowchart LR
     toml --> cli
     cli --> cache
     cli --> explorer
-    cache -->|"run live replay report discover tokens"| cli
+    cache -->|"run live report discover tokens"| cli
     explorer -->|"report explorer"| cli
 ```
 
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
-| Scanner cache | `cache/` per-chain DB | `run`, `live`, `fetch`, `discover`, `validate-pools`, `tokens` | `run`, `live`, `replay`, `discover --incremental`, `tokens`, `report` (manifests) |
+| Scanner cache | `cache/` per-chain DB | `run`, `live`, `discover`, `tokens` | `run`, `live`, `discover --incremental`, `tokens`, `report` (manifests) |
 | Explorer store | `explorer_{chain}.sqlite` | `run`/`live` (opportunities; rejections with `--record-rejections`), `explorer index` | `report`, `explorer *` |
 
 ---
@@ -276,30 +266,7 @@ flowchart TB
     Q --> T["output: table or --json"]
 ```
 
-### 4.3 `validate-pools` — discovery accuracy audit
-
-Compares on-chain discovery (set A) against GeckoTerminal references (set B).
-Reports recall per DEX, extras, field mismatches, and TVL deltas.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml validate-pools --days 7
-mev-scout validate-pools --days 7 --source gecko
-mev-scout validate-pools --json
-mev-scout validate-pools --markdown-out report.md
-```
-
-```mermaid
-flowchart TB
-    A["resolve_chain"] --> B["Set B first (no RPC needed,<br/>fail fast if all dead):<br/>discover_via_geckoterminal"]
-    B --> C["init_rpc + resolve --days window"]
-    C --> D["open cache"]
-    D --> E["Set A: discover_pools over window<br/>(same factories as discover,<br/>NO token cache)"]
-    E --> F["health check set A"]
-    F --> G["compare A vs B per source:<br/>• recall = |A∩B| / |B| overall + per DEX<br/>• A∖B extras (dust retention)<br/>• fee / token-side mismatches on overlap<br/>• TVL mean-absolute-delta<br/>• top missing pools by TVL"]
-    G --> H["UTF-8 table · --json · --markdown-out"]
-```
-
-### 4.4 `tokens` — token metadata cache
+### 4.3 `tokens` — token metadata cache
 
 Offline by default (bundled known-token list + SQLite). Optional `--enrich`
 pulls missing **symbol/decimals** from DefiLlama coins and **name/icon URL**
@@ -332,38 +299,7 @@ flowchart LR
     L -- no --> N["table / json / csv"]
 ```
 
-### 4.5 `fetch` — pre-cache blocks only
-
-Warms the SQLite cache so later `run`/`replay` are fast / offline-friendly. No
-detection.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml fetch --blocks 1000
-mev-scout fetch --days 3
-mev-scout fetch --block 65000000
-mev-scout fetch --from-block 65000000 --to-block 65001000
-mev-scout fetch --blocks 500 --batch-rpc
-mev-scout fetch --blocks 500 --no-sig-resolve
-```
-
-```mermaid
-flowchart TB
-    A["resolve_chain + init_rpc"] --> B["open SQLite cache"]
-    B --> C["resolve block range"]
-    C --> D["RunManifest → SQLite"]
-    D --> E{"--no-sig-resolve?"}
-    E -- no --> F["ensure_signature_db<br/>4byte.directory → local sig DB"]
-    E -- yes --> G["skip sig resolution"]
-    F --> H["Fetcher.fetch_range<br/>sharded across providers by weight<br/>parallel block+receipt download"]
-    G --> H
-    H --> I["store blocks+receipts+txs<br/>(sig labels resolved per tx)"]
-    I --> J{"missing blocks?"}
-    J -- yes --> K["auto_refetch_gaps"]
-    J -- no --> L["print fetch summary<br/>(fetched / cached / phase timings)"]
-    K --> L
-```
-
-### 4.6 `run` — the full backtest
+### 4.4 `run` — the full backtest
 
 The main pipeline. Everything is cached first, then replayed and detected.
 Opportunities always land in the explorer store; `--record-rejections` also
@@ -415,7 +351,7 @@ flowchart LR
     B5 --> B6["filter: min_profit_wei<br/>max_candidates_per_tx<br/>persistence confidence decay"]
 ```
 
-### 4.7 `live` — real-time streaming detection
+### 4.5 `live` — real-time streaming detection
 
 Same engine as `run`, against chain tip. One-shot (default) or continuous
 polling with `--loop`.
@@ -457,76 +393,7 @@ flowchart TB
     P -- "≥5 consecutive" --> T["bail out"]
 ```
 
-### 4.8 `replay` — single-block EVM debugger
-
-Re-runs one **already cached** block through revm and verifies results against
-cached receipts. Fetch the block first if needed.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml fetch --block 65000000
-mev-scout replay --block 65000000
-mev-scout replay --block 65000000 --tx-index 42
-mev-scout replay --block 65000000 --analyze
-```
-
-```mermaid
-flowchart TB
-    A["validate_replay + init_rpc<br/>+ open cache"] --> B{"block cached?"}
-    B -- no --> X["bail: 'run mev-scout fetch<br/>--block N first'"]
-    B -- yes --> C{"--analyze?"}
-    C -- yes --> D["load discovered pools<br/>into address→PoolInfo map"]
-    C -- no --> E
-    D --> E["BlockReplayer.replay_to<br/>sequential revm execution 0..tx_index<br/>(single EVM context, state carried forward)"]
-    E --> F["per tx: idx · hash · status · gas_used<br/>receipt match ✓/✗"]
-    F --> G{"--analyze?"}
-    G -- yes --> H["decode DEX log interactions:<br/>Swap / Sync / Mint / Burn per pool"]
-    G -- no --> I
-    H --> I["receipt verification summary:<br/>matched/total (%), warn if < 99%"]
-```
-
-### 4.9 `scan` — raw on-chain event scans
-
-Topic-level `eth_getLogs` scans; replaces the old Dune-query workflows. No
-cache writes. Listing format follows TOML `output`.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml scan --blocks 100 --kind trades
-mev-scout scan --days 1 --kind transfers
-mev-scout scan --days 1 --kind transfers --min-value 1000000000000000000
-mev-scout scan --blocks 500 --kind flashloans
-mev-scout scan --blocks 500 --kind liquidations
-mev-scout scan --kind labels --address 0x…
-mev-scout scan --blocks 200 --kind trades --address 0x… --limit 100 --batch-size 500
-```
-
-| `--kind` | What it scans |
-|---|---|
-| `trades` | DEX swap topics (V2/V3/Algebra/Solidly/Curve) |
-| `transfers` | ERC-20 Transfer; with `--min-value`, whale path |
-| `flashloans` | Aave V2/V3 · Balancer V2 · Uni V3 |
-| `liquidations` | Aave V3 LiquidationCall · Compound V3 Absorb |
-| `labels` | Address label lookup (bundled JSON + DefiLlama cache) |
-
-```mermaid
-flowchart TB
-    A["resolve_chain + init_rpc"] --> B["resolve block range"]
-    B --> C{"--kind"}
-    C -- trades --> D["chain::trades::scan_trades<br/>V2/V3/Algebra/Solidly/Curve swap topics"]
-    C -- transfers --> E{"--min-value set?"}
-    E -- yes --> F["scan_whale_transfers"]
-    E -- no --> G["scan_transfers"]
-    C -- flashloans --> H["chain::flashloans::scan_flash_loans<br/>Aave V2/V3 · Balancer V2 · Uni V3"]
-    C -- liquidations --> I["chain::liquidations::scan_liquidations<br/>Aave V3 LiquidationCall · Compound V3 Absorb"]
-    C -- labels --> J["LabelDb::load<br/>(bundled JSON + DefiLlama cache)<br/>print --address lookups"]
-    D --> K["chunked getLogs<br/>(--batch-size, --address filter)"]
-    F --> K
-    G --> K
-    H --> K
-    I --> K
-    K --> L["print table / --json / --csv<br/>limited to --limit"]
-```
-
-### 4.10 `report` — re-render saved results
+### 4.6 `report` — re-render saved results
 
 Offline. Reads run metadata from the cache DB (`run_manifests`) and
 opportunities from the explorer DB. No chain access; no on-disk JSON result
@@ -551,7 +418,7 @@ flowchart LR
     F -- json --> I["pretty-print full run"]
 ```
 
-### 4.11 `explorer` — realized-MEV forensics
+### 4.7 `explorer` — realized-MEV forensics
 
 Forensic reconstruction of MEV that was actually extracted on-chain — the
 counterpart to the scanner's simulated opportunities. Pipeline: ingest → decode
@@ -563,25 +430,14 @@ adds rejected candidates for offline analysis.
 flowchart TB
     A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer_{chain}.sqlite, WAL)"]
     B --> C{"subcommand"}
-    C -- doctor --> D["probe every provider:<br/>latest · archive · bulk-receipts · traces"]
-    C -- index --> E["ingest: live stream or range<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
+    C -- index --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
     E --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
-    C -- "live-feed" --> G["tail of mev_ops<br/>(--kinds, --min-profit-usd, poll)"]
-    C -- "stats / top" --> H["pure SQL aggregates:<br/>op counts · profit · daily · leaderboards"]
+    C -- stats --> H["pure SQL aggregates:<br/>op counts · profit · daily · top searchers/pools"]
     C -- show --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)"]
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
-#### 4.11.1 `explorer doctor`
-
-Probes every configured provider (latest block, archive, bulk receipts, traces)
-and prints the capability matrix.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml explorer doctor
-```
-
-#### 4.11.2 `explorer index`
+#### 4.7.1 `explorer index`
 
 Stream-index tip blocks into the explorer store (live). On each start, jumps to
 the current confirmed tip and only follows new blocks forward — no resume of a
@@ -594,30 +450,7 @@ mev-scout explorer index
 mev-scout explorer index --duration 15m
 mev-scout explorer index --duration 1h
 ```
-#### 4.11.3 `explorer live-feed`
-
-mev.zone-style live feed of realized ops (tail of the indexed store). Run
-`explorer index` alongside (or ensure the store already has a tail).
-Default kinds **exclude** `frontrun` / `backrun` (Phase 3 ship gate).
-
-```powershell
-mev-scout explorer live-feed
-mev-scout explorer live-feed --kinds all
-mev-scout explorer live-feed --kinds arb_atomic,sandwich,liquidation
-mev-scout explorer live-feed --min-profit-usd 10
-mev-scout explorer live-feed --poll-interval-ms 2000 --duration 90s
-mev-scout explorer live-feed --arb-shape triangular
-```
-
-Default kinds **exclude** `frontrun` / `backrun` (Phase 3 ship gate) unless
-`[explorer].live_feed_kinds` is set in TOML. Logs-only causal kinds are
-`tier=inferred` until REVM counterfactuals land.
-
-Kinds: `arb_atomic`, `sandwich`, `frontrun`, `backrun`, `liquidation`, `jit`,
-`jit_arb`, `unknown`. Atomic arbs carry `details.arb_meta` (`arb_shape`,
-`hop_count`, `dex_count`, `is_cross_dex`, `flashloan_funded`).
-
-#### 4.11.4 `explorer stats`
+#### 4.7.2 `explorer stats`
 
 Pure SQL aggregates: op counts, profit totals, daily breakdown, top
 searchers/pools.
@@ -633,17 +466,7 @@ mev-scout explorer stats --since 7d --arb-shape triangular
 `--since` accepts `1d` | `7d` | `30d` | `all` (default all). `--kind` filters
 to one pattern. `--arb-shape` samples matching `arb_atomic` ops.
 
-#### 4.11.5 `explorer top`
-
-Leaderboards by sender, token, or pool.
-
-```powershell
-mev-scout explorer top --by sender --metric profit
-mev-scout explorer top --by pool --metric ops --since 7d --limit 20
-mev-scout explorer top --by token --metric profit --since 30d
-```
-
-#### 4.11.6 `explorer show`
+#### 4.7.3 `explorer show`
 
 Operation detail for a transaction hash. `--trace` recomputes exact profit via
 `debug_traceTransaction` (prestateTracer diffMode).
@@ -698,7 +521,6 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 
 ```bash
 # config: chain = "avalanche"
-mev-scout explorer doctor
 mev-scout discover --source hybrid --days 7
 mev-scout explorer index --duration 1h
 mev-scout explorer stats --since 1d
@@ -711,11 +533,8 @@ Gates that depend on this table:
 - **Phase 1.2**: `explorer.arb_likely_parity=false` is the default (precision over
   mevlive catch-all recall). Set `true` only for explicit mevlive-parity experiments.
 - **Phase 3 ship gate**: labeled golden set (Phase 0.5) must show acceptable
-  backrun/frontrun precision before those kinds are enabled in live-feed defaults.
-  Synthetic CI set: `cargo test -p mev-scout-core golden`. Live-feed default
-  **excludes** `frontrun`/`backrun`; pass `--kinds all`, an explicit list, or set
-  `[explorer].live_feed_kinds` in TOML to opt in. Causal ops are tagged
-  `tier=inferred` (logs-only) until REVM counterfactuals land.
+  backrun/frontrun precision. Synthetic CI set: `cargo test -p mev-scout-core golden`.
+  Causal ops are tagged `tier=inferred` (logs-only) until REVM counterfactuals land.
   Chain-curated AVAX labels remain a follow-up once an RPC baseline window is available.
 
 #### Known biases / methodology notes
@@ -756,9 +575,9 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 
 | Artifact | Produced by | Consumed by |
 |---|---|---|
-| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `fetch`, `discover`, `validate-pools` | `run`, `live`, `replay`, `discover` (incremental), `tokens`, `report` (manifests) |
+| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `discover` | `run`, `live`, `discover` (incremental), `tokens`, `report` (manifests) |
 | Explorer store `explorer_{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections with `--record-rejections`) | `report` |
 | Explorer store `explorer_{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI |
-| Signature DB (4byte directory snapshot) | `fetch` (unless `--no-sig-resolve`) | tx decoding |
+| Signature DB (4byte directory snapshot) | fetched during `run`/`live` block ingest | tx decoding |
 
 `ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact.

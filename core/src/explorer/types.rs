@@ -57,34 +57,6 @@ impl MevKind {
         }
     }
 
-    /// Live-feed default kinds (Phase 3 ship gate): exclude `Frontrun` /
-    /// `Backrun` until the labeled causal golden set is accepted for
-    /// production. Pass `--kinds all` (CLI) or include them explicitly to
-    /// opt in. Classification still emits both kinds into `mev_ops`.
-    /// Config override: `[explorer].live_feed_kinds` (comma-separated).
-    pub fn live_feed_default_kinds() -> Vec<MevKind> {
-        vec![
-            MevKind::ArbAtomic,
-            MevKind::Sandwich,
-            MevKind::Liquidation,
-            MevKind::Jit,
-            MevKind::JitArb,
-            MevKind::Unknown,
-        ]
-    }
-
-    /// Parse a comma-separated kinds list for live-feed config/CLI.
-    /// `"all"` → empty vec (caller treats as no filter / every kind).
-    pub fn parse_kinds_list(s: &str) -> Option<Vec<MevKind>> {
-        if s.eq_ignore_ascii_case("all") {
-            return Some(vec![]);
-        }
-        let mut out = Vec::new();
-        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            out.push(MevKind::parse(part)?);
-        }
-        Some(out)
-    }
 }
 
 impl std::fmt::Display for MevKind {
