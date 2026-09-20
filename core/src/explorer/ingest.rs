@@ -530,13 +530,11 @@ pub async fn native_price_cached(
     }
 }
 
-/// When live mode is this far behind tip, skip the backlog and index near tip.
-/// Live feed should match tip explorers (no historical catch-up).
-const LIVE_MAX_LAG_BLOCKS: u64 = 256;
-
-/// Live streaming mode: follow head − confirmations, indexing each new block.
-/// Runs until `stop` is set; the indexed tip is hash-verified on every poll
-/// (Phase 4) and a heavier reorg sweep runs every 32 blocks.
+/// Live streaming mode: on start, jump to the current confirmed tip and only
+/// follow new blocks forward. Never resumes a historical `indexed_to` gap and
+/// never walks earlier blocks. Runs until `stop` is set; the indexed tip is
+/// hash-verified on every poll (Phase 4) and a heavier reorg sweep runs every
+/// 32 blocks.
 pub async fn run_live(
     rpc: &RpcClient,
     store: &ExplorerStore,
@@ -549,7 +547,8 @@ pub async fn run_live(
 
     let mut indexed_total: u64 = 0;
     let mut since_reorg_check: u64 = 0;
-    let mut next_block = store.get_indexed_to(cfg.chain_id)?.saturating_add(1);
+    // `None` until the first successful tip probe — then pinned to tip, not DB.
+    let mut next_block: Option<u64> = None;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -564,103 +563,58 @@ pub async fn run_live(
             }
         };
 
-        if safe >= next_block {
-            let lag = safe.saturating_sub(next_block).saturating_add(1);
-            if lag > LIVE_MAX_LAG_BLOCKS {
-                let skip_to = safe.saturating_sub(LIVE_MAX_LAG_BLOCKS.saturating_sub(1));
+        let mut cursor = match next_block {
+            Some(n) => n,
+            None => {
+                // Tip-only start: ignore stored `indexed_to` so we never catch up
+                // historical backlog. Anchor the checkpoint just behind tip.
                 warn!(
-                    lag,
-                    from = next_block,
-                    to = skip_to,
                     tip = safe,
-                    "live indexer far behind tip — skipping backlog to keep feed fresh"
+                    confirmations = cfg.confirmations,
+                    "live indexer starting at current tip (no historical catch-up)"
                 );
-                next_block = skip_to;
+                store.set_sync_state(cfg.chain_id, safe, safe.saturating_sub(1))?;
+                safe
             }
+        };
 
+        if safe >= cursor {
             // Phase 4: cheap per-poll reorg re-verify on the last indexed block.
-            // Single header-only hash compare; unwinds before we extend the stored
-            // chain past a block whose hash already changed on-chain.
+            // Only meaningful for blocks we indexed this session (checkpoint is
+            // tip-anchored on start).
             let indexed_to = store.get_indexed_to(cfg.chain_id)?;
             if indexed_to > 0
-                && indexed_to < next_block
+                && indexed_to < cursor
                 && verify_indexed_tip(rpc, store, indexed_to).await?.is_some()
             {
-                // Reorg detected on the indexed tip — rewind the live loop's
-                // next block so the poll loop re-canonicalizes from the fork.
-                next_block = indexed_to;
+                cursor = indexed_to;
             }
 
-            // Reorg check on the previous indexed block before continuing.
             since_reorg_check += 1;
             if since_reorg_check >= 32 {
-                let check_at = next_block.saturating_sub(1);
+                let check_at = cursor.saturating_sub(1);
                 if check_reorg(rpc, store, check_at).await?.is_some() {
-                    next_block = check_at; // re-index from fork
+                    cursor = check_at;
                 }
                 since_reorg_check = 0;
             }
+
             let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-            // Cap work per poll so we stay near tip under RPC rate limits.
-            let batch_end = (next_block + LIVE_MAX_LAG_BLOCKS - 1).min(safe);
-            for block in next_block..=batch_end {
+            for block in cursor..=safe {
                 let indexed =
                     index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
                 indexed_total += indexed.ops as u64;
             }
-            store.set_sync_state(cfg.chain_id, safe, batch_end)?;
-            next_block = batch_end + 1;
+            store.set_sync_state(cfg.chain_id, safe, safe)?;
+            next_block = Some(safe + 1);
+        } else {
+            next_block = Some(cursor);
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
     }
 
     Ok(indexed_total)
-}
-
-/// Historical / range backfill: index every block in `[from_block, to_block]`
-/// (inclusive). Does **not** apply `LIVE_MAX_LAG_BLOCKS` skipping — that
-/// tip-tracking behaviour is live-only. Idempotent via `blocks_classified`.
-/// Blocks past `head − confirmations` are skipped until they confirm.
-pub async fn run_range(
-    rpc: &RpcClient,
-    store: &ExplorerStore,
-    cfg: &IngestConfig,
-    pool_tokens: &HashMap<Address, (Address, Address)>,
-    from_block: u64,
-    to_block: u64,
-) -> anyhow::Result<u64> {
-    if to_block < from_block {
-        anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
-    }
-    let tip = rpc.get_block_number().await.unwrap_or(to_block);
-    let safe_tip = tip.saturating_sub(cfg.confirmations);
-    let end = to_block.min(safe_tip);
-    if end < from_block {
-        warn!(
-            from_block,
-            to_block,
-            safe_tip,
-            confirmations = cfg.confirmations,
-            "range end is inside the confirmation lag — nothing to index yet"
-        );
-        return Ok(0);
-    }
-
-    let mut indexed_ops: u64 = 0;
-    let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-    for block in from_block..=end {
-        if block.saturating_sub(from_block) % 256 == 0 {
-            native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-        }
-        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
-        indexed_ops += indexed.ops as u64;
-        if block % 32 == 0 {
-            let _ = check_reorg(rpc, store, block).await?;
-        }
-    }
-    store.set_sync_state(cfg.chain_id, tip, end)?;
-    Ok(indexed_ops)
 }
 
 #[cfg(test)]

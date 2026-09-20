@@ -583,22 +583,17 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml explorer doctor
 
 #### 4.11.2 `explorer index`
 
-Stream-index tip blocks into the explorer store (live), **or** backfill a
-historical range. Live mode is idempotent, resumable, reorg-aware; classifies
-in-stream. Follows `head − confirmations` until cancelled (Ctrl+C) or
-`--duration` elapses. Range mode indexes every confirmed block in
-`[--from-block, --to-block]` without `LIVE_MAX_LAG_BLOCKS` skipping.
+Stream-index tip blocks into the explorer store (live). On each start, jumps to
+the current confirmed tip and only follows new blocks forward — no resume of a
+historical `indexed_to` gap and no earlier backfill. Idempotent, reorg-aware;
+classifies in-stream. Follows `head − confirmations` until cancelled (Ctrl+C) or
+`--duration` elapses.
 
 ```powershell
 mev-scout explorer index
 mev-scout explorer index --duration 15m
 mev-scout explorer index --duration 1h
-mev-scout explorer index --from-block 50000000 --to-block 50001000
 ```
-
-`LIVE_MAX_LAG_BLOCKS` (256) applies to **live** only: if the indexer falls more
-than ~256 blocks behind tip it skips backlog to stay near tip. Use range mode
-for historical windows — live lag-skip is not a backfill substitute.
 #### 4.11.3 `explorer live-feed`
 
 mev.zone-style live feed of realized ops (tail of the indexed store). Run
@@ -664,8 +659,8 @@ Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows fo
 the affected window, so before/after Phase numbers are only comparable after a
 replay. `index` is replay-safe (INSERT OR REPLACE, reorg-aware, idempotent), so
 the wipe is required only for classifier *semantics* changes, not plain re-indexes.
-Because `explorer index` is live-only by default, rewind the checkpoint and let live
-re-index from tip (or from a lowered `indexed_to`), or use `--from-block`/`--to-block`:
+Because `explorer index` is live-only, rewind the checkpoint and let live
+re-index from tip (or from a lowered `indexed_to`):
 
 ```bash
 # 1) Wipe the affected window on the forensic DB (example: Polygon, from N).
@@ -675,7 +670,7 @@ sqlite3 explorer_polygon.sqlite \
    DELETE FROM blocks_classified WHERE block >= N;
    UPDATE sync_state SET indexed_to = N-1 WHERE chain_id = 137;"
 
-# 2) Resume live indexing (skips backlog beyond LIVE_MAX_LAG_BLOCKS of tip).
+# 2) Resume live indexing from the current tip (no historical catch-up).
 mev-scout explorer index --duration 1h
 ```
 
@@ -706,8 +701,6 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 mev-scout explorer doctor
 mev-scout discover --source hybrid --days 7
 mev-scout explorer index --duration 1h
-# or historical:
-mev-scout explorer index --from-block N --to-block M
 mev-scout explorer stats --since 1d
 ```
 

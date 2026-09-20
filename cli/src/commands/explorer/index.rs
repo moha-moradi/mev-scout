@@ -7,14 +7,10 @@ use mev_scout_core::jobs::{job_index, IndexOpts};
 pub async fn cmd_index(
     config: &Config,
     duration: Option<&str>,
-    from_block: Option<u64>,
-    to_block: Option<u64>,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
     let opts = IndexOpts {
         duration: duration.map(String::from),
-        from_block,
-        to_block,
     };
     job_index(config, &opts, progress).await?;
     Ok(())

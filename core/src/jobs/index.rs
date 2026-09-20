@@ -9,7 +9,7 @@ use anyhow::Context;
 use crate::cache::SqliteStore;
 use crate::config::validation;
 use crate::config::Config;
-use crate::explorer::ingest::{run_live, run_range, IngestConfig};
+use crate::explorer::ingest::{run_live, IngestConfig};
 use crate::explorer::store::ExplorerStore;
 use crate::progress::JobProgress;
 use crate::types::ChainName;
@@ -19,11 +19,6 @@ use super::rpc::init_rpc;
 #[derive(Debug, Clone, Default)]
 pub struct IndexOpts {
     pub duration: Option<String>,
-    /// Inclusive range start (historical backfill). When set with `to_block`,
-    /// uses `run_range` instead of live tip-following.
-    pub from_block: Option<u64>,
-    /// Inclusive range end (historical backfill).
-    pub to_block: Option<u64>,
 }
 
 pub struct IndexOutcome {
@@ -53,30 +48,6 @@ pub async fn job_index(
 
     let t0 = Instant::now();
 
-    // Historical range mode (spec §5 / Phase-1 acceptance).
-    if let (Some(from), Some(to)) = (opts.from_block, opts.to_block) {
-        progress.log(&format!(
-            "Range indexing — {chain} blocks {from}..={to} (confirmations={})",
-            cfg.confirmations
-        ));
-        let ops = run_range(&setup.rpc, &store, &cfg, &pool_tokens, from, to).await?;
-        let elapsed = t0.elapsed();
-        let blocks = to.saturating_sub(from).saturating_add(1);
-        progress.log(&format!(
-            "Range indexing done — ~{blocks} blocks requested, {} ops total in {:.1}s",
-            store.op_count_since(0)?,
-            elapsed.as_secs_f64(),
-        ));
-        return Ok(IndexOutcome {
-            blocks_indexed: blocks,
-            ops,
-            elapsed,
-        });
-    }
-    if opts.from_block.is_some() ^ opts.to_block.is_some() {
-        anyhow::bail!("explorer index range requires both --from-block and --to-block");
-    }
-
     let stop = Arc::new(AtomicBool::new(false));
     let stop_cancel = stop.clone();
     let cancel_poll = async {
@@ -102,7 +73,7 @@ pub async fn job_index(
     };
 
     progress.log(&format!(
-        "Live indexing — {chain} (head − {} confirmations)",
+        "Live indexing — {chain} from current tip (head − {} confirmations; no historical catch-up)",
         cfg.confirmations
     ));
     let (_, _, indexed) = tokio::join!(

@@ -106,14 +106,6 @@ pub struct IndexArgs {
     /// Stop live indexing after this duration (e.g. 90s, 15m, 1h)
     #[arg(long, value_name = "DURATION")]
     pub duration: Option<String>,
-
-    /// Historical backfill start (requires --to-block). Inclusive.
-    #[arg(long = "from-block", value_name = "NUMBER", value_parser = clap::value_parser!(u64).range(1..))]
-    pub from_block: Option<u64>,
-
-    /// Historical backfill end (requires --from-block). Inclusive.
-    #[arg(long = "to-block", value_name = "NUMBER", value_parser = clap::value_parser!(u64).range(1..))]
-    pub to_block: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone)]
