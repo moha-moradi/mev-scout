@@ -618,6 +618,51 @@ pub async fn run_live(
     Ok(indexed_total)
 }
 
+/// Historical / range backfill: index every block in `[from_block, to_block]`
+/// (inclusive). Does **not** apply `LIVE_MAX_LAG_BLOCKS` skipping — that
+/// tip-tracking behaviour is live-only. Idempotent via `blocks_classified`.
+/// Blocks past `head − confirmations` are skipped until they confirm.
+pub async fn run_range(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    cfg: &IngestConfig,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
+    from_block: u64,
+    to_block: u64,
+) -> anyhow::Result<u64> {
+    if to_block < from_block {
+        anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
+    }
+    let tip = rpc.get_block_number().await.unwrap_or(to_block);
+    let safe_tip = tip.saturating_sub(cfg.confirmations);
+    let end = to_block.min(safe_tip);
+    if end < from_block {
+        warn!(
+            from_block,
+            to_block,
+            safe_tip,
+            confirmations = cfg.confirmations,
+            "range end is inside the confirmation lag — nothing to index yet"
+        );
+        return Ok(0);
+    }
+
+    let mut indexed_ops: u64 = 0;
+    let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+    for block in from_block..=end {
+        if block.saturating_sub(from_block) % 256 == 0 {
+            native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+        }
+        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
+        indexed_ops += indexed.ops as u64;
+        if block % 32 == 0 {
+            let _ = check_reorg(rpc, store, block).await?;
+        }
+    }
+    store.set_sync_state(cfg.chain_id, tip, end)?;
+    Ok(indexed_ops)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

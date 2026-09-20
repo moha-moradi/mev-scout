@@ -13,12 +13,18 @@ pub fn protocol_name_for_factory(factory: Address) -> Option<&'static str> {
         // ── Avalanche ────────────────────────────────────────────────────
         // LFJ (Trader Joe) V1 classic AMM
         a if a == address!("0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10") => Some("LFJ V1"),
+        // SushiSwap V2 (Avalanche)
+        a if a == address!("0xc35DADB65012eC5796536bD9864eD8773aBc74C4") => Some("SushiSwap"),
+        // Pangolin V2
+        a if a == address!("0xefa94DE7a4656D787667C749f7E1223D71E9FD88") => Some("Pangolin V2"),
         // Uniswap V3 (canonical Avalanche deployment)
         a if a == address!("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD") => Some("Uniswap V3"),
         // Pharaoh V3 (RamsesV3Factory)
         a if a == address!("0xAE6E5c62328ade73ceefD42228528b70c8157D0d") => Some("Pharaoh V3"),
         // Pangolin V3
         a if a == address!("0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256") => Some("Pangolin V3"),
+        // Curve Stableswap Factory NG (Avalanche / Polygon shared address)
+        a if a == address!("0x1764ee18e8B3ccA4787249Ceb249356192594585") => Some("Curve Stableswap NG"),
         // Blackhole CLMM (Algebra-family)
         a if a == address!("0x512eb749541B7cf294be882D636218c84a5e9E5F") => Some("Blackhole CLMM"),
         // LFJ Liquidity Book V2.2 / V2.1 + Pharaoh DLMM
@@ -61,6 +67,10 @@ mod tests {
         assert_eq!(
             protocol_name_for_factory(address!("0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256")),
             Some("Pangolin V3")
+        );
+        assert_eq!(
+            protocol_name_for_factory(address!("0xefa94DE7a4656D787667C749f7E1223D71E9FD88")),
+            Some("Pangolin V2")
         );
         assert_eq!(
             protocol_name_for_factory(address!("0x0000000000000000000000000000000000000001")),

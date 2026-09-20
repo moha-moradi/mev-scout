@@ -114,7 +114,7 @@ flowchart TB
 | `replay` | Debug a single block through revm | yes (fallback calls) | — |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Realized-MEV forensics (index/feed/stats/top/show/explain/validate/export) | yes (logs; optional traces) | Explorer SQLite store |
+| `explorer` | Realized-MEV forensics (index/feed/stats/top/show) | yes (logs; optional traces) | Explorer SQLite store |
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -154,8 +154,7 @@ mev-scout config
 Prefer `${ENV_VAR}` placeholders in RPC URLs; export keys in the same shell.
 Unset placeholders stay literal and fail loudly at the provider. The listing
 format for `tokens`, `scan`, and `report` is the TOML `output` key. Exceptions
-that take their own JSON flag: `discover --json`, `validate-pools --json`,
-`explorer validate --json`.
+that take their own JSON flag: `discover --json`, `validate-pools --json`.
 
 ### Block range (exactly one)
 
@@ -368,7 +367,7 @@ flowchart TB
 
 The main pipeline. Everything is cached first, then replayed and detected.
 Opportunities always land in the explorer store; `--record-rejections` also
-stores rejected candidates for `explorer validate` / `explain`.
+stores rejected candidates for offline analysis.
 
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml run --blocks 100
@@ -558,20 +557,18 @@ Forensic reconstruction of MEV that was actually extracted on-chain — the
 counterpart to the scanner's simulated opportunities. Pipeline: ingest → decode
 → classify → profit → store (`explorer_{chain}.sqlite`) → query surface below.
 Scanner `run`/`live` persist opportunities into the same store; `--record-rejections`
-adds rejected candidates for cross-validation.
+adds rejected candidates for offline analysis.
 
 ```mermaid
 flowchart TB
     A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer_{chain}.sqlite, WAL)"]
     B --> C{"subcommand"}
     C -- doctor --> D["probe every provider:<br/>latest · archive · bulk-receipts · traces"]
-    C -- index --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
+    C -- index --> E["ingest: live stream or range<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
     E --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
     C -- "live-feed" --> G["tail of mev_ops<br/>(--kinds, --min-profit-usd, poll)"]
     C -- "stats / top" --> H["pure SQL aggregates:<br/>op counts · profit · daily · leaderboards"]
-    C -- "show / explain" --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)<br/>explain: rejected candidates + miss cause"]
-    C -- validate --> J["realized ground truth vs run/live<br/>tiered recall · miss taxonomy · sweep"]
-    C -- export --> K["bulk json|csv"]
+    C -- show --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)"]
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
@@ -586,18 +583,22 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml explorer doctor
 
 #### 4.11.2 `explorer index`
 
-Stream-index tip blocks into the explorer store (live only). Idempotent,
-resumable, reorg-aware; classifies in-stream. Follows `head − confirmations`
-until cancelled (Ctrl+C) or `--duration` elapses.
+Stream-index tip blocks into the explorer store (live), **or** backfill a
+historical range. Live mode is idempotent, resumable, reorg-aware; classifies
+in-stream. Follows `head − confirmations` until cancelled (Ctrl+C) or
+`--duration` elapses. Range mode indexes every confirmed block in
+`[--from-block, --to-block]` without `LIVE_MAX_LAG_BLOCKS` skipping.
 
 ```powershell
 mev-scout explorer index
 mev-scout explorer index --duration 15m
 mev-scout explorer index --duration 1h
+mev-scout explorer index --from-block 50000000 --to-block 50001000
 ```
 
-Historical range backfill (`--days` / `--from` / `--to`) is not supported;
-run `explorer index` continuously to accumulate realized ops near tip.
+`LIVE_MAX_LAG_BLOCKS` (256) applies to **live** only: if the indexer falls more
+than ~256 blocks behind tip it skips backlog to stay near tip. Use range mode
+for historical windows — live lag-skip is not a backfill substitute.
 #### 4.11.3 `explorer live-feed`
 
 mev.zone-style live feed of realized ops (tail of the indexed store). Run
@@ -610,10 +611,16 @@ mev-scout explorer live-feed --kinds all
 mev-scout explorer live-feed --kinds arb_atomic,sandwich,liquidation
 mev-scout explorer live-feed --min-profit-usd 10
 mev-scout explorer live-feed --poll-interval-ms 2000 --duration 90s
+mev-scout explorer live-feed --arb-shape triangular
 ```
 
+Default kinds **exclude** `frontrun` / `backrun` (Phase 3 ship gate) unless
+`[explorer].live_feed_kinds` is set in TOML. Logs-only causal kinds are
+`tier=inferred` until REVM counterfactuals land.
+
 Kinds: `arb_atomic`, `sandwich`, `frontrun`, `backrun`, `liquidation`, `jit`,
-`jit_arb`, `unknown`.
+`jit_arb`, `unknown`. Atomic arbs carry `details.arb_meta` (`arb_shape`,
+`hop_count`, `dex_count`, `is_cross_dex`, `flashloan_funded`).
 
 #### 4.11.4 `explorer stats`
 
@@ -625,10 +632,11 @@ mev-scout explorer stats
 mev-scout explorer stats --since 7d
 mev-scout explorer stats --since 1d --kind sandwich
 mev-scout explorer stats --since 30d --window week
+mev-scout explorer stats --since 7d --arb-shape triangular
 ```
 
 `--since` accepts `1d` | `7d` | `30d` | `all` (default all). `--kind` filters
-to one pattern.
+to one pattern. `--arb-shape` samples matching `arb_atomic` ops.
 
 #### 4.11.5 `explorer top`
 
@@ -650,51 +658,14 @@ mev-scout explorer show 0xabc…
 mev-scout explorer show 0xabc… --trace
 ```
 
-#### 4.11.7 `explorer explain`
-
-Per-miss drill-down: realized op + the scanner's rejected candidates + inferred
-miss cause (M1–M8). Useful after `run`/`live` with `--record-rejections`.
-
-```powershell
-mev-scout explorer explain 0xabc…
-```
-
-#### 4.11.8 `explorer validate`
-
-Cross-validation: realized ground truth vs `run`/`live` opportunities. Reports
-tiered recall, USD-weighted recall, miss taxonomy, and optional threshold sweep.
-
-```powershell
-mev-scout explorer validate
-mev-scout explorer validate --since 7d
-mev-scout explorer validate --match-window 1
-mev-scout explorer validate --run run_1717…
-mev-scout explorer validate --threshold-sweep --emit-missing-pools
-mev-scout explorer validate --review-csv results/review.csv
-mev-scout explorer validate --golden-causal
-mev-scout explorer validate --json
-```
-
-`--match-window 0` (default) suits backtests; `1` is recommended for live.
-
-#### 4.11.9 `explorer export`
-
-Bulk export of realized ops.
-
-```powershell
-mev-scout explorer export --format json
-mev-scout explorer export --format csv --since 7d --out results/ops.csv
-mev-scout explorer export --format json --kinds arb_atomic,sandwich --out results/ops.json
-```
-
 #### Classifier-change replay recipe (wipe + reindex)
 
 Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows for
 the affected window, so before/after Phase numbers are only comparable after a
 replay. `index` is replay-safe (INSERT OR REPLACE, reorg-aware, idempotent), so
 the wipe is required only for classifier *semantics* changes, not plain re-indexes.
-Because `explorer index` is live-only, rewind the checkpoint and let live
-re-index from tip (or from a lowered `indexed_to`):
+Because `explorer index` is live-only by default, rewind the checkpoint and let live
+re-index from tip (or from a lowered `indexed_to`), or use `--from-block`/`--to-block`:
 
 ```bash
 # 1) Wipe the affected window on the forensic DB (example: Polygon, from N).
@@ -706,46 +677,62 @@ sqlite3 explorer_polygon.sqlite \
 
 # 2) Resume live indexing (skips backlog beyond LIVE_MAX_LAG_BLOCKS of tip).
 mev-scout explorer index --duration 1h
-
-# 3) Re-run baseline validation + missing-pool report.
-mev-scout explorer validate --threshold-sweep --emit-missing-pools
 ```
 
 #### Phase-0 baseline recipe and ship gates
 
-Live-window recipe (e.g. Polygon): run the indexer for a measurement window,
-then validate:
+Live-window recipe (e.g. Avalanche / Polygon): run the indexer for a measurement
+window, then inspect with `stats` / `show`:
 
 ```bash
 mev-scout explorer index --duration 1h
-mev-scout explorer validate --threshold-sweep --emit-missing-pools
+mev-scout explorer stats --since 1d
 ```
 
-Record the report on every phase merge (`cargo test` + clippy alone are not the
+Record coverage notes on every phase merge (`cargo test` + clippy alone are not the
 gate). Numbers are data-dependent — tests assert report *shape* only:
 
-| Window | recall | USD-recall | miss-taxonomy | profit-error MAD | `arb_likely` parity |
-|---|---|---|---|---|---|
-| *(pending — run recipe above with RPC)* | — | — | — | — | `false` (default) |
+| Window | ops indexed | notes | `arb_likely` parity |
+|---|---|---|---|
+| *(pending — run recipe above with RPC)* | — | — | `false` (default) |
 
-No working RPC credentials were available to fill real numbers: the avalanche
-endpoint committed in `mev-scout.toml` is revoked (connection reset; `explorer
-doctor` reports `latest=✗ archive=n/a traces=n/a`, Gate FAIL). Re-run the
-recipe locally with a valid key (plain URL or `${ENV_VAR}` placeholder) and
-paste validate output into the table. `arb_likely_parity` defaults to `false`
-(closed-cycle-only arb) to match the opportunity detection spec.
+Avalanche C-Chain factories in [`core/data/chains.toml`](../core/data/chains.toml)
+now include LFJ V1 + Sushi + Pangolin V2, Curve Stableswap NG, Uni/Pharaoh/
+Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
+`mev-scout.example.toml` `[chains.avalanche]` (or a paid archive URL) and:
+
+```bash
+# config: chain = "avalanche"
+mev-scout explorer doctor
+mev-scout discover --source hybrid --days 7
+mev-scout explorer index --duration 1h
+# or historical:
+mev-scout explorer index --from-block N --to-block M
+mev-scout explorer stats --since 1d
+```
+
+Paste stats / sample `show` output into notes above. `arb_likely_parity` defaults to
+`false` (closed-cycle-only arb) to match the opportunity detection spec.
 
 Gates that depend on this table:
 - **Phase 1.2**: `explorer.arb_likely_parity=false` is the default (precision over
   mevlive catch-all recall). Set `true` only for explicit mevlive-parity experiments.
 - **Phase 3 ship gate**: labeled golden set (Phase 0.5) must show acceptable
   backrun/frontrun precision before those kinds are enabled in live-feed defaults.
-  Synthetic CI set: `mev-scout explorer validate --golden-causal` (or
-  `cargo test -p mev-scout-core golden`). Live-feed default **excludes**
-  `frontrun`/`backrun`; pass `--kinds all` (or include them explicitly) to opt in.
-  Chain-curated labels remain a follow-up once an RPC baseline window is available.
+  Synthetic CI set: `cargo test -p mev-scout-core golden`. Live-feed default
+  **excludes** `frontrun`/`backrun`; pass `--kinds all`, an explicit list, or set
+  `[explorer].live_feed_kinds` in TOML to opt in. Causal ops are tagged
+  `tier=inferred` (logs-only) until REVM counterfactuals land.
+  Chain-curated AVAX labels remain a follow-up once an RPC baseline window is available.
 
 #### Known biases / methodology notes
+
+- Logs-only backrun/frontrun are **not** REVM `profit(B|before)` vs `profit(B|after)` —
+  they are inferred causal proxies with §23 evidence codes in `details`.
+- JIT covers Uni V3 Mint/Burn **and** LFJ/Pharaoh LB DepositedToBins/WithdrawnFromBins
+  (bin range mapped into tick_lower/tick_upper; overlap = any same-pool swap).
+- Avalanche liquidations: Aave V3 topic decode (pool in chains.toml). Benqi/GMX
+  not in the explorer liquidation registry yet.
 
 | Bias | Status | Notes |
 |---|---|---|
@@ -777,7 +764,7 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Artifact | Produced by | Consumed by |
 |---|---|---|
 | SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `fetch`, `discover`, `validate-pools` | `run`, `live`, `replay`, `discover` (incremental), `tokens`, `report` (manifests) |
-| Explorer store `explorer_{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections with `--record-rejections`) | `report`, `explorer explain` / `validate` |
+| Explorer store `explorer_{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections with `--record-rejections`) | `report` |
 | Explorer store `explorer_{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI |
 | Signature DB (4byte directory snapshot) | `fetch` (unless `--no-sig-resolve`) | tx decoding |
 

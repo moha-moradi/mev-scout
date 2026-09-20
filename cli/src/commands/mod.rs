@@ -20,10 +20,7 @@ mod validate_pools;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{
-    cmd_doctor, cmd_explain, cmd_export, cmd_index, cmd_live_feed, cmd_show, cmd_stats, cmd_top,
-    cmd_validate,
-};
+pub use explorer::{cmd_doctor, cmd_index, cmd_live_feed, cmd_show, cmd_stats, cmd_top};
 pub use fetch::cmd_fetch;
 pub use live::cmd_live;
 pub use replay::cmd_replay;
@@ -115,7 +112,14 @@ impl CliCommand for ExplorerArgs {
         match &self.command {
             ExplorerCommand::Doctor => cmd_doctor(config).await,
             ExplorerCommand::Index(a) => {
-                cmd_index(config, a.duration.as_deref(), progress).await
+                cmd_index(
+                    config,
+                    a.duration.as_deref(),
+                    a.from_block,
+                    a.to_block,
+                    progress,
+                )
+                .await
             }
             ExplorerCommand::LiveFeed(a) => {
                 cmd_live_feed(
@@ -125,6 +129,7 @@ impl CliCommand for ExplorerArgs {
                     a.poll_interval_ms
                         .unwrap_or(config.explorer.poll_interval_ms),
                     a.duration.as_deref(),
+                    a.arb_shape.as_deref(),
                 )
                 .await
             }
@@ -134,6 +139,7 @@ impl CliCommand for ExplorerArgs {
                     a.since.as_deref(),
                     a.window.as_deref(),
                     a.kind.as_deref(),
+                    a.arb_shape.as_deref(),
                 )
                 .await
             }
@@ -141,18 +147,6 @@ impl CliCommand for ExplorerArgs {
                 cmd_top(config, &a.by, &a.metric, a.since.as_deref(), a.limit).await
             }
             ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
-            ExplorerCommand::Explain(a) => cmd_explain(config, &a.tx_hash).await,
-            ExplorerCommand::Validate(a) => cmd_validate(config, a).await,
-            ExplorerCommand::Export(a) => {
-                cmd_export(
-                    config,
-                    a.since.as_deref(),
-                    a.kinds.as_deref(),
-                    &a.format,
-                    a.out.as_deref(),
-                )
-                .await
-            }
         }
     }
 }

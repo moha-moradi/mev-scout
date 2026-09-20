@@ -1,5 +1,5 @@
 //! `mev-scout explorer` subcommands:
-//! doctor, index, live, stats, top, show, explain, validate, export.
+//! doctor, index, live-feed, stats, top, show.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -7,12 +7,10 @@ use std::sync::Arc;
 use anyhow::Context;
 use comfy_table::Table;
 
-use crate::cli::ValidateArgs;
 use mev_scout_core::config::validation;
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::ingest::IngestConfig;
 use mev_scout_core::explorer::store::{ExplorerStore, MevOpRow};
-use mev_scout_core::explorer::validate;
 use mev_scout_core::explorer::MevKind;
 use mev_scout_core::types::ChainName;
 use mev_scout_core::utils::epoch_secs;
@@ -93,15 +91,11 @@ fn stop_flag_with_deadline(deadline: Option<std::time::Duration>) -> Arc<AtomicB
 }
 
 mod doctor;
-mod export;
 mod index;
 mod show;
 mod stats;
-mod validator;
 
 pub use doctor::cmd_doctor;
-pub use export::cmd_export;
 pub use index::{cmd_index, cmd_live_feed};
-pub use show::{cmd_explain, cmd_show};
+pub use show::cmd_show;
 pub use stats::{cmd_stats, cmd_top};
-pub use validator::cmd_validate;

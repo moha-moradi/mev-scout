@@ -113,6 +113,11 @@ pub struct ExplorerConfig {
     /// ownership rules in `mev_detection_and_opportunity_engine_spec.md` §11.1.
     #[serde(default = "default_false")]
     pub arb_likely_parity: bool,
+    /// Optional override for `explorer live-feed` default kinds (comma-separated).
+    /// Empty = Phase 3 ship gate defaults (excludes frontrun/backrun).
+    /// Example: `"arb_atomic,sandwich,liquidation,jit,jit_arb,unknown,frontrun,backrun"`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub live_feed_kinds: String,
 }
 
 fn default_false() -> bool {
@@ -263,6 +268,7 @@ impl Default for ExplorerConfig {
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
             arb_likely_parity: false,
+            live_feed_kinds: String::new(),
         }
     }
 }

@@ -160,7 +160,8 @@ impl ChainName {
             ],
             ChainName::Avalanche => &[
                 "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
-                "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe V1
+                "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe / LFJ V1
+                "0xefa94DE7a4656D787667C749f7E1223D71E9FD88", // Pangolin V2
             ],
             ChainName::Bsc => &[
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2
@@ -272,6 +273,8 @@ impl ChainName {
                 "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6", // Lista DEX SmartSwap (Curve-like)
             ],
             ChainName::Optimism => &["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"],
+            // Same Stableswap Factory NG address as Polygon (deterministic deploy).
+            ChainName::Avalanche => &["0x1764ee18e8B3ccA4787249Ceb249356192594585"],
             _ => &[],
         }
     }

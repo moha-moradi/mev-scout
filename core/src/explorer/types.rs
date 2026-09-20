@@ -61,6 +61,7 @@ impl MevKind {
     /// `Backrun` until the labeled causal golden set is accepted for
     /// production. Pass `--kinds all` (CLI) or include them explicitly to
     /// opt in. Classification still emits both kinds into `mev_ops`.
+    /// Config override: `[explorer].live_feed_kinds` (comma-separated).
     pub fn live_feed_default_kinds() -> Vec<MevKind> {
         vec![
             MevKind::ArbAtomic,
@@ -70,6 +71,19 @@ impl MevKind {
             MevKind::JitArb,
             MevKind::Unknown,
         ]
+    }
+
+    /// Parse a comma-separated kinds list for live-feed config/CLI.
+    /// `"all"` → empty vec (caller treats as no filter / every kind).
+    pub fn parse_kinds_list(s: &str) -> Option<Vec<MevKind>> {
+        if s.eq_ignore_ascii_case("all") {
+            return Some(vec![]);
+        }
+        let mut out = Vec::new();
+        for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            out.push(MevKind::parse(part)?);
+        }
+        Some(out)
     }
 }
 
@@ -264,7 +278,9 @@ pub struct LiquidationFact {
     pub debt_to_cover: U256,
 }
 
-/// A decoded V3 concentrated-liquidity Mint/Burn fact.
+/// A decoded V3 concentrated-liquidity Mint/Burn fact, or an LFJ/Pharaoh
+/// Liquidity Book DepositedToBins/WithdrawnFromBins fact (bin ids mapped into
+/// `tick_lower`/`tick_upper` as the inclusive min/max bin id).
 #[derive(Debug, Clone)]
 pub struct JitFact {
     pub tx_index: u64,
@@ -277,4 +293,6 @@ pub struct JitFact {
     pub liquidity: u128,
     pub amount0: U256,
     pub amount1: U256,
+    /// When true, overlap is any same-pool swap (LB has no tick on Swap).
+    pub bin_amm: bool,
 }

@@ -5,7 +5,8 @@
 # No `${ENV_VAR}` placeholders require exporting any key; every URL below is a
 # public, free-tier HTTPS endpoint.
 
-chain = "polygon"
+# Default chain for this example file. Switch to avalanche (or others) as needed.
+chain = "avalanche"
 priority_fee_gwei = 30
 
 # Global (default) RPC endpoints — used for any chain without a per-chain
@@ -35,6 +36,14 @@ output = "table"
 # Switching chains via `--chain` / config just works — every chain gets its
 # own public endpoints from chainlist. `rps_limit` / `block_concurrency` stay
 # global.
+
+# ── Explorer (realized-MEV forensic layer) ──────────────────────────
+# Uncomment to include frontrun/backrun in live-feed defaults once the
+# Phase 3 golden causal gate passes for your chain window.
+# [explorer]
+# live_feed_kinds = "arb_atomic,sandwich,liquidation,jit,jit_arb,unknown,frontrun,backrun"
+# arb_likely_parity = false
+# confirmations = 6
 
 [chains.polygon]
 chain_id = 137

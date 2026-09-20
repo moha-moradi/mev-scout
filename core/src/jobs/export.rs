@@ -14,6 +14,7 @@ pub struct ExportOpts {
     pub format: String,
     pub since: Option<String>,
     pub kinds: Option<String>,
+    pub arb_shape: Option<String>,
     pub out: Option<String>,
 }
 
@@ -22,6 +23,15 @@ pub struct ExportOutcome {
     pub path: String,
     pub count: usize,
     pub format: String,
+}
+
+/// Wrapper that stamps `mode = "realized"` on every exported op so scanner
+/// opportunities in the same DB are not conflated (§2.1 / §36).
+#[derive(Debug, Clone, Serialize)]
+struct ExportOp<'a> {
+    mode: &'static str,
+    #[serde(flatten)]
+    op: &'a MevOpRow,
 }
 
 fn since_ts(since: Option<&str>) -> u64 {
@@ -46,13 +56,38 @@ fn parse_kinds(s: &str) -> anyhow::Result<Vec<MevKind>> {
     Ok(out)
 }
 
+fn matches_arb_shape(op: &MevOpRow, shape: &str) -> bool {
+    if op.kind != "arb_atomic" && op.kind != "jit_arb" {
+        return false;
+    }
+    op.details_json
+        .as_deref()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .and_then(|v| {
+            v.pointer("/arb_meta/arb_shape")
+                .and_then(|x| x.as_str())
+                .map(|s| s.eq_ignore_ascii_case(shape))
+        })
+        .unwrap_or(false)
+}
+
 fn render_csv(ops: &[MevOpRow]) -> String {
     let mut w = String::from(
-        "block_number,tx_index,tx_hash,ts,kind,eoa,confidence,canonical_id,profit_token,profit_amount,profit_usd,gas_cost_usd,net_profit_usd,route_json,victim_hashes\n",
+        "mode,block_number,tx_index,tx_hash,ts,kind,eoa,confidence,canonical_id,profit_token,profit_amount,profit_usd,gas_cost_usd,net_profit_usd,route_json,victim_hashes,arb_shape\n",
     );
     for o in ops {
+        let shape = o
+            .details_json
+            .as_deref()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+            .and_then(|v| {
+                v.pointer("/arb_meta/arb_shape")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
         w.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "realized,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             o.block_number,
             o.tx_index.map(|v| v.to_string()).unwrap_or_default(),
             o.tx_hash,
@@ -68,6 +103,7 @@ fn render_csv(ops: &[MevOpRow]) -> String {
             o.net_profit_usd.map(|v| v.to_string()).unwrap_or_default(),
             o.route_json.as_deref().unwrap_or(""),
             o.victim_hashes.as_deref().unwrap_or(""),
+            shape,
         ));
     }
     w
@@ -79,6 +115,15 @@ pub fn collect_export_ops(
     since: Option<&str>,
     kinds: Option<&str>,
 ) -> anyhow::Result<Vec<MevOpRow>> {
+    collect_export_ops_filtered(store, since, kinds, None)
+}
+
+pub fn collect_export_ops_filtered(
+    store: &ExplorerStore,
+    since: Option<&str>,
+    kinds: Option<&str>,
+    arb_shape: Option<&str>,
+) -> anyhow::Result<Vec<MevOpRow>> {
     let ts = since_ts(since);
     let kind_filter = kinds.map(parse_kinds).transpose()?;
     let mut ops: Vec<MevOpRow> = match &kind_filter {
@@ -89,6 +134,9 @@ pub fn collect_export_ops(
             .collect(),
         _ => store.ops_since(ts)?,
     };
+    if let Some(shape) = arb_shape {
+        ops.retain(|o| matches_arb_shape(o, shape));
+    }
     ops.sort_by_key(|o| (o.block_number, o.tx_index.unwrap_or(0)));
     Ok(ops)
 }
@@ -97,8 +145,15 @@ pub fn format_export_body(ops: &[MevOpRow], format: &str) -> anyhow::Result<(Str
     if format == "csv" {
         Ok((render_csv(ops), "text/csv".into()))
     } else {
+        let wrapped: Vec<ExportOp<'_>> = ops
+            .iter()
+            .map(|op| ExportOp {
+                mode: "realized",
+                op,
+            })
+            .collect();
         Ok((
-            serde_json::to_string_pretty(ops)?,
+            serde_json::to_string_pretty(&wrapped)?,
             "application/json".into(),
         ))
     }
@@ -112,7 +167,12 @@ pub async fn job_export(
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
     let store = ExplorerStore::open(config.effective_explorer_db_path(&chain))?;
-    let ops = collect_export_ops(&store, opts.since.as_deref(), opts.kinds.as_deref())?;
+    let ops = collect_export_ops_filtered(
+        &store,
+        opts.since.as_deref(),
+        opts.kinds.as_deref(),
+        opts.arb_shape.as_deref(),
+    )?;
 
     let format = if opts.format == "csv" { "csv" } else { "json" };
     let out_path = opts

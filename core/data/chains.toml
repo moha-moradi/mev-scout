@@ -33,12 +33,16 @@ uniswap_v3_factories = [
   "0x512eb749541B7cf294be882D636218c84a5e9E5F",
 ]
 uniswap_v2_factories = [
-  "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10",
+  "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", # LFJ V1
+  "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", # SushiSwap
+  "0xefa94DE7a4656D787667C749f7E1223D71E9FD88", # Pangolin V2
 ]
 pool_discovery_start_block = 4200000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"
 v4_pool_manager = "0x06380c0e0912312b5150364b9dc4542ba0dbbc85"
+# Curve Stableswap Factory NG (same deterministic address as Polygon).
+curve_factories = ["0x1764ee18e8B3ccA4787249Ceb249356192594585"]
 # LFJ V2.1 (0x8e42f2...) + V2.2 (0xb43120...) LB factories both deployed on Avalanche.
 # Pharaoh DLMM (0xEb48...) is an LB-family (Liquidity Book v2.1-compatible) factory.
 trader_joe_factories = [

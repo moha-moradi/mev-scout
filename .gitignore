@@ -8,4 +8,5 @@ tmp_output.txt
 
 # Live configs with secrets (secrets now come from environment variables)
 mev-scout.toml
+mev-scout.avax.toml
 

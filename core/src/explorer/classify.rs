@@ -278,6 +278,7 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                         victim_hashes: vec![],
                         victim_swap_size: None,
                         details: serde_json::json!({
+                            "mode": "realized",
                             "route": tx.swaps.iter().map(|s| serde_json::json!({
                                 "pool": format!("{:#x}", s.pool),
                                 "amm": s.amm.as_str(),
@@ -286,6 +287,7 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                                 "amount_in": s.amount_in.to_string(),
                                 "amount_out": s.amount_out.to_string(),
                             })).collect::<Vec<_>>(),
+                            "arb_meta": arb_route_meta(&tx.swaps, flashloan_fee_wei.is_some()),
                         }),
                     });
                     continue;
@@ -316,11 +318,16 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             };
             if has_transfer_cycle(ev.searcher, &tx.transfers) {
                 ev.kind = MevKind::ArbAtomic;
+                ev.details["mode"] = serde_json::json!("realized");
                 ev.details["reasons"] = serde_json::json!(["TRANSFER_CYCLE"]);
                 ev.details["evidence"] = serde_json::json!({
                     "transfer_cycle": true,
                     "note": "closed >=3-entity transfer cycle with positive ledger delta",
                 });
+                ev.details["arb_meta"] = arb_route_meta(&tx.swaps, !tx.flashloans.is_empty());
+                if let Some(meta) = ev.details.get_mut("arb_meta") {
+                    meta["arb_shape"] = serde_json::json!("transfer_cycle");
+                }
             }
         }
     }
@@ -601,6 +608,7 @@ fn fold_sandwich(
         victim_hashes: walk.victims.iter().map(|v| v.tx_hash).collect(),
         victim_swap_size: walk.victims.last().map(|v| v.amount_in),
         details: serde_json::json!({
+            "mode": "realized",
             "pool": format!("{pool:#x}"),
             "front_run": {
                 "tx_index": front.tx_index,
@@ -848,6 +856,8 @@ fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEven
                 victim_hashes: vec![a_hash],
                 victim_swap_size: None,
                 details: serde_json::json!({
+                    "mode": "realized",
+                    "tier": "inferred",
                     "pool": format!("{pool:#x}"),
                     "source_tx_index": atx,
                     "source_sender": format!("{afrom:#x}"),
@@ -858,17 +868,19 @@ fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEven
                         "amount_out": aleg.amount_out.to_string(),
                     },
                     "evidence": {
-                        "state_delta_match": true,
-                        "direction_of_benefit": opposite_dir(aleg, bleg),
+                        "STATE_DELTA_MATCH": true,
+                        "DIRECTION_OF_BENEFIT": opposite_dir(aleg, bleg),
+                        "PROFIT_VERIFIED": true,
                         "exec_better_than_pre_move": price_better_by(bleg, a.1, 0.5),
                         "cycle": true,
+                        "supporting_tx_hashes": [format!("{a_hash:#x}")],
                     },
                     "ledger": {
                         "searcher": format!("{bfrom:#x}"),
                         "profit_token": format!("{btoken:#x}"),
                         "profit_amount": bamount.to_string(),
                     },
-                    "reasons": ["STATE_DELTA_MATCH", "DIRECT_TOKEN_CYCLE"],
+                    "reasons": ["STATE_DELTA_MATCH", "PROFIT_VERIFIED", "DIRECT_TOKEN_CYCLE"],
                 }),
             });
         }
@@ -967,6 +979,8 @@ fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEve
                 victim_hashes: vec![vleg.tx_hash],
                 victim_swap_size: Some(vleg.amount_in),
                 details: serde_json::json!({
+                    "mode": "realized",
+                    "tier": "inferred",
                     "pool": format!("{pool:#x}"),
                     "victim_tx_index": vtx,
                     "front_run": {
@@ -982,16 +996,57 @@ fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEve
                         "amount_out": vleg.amount_out.to_string(),
                     },
                     "evidence": {
-                        "same_pool": true,
-                        "victim_execution_degraded": true,
-                        "profit_verified": true,
+                        "STATE_DELTA_MATCH": true,
+                        "VICTIM_EXECUTION_DEGRADED": true,
+                        "PROFIT_VERIFIED": true,
+                        "supporting_tx_hashes": [format!("{:#x}", vleg.tx_hash)],
                     },
-                    "reasons": ["SAME_POOL", "VICTIM_EXECUTION_DEGRADED", "PROFIT_VERIFIED"],
+                    "reasons": ["STATE_DELTA_MATCH", "VICTIM_EXECUTION_DEGRADED", "PROFIT_VERIFIED"],
                 }),
             });
         }
     }
     out
+}
+
+/// Derive route geometry metadata for an atomic arb (spec §10 / §11.4).
+/// Does not invent new `MevKind`s — annotation only.
+fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Value {
+    let hop_count = swaps.len();
+    let mut pools: Vec<Address> = swaps.iter().map(|s| s.pool).collect();
+    pools.sort();
+    pools.dedup();
+    let mut amms: Vec<&str> = swaps.iter().map(|s| s.amm.as_str()).collect();
+    amms.sort();
+    amms.dedup();
+    let mut tokens: Vec<Address> = Vec::new();
+    for s in swaps {
+        if !has_unresolved_tokens(s) {
+            tokens.push(s.token_in);
+            tokens.push(s.token_out);
+        }
+    }
+    tokens.sort();
+    tokens.dedup();
+    let unique_tokens = tokens.len();
+    let arb_shape = if hop_count == 0 {
+        "transfer_cycle"
+    } else if hop_count == 2 || unique_tokens == 2 {
+        "two_pool"
+    } else if hop_count == 3 || unique_tokens == 3 {
+        "triangular"
+    } else {
+        "multi_hop"
+    };
+    serde_json::json!({
+        "hop_count": hop_count,
+        "pool_count": pools.len(),
+        "dex_count": amms.len(),
+        "is_cross_dex": amms.len() > 1,
+        "flashloan_funded": flashloan_funded,
+        "arb_shape": arb_shape,
+        "unique_tokens": unique_tokens,
+    })
 }
 
 /// JIT pairing: same pool, same owner, same tick range, Mint before Burn.
@@ -1044,6 +1099,7 @@ fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 mint.amount1,
                 *burn_tx,
                 input.block,
+                mint.bin_amm,
             ) {
                 out.push(ev);
             }
@@ -1059,7 +1115,7 @@ fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 && b.tick_upper == pos.tick_upper
                 && b.liquidity >= pos.liquidity
         });
-        if let Some((burn_tx, _)) = burn {
+        if let Some((burn_tx, b)) = burn {
             // Anchor to the burn tx when the opening tx is not in this block.
             if let Some(ev) = build_jit_event(
                 input,
@@ -1073,6 +1129,7 @@ fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 U256::ZERO,
                 *burn_tx,
                 pos.opened_block,
+                b.bin_amm,
             ) {
                 out.push(ev);
             }
@@ -1096,9 +1153,18 @@ fn build_jit_event(
     amount1: U256,
     burn_tx: u64,
     opened_block: u64,
+    bin_amm: bool,
 ) -> Option<MevEvent> {
-    let in_range =
-        |s: &SwapFact| s.pool == pool && s.tick.is_some_and(|k| k >= tick_lower && k <= tick_upper);
+    // V3: require an in-range tick. LB: any same-pool swap (Swap has no tick).
+    let in_range = |s: &SwapFact| {
+        if s.pool != pool {
+            return false;
+        }
+        if bin_amm {
+            return true;
+        }
+        s.tick.is_some_and(|k| k >= tick_lower && k <= tick_upper)
+    };
     if !input.txs.iter().flat_map(|t| &t.swaps).any(in_range) {
         return None;
     }
@@ -1133,6 +1199,7 @@ fn build_jit_event(
         .map(|(k, v)| (k.clone(), serde_json::Value::String(v.to_string())))
         .collect();
 
+    let range_key = if bin_amm { "bin" } else { "tick" };
     Some(MevEvent {
         block: input.block,
         ts: input.ts,
@@ -1163,11 +1230,18 @@ fn build_jit_event(
             "held_blocks": input.block.saturating_sub(opened_block),
             "amount0": amount0.to_string(),
             "amount1": amount1.to_string(),
-            "reasons": ["SHORT_LP_LIFETIME", "OVERLAPPING_TICK_RANGE"],
+            "bin_amm": bin_amm,
+            "mode": "realized",
+            "reasons": if bin_amm {
+                serde_json::json!(["SHORT_LP_LIFETIME", "SAME_POOL_SWAP_DURING_LB_POSITION"])
+            } else {
+                serde_json::json!(["SHORT_LP_LIFETIME", "OVERLAPPING_TICK_RANGE"])
+            },
             "fees_estimated": {
                 "method": "in_range_volume_x_pool_fee",
                 "pool_fee_bps": POOL_FEE_BPS,
                 "confidence": "inferred",
+                "range": range_key,
                 "by_token": fees_estimated,
             },
         }),
@@ -1232,6 +1306,10 @@ pub fn decode_tx_logs(
             flashloans.push(f);
         }
         if let Some(mut j) = decode::decode_v3_mint_burn(log) {
+            j.tx_index = tx_index;
+            j.log_index = log_idx;
+            jit.push(j);
+        } else if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
             j.tx_index = tx_index;
             j.log_index = log_idx;
             jit.push(j);
@@ -1836,9 +1914,11 @@ mod tests {
         assert!(reasons.contains(&"STATE_DELTA_MATCH"));
         assert!(reasons.contains(&"DIRECT_TOKEN_CYCLE"));
         assert_eq!(
-            ev.details["evidence"]["direction_of_benefit"],
+            ev.details["evidence"]["DIRECTION_OF_BENEFIT"],
             serde_json::json!(true)
         );
+        assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
+        assert_eq!(ev.details["mode"], serde_json::json!("realized"));
         // Precedence: the profitable closed-cycle tx keeps Backrun, so the
         // ArbAtomic claim on tx2 is superseded (no double-counted P&L).
         assert_eq!(
@@ -1978,9 +2058,10 @@ mod tests {
             .iter()
             .map(|x| x.as_str().unwrap())
             .collect();
-        assert!(reasons.contains(&"SAME_POOL"));
+        assert!(reasons.contains(&"STATE_DELTA_MATCH"));
         assert!(reasons.contains(&"VICTIM_EXECUTION_DEGRADED"));
         assert!(reasons.contains(&"PROFIT_VERIFIED"));
+        assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
         assert_eq!(ev.details["victim_tx_index"], serde_json::json!(1));
         // Cross-pool close: no same-pool sandwich structure exists.
         assert!(!kinds(&events).contains(&MevKind::Sandwich));
@@ -2174,6 +2255,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let burn = JitFact {
             tx_index: 1,
@@ -2186,6 +2268,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let mut t0 = tx(
             0,
@@ -2223,6 +2306,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let mut t0 = tx(
             0,
@@ -2268,6 +2352,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let burn = JitFact {
             tx_index: 1,
@@ -2280,6 +2365,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let mut t0 = tx(
             0,
@@ -2516,6 +2602,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let burn = JitFact {
             tx_index: 1,
@@ -2528,6 +2615,7 @@ mod tests {
             liquidity: 1000,
             amount0: U256::from(5),
             amount1: U256::from(5),
+            bin_amm: false,
         };
         let mut t0 = tx(0, ATK, true, swaps, transfers);
         t0.jit = vec![mint];
@@ -2613,5 +2701,58 @@ mod tests {
         map2.insert(0, B256::repeat_byte(0xAA));
         stamp_jit_tx_hashes(std::slice::from_mut(&mut arb), &map2);
         assert_eq!(arb.tx_hash, h0);
+    }
+
+    #[test]
+    fn lb_bin_jit_pairs_without_tick_on_swap() {
+        // LB swaps carry no tick; bin_amm JIT must still fire when a same-pool
+        // swap sits between deposit and withdraw.
+        let mint = JitFact {
+            tx_index: 0,
+            log_index: 0,
+            pool: POOL_A,
+            owner: ATK,
+            tick_lower: 8000,
+            tick_upper: 8010,
+            is_mint: true,
+            liquidity: 2,
+            amount0: U256::from(10),
+            amount1: U256::from(5),
+            bin_amm: true,
+        };
+        let burn = JitFact {
+            tx_index: 2,
+            log_index: 0,
+            pool: POOL_A,
+            owner: ATK,
+            tick_lower: 8000,
+            tick_upper: 8010,
+            is_mint: false,
+            liquidity: 2,
+            amount0: U256::from(10),
+            amount1: U256::from(5),
+            bin_amm: true,
+        };
+        let mut t0 = tx(0, ATK, true, vec![], vec![]);
+        t0.jit = vec![mint];
+        // Same-pool swap with tick=None (LB).
+        let t1 = tx(
+            1,
+            MARKET,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+            vec![],
+        );
+        let mut t2 = tx(2, ATK, true, vec![], vec![]);
+        t2.jit = vec![burn];
+        let events = classify_block(&block(vec![t0, t1, t2]));
+        assert!(
+            kinds(&events).contains(&MevKind::Jit),
+            "expected LB JIT; got {:?}",
+            kinds(&events)
+        );
+        let ev = event_of(&events, MevKind::Jit);
+        assert_eq!(ev.details["bin_amm"], serde_json::json!(true));
+        assert_eq!(ev.details["mode"], serde_json::json!("realized"));
     }
 }

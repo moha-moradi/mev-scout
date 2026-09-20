@@ -7,10 +7,14 @@ use mev_scout_core::jobs::{job_index, IndexOpts};
 pub async fn cmd_index(
     config: &Config,
     duration: Option<&str>,
+    from_block: Option<u64>,
+    to_block: Option<u64>,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
     let opts = IndexOpts {
         duration: duration.map(String::from),
+        from_block,
+        to_block,
     };
     job_index(config, &opts, progress).await?;
     Ok(())
@@ -24,12 +28,16 @@ pub async fn cmd_live_feed(
     min_profit_usd: f64,
     poll_interval_ms: u64,
     duration: Option<&str>,
+    arb_shape: Option<&str>,
 ) -> anyhow::Result<()> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
     let store = explorer_store(config, chain)?;
     let kinds = match kinds {
         Some(s) => parse_kinds(s)?,
+        None if !config.explorer.live_feed_kinds.is_empty() => {
+            parse_kinds(&config.explorer.live_feed_kinds)?
+        }
         // Phase 3 ship gate: default live feed excludes frontrun/backrun.
         None => MevKind::live_feed_default_kinds(),
     };
@@ -61,6 +69,11 @@ pub async fn cmd_live_feed(
                 if row.profit_usd.unwrap_or(0.0) < min_profit_usd {
                     continue;
                 }
+                if let Some(shape) = arb_shape {
+                    if !row_matches_arb_shape(row, shape) {
+                        continue;
+                    }
+                }
                 println!(
                     "{}  blk {:>9}  {:<11}  {:<12}  ${:>10.2}  {}",
                     time_hhmmss(row.ts),
@@ -79,6 +92,21 @@ pub async fn cmd_live_feed(
         tokio::time::sleep(std::time::Duration::from_millis(poll_interval_ms.max(250))).await;
     }
     Ok(())
+}
+
+fn row_matches_arb_shape(row: &mev_scout_core::explorer::store::FeedRow, shape: &str) -> bool {
+    if row.kind != "arb_atomic" && row.kind != "jit_arb" {
+        return false;
+    }
+    let Some(details) = row.details_json.as_deref() else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(details) else {
+        return false;
+    };
+    v.pointer("/arb_meta/arb_shape")
+        .and_then(|x| x.as_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case(shape))
 }
 
 fn time_hhmmss(ts: u64) -> String {

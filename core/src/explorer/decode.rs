@@ -29,8 +29,8 @@ use crate::chain::events::{
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-    FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
-    V3_BURN_TOPIC, V3_MINT_TOPIC,
+    FLUID_SWAP_TOPIC, LB_DEPOSITED_TO_BINS_TOPIC, LB_SWAP_TOPIC, LB_WITHDRAWN_FROM_BINS_TOPIC,
+    METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
 };
 
 /// Decode an ERC-20 Transfer fact from a receipt log.
@@ -752,7 +752,114 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
         liquidity,
         amount0: U256::from_be_slice(&log.data[96..128]),
         amount1: U256::from_be_slice(&log.data[128..160]),
+        bin_amm: false,
     })
+}
+
+/// Decode LFJ / Pharaoh LB `DepositedToBins` / `WithdrawnFromBins` into a
+/// JIT fact. Bin ids are mapped into `tick_lower`/`tick_upper` as the inclusive
+/// min/max id so existing JIT pairing can match deposit↔withdraw ranges.
+pub fn decode_lb_bins_liquidity(log: &LogData) -> Option<JitFact> {
+    let topic0 = *log.topics.first()?;
+    let is_mint = topic0 == *LB_DEPOSITED_TO_BINS_TOPIC;
+    let is_burn = topic0 == *LB_WITHDRAWN_FROM_BINS_TOPIC;
+    if !is_mint && !is_burn {
+        return None;
+    }
+    // topics: [sig, sender, to]; data = ABI(uint256[] ids, bytes32[] amounts)
+    if log.topics.len() < 3 || log.data.len() < 64 {
+        return None;
+    }
+    let owner = Address::from_slice(&log.topics[2][12..]);
+    let ids = decode_abi_u256_array(&log.data, 0)?;
+    if ids.is_empty() {
+        return None;
+    }
+    let mut min_id = i32::MAX;
+    let mut max_id = i32::MIN;
+    for id in &ids {
+        let v = u256_to_i32_bin(*id)?;
+        min_id = min_id.min(v);
+        max_id = max_id.max(v);
+    }
+    if min_id == i32::MAX {
+        return None;
+    }
+
+    let (amount0, amount1) = decode_lb_amounts_xy(&log.data).unwrap_or((U256::ZERO, U256::ZERO));
+    Some(JitFact {
+        tx_index: 0,
+        log_index: 0,
+        pool: log.address,
+        owner,
+        tick_lower: min_id,
+        tick_upper: max_id,
+        is_mint,
+        liquidity: ids.len() as u128,
+        amount0,
+        amount1,
+        bin_amm: true,
+    })
+}
+
+fn u256_to_i32_bin(v: U256) -> Option<i32> {
+    let n: u64 = v.try_into().ok()?;
+    i32::try_from(n).ok()
+}
+
+fn u256_to_usize(v: U256) -> Option<usize> {
+    let n: u64 = v.try_into().ok()?;
+    usize::try_from(n).ok()
+}
+
+/// Read a dynamic `uint256[]` from ABI-encoded `data` starting at the head
+/// word index `head_word` (0 = first 32-byte word is the relative offset).
+fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec<U256>> {
+    let head_off = head_word * 32;
+    if data.len() < head_off + 32 {
+        return None;
+    }
+    let rel = u256_to_usize(U256::from_be_slice(&data[head_off..head_off + 32]))?;
+    if data.len() < rel + 32 {
+        return None;
+    }
+    let len = u256_to_usize(U256::from_be_slice(&data[rel..rel + 32]))?;
+    let mut out = Vec::with_capacity(len.min(64));
+    for i in 0..len.min(64) {
+        let start = rel + 32 + i * 32;
+        if data.len() < start + 32 {
+            break;
+        }
+        out.push(U256::from_be_slice(&data[start..start + 32]));
+    }
+    Some(out)
+}
+
+/// Sum packed X/Y amounts from the second dynamic `bytes32[]` in a
+/// DepositedToBins / WithdrawnFromBins payload. Each bytes32 packs
+/// amountX in the low 128 bits and amountY in the high 128 bits (LFJ layout).
+fn decode_lb_amounts_xy(data: &[u8]) -> Option<(U256, U256)> {
+    if data.len() < 64 {
+        return None;
+    }
+    let rel = u256_to_usize(U256::from_be_slice(&data[32..64]))?;
+    if data.len() < rel + 32 {
+        return None;
+    }
+    let len = u256_to_usize(U256::from_be_slice(&data[rel..rel + 32]))?;
+    let mut ax = U256::ZERO;
+    let mut ay = U256::ZERO;
+    for i in 0..len.min(64) {
+        let start = rel + 32 + i * 32;
+        if data.len() < start + 32 {
+            break;
+        }
+        let word = &data[start..start + 32];
+        // amountX = low 16 bytes, amountY = high 16 bytes (LFJ PackedUint128).
+        ax = ax.saturating_add(U256::from_be_slice(&word[16..32]));
+        ay = ay.saturating_add(U256::from_be_slice(&word[0..16]));
+    }
+    Some((ax, ay))
 }
 
 /// True when a token slot is not yet a resolved ERC-20 address (zero or a
@@ -1321,5 +1428,52 @@ mod tests {
         let mut edges = vec![pair(Amm::Aggregator, router, src, dst, 1000, 990)];
         dedup_aggregator_facts(&mut edges);
         assert_eq!(edges.len(), 1);
+    }
+
+    #[test]
+    fn lb_deposited_to_bins_decodes() {
+        let pool = address!("1111111111111111111111111111111111111111");
+        let to = address!("2222222222222222222222222222222222222222");
+        // ABI: offset ids=0x40, offset amounts=0x80, len=1, id=100, len=1, packed xy
+        let mut data = vec![0u8; 192];
+        data[31] = 0x40; // ids offset
+        data[63] = 0x80; // amounts offset
+        data[95] = 1; // ids len
+        data[127] = 100; // bin id 100
+        data[159] = 1; // amounts len
+        // packed: amountY high 16 bytes = 7, amountX low 16 bytes = 9
+        data[175] = 7;
+        data[191] = 9;
+        let j = decode_lb_bins_liquidity(&log(
+            pool,
+            vec![
+                *LB_DEPOSITED_TO_BINS_TOPIC,
+                topic_addr(address!("3333333333333333333333333333333333333333")),
+                topic_addr(to),
+            ],
+            data,
+        ))
+        .unwrap();
+        assert!(j.is_mint);
+        assert!(j.bin_amm);
+        assert_eq!(j.owner, to);
+        assert_eq!(j.tick_lower, 100);
+        assert_eq!(j.tick_upper, 100);
+        assert_eq!(j.liquidity, 1);
+        assert_eq!(j.amount0, U256::from(9));
+        assert_eq!(j.amount1, U256::from(7));
+    }
+
+    #[test]
+    fn lb_topics_match_keccak() {
+        use alloy::primitives::keccak256;
+        assert_eq!(
+            *LB_DEPOSITED_TO_BINS_TOPIC,
+            keccak256(b"DepositedToBins(address,address,uint256[],bytes32[])")
+        );
+        assert_eq!(
+            *LB_WITHDRAWN_FROM_BINS_TOPIC,
+            keccak256(b"WithdrawnFromBins(address,address,uint256[],bytes32[])")
+        );
     }
 }

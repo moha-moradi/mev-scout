@@ -47,28 +47,25 @@ fn explorer_help_lists_subcommands() {
     let ws = temp_ws("args_explorer_help");
     let out = run(&ws, &["explorer", "--help"]);
     expect_ok(&out, "explorer --help");
-    for sub in [
-        "doctor", "index", "live", "stats", "top", "show", "explain", "validate", "export",
-    ] {
+    for sub in ["doctor", "index", "live", "stats", "top", "show"] {
         assert!(
             out.stdout.contains(sub),
             "explorer --help missing subcommand '{sub}'"
         );
     }
+    for removed in ["explain", "validate", "export"] {
+        assert!(
+            !out.stdout.contains(removed),
+            "explorer --help still lists removed subcommand '{removed}'"
+        );
+    }
 }
 
 #[test]
-fn explorer_validate_fails_without_store() {
-    // A workspace with no indexed explorer store must fail with a clear
-    // message (no panic), not silently print an empty report.
-    let ws = temp_ws("args_explorer_validate_empty");
+fn explorer_unknown_subcommand_fails() {
+    let ws = temp_ws("args_explorer_unknown_sub");
     let out = run(&ws, &["explorer", "validate"]);
-    expect_fail(&out, "explorer validate with empty store");
-    assert!(
-        out.combined().contains("explorer index") || out.combined().contains("no indexed ops"),
-        "expected missing-store error, got:\n{}",
-        out.combined()
-    );
+    expect_fail(&out, "removed explorer validate subcommand");
 }
 
 #[test]

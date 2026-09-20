@@ -149,6 +149,7 @@ fn golden_input() -> BlockInput {
         liquidity: 1000,
         amount0: U256::from(5),
         amount1: U256::from(5),
+        bin_amm: false,
     };
     let burn = JitFact {
         tx_index: 5,
@@ -161,6 +162,7 @@ fn golden_input() -> BlockInput {
         liquidity: 1000,
         amount0: U256::from(5),
         amount1: U256::from(5),
+        bin_amm: false,
     };
     let mint_tx = tx_input(
         4,

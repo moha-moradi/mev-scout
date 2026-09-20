@@ -33,7 +33,7 @@ pub fn print_startup_plan(result: &validation::ValidationResult, config: &Config
 }
 
 /// Persist run/live results into the explorer store's `opportunities` table
-/// (the results layer feeds `explorer validate`). The
+/// (the results layer feeds offline analysis of rejected candidates). The
 /// execution history lives only in SQLite; failures here warn only.
 pub fn persist_opportunities_to_explorer(
     config: &Config,

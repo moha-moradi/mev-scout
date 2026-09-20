@@ -99,6 +99,7 @@ pub struct FeedRow {
     pub eoa: String,
     pub tx_hash: String,
     pub route_json: Option<String>,
+    pub details_json: Option<String>,
     /// Spot USD for the chain native / wrapped-native (mevlive Price column).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_price_usd: Option<f64>,
@@ -882,7 +883,7 @@ impl ExplorerStore {
         };
         let sql = format!(
             "SELECT ts, block_number, kind, profit_token, profit_amount, profit_usd, gas_cost_usd,
-                    net_profit_usd, eoa, tx_hash, route_json
+                    net_profit_usd, eoa, tx_hash, route_json, details_json
              FROM mev_ops {order}
              ORDER BY block_number DESC, tx_index DESC, id DESC LIMIT {limit}"
         );
@@ -1861,6 +1862,7 @@ fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
         eoa: r.get(8)?,
         tx_hash: r.get(9)?,
         route_json: r.get(10)?,
+        details_json: r.get(11)?,
         native_price_usd: None,
     })
 }

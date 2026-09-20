@@ -65,8 +65,7 @@ pub enum Command {
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data (index, live feed, stats, leaderboards, op detail,
-    /// cross-validation against the opportunity scanner).
+    /// raw chain data (index, live feed, stats, leaderboards, op detail).
     Explorer(ExplorerArgs),
 }
 
@@ -94,17 +93,6 @@ pub enum ExplorerCommand {
     /// Operation detail for a tx hash; --trace recomputes exact profit via
     /// debug_traceTransaction (prestateTracer diffMode).
     Show(ShowArgs),
-
-    /// Per-miss drill-down: realized op + the scanner's rejected candidates
-    /// + inferred M1–M8 miss cause.
-    Explain(ExplainArgs),
-
-    /// Cross-validation: realized ground truth vs run/live opportunities.
-    /// Reports tiered recall, USD-weighted recall, miss taxonomy, sweep.
-    Validate(ValidateArgs),
-
-    /// Bulk export of realized ops (json|csv).
-    Export(ExportArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -118,12 +106,21 @@ pub struct IndexArgs {
     /// Stop live indexing after this duration (e.g. 90s, 15m, 1h)
     #[arg(long, value_name = "DURATION")]
     pub duration: Option<String>,
+
+    /// Historical backfill start (requires --to-block). Inclusive.
+    #[arg(long = "from-block", value_name = "NUMBER", value_parser = clap::value_parser!(u64).range(1..))]
+    pub from_block: Option<u64>,
+
+    /// Historical backfill end (requires --from-block). Inclusive.
+    #[arg(long = "to-block", value_name = "NUMBER", value_parser = clap::value_parser!(u64).range(1..))]
+    pub to_block: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct LiveFeedArgs {
     /// Comma-separated kind filter. Default excludes frontrun/backrun (Phase 3
-    /// ship gate). Pass `all` to include every kind, or an explicit list.
+    /// ship gate) unless `[explorer].live_feed_kinds` is set. Pass `all` to
+    /// include every kind, or an explicit list.
     #[arg(long, value_name = "KINDS")]
     pub kinds: Option<String>,
 
@@ -138,6 +135,10 @@ pub struct LiveFeedArgs {
     /// Stop after this duration (e.g. 90s, 15m, 1h)
     #[arg(long, value_name = "DURATION")]
     pub duration: Option<String>,
+
+    /// Filter atomic arbs by shape: two_pool|triangular|multi_hop|transfer_cycle
+    #[arg(long = "arb-shape", value_name = "SHAPE")]
+    pub arb_shape: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -153,6 +154,10 @@ pub struct StatsArgs {
     /// Filter to one kind
     #[arg(long, value_name = "KIND")]
     pub kind: Option<String>,
+
+    /// Filter atomic arbs by shape: two_pool|triangular|multi_hop|transfer_cycle
+    #[arg(long = "arb-shape", value_name = "SHAPE")]
+    pub arb_shape: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -183,68 +188,6 @@ pub struct ShowArgs {
     /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
     #[arg(long)]
     pub trace: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ExplainArgs {
-    /// Transaction hash of the missed realized op
-    #[arg(value_name = "TX_HASH")]
-    pub tx_hash: String,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ValidateArgs {
-    /// Time window: 1d|7d|30d|all
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Match window in blocks (default 0 for run backtests; 1 recommended for live)
-    #[arg(long = "match-window", default_value = "0", value_name = "N")]
-    pub match_window: u64,
-
-    /// Restrict scanner side to these run ids (repeatable)
-    #[arg(long = "run", value_name = "RUN_ID")]
-    pub run: Vec<String>,
-
-    /// Report recall(count+USD) as a function of the min-profit threshold
-    #[arg(long = "threshold-sweep")]
-    pub threshold_sweep: bool,
-
-    /// Write realized-op pools missing from the scanner pool set to results/missing_pools.txt
-    #[arg(long = "emit-missing-pools")]
-    pub emit_missing_pools: bool,
-
-    /// Export realized review candidates (inferred arb/unknown) to this CSV path
-    #[arg(long = "review-csv", value_name = "FILE")]
-    pub review_csv: Option<String>,
-
-    /// Score the Phase 0.5 Backrun/Frontrun labeled golden set (no store needed
-    /// when used alone; attaches to the validation report when combined).
-    #[arg(long = "golden-causal")]
-    pub golden_causal: bool,
-
-    /// Machine-readable JSON output
-    #[arg(long)]
-    pub json: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ExportArgs {
-    /// Output format: json|csv (default json)
-    #[arg(long, default_value = "json")]
-    pub format: String,
-
-    /// Time window: 1d|7d|30d|all
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Comma-separated kind filter
-    #[arg(long, value_name = "KINDS")]
-    pub kinds: Option<String>,
-
-    /// Output file path (default results/explorer_export_<epoch>.<ext>)
-    #[arg(long, value_name = "FILE")]
-    pub out: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -289,8 +232,8 @@ pub struct RunArgs {
     #[arg(long = "batch-rpc", help_heading = "RPC")]
     pub batch_rpc: bool,
 
-    /// Record rejected candidates into the explorer store for
-    /// false-negative attribution in `explorer validate`. Off by default.
+    /// Record rejected candidates into the explorer store for later
+    /// false-negative analysis. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
 
@@ -528,8 +471,8 @@ pub struct LiveArgs {
     )]
     pub poll_interval_ms: u64,
 
-    /// Record rejected candidates into the explorer store for
-    /// false-negative attribution in `explorer validate`. Off by default.
+    /// Record rejected candidates into the explorer store for later
+    /// false-negative analysis. Off by default.
     #[arg(long = "record-rejections")]
     pub record_rejections: bool,
 
