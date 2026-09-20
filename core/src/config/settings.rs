@@ -110,7 +110,7 @@ pub struct ExplorerConfig {
     /// Mevlive-parity `arb_atomic` fallback (Phase 1.2). When true, a profitable
     /// non-cycle residual is still labeled arb (can FP simple swaps as arb).
     /// Default **false** so classification matches the closed-cycle + flow-
-    /// ownership rules in `mev_opportunity_detection_and_pnl_spec.md` §7.1.
+    /// ownership rules in `mev_detection_and_opportunity_engine_spec.md` §11.1.
     #[serde(default = "default_false")]
     pub arb_likely_parity: bool,
 }
