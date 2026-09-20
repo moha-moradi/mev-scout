@@ -82,16 +82,46 @@ pub struct BacktestConfig {
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     #[serde(default)]
     pub max_candidates_per_tx: usize,
+    /// Enable JSON-RPC batching (block+receipts in one HTTP POST). Off by default.
+    #[serde(default)]
+    pub batch_rpc: bool,
+    /// Record rejected candidates into the explorer store for false-negative analysis.
+    #[serde(default)]
+    pub record_rejections: bool,
 }
 
+/// Discover sub-config: `[discover]` TOML section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OutputConfig {
-    /// Output format: "table", "json", or "csv"
-    #[serde(default = "default_output_format")]
-    pub output: OutputFormat,
-    /// Directory for SQLite database file
-    #[serde(default = "default_db_path")]
-    pub db_path: String,
+pub struct DiscoverConfig {
+    /// Batch size for each getLogs request (default: 500).
+    #[serde(default = "default_discover_batch_size")]
+    pub batch_size: u64,
+    /// Max concurrent RPC calls during pool metadata fetch (default: 8).
+    #[serde(default = "default_discover_rpc_concurrency")]
+    pub rpc_concurrency: usize,
+    /// Post-discovery health check filtering drained pools (default: true).
+    #[serde(default = "default_true")]
+    pub health_check: bool,
+    /// Minimum USD TVL for remote-sourced pools (default: 0).
+    #[serde(default)]
+    pub min_tvl: f64,
+    /// Per-source pagination cap for remote discovery (default: 1000).
+    #[serde(default = "default_discover_max_pools")]
+    pub max_pools: usize,
+    /// Resolve missing fee/tickSpacing/token metadata for remote CL pools via Multicall3.
+    #[serde(default)]
+    pub resolve_remote_metadata: bool,
+    /// Solidly-style pool fee override in basis points (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solidly_fee_bps: Option<u32>,
+}
+
+/// Live sub-config: `[live]` TOML section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveConfig {
+    /// Polling interval in milliseconds when `--loop` is set (default: 2000).
+    #[serde(default = "default_live_poll_ms")]
+    pub poll_interval_ms: u64,
 }
 
 /// Explorer sub-config: `[explorer]` TOML section.
@@ -118,12 +148,36 @@ pub struct ExplorerConfig {
 fn default_false() -> bool {
     false
 }
-
+fn default_true() -> bool {
+    true
+}
+fn default_discover_batch_size() -> u64 {
+    500
+}
+fn default_discover_rpc_concurrency() -> usize {
+    8
+}
+fn default_discover_max_pools() -> usize {
+    1000
+}
+fn default_live_poll_ms() -> u64 {
+    2000
+}
 fn default_explorer_confirmations() -> u64 {
     6
 }
 fn default_explorer_poll_ms() -> u64 {
     2000
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
+    /// Output format: "table", "json", or "csv"
+    #[serde(default = "default_output_format")]
+    pub output: OutputFormat,
+    /// Directory for SQLite database file
+    #[serde(default = "default_db_path")]
+    pub db_path: String,
 }
 
 // ── Default helpers ─────────────────────────────────────────────────
@@ -243,6 +297,30 @@ impl Default for BacktestConfig {
             capture_pending: false,
             min_profit_wei: 0,
             max_candidates_per_tx: 0,
+            batch_rpc: false,
+            record_rejections: false,
+        }
+    }
+}
+
+impl Default for DiscoverConfig {
+    fn default() -> Self {
+        DiscoverConfig {
+            batch_size: default_discover_batch_size(),
+            rpc_concurrency: default_discover_rpc_concurrency(),
+            health_check: true,
+            min_tvl: 0.0,
+            max_pools: default_discover_max_pools(),
+            resolve_remote_metadata: false,
+            solidly_fee_bps: None,
+        }
+    }
+}
+
+impl Default for LiveConfig {
+    fn default() -> Self {
+        LiveConfig {
+            poll_interval_ms: default_live_poll_ms(),
         }
     }
 }
@@ -311,6 +389,12 @@ pub struct Config {
     /// the flattened top-level fields above.
     #[serde(default)]
     pub explorer: ExplorerConfig,
+    /// Discover tuning knobs — `[discover]` TOML section.
+    #[serde(default)]
+    pub discover: DiscoverConfig,
+    /// Live polling knobs — `[live]` TOML section.
+    #[serde(default)]
+    pub live: LiveConfig,
 }
 
 impl Config {
@@ -352,6 +436,8 @@ impl Default for Config {
             backtest: BacktestConfig::default(),
             output: OutputConfig::default(),
             explorer: ExplorerConfig::default(),
+            discover: DiscoverConfig::default(),
+            live: LiveConfig::default(),
         }
     }
 }
@@ -765,6 +851,8 @@ pub struct BacktestOverrides {
     pub capture_pending: Option<bool>,
     pub min_profit_wei: Option<u64>,
     pub max_candidates_per_tx: Option<usize>,
+    pub batch_rpc: Option<bool>,
+    pub record_rejections: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -901,7 +989,9 @@ impl Config {
                 (proximity_window, copy),
                 (capture_pending, copy),
                 (min_profit_wei, copy),
-                (max_candidates_per_tx, copy)
+                (max_candidates_per_tx, copy),
+                (batch_rpc, copy),
+                (record_rejections, copy)
             ]
         );
         merge_sub!(self, overrides, output, [(output, parse), (db_path)]);

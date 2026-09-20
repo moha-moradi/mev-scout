@@ -65,6 +65,13 @@ fn live_loop_duration_graceful_exit() {
     let db_s = db.to_str().unwrap();
 
     let pipeline = live_cfg(&ws, &[("db_path", db_s)]);
+    // Faster poll for the short duration loop via [live] config.
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut f = OpenOptions::new().append(true).open(&pipeline).unwrap();
+        writeln!(f, "\n[live]\npoll_interval_ms = 1000").unwrap();
+    }
     let mut c = scout(&ws);
     c.args([
         "-f",
@@ -73,8 +80,6 @@ fn live_loop_duration_graceful_exit() {
         "--loop",
         "--duration",
         "30s",
-        "--poll-interval",
-        "1000",
     ]);
     let out = run_timed(&mut c, Duration::from_secs(300)).expect("live loop spawn failed");
     expect_ok(

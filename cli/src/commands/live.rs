@@ -33,11 +33,6 @@ pub async fn cmd_live(
     args: &LiveArgs,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    if let Some(format) = args.progress.as_deref() {
-        if format != "json" {
-            anyhow::bail!("unsupported --progress format '{format}' (only 'json')");
-        }
-    }
     if args.max_blocks.is_some() && !args.r#loop {
         anyhow::bail!("--max-blocks requires --loop");
     }
@@ -46,8 +41,8 @@ pub async fn cmd_live(
     let opts = LiveOpts {
         loop_enabled: args.r#loop,
         duration: args.duration.clone(),
-        poll_interval_ms: args.poll_interval_ms,
-        record_rejections: args.record_rejections,
+        poll_interval_ms: config.live.poll_interval_ms,
+        record_rejections: config.backtest.record_rejections,
         max_blocks: args.max_blocks,
     };
 

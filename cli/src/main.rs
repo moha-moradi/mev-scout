@@ -3,7 +3,7 @@ use tracing_subscriber::EnvFilter;
 
 use mev_scout_cli::cli::{Cli, Command};
 use mev_scout_cli::commands;
-use mev_scout_cli::job_progress::{BarProgress, JobProgress, NoopProgress, StdoutJsonProgress};
+use mev_scout_cli::job_progress::{BarProgress, JobProgress, NoopProgress};
 use mev_scout_cli::overrides;
 use mev_scout_core::config::Config;
 
@@ -23,17 +23,9 @@ fn setup_logging(verbose: bool, quiet: bool) {
         .init();
 }
 
-/// Pick the presentation sink: NDJSON on stdout when `--progress json` was
-/// requested by a progress-capable command, an indicatif bar otherwise.
+/// Pick the presentation sink: indicatif bar for run/live, noop otherwise.
 fn make_sink(cmd: &Command) -> Box<dyn JobProgress> {
-    let json = match cmd {
-        Command::Run(a) => a.progress.as_deref() == Some("json"),
-        Command::Live(a) => a.progress.as_deref() == Some("json"),
-        _ => false,
-    };
-    if json {
-        Box::new(StdoutJsonProgress)
-    } else if matches!(cmd, Command::Run(_) | Command::Live(_)) {
+    if matches!(cmd, Command::Run(_) | Command::Live(_)) {
         Box::new(BarProgress::new())
     } else {
         Box::new(NoopProgress)

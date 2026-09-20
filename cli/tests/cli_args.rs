@@ -406,12 +406,12 @@ fn quiet_and_verbose_flags_parse_ok_offline() {
 // ── tokens (fully offline: SQLite + bundled known-token list) ────────────────
 
 #[test]
-fn tokens_filters_work_offline() {
+fn tokens_cache_and_listing_work_offline() {
     let ws = temp_ws("args_tokens");
     let db = ws.join("tokens.db");
     let db_s: &str = db.to_str().unwrap();
 
-    // Full unfiltered dump via JSON. NB: tracing INFO lines share stdout, so
+    // Full dump via JSON. NB: tracing INFO lines share stdout, so
     // the JSON array must be extracted rather than parsed whole.
     let json_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let out = run(&ws, &["-f", &json_cfg, "tokens"]);
@@ -424,46 +424,17 @@ fn tokens_filters_work_offline() {
         "bundled known-token list should seed the cache offline"
     );
 
-    // Symbol substring filter (USDC is guaranteed in the bundled Polygon list).
-    let out = run(&ws, &["-f", &json_cfg, "tokens", "--symbol", "USDC"]);
-    expect_ok(&out, "tokens --symbol USDC");
-    let entries = common::extract_json_array(&out.stdout)
-        .expect("tokens --output json should print a JSON array");
-    let entries = entries.as_array().expect("tokens json must be an array");
-    assert!(
-        !entries.is_empty()
-            && entries.iter().all(|t| t["symbol"]
-                .as_str()
-                .unwrap_or("")
-                .to_lowercase()
-                .contains("usdc")),
-        "--symbol USDC must only keep USDC-like entries, got: {entries:?}"
-    );
-
-    // Exact decimals filter (USDC variants are 6-decimal).
-    let out = run(&ws, &["-f", &json_cfg, "tokens", "--decimals", "6"]);
-    expect_ok(&out, "tokens --decimals 6");
-    let entries = common::extract_json_array(&out.stdout)
-        .expect("tokens --output json should print a JSON array");
-    let entries = entries.as_array().expect("tokens json must be an array");
-    assert!(
-        !entries.is_empty() && entries.iter().all(|t| t["decimals"] == 6),
-        "--decimals 6 must only keep 6-decimal tokens, got: {entries:?}"
-    );
-
-    // Limit caps the listing.
-    let out = run(&ws, &["-f", &json_cfg, "tokens", "--limit", "1"]);
-    expect_ok(&out, "tokens --limit 1");
-    let entries = common::extract_json_array(&out.stdout)
-        .expect("tokens --output json should print a JSON array");
-    assert!(
-        entries.as_array().map(|a| a.len() <= 1).unwrap_or(false),
-        "--limit 1 must cap the number of listed tokens, got: {entries:?}"
-    );
-
-    // Default human-readable table (rewrite base cfg: every make_cfg call
-    // targets the same ws/mev-scout.toml path, last write wins).
+    // cache-only summary
     let base = make_cfg(&ws, &[("db_path", db_s)]);
+    let out = run(&ws, &["-f", &base, "tokens", "--cache-only"]);
+    expect_ok(&out, "tokens --cache-only");
+    assert!(
+        out.stdout.contains("Token cache:"),
+        "expected cache summary line, got:\n{}",
+        out.stdout
+    );
+
+    // Default human-readable table
     let out = run(&ws, &["-f", &base, "tokens"]);
     expect_ok(&out, "tokens default table output");
     assert!(

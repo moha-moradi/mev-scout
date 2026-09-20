@@ -74,14 +74,7 @@ impl CliCommand for ExplorerArgs {
                 cmd_index(config, a.duration.as_deref(), progress).await
             }
             ExplorerCommand::Stats(a) => {
-                cmd_stats(
-                    config,
-                    a.since.as_deref(),
-                    a.window.as_deref(),
-                    a.kind.as_deref(),
-                    a.arb_shape.as_deref(),
-                )
-                .await
+                cmd_stats(config, a.since.as_deref(), a.kind.as_deref()).await
             }
             ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
         }

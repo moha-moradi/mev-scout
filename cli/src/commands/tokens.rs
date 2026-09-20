@@ -11,9 +11,9 @@ pub async fn cmd_tokens(config: &Config, args: &TokensArgs) -> anyhow::Result<()
     let _ = validation::resolve_chain(config).context("failed to resolve chain")?;
 
     let opts = TokensOpts {
-        symbol: args.symbol.clone(),
-        decimals: args.decimals.map(u64::from),
-        limit: args.limit,
+        symbol: None,
+        decimals: None,
+        limit: 100,
         cache_only: args.cache_only,
         enrich: args.enrich,
     };

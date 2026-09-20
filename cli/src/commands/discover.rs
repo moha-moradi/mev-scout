@@ -5,18 +5,20 @@ use crate::job_progress::JobProgress;
 use mev_scout_core::config::Config;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::pool::discovery::DiscoveredPool;
+use mev_scout_core::types::OutputFormat;
 
 pub async fn cmd_discover(
     config: &Config,
     args: &DiscoverArgs,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    if args.batch_size > 5000 {
+    let d = &config.discover;
+    if d.batch_size > 5000 {
         eprintln!(
             "  Warning: batch_size={} exceeds recommended maximum of 5000 for public RPCs. \
                    Free-tier endpoints (drpc, Ankr, CloudFlare) typically cap eth_getLogs at 5K–10K blocks. \
-                   Consider using --batch-size 2000 for best results.",
-            args.batch_size
+                   Consider setting [discover].batch_size = 2000 for best results.",
+            d.batch_size
         );
     }
 
@@ -28,22 +30,23 @@ pub async fn cmd_discover(
         DiscoverySource::Hybrid => "hybrid",
     };
 
+    let json = matches!(config.output.output, OutputFormat::Json);
     let opts = mev_scout_core::jobs::DiscoverOpts {
         source: source.to_string(),
         enrich: args.enrich,
-        min_tvl: if args.min_tvl > 0.0 {
-            Some(args.min_tvl)
+        min_tvl: if d.min_tvl > 0.0 {
+            Some(d.min_tvl)
         } else {
             None
         },
-        max_pools: args.max_pools,
-        batch_size: args.batch_size,
-        rpc_concurrency: args.rpc_concurrency,
+        max_pools: d.max_pools,
+        batch_size: d.batch_size,
+        rpc_concurrency: d.rpc_concurrency,
         incremental: args.incremental,
-        health_check: args.health_check,
-        json: args.json,
-        solidly_fee_bps: args.solidly_fee_bps.map(u64::from),
-        resolve_remote_metadata: args.resolve_remote_metadata,
+        health_check: d.health_check,
+        json,
+        solidly_fee_bps: d.solidly_fee_bps.map(u64::from),
+        resolve_remote_metadata: d.resolve_remote_metadata,
     };
 
     let outcome = mev_scout_core::jobs::job_discover(config, &opts, progress).await?;
@@ -54,7 +57,7 @@ pub async fn cmd_discover(
     }
 
     let mode = OutputMode {
-        json: args.json,
+        json,
         remote_only: is_remote_only,
         hybrid: is_hybrid,
         enrich: args.enrich,

@@ -32,6 +32,25 @@ gas_model = "historical_exact"
 # Default output format: table | csv | json
 output = "table"
 
+# JSON-RPC batching for run/live block+receipt fetches (off by default)
+# batch_rpc = false
+# Record rejected candidates into the explorer store (off by default)
+# record_rejections = false
+
+# ── Discover tuning ────────────────────────────────────────────────
+# [discover]
+# batch_size = 500
+# rpc_concurrency = 8
+# health_check = true
+# min_tvl = 0.0
+# max_pools = 1000
+# resolve_remote_metadata = false
+# solidly_fee_bps = 30
+
+# ── Live polling ───────────────────────────────────────────────────
+# [live]
+# poll_interval_ms = 2000
+
 # ── Per-chain public RPC overrides ─────────────────────────────────
 # Switching chains via `--chain` / config just works — every chain gets its
 # own public endpoints from chainlist. `rps_limit` / `block_concurrency` stay

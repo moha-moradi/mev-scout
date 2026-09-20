@@ -1,14 +1,12 @@
 //! Job progress sinks for the CLI binary. The shared trait/event types live
 //! in `mev_scout_core::progress`; here we pick a presentation sink per mode:
-//! `--progress json` → NDJSON on stdout, otherwise an indicatif bar.
+//! indicatif bar for `run`/`live`, noop otherwise.
 //!
-//! The CLI reads `--progress json` to choose a [`StdoutJsonProgress`] sink,
-//! falling back to [`BarProgress`].
+//! [`StdoutJsonProgress`] remains available for embedding hosts that want NDJSON.
 
 pub use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
-/// Sink for the CLI's plain (non-`--progress json`) mode: a fetch-stage
-/// indicatif bar, other stages ignored.
+/// Sink for the CLI's plain mode: a fetch-stage indicatif bar, other stages ignored.
 #[derive(Default)]
 pub struct BarProgress {
     bar: std::sync::Mutex<Option<indicatif::ProgressBar>>,

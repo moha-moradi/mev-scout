@@ -234,7 +234,6 @@ pub fn rpc_ready(ws: &Path) -> bool {
         "onchain",
         "--blocks",
         "1",
-        "--json",
     ]);
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }

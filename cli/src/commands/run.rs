@@ -12,18 +12,14 @@ pub async fn cmd_run(
     args: &RunArgs,
     progress: &dyn JobProgress,
 ) -> anyhow::Result<()> {
-    if let Some(format) = args.progress.as_deref() {
-        if format != "json" {
-            anyhow::bail!("unsupported --progress format '{format}' (only 'json')");
-        }
-    }
+    let _ = args;
     let validation_result =
         validation::validate_and_resolve(config).context("invalid configuration")?;
     print_startup_plan(&validation_result, config);
 
     let opts = RunOpts {
-        batch_rpc: args.batch_rpc,
-        record_rejections: args.record_rejections,
+        batch_rpc: config.backtest.batch_rpc,
+        record_rejections: config.backtest.record_rejections,
     };
     let outcome = job_run(config, &opts, progress).await?;
 

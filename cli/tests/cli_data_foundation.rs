@@ -4,7 +4,14 @@ use common::{
     ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, rpc_lock, run_timed, scout,
     HEAVY_TIMEOUT, NETWORK_TIMEOUT,
 };
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::time::Duration;
+
+fn append_toml(path: &str, extra: &str) {
+    let mut f = OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(f, "\n{extra}").unwrap();
+}
 
 #[test]
 fn data_foundation_pipeline_discover_tokens() {
@@ -15,7 +22,7 @@ fn data_foundation_pipeline_discover_tokens() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let discover_cfg = make_cfg(&ws, &[("db_path", db_s)]);
+    let discover_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args([
         "-f",
@@ -25,7 +32,6 @@ fn data_foundation_pipeline_discover_tokens() {
         "onchain",
         "--blocks",
         "5",
-        "--json",
     ]);
     let out = match run_timed(&mut c, HEAVY_TIMEOUT) {
         Ok(o) => o,
@@ -37,13 +43,13 @@ fn data_foundation_pipeline_discover_tokens() {
     expect_ok(&out, "discover onchain 5 blocks");
     let pools = extract_json_array(&out.stdout).unwrap_or_else(|| {
         panic!(
-            "discover --json did not print a JSON array\nexit={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            "discover with output=json did not print a JSON array\nexit={:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
             out.code, out.stdout, out.stderr
         )
     });
     let entries = pools
         .as_array()
-        .expect("discover --json output must be an array");
+        .expect("discover json output must be an array");
     for p in entries {
         assert!(p.get("address").is_some(), "pool missing address: {p}");
         assert!(p.get("token0").is_some(), "pool missing token0: {p}");
@@ -101,7 +107,14 @@ fn discover_remote_tolerant_to_service_failures() {
         return;
     };
 
-    let rem_cfg = make_cfg(&ws, &[("db_path", ws.join("cache.db").to_str().unwrap())]);
+    let rem_cfg = make_cfg(
+        &ws,
+        &[
+            ("db_path", ws.join("cache.db").to_str().unwrap()),
+            ("output", "\"json\""),
+        ],
+    );
+    append_toml(&rem_cfg, "[discover]\nmax_pools = 50");
     let mut c = scout(&ws);
     c.args([
         "-f",
@@ -110,9 +123,6 @@ fn discover_remote_tolerant_to_service_failures() {
         "--source",
         "remote",
         "--enrich",
-        "--max-pools",
-        "50",
-        "--json",
     ]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,

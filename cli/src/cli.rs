@@ -89,17 +89,9 @@ pub struct StatsArgs {
     #[arg(long, value_name = "WINDOW")]
     pub since: Option<String>,
 
-    /// Period bucket hint: day|week|month|year
-    #[arg(long, value_name = "PERIOD")]
-    pub window: Option<String>,
-
     /// Filter to one kind
     #[arg(long, value_name = "KIND")]
     pub kind: Option<String>,
-
-    /// Filter atomic arbs by shape: two_pool|triangular|multi_hop|transfer_cycle
-    #[arg(long = "arb-shape", value_name = "SHAPE")]
-    pub arb_shape: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -149,21 +141,6 @@ impl TryFrom<&BlockRangeArgs> for mev_scout_core::config::validation::RangeSpec 
 pub struct RunArgs {
     #[command(flatten)]
     pub block_range: BlockRangeArgs,
-
-    /// Enable JSON-RPC batching (send block+receipts in one HTTP POST).
-    /// Disabled by default — separate parallel requests often achieve better throughput.
-    #[arg(long = "batch-rpc", help_heading = "RPC")]
-    pub batch_rpc: bool,
-
-    /// Record rejected candidates into the explorer store for later
-    /// false-negative analysis. Off by default.
-    #[arg(long = "record-rejections")]
-    pub record_rejections: bool,
-
-    /// Emit NDJSON stage-progress events to stdout for machine consumers.
-    /// Only "json" is supported; replaces the indicative progress bar.
-    #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
-    pub progress: Option<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -178,32 +155,10 @@ pub struct DiscoverArgs {
     #[command(flatten)]
     pub block_range: BlockRangeArgs,
 
-    /// Batch size for each getLogs request (default: 500, safe for public RPCs)
-    #[arg(long, default_value = "500", value_name = "NUMBER")]
-    pub batch_size: u64,
-
-    /// Output discovered pools as JSON instead of human-readable tables
-    #[arg(long)]
-    pub json: bool,
-
-    /// Max concurrent RPC calls during pool metadata fetch (default: 8, safe for public RPCs)
-    #[arg(long = "rpc-concurrency", default_value = "8", value_name = "NUMBER")]
-    pub rpc_concurrency: usize,
-
     /// Resume from the latest cached block instead of the full range.
     /// Queries the cache for the highest creation_block and scans from there.
     #[arg(long)]
     pub incremental: bool,
-
-    /// Run a post-discovery health check that queries on-chain state to filter
-    /// out drained (zero-reserve) pools. Enabled by default.
-    #[arg(long, default_value = "true", value_name = "BOOL")]
-    pub health_check: bool,
-
-    /// Solidly-style pool fee in basis points (default: 30).
-    /// Overrides v2_fee_override for Solidly/Velodrome/Aerodrome pools.
-    #[arg(long = "solidly-fee-bps", value_name = "BPS")]
-    pub solidly_fee_bps: Option<u32>,
 
     /// Pool source: onchain (RPC events only), remote (GeckoTerminal
     /// aggregator only), or hybrid (union of both, deduped by address).
@@ -215,22 +170,6 @@ pub struct DiscoverArgs {
     /// from the free GeckoTerminal aggregator. Implies one remote fetch.
     #[arg(long)]
     pub enrich: bool,
-
-    /// Minimum USD TVL for remote-sourced pools (default 0 = full parity with
-    /// on-chain discovery; opt-in to mimic explorer dust suppression).
-    #[arg(long = "min-tvl", default_value = "0", value_name = "USD")]
-    pub min_tvl: f64,
-
-    /// Per-source pagination cap for remote discovery (default 1000).
-    #[arg(long = "max-pools", default_value = "1000", value_name = "N")]
-    pub max_pools: usize,
-
-    /// Resolve missing fee/tickSpacing/token metadata for remote-sourced
-    /// concentrated-liquidity pools via a Multicall3 batch (one eth_call per
-    /// ~25 pools). Off by default so offline/remote-only workflows stay RPC-free.
-    /// Results are persisted to the SQLite cache and never re-fetched.
-    #[arg(long = "resolve-remote-metadata")]
-    pub resolve_remote_metadata: bool,
 }
 
 /// Pool discovery source selection.
@@ -243,18 +182,6 @@ pub enum DiscoverySource {
 
 #[derive(Args, Debug, Clone)]
 pub struct TokensArgs {
-    /// Filter by symbol pattern (case-insensitive substring match)
-    #[arg(long, value_name = "PATTERN")]
-    pub symbol: Option<String>,
-
-    /// Filter by exact decimals value
-    #[arg(long, value_name = "N")]
-    pub decimals: Option<u8>,
-
-    /// Maximum tokens to display (default: 100)
-    #[arg(long, default_value = "100", value_name = "N")]
-    pub limit: usize,
-
     /// Only populate / report cache size; skip detailed listing
     #[arg(long)]
     pub cache_only: bool,
@@ -276,27 +203,8 @@ pub struct LiveArgs {
     #[arg(long = "duration", value_name = "DURATION", help_heading = "Live")]
     pub duration: Option<String>,
 
-    /// Polling interval in milliseconds (default: 2000)
-    #[arg(
-        long = "poll-interval",
-        default_value = "2000",
-        value_name = "MS",
-        help_heading = "Live"
-    )]
-    pub poll_interval_ms: u64,
-
-    /// Record rejected candidates into the explorer store for later
-    /// false-negative analysis. Off by default.
-    #[arg(long = "record-rejections")]
-    pub record_rejections: bool,
-
     /// Stop continuous polling after processing this many blocks
     /// (requires --loop).
     #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
     pub max_blocks: Option<u64>,
-
-    /// Emit NDJSON stage-progress events to stdout for machine consumers.
-    /// Only "json" is supported; replaces the indicative progress bar.
-    #[arg(long = "progress", value_name = "FORMAT", help_heading = "Output")]
-    pub progress: Option<String>,
 }
