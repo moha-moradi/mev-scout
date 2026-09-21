@@ -197,6 +197,11 @@ fn reason_list(details: &serde_json::Value) -> Vec<String> {
 }
 
 impl ExplorerStore {
+    /// Shared connection for extension modules (e.g. paper tables).
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Open (or create) the explorer database at `path`.
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         if let Some(parent) = path.as_ref().parent() {
@@ -398,6 +403,45 @@ impl ExplorerStore {
               ON rejected_candidates(chain, block_number);
             CREATE INDEX IF NOT EXISTS rejected_reason
               ON rejected_candidates(reject_reason);
+
+            CREATE TABLE IF NOT EXISTS paper_sessions(
+              session_id TEXT PRIMARY KEY,
+              chain TEXT NOT NULL,
+              mode TEXT NOT NULL,
+              linked_run_id TEXT,
+              start_block INTEGER NOT NULL,
+              end_block INTEGER NOT NULL,
+              starting_gas_wei TEXT NOT NULL,
+              ending_gas_wei TEXT NOT NULL,
+              reserve_wei TEXT NOT NULL,
+              fills INTEGER NOT NULL,
+              skipped INTEGER NOT NULL,
+              net_profit_wei TEXT NOT NULL,
+              max_drawdown_wei TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS paper_sessions_created
+              ON paper_sessions(created_at);
+            CREATE INDEX IF NOT EXISTS paper_sessions_chain
+              ON paper_sessions(chain, created_at);
+
+            CREATE TABLE IF NOT EXISTS paper_fills(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id TEXT NOT NULL,
+              block_number INTEGER NOT NULL,
+              tx_index INTEGER,
+              canonical_id TEXT,
+              strategy TEXT NOT NULL,
+              gross_wei TEXT NOT NULL,
+              gas_wei TEXT NOT NULL,
+              net_wei TEXT NOT NULL,
+              wallet_before TEXT NOT NULL,
+              wallet_after TEXT NOT NULL,
+              pools_json TEXT,
+              mempool_only INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS paper_fills_session
+              ON paper_fills(session_id, block_number);
             ",
         )?;
         // Phase 2.2 runtime migration for databases created before the

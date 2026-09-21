@@ -10,6 +10,7 @@ pub mod explorer;
 pub mod fetch;
 pub mod jobs;
 pub mod mev;
+pub mod paper;
 pub mod pipeline;
 pub mod pool;
 pub mod progress;

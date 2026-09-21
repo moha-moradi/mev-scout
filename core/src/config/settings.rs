@@ -124,6 +124,65 @@ pub struct LiveConfig {
     pub poll_interval_ms: u64,
 }
 
+/// Paper sub-config: `[paper]` TOML section (virtual-fund bot P&L).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaperConfig {
+    /// Starting native gas wallet in wei (default: 10 × 10^18). Stored as
+    /// string so TOML round-trips large integers safely.
+    #[serde(default = "default_paper_starting_gas_wei_str")]
+    pub starting_gas_wei: String,
+    /// Wei kept idle so one large fill cannot starve later blocks.
+    #[serde(default = "default_zero_str")]
+    pub reserve_wei: String,
+    /// Soft per-block fill cap (also clamped to hard safety cap of 32).
+    #[serde(default = "default_paper_max_fills_per_block")]
+    pub max_fills_per_block: usize,
+}
+
+fn default_paper_starting_gas_wei_str() -> String {
+    crate::paper::default_starting_gas_wei().to_string()
+}
+
+fn default_zero_str() -> String {
+    "0".to_string()
+}
+
+fn default_paper_max_fills_per_block() -> usize {
+    crate::paper::HARD_MAX_FILLS_PER_BLOCK
+}
+
+impl PaperConfig {
+    pub fn starting_gas_wei_u128(&self) -> anyhow::Result<u128> {
+        self.starting_gas_wei
+            .parse::<u128>()
+            .map_err(|e| anyhow::anyhow!("invalid paper.starting_gas_wei '{}': {e}", self.starting_gas_wei))
+    }
+
+    pub fn reserve_wei_u128(&self) -> anyhow::Result<u128> {
+        self.reserve_wei
+            .parse::<u128>()
+            .map_err(|e| anyhow::anyhow!("invalid paper.reserve_wei '{}': {e}", self.reserve_wei))
+    }
+
+    pub fn ledger_policy(&self) -> anyhow::Result<crate::paper::LedgerPolicy> {
+        Ok(crate::paper::LedgerPolicy {
+            starting_gas_wei: self.starting_gas_wei_u128()?,
+            reserve_wei: self.reserve_wei_u128()?,
+            max_fills_per_block: self.max_fills_per_block,
+        })
+    }
+}
+
+impl Default for PaperConfig {
+    fn default() -> Self {
+        PaperConfig {
+            starting_gas_wei: default_paper_starting_gas_wei_str(),
+            reserve_wei: default_zero_str(),
+            max_fills_per_block: default_paper_max_fills_per_block(),
+        }
+    }
+}
+
 /// Explorer sub-config: `[explorer]` TOML section.
 /// All fields optional — defaults keep existing config files valid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,6 +454,9 @@ pub struct Config {
     /// Live polling knobs — `[live]` TOML section.
     #[serde(default)]
     pub live: LiveConfig,
+    /// Paper virtual-fund P&L knobs — `[paper]` TOML section.
+    #[serde(default)]
+    pub paper: PaperConfig,
 }
 
 impl Config {
@@ -438,6 +500,7 @@ impl Default for Config {
             explorer: ExplorerConfig::default(),
             discover: DiscoverConfig::default(),
             live: LiveConfig::default(),
+            paper: PaperConfig::default(),
         }
     }
 }

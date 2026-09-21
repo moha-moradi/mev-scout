@@ -37,6 +37,7 @@ fn help_lists_kept_commands() {
         "tokens",
         "live",
         "explorer",
+        "paper",
     ] {
         assert!(
             help_lists_subcommand(&out.stdout, cmd),
@@ -66,6 +67,19 @@ fn explorer_help_lists_subcommands() {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "explorer --help still lists removed subcommand '{removed}'"
+        );
+    }
+}
+
+#[test]
+fn paper_help_lists_subcommands() {
+    let ws = temp_ws("args_paper_help");
+    let out = run(&ws, &["paper", "--help"]);
+    expect_ok(&out, "paper --help");
+    for sub in ["run", "live", "sim", "stats"] {
+        assert!(
+            help_lists_subcommand(&out.stdout, sub),
+            "paper --help missing subcommand '{sub}'"
         );
     }
 }

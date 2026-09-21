@@ -65,6 +65,10 @@ mev-scout report
 # Index realized MEV near tip, then summarize
 mev-scout explorer index --duration 15m
 mev-scout explorer stats --since 7d
+
+# Virtual-fund P&L over a backtest (theoretical, no competition)
+mev-scout paper run --blocks 100
+mev-scout paper stats
 ```
 
 ### 3. Command index
@@ -78,6 +82,7 @@ mev-scout explorer stats --since 7d
 | `live` | Stream tip blocks and detect | [§4.5](docs/ARCHITECTURE.md#45-live--real-time-streaming-detection) |
 | `report` | Re-render a recorded run from SQLite | [§4.6](docs/ARCHITECTURE.md#46-report--re-render-saved-results) |
 | `explorer` | Realized-MEV forensics (`index`, `stats`, `show`) | [§4.7](docs/ARCHITECTURE.md#47-explorer--realized-mev-forensics) |
+| `paper` | Virtual-fund bot P&L (`run`, `live`, `sim`, `stats`) | [§4.8](docs/ARCHITECTURE.md#48-paper--virtual-fund-bot-pl) |
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. Block-range
 commands take exactly one of `--days`, `--blocks`, `--block`, or
@@ -88,7 +93,7 @@ commands take exactly one of `--days`, `--blocks`, `--block`, or
 | Path | What it is |
 |---|---|
 | `core/` | Library: pool state, quoting, detectors, cache & explorer stores, config |
-| `cli/` | `mev-scout` binary — `run`, `live`, `discover`, `tokens`, `report`, `explorer`, … |
+| `cli/` | `mev-scout` binary — `run`, `live`, `discover`, `tokens`, `report`, `explorer`, `paper`, … |
 | `cache/` | SQLite DBs (per-chain scanner cache + explorer stores), gitignored |
 
 Pool discovery remotes are **GeckoTerminal + DexScreener** (plus on-chain

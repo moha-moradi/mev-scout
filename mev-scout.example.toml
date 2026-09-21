@@ -51,6 +51,12 @@ output = "table"
 # [live]
 # poll_interval_ms = 2000
 
+# ── Paper virtual-fund P&L ─────────────────────────────────────────
+# [paper]
+# starting_gas_wei = "10000000000000000000"  # 10 native
+# reserve_wei = "0"
+# max_fills_per_block = 32
+
 # ── Per-chain public RPC overrides ─────────────────────────────────
 # Switching chains via `--chain` / config just works — every chain gets its
 # own public endpoints from chainlist. `rps_limit` / `block_concurrency` stay

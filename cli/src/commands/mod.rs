@@ -1,4 +1,6 @@
-use crate::cli::{DiscoverArgs, ExplorerArgs, LiveArgs, ReportArgs, RunArgs, TokensArgs};
+use crate::cli::{
+    DiscoverArgs, ExplorerArgs, LiveArgs, PaperArgs, ReportArgs, RunArgs, TokensArgs,
+};
 use crate::job_progress::JobProgress;
 use async_trait::async_trait;
 use mev_scout_core::config::Config;
@@ -7,6 +9,7 @@ mod config;
 mod discover;
 mod explorer;
 mod live;
+mod paper;
 mod report;
 mod run;
 mod tokens;
@@ -15,6 +18,7 @@ pub use config::cmd_config;
 pub use discover::cmd_discover;
 pub use explorer::{cmd_index, cmd_show, cmd_stats};
 pub use live::cmd_live;
+pub use paper::cmd_paper;
 pub use report::cmd_report;
 pub use run::cmd_run;
 pub use tokens::cmd_tokens;
@@ -81,6 +85,13 @@ impl CliCommand for ExplorerArgs {
     }
 }
 
+#[async_trait(?Send)]
+impl CliCommand for PaperArgs {
+    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
+        cmd_paper(config, self, progress).await
+    }
+}
+
 /// Dispatch a clap `Command` to its trait implementation.
 pub async fn execute(
     cmd: &crate::cli::Command,
@@ -96,5 +107,6 @@ pub async fn execute(
         Tokens(a) => a.execute(config, progress).await,
         Live(a) => a.execute(config, progress).await,
         Explorer(a) => a.execute(config, progress).await,
+        Paper(a) => a.execute(config, progress).await,
     }
 }

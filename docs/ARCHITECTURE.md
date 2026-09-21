@@ -107,6 +107,9 @@ flowchart TB
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
 | `explorer` | Realized-MEV forensics (`index` / `stats` / `show`) | yes (logs; optional traces) | Explorer SQLite store |
+| `paper` | Virtual-fund bot P&L (`run` / `live` / `sim` / `stats`) | yes (run/live); no (sim/stats) | Explorer SQLite (`paper_*`) |
+
+Product split: **`run`/`live`** = what *could* be made; **`explorer`** = what *was* made; **`paper`** = theoretical session P&L if we took detections with a virtual gas wallet (no competition).
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -147,7 +150,7 @@ Prefer `${ENV_VAR}` placeholders in RPC URLs; export keys in the same shell.
 Unset placeholders stay literal and fail loudly at the provider. The listing
 format for `tokens`, `report`, and `discover` is the TOML `output` key
 (`table` | `csv` | `json`). Tuning knobs that used to be CLI flags live under
-`batch_rpc` / `record_rejections`, `[discover]`, and `[live]` (see
+`batch_rpc` / `record_rejections`, `[discover]`, `[live]`, and `[paper]` (see
 `mev-scout.example.toml`).
 
 ### Block range (exactly one)
@@ -181,7 +184,7 @@ flowchart LR
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
 | Scanner cache | `cache/` per-chain DB | `run`, `live`, `discover`, `tokens` | `run`, `live`, `discover --incremental`, `tokens`, `report` (manifests) |
-| Explorer store | `explorer_{chain}.sqlite` | `run`/`live` (opportunities; rejections when `record_rejections = true`), `explorer index` | `report`, `explorer *` |
+| Explorer store | `explorer_{chain}.sqlite` | `run`/`live` (opportunities; rejections when `record_rejections = true`), `explorer index`, `paper` (`paper_sessions` / `paper_fills`) | `report`, `explorer *`, `paper stats`/`sim` |
 
 ---
 
@@ -466,6 +469,32 @@ mev-scout explorer show 0xabc…
 mev-scout explorer show 0xabc… --trace
 ```
 
+### 4.8 `paper` — virtual-fund bot P&L
+
+Theoretical session accounting over detected opportunities: a native gas wallet,
+greedy per-block fill selection (pool-conflict aware), labeled
+`PAPER (theoretical, no competition)`. Reuses `job_run` / `job_live` for
+detection; ledger is a pure post-process. No mempool racing, no Solidity
+executor.
+
+```powershell
+mev-scout paper run --blocks 100
+mev-scout paper live --loop --duration 15m
+mev-scout paper sim --run run_1717… --wallet-multiplier 2
+mev-scout paper stats
+mev-scout paper stats --session paper_run_…
+```
+
+`[paper]` TOML: `starting_gas_wei`, `reserve_wei`, `max_fills_per_block`
+(hard-capped at 32/block). `paper sim` replays stored `opportunities` offline.
+
+```mermaid
+flowchart TB
+  detect["job_run / job_live / opportunities table"] --> ledger["paper::LedgerPolicy"]
+  ledger --> sess["paper_sessions + paper_fills"]
+  sess --> stats["paper stats"]
+```
+
 #### Classifier-change replay recipe (wipe + reindex)
 
 Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows for
@@ -566,7 +595,8 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Artifact | Produced by | Consumed by |
 |---|---|---|
 | SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `discover` | `run`, `live`, `discover` (incremental), `tokens`, `report` (manifests) |
-| Explorer store `explorer_{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
+| Explorer store `explorer_{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections when `record_rejections = true`) | `report`, `paper sim` |
+| Explorer store — `paper_sessions` / `paper_fills` | `paper run` / `live` / `sim` | `paper stats` |
 | Explorer store `explorer_{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI |
 | Signature DB (4byte directory snapshot) | fetched during `run`/`live` block ingest | tx decoding |
 

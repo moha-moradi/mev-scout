@@ -23,6 +23,12 @@ pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
         Command::Tokens(_) => {}
         Command::Live(_) => {}
         Command::Explorer(_) => {}
+        Command::Paper(args) => {
+            use crate::cli::PaperCommand;
+            if let PaperCommand::Run(a) = &args.command {
+                apply_block_range(&mut o, &a.block_range);
+            }
+        }
     }
     o
 }

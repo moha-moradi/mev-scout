@@ -52,6 +52,9 @@ pub enum Command {
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
     /// raw chain data (index, stats, op detail).
     Explorer(ExplorerArgs),
+
+    /// Virtual-fund bot P&L over detected opportunities (theoretical, no competition).
+    Paper(PaperArgs),
 }
 
 /// Explorer subcommand group.
@@ -207,4 +210,66 @@ pub struct LiveArgs {
     /// (requires --loop).
     #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
     pub max_blocks: Option<u64>,
+}
+
+/// Paper subcommand group (virtual-fund P&L).
+#[derive(Args, Debug, Clone)]
+pub struct PaperArgs {
+    #[command(subcommand)]
+    pub command: PaperCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PaperCommand {
+    /// Backtest range then apply paper ledger
+    Run(PaperRunArgs),
+    /// Tip detection (optional --loop) then paper ledger
+    Live(PaperLiveArgs),
+    /// Offline ledger replay over a stored run's opportunities
+    Sim(PaperSimArgs),
+    /// Summarize paper sessions
+    Stats(PaperStatsArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PaperRunArgs {
+    #[command(flatten)]
+    pub block_range: BlockRangeArgs,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PaperLiveArgs {
+    /// Continuously poll and process new blocks until Ctrl+C / deadline
+    #[arg(long, help_heading = "Live")]
+    pub r#loop: bool,
+
+    /// Stop continuous polling after this duration (requires --loop).
+    #[arg(long = "duration", value_name = "DURATION", help_heading = "Live")]
+    pub duration: Option<String>,
+
+    /// Stop after processing this many tip passes (requires --loop).
+    #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
+    pub max_blocks: Option<u64>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PaperSimArgs {
+    /// Existing detection run id (`run_…` / `live_…`)
+    #[arg(long = "run", value_name = "RUN_ID")]
+    pub run_id: String,
+
+    /// Multiply `[paper].starting_gas_wei` (e.g. 2 = twice the wallet)
+    #[arg(long = "wallet-multiplier", value_name = "N", default_value = "1")]
+    pub wallet_multiplier: f64,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct PaperStatsArgs {
+    /// Specific paper session id
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+
+    /// Time window: 1d|7d|30d|all (default all)
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
 }
