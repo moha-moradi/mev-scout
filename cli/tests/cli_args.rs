@@ -30,14 +30,7 @@ fn help_lists_kept_commands() {
     let out = run(&ws, &["--help"]);
     expect_ok(&out, "mev-scout --help");
     for cmd in [
-        "run",
-        "report",
-        "config",
-        "discover",
-        "tokens",
-        "live",
-        "explorer",
-        "paper",
+        "run", "report", "config", "discover", "tokens", "live", "explorer", "paper",
     ] {
         assert!(
             help_lists_subcommand(&out.stdout, cmd),
@@ -63,7 +56,14 @@ fn explorer_help_lists_subcommands() {
             "explorer --help missing subcommand '{sub}'"
         );
     }
-    for removed in ["doctor", "live-feed", "top", "explain", "validate", "export"] {
+    for removed in [
+        "doctor",
+        "live-feed",
+        "top",
+        "explain",
+        "validate",
+        "export",
+    ] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "explorer --help still lists removed subcommand '{removed}'"
@@ -553,10 +553,7 @@ fn report_selects_explicit_run_id_offline() {
         path
     };
 
-    let cfg_path = write_cfg(
-        &ws,
-        &[("output", "\"json\""), ("db_path", &cache_db)],
-    );
+    let cfg_path = write_cfg(&ws, &[("output", "\"json\""), ("db_path", &cache_db)]);
     let out = run(
         &ws,
         &["-f", &cfg_path, "report", "--run-id", "run_1111111111"],

@@ -1,6 +1,6 @@
 # MEV Strategies: Complete Reference & Implementation Analysis
 
-> **53 strategies across 8 categories** — mechanics, edge, capital requirements, competition level, implementation notes, implementation difficulty, income estimates, codebase status, and on-chain validation.
+> **53 strategies across 8 categories + 5 expansion surfaces (Part IV)** — mechanics, edge, capital requirements, competition level, implementation notes, implementation difficulty, income estimates, codebase status, on-chain validation, and post-2025 capital-free surfaces (Instadapp / DeFi Saver / DefiLlama / DappRadar rails).
 > Profitability and competition scored 1–10. Capital: None / Low / Medium / High.
 > This document combines the strategy reference (`mev_strategies_complete_v2.md`) with the implementation & execution analysis (`mev_strategies_analysis_summary.md`).
 
@@ -88,6 +88,14 @@
 17. [Dune On-Chain Validation Report](#17-dune-on-chain-validation-report)
 18. [Cross-Cutting Infrastructure](#18-cross-cutting-infrastructure)
 19. [Implementation Roadmap](#19-implementation-roadmap)
+
+**Part IV — Expansion Surfaces (2026)**
+
+20. [Cross-market position refinancing / debt-mgmt arb](#20-cross-market-position-refinancing--debt-management-arbitrage)
+21. [Automation / keeper-network execution](#21-automation--keeper-network-execution--trigger-backrunning)
+22. [Owner-side liquidation-protection salvage](#22-owner-side-liquidation-protection-salvage)
+23. [Fluid (Instadapp) — DEX + lending vaults](#23-fluid-instadapp--dex--lending-vaults)
+24. [New-gen lending liquidations](#24-new-gen-lending-liquidations)
 
 ---
 
@@ -2634,6 +2642,11 @@ Strategies executable with **zero pre-positioned capital** through flash loans, 
 | Uniswap V4 hook MEV | 6 | $1K–$5K | Flash accounting built into PoolManager | 2/10 | Hook-type registry |
 | Multi-block MEV | 7 | $5K–$50K | Strategic ordering, no capital | 1/10 | Validator relationships |
 | Cascading liq eng. | 7 | $10K–$100K+ | Flash loan through Balancer/AAVE | 2/10 | Cross-protocol dep graph |
+| Position refinancing / debt-mgmt arb (§20) | 3 | $300–$2K | Flash loan collateral/debt swap across money markets | 3/10 | Rate-divergence scanner over Aave/Spark/Morpho/Compound/Fluid/Sky |
+| Automation / keeper-network execution (§21) | 3 | $200–$1K | Public executor race; gas only | 6/10 | Trigger-tx visibility → co-bundle/backrun |
+| Owner-side liq-protection salvage (§22) | 3 | $200–$1K | Flash loan; no penalty auction | 3/10 | HF watch + collateral-swap routing (B.Protocol class) |
+| Fluid lending-vault liq (§23) | 4 | $500–$3K | Flash loan | 3/10 | Single-oracle delegated-liq race |
+| New-gen lending liq — Aave V4 / Liquity V2 / Sky / Euler V2 / Morpho (§24) | 4 | $500–$3K | Flash loan | 5/10 | Extends Aave V3 fingerprint; chain-gated |
 
 **Pattern**: Capital-free and low-competition rarely coincide — but when they do (OSM preview, V4 hooks, interest accrual, multi-block), the ROI per engineering hour is highest.
 
@@ -2684,6 +2697,10 @@ Balancer's zero fee makes it the default flash source. Route through Balancer fi
 | **$500–$3K** | Stablecoin depeg, recovery cascade | Clip auction, Balancer staleness | Interest accrual liq, AAVE liq | Flash swap arb, Curve imbalance, Trader Joe LB, ERC-4337 |
 | **$3K–$10K** | Cascading liq eng., LST depeg | Lido oracle, GMX V2 ADL | JIT liquidity, Oracle-latency liq | Backrunning, Sandwich, Solver intent |
 | **$10K+** | Multi-block MEV | TWAP manipulation, Governance | — | CEX–DEX arb, PBS/block building |
+
+**Note (2026)**: expansion surfaces in Part IV (§20–§24) — position refinancing arb and new-gen lending
+liquidations land in the $500–$3K/Daily band; automation/keeper fees in the $0–$500 to $1K band across
+Continuous/Daily; Fluid vault liquidations mirror the flash-loan liq band ($500–$3K/Daily).
 
 ---
 
@@ -2855,6 +2872,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 | **Pool discovery** | Active | Dune + on-chain discovery for V2, V3, Curve, Balancer, Trader Joe, Pendle |
 | **Test coverage** | 4 test files | `arbitrage.rs` (610 lines), `sandwich.rs` (398 lines), `liquidation.rs` (empty), `e2e.rs` (539 lines) |
 | **46 strategies** | Planned (Phases 0–5) | All mapped to specific files in `plans/implementation_plan.md` (~8K–10K Rust planned) |
+| **5 expansion surfaces (Part IV)** | Not mapped | §20–§24 seen on Instadapp / DeFi Saver rails; no files assigned yet — see Part IV + `docs/implementation_plan_capital_free.md` |
 | **3 strategies** | Excluded permanently | TWAP manipulation, NFT floor arb, governance MEV |
 
 ---
@@ -3177,4 +3195,201 @@ If forced to sequence what to build in strict order:
 
 ---
 
-*This combined document covers 53 strategies across 8 categories: V2 pool mechanics, order flow, bundle/positional strategies, liquidations, oracle/rebase/peg, cross-domain, protocol niches (expanded), and emerging — plus implementation-difficulty rankings, capital mapping, income estimates, codebase status, and on-chain validation. Merged from `mev_strategies_complete_v2.md` (53 strategies, 8 categories, 2,716 lines) and `mev_strategies_analysis_summary.md` (analysis cross-referenced with MEV Scout codebase status: 7 detectors coded, 46 planned). Validation report updated July 26, 2026 via `mev-scout dune-query` against Dune Analytics API (Polygon, Ethereum, Arbitrum); all 17 validation queries executed; table discovery queries used to identify correct Dune schema names.*
+---
+
+# Part IV — Expansion Surfaces (2026)
+
+> Sources: Instadapp (`instadapp.io`), DeFi Saver (`defisaver.com`), DefiLlama, DappRadar.
+> Five capital-free (or flash-viable) surfaces that post-date the original 53-strategy reference. All are
+> mode-A reportable from raw logs; detector/phase mapping lives in `docs/implementation_plan_capital_free.md`.
+
+---
+
+### 20. Cross-market position refinancing / debt-management arbitrage
+
+**References**: DeFi Saver "Loan Shifter"; Instadapp DSL connectors (Aave / Spark / Morpho / Compound / Fluid / Sky / sDAI).
+DeFi Saver reports $461M+ automated across 980+ positions — the rail is proven, not hypothetical.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 6/10 |
+| Competition | 3/10 |
+| Capital required | None (flash loan) |
+| Complexity | 5/10 |
+| Chains | ETH, Base, Arbitrum, Polygon |
+| Frequency | Continuous (rate-divergence triggered) |
+
+**Mechanism**
+
+A borrower's position (collateral + debt) is moved between two money markets in a single transaction whenever the
+borrow APR on the destination is meaningfully lower than the source (or the supply APR higher), after
+flash-loan fee + gas + swap slippage:
+
+```
+1. Flash-borrow debt_token (Balancer 0% preferred, else AAVE)
+2. Repay debt on protocol A; withdraw collateral
+3. (optional) swap collateral flavour (e.g. USDC → USDS/sDAI) if the destination needs it
+4. Deposit collateral on protocol B; borrow debt_token (recreate the position)
+5. Repay flash loan + fee; retain ΔAPR × notional (rate savings) or a refinancing premium
+```
+
+Users pay platforms (DeFi Saver, Instadapp) for exactly this. A searcher can run the same loop
+**unpermissioned** over any position the destination market will accept, and charge a rent on the
+refinanced notional. Instadapp's DSL "cast" spells and DeFi Saver recipes are the same operation encoded as
+middleware connectors.
+
+**Relation to existing entries**: sibling of §4.4 (flash-loan atomic liq) and §4.13 (interest accrual liq) —
+same flash + reserve/rate plumbing, different extraction target (spread capture instead of bonus capture).
+
+**Reportability (mode A)**: repay-on-A + borrow-on-B in one tx is a clean log fingerprint
+(`Repay`/`Borrow`/`Withdraw`/`Deposit` pairs on different protocol addresses, same tx). Whether the move is
+genuinely *rate-driven* needs a C sim or an events cross-check against borrow-rate time series.
+
+---
+
+### 21. Automation / keeper-network execution & trigger backrunning
+
+**References**: Gelato Automate, Keep3r, Chainlink Automation, DeFi Saver Automations
+(Boost / Repay / Stop-Loss / Take-Profit / Trailing-Stop), Instadapp "Gelato Aave Protection" connector.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 5/10 |
+| Competition | 6/10 |
+| Capital required | None |
+| Complexity | 4/10 |
+| Chains | ETH, Polygon, Base, Arbitrum, BSC |
+| Frequency | Continuous |
+
+**Mechanism**
+
+Automation rails execute user-configured state changes when a condition fires (health-ratio threshold,
+stop-loss price, trailing target, rate crossing). Two discrete capture surfaces for a searcher:
+
+1. **Executor fee race (capital-free)** — many automation jobs are public-executor jobs: the first tx that
+   satisfies the condition earns the network's execution fee (gel fee / Keep3r bond + reward / Chainlink
+   premium).
+2. **Trigger backrun (the MEV)** — the trigger transaction itself is the event. A stop-loss Boost executes a
+   large swap; a Liquidation-Protection Repay improves a position right before liquidators would fire.
+   Backrunning or co-bundling with those trigger txs (same `capture_pending_block` + revm stack as §2.1
+   backrunning) captures the state change the automation produces.
+
+**Relation to existing entries**: generalizes the protocol-native keepers already catalogued (§4.2 OSM kick,
+§4.11 GMX v1, §4.12 perp keepers, §7.8 GMX ADL) into a cross-protocol race.
+
+**Reportability (mode A)**: trigger/executor tx volume is log-countable per keeper registry; fee income needs
+per-executor reward math (C). Trigger → backrun profit is mode C / paper.
+
+---
+
+### 22. Owner-side liquidation-protection salvage
+
+**References**: B.Protocol (Liquity / Maker / Compound connections), DeFi Saver "Liquidation Protection" /
+Stop-Loss Repay. DeFi Saver's framing — "liquidations in MakerDAO are 100% preventable" — hints at how much of
+this market still runs salvage bots.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 5/10 |
+| Competition | 3/10 |
+| Capital required | None (flash loan) |
+| Complexity | 5/10 |
+| Chains | ETH, Arbitrum, Base, Polygon |
+| Frequency | Continuous (HF-approaching triggered) |
+
+**Mechanism**
+
+When a position's HF approaches 1.0, the *owner-side* remedies are deleverage (repay + sell collateral), add
+collateral, or collateral-swap. A salvage bot performs the owner's action unpermissioned and charges a premium
+(B.Protocol-style protocols do exactly this and share the liquidation-bonus-equivalent):
+
+```
+HF < 1.05 on any monitored position:
+1. Flash-borrow debt_token
+2. Repay some/all debt — HF restored in the same tx (no penalty auction for the owner)
+3. Optional: swap part of the collateral for the debt asset at market (rate-based deleveraging)
+4. Repay flash loan; keep a negotiated premium or the saved-penalty share
+```
+
+**Relation to existing entries**: complementary to §4.4 (protocol-side, post-trigger) and §4.15 (bad-debt
+optimization, protocol solvency). This extracts value *for the position owner* rather than *against* them.
+B.Protocol's connectors and DeFi Saver's automation layer are the reference implementations.
+
+**Reportability (mode A)**: partial — an HF-restoring repay in proximity of 1.0 is a fuzzy fingerprint vs
+ordinary repay. Weak A; attribution requires C sim.
+
+---
+
+### 23. Fluid (Instadapp) — DEX + lending vaults
+
+**References**: Instadapp's Fluid protocol (`fluid.instadapp.io`) — top-of-catalog TVL across DEX + lending,
+entirely absent from the original reference.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 7/10 |
+| Competition | 2/10 |
+| Capital required | None (flash, vaults) / Low (DEX side) |
+| Complexity | 7/10 |
+| Chains | ETH, Arbitrum, Base |
+| Frequency | Continuous |
+
+**Mechanism**
+
+**Lending vaults** — Fluid vaults are single-pair pools priced around a centralized oracle with same-pair
+instant leverage, no AAVE-style grace guards; delegated liquidation bonuses differ from Aave's close-factor
+logic. Liquidation race: watch vault health vs the Fluid oracle update, flash-borrow → liquidate → swap →
+repay — reusing the Phase 2 flash-liq stack minus the Aave-specific per-asset reserve cache (the oracle is read
+directly).
+
+**DEX** — Fluid's liquidity-density continuous-bin model inverts V2 drift logic: LPs concentrate around the
+oracle price, so the "DEX price vs oracle price" gap is open air, and bin saturation creates a jitter/backrun
+surface similar to Trader Joe LB (§7.13) without the discrete-bin step.
+
+**Reportability (mode A)**: vault `Liquidate`/`Withdraw` events countable directly; DEX extractable value is
+sim-only (C).
+
+---
+
+### 24. New-gen lending liquidations
+
+**References**: Aave **V4**, Liquity **V2** (BOLD stability pool), **Sky** (USDS / sDAI SAV), Euler **V2**,
+Morpho **Blue / Midnight** — the 2025-26 lending generation, all currently behind the existing Aave-V3-only
+modeling.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 7/10 |
+| Competition | 5/10 |
+| Capital required | None (flash loan) |
+| Complexity | 6/10 |
+| Chains | ETH, Arbitrum, Base, Polygon |
+| Frequency | Daily → Continuous |
+
+**Mechanism**
+
+Same flash-loan atomic liquidation loop as §4.4 with per-protocol selectors and liquidation mechanics:
+
+| Protocol | Liquidation surface vs Aave V3 |
+|----------|--------------------------------|
+| Aave V4 | Updated `LiquidationCall`/borrow accounting + new reserve-cache layout (reuse the `AaveReserveCache` pattern) |
+| Liquity V2 | BOLD stability-pool absorption ≠ v1 (§4.8/§4.9); redemptions + stability liquidation, different keeper math |
+| Sky (USDS/sDAI) | sDAI-style SAV rate feed; USDS soft-liquidation model distinct from DAI/CDP |
+| Euler V2 | Reactive/primary local accounting, sub-accounts; liquidation via `liquidate` on vaults |
+| Morpho Blue / Midnight | Single-oracle markets with no Aave guards (extends §7.10 modeling) |
+
+**Reportability (mode A)**: same `Repay` + `LiquidationCall` fingerprint as §4.4; new protocols/chains just need
+`ChainConfig` addresses (same pattern as `aave_v3_pool`).
+
+---
+
+*This combined document covers 53 strategies across 8 categories plus five expansion surfaces in Part IV
+(§20–§24): position refinancing arb, automation/keeper-network execution, owner-side liquidation-protection
+salvage, Fluid (DEX + lending vaults), and new-gen lending liquidations. Core catalog: V2 pool mechanics, order
+flow, bundle/positional strategies, liquidations, oracle/rebase/peg, cross-domain, protocol niches (expanded),
+and emerging — plus implementation-difficulty rankings, capital mapping, income estimates, codebase status, and
+on-chain validation. Merged from `mev_strategies_complete_v2.md` (53 strategies, 8 categories, 2,716 lines) and
+`mev_strategies_analysis_summary.md` (analysis cross-referenced with MEV Scout codebase status: 7 detectors
+coded, 46 planned). Validation report updated July 26, 2026 via `mev-scout dune-query` against Dune Analytics
+API (Polygon, Ethereum, Arbitrum); all 17 validation queries executed; table discovery queries used to identify
+correct Dune schema names.*

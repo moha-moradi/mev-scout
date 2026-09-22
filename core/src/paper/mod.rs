@@ -8,7 +8,7 @@ pub mod ledger;
 pub mod store;
 pub mod types;
 
-pub use ledger::{default_starting_gas_wei, is_native_eligible, LedgerPolicy, HARD_MAX_FILLS_PER_BLOCK};
-pub use types::{
-    FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession, PaperSkip,
+pub use ledger::{
+    default_starting_gas_wei, is_native_eligible, LedgerPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
+pub use types::{FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession, PaperSkip};

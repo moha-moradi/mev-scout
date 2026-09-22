@@ -43,13 +43,7 @@ fn discover_hybrid_incremental_and_enrich() {
     let base_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
     c.args([
-        "-f",
-        &base_cfg,
-        "discover",
-        "--source",
-        "onchain",
-        "--blocks",
-        "2",
+        "-f", &base_cfg, "discover", "--source", "onchain", "--blocks", "2",
     ]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover baseline") {
         expect_ok(&out, "discover onchain baseline");
@@ -149,10 +143,7 @@ fn run_smoke() {
         let report_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
         let mut c2 = scout(&ws);
         c2.args(["-f", &report_cfg, "report"]);
-        if let Some(out2) = tolerant(
-            run_timed(&mut c2, common::TEST_TIMEOUT),
-            "report after run",
-        ) {
+        if let Some(out2) = tolerant(run_timed(&mut c2, common::TEST_TIMEOUT), "report after run") {
             expect_ok(&out2, "report after run");
             assert!(
                 out2.stdout.contains("Run ID:"),

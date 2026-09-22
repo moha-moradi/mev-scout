@@ -153,9 +153,12 @@ fn default_paper_max_fills_per_block() -> usize {
 
 impl PaperConfig {
     pub fn starting_gas_wei_u128(&self) -> anyhow::Result<u128> {
-        self.starting_gas_wei
-            .parse::<u128>()
-            .map_err(|e| anyhow::anyhow!("invalid paper.starting_gas_wei '{}': {e}", self.starting_gas_wei))
+        self.starting_gas_wei.parse::<u128>().map_err(|e| {
+            anyhow::anyhow!(
+                "invalid paper.starting_gas_wei '{}': {e}",
+                self.starting_gas_wei
+            )
+        })
     }
 
     pub fn reserve_wei_u128(&self) -> anyhow::Result<u128> {

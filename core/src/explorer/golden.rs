@@ -111,12 +111,7 @@ fn transfer(li: u64, token: Address, from: Address, to: Address, amt: u64) -> Tr
     }
 }
 
-fn tx(
-    idx: u64,
-    from: Address,
-    swaps: Vec<SwapFact>,
-    transfers: Vec<TransferFact>,
-) -> TxInput {
+fn tx(idx: u64, from: Address, swaps: Vec<SwapFact>, transfers: Vec<TransferFact>) -> TxInput {
     TxInput {
         tx_index: idx,
         tx_hash: B256::repeat_byte(idx as u8),

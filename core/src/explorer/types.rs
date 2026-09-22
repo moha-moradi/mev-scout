@@ -56,7 +56,6 @@ impl MevKind {
             _ => None,
         }
     }
-
 }
 
 impl std::fmt::Display for MevKind {

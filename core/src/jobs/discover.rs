@@ -293,7 +293,10 @@ pub async fn job_discover(
     } else {
         let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
         let disc_config = factories.discovery_config(DiscoveryRuntimeOpts {
-            batch_size: recommended_get_logs_batch(&config.effective_rpc(chain_name).rpc_urls, batch_size),
+            batch_size: recommended_get_logs_batch(
+                &config.effective_rpc(chain_name).rpc_urls,
+                batch_size,
+            ),
             solidly_fee_bps: opts.solidly_fee_bps.map(|v| v as u32),
             rpc_concurrency,
             token_cache: Some(&token_cache),

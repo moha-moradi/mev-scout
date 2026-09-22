@@ -7,9 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
-use crate::paper::types::{
-    FillSkipReason, LedgerResult, PaperFill, PaperSkip,
-};
+use crate::paper::types::{FillSkipReason, LedgerResult, PaperFill, PaperSkip};
 use crate::types::{MevOpportunity, Strategy};
 
 /// Hard safety cap so a pathological block cannot produce a huge session.
@@ -96,7 +94,10 @@ fn sort_key(opp: &MevOpportunity) -> (i128, u8, usize, String) {
 impl LedgerPolicy {
     /// Apply the ledger over `opportunities`. Pure — no I/O.
     pub fn apply(&self, opportunities: &[MevOpportunity]) -> LedgerResult {
-        let max_fills = self.max_fills_per_block.min(HARD_MAX_FILLS_PER_BLOCK).max(1);
+        let max_fills = self
+            .max_fills_per_block
+            .min(HARD_MAX_FILLS_PER_BLOCK)
+            .max(1);
         let mut wallet = self.starting_gas_wei;
         let mut peak = wallet;
         let mut max_drawdown: u128 = 0;
@@ -345,7 +346,15 @@ mod tests {
     fn liquidation_skipped_as_not_native() {
         let policy = LedgerPolicy::default();
         let a = address!("0x0000000000000000000000000000000000000001");
-        let opps = [opp(1, 0, Strategy::Liquidation, a, Address::ZERO, 1_000_000, 1)];
+        let opps = [opp(
+            1,
+            0,
+            Strategy::Liquidation,
+            a,
+            Address::ZERO,
+            1_000_000,
+            1,
+        )];
         let r = policy.apply(&opps);
         assert!(r.fills.is_empty());
         assert_eq!(r.skips[0].reason, FillSkipReason::NotNativeUnit);
@@ -392,17 +401,7 @@ mod tests {
         let opps: Vec<_> = pools
             .iter()
             .enumerate()
-            .map(|(i, (a, b))| {
-                opp(
-                    1,
-                    i,
-                    Strategy::TwoHopArb,
-                    *a,
-                    *b,
-                    1000 - i as u128,
-                    10,
-                )
-            })
+            .map(|(i, (a, b))| opp(1, i, Strategy::TwoHopArb, *a, *b, 1000 - i as u128, 10))
             .collect();
         let r = policy.apply(&opps);
         assert_eq!(r.fills.len(), 1);

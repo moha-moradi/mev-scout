@@ -70,15 +70,11 @@ pub fn validate_chain_rpc_overrides(config: &Config) -> std::result::Result<(), 
         if let Some(rpc) = &chain_cfg.rpc {
             if let Some(url) = &rpc.rpc_url {
                 validate_rpc_url(url).map_err(|e| {
-                    ConfigError::Validation(format!(
-                        "[chains.{name}.rpc] rpc_url: {}",
-                        e
-                    ))
+                    ConfigError::Validation(format!("[chains.{name}.rpc] rpc_url: {}", e))
                 })?;
             }
-            validate_rpc_urls(&rpc.rpc_urls).map_err(|e| {
-                ConfigError::Validation(format!("[chains.{name}.rpc] {}", e))
-            })?;
+            validate_rpc_urls(&rpc.rpc_urls)
+                .map_err(|e| ConfigError::Validation(format!("[chains.{name}.rpc] {}", e)))?;
         }
     }
     Ok(())

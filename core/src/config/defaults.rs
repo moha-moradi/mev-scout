@@ -213,8 +213,7 @@ mod tests {
         partial.merge_defaults(&poly_default);
 
         assert_eq!(
-            partial.pool_discovery_start_block,
-            poly_default.pool_discovery_start_block,
+            partial.pool_discovery_start_block, poly_default.pool_discovery_start_block,
             "unset pool_discovery_start_block must come from defaults"
         );
         assert_eq!(

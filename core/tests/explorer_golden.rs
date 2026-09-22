@@ -103,7 +103,10 @@ fn golden_input() -> BlockInput {
     let arb_tx = tx_input(
         0,
         ARB,
-        vec![swap(POOL_A, USDC, TOKA, 100, 200), swap(POOL_B, TOKA, USDC, 200, 110)],
+        vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ],
         vec![
             transfer(0, USDC, ARB, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ARB, 200),
@@ -331,7 +334,11 @@ fn golden_block_persists_mev_ops_rows() {
     assert_eq!(arb.tx_index, Some(0));
     assert_eq!(arb.profit_token.as_deref(), Some(usdc_str.as_str()));
     assert_eq!(arb.profit_amount.as_deref(), Some("10"));
-    assert!(arb.canonical_id.as_deref().unwrap().starts_with("ArbAtomic|"));
+    assert!(arb
+        .canonical_id
+        .as_deref()
+        .unwrap()
+        .starts_with("ArbAtomic|"));
     assert!(arb.profit_usd.unwrap() > 0.0);
     assert!(arb.gas_cost_usd.unwrap() > 0.0);
 
@@ -339,7 +346,11 @@ fn golden_block_persists_mev_ops_rows() {
     assert_eq!(sandwich.confidence, "exact");
     assert_eq!(sandwich.tx_index, Some(1));
     assert_eq!(sandwich.profit_amount.as_deref(), Some("95000000"));
-    assert!(sandwich.canonical_id.as_deref().unwrap().starts_with("Sandwich|"));
+    assert!(sandwich
+        .canonical_id
+        .as_deref()
+        .unwrap()
+        .starts_with("Sandwich|"));
     assert!(
         sandwich.net_profit_usd.unwrap() > 0.0,
         "sandwich survives the profitability gate"
@@ -349,6 +360,9 @@ fn golden_block_persists_mev_ops_rows() {
     let jit = row_by_kind("jit");
     assert_eq!(jit.confidence, "exact");
     assert_eq!(jit.tx_index, Some(4));
-    assert_eq!(jit.profit_token, None, "JIT is fee-capture; no profit token");
+    assert_eq!(
+        jit.profit_token, None,
+        "JIT is fee-capture; no profit token"
+    );
     assert!(jit.canonical_id.as_deref().unwrap().starts_with("Jit|"));
 }

@@ -73,14 +73,7 @@ fn live_loop_duration_graceful_exit() {
         writeln!(f, "\n[live]\npoll_interval_ms = 1000").unwrap();
     }
     let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &pipeline,
-        "live",
-        "--loop",
-        "--duration",
-        "30s",
-    ]);
+    c.args(["-f", &pipeline, "live", "--loop", "--duration", "30s"]);
     let out = run_timed(&mut c, Duration::from_secs(300)).expect("live loop spawn failed");
     expect_ok(
         &out,

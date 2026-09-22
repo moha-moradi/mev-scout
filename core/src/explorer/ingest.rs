@@ -17,6 +17,7 @@ use crate::explorer::store::{
     BlockFactsInput, ExplorerStore, OpenPosition, SwapRow, TransferRow, TxRow,
 };
 use crate::explorer::types::{MevEvent, MevKind};
+use crate::progress::{JobProgress, ProgressEvent};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
 
@@ -112,6 +113,13 @@ pub struct IndexedBlock {
     pub block: u64,
     pub events: usize,
     pub ops: usize,
+}
+
+/// Outcome of a historical `run_range` backfill.
+#[derive(Debug, Clone, Default)]
+pub struct RangeOutcome {
+    pub blocks_processed: u64,
+    pub ops: u64,
 }
 
 /// Fetch one block + receipts, decode, classify, persist. Idempotent: an
@@ -373,7 +381,10 @@ pub async fn verify_indexed_tip(
     };
     match rpc.get_block_hash(block).await {
         Ok(onchain) if stored != format!("{onchain:#x}") => {
-            warn!(block, "reorg detected via indexed-tip hash compare — unwinding");
+            warn!(
+                block,
+                "reorg detected via indexed-tip hash compare — unwinding"
+            );
             store.unwind_from(block)?;
             Ok(Some(block))
         }
@@ -615,6 +626,78 @@ pub async fn run_live(
     }
 
     Ok(indexed_total)
+}
+
+/// Historical / range backfill: index every block in `[from_block, to_block]`
+/// (inclusive), clamped to `head − confirmations`. Idempotent via
+/// `blocks_classified` and gap-resumable — an interrupted backfill can be
+/// re-run over the same range and it will pick up where it left off.
+///
+/// Feeds the revenue report's 1d/7d/30d windows: without history in the store
+/// the report can never show more than the live indexer has been running.
+///
+/// Unlike `run_live` no reorg sweeps are applied: everything in the range is
+/// finalized once it lags `confirmations`, and tip-fork handling stays with
+/// the live indexer. Token profit USD is priced historically (Llama keyed by
+/// the block's timestamp inside `index_block`); native/gas USD uses the current
+/// native price (a close approximation for ≤30d windows).
+pub async fn run_range(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    cfg: &IngestConfig,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
+    from_block: u64,
+    to_block: u64,
+    progress: &dyn JobProgress,
+) -> anyhow::Result<RangeOutcome> {
+    if to_block < from_block {
+        anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
+    }
+    let tip = rpc.get_block_number().await.unwrap_or(to_block);
+    let safe_tip = tip.saturating_sub(cfg.confirmations);
+    let end = to_block.min(safe_tip);
+    if end < from_block {
+        warn!(
+            from_block,
+            to_block,
+            safe_tip,
+            confirmations = cfg.confirmations,
+            "range end is inside the confirmation lag — nothing to index yet"
+        );
+        return Ok(RangeOutcome::default());
+    }
+
+    let total = end - from_block + 1;
+    let mut done: u64 = 0;
+    let mut outcome = RangeOutcome::default();
+    let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+    let emit = |done: u64| {
+        let mut evt = ProgressEvent::stage("backfill");
+        evt.done = Some(done);
+        evt.total = Some(total);
+        progress.emit(evt);
+    };
+    emit(0);
+    for block in from_block..=end {
+        done += 1;
+        if block.saturating_sub(from_block) % 256 == 0 {
+            native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+        }
+        if store.block_classified(block)? {
+            continue;
+        }
+        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
+        outcome.blocks_processed += 1;
+        outcome.ops += indexed.ops as u64;
+        if done.is_multiple_of(500) || done == total {
+            emit(done);
+        }
+    }
+    store.set_sync_state(cfg.chain_id, tip, end)?;
+    if total > 0 && !done.is_multiple_of(500) {
+        emit(total);
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]

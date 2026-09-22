@@ -60,13 +60,7 @@ fn persist_session_for_chain(
 ) -> anyhow::Result<String> {
     let session_id = format!("paper_{}_{}", mode.as_str(), epoch_secs());
     let store = ExplorerStore::open(config.effective_explorer_db_path(&chain))?;
-    store.insert_paper_session(
-        &session_id,
-        &chain.to_string(),
-        mode,
-        linked_run_id,
-        ledger,
-    )?;
+    store.insert_paper_session(&session_id, &chain.to_string(), mode, linked_run_id, ledger)?;
     Ok(session_id)
 }
 
@@ -111,13 +105,8 @@ pub async fn job_paper_run(
     let (chain, _) = validation::resolve_chain(config).context("resolve chain")?;
     let policy = policy_from_config(config)?;
     let ledger = policy.apply(&run.opportunities);
-    let session_id = persist_session_for_chain(
-        config,
-        chain,
-        PaperMode::Run,
-        Some(&run.run_id),
-        &ledger,
-    )?;
+    let session_id =
+        persist_session_for_chain(config, chain, PaperMode::Run, Some(&run.run_id), &ledger)?;
     let outcome = PaperOutcome {
         session_id,
         linked_run_id: Some(run.run_id),
@@ -233,13 +222,8 @@ pub async fn job_paper_live(
     } else {
         Some(linked_ids.join(","))
     };
-    let session_id = persist_session_for_chain(
-        config,
-        chain,
-        PaperMode::Live,
-        linked.as_deref(),
-        &ledger,
-    )?;
+    let session_id =
+        persist_session_for_chain(config, chain, PaperMode::Live, linked.as_deref(), &ledger)?;
     let outcome = PaperOutcome {
         session_id,
         linked_run_id: linked,
@@ -287,13 +271,8 @@ pub async fn job_paper_sim(
         opts.run_id
     ));
     let ledger = policy.apply(&opps);
-    let session_id = persist_session_for_chain(
-        config,
-        chain,
-        PaperMode::Sim,
-        Some(&opts.run_id),
-        &ledger,
-    )?;
+    let session_id =
+        persist_session_for_chain(config, chain, PaperMode::Sim, Some(&opts.run_id), &ledger)?;
     let outcome = PaperOutcome {
         session_id,
         linked_run_id: Some(opts.run_id.clone()),

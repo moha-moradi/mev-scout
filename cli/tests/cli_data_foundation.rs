@@ -116,14 +116,7 @@ fn discover_remote_tolerant_to_service_failures() {
     );
     append_toml(&rem_cfg, "[discover]\nmax_pools = 50");
     let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &rem_cfg,
-        "discover",
-        "--source",
-        "remote",
-        "--enrich",
-    ]);
+    c.args(["-f", &rem_cfg, "discover", "--source", "remote", "--enrich"]);
     let out = match run_timed(&mut c, Duration::from_secs(300)) {
         Ok(o) => o,
         Err(e) => {

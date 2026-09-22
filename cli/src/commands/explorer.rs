@@ -37,10 +37,14 @@ fn short_addr(s: &str) -> String {
     }
 }
 
+mod backfill;
 mod index;
+mod report;
 mod show;
 mod stats;
 
+pub use backfill::cmd_backfill;
 pub use index::cmd_index;
+pub use report::cmd_explorer_report;
 pub use show::cmd_show;
 pub use stats::cmd_stats;

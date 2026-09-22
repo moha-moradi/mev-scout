@@ -50,7 +50,7 @@ pub enum Command {
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data (index, stats, op detail).
+    /// raw chain data (index, stats, show, report, backfill).
     Explorer(ExplorerArgs),
 
     /// Virtual-fund bot P&L over detected opportunities (theoretical, no competition).
@@ -71,6 +71,15 @@ pub enum ExplorerCommand {
     /// Operation detail for a tx hash; --trace recomputes exact profit via
     /// debug_traceTransaction (prestateTracer diffMode).
     Show(ShowArgs),
+
+    /// Revenue report: cost, profit, and volume per time window (1d/7d/30d
+    /// default), broken out per MEV kind, with daily trend and top-op detail.
+    /// Requires the store to hold history — populate it with `backfill`.
+    Report(ExplorerReportArgs),
+
+    /// Index a historical block range into the store so the revenue-report
+    /// windows (1d/7d/30d) have realized data. Idempotent + resumable.
+    Backfill(ExplorerBackfillArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -106,6 +115,41 @@ pub struct ShowArgs {
     /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
     #[arg(long)]
     pub trace: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplorerReportArgs {
+    /// Time windows: comma-separated 1d|7d|30d|all (default 1d,7d,30d)
+    #[arg(
+        long,
+        value_name = "WINDOWS",
+        value_delimiter = ',',
+        default_value = "1d,7d,30d"
+    )]
+    pub windows: Vec<String>,
+
+    /// Filter the whole report to one kind
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
+
+    /// Detail depth: top-N ops by net profit per window
+    #[arg(long, value_name = "N", default_value = "10")]
+    pub top: usize,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplorerBackfillArgs {
+    /// Backfill the trailing N days up to the current confirmed tip
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
+    pub days: Option<u64>,
+
+    /// Exact range start (requires --to-block). Inclusive.
+    #[arg(long = "from-block", value_name = "NUMBER", requires = "to_block")]
+    pub from_block: Option<u64>,
+
+    /// Exact range end (requires --from-block). Inclusive.
+    #[arg(long = "to-block", value_name = "NUMBER", requires = "from_block")]
+    pub to_block: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone)]

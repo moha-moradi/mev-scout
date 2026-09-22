@@ -1612,7 +1612,11 @@ mod tests {
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(ev.confidence, Confidence::Inferred, "cycle mixes unrelated owners");
+        assert_eq!(
+            ev.confidence,
+            Confidence::Inferred,
+            "cycle mixes unrelated owners"
+        );
         assert_eq!(ev.searcher, ATK);
     }
 
@@ -1633,7 +1637,11 @@ mod tests {
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(ev.confidence, Confidence::Inferred, "flow owner is not a candidate");
+        assert_eq!(
+            ev.confidence,
+            Confidence::Inferred,
+            "flow owner is not a candidate"
+        );
     }
 
     #[test]

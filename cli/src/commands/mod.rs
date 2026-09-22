@@ -16,7 +16,7 @@ mod tokens;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_index, cmd_show, cmd_stats};
+pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, cmd_show, cmd_stats};
 pub use live::cmd_live;
 pub use paper::cmd_paper;
 pub use report::cmd_report;
@@ -74,13 +74,19 @@ impl CliCommand for ExplorerArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         use crate::cli::ExplorerCommand;
         match &self.command {
-            ExplorerCommand::Index(a) => {
-                cmd_index(config, a.duration.as_deref(), progress).await
-            }
+            ExplorerCommand::Index(a) => cmd_index(config, a.duration.as_deref(), progress).await,
             ExplorerCommand::Stats(a) => {
                 cmd_stats(config, a.since.as_deref(), a.kind.as_deref()).await
             }
             ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
+            ExplorerCommand::Report(a) => {
+                let _ = progress;
+                cmd_explorer_report(config, &a.windows, a.kind.as_deref(), a.top).await
+            }
+            ExplorerCommand::Backfill(a) => {
+                cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
+                Ok(())
+            }
         }
     }
 }

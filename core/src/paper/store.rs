@@ -197,10 +197,7 @@ impl ExplorerStore {
                 tx_index: r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
                 canonical_id: r.get(2)?,
                 strategy: r.get(3)?,
-                gross_wei: r
-                    .get::<_, String>(4)?
-                    .parse()
-                    .unwrap_or(0),
+                gross_wei: r.get::<_, String>(4)?.parse().unwrap_or(0),
                 gas_wei: r.get::<_, String>(5)?.parse().unwrap_or(0),
                 net_wei,
                 wallet_before: r.get::<_, String>(7)?.parse().unwrap_or(0),
@@ -242,7 +239,13 @@ mod tests {
         };
         let ledger = policy.apply(&[opp]);
         store
-            .insert_paper_session("paper_test_1", "polygon", PaperMode::Sim, Some("run_1"), &ledger)
+            .insert_paper_session(
+                "paper_test_1",
+                "polygon",
+                PaperMode::Sim,
+                Some("run_1"),
+                &ledger,
+            )
             .unwrap();
         let s = store.paper_session("paper_test_1").unwrap().unwrap();
         assert_eq!(s.fills, 1);

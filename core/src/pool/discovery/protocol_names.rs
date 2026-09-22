@@ -24,7 +24,9 @@ pub fn protocol_name_for_factory(factory: Address) -> Option<&'static str> {
         // Pangolin V3
         a if a == address!("0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256") => Some("Pangolin V3"),
         // Curve Stableswap Factory NG (Avalanche / Polygon shared address)
-        a if a == address!("0x1764ee18e8B3ccA4787249Ceb249356192594585") => Some("Curve Stableswap NG"),
+        a if a == address!("0x1764ee18e8B3ccA4787249Ceb249356192594585") => {
+            Some("Curve Stableswap NG")
+        }
         // Blackhole CLMM (Algebra-family)
         a if a == address!("0x512eb749541B7cf294be882D636218c84a5e9E5F") => Some("Blackhole CLMM"),
         // LFJ Liquidity Book V2.2 / V2.1 + Pharaoh DLMM

@@ -1210,7 +1210,10 @@ mod tests {
         assert_eq!(s.token_out, tout);
         // Flow ownership (§7.1): the funder of the input leg is the `from` of
         // the nearest inbound transfer to the pool before the swap log.
-        assert_eq!(s.owner, Some(address!("4000000000000000000000000000000000000000")));
+        assert_eq!(
+            s.owner,
+            Some(address!("4000000000000000000000000000000000000000"))
+        );
     }
 
     #[test]
@@ -1441,7 +1444,7 @@ mod tests {
         data[95] = 1; // ids len
         data[127] = 100; // bin id 100
         data[159] = 1; // amounts len
-        // packed: amountY high 16 bytes = 7, amountX low 16 bytes = 9
+                       // packed: amountY high 16 bytes = 7, amountX low 16 bytes = 9
         data[175] = 7;
         data[191] = 9;
         let j = decode_lb_bins_liquidity(&log(

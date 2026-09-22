@@ -105,7 +105,10 @@ pub async fn job_index(
 /// Load the pool → (token0, token1) registry from the scanner cache (Phase 1.1).
 /// Best-effort: an absent/locked cache yields an empty map and ingest degrades
 /// to transfer-pairing resolution.
-fn load_pool_registry(config: &Config, chain: &ChainName) -> HashMap<Address, (Address, Address)> {
+pub fn load_pool_registry(
+    config: &Config,
+    chain: &ChainName,
+) -> HashMap<Address, (Address, Address)> {
     let mut map = HashMap::new();
     match SqliteStore::open(config.effective_db_path(chain)) {
         Ok(cache) => match cache.list_discovered_pools() {

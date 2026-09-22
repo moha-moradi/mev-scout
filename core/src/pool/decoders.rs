@@ -35,14 +35,12 @@ pub static LB_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| *crate::chain::events::TRADER_JOE_LB_SWAP_TOPIC);
 
 /// LFJ / Pharaoh LB: `DepositedToBins(address,address,uint256[],bytes32[])`.
-pub static LB_DEPOSITED_TO_BINS_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"DepositedToBins(address,address,uint256[],bytes32[])")
-});
+pub static LB_DEPOSITED_TO_BINS_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"DepositedToBins(address,address,uint256[],bytes32[])"));
 
 /// LFJ / Pharaoh LB: `WithdrawnFromBins(address,address,uint256[],bytes32[])`.
-pub static LB_WITHDRAWN_FROM_BINS_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"WithdrawnFromBins(address,address,uint256[],bytes32[])")
-});
+pub static LB_WITHDRAWN_FROM_BINS_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256(b"WithdrawnFromBins(address,address,uint256[],bytes32[])"));
 
 /// Pendle V2 Market Swap topic. Matches the canonical Pendle V2 signature
 /// `Swap(address indexed caller, address indexed receiver, int256

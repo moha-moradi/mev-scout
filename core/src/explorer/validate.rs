@@ -816,11 +816,7 @@ pub fn render_validation_report(report: &ValidationReport) -> String {
     if let Some(g) = &report.causal_golden {
         let _ = writeln!(out);
         let _ = write!(out, "{}", g.render());
-        let gate = if g.passes(1.0, 1.0) {
-            "PASS"
-        } else {
-            "FAIL"
-        };
+        let gate = if g.passes(1.0, 1.0) { "PASS" } else { "FAIL" };
         let _ = writeln!(out, "  Causal golden ship gate: {gate}");
     }
 

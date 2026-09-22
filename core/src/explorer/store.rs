@@ -67,7 +67,9 @@ pub struct MevOpRow {
     pub profit_token: Option<String>,
     pub profit_amount: Option<String>,
     pub profit_usd: Option<f64>,
+    pub volume_usd: Option<f64>,
     pub gas_cost_usd: Option<f64>,
+    pub flashloan_fee_usd: Option<f64>,
     pub net_profit_usd: Option<f64>,
     pub route_json: Option<String>,
     pub victim_hashes: Option<String>,
@@ -293,6 +295,7 @@ impl ExplorerStore {
               profit_token TEXT,
               profit_amount TEXT,
               profit_usd REAL,
+              volume_usd REAL,
               gas_cost_usd REAL,
               flashloan_fee_usd REAL,
               net_profit_usd REAL,
@@ -445,8 +448,9 @@ impl ExplorerStore {
             ",
         )?;
         // Phase 2.2 runtime migration for databases created before the
-        // flash-loan fee column existed.
+        // flash-loan fee column existed. `volume_usd` likewise for pre-report DBs.
         Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
+        Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;
         Ok(())
     }
 
@@ -787,15 +791,34 @@ impl ExplorerStore {
                         }
                     }
                 }
+                // USD notional of the op's swap legs (report "volume"): priced
+                // at the block's token prices. Legs with no price/decimals are
+                // skipped; volume is `None` when nothing priced. Attribution is
+                // per anchor tx — a tx with multiple events shares its legs.
+                let volume_usd = {
+                    let total = swaps.iter().filter(|s| s.tx_index == ev.tx_index).fold(
+                        0.0f64,
+                        |acc, s| {
+                            acc + token_prices
+                                .get(&s.token_in)
+                                .map(|p| {
+                                    crate::explorer::pricing::token_amount_to_usd(s.amount_in, p)
+                                })
+                                .unwrap_or(0.0)
+                        },
+                    );
+                    (total > 0.0).then_some(total)
+                };
                 let canonical = crate::explorer::explorer_canonical_id(ev);
                 conn.execute(
                     "INSERT INTO mev_ops
                        (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                         confidence, canonical_id, profit_token, profit_amount,
-                        profit_usd, gas_cost_usd, flashloan_fee_usd, net_profit_usd,
-                        route_json, victim_hashes, details_json, detector, created_at)
+                        volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
+                        net_profit_usd, route_json, victim_hashes, details_json,
+                        detector, created_at)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                            ?14, ?15, ?16, ?17, ?18, 'explorer', ?19)",
+                            ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20)",
                     rusqlite::params![
                         ev.block as i64,
                         ev.tx_index as i64,
@@ -808,6 +831,7 @@ impl ExplorerStore {
                         canonical,
                         ev.profit_token.map(|a| format!("{:#x}", a)),
                         ev.profit_amount.map(|a| a.to_string()),
+                        volume_usd,
                         profit_usd,
                         gas_usd,
                         flashloan_fee_usd,
@@ -1062,8 +1086,8 @@ impl ExplorerStore {
         let mut stmt = self.conn.prepare(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, net_profit_usd, route_json, victim_hashes,
-                    details_json, detector, created_at
+                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
+                    route_json, victim_hashes, details_json, detector, created_at
              FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([tx_hash], map_mev_op_row)?;
@@ -1090,8 +1114,8 @@ impl ExplorerStore {
         let sql = format!(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, net_profit_usd, route_json, victim_hashes,
-                    details_json, detector, created_at
+                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
+                    route_json, victim_hashes, details_json, detector, created_at
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
              ORDER BY block_number, tx_index"
@@ -1675,8 +1699,8 @@ impl ExplorerStore {
         let mut stmt = self.conn.prepare(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, net_profit_usd, route_json, victim_hashes,
-                    details_json, detector, created_at
+                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
+                    route_json, victim_hashes, details_json, detector, created_at
              FROM mev_ops WHERE ts >= ?1 ORDER BY block_number, tx_index",
         )?;
         let rows = stmt.query_map([since_ts as i64], map_mev_op_row)?;
@@ -1687,8 +1711,144 @@ impl ExplorerStore {
         Ok(out)
     }
 
-    /// Distinct pools referenced by scanner opportunities in a window
-    /// (pool-coverage side of the M1 missing-pool report).
+    // ── revenue report queries (1d/7d/30d cost · profit · volume) ────────
+
+    /// Window-wide revenue aggregates (`explorer report` overview).
+    pub fn report_window_overview(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<ReportOverview> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(volume_usd), 0),
+                    COALESCE(SUM(profit_usd), 0),
+                    COALESCE(SUM(gas_cost_usd), 0),
+                    COALESCE(SUM(flashloan_fee_usd), 0),
+                    COALESCE(SUM(net_profit_usd), 0),
+                    COALESCE(MAX(profit_usd), 0),
+                    COUNT(DISTINCT eoa)
+             FROM mev_ops WHERE ts >= {since_ts} {kind_clause}"
+        );
+        let row = self.conn.query_row(&sql, [], |r| {
+            Ok(ReportOverview {
+                ops: r.get::<_, i64>(0)?,
+                volume_usd: r.get(1)?,
+                gross_usd: r.get(2)?,
+                gas_usd: r.get(3)?,
+                flash_fee_usd: r.get(4)?,
+                net_usd: r.get(5)?,
+                highest_single_usd: r.get(6)?,
+                searchers: r.get::<_, i64>(7)?,
+            })
+        })?;
+        Ok(row)
+    }
+
+    /// Per-kind revenue rows in a window (`explorer report` kinds table).
+    pub fn report_by_kind(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ReportRow>> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT kind AS label, COUNT(*) AS ops,
+                    COALESCE(SUM(volume_usd), 0),
+                    COALESCE(SUM(profit_usd), 0) AS gross,
+                    COALESCE(SUM(gas_cost_usd), 0),
+                    COALESCE(SUM(flashloan_fee_usd), 0),
+                    COALESCE(SUM(net_profit_usd), 0)
+             FROM mev_ops
+             WHERE ts >= {since_ts} {kind_clause}
+             GROUP BY kind
+             ORDER BY gross DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_report_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Daily revenue series in a window (`explorer report` trend).
+    pub fn report_daily(
+        &self,
+        since_ts: u64,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ReportRow>> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT date(ts, 'unixepoch') AS label, COUNT(*),
+                    COALESCE(SUM(volume_usd), 0),
+                    COALESCE(SUM(profit_usd), 0),
+                    COALESCE(SUM(gas_cost_usd), 0),
+                    COALESCE(SUM(flashloan_fee_usd), 0),
+                    COALESCE(SUM(net_profit_usd), 0)
+             FROM mev_ops
+             WHERE ts >= {since_ts} {kind_clause}
+             GROUP BY label
+             ORDER BY label DESC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_report_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Highest net-value ops in a window (drill-down detail list), by
+    /// `net_profit_usd` descending.
+    pub fn top_ops(
+        &self,
+        since_ts: u64,
+        limit: usize,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<MevOpRow>> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
+                    confidence, canonical_id, profit_token, profit_amount, profit_usd,
+                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
+                    route_json, victim_hashes, details_json, detector, created_at
+             FROM mev_ops
+             WHERE ts >= {since_ts} {kind_clause}
+             ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC
+             LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_mev_op_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Blocks indexed whose timestamp falls in the window (coverage). Each
+    /// classified block persists a `blocks` row, so this counts indexed blocks
+    /// even when they carried no realized ops.
+    pub fn blocks_in_window(&self, since_ts: u64) -> anyhow::Result<i64> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM blocks WHERE ts >= ?1",
+            [since_ts as i64],
+            |r| r.get(0),
+        )?;
+        Ok(n)
+    }
     pub fn opportunity_pools(
         &self,
         chain: &str,
@@ -1788,6 +1948,7 @@ pub struct TxRow {
 }
 
 /// A swap row to persist.
+#[derive(Debug, Clone)]
 pub struct SwapRow {
     pub tx_index: u64,
     pub log_index: u64,
@@ -1893,6 +2054,32 @@ pub struct OverviewRow {
     pub searchers: i64,
 }
 
+/// One cost · profit · volume row for the revenue report (per kind, per day,
+/// or the window overview).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportRow {
+    pub label: String,
+    pub ops: i64,
+    pub volume_usd: f64,
+    pub gross_usd: f64,
+    pub gas_usd: f64,
+    pub flash_fee_usd: f64,
+    pub net_usd: f64,
+}
+
+/// Revenue-report window header (`explorer report` overview).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportOverview {
+    pub ops: i64,
+    pub volume_usd: f64,
+    pub gross_usd: f64,
+    pub gas_usd: f64,
+    pub flash_fee_usd: f64,
+    pub net_usd: f64,
+    pub highest_single_usd: f64,
+    pub searchers: i64,
+}
+
 fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
     Ok(FeedRow {
         ts: r.get::<_, i64>(0)? as u64,
@@ -1935,6 +2122,18 @@ fn map_stats_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatsRow> {
     })
 }
 
+fn map_report_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ReportRow> {
+    Ok(ReportRow {
+        label: r.get(0)?,
+        ops: r.get(1)?,
+        volume_usd: r.get(2)?,
+        gross_usd: r.get(3)?,
+        gas_usd: r.get(4)?,
+        flash_fee_usd: r.get(5)?,
+        net_usd: r.get(6)?,
+    })
+}
+
 fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow> {
     Ok(MevOpRow {
         id: r.get(0)?,
@@ -1951,12 +2150,14 @@ fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow> {
         profit_amount: r.get(11)?,
         profit_usd: r.get(12)?,
         gas_cost_usd: r.get(13)?,
-        net_profit_usd: r.get(14)?,
-        route_json: r.get(15)?,
-        victim_hashes: r.get(16)?,
-        details_json: r.get(17)?,
-        detector: r.get(18)?,
-        created_at: r.get::<_, i64>(19)? as u64,
+        flashloan_fee_usd: r.get(14)?,
+        volume_usd: r.get(15)?,
+        net_profit_usd: r.get(16)?,
+        route_json: r.get(17)?,
+        victim_hashes: r.get(18)?,
+        details_json: r.get(19)?,
+        detector: r.get(20)?,
+        created_at: r.get::<_, i64>(21)? as u64,
     })
 }
 
@@ -2555,5 +2756,165 @@ mod tests {
         assert!(store.price_at(tok, 1000).unwrap().is_some());
         assert!(store.price_at(tok, 1010).unwrap().is_some());
         assert!(store.price_at(tok, 2000).unwrap().is_none());
+    }
+
+    fn usdc_price() -> std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd> {
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        prices
+    }
+
+    fn swap_leg(tx_index: u64, log_index: u64, token_in: Address, amount_in: u64) -> SwapRow {
+        SwapRow {
+            tx_index,
+            log_index,
+            pool: address!("3333000000000000000000000000000000000003"),
+            amm: crate::explorer::types::Amm::V3,
+            token_in,
+            token_out: address!("5555000000000000000000000000000000000005"),
+            amount_in: U256::from(amount_in),
+            amount_out: U256::ZERO,
+        }
+    }
+
+    #[test]
+    fn volume_usd_prices_op_swap_legs() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let usdc = address!("4444000000000000000000000000000000000004");
+        let mut ev = sample_event(400);
+        ev.tx_index = 7;
+        let swap_legs = [
+            swap_leg(7, 0, usdc, 5_000_000),   // $5
+            swap_leg(7, 1, usdc, 2_000_000),   // $2
+            swap_leg(9, 0, usdc, 100_000_000), // other tx, not attributed
+        ];
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 400,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 10,
+                txs: &[],
+                swaps: &swap_legs,
+                transfers: &[],
+                events: &[ev],
+                native_price_usd: Some(0.75),
+                token_prices: &usdc_price(),
+            })
+            .unwrap();
+        let ops = store.ops_in_range(400, 400, &[]).unwrap();
+        assert_eq!(ops.len(), 1);
+        let v = ops[0].volume_usd.unwrap();
+        assert!((v - 7.0).abs() < 1e-6, "op volume {v}");
+        // Unpriced legs yield None volume.
+        let mut unpr = sample_event(401);
+        unpr.tx_index = 11;
+        // token not in prices map
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 401,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 1,
+                txs: &[],
+                swaps: &[swap_leg(
+                    11,
+                    0,
+                    address!("9999000000000000000000000000000000000009"),
+                    123,
+                )],
+                transfers: &[],
+                events: &[unpr],
+                native_price_usd: Some(0.75),
+                token_prices: &usdc_price(),
+            })
+            .unwrap();
+        let ops = store.ops_in_range(401, 401, &[]).unwrap();
+        assert!(ops[0].volume_usd.is_none());
+    }
+
+    #[test]
+    fn report_windows_aggregate_cost_profit_volume() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let usdc = address!("4444000000000000000000000000000000000004");
+        let day_a: u64 = 1_700_000_000;
+        let day_b: u64 = day_a + 86_400;
+        let mut arb = sample_event(510);
+        arb.ts = day_a;
+        arb.tx_index = 3;
+        let mut sand = sample_event(511);
+        sand.ts = day_b;
+        sand.tx_index = 4;
+        sand.kind = MevKind::Sandwich;
+        let mut swp_a = swap_leg(3, 0, usdc, 5_000_000);
+        swp_a.pool = arb.pools[0];
+        let mut swp_b = swap_leg(4, 0, usdc, 10_000_000);
+        swp_b.pool = sand.pools[0];
+        for (block, ev, swaps, ts) in [
+            (510u64, &arb, &[swp_a.clone()][..], day_a),
+            (511, &sand, &[swp_b.clone()][..], day_b),
+        ] {
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
+                    ),
+                    ts,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps,
+                    transfers: &[],
+                    events: std::slice::from_ref(ev),
+                    native_price_usd: Some(0.75),
+                    token_prices: &usdc_price(),
+                })
+                .unwrap();
+        }
+
+        let ov = store.report_window_overview(0, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert!(
+            (ov.volume_usd - 15.0).abs() < 1e-6,
+            "volume {}",
+            ov.volume_usd
+        );
+        assert!((ov.gross_usd - 2.0).abs() < 1e-6, "gross {}", ov.gross_usd);
+        assert!(ov.net_usd < ov.gross_usd, "net subtracts gas");
+        assert!(ov.gas_usd > 0.0);
+        assert_eq!(ov.flash_fee_usd, 0.0);
+
+        let kinds = store.report_by_kind(0, None).unwrap();
+        assert_eq!(kinds.len(), 2);
+        let arb_row = kinds.iter().find(|r| r.label == "arb_atomic").unwrap();
+        assert!((arb_row.volume_usd - 5.0).abs() < 1e-6);
+
+        let daily = store.report_daily(0, None).unwrap();
+        assert_eq!(daily.len(), 2, "two distinct days: {:?}", daily);
+
+        let top = store.top_ops(0, 5, None).unwrap();
+        assert_eq!(top.len(), 2);
+        assert!(top[0].net_profit_usd.unwrap() >= top[1].net_profit_usd.unwrap());
+
+        assert_eq!(store.blocks_in_window(0).unwrap(), 2);
+        assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
+
+        // Kind filter narrows everything down.
+        let ov_k = store.report_window_overview(0, Some("sandwich")).unwrap();
+        assert_eq!(ov_k.ops, 1);
+        assert_eq!(store.report_by_kind(0, Some("sandwich")).unwrap().len(), 1);
     }
 }
