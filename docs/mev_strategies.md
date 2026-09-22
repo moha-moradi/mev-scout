@@ -2888,6 +2888,8 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 > - **Ethereum** (blocks 28,249,309–28,465,309, ~30 days)
 > - **Arbitrum** (blocks 563,334,992–573,234,992, ~30 days)
 > All frequency/income claims in this document were compared against real on-chain data.
+> **No Dune access?** §17.8 gives the per-strategy on-chain algorithm (log fingerprints + count + $ rules) that
+> reproduces every estimate here from raw RPC (`getLogs`/`getStorageAt`/`traces` + block-level pricing).
 
 ### 17.1 Polygon Validation Results (30 days)
 
@@ -2967,6 +2969,138 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 6. **MakerDAO OSM / Liquity / Synthetix**: Tables exist on Ethereum but no liquidations in 30-day window — these are event-driven strategies that only activate during market stress; validate during volatile periods
 7. **GMX V1/V2 / Gains Network**: Dune decoded event tables either missing or empty — these perp DEX protocols require custom node indexing, subgraph queries, or GMX's own event API
 8. **Skim/sync (UniV2) / Curve**: `uniswap_v2_polygon` and `curvefi_polygon` tables not decoded on Dune — consider validating on Ethereum mainnet where these protocols have better Dune coverage, or use raw RPC event decoding
+
+### 17.8 On-Chain Estimation Algorithms (Dune-free)
+
+Every frequency / income estimate in this document is reproducible **without Dune** from raw RPC data over the same
+block ranges §17 uses (chunked, reorg-safe `getLogs` + archive `eth_call`/`getStorageAt` + `traces`). Below is the
+per-strategy `<input fingerprint> → <count rule> → <$ rule>`. Everything Dune decoded for us is derivable from the
+following primitives:
+
+- **`eth_getLogs`** filtered by event signature. Standard `topic0`s: `Transfer` = `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef`,
+  `Sync` = `0x1c411e9a12d0df96a218c9ab97f2bad6ba7eb626f9ef159e9a503b49d8a738d`,
+  `Swap` = `0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822`, `Mint`/`Burn`
+  (V2) = `0x4c209b5f8c8d0db7364c3d2e249127a2c4db0a1e9a1a522d8b8cf11092679c7` /
+  `0xdccd412f0b1252819cb1fd330b93224ca42612892bb3f4f789976e6d8193646`; all other protocol events keyed
+  from their ABIs. Fragmenting `getLogs` by `topic0` sidesteps Dune's decode gaps (§17.3, §17.4) — raw logs exist
+  regardless of whether Dune indexed them.
+- **`eth_getStorageAt` / `eth_call` (archive)** for latent state: `balanceOf − reserve` per pair, OSM `_next` (slot 4),
+  V3 `slot0.sqrtPriceX96`, TWAP accumulators, protocol-level totals (Liquity TCR, Curve balances, Morpho market state).
+- **`traces`** for function-call attribution where events are ambiguous (who called `skim`, `take`, `kick`, the
+  executor functions) — matches the "aborted tx still traces" caveat.
+- **USD pricing without Dune**: quote each leg from pools in the *same block* (state at the relevant `Sync`/reserves),
+  prefer stablecoin-denominated legs, else a Chainlink feed `latestRoundData` for the historical round. The §17.5
+  dollar figures were fee-tier × notional proxies anyway — same precision, computed locally.
+
+Estimation modes (as in `docs/implementation_plan_capital_free.md`):
+**A = settled capture** (someone executed: count + notional from event args), **B = latent/reconstructable**
+(the condition existed, detect from storage/logs), **C = simulation-required** (our path's net after gas/fees/ordering;
+`revm` / `BlockReplayer`). Strategies are marked with the mode(s) that produce the estimate.
+
+#### 17.8.1 V2 Pool Mechanics (§1)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 1.1 | skim() capture | A+B | `Sync`+`Transfer` logs per pair vs stored reserves (reconstruct `balance − reserve` per block, B); realized event = `skim(address)` call in `traces` with outbound `Transfer` whose payer is the pair and not part of a swap/mint/burn. Count = skim events in range (~100–500/mo). $ = outbound transfer amounts (in USD at block price); latent inventory from the live `balance − reserve` (not counted until realized). |
+| 1.2 | sync() race | B→C | `sync()` calls in `traces`; reconstruct pre-call drift: reserve vs `balanceOf` from the preceding `Transfer`/`Sync` history (B). Count = drift-correcting syncs (~30–200/mo). $ = follow-on arb requires the corrected state re-simulated post-`sync` (C); the `sync()` itself transfers nothing, so A-dollar is ~$0. |
+| 1.3 | Flash swap arbitrage | A | Same tx touches ≥2 pools (group `Swap` logs by `tx_hash`); verify the flash path via `uniswapV2Call` on the router/contract `traces`. Count = successful multi-pool atomic swaps (500–3K/mo). $ = net token delta per tx across all legs (in-legs − out-legs summed from `Transfer` flows, priced at block) — fully on-chain, no Dune. |
+| 1.4 | Init price snipe | A | V3 factory `PoolCreated` → read `slot0.sqrtPriceX96` at first `initialize`. Count = pools whose implied price deviates from the concurrent reference-pool mid by more than fee+gas (~30–200/mo; 0 on Polygon per §17.1). $ = first-swap signed volume × deviation %. |
+
+#### 17.8.2 Order Flow (§2)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 2.1 | Backrunning | A / C | Per `(block, pool)` sort `Swap` logs by log index; backrun = different tx, opposing direction, same block as a price-moving swap. Count = such pairs (9,663 in the fixed §17.1 run). $ proxy = fee-tier (0.3%) × closing-leg notional — exactly the corrected Dune formula; true net needs post-swap revm re-quote (C). |
+| 2.2 | Long-tail token arb | A / C | Group `Swap` by `tx_hash`; multi-hop txs (≥3 pools, path excluding blue-chip pairs) = proxy count (150,430 / ~21d in §17.1; ~14x inflated). $ = sum of legs priced via the final stablecoin-denominated leg ($0.26/opp avg); real arb = negative-cycle detection over the reserve graph + revm (C). |
+| 2.3 | CEX–DEX arb | C (on-chain leg) | On-chain we only see the DEX close: same-block opposing swap that reverts the pool mid to its pre-move level. Count = such DEX-side closes (5K–30K/mo). $ = DEX-leg net from `Transfer` deltas; full estimate requires CEX order flow (WebSocket) not readable on-chain — mark as partial. |
+| 2.4 | Statistical arb / pairs | B / C | Reconstruct pair price-ratio time series per block from `Sync`/reserves of correlated pools (stETH/ETH, WBTC/cbBTC, DAO/USDC). Count = threshold-crossings where spread > fees+gas (500–2K/mo). $ = round-trip simulation at crossing block (C). |
+
+#### 17.8.3 Bundle / Positional (§3)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 3.1 | Sandwich | A | Same block, same pool(s): front `Swap` → victim `Swap` → back `Swap` in consecutive txs (V2); V3 via `Swap` + `Mint`/`Burn` of the front-run position. Count = matched structures (500–5K/mo). $ = realized net from `Transfer` deltas (back-sell − front-buy) priced at block; re-quote via `BlockReplayer` for slippage-adjusted net. |
+| 3.2 | JIT liquidity | A | `Mint` + `Swap` + `Burn` by the **same owner** in the same block (or tight window) on a V3 pool. Count = bundles (545 in June 2026 per §17.5 ~18/day; Dune's broken decode hid this). $ = collocated swap volume × fee tier × position share — the rewritten §17.5 formula, computed from raw `Mint`/`Burn`/`Swap` logs. |
+| 3.3 | JIT + arb combo | A | The 3.2 bundle + a 4th leg: same-block opposing `Swap` on a second pool after the JIT burn. Count = 4-leg bundles (100–500/mo). $ = JIT fee capture + arb-leg `Transfer` delta net. |
+| 3.4 | V3 range order snipe | B | Reconstruct single-sided positions (owner + `liquidity` from `Mint`/`Burn`) and price-crossings via `TickLiquidityChanged`/`Swap` tick moves. Count = positions whose hold-space flipped from tokenA-only to tokenB-only after a crossing (100–500/mo). $ = exit value − entry value reconstructed from the fill ticks (B); timing/IL model is C. |
+
+#### 17.8.4 Liquidations (§4)
+
+Realized liquidations are the cleanest on-chain counts — the notional is in the event args.
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 4.1 | Cascading liq. engineering | B / C | Liquidation-storm reconstruction: a liquidation tx whose seized collateral then gets swapped and lands in a *different* protocol's `LiquidationCall` in a follow-up tx within the same few blocks. Count = multi-protocol storm windows (5–50/mo). $ = sum of seized-value discounts across triggers (each event's seized − repaid), minus swap impact (C; requires the dependency graph + revm). |
+| 4.2 | Maker OSM preview + kick | A/B | `kick()` calls in `traces` on the ilk's `Clipper` (or `Vow`), or `lending.borrow`-equivalent raw decode; notional = `tab = art × price` at kick. Count = kick events (≈ hourly OSM cadence; ~720/mo theoretical). $ = keeper `tip + chip × tab` from event args. Lookahead B: read OSM slot 4 (`_next`) and pre-compute unsafe vaults. |
+| 4.3 | Oracle-latency liq | A/B | Liquidation txs whose block also contains the respective Chainlink `AggregatorV3Interface` `Updated` (price-feed poke). Count = co-blocked pokes+liqs (200–800/mo). $ = seized discount args. B: pre-liquidatable detection via feed-vs-market divergence needs archive reads of the pre-poke state. |
+| 4.4 | Flash loan atomic liq | A | Same `tx_hash` contains a flash-borrow (`Vault.FlashLoan`, Aave `flashLoan`, V3 `Flash`) **and** `LiquidationCall`. Count = matched txs (226/21d ≈ 323/mo per §17.1). $ = `repayAmount` notional ($111K / $493 avg) and seized − repaid delta; the "closest to Dune but ours" fingerprint. |
+| 4.5 | LST depeg collateral liq | A/B | `LiquidationCall` events whose `collateralAsset` is a known LST address (stETH, rETH, cbETH), clustered in windows where the stETH/ETH and LST stable pools deviate from Chainlink. Count = LST-collateral liquidations (5–30/mo). $ = seized − repaid with the discount computed at the distressed pool price (B reconstructs the stress window). |
+| 4.6 | AAVE partial liq optimizer | A | Aave v2/v3 `LiquidationCall` events (args: collateral, debt, `debtToCover`, `liquidatedCollateralAmount`). Count = events (300–1K/mo). $ = seized USD − repaid USD = bonus directly from args (both emitted, no pricing table needed beyond the two assets). |
+| 4.7 | Synthetix flag + delayed liq | A | `AccountFlaggedForLiquidation` then `Liquidate`/`LiquidateDelinquentAccount` in `traces`/events (`synthetix_v3` `core_evt_liquidation` raw decode). Count = liquidations (30–120/mo, calm-month 0 per §17.2). $ = `flagReward` + liquidation premium args. Scheduling B: `lastFlaggedTime` + `liquidationDelay` storage → deterministic liquidation block. |
+| 4.8 | Liquity recovery mode cascade | A/B | `TroveManager.TroveLiquidated` events; restrict count to blocks where reconstructed TCR < 150% (`totalCollateral`/`totalDebt` storage reads per block, B). Count = troves liquidated in recovery mode (1–5/mo). $ = debt + collateral-gain args (110% vs 150% threshold doubles the eligible set). |
+| 4.9 | Liquity stability pool front-run | A/B | `StabilityPool` `DepositorUpdated`/`ETHLoss` events in the block *before* a `TroveLiquidated` block (front-run deposits) or after (exit race). Count = co-timed deposit/liquidation pairs (20–80/mo). $ = depositor share of the collateral gain per the emitted `ETHGain` splits. |
+| 4.10 | Maker Clip Dutch auction take() | A | `Clipper.Take` events (all-time 2,130 / $9.99M per §17.2). Count = takes in range (200–500/mo theoretical; calm-month 0). $ = `lot×price − tab` from event args. Optimal-take-block timing is a Dutch-curve simulation (C) over the auction's decay schedule. |
+| 4.11 | GMX v1 keeper race | A | GMX `Vault.Liquidation` raw-decode (Dune has no table, §17.3 — logs work anyway). Count = liquidation events (200–500/mo). $ = `fee` + payout args. Position pre-indexing (B) from `Increase/DecreasePosition` events feeds the keeper race itself. |
+| 4.12 | Perp protocol keeper | A | Per-protocol: Kwenta/SNX Perps `Liquidate`/`CrossMargin` events (Optimism), gTrade `liquidatePosition` in `traces` (Polygon/Arb), Perpetual Protocol required-margin liqs; dYdX v4 is a Cosmos app-chain (off-chain API — mark partial). Count = events (200–800/mo). $ = keeper reward args. |
+| 4.13 | Interest accrual liq | B / A | Forward HF model: reconstruct borrow-rate time series (Aave `ReserveDataUpdated` events) + per-position debt/collateral for each block; count crossings where HF dips below 1 with **no price move** in prior blocks (attribution). Count = attributed liqs (100–500/mo). $ = seized − repaid args for attributed events. |
+| 4.14 | NFT collateral liq | B | BendDAO `AuctionStarted`/`AuctionEnded`, Blur Blend loan `Trigger`/liquidation events, NFTfi `LoanForeclosure`. Count = events (30–100/mo). $ = floor-based discount: floor from on-chain markets (NFTX/sudoswap `eth_call` price), seized value − debt. |
+| 4.15 | Bad debt prevention optimizer | A/B | Liquidations where reconstructed seized-collateral USD < debt + bonus (collateral kurzfall). Count = near/below-solvent liquidations (50–200/mo). $ = remainder shortfall (the "prevented" loss) + the max-eligible bonus from args. |
+
+#### 17.8.5 Oracle / Rebase / Peg (§5)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 5.1 | Stablecoin depeg arb | A | Depeg window detection: pool ratio (via `Sync`/reserves or `get_dy`) diverging from 1:1 stable reference; realized = swaps in the stress window that later restore, priced at the restore mid. Count = windows (1–5/mo). $ = `Transfer` net across the window's arb txs, priced at restored price. |
+| 5.2 | TWAP oracle manipulation | B / C | Reconstruct TWAP per block from `price0/1CumulativeLast` storage vs wall clock (or V3 `observation` accumulator); flag windows where cumulative Δ implies price deviating from a reference pool for ≥N blocks. Count = manipulation windows (5–50/mo). $ = defensive counter-arb net, simulated (C). |
+| 5.3 | Rebase token arb | A/B | Monitor the rebase token's `Rebase`/`LogRebase` event, then the first `Sync` (or `skim`) after it on the token's pools; count drift openings where `balance > reserve`. Count = positive-rebase windows (30–90/mo). $ = fee-tier × closed volume proxy, or swap-net A where an arb followed. |
+| 5.4 | Fee-on-transfer token arb | B | Identify FoT tokens from `swapExactTokensForTokensSupportingFeeOnTransfer` calls (or actual-vs-nominal balance math on `Transfer`); track cumulative `balance − reserve` drift per pair. Count = drift-arb openings (200–800/mo). $ proxy = fee-tier × volume on drift-closing swaps; real round-trip sim is C. |
+
+#### 17.8.6 Cross-Domain (§6)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 6.1 | Bridge MEV | B / A | Source-chain bridge events (LayerZero `Relayed`/`XSent`, Wormhole `LogMessagePublished`, Stargate `Swap`) → detect destination-chain price impact on the target asset's pools in the same window, and the realized same-block arb close on the destination. Count = bridge-event→impact pairs (500–2K/mo). $ = destination close-leg net priced at dest block. |
+| 6.2 | L2 sequencer MEV | A | The same §17 fingerprints (backrun, arb, liq) via the sequencer's ordering — for Arbitrum only co-blocked (never sandwich); count per ordering model. Count = sequential-opposing swap pairs on the target L2s (1K–5K/mo). $ = same proxies as 2.1/1.3. |
+| 6.3 | PBS / MEV-Boost | A | Per block: the value transferred to the block's fee-recipient/coinbase beyond the base tip = builder payment. Reconstruct from receipts (address of the paying tx) over all blocks. Count = blocks with extra-value transfer (≈4,500/mo at settled cadence). $ = sum of non-tip transfers to the proposer address per block. |
+| 6.4 | Cross-chain arb | B | Per-chain archive reads of the same asset's pool price around bridge finality windows; realized = bridge + immediate opposing swap on the other chain. Count = cross-chain close pairs (500–2K/mo). $ = net across both chains' `Transfer` deltas, finality-adjusted (bridge fees, gas, proof windows). |
+
+#### 17.8.7 Protocol Niches (§7)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 7.1 | Curve pool imbalance | A/B | `TokenExchange` events (+ balance storage) with pool ratio deviating from peg; realized = exchange legs during the deviation that re-balance toward peg. Count = imbalance windows (500–2K/mo). $ = leg net at block prices. ($17.4: Curve logs work even though Dune lacks `curvefi_polygon` tables.) |
+| 7.2 | Governance MEV | B / C | On-chain: Governor `ProposalCreated`/`CastVote`, timelock `Queue`/`Execute`; price drift after execution (reference pool mid pre/post). Count = proposals with measurable drift (5–30/mo). $ = drift-market return is C (directional); realized governance MEV value is rarely unambiguously attributable on-chain. |
+| 7.3 | Airdrop MEV | A | Claim txs (e.g. MerkleDistributor `Claimed`, MerkleDrop claims) grouped by claimant/recipient; count = claims (5–30/mo). $ = claimed token amount × price at claim block (from the receiving wallet's transfers or claim event args). |
+| 7.4 | ERC-4337 AA bundler MEV | A | EntryPoint `UserOperationEvent` (all bundles) per bundler; count = UserOps bundled (1K–5K/mo). $ = bundler premium (account abstraction fee args) per op; ordering-value capture (reordering ops) needs alt-mempool + sim (C). |
+| 7.5 | Velodrome/Aerodrome epoch transition | A | Epoch flip (block at `EpochTimestamp` boundary); reward-claim txs (`VotingEscrow`/`Gauge` `Deposit`+`Withdraw`, `RewardClaimed`) in the same block window. Count = epoch-boundary claim captures (≈4/mo). $ = claimed reward amounts × token price. |
+| 7.6 | Pendle PT/YT implied yield spread | B | Reconstruct implied yield from pendle market ratio (PT/YT pool `Swap` mid) vs realized yield from SY rate events; flag divergence windows. Count = windows (200–500/mo). $ = PT/YT round-trip net simulated at window (C); realized A from `Redemption`/`Swap` net when present. |
+| 7.7 | Balancer rate provider staleness | A/B | Rate-update events (`OracleUpdated` / rate-provider `pose`) lagging the underlying reference-market price; pool `Swap` mid vs reference mid during stale windows. Count = stale windows with an opposing close (200–500/mo). $ = swap-leg net in-window (A), else C. |
+| 7.8 | GMX V2 ADL front-run | A | `AdlHandler`/`LiquidationHandler` `OracleError`/ADL events (raw decode; Dune tables empty per §17.3). Count = ADL events (20–100/mo). $ = ADL keeper-fee/payout args; front-run edge (predicting before submit) = market-price model (C). |
+| 7.9 | Lido oracle report front-run | A/B | LidoOracle `CompletedRebased`/`PostTotalShares` reports; predict next report from the same validator/prediction inputs (B). Count = report windows (≈30/mo). $ = pre/post report stETH→ETH arb net, simulated (C). |
+| 7.10 | Morpho Blue market state transition | A/B | Market `Config`/state changes (`IsSupplyPaused`, LLTV, oracle updates) via events; liquidations via `Liquidate` events (repay = seized args). Count = events + follow-on liquidations (200–1K/mo). $ = seized − repaid delta from args. |
+| 7.11 | Uniswap V4 hook MEV | A / C | Pool creation + `PoolModified`/`Swap` on pools whose `hook_address` byte-17 flags indicate `beforeSwap`/fees/limits. Count = hook-touched swap/action volume (500–3K/mo). $ = extractable value is hook-path sim (C); activity counting is A. |
+| 7.12 | Convex/Curve gauge vote epoch | A | Gauge `Deposit`/`Withdraw`/`RewardClaimed` around vote-epoch switches (weekly `WeightUpdate` on curve gauge controller). Count = epoch captures (≈2/mo). $ = CRV/CVX reward amounts × price at claim. |
+| 7.13 | Trader Joe V2 Liquidity Book | A/B | LB `Swap` events at bin boundaries + bin-JIT (bin `Deposit`+`Swap`+`Withdraw` same tx). Count = bin-boundary JIT/arb bundles (200–1K/mo). $ = per-bin fee share × swapped volume + bin-move arb leg net. |
+
+#### 17.8.8 Emerging (§8)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 8.1 | Solver / intent MEV | A | Solver-fill events: CoW `Trade` (settlement), UniswapX `DutchOrderFilled`/`ExclusiveDutchOrderFilled`, Across fills. Count = solves (2K–10K/mo). $ = solver fee args + surplus net (C for exact fill P&L). |
+| 8.2 | Batch auction MEV | A | CoW/DFNS settlement txs (solver calls `settle`); count = settlements (2K–10K/mo). $ = solver payment args + surplus (reconstruct bid/execution price diff within the settlement). |
+| 8.3 | NFT floor arbitrage | B / C | On-chain floors: NFTX `Buy`/`Sell` price, sudoswap `GetBuyNFTQuote`; marketplace (Blur/OpenSea) floors are off-chain — mark partial. Count = cross-market floor-gap events (50–200/mo). $ = requires NFT resale (C-ish; doc deprioritizes permanently, §15). |
+| 8.4 | Token launch snipe | A | New pool (`PairCreated`/V4 `Pool`/Algebra `PoolCreated`) + same-tx add-liquidity + first `Swap` (launch bundle) + subsequent sell. Count = launched-then-churned pools (500–3K/mo). $ = realized `Transfer` net across the launch txs when the snipe sold; unrealized marked-to-block (C). |
+| 8.5 | Multi-block MEV | C + validator intel | On-chain: detect contiguous blocks ordered by the same builder/proposer containing related state flow. Count = such sequences (10–100/mo). $ = only simulable with proposer knowledge (C); not an on-chain report. |
+
+#### 17.8.9 Part IV Expansion Surfaces (§20–§24)
+
+| # | Strategy | Mode | On-chain fingerprint → count → $ |
+|---|----------|:---:|----------------------------------|
+| 20 | Cross-market position refinancing / debt-mgmt arb | A / C | Same `tx_hash` contains a repay on protocol A (`Repay` event) and a borrow on protocol B (`Borrow` event) for the same user/collateral (DeFi Saver "Loan Shifter" / Instadapp DSL class). Count = cross-protocol repay+borrow pairs (300–1K/mo). $ = debt-moved notional (A); rate-spread attribution (was it rate-arb) needs borrow-rate spread vs gas (C). |
+| 21 | Automation / keeper-network execution | A | Executor txs to keeper registries: Gelato `TaskExecuted`, Keep3r `KeeperWork`, Chainlink Automation `LogTriggered`/`UpkeepPerformed`, DFS Auto `Trigger`. Count = trigger executions (1K–5K/mo). $ = executor fee args (small) + trigger-state co-bundle backrun (C). |
+| 22 | Owner-side liq-protection salvage | A/B | Pre-emptive deleverage txs: collateral swap + repay by the *borrower* in the blocks immediately before projected HF<1 (B.Protocol / DFS "Liquidation Protection" class). Count = self-deleveraging events (50–200/mo). $ = avoided liquidation penalty (bonus the protocol would have taken) reconstructed from the averted `LiquidationCall` args (C for certainty). |
+| 23 | Fluid (Instadapp) vault liq | A | Fluid `Vault` `Liquidate`/`Withdraw` events (single-oracle delegated liquidations). Count = events (200–1K/mo). $ = seized − repaid delta from args; DEX-leg value (continuous-bin jitter) is C. |
+| 24 | New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho) | A | Per-protocol `LiquidationCall`-equivalent events (same generic fingerprint as 4.4, chain-gated via `ChainConfig`). Count = events per protocol (100–500/mo each). $ = repaid/seized notional args, priced at block. |
 
 ---
 

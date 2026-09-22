@@ -1,7 +1,8 @@
 # Implementation Plan: Capital-Free MEV Detectors (multi-chain)
 
 > Source: `docs/mev_strategies.md` — strategy reference, capital-free inventory (§11),
-> Dune validation (§17), and codebase status (§16).
+> on-chain validation (§17, incl. the Dune-free per-strategy estimation algorithms in
+> §17.8), and codebase status (§16).
 > Scope: **all capital-free, non-CEX strategies**, sequenced, chain-generic.
 > Protocol-specific addresses are gated through `ChainConfig` / `chains.toml` (same
 > pattern as `aave_v3_pool` today).
@@ -12,6 +13,8 @@ Two delivery tracks (can proceed in parallel):
 2. **Historical market reports** — past-month opportunity count + estimated revenue from
    on-chain logs/storage, without requiring a live bot. Replaces the Dune §17 workflow
    with our own RPC log decoding (closes gaps where Dune tables were missing).
+   The per-strategy log fingerprints + count/$ rules are codified in
+   `mev_strategies.md` §17.8; this track implements the scanner side of those rules.
 
 ---
 
@@ -125,7 +128,8 @@ Note: the `strategies` config list currently does **not** gate execution — tha
 ### Phase 0 — Historical market reports (~2–4 days, parallelizable)
 
 Ranged log/storage scanners producing past-month **N opps / $ revenue** without live
-execution. Note: neither existing CLI surface fits this today — `report` only
+execution. Fingerprints below follow `mev_strategies.md` §17.8 (modes A/B/C per
+strategy). Note: neither existing CLI surface fits this today — `report` only
 re-renders recorded runs from `run_manifests`, and `explorer index` is live-only with
 no historical backfill (`docs/ARCHITECTURE.md` §4.7.1). Add ranged ingest
 (`--from/--to`) to the explorer pipeline, or a new `scan --kind <skim|flash-liq|maker-keeper|gmx-adl>`
