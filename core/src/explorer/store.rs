@@ -1979,8 +1979,23 @@ impl ExplorerStore {
                 .details_json
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
+                .filter(serde_json::Value::is_object)
                 .unwrap_or(serde_json::json!({}));
 
+            if let Some(object) = details.as_object_mut() {
+                for key in [
+                    "trace_verified",
+                    "trace_check",
+                    "trace_check_reason",
+                    "trace_profit_usd",
+                    "expected_profit_usd",
+                    "profit_error_pct",
+                    "trace_native_delta_wei",
+                    "trace_note",
+                ] {
+                    object.remove(key);
+                }
+            }
             if let Some(check) = &verification.trace_check {
                 details["trace_verified"] = serde_json::json!(true);
                 details["trace_check"] = serde_json::json!(check);
@@ -2001,7 +2016,9 @@ impl ExplorerStore {
                 details["trace_native_delta_wei"] =
                     serde_json::json!(verification.native_delta_wei);
             }
-            details["trace_note"] = serde_json::json!(verification.note);
+            if !verification.note.is_empty() {
+                details["trace_note"] = serde_json::json!(verification.note);
+            }
             self.conn.execute(
                 "UPDATE mev_ops SET details_json = ?1 WHERE id = ?2",
                 rusqlite::params![details.to_string(), op.id],
@@ -3009,9 +3026,103 @@ mod tests {
         assert_eq!(store.blocks_in_window(0).unwrap(), 2);
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
-        // Kind filter narrows everything down.
         let ov_k = store.report_window_overview(0, Some("sandwich")).unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(store.report_by_kind(0, Some("sandwich")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trace_verification_replaces_stale_fields() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 600,
+                block_hash: &b256!(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 1,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[sample_event(600)],
+                native_price_usd: Some(0.75),
+                token_prices: &usdc_price(),
+            })
+            .unwrap();
+        let tx_hash = store.ops_in_range(600, 600, &[]).unwrap()[0]
+            .tx_hash
+            .clone();
+
+        store
+            .mark_trace_verified(
+                &tx_hash,
+                &TraceVerification {
+                    expected_profit_usd: Some(100.0),
+                    trace_profit_usd: Some(95.0),
+                    profit_error_pct: Some(5.0),
+                    native_delta_wei: "123".into(),
+                    note: "first".into(),
+                    trace_check: Some("pass".into()),
+                    trace_check_reason: None,
+                },
+            )
+            .unwrap();
+        let first = store.ops_in_range(600, 600, &[]).unwrap()[0]
+            .details_json
+            .clone()
+            .unwrap();
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["trace_check"], "pass");
+        assert_eq!(first["profit_error_pct"], 5.0);
+
+        store
+            .mark_trace_verified(
+                &tx_hash,
+                &TraceVerification {
+                    expected_profit_usd: None,
+                    trace_profit_usd: None,
+                    profit_error_pct: None,
+                    native_delta_wei: String::new(),
+                    note: "second".into(),
+                    trace_check: Some("unverifiable".into()),
+                    trace_check_reason: Some("no price".into()),
+                },
+            )
+            .unwrap();
+        let second = store.ops_in_range(600, 600, &[]).unwrap()[0]
+            .details_json
+            .clone()
+            .unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(second["trace_check"], "unverifiable");
+        assert_eq!(second["trace_check_reason"], "no price");
+        assert!(second.get("expected_profit_usd").is_none());
+        assert!(second.get("trace_profit_usd").is_none());
+        assert!(second.get("profit_error_pct").is_none());
+        assert!(second.get("trace_native_delta_wei").is_none());
+
+        store
+            .mark_trace_verified(
+                &tx_hash,
+                &TraceVerification {
+                    expected_profit_usd: Some(100.0),
+                    trace_profit_usd: Some(95.0),
+                    profit_error_pct: Some(5.0),
+                    native_delta_wei: "123".into(),
+                    note: "third".into(),
+                    trace_check: Some("pass".into()),
+                    trace_check_reason: None,
+                },
+            )
+            .unwrap();
+        let third = store.ops_in_range(600, 600, &[]).unwrap()[0]
+            .details_json
+            .clone()
+            .unwrap();
+        let third: serde_json::Value = serde_json::from_str(&third).unwrap();
+        assert_eq!(third["trace_check"], "pass");
+        assert!(third.get("trace_check_reason").is_none());
     }
 }

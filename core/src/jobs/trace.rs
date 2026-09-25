@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::config::validation;
 use crate::config::Config;
 use crate::explorer::pricing;
-use crate::explorer::store::{ExplorerStore, TraceVerification};
+use crate::explorer::store::{ExplorerStore, MevOpRow, TraceVerification};
 use crate::progress::JobProgress;
 
 use super::rpc::init_rpc;
@@ -72,6 +72,15 @@ pub fn trace_verdict(
     tolerance_pct: f64,
     abs_usd_tol: f64,
 ) -> TraceVerdict {
+    if !tolerance_pct.is_finite()
+        || tolerance_pct < 0.0
+        || !abs_usd_tol.is_finite()
+        || abs_usd_tol < 0.0
+    {
+        return TraceVerdict::Unverifiable(
+            "trace tolerances must be finite and non-negative".to_string(),
+        );
+    }
     let Some(expected) = expected_profit_usd else {
         return TraceVerdict::Unverifiable(
             "no expected USD profit for the op — classifier did not price it".to_string(),
@@ -84,35 +93,37 @@ pub fn trace_verdict(
                 .to_string(),
         );
     };
-    match err_pct {
-        Some(pct) => {
-            if pct.abs() <= tolerance_pct {
-                TraceVerdict::Pass
-            } else {
-                let direction = if pct > 0.0 {
-                    "over-estimate"
-                } else {
-                    "under-estimate"
-                };
-                TraceVerdict::Fail(format!(
-                    "profit_error_pct {pct:+.1}% exceeds tolerance ±{tolerance_pct:.1}% \
-                     (classifier {direction})"
-                ))
-            }
+    if !expected.is_finite() || !trace.is_finite() {
+        return TraceVerdict::Unverifiable("trace profit inputs are not finite".to_string());
+    }
+    if expected.abs() <= f64::EPSILON {
+        let diff = (expected - trace).abs();
+        if diff <= abs_usd_tol {
+            return TraceVerdict::Pass;
         }
-        None => {
-            // `err_pct` is undefined when expected ≈ 0; fall back to an absolute
-            // USD band so a near-zero baseline cannot fail at an arbitrary % .
-            let diff = (expected - trace).abs();
-            if diff <= abs_usd_tol {
-                TraceVerdict::Pass
-            } else {
-                TraceVerdict::Fail(format!(
-                    "expected ≈ 0 but |expected − trace| = ${diff:.2} > ${abs_usd_tol:.2} \
-                     absolute tolerance"
-                ))
-            }
-        }
+        return TraceVerdict::Fail(format!(
+            "expected ≈ 0 but |expected − trace| = ${diff:.2} > ${abs_usd_tol:.2} \
+             absolute tolerance"
+        ));
+    }
+    let Some(pct) = err_pct else {
+        return TraceVerdict::Unverifiable("profit error percentage is unavailable".to_string());
+    };
+    if !pct.is_finite() {
+        return TraceVerdict::Unverifiable("profit error percentage is not finite".to_string());
+    }
+    if pct.abs() <= tolerance_pct {
+        TraceVerdict::Pass
+    } else {
+        let direction = if pct > 0.0 {
+            "over-estimate"
+        } else {
+            "under-estimate"
+        };
+        TraceVerdict::Fail(format!(
+            "profit_error_pct {pct:+.1}% exceeds tolerance ±{tolerance_pct:.1}% \
+             (classifier {direction})"
+        ))
     }
 }
 
@@ -173,15 +184,23 @@ pub fn parse_prestatediff_deltas(raw: &serde_json::Value) -> Vec<(Address, I256)
 }
 
 /// Signed sum of native deltas over `addrs` (searcher EOA + its contract).
+#[allow(dead_code)]
 pub fn native_delta_for(raw: &serde_json::Value, addrs: &[Address]) -> I256 {
+    native_delta_for_checked(raw, addrs).unwrap_or(I256::ZERO)
+}
+
+fn native_delta_for_checked(raw: &serde_json::Value, addrs: &[Address]) -> Option<I256> {
     let deltas = parse_prestatediff_deltas(raw);
-    let mut total = I256::ZERO;
-    for (a, d) in &deltas {
-        if addrs.contains(a) {
-            total += *d;
-        }
+    if deltas.is_empty() || !deltas.iter().any(|(address, _)| addrs.contains(address)) {
+        return None;
     }
-    total
+    Some(
+        deltas
+            .iter()
+            .filter(|(address, _)| addrs.contains(address))
+            .map(|(_, delta)| *delta)
+            .sum(),
+    )
 }
 
 /// Convert a signed wei delta to f64 (precision loss acceptable at report layer).
@@ -215,6 +234,65 @@ pub fn summarize_prestatediff(raw: &serde_json::Value) -> String {
     format!("balance deltas:\n{}", lines.join("\n"))
 }
 
+fn expected_profit_usd(ops: &[MevOpRow]) -> Option<f64> {
+    if ops.iter().any(|op| op.profit_usd.is_none()) {
+        return None;
+    }
+    Some(ops.iter().map(|op| op.profit_usd.unwrap_or(0.0)).sum())
+}
+
+fn persist_trace_outcome(
+    store: &ExplorerStore,
+    progress: &dyn JobProgress,
+    outcome: &TraceOutcome,
+    native_delta_wei: &str,
+) -> anyhow::Result<()> {
+    let verification = TraceVerification {
+        expected_profit_usd: outcome.expected_profit_usd,
+        trace_profit_usd: outcome.trace_profit_usd,
+        profit_error_pct: outcome.profit_error_pct,
+        native_delta_wei: native_delta_wei.to_string(),
+        note: outcome.summary.clone(),
+        trace_check: Some(outcome.verdict.as_str().to_string()),
+        trace_check_reason: outcome.verdict.reason().map(str::to_string),
+    };
+    store.mark_trace_verified(&outcome.tx_hash, &verification)?;
+    progress.log(&format!(
+        "stored trace_verified + profit_error_pct on the op (gate: {})",
+        outcome.verdict
+    ));
+    Ok(())
+}
+
+fn unverifiable_outcome(
+    tx_hash: &str,
+    summary: String,
+    reason: String,
+    expected_profit_usd: Option<f64>,
+    tolerance_pct: f64,
+    abs_usd_tol: f64,
+) -> TraceOutcome {
+    TraceOutcome {
+        tx_hash: tx_hash.to_string(),
+        summary,
+        expected_profit_usd,
+        trace_profit_usd: None,
+        profit_error_pct: None,
+        verdict: TraceVerdict::Unverifiable(reason),
+        tolerance_pct,
+        abs_usd_tol,
+    }
+}
+
+fn finish_unverifiable(
+    store: &ExplorerStore,
+    progress: &dyn JobProgress,
+    outcome: TraceOutcome,
+) -> anyhow::Result<TraceOutcome> {
+    persist_trace_outcome(store, progress, &outcome, "")?;
+    Ok(outcome)
+}
+
 pub async fn job_trace_op(
     config: &Config,
     tx_hash: &str,
@@ -228,28 +306,52 @@ pub async fn job_trace_op(
         anyhow::bail!("no explorer ops for tx {tx_hash}");
     }
 
-    let setup = init_rpc(config, chain, true).await?;
     let h: B256 = tx_hash.parse().context("invalid tx hash")?;
+    let expected_profit_usd = expected_profit_usd(&ops);
+    let tolerance_pct = config.explorer.trace_tolerance_pct;
+    let abs_usd_tol = config.explorer.trace_error_usd_tol;
+
+    let setup = match init_rpc(config, chain, true).await {
+        Ok(setup) => setup,
+        Err(error) => {
+            let reason = format!("trace RPC initialization failed: {error}");
+            return finish_unverifiable(
+                &store,
+                progress,
+                unverifiable_outcome(
+                    tx_hash,
+                    reason.clone(),
+                    reason,
+                    expected_profit_usd,
+                    tolerance_pct,
+                    abs_usd_tol,
+                ),
+            );
+        }
+    };
     progress.log("Tracing via debug_traceTransaction (prestateTracer diffMode)...");
-    let raw = setup
-        .rpc
-        .debug_trace_transaction_prestatediff(h)
-        .await
-        .with_context(|| format!("trace failed (provider may lack debug_*): {tx_hash}"))?;
+    let raw = match setup.rpc.debug_trace_transaction_prestatediff(h).await {
+        Ok(raw) => raw,
+        Err(error) => {
+            let reason =
+                format!("trace RPC failed for {tx_hash} (provider may lack debug_*): {error}");
+            return finish_unverifiable(
+                &store,
+                progress,
+                unverifiable_outcome(
+                    tx_hash,
+                    reason.clone(),
+                    reason,
+                    expected_profit_usd,
+                    tolerance_pct,
+                    abs_usd_tol,
+                ),
+            );
+        }
+    };
     let summary = summarize_prestatediff(&raw);
     progress.log(&summary);
 
-    // Expected: sum of the classifier's persisted USD profit for this tx.
-    let expected_profit_usd: Option<f64> = {
-        let vals: Vec<f64> = ops.iter().filter_map(|o| o.profit_usd).collect();
-        if vals.is_empty() {
-            None
-        } else {
-            Some(vals.iter().sum())
-        }
-    };
-
-    // Trace actual: native balance delta of the searcher EOA + its contract.
     let mut addrs: Vec<Address> = Vec::new();
     for op in &ops {
         if let Ok(a) = op.eoa.parse::<Address>() {
@@ -263,10 +365,11 @@ pub async fn job_trace_op(
     }
     addrs.sort();
     addrs.dedup();
-    let native_delta = native_delta_for(&raw, &addrs);
-    let native_delta_f = i256_to_f64(native_delta);
+    let native_delta = native_delta_for_checked(&raw, &addrs);
+    let native_delta_wei = native_delta
+        .map(|delta| delta.to_string())
+        .unwrap_or_default();
 
-    // Native USD at the block's hour (cached price, else wrapped-native, else Llama).
     let ts = ops[0].ts;
     let hour = pricing::hour_bucket(ts);
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -283,38 +386,31 @@ pub async fn job_trace_op(
             p
         }
     };
-    let trace_profit_usd = native_usd.map(|p| native_delta_f / 1e18 * p);
+    let trace_profit_usd =
+        native_delta.and_then(|delta| native_usd.map(|price| i256_to_f64(delta) / 1e18 * price));
 
     let profit_error_pct = match (expected_profit_usd, trace_profit_usd) {
-        (Some(e), Some(t)) if e.abs() > f64::EPSILON => Some((e - t) / e * 100.0),
+        (Some(e), Some(t)) if e.is_finite() && t.is_finite() && e.abs() > f64::EPSILON => {
+            Some((e - t) / e * 100.0)
+        }
         _ => None,
     };
 
-    let tolerance_pct = config.explorer.trace_tolerance_pct;
-    let abs_usd_tol = config.explorer.trace_error_usd_tol;
-    let verdict = trace_verdict(
-        expected_profit_usd,
-        trace_profit_usd,
-        profit_error_pct,
-        tolerance_pct,
-        abs_usd_tol,
-    );
-
-    let verification = TraceVerification {
-        expected_profit_usd,
-        trace_profit_usd,
-        profit_error_pct,
-        native_delta_wei: native_delta.to_string(),
-        note: summary.clone(),
-        trace_check: Some(verdict.as_str().to_string()),
-        trace_check_reason: verdict.reason().map(|r| r.to_string()),
+    let verdict = if expected_profit_usd.is_some() && native_delta.is_none() {
+        TraceVerdict::Unverifiable(
+            "trace native balance delta absent — empty or no tracked account deltas".to_string(),
+        )
+    } else {
+        trace_verdict(
+            expected_profit_usd,
+            trace_profit_usd,
+            profit_error_pct,
+            tolerance_pct,
+            abs_usd_tol,
+        )
     };
-    store.mark_trace_verified(tx_hash, &verification)?;
-    progress.log(&format!(
-        "stored trace_verified + profit_error_pct on the op (gate: {verdict})"
-    ));
 
-    Ok(TraceOutcome {
+    let outcome = TraceOutcome {
         tx_hash: tx_hash.to_string(),
         summary,
         expected_profit_usd,
@@ -323,7 +419,9 @@ pub async fn job_trace_op(
         verdict,
         tolerance_pct,
         abs_usd_tol,
-    })
+    };
+    persist_trace_outcome(&store, progress, &outcome, &native_delta_wei)?;
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -449,5 +547,30 @@ mod tests {
             panic!("expected Unverifiable");
         };
         assert!(r.contains("no expected USD profit"), "{r}");
+    }
+
+    #[test]
+    fn checked_delta_requires_a_tracked_account() {
+        let tracked = address!("1111111111111111111111111111111111111111");
+        let raw = raw_with("0", "1000000000000000000");
+        assert!(native_delta_for_checked(&raw, &[tracked]).is_some());
+        assert!(native_delta_for_checked(&serde_json::json!({}), &[tracked]).is_none());
+        assert!(native_delta_for_checked(
+            &raw,
+            &[address!("2222222222222222222222222222222222222222")]
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn verdict_unverifiable_for_invalid_tolerances() {
+        assert!(matches!(
+            trace_verdict(Some(100.0), Some(95.0), Some(5.0), f64::NAN, ABS),
+            TraceVerdict::Unverifiable(_)
+        ));
+        assert!(matches!(
+            trace_verdict(Some(100.0), Some(95.0), Some(5.0), TOL, -1.0),
+            TraceVerdict::Unverifiable(_)
+        ));
     }
 }

@@ -61,6 +61,27 @@ pub fn validate_rpc_urls(urls: &[String]) -> std::result::Result<(), ConfigError
     Ok(())
 }
 
+fn validate_explorer_tolerances(config: &Config) -> std::result::Result<(), ConfigError> {
+    for (field, value) in [
+        (
+            "explorer.trace_tolerance_pct",
+            config.explorer.trace_tolerance_pct,
+        ),
+        (
+            "explorer.trace_error_usd_tol",
+            config.explorer.trace_error_usd_tol,
+        ),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            return Err(ConfigError::InvalidValue {
+                field: field.into(),
+                message: "must be finite and non-negative".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Validate every per-chain `[chains.<name>.rpc]` override present in the
 /// config. Built-in defaults carry no override, so this only fires for URLs
 /// the user configured — catching a typo'd per-chain endpoint at load/validate
@@ -274,6 +295,7 @@ pub fn validate_and_resolve_for(
     check_strategies: bool,
 ) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
+    validate_explorer_tolerances(config)?;
 
     let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
@@ -367,6 +389,7 @@ pub fn validate_and_resolve_for(
 /// live mode auto-detects the chain tip at runtime.
 pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
+    validate_explorer_tolerances(config)?;
 
     let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
@@ -400,4 +423,23 @@ pub fn validate_chain_config_addresses(
     _chain_config: &ChainConfig,
 ) -> std::result::Result<(), ConfigError> {
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_negative_trace_tolerance() {
+        let mut config = Config::default();
+        config.explorer.trace_tolerance_pct = -1.0;
+        assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_trace_tolerance() {
+        let mut config = Config::default();
+        config.explorer.trace_error_usd_tol = f64::NAN;
+        assert!(validate_live(&config).is_err());
+    }
 }

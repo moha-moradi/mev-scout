@@ -94,14 +94,15 @@ pub async fn cmd_show(
         let err = outcome
             .profit_error_pct
             .map(|p| format!("{p:+.1}%"))
-            .unwrap_or_else(|| "n/a (expected ≈ 0)".into());
+            .unwrap_or_else(|| "n/a".into());
         println!(
-            "  trace gate: {} | expected {:?} USD | trace {:?} USD | err {} | tol ±{:.1}%",
+            "  trace gate: {} | expected {:?} USD | trace {:?} USD | err {} | tol ±{:.1}% / ${:.2} near zero",
             outcome.verdict,
             outcome.expected_profit_usd,
             outcome.trace_profit_usd,
             err,
             outcome.tolerance_pct,
+            outcome.abs_usd_tol,
         );
         match &outcome.verdict {
             TraceVerdict::Pass => {}

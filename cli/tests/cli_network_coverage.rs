@@ -233,10 +233,9 @@ fn show_trace_reconciles_live_op() {
         return;
     };
     assert!(
-        out.combined().contains("trace gate:")
-            || out.combined().contains("trace failed")
-            || out.combined().contains("unable to trace"),
-        "show --trace must reconcile the op or degrade gracefully at the RPC layer:\n{}",
+        out.combined().contains("trace gate:"),
+        "show --trace must report a trace verdict:\n{}",
         out.combined()
     );
+    expect_ok(&out, "show --trace with degraded coverage");
 }

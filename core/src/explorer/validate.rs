@@ -117,6 +117,23 @@ fn op_pools(op: &OpportunityRow) -> HashSet<String> {
     out
 }
 
+fn trace_error_pct(details: &serde_json::Value) -> Option<f64> {
+    if details.get("trace_check").and_then(|value| value.as_str()) == Some("unverifiable") {
+        return None;
+    }
+    if !details
+        .get("trace_verified")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    details
+        .get("profit_error_pct")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite())
+}
+
 /// One matched realized-op ↔ opportunity pair.
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchRecord {
@@ -403,14 +420,9 @@ pub fn compute_validation(
                 recall.inferred_ops += 1;
             }
             if let Some(details) = ev.details_json.as_deref() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(details) {
-                    if v.get("trace_verified")
-                        .and_then(|b| b.as_bool())
-                        .unwrap_or(false)
-                    {
-                        if let Some(e) = v.get("profit_error_pct").and_then(|x| x.as_f64()) {
-                            errors.push(e);
-                        }
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(details) {
+                    if let Some(error) = trace_error_pct(&value) {
+                        errors.push(error);
                     }
                 }
             }
@@ -631,12 +643,7 @@ pub fn compute_validation(
         .iter()
         .filter_map(|o| o.details_json.as_deref())
         .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
-        .filter(|v| {
-            v.get("trace_verified")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false)
-        })
-        .filter_map(|v| v.get("profit_error_pct").and_then(|x| x.as_f64()))
+        .filter_map(|value| trace_error_pct(&value))
         .collect();
 
     Ok(ValidationReport {

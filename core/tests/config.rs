@@ -63,6 +63,8 @@ fn test_config_toml_output() {
     assert_eq!(parsed.chain, config.chain);
     assert_eq!(parsed.backtest.strategies, config.backtest.strategies);
     assert_eq!(parsed.gas.gas_limit, config.gas.gas_limit);
+    assert_eq!(config.explorer.trace_tolerance_pct, 20.0);
+    assert_eq!(config.explorer.trace_error_usd_tol, 0.50);
 }
 
 /// ── Test 8: CLI override merging ────────────────────────────────────────────
