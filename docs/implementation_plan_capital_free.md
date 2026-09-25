@@ -129,13 +129,13 @@ Note: the `strategies` config list currently does **not** gate execution — tha
 
 Ranged log/storage scanners producing past-month **N opps / $ revenue** without live
 execution. Fingerprints below follow `mev_strategies.md` §17.8 (modes A/B/C per
-strategy). Note: neither existing CLI surface fits this today — `report` only
-re-renders recorded runs from `run_manifests`, and `explorer index` is live-only with
-no historical backfill (`docs/ARCHITECTURE.md` §4.7.1). Add ranged ingest
-(`--from/--to`) to the explorer pipeline, or a new `scan --kind <skim|flash-liq|maker-keeper|gmx-adl>`
-subcommand, and reuse the explorer's classify-in-stream / WAL / reorg-safe store rather
-than ad-hoc parallel scanners. Prefer these reports before investing in full detectors
-for the same strategy.
+strategy). Note: ranged historic ingest now exists — `explorer backfill --days N`
+(or `--from-block/--to-block`) is historical, idempotent, and gap-resumable
+(`docs/ARCHITECTURE.md` §4.7.5). Still missing is the per-strategy report surface —
+a `scan --kind <skim|flash-liq|maker-keeper|gmx-adl>` subcommand should reuse the
+explorer's classify-in-stream / WAL / reorg-safe store rather than ad-hoc parallel
+scanners. Prefer these reports before investing in full detectors for the same
+strategy.
 
 | Scanner | Strategy | Mode | Notes |
 |---|---|---|---|

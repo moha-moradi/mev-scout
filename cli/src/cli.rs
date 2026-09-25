@@ -80,6 +80,10 @@ pub enum ExplorerCommand {
     /// Index a historical block range into the store so the revenue-report
     /// windows (1d/7d/30d) have realized data. Idempotent + resumable.
     Backfill(ExplorerBackfillArgs),
+
+    /// Cross-validation report: realized explorer ops vs scanner
+    /// opportunities (T1/T2/T3 matching). Read-only; does no RPC.
+    Validate(ExplorerValidateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -115,6 +119,10 @@ pub struct ShowArgs {
     /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
     #[arg(long)]
     pub trace: bool,
+
+    /// Override `[explorer] trace_tolerance_pct` for the gate verdict
+    #[arg(long = "tolerance-pct", value_name = "PCT")]
+    pub tolerance_pct: Option<f64>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -150,6 +158,41 @@ pub struct ExplorerBackfillArgs {
     /// Exact range end (requires --from-block). Inclusive.
     #[arg(long = "to-block", value_name = "NUMBER", requires = "from_block")]
     pub to_block: Option<u64>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ExplorerValidateArgs {
+    /// Window: 1d|7d|30d|all (default all; 'all' means every indexed op)
+    #[arg(long, value_name = "WINDOW")]
+    pub since: Option<String>,
+
+    /// Blocks of tolerance when matching ops to opportunities (default 0)
+    #[arg(long = "match-window", value_name = "N", default_value = "0")]
+    pub match_window: u64,
+
+    /// Restrict the scanner side to a recorded run id (repeatable)
+    #[arg(long = "run-id", value_name = "RUN_ID")]
+    pub run_ids: Vec<String>,
+
+    /// Sweep the profit threshold and report count/USD recall per point
+    #[arg(long = "threshold-sweep")]
+    pub threshold_sweep: bool,
+
+    /// Write pools absent from the scanner coverage to results/missing_pools.txt
+    #[arg(long = "emit-missing-pools")]
+    pub emit_missing_pools: bool,
+
+    /// Write precision-review candidates to a CSV at this path
+    #[arg(long = "review-csv", value_name = "FILE")]
+    pub review_csv: Option<String>,
+
+    /// Embed the Phase 0.5 labeled causal-set score in the report
+    #[arg(long = "golden-causal")]
+    pub golden_causal: bool,
+
+    /// Emit the report as pretty JSON instead of a terminal table
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Args, Debug, Clone)]

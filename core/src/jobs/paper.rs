@@ -100,6 +100,7 @@ pub async fn job_paper_run(
     let run_opts = RunOpts {
         batch_rpc: opts.batch_rpc,
         record_rejections: opts.record_rejections,
+        ..Default::default()
     };
     let run = job_run(config, &run_opts, progress).await?;
     let (chain, _) = validation::resolve_chain(config).context("resolve chain")?;

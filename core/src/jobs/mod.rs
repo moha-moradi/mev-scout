@@ -31,4 +31,4 @@ pub use report::{job_report, ReportOpts, ReportOutcome};
 pub use rpc::{init_rpc, RpcSetup};
 pub use run::{job_run, RunOpts, RunOutcome};
 pub use tokens::{job_tokens, TokenEntry, TokensOpts, TokensOutcome};
-pub use trace::{job_trace_op, summarize_prestatediff, TraceOutcome};
+pub use trace::{job_trace_op, summarize_prestatediff, trace_verdict, TraceOutcome, TraceVerdict};

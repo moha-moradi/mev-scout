@@ -20,6 +20,7 @@ pub async fn cmd_run(
     let opts = RunOpts {
         batch_rpc: config.backtest.batch_rpc,
         record_rejections: config.backtest.record_rejections,
+        ..Default::default()
     };
     let outcome = job_run(config, &opts, progress).await?;
 

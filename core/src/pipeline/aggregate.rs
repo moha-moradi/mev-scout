@@ -1,7 +1,6 @@
-// Reserved for the `explorer` command.
-// No caller exists today; kept intentionally so cross-run aggregation can be
-// wired up without re-adding the module.
-#![allow(dead_code)]
+// Cross-run opportunity aggregation: summary / per-strategy / per-dex metrics
+// (MEV-VERIFICATION §C.3 re-expose). Consumed by the CLI `report` surface and
+// covered by offline unit tests below; feeds the paper plan's ROI stats.
 
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
@@ -161,6 +160,7 @@ pub fn aggregate_with_prices(
     let mut summary_gross_wei = 0_u128;
     let mut summary_gas_wei = 0_u128;
     let mut summary_usd = 0.0_f64;
+    let mut total = 0_usize;
 
     // Deduplicate by canonical_id when available, falling back to
     // (block, pool pair, token pair) for backward compatibility (L9).
@@ -176,6 +176,7 @@ pub fn aggregate_with_prices(
         };
         dedup_seen.insert(key)
     }) {
+        total += 1;
         let profit_wei = opp.expected_profit.to::<u128>();
         let gas_wei = opp.gas_cost_wei;
         let profit_eth = wei_to_eth(profit_wei);
@@ -215,7 +216,6 @@ pub fn aggregate_with_prices(
         }
     }
 
-    let total = opportunities.len();
     let net_profit = gross_revenue - total_gas;
     let summary_net_wei = (summary_gross_wei as i128) - (summary_gas_wei as i128);
 
@@ -360,5 +360,235 @@ pub fn aggregate_with_prices(
         },
         by_strategy: strategy_metrics,
         by_dex: dex_metrics,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{address, U256};
+
+    const ETH: u64 = 1_000_000_000_000_000_000;
+
+    #[allow(clippy::too_many_arguments)]
+    fn opp(
+        block: u64,
+        tx: usize,
+        strategy: Strategy,
+        pool_a: Address,
+        pool_b: Address,
+        profit_wei: u64,
+        gas_wei: u64,
+        cid: Option<&str>,
+    ) -> MevOpportunity {
+        let mut o = MevOpportunity::new(block, tx, strategy, pool_a, 1_700_000_000);
+        o.pool_b = pool_b;
+        o.token_in = address!("1111000000000000000000000000000000000001");
+        o.token_out = address!("2222000000000000000000000000000000000002");
+        o.expected_profit = U256::from(profit_wei);
+        o.gas_cost_wei = gas_wei as u128;
+        o.canonical_id = cid.map(|s| s.to_string());
+        o
+    }
+
+    #[test]
+    fn aggregate_dedups_by_canonical_id_and_falls_back_to_key_fields() {
+        let pool_a = address!("aaaa000000000000000000000000000000000001");
+        let pool_b = address!("bbbb000000000000000000000000000000000002");
+        // Two rows with the SAME canonical id (cross-run duplicates)…
+        let dup1 = opp(
+            10,
+            0,
+            Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            ETH,
+            ETH / 4,
+            Some("c1"),
+        );
+        let dup2 = opp(
+            10,
+            0,
+            Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            ETH,
+            ETH / 4,
+            Some("c1"),
+        );
+        // …and one without a canonical id: its fallback key (strategy, block,
+        // pools, tokens) is a DIFFERENT key than the shared cid, so it survives.
+        let noref = opp(
+            10,
+            0,
+            Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            ETH,
+            ETH / 4,
+            None,
+        );
+
+        let agg = aggregate(&[dup1, dup2, noref], &[], 1.0);
+        assert_eq!(
+            agg.summary.total, 2,
+            "cid dedup collapses dup1+dup2; the cid-less row keeps its own key"
+        );
+        assert_eq!(agg.summary.profitable, 2);
+        assert_eq!(agg.summary.gross_revenue_wei, 2 * ETH as u128);
+        assert_eq!(
+            agg.summary.net_profit_wei,
+            2 * (ETH - ETH / 4) as i128,
+            "net = gross − gas for the two surviving ops"
+        );
+        let arb = &agg.by_strategy["arb"];
+        assert_eq!(arb.count, 2);
+    }
+
+    #[test]
+    fn aggregate_roi_formula_and_net_gas() {
+        let pool_a = address!("aaaa000000000000000000000000000000000001");
+        let pool_b = address!("bbbb000000000000000000000000000000000002");
+        let o = opp(
+            10,
+            0,
+            Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            ETH + ETH / 2,
+            ETH / 2,
+            Some("c2"),
+        );
+        // gross 1.5 ETH, gas 0.5 ETH → net 1.0 ETH, ROI = (1.0/0.5)*100 = 200%.
+        let agg = aggregate(&[o], &[], 0.0);
+        let arb = &agg.by_strategy["arb"];
+        assert_eq!(arb.gross_revenue, 1.5);
+        assert_eq!(arb.gas_fees, 0.5);
+        assert_eq!(arb.net_profit, 1.0);
+        assert!(
+            (arb.roi - 200.0).abs() < 1e-9,
+            "roi = net/gas*100, got {}",
+            arb.roi
+        );
+        // Zero gas must not divide-by-zero.
+        let o0 = opp(
+            11,
+            0,
+            Strategy::Sandwich,
+            pool_a,
+            pool_b,
+            ETH,
+            0,
+            Some("c3"),
+        );
+        let agg0 = aggregate(&[o0], &[], 0.0);
+        assert_eq!(agg0.by_strategy["sandwich"].roi, 0.0);
+    }
+
+    #[test]
+    fn aggregate_rolls_up_per_strategy_counts_and_net() {
+        let pool_a = address!("aaaa000000000000000000000000000000000001");
+        let pool_b = address!("bbbb000000000000000000000000000000000002");
+        let ops = vec![
+            opp(
+                10,
+                0,
+                Strategy::TwoHopArb,
+                pool_a,
+                pool_b,
+                ETH,
+                ETH / 2,
+                Some("x1"),
+            ),
+            opp(
+                10,
+                1,
+                Strategy::Sandwich,
+                pool_b,
+                pool_a,
+                2 * ETH,
+                ETH,
+                Some("x2"),
+            ),
+            // second sandwich, dedup-free canonical: adds to sandwich count
+            opp(
+                11,
+                0,
+                Strategy::Sandwich,
+                pool_b,
+                pool_a,
+                3 * ETH,
+                ETH,
+                Some("x3"),
+            ),
+        ];
+        let agg = aggregate(&ops, &[], 1.0);
+        assert_eq!(agg.summary.total, 3);
+        // all three are net-positive: arb 1.0−0.25, sandwich 2.0−1.0, 3.0−1.0.
+        assert_eq!(agg.summary.profitable, 3);
+        assert_eq!(agg.by_strategy["arb"].count, 1);
+        assert_eq!(agg.by_strategy["sandwich"].count, 2);
+        assert_eq!(
+            agg.by_strategy["sandwich"].net_profit,
+            (2.0 - 1.0) + (3.0 - 1.0)
+        );
+        assert_eq!(
+            agg.by_strategy["sandwich"].net_profit_usd,
+            // token price 1.0 quoted from pool: (2-1)+(3-1) = 3.0
+            3.0
+        );
+        assert_eq!(agg.summary.best_strategy.as_deref(), Some("sandwich"));
+    }
+
+    #[test]
+    fn aggregate_attributes_opp_to_both_dexes_and_empty_case() {
+        use alloy::primitives::address as a;
+        let pool_a = a!("cccc000000000000000000000000000000000003");
+        let pool_b = a!("dddd000000000000000000000000000000000004");
+        let dex_a = DexMeta {
+            name: "uniswap_v3".into(),
+            fork: "v3".into(),
+            tx_count: 1,
+            pool_addresses: vec![pool_a],
+        };
+        let dex_b = DexMeta {
+            name: "quickswap".into(),
+            fork: "v3".into(),
+            tx_count: 1,
+            pool_addresses: vec![pool_b],
+        };
+        let o = opp(
+            10,
+            0,
+            Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            ETH,
+            ETH / 2,
+            Some("y1"),
+        );
+        let agg = aggregate(&[o], &[dex_a, dex_b], 1.0);
+        let dexes = &agg.by_dex;
+        assert_eq!(dexes.len(), 2, "both pools' dexes get an entry");
+        let u = dexes.iter().find(|d| d.dex == "uniswap_v3").unwrap();
+        let q = dexes.iter().find(|d| d.dex == "quickswap").unwrap();
+        assert_eq!(u.opportunities, 1);
+        assert_eq!(q.opportunities, 1);
+        assert_eq!(u.gross_revenue_wei, ETH as u128);
+        assert_eq!(q.revenue, 1.0);
+
+        let empty = aggregate(
+            &[],
+            &[DexMeta {
+                name: "uniswap_v3".into(),
+                fork: "v3".into(),
+                tx_count: 1,
+                pool_addresses: vec![pool_a],
+            }],
+            1.0,
+        );
+        assert_eq!(empty.summary.total, 0);
+        assert_eq!(empty.by_strategy.len(), 0);
+        assert_eq!(empty.by_dex[0].opportunities, 0);
     }
 }

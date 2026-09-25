@@ -230,7 +230,7 @@ pub async fn cmd_explorer_report(
         }
         OutputFormat::Table => {
             for r in &reports {
-                render_window(&r);
+                render_window(r);
             }
         }
     }

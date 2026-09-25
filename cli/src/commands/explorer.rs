@@ -42,9 +42,11 @@ mod index;
 mod report;
 mod show;
 mod stats;
+mod validate;
 
 pub use backfill::cmd_backfill;
 pub use index::cmd_index;
 pub use report::cmd_explorer_report;
 pub use show::cmd_show;
 pub use stats::cmd_stats;
+pub use validate::cmd_explorer_validate;

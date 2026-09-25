@@ -20,10 +20,28 @@ use crate::utils::epoch_secs;
 
 use super::rpc::init_rpc;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RunOpts {
+    /// Batch RPC requests where supported.
     pub batch_rpc: bool,
+    /// Persist rejected candidates to the explorer DB (diagnostics).
     pub record_rejections: bool,
+    /// When a pool registry is present, restrict fetching to blocks with DEX
+    /// activity via `eth_getLogs`. Defaults to `true` (live-optimized
+    /// behavior). Set to `false` to force a full historical fetch — required
+    /// when the provider has no deep log retention (e.g. backtests over old
+    /// windows) or when detection should not depend on the activity scan.
+    pub fetch_relevant: bool,
+}
+
+impl Default for RunOpts {
+    fn default() -> Self {
+        RunOpts {
+            batch_rpc: false,
+            record_rejections: false,
+            fetch_relevant: true,
+        }
+    }
 }
 
 pub struct RunOutcome {
@@ -102,7 +120,7 @@ pub async fn job_run(
         true
     };
 
-    let fetch_summary = if !pool_addresses.is_empty() {
+    let fetch_summary = if !pool_addresses.is_empty() && opts.fetch_relevant {
         fetcher
             .fetch_relevant(&resolved, &pool_addresses, Some(&tick))
             .await?

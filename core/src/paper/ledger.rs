@@ -94,10 +94,7 @@ fn sort_key(opp: &MevOpportunity) -> (i128, u8, usize, String) {
 impl LedgerPolicy {
     /// Apply the ledger over `opportunities`. Pure — no I/O.
     pub fn apply(&self, opportunities: &[MevOpportunity]) -> LedgerResult {
-        let max_fills = self
-            .max_fills_per_block
-            .min(HARD_MAX_FILLS_PER_BLOCK)
-            .max(1);
+        let max_fills = self.max_fills_per_block.clamp(1, HARD_MAX_FILLS_PER_BLOCK);
         let mut wallet = self.starting_gas_wei;
         let mut peak = wallet;
         let mut max_drawdown: u128 = 0;

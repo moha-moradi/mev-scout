@@ -37,3 +37,4 @@ ruzstd = "0.7"
 
 [dev-dependencies]
 wiremock = "0.6"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -81,7 +81,7 @@ mev-scout paper stats
 | `run` | Full backtest → opportunities | [§4.4](docs/ARCHITECTURE.md#44-run--the-full-backtest) |
 | `live` | Stream tip blocks and detect | [§4.5](docs/ARCHITECTURE.md#45-live--real-time-streaming-detection) |
 | `report` | Re-render a recorded run from SQLite | [§4.6](docs/ARCHITECTURE.md#46-report--re-render-saved-results) |
-| `explorer` | Realized-MEV forensics (`index`, `stats`, `show`) | [§4.7](docs/ARCHITECTURE.md#47-explorer--realized-mev-forensics) |
+| `explorer` | Realized-MEV forensics (`index`, `stats`, `show`, `report`, `backfill`, `validate`) | [§4.7](docs/ARCHITECTURE.md#47-explorer--realized-mev-forensics) |
 | `paper` | Virtual-fund bot P&L (`run`, `live`, `sim`, `stats`) | [§4.8](docs/ARCHITECTURE.md#48-paper--virtual-fund-bot-pl) |
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. Block-range

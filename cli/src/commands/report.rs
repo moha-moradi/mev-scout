@@ -1,6 +1,7 @@
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{job_report, ReportOpts};
+use mev_scout_core::pipeline::aggregate;
 use mev_scout_core::progress::NoopProgress;
 use mev_scout_core::types::{OutputFormat, ResultsFile};
 
@@ -52,6 +53,34 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
                 println!("No MEV opportunities in this run.");
             } else {
                 render_results_table(&results_file.opportunities, None);
+
+                // Aggregated run-level rollups (MEV-VERIFICATION §C.3): ROI and
+                // per-strategy net profit, reachable from `report` with no live
+                // feed or pricing snapshot ($0 → USD fields zeroed; fold ETH only).
+                let agg = aggregate(&results_file.opportunities, &[], 0.0);
+                let s = &agg.summary;
+                println!();
+                println!("  ── Aggregated summary ──");
+                println!(
+                    "  ops {} ({} profitable) | gross {:.4} ETH | gas {:.4} ETH | net {:.4} ETH",
+                    s.total, s.profitable, s.gross_revenue, s.total_cost, s.net_profit,
+                );
+                if let Some(best) = &s.best_strategy {
+                    println!("  best strategy: {best}");
+                }
+                println!("  strategy     ops     net (ETH)     ROI%  best (ETH)");
+                let mut strat: Vec<_> = agg.by_strategy.values().collect();
+                strat.sort_by(|a, b| {
+                    b.net_profit
+                        .partial_cmp(&a.net_profit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                for m in strat {
+                    println!(
+                        "  {:<10} {:>4} {:>11.4} {:>7.1} {:>10.4}",
+                        m.strategy, m.count, m.net_profit, m.roi, m.best_opp,
+                    );
+                }
             }
 
             // Explorer recall/miss metrics are human-readable; only append in table mode.

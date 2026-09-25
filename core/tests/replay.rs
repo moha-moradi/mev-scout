@@ -17,7 +17,7 @@ use mev_scout_core::pool::state::{
 use mev_scout_core::replay::BlockReplayer;
 use mev_scout_core::resolver::ResolvedRange;
 use mev_scout_core::rpc::RpcClient;
-use mev_scout_core::types::{GasConfig, GasModel, RangeMode};
+use mev_scout_core::types::{GasConfig, GasModel, RangeMode, Strategy};
 
 mod common;
 use common::*;
@@ -213,6 +213,99 @@ async fn test_runner_run_block_synthetic() {
     for opp in &opps {
         assert!(opp.expected_profit > U256::ZERO);
         assert!(opp.gas_cost_wei > 0);
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ── Test 1b: Deterministic golden `run_block` output on the fixed synthetic
+/// cache (C.2 offline fixture) ─────────────────────────────────────────────
+///
+/// `GasModel::HistoricalExact` pins gas so a single `run_block` is
+/// fully deterministic given a warm cache. Asserts the derived facts that the
+/// pipeline cross-check (`explorer validate`) relies on: kind present,
+/// every retained op is net-positive (`expected_profit > gas_cost_wei`), and
+/// canonical ids are well-formed + unique. Exact profit amounts are never
+/// asserted (classifier drift tolerance), matching the corpus convention.
+#[tokio::test]
+async fn test_runner_run_block_synthetic_golden() {
+    let dir = temp_test_dir("run_block_synth_golden");
+    let gas_cfg = GasConfig {
+        gas_model: GasModel::HistoricalExact,
+        ..GasConfig::default()
+    };
+
+    let run = |dir: &str| -> Vec<mev_scout_core::types::MevOpportunity> {
+        let mut runner = make_synthetic_runner(dir, 1, gas_cfg);
+        let (opps, stats, _) = runner.run_block(1).unwrap();
+        assert_eq!(stats.total_tx_count, 2, "synthetic block carries 2 txs");
+        opps
+    };
+
+    let opps = run(&dir);
+    assert!(
+        !opps.is_empty(),
+        "imbalanced synthetic pools must yield arbitrage opportunities"
+    );
+
+    // Kind present: the synthetic V2 pair set fires the arb family.
+    assert!(
+        opps.iter()
+            .any(|o| matches!(o.strategy, Strategy::TwoHopArb | Strategy::MultiHopArb)),
+        "expected at least one arb-family opportunity"
+    );
+
+    // Every opportunity that survived `retain_with_rejections` is net-positive.
+    for opp in &opps {
+        assert!(
+            opp.expected_profit > U256::from(opp.gas_cost_wei),
+            "retained op must be net-positive: profit={} gas={}",
+            opp.expected_profit,
+            opp.gas_cost_wei
+        );
+        let cid = opp
+            .canonical_id
+            .as_deref()
+            .unwrap_or_else(|| panic!("opp must carry a canonical id"));
+        assert!(!cid.is_empty(), "canonical id must be non-empty");
+        assert!(
+            cid.starts_with(&format!("{:?}", opp.strategy)),
+            "canonical id must start with the strategy name: {cid}"
+        );
+        assert!(
+            cid.contains("0x"),
+            "canonical id must embed pool addresses: {cid}"
+        );
+    }
+    let mut ids: Vec<&String> = opps.iter().flat_map(|o| o.canonical_id.as_ref()).collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        opps.iter().filter(|o| o.canonical_id.is_some()).count(),
+        "canonical ids must be unique within a block"
+    );
+
+    // Determinism: a fresh identical runner produces the identical sequence.
+    let opps2 = run(&dir);
+    assert_eq!(
+        opps.len(),
+        opps2.len(),
+        "golden run_block must be deterministic"
+    );
+    for (a, b) in opps.iter().zip(opps2.iter()) {
+        assert_eq!(a.block_number, b.block_number);
+        assert_eq!(a.tx_index, b.tx_index);
+        assert_eq!(a.strategy, b.strategy, "strategy must be deterministic");
+        assert_eq!(
+            a.expected_profit, b.expected_profit,
+            "expected_profit must be deterministic on a pinned gas model"
+        );
+        assert_eq!(
+            a.gas_cost_wei, b.gas_cost_wei,
+            "gas_cost_wei must be deterministic on a pinned gas model"
+        );
+        assert_eq!(a.canonical_id, b.canonical_id);
     }
 
     let _ = std::fs::remove_dir_all(&dir);

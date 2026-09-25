@@ -5,10 +5,12 @@
 //! have been?" without competition or on-chain execution.
 
 pub mod ledger;
+pub mod recon;
 pub mod store;
 pub mod types;
 
 pub use ledger::{
     default_starting_gas_wei, is_native_eligible, LedgerPolicy, HARD_MAX_FILLS_PER_BLOCK,
 };
+pub use recon::{paper_vs_executed, ReconFill, ReconReport, ReconVerdict};
 pub use types::{FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession, PaperSkip};

@@ -181,11 +181,22 @@ impl RpcClient {
     }
 
     /// Build a shared `reqwest::Client` with gzip compression, TCP nodelay, and a request timeout.
+    ///
+    /// `MEV_SCOUT_FORCE_IPV4=1` binds the local socket to an IPv4 address so
+    /// reqwest only dials IPv4 destinations. Some hosts advertise IPv6 in the
+    /// resolver while the v6 route is actually dead (VPNs, sandboxes, some
+    /// corporate networks): reqwest then picks the v6 AAAA first and aborts
+    /// with `tls handshake eof` even though IPv4 works (curl, which prefers
+    /// IPv4, is unaffected). Default is off — IPv6 remains available.
     fn build_http_client() -> anyhow::Result<reqwest::Client> {
-        reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .gzip(true)
             .tcp_nodelay(true)
-            .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS));
+        if std::env::var("MEV_SCOUT_FORCE_IPV4").as_deref() == Ok("1") {
+            builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        }
+        builder
             .build()
             .map_err(|e| anyhow::anyhow!("failed to build HTTP client: {e}"))
     }

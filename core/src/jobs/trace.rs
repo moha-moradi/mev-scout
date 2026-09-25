@@ -19,17 +19,119 @@ use crate::progress::JobProgress;
 
 use super::rpc::init_rpc;
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum TraceVerdict {
+    /// Classifier and trace agree within tolerance.
+    Pass,
+    /// Classifier over/under-estimates the trace-observed profit beyond tolerance.
+    Fail(String),
+    /// Trace profit is absent (no native price / empty balance deltas / trace
+    /// RPC failure / no USD for the op) — degraded coverage, not a failure.
+    Unverifiable(String),
+}
+
+impl TraceVerdict {
+    /// Short machine-readable tag persisted as `trace_check`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TraceVerdict::Pass => "pass",
+            TraceVerdict::Fail(_) => "fail",
+            TraceVerdict::Unverifiable(_) => "unverifiable",
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            TraceVerdict::Pass => None,
+            TraceVerdict::Fail(r) | TraceVerdict::Unverifiable(r) => Some(r),
+        }
+    }
+}
+
+impl std::fmt::Display for TraceVerdict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TraceVerdict::Pass => write!(f, "pass"),
+            TraceVerdict::Fail(r) => write!(f, "fail: {r}"),
+            TraceVerdict::Unverifiable(r) => write!(f, "unverifiable: {r}"),
+        }
+    }
+}
+
+/// Pure verdict function for the trace gate (offline-testable; the CLI/RPC
+/// layers assemble the inputs).
+///
+/// - `Pass` when `|err_pct| <= tolerance_pct`, or when the expected profit is
+///   ~0 (`err_pct` unknown) and `|expected − trace| <= abs_usd_tol`.
+/// - `Fail(reason)` when `|err_pct| > tolerance_pct` (positive = over-estimate).
+/// - `Unverifiable(reason)` when either side of the comparison is missing.
+pub fn trace_verdict(
+    expected_profit_usd: Option<f64>,
+    trace_profit_usd: Option<f64>,
+    err_pct: Option<f64>,
+    tolerance_pct: f64,
+    abs_usd_tol: f64,
+) -> TraceVerdict {
+    let Some(expected) = expected_profit_usd else {
+        return TraceVerdict::Unverifiable(
+            "no expected USD profit for the op — classifier did not price it".to_string(),
+        );
+    };
+    let Some(trace) = trace_profit_usd else {
+        return TraceVerdict::Unverifiable(
+            "trace profit absent — no native price, empty balance deltas, trace RPC \
+             failure, or no USD for the op"
+                .to_string(),
+        );
+    };
+    match err_pct {
+        Some(pct) => {
+            if pct.abs() <= tolerance_pct {
+                TraceVerdict::Pass
+            } else {
+                let direction = if pct > 0.0 {
+                    "over-estimate"
+                } else {
+                    "under-estimate"
+                };
+                TraceVerdict::Fail(format!(
+                    "profit_error_pct {pct:+.1}% exceeds tolerance ±{tolerance_pct:.1}% \
+                     (classifier {direction})"
+                ))
+            }
+        }
+        None => {
+            // `err_pct` is undefined when expected ≈ 0; fall back to an absolute
+            // USD band so a near-zero baseline cannot fail at an arbitrary % .
+            let diff = (expected - trace).abs();
+            if diff <= abs_usd_tol {
+                TraceVerdict::Pass
+            } else {
+                TraceVerdict::Fail(format!(
+                    "expected ≈ 0 but |expected − trace| = ${diff:.2} > ${abs_usd_tol:.2} \
+                     absolute tolerance"
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TraceOutcome {
     pub tx_hash: String,
     pub summary: String,
-    pub verified: bool,
     /// Classifier-expected USD profit (sum over the tx's ops).
     pub expected_profit_usd: Option<f64>,
     /// Trace-observed native delta converted to USD (signed).
     pub trace_profit_usd: Option<f64>,
     /// `(expected − trace) / expected × 100`.
     pub profit_error_pct: Option<f64>,
+    /// Gate verdict derived from the tolerance config.
+    pub verdict: TraceVerdict,
+    /// Percent tolerance applied (`config.explorer.trace_tolerance_pct`).
+    pub tolerance_pct: f64,
+    /// Absolute USD tolerance applied (`config.explorer.trace_error_usd_tol`).
+    pub abs_usd_tol: f64,
 }
 
 fn short_addr(s: &str) -> String {
@@ -188,23 +290,39 @@ pub async fn job_trace_op(
         _ => None,
     };
 
+    let tolerance_pct = config.explorer.trace_tolerance_pct;
+    let abs_usd_tol = config.explorer.trace_error_usd_tol;
+    let verdict = trace_verdict(
+        expected_profit_usd,
+        trace_profit_usd,
+        profit_error_pct,
+        tolerance_pct,
+        abs_usd_tol,
+    );
+
     let verification = TraceVerification {
         expected_profit_usd,
         trace_profit_usd,
         profit_error_pct,
         native_delta_wei: native_delta.to_string(),
         note: summary.clone(),
+        trace_check: Some(verdict.as_str().to_string()),
+        trace_check_reason: verdict.reason().map(|r| r.to_string()),
     };
     store.mark_trace_verified(tx_hash, &verification)?;
-    progress.log("stored trace_verified + profit_error_pct on the op");
+    progress.log(&format!(
+        "stored trace_verified + profit_error_pct on the op (gate: {verdict})"
+    ));
 
     Ok(TraceOutcome {
         tx_hash: tx_hash.to_string(),
         summary,
-        verified: true,
         expected_profit_usd,
         trace_profit_usd,
         profit_error_pct,
+        verdict,
+        tolerance_pct,
+        abs_usd_tol,
     })
 }
 
@@ -256,5 +374,80 @@ mod tests {
         let raw = raw_with("0", "1000000000000000000");
         let s = summarize_prestatediff(&raw);
         assert!(s.contains("native delta 1.000000"), "{s}");
+    }
+
+    // ── trace_verdict (pure; the offline deterministic tier) ────────────────
+
+    const TOL: f64 = 20.0;
+    const ABS: f64 = 0.50;
+
+    #[test]
+    fn verdict_passes_within_tolerance() {
+        assert_eq!(
+            trace_verdict(Some(100.0), Some(90.0), Some(10.0), TOL, ABS),
+            TraceVerdict::Pass
+        );
+        // exactly at the boundary passes.
+        assert_eq!(
+            trace_verdict(Some(100.0), Some(80.0), Some(20.0), TOL, ABS),
+            TraceVerdict::Pass
+        );
+    }
+
+    #[test]
+    fn verdict_fails_over_estimate() {
+        let v = trace_verdict(Some(100.0), Some(50.0), Some(50.0), TOL, ABS);
+        let TraceVerdict::Fail(r) = v else {
+            panic!("expected Fail");
+        };
+        assert!(r.contains("over-estimate"), "{r}");
+        assert_eq!(
+            trace_verdict(Some(100.0), Some(50.0), Some(50.0), TOL, ABS).as_str(),
+            "fail"
+        );
+    }
+
+    #[test]
+    fn verdict_fails_under_estimate() {
+        let v = trace_verdict(Some(100.0), Some(140.0), Some(-40.0), TOL, ABS);
+        let TraceVerdict::Fail(r) = v else {
+            panic!("expected Fail");
+        };
+        assert!(r.contains("under-estimate"), "{r}");
+    }
+
+    #[test]
+    fn verdict_uses_abs_band_when_expected_near_zero() {
+        // expected = 0 → err_pct undefined; 0 vs 0.2 within the $0.50 band.
+        assert_eq!(
+            trace_verdict(Some(0.0), Some(0.20), None, TOL, ABS),
+            TraceVerdict::Pass
+        );
+        // 0 vs 3.0 breaches the band.
+        let TraceVerdict::Fail(r) = trace_verdict(Some(0.0), Some(3.0), None, TOL, ABS) else {
+            panic!("expected Fail");
+        };
+        assert!(r.contains("expected ≈ 0"), "{r}");
+    }
+
+    #[test]
+    fn verdict_unverifiable_without_trace_profit() {
+        assert_eq!(
+            trace_verdict(Some(100.0), None, None, TOL, ABS),
+            TraceVerdict::Unverifiable(
+                "trace profit absent — no native price, empty balance deltas, trace RPC \
+                 failure, or no USD for the op"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn verdict_unverifiable_without_expected_profit() {
+        let v = trace_verdict(None, Some(50.0), None, TOL, ABS);
+        let TraceVerdict::Unverifiable(r) = v else {
+            panic!("expected Unverifiable");
+        };
+        assert!(r.contains("no expected USD profit"), "{r}");
     }
 }

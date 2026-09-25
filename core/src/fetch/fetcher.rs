@@ -310,10 +310,12 @@ impl Fetcher {
                 let _permit = permit;
                 let t0 = Instant::now();
 
-                let (block, txs, receipts) = if let Some(idx) = provider_idx {
-                    rpc.get_block_and_receipts_batch_for(idx, block_num).await?
-                } else if batch_rpc {
-                    rpc.get_block_and_receipts_batch(block_num).await?
+                let (block, txs, receipts) = if batch_rpc {
+                    if let Some(idx) = provider_idx {
+                        rpc.get_block_and_receipts_batch_for(idx, block_num).await?
+                    } else {
+                        rpc.get_block_and_receipts_batch(block_num).await?
+                    }
                 } else {
                     let (block_res, receipts_res) =
                         tokio::join!(rpc.get_block(block_num), rpc.get_receipts(block_num),);
@@ -383,12 +385,14 @@ impl Fetcher {
         for block_num in start..=end {
             let t0 = Instant::now();
             let block_fetch = async {
-                if let Some(idx) = provider_idx {
-                    self.rpc
-                        .get_block_and_receipts_batch_for(idx, block_num)
-                        .await
-                } else if self.batch_rpc {
-                    self.rpc.get_block_and_receipts_batch(block_num).await
+                if self.batch_rpc {
+                    if let Some(idx) = provider_idx {
+                        self.rpc
+                            .get_block_and_receipts_batch_for(idx, block_num)
+                            .await
+                    } else {
+                        self.rpc.get_block_and_receipts_batch(block_num).await
+                    }
                 } else {
                     let (block_res, receipts_res) = tokio::join!(
                         self.rpc.get_block(block_num),

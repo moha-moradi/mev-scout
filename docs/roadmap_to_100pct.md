@@ -95,7 +95,7 @@ all 5 pipeline stages exist.
 | Mempool capture (pending block, arb-only detection) | PARTIAL | `core/src/mev/detectors/mempool.rs` |
 | 7 chains wired (Aave V3 + Balancer + DEX factories) | DONE | `core/data/chains.toml`, `core/src/config/defaults.rs` |
 | Strategy enum + GasConfig + FlashLoanProvider | DONE (6 variants) | `core/src/types/strategy.rs` |
-| Docs/knowledge | STRONG, minor stale | `docs/ARCHITECTURE.md` §2/§4.7.1, plan Phase-0 premise |
+| Docs/knowledge | STRONG | `ARCHITECTURE.md` §2/§4.7 synced (`explorer backfill|report|validate` documented; `explorer-{chain}.sqlite` naming); plan Phase-0 "no backfill" premise corrected |
 
 ## 4. Current gaps (what blocks 100%)
 
@@ -111,7 +111,7 @@ all 5 pipeline stages exist.
 | G8 | No order-flow channels (MEV-Share/Fiber/bloXroute/48Club) — zero code | S7, S14 |
 | G9 | Missing ChainConfig addresses: Maker OSM/Clip/join, GMX DataStore/Reader, Fluid vault, Liquity V2/Sky/Euler V2/Morpho, keeper registries | S4, S9–S14 |
 | G10 | Cross-chain aggregation + `prioritize` command absent | G0 |
-| G11 | Docs stale (ARCHITECTURE §2/§4.7.1; plan Phase-0 "no backfill" premise outdated); no measured-data sections | G4 |
+| G11 | No measured-data sections per implemented strategy (docs/knowledge gap) | G4 |
 
 ---
 
@@ -250,10 +250,11 @@ Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is i
 - Validate ranking against `docs/mev_strategies.md` §9/§10/§17/§19 hypotheses
   (e.g., backrun highest-opportunity on Polygon, Avalanche lowest competition) —
   the doc becomes the cross-check, data is the source of truth.
-- **Docs sync (G4):** update `ARCHITECTURE.md` §2/§4.7.1 (backfill/report/scan exist);
-  update plan Phase-0 premise; add **measured-data** section to each implemented
-  strategy in `mev_strategies.md`; keep a **detector template** doc + checklist so a
-  new strategy needs ≤1 known path.
+- **Docs sync (G4):** `ARCHITECTURE.md` §2/§4.7 is updated — `explorer backfill|report|validate` are
+  documented and the Phase-0 "no backfill" premise in the plan is corrected (note: a standalone
+  `scan --kind …` report surface still does not exist — G1); remaining: add a **measured-data**
+  section to each implemented strategy in `mev_strategies.md`; keep a **detector template** doc
+  + checklist so a new strategy needs ≤1 known path.
 - **Done (G0/G4)** = `prioritize` output table is derivable from the explorer+paper
   stores alone; no doc in `docs/` contradicts implemented code; every implemented
   strategy section shows measured numbers.

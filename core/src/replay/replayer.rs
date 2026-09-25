@@ -264,7 +264,7 @@ impl BlockReplayer {
         &self.rpc
     }
 
-    fn build_cfg_env(&self, block_num: u64) -> CfgEnv {
+    pub(crate) fn build_cfg_env(&self, block_num: u64) -> CfgEnv {
         let spec = spec_id_for_block(self.chain_id, block_num);
         let mut cfg = CfgEnv::new_with_spec(spec);
         cfg.chain_id = self.chain_id;
@@ -272,7 +272,7 @@ impl BlockReplayer {
         cfg
     }
 
-    fn build_block_env(&self, block: &BlockData) -> BlockEnv {
+    pub(crate) fn build_block_env(&self, block: &BlockData) -> BlockEnv {
         let spec = spec_id_for_block(self.chain_id, block.number);
         let blob_excess_gas_and_price = if spec >= SpecId::CANCUN {
             Some(BlobExcessGasAndPrice::new_with_spec(0, spec))
@@ -292,7 +292,7 @@ impl BlockReplayer {
         }
     }
 
-    fn tx_data_to_tx_env(&self, tx: &TxData) -> TxEnv {
+    pub(crate) fn tx_data_to_tx_env(&self, tx: &TxData) -> TxEnv {
         let kind = match tx.to {
             Some(addr) => TxKind::Call(addr),
             None => TxKind::Create,
@@ -645,7 +645,10 @@ impl BlockReplayer {
 
     /// Create a fresh `CacheDB<CachedRpcDb>` for replaying `block_num`.
     /// Registers Polygon precompiles when chain_id == 137.
-    fn create_db_for_block(&self, block_num: u64) -> anyhow::Result<CacheDB<CachedRpcDb>> {
+    pub(crate) fn create_db_for_block(
+        &self,
+        block_num: u64,
+    ) -> anyhow::Result<CacheDB<CachedRpcDb>> {
         let state_block = block_num.saturating_sub(1);
         let inner_db = CachedRpcDb::new(
             self.handle.clone(),

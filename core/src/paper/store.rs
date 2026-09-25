@@ -160,7 +160,7 @@ impl ExplorerStore {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![since_ts as i64, limit as i64], |r| {
-            Ok(row_to_session(r)?)
+            row_to_session(r)
         })?;
         let mut out = Vec::new();
         for row in rows {
@@ -214,6 +214,25 @@ impl ExplorerStore {
     }
 }
 
+fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
+    Ok(PaperSession {
+        session_id: r.get(0)?,
+        chain: r.get(1)?,
+        mode: r.get(2)?,
+        linked_run_id: r.get(3)?,
+        start_block: r.get::<_, i64>(4)? as u64,
+        end_block: r.get::<_, i64>(5)? as u64,
+        starting_gas_wei: r.get(6)?,
+        ending_gas_wei: r.get(7)?,
+        reserve_wei: r.get(8)?,
+        fills: r.get::<_, i64>(9)? as u64,
+        skipped: r.get::<_, i64>(10)? as u64,
+        net_profit_wei: r.get(11)?,
+        max_drawdown_wei: r.get(12)?,
+        created_at: r.get::<_, i64>(13)? as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,23 +273,4 @@ mod tests {
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].net_wei, 900);
     }
-}
-
-fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
-    Ok(PaperSession {
-        session_id: r.get(0)?,
-        chain: r.get(1)?,
-        mode: r.get(2)?,
-        linked_run_id: r.get(3)?,
-        start_block: r.get::<_, i64>(4)? as u64,
-        end_block: r.get::<_, i64>(5)? as u64,
-        starting_gas_wei: r.get(6)?,
-        ending_gas_wei: r.get(7)?,
-        reserve_wei: r.get(8)?,
-        fills: r.get::<_, i64>(9)? as u64,
-        skipped: r.get::<_, i64>(10)? as u64,
-        net_profit_wei: r.get(11)?,
-        max_drawdown_wei: r.get(12)?,
-        created_at: r.get::<_, i64>(13)? as u64,
-    })
 }

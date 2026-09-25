@@ -16,7 +16,9 @@ mod tokens;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, cmd_show, cmd_stats};
+pub use explorer::{
+    cmd_backfill, cmd_explorer_report, cmd_explorer_validate, cmd_index, cmd_show, cmd_stats,
+};
 pub use live::cmd_live;
 pub use paper::cmd_paper;
 pub use report::cmd_report;
@@ -78,7 +80,9 @@ impl CliCommand for ExplorerArgs {
             ExplorerCommand::Stats(a) => {
                 cmd_stats(config, a.since.as_deref(), a.kind.as_deref()).await
             }
-            ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
+            ExplorerCommand::Show(a) => {
+                cmd_show(config, &a.tx_hash, a.trace, a.tolerance_pct).await
+            }
             ExplorerCommand::Report(a) => {
                 let _ = progress;
                 cmd_explorer_report(config, &a.windows, a.kind.as_deref(), a.top).await
@@ -87,6 +91,7 @@ impl CliCommand for ExplorerArgs {
                 cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
                 Ok(())
             }
+            ExplorerCommand::Validate(a) => cmd_explorer_validate(config, a, progress).await,
         }
     }
 }

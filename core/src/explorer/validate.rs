@@ -26,13 +26,19 @@ use crate::types::ChainName;
 /// (`explorer::golden` / `explorer validate --golden-causal`), not via
 /// opportunity matching. Unmapped scanner strategies contribute only to
 /// `precision_signal_count`.
+///
+/// Strategy strings are matched case-insensitively because the two producers
+/// disagree on casing: unit fixtures write the `Debug` form (`"TwoHopArb"`)
+/// while the production results layer persists `Strategy::to_string()`
+/// (strum `Display` → `"two_hop_arb"`). Normalizing here keeps T2 matching
+/// alive for every persisted production row.
 fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
-    match strategy {
-        "TwoHopArb" | "MultiHopArb" => Some("arb_atomic"),
-        "Sandwich" => Some("sandwich"),
-        "Liquidation" => Some("liquidation"),
-        "Jit" => Some("jit"),
-        "JitArb" => Some("jit_arb"),
+    match strategy.to_ascii_lowercase().as_str() {
+        "two_hop_arb" | "multi_hop_arb" => Some("arb_atomic"),
+        "sandwich" => Some("sandwich"),
+        "liquidation" => Some("liquidation"),
+        "jit" => Some("jit"),
+        "jit_arb" => Some("jit_arb"),
         _ => None,
     }
 }
@@ -1041,6 +1047,153 @@ mod tests {
             })
             .unwrap();
         store
+    }
+
+    /// Realized ArbAtomic event on `pools` for a test block (route on the
+    /// fixture token pair so T2 token-overlap can hit).
+    fn realized_ev_at(
+        block: u64,
+        pools: Vec<alloy::primitives::Address>,
+    ) -> crate::explorer::types::MevEvent {
+        use crate::explorer::types::{Confidence, MevKind};
+        use alloy::primitives::{b256 as b256f, U256 as U256t};
+        crate::explorer::types::MevEvent {
+            block,
+            ts: 1_700_000_000,
+            tx_index: 1,
+            tx_hash: b256f!("1111111111111111111111111111111111111111111111111111111111111111"),
+            kind: MevKind::ArbAtomic,
+            searcher: address!("2222000000000000000000000000000000000002"),
+            contract: None,
+            pools: pools.clone(),
+            profit_token: Some(address!("4444000000000000000000000000000000000004")),
+            profit_amount: Some(U256t::from(1_000_000u64)),
+            profit_tokens: vec![],
+            profit_usd: None,
+            gas_cost_wei: U256t::from(100_000_000_000_000u64),
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence: Confidence::Exact,
+            victim_hashes: vec![],
+            victim_swap_size: None,
+            details: serde_json::json!({
+                "route": [
+                    {"pool": format!("{:#x}", pools[0]), "amm": "v3",
+                     "token_in": "0x4444000000000000000000000000000000000004",
+                     "token_out": "0x5555000000000000000000000000000000000005",
+                     "amount_in": "1", "amount_out": "2"}
+                ]
+            }),
+        }
+    }
+
+    #[allow(clippy::field_reassign_with_default)]
+    #[test]
+    fn t2_matches_production_snake_case_strategy() {
+        // The production results layer persists `Strategy::to_string()` —
+        // strum `Display` emits snake_case (`two_hop_arb`), not the PascalCase
+        // `Debug` form fixtures use. Seed through that path and assert T2
+        // still matches after the `strategy_to_kind` case normalization.
+        use crate::explorer::results::persist_opportunities_to_explorer;
+        use crate::types::{MevOpportunity, ResultsFile, Strategy};
+        use alloy::primitives::{b256 as b256f, U256};
+        use std::collections::HashMap;
+
+        let dir = std::env::temp_dir().join(format!("mev_validate_t2_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let db_path = dir.join("explorer.sqlite");
+        let _ = std::fs::remove_file(&db_path);
+
+        let pool_a = address!("3333000000000000000000000000000000000003");
+        let mut prices = HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        let store = ExplorerStore::open(&db_path).unwrap();
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number: 100,
+                block_hash: &b256f!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                base_fee_gwei: Some(25.0),
+                tx_count: 5,
+                txs: &[],
+                swaps: &[],
+                transfers: &[],
+                events: &[realized_ev_at(100, vec![pool_a])],
+                native_price_usd: Some(1.0),
+                token_prices: &prices,
+            })
+            .unwrap();
+        drop(store);
+
+        let mut config = crate::config::Config::default();
+        config.chain = crate::types::ChainName::Polygon;
+        config.explorer.db_path = db_path.to_string_lossy().into_owned();
+
+        let mut opp = MevOpportunity::new(100, 0, Strategy::TwoHopArb, pool_a, 1_700_000_000);
+        opp.token_in = address!("4444000000000000000000000000000000000004");
+        opp.token_out = address!("5555000000000000000000000000000000000005");
+        opp.expected_profit = U256::from(900_000u64);
+        opp.gas_cost_wei = 50_000;
+        opp.tx_hash = Some(b256f!(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+        // Deliberately NOT the explorer canonical form, so only T2 can hit.
+        opp.canonical_id = Some("TwoHopArb-unmatched".into());
+        let results = ResultsFile {
+            run_id: "run_snake".into(),
+            chain: "polygon".into(),
+            start_block: 100,
+            end_block: 100,
+            range_mode: "single".into(),
+            strategies: vec!["two_hop_arb".into()],
+            flash_loan_provider: "auto".into(),
+            resolved_at: 1_700_000_000,
+            created_at: 1_700_000_000,
+            opportunities: vec![opp],
+        };
+        persist_opportunities_to_explorer(
+            &config,
+            crate::types::ChainName::Polygon,
+            "run_snake",
+            &results,
+        );
+
+        let store = ExplorerStore::open(&db_path).unwrap();
+        let report = compute_validation(
+            &store,
+            ValidationQuery {
+                chain: crate::types::ChainName::Polygon,
+                from_block: 90,
+                to_block: 110,
+                match_window: 0,
+                run_filter: None,
+                threshold_sweep: false,
+            },
+        )
+        .unwrap();
+        let (kind, t) = report
+            .per_kind
+            .iter()
+            .find(|(k, _)| k == "arb_atomic")
+            .unwrap();
+        assert_eq!(*kind, "arb_atomic");
+        assert_eq!(
+            t.matched_t2, 1,
+            "production snake_case strategy must match T2 (pool+token overlap)"
+        );
+        assert_eq!(
+            t.matched_t1, 0,
+            "non-matching canonical id must not T1-match"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

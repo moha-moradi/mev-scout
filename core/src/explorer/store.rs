@@ -12,6 +12,9 @@
 
 use std::path::Path;
 
+/// `(pool, amm, token_in, token_out)` for a realized swap row.
+type PoolSwapRow = (String, Option<String>, String, String);
+
 use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -34,6 +37,10 @@ pub struct TraceVerification {
     /// Raw trace native delta in wei, signed decimal string.
     pub native_delta_wei: String,
     pub note: String,
+    /// Gate verdict tag: `pass | fail | unverifiable`.
+    pub trace_check: Option<String>,
+    /// Human-readable reason for non-pass verdicts.
+    pub trace_check_reason: Option<String>,
 }
 
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
@@ -1098,6 +1105,69 @@ impl ExplorerStore {
         Ok(out)
     }
 
+    /// Distinct pools seen in realized swaps: `(pool, amm, token_in, token_out)`.
+    ///
+    /// Re-scoped for the detector corpus (MEV-VERIFICATION §D): the backtest
+    /// detector's pool registry is normally built by live runs, but the repo's
+    /// seed block cache holds none, so the corpus re-seeds it from the swap
+    /// endpoints the realizer actually saw, then lets `init_from_rpc` hydrate
+    /// fee/tick/reserves over RPC before detection.
+    pub fn pools_from_swaps(&self) -> anyhow::Result<Vec<PoolSwapRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT pool, amm, token_in, token_out FROM swaps
+             WHERE pool IS NOT NULL AND token_in IS NOT NULL AND token_out IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Detector opportunities anchored to a tx hash (`show` MEV verdict;
+    /// tx_hash-only realization join per MEV-VERIFICATION §A).
+    pub fn opportunities_for_tx(&self, tx_hash: &str) -> anyhow::Result<Vec<OpportunityRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT run_id, block_number, tx_index, strategy, pool_a, pool_b,
+                    token_in, token_out, expected_profit, gas_cost_wei,
+                    mempool_only, detection_path, canonical_id, tx_hash
+             FROM opportunities
+             WHERE tx_hash = ?1
+             ORDER BY block_number",
+        )?;
+        let rows = stmt.query_map([tx_hash], |r| {
+            Ok(OpportunityRow {
+                run_id: r.get(0)?,
+                block_number: r.get::<_, i64>(1)? as u64,
+                tx_index: r.get::<_, Option<i64>>(2)?.map(|v| v as u64),
+                strategy: r.get(3)?,
+                pool_a: r.get(4)?,
+                pool_b: r.get(5)?,
+                token_in: r.get(6)?,
+                token_out: r.get(7)?,
+                expected_profit: r.get(8)?,
+                gas_cost_wei: r.get(9)?,
+                mempool_only: r.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
+                detection_path: r.get(11)?,
+                canonical_id: r.get(12)?,
+                tx_hash: r.get(13)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     /// Realized ops in a block window (`validate` ground truth).
     pub fn ops_in_range(
         &self,
@@ -1138,8 +1208,8 @@ impl ExplorerStore {
     ) -> anyhow::Result<Vec<OpportunityRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT run_id, block_number, tx_index, strategy, pool_a, pool_b,
-                    token_in, token_out, expected_profit, mempool_only,
-                    detection_path, canonical_id, tx_hash
+                    token_in, token_out, expected_profit, gas_cost_wei,
+                    mempool_only, detection_path, canonical_id, tx_hash
              FROM opportunities
              WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
              ORDER BY block_number",
@@ -1157,10 +1227,11 @@ impl ExplorerStore {
                     token_in: r.get(6)?,
                     token_out: r.get(7)?,
                     expected_profit: r.get(8)?,
-                    mempool_only: r.get::<_, Option<i64>>(9)?.unwrap_or(0) != 0,
-                    detection_path: r.get(10)?,
-                    canonical_id: r.get(11)?,
-                    tx_hash: r.get(12)?,
+                    gas_cost_wei: r.get(9)?,
+                    mempool_only: r.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
+                    detection_path: r.get(11)?,
+                    canonical_id: r.get(12)?,
+                    tx_hash: r.get(13)?,
                 })
             },
         )?;
@@ -1422,6 +1493,22 @@ impl ExplorerStore {
             rusqlite::params![hour as i64, format!("{:#x}", token), usd, source],
         )?;
         Ok(())
+    }
+
+    /// Native USD price at the hour bucket nearest `ts` (native keyed at
+    /// `0x…0` / `0x0`). Drives the USD→wei conversion for the detector-vs-
+    /// realized verdict when a trace native delta is unavailable.
+    pub fn native_price_near(&self, ts: u64) -> anyhow::Result<Option<f64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT usd FROM prices
+             WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
+             ORDER BY ABS(hour - ?1) ASC LIMIT 1",
+        )?;
+        let mut rows = stmt.query([ts as i64])?;
+        Ok(match rows.next()? {
+            Some(row) => Some(row.get::<_, f64>(0)?),
+            None => None,
+        })
     }
 
     /// Persist (or refresh) open JIT Mint positions (Phase 1.5).
@@ -1893,7 +1980,14 @@ impl ExplorerStore {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(serde_json::json!({}));
-            details["trace_verified"] = serde_json::json!(true);
+
+            if let Some(check) = &verification.trace_check {
+                details["trace_verified"] = serde_json::json!(true);
+                details["trace_check"] = serde_json::json!(check);
+            }
+            if let Some(reason) = &verification.trace_check_reason {
+                details["trace_check_reason"] = serde_json::json!(reason);
+            }
             if let Some(usd) = verification.trace_profit_usd {
                 details["trace_profit_usd"] = serde_json::json!(usd);
             }
@@ -2021,6 +2115,9 @@ pub struct OpportunityRow {
     pub token_in: Option<String>,
     pub token_out: Option<String>,
     pub expected_profit: Option<String>,
+    /// Detector gas estimate in wei (present on retention rows; drives the
+    /// detector-vs-realized `expected_net_wei` in the MEV verdict).
+    pub gas_cost_wei: Option<String>,
     pub mempool_only: bool,
     pub detection_path: Option<String>,
     pub canonical_id: Option<String>,
