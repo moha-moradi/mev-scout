@@ -1,28 +1,34 @@
 //! Real-block golden corpus (WS-H2, first slice).
 //!
-//! Re-ingests a fixed historical window from a live RPC and asserts derived
+//! Re-ingests fixed historical windows from a live RPC and asserts derived
 //! facts (kind present, op counts above a floor, searcher identity, USD
-//! profit floor) that were collected from the seed database produced by
-//! `explorer backfill` on Avalanche (blocks 95681722..=95682322).
+//! profit floor). Expected numbers were collected with `explorer backfill`
+//! and are not exact — thresholds sit near 60-70% of what that run stored.
 //!
-//! Seed facts (from `cache/explorer-avalanche.sqlite`, Sep 2026):
-//! - `arb_atomic` total: 630 ops across the window
+//! Avalanche seed (`cache/explorer-avalanche.sqlite`, blocks 95681722..=95682322):
+//! - `arb_atomic` total: 630 ops
 //! - `0x93a9f59d5defaae72702dedc2fc4a8fbc287a1ac`: 23 ops, max profit \$2332
 //! - `0x92d4ee32bc0f81dbb9923073395a2be7febbc3e5`: 294 ops (dust, max \$0.28)
 //! - block 95682057: 9 `arb_atomic` ops, max profit \$682
 //! - block 95682033: 1 liquidation by `0xd2a82f1bb41a950ad24829b2f483b1b10f3569dd`
 //!
-//! Thresholds are deliberately conservative (roughly 60-70% of observed) so
-//! small classifier/pricing drift does not fail the corpus, while a missing
-//! kind, a lost searcher, or a collapsed USD pipeline still does.
+//! Polygon seed (backfill 94430000..=94430280 and block 94430973, 2026-09-25):
+//! - `arb_atomic`: 506 ops in the 281-block window
+//! - `0x8695330488513a6c3698a2b072ff88aaedbfac3e`: 9 ops, max profit \$62
+//! - `0x8c771167beba08d15acd9bee460bc3d14a35201c`: 30 ops
+//! - `0xa6563baa758a7c39960a339750c89663aadf9fd2`: 17 ops
+//! - block 94430259: 5 `arb_atomic` ops, max profit \$25
+//! - blocks 94430973..=94431381: 8 liquidations by
+//!   `0x7f1aacb852a7457e8eb97e5196276b92f408d990`
+//!
+//! Ethereum seed (backfill 26055651..=26055745, 2026-09-25): 5 `sandwich`
+//! ops. Three are from `0xae2fc483527b8ef99eb5d9b44875f005ba1fae13`, best
+//! priced profit about \$10. No `jit` mint/burn pair landed in that window.
+//!
+//! Distant windows on one chain are ingested separately (see `ingest_windows`).
 //!
 //! Gated like every other live-RPC test: `MEV_SCOUT_E2E=1` + `RPC_URL`
 //! (`common::setup::rpc_url`), otherwise it skips with no network I/O.
-//!
-//! To add a case: pick a block window from the seed DB (or a fresh
-//! `explorer backfill`), record kind/searcher/count/profit facts, then append
-//! a `CorpusCase` below. Sandwich/jit cases need a window where those kinds
-//! occurred — none exist in this seed window.
 mod common;
 use common::rpc_url;
 
@@ -100,6 +106,86 @@ const CORPUS: &[CorpusCase] = &[
         searcher: Some(address!("d2a82f1bb41a950ad24829b2f483b1b10f3569dd")),
         profit_usd_min: None,
     },
+    CorpusCase {
+        id: "poly-arb-window",
+        chain: ChainName::Polygon,
+        from_block: 94_430_000,
+        to_block: 94_430_280,
+        kind: "arb_atomic",
+        min_ops: 350,
+        searcher: None,
+        profit_usd_min: None,
+    },
+    CorpusCase {
+        id: "poly-arb-whale",
+        chain: ChainName::Polygon,
+        from_block: 94_430_000,
+        to_block: 94_430_280,
+        kind: "arb_atomic",
+        min_ops: 6,
+        searcher: Some(address!("8695330488513a6c3698a2b072ff88aaedbfac3e")),
+        profit_usd_min: Some(20.0),
+    },
+    CorpusCase {
+        id: "poly-arb-searcher",
+        chain: ChainName::Polygon,
+        from_block: 94_430_000,
+        to_block: 94_430_280,
+        kind: "arb_atomic",
+        min_ops: 20,
+        searcher: Some(address!("8c771167beba08d15acd9bee460bc3d14a35201c")),
+        profit_usd_min: None,
+    },
+    CorpusCase {
+        id: "poly-arb-searcher-2",
+        chain: ChainName::Polygon,
+        from_block: 94_430_000,
+        to_block: 94_430_280,
+        kind: "arb_atomic",
+        min_ops: 10,
+        searcher: Some(address!("a6563baa758a7c39960a339750c89663aadf9fd2")),
+        profit_usd_min: None,
+    },
+    CorpusCase {
+        id: "poly-arb-dense-block",
+        chain: ChainName::Polygon,
+        from_block: 94_430_259,
+        to_block: 94_430_259,
+        kind: "arb_atomic",
+        min_ops: 3,
+        searcher: None,
+        profit_usd_min: Some(10.0),
+    },
+    CorpusCase {
+        id: "poly-liquidation-window",
+        chain: ChainName::Polygon,
+        from_block: 94_430_973,
+        to_block: 94_431_381,
+        kind: "liquidation",
+        min_ops: 5,
+        searcher: Some(address!("7f1aacb852a7457e8eb97e5196276b92f408d990")),
+        profit_usd_min: None,
+    },
+    CorpusCase {
+        id: "eth-sandwich-window",
+        chain: ChainName::Ethereum,
+        from_block: 26_055_651,
+        to_block: 26_055_745,
+        kind: "sandwich",
+        min_ops: 3,
+        searcher: None,
+        profit_usd_min: Some(5.0),
+    },
+    CorpusCase {
+        id: "eth-sandwich-searcher",
+        chain: ChainName::Ethereum,
+        from_block: 26_055_651,
+        to_block: 26_055_745,
+        kind: "sandwich",
+        min_ops: 2,
+        searcher: Some(address!("ae2fc483527b8ef99eb5d9b44875f005ba1fae13")),
+        profit_usd_min: Some(5.0),
+    },
 ];
 
 /// Build the runtime config for a corpus chain: defaults + chain + the
@@ -174,17 +260,36 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
     );
 }
 
-/// Ingest the union window of all corpus cases for one chain, then assert
-/// every case of that chain. Skips (never fails) on RPC/network problems so
-/// a flaky endpoint does not turn the corpus red — assertion failures are
-/// the only hard failures.
+/// Merge case ranges that sit within `GAP` blocks of each other. Distant
+/// windows on the same chain are ingested on their own so the harness does
+/// not replay every block between them.
+fn ingest_windows(cases: &[&CorpusCase]) -> Vec<(u64, u64)> {
+    const GAP: u64 = 64;
+    let mut ranges: Vec<(u64, u64)> = cases.iter().map(|c| (c.from_block, c.to_block)).collect();
+    ranges.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for (from, to) in ranges {
+        if let Some(last) = out.last_mut() {
+            if from <= last.1.saturating_add(GAP) {
+                last.1 = last.1.max(to);
+                continue;
+            }
+        }
+        out.push((from, to));
+    }
+    out
+}
+
+/// Ingest each cluster of corpus cases for one chain, then assert every case.
+/// Skips (never fails) on RPC/network problems so a flaky endpoint does not
+/// turn the corpus red — assertion failures are the only hard failures.
 async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
     let cases: Vec<&CorpusCase> = CORPUS.iter().filter(|c| c.chain == chain).collect();
     if cases.is_empty() {
         return true;
     }
-    let union_from = cases.iter().map(|c| c.from_block).min().unwrap();
-    let union_to = cases.iter().map(|c| c.to_block).max().unwrap();
+    let windows = ingest_windows(&cases);
+    let union_to = windows.iter().map(|(_, to)| *to).max().unwrap();
 
     let config = corpus_config(chain, rpc_url);
     let setup = match init_rpc(&config, chain, true).await {
@@ -228,23 +333,25 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
         }
     };
 
-    eprintln!(
-        "{chain}: ingesting corpus window {union_from}..={union_to} (~{} blocks)",
-        union_to - union_from + 1
-    );
-    if let Err(e) = run_range(
-        &setup.rpc,
-        &store,
-        &cfg,
-        &pool_tokens,
-        union_from,
-        union_to,
-        &NoopProgress,
-    )
-    .await
-    {
-        eprintln!("Skipping: corpus ingest failed for {chain}: {e}");
-        return false;
+    for (from, to) in windows {
+        eprintln!(
+            "{chain}: ingesting corpus window {from}..={to} (~{} blocks)",
+            to - from + 1
+        );
+        if let Err(e) = run_range(
+            &setup.rpc,
+            &store,
+            &cfg,
+            &pool_tokens,
+            from,
+            to,
+            &NoopProgress,
+        )
+        .await
+        {
+            eprintln!("Skipping: corpus ingest failed for {chain} {from}..={to}: {e}");
+            return false;
+        }
     }
 
     for case in cases {
