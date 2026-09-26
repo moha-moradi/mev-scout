@@ -738,11 +738,21 @@ fn i24_from_topic(word: &B256) -> i32 {
 
 /// Decode a V3 Mint/Burn fact (JIT candidate).
 ///
-/// Canonical Uniswap V3 indexes `owner`, `tickLower` and `tickUpper`, so the
-/// topics are `[sig, owner, tickLower, tickUpper]` and the non-indexed data is
-/// `[sender, amount, amount0, amount1]` for Mint and `[amount, amount0, amount1]`
-/// for Burn. Forks that only index `owner` keep the ticks in the data, which is
-/// handled as a fallback.
+/// Layout taken from `IUniswapV3PoolEvents` in Uniswap/v3-core, where `owner`,
+/// `tickLower` and `tickUpper` are all declared `indexed`:
+///
+/// ```solidity
+/// event Mint(address sender, address indexed owner, int24 indexed tickLower,
+///            int24 indexed tickUpper, uint128 amount, uint256 amount0, uint256 amount1);
+/// event Burn(address indexed owner, int24 indexed tickLower, int24 indexed tickUpper,
+///            uint128 amount, uint256 amount0, uint256 amount1);
+/// ```
+///
+/// So the topics are `[sig, owner, tickLower, tickUpper]` and the non-indexed
+/// data is `[sender, amount, amount0, amount1]` for Mint (128 bytes) and
+/// `[amount, amount0, amount1]` for Burn (96 bytes). Anything that does not match
+/// that shape is rejected rather than guessed at, because a wrong offset
+/// silently yields plausible-looking garbage ticks.
 pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     let topic0 = *log.topics.first()?;
     let is_mint = topic0 == V3_MINT_TOPIC;
@@ -750,43 +760,26 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if !is_mint && !is_burn {
         return None;
     }
-    if log.topics.len() < 2 {
+    if log.topics.len() < 4 {
         return None;
     }
     let owner = Address::from_slice(&log.topics[1][12..]);
+    let tick_lower = i24_from_topic(&log.topics[2]);
+    let tick_upper = i24_from_topic(&log.topics[3]);
 
-    let (tick_lower, tick_upper, amount0, amount1, liquidity);
-    if log.topics.len() >= 4 {
-        tick_lower = i24_from_topic(&log.topics[2]);
-        tick_upper = i24_from_topic(&log.topics[3]);
-        if is_mint {
-            // data: sender, amount, amount0, amount1
-            if log.data.len() < 128 {
-                return None;
-            }
-            liquidity = crate::utils::u128_from_be_bytes(&log.data[32 + 16..64]);
-            amount0 = U256::from_be_slice(&log.data[64..96]);
-            amount1 = U256::from_be_slice(&log.data[96..128]);
-        } else {
-            // data: amount, amount0, amount1
-            if log.data.len() < 96 {
-                return None;
-            }
-            liquidity = crate::utils::u128_from_be_bytes(&log.data[0 + 16..32]);
-            amount0 = U256::from_be_slice(&log.data[32..64]);
-            amount1 = U256::from_be_slice(&log.data[64..96]);
-        }
+    // Mint carries a leading `sender` word, Burn does not.
+    let (amount_off, (a0_off, a1_off)) = if is_mint {
+        (32, (64, 96))
     } else {
-        // data: sender, tickLower, tickUpper, amount, amount0, amount1
-        if log.data.len() < 192 {
-            return None;
-        }
-        tick_lower = i24_from_topic(&B256::from_slice(&log.data[32..64]));
-        tick_upper = i24_from_topic(&B256::from_slice(&log.data[64..96]));
-        liquidity = crate::utils::u128_from_be_bytes(&log.data[96 + 16..128]);
-        amount0 = U256::from_be_slice(&log.data[128..160]);
-        amount1 = U256::from_be_slice(&log.data[160..192]);
+        (0, (32, 64))
+    };
+    let need = a1_off + 32;
+    if log.data.len() < need {
+        return None;
     }
+    let liquidity = crate::utils::u128_from_be_bytes(&log.data[amount_off + 16..amount_off + 32]);
+    let amount0 = U256::from_be_slice(&log.data[a0_off..a0_off + 32]);
+    let amount1 = U256::from_be_slice(&log.data[a1_off..a1_off + 32]);
 
     Some(JitFact {
         tx_index: 0,
@@ -1183,8 +1176,10 @@ mod tests {
     }
 
     #[test]
-    fn v3_mint_falls_back_to_data_ticks_when_not_indexed() {
-        // Fork layout: only `owner` is indexed, so ticks stay in the data.
+    fn v3_mint_rejects_non_canonical_topic_layout() {
+        // `IUniswapV3PoolEvents` indexes owner, tickLower and tickUpper, so a
+        // 2-topic log is not a V3 Mint. It must be rejected rather than decoded
+        // from the data payload, which would produce invented tick values.
         let l = log(
             address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
             vec![
@@ -1198,12 +1193,7 @@ mod tests {
                 "000000000000000000000000000000000000000000000000000000002d5b38bf",
                 "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
         );
-        let f = decode_v3_mint_burn(&l).unwrap();
-        assert_eq!(f.tick_lower, 197190);
-        assert_eq!(f.tick_upper, 197620);
-        assert_eq!(f.liquidity, 0x4ca38c9eecc93);
-        assert_eq!(f.amount0, U256::from(0x2d5b38bfu64));
-        assert_eq!(f.amount1, U256::from(0x3c9c2b775e90ef4u64));
+        assert!(decode_v3_mint_burn(&l).is_none());
     }
 
     #[test]

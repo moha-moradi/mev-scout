@@ -479,29 +479,117 @@ mod tests {
     }
 
     /// A real V3 Mint log decodes — the end-to-end consequence of the topic
-    /// being right.
+    /// being right. Fixture captured from mainnet block 26051637 on the
+    /// UniswapV3 USDC/WETH 0.05% pool.
     #[test]
     fn v3_mint_topic_decodes_a_mint() {
-        let mut data = vec![0u8; 96];
-        data[28..32].copy_from_slice(&100i32.to_be_bytes()); // tickLower
-        data[60..64].copy_from_slice(&200i32.to_be_bytes()); // tickUpper
-        data[95] = 7; // amount = 7 (right-aligned in the 32-byte word)
+        // topics: [sig, owner, tickLower, tickUpper]
         let log = ExecutedLog {
             address: alloy::primitives::address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
             topics: vec![
                 V3_MINT_TOPIC,
                 alloy::primitives::b256!(
-                    "0000000000000000000000000000000000000000000000000000000000000001"
+                    "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"
                 ),
                 alloy::primitives::b256!(
-                    "00000000000000000000000000000000000000000000000000000000000000aa"
+                    "0000000000000000000000000000000000000000000000000000000000030246"
+                ),
+                alloy::primitives::b256!(
+                    "00000000000000000000000000000000000000000000000000000000000303f4"
                 ),
             ],
-            data: data.into(),
+            // data: sender, amount, amount0, amount1
+            data: alloy::primitives::hex::decode(concat!(
+                "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
+                "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
+                "000000000000000000000000000000000000000000000000000000002d5b38bf",
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",
+            ))
+            .unwrap()
+            .into(),
         };
         let decoded = decode_v3_mint_burn(&log).expect("Mint log must decode");
-        assert_eq!(decoded.tick_lower, 100);
-        assert_eq!(decoded.tick_upper, 200);
-        assert_eq!(decoded.amount, 7, "a Mint amount is positive");
+        assert_eq!(decoded.tick_lower, 197190);
+        assert_eq!(decoded.tick_upper, 197620);
+        assert_eq!(decoded.amount, 0x4ca38c9eecc93 as i128, "a Mint amount is positive");
+    }
+
+    /// A real V3 Burn log decodes, and `amount` keeps its negative sign so the
+    /// liquidity delta adds up. Same block/pool as the Mint above.
+    #[test]
+    fn v3_burn_topic_decodes_a_burn() {
+        let log = ExecutedLog {
+            address: alloy::primitives::address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            topics: vec![
+                V3_BURN_TOPIC,
+                alloy::primitives::b256!(
+                    "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"
+                ),
+                alloy::primitives::b256!(
+                    "000000000000000000000000000000000000000000000000000000000003011a"
+                ),
+                alloy::primitives::b256!(
+                    "00000000000000000000000000000000000000000000000000000000000302b4"
+                ),
+            ],
+            // data: amount, amount0, amount1
+            data: alloy::primitives::hex::decode(concat!(
+                "000000000000000000000000000000000000000000000000000503364091d046",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",
+            ))
+            .unwrap()
+            .into(),
+        };
+        let decoded = decode_v3_mint_burn(&log).expect("Burn log must decode");
+        assert_eq!(decoded.tick_lower, 196890);
+        assert_eq!(decoded.tick_upper, 197300);
+        assert_eq!(decoded.amount, -(0x0503364091d046i128), "a Burn amount is negative");
+    }
+
+    /// A Mint carries a leading `sender` word that a Burn does not, so the
+    /// amount sits in a different data word for each.
+    #[test]
+    fn v3_mint_and_burn_amount_offsets_differ() {
+        let topics = |t0: B256| {
+            vec![
+                t0,
+                alloy::primitives::b256!(
+                    "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"
+                ),
+                alloy::primitives::b256!(
+                    "0000000000000000000000000000000000000000000000000000000000030246"
+                ),
+                alloy::primitives::b256!(
+                    "00000000000000000000000000000000000000000000000000000000000303f4"
+                ),
+            ]
+        };
+        let pool = alloy::primitives::address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640");
+
+        // Same numeric amount, placed in word 0 (Burn) and word 1 (Mint).
+        let burn = ExecutedLog {
+            address: pool,
+            topics: topics(V3_BURN_TOPIC),
+            data: {
+                let mut d = vec![0u8; 96];
+                d[16..32].copy_from_slice(&0x1234u128.to_be_bytes());
+                d.into()
+            },
+        };
+        let mint = ExecutedLog {
+            address: pool,
+            topics: topics(V3_MINT_TOPIC),
+            data: {
+                let mut d = vec![0u8; 128];
+                d[48..64].copy_from_slice(&0x1234u128.to_be_bytes());
+                d.into()
+            },
+        };
+        assert_eq!(
+            decode_v3_mint_burn(&burn).unwrap().amount,
+            -(0x1234i128)
+        );
+        assert_eq!(decode_v3_mint_burn(&mint).unwrap().amount, 0x1234i128);
     }
 }
