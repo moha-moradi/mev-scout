@@ -1224,7 +1224,10 @@ fn build_jit_event(
             "owner": format!("{:#x}", owner),
             "tick_lower": tick_lower,
             "tick_upper": tick_upper,
-            "liquidity": liquidity,
+            // Liquidity is a u128 and routinely exceeds u64::MAX, which
+            // `serde_json::Value` cannot represent, so it is stringified like
+            // amount0/amount1 below.
+            "liquidity": liquidity.to_string(),
             "burn_tx_index": burn_tx,
             "opened_block": opened_block,
             "held_blocks": input.block.saturating_sub(opened_block),

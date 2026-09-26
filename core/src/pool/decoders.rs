@@ -209,11 +209,7 @@ pub fn decode_v3_mint_burn(log: &ExecutedLog) -> Option<V3MintBurnDecoded> {
         return None;
     }
     let raw = u128_from_be_bytes(&log.data[amount_off..amount_off + 32]);
-    let amount = if is_burn {
-        -(raw as i128)
-    } else {
-        raw as i128
-    };
+    let amount = if is_burn { -(raw as i128) } else { raw as i128 };
 
     Some(V3MintBurnDecoded {
         tick_lower,
@@ -511,7 +507,10 @@ mod tests {
         let decoded = decode_v3_mint_burn(&log).expect("Mint log must decode");
         assert_eq!(decoded.tick_lower, 197190);
         assert_eq!(decoded.tick_upper, 197620);
-        assert_eq!(decoded.amount, 0x4ca38c9eecc93 as i128, "a Mint amount is positive");
+        assert_eq!(
+            decoded.amount, 0x4ca38c9eecc93_i128,
+            "a Mint amount is positive"
+        );
     }
 
     /// A real V3 Burn log decodes, and `amount` keeps its negative sign so the
@@ -544,7 +543,11 @@ mod tests {
         let decoded = decode_v3_mint_burn(&log).expect("Burn log must decode");
         assert_eq!(decoded.tick_lower, 196890);
         assert_eq!(decoded.tick_upper, 197300);
-        assert_eq!(decoded.amount, -(0x0503364091d046i128), "a Burn amount is negative");
+        assert_eq!(
+            decoded.amount,
+            -(0x0503364091d046i128),
+            "a Burn amount is negative"
+        );
     }
 
     /// A Mint carries a leading `sender` word that a Burn does not, so the
@@ -586,10 +589,7 @@ mod tests {
                 d.into()
             },
         };
-        assert_eq!(
-            decode_v3_mint_burn(&burn).unwrap().amount,
-            -(0x1234i128)
-        );
+        assert_eq!(decode_v3_mint_burn(&burn).unwrap().amount, -(0x1234i128));
         assert_eq!(decode_v3_mint_burn(&mint).unwrap().amount, 0x1234i128);
     }
 }

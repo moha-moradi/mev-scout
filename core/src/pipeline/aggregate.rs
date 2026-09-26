@@ -400,7 +400,13 @@ fn fill_as_opportunity(fill: &PaperFill) -> Option<MevOpportunity> {
     let strategy: Strategy = fill.strategy.parse().ok()?;
     let pool_a = fill.pools.first().copied().unwrap_or(Address::ZERO);
     let pool_b = fill.pools.get(1).copied().unwrap_or(Address::ZERO);
-    let mut opp = MevOpportunity::new(fill.block_number, fill.tx_index.unwrap_or(0), strategy, pool_a, 0);
+    let mut opp = MevOpportunity::new(
+        fill.block_number,
+        fill.tx_index.unwrap_or(0),
+        strategy,
+        pool_a,
+        0,
+    );
     opp.pool_b = pool_b;
     // Paper is native-normalized, so both token legs are the native unit; that
     // makes `Address::ZERO` the right key for the native price lookup.
@@ -413,7 +419,8 @@ fn fill_as_opportunity(fill: &PaperFill) -> Option<MevOpportunity> {
         format!(
             "paper_fill|{}|{}|{}|{:?}|{}",
             fill.block_number,
-            fill.tx_index.map_or_else(|| "mempool".to_string(), |i| i.to_string()),
+            fill.tx_index
+                .map_or_else(|| "mempool".to_string(), |i| i.to_string()),
             fill.strategy,
             fill.pools,
             fill.wallet_after,
@@ -681,9 +688,33 @@ mod tests {
         // ((2.0 − 1.0) + (3.0 − 1.0) = 3.0 net). Sandwich gas total is 2.0,
         // so its ROI = 3.0 / 2.0 × 100 = 150%.
         let fills = vec![
-            pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 2, 0, Some("f1")),
-            pfill(10, Some(1), "sandwich", 2 * ETH as u128, ETH as u128, 0, Some("f2")),
-            pfill(11, Some(0), "sandwich", 3 * ETH as u128, ETH as u128, 0, Some("f3")),
+            pfill(
+                10,
+                Some(0),
+                "two_hop_arb",
+                ETH as u128,
+                ETH as u128 / 2,
+                0,
+                Some("f1"),
+            ),
+            pfill(
+                10,
+                Some(1),
+                "sandwich",
+                2 * ETH as u128,
+                ETH as u128,
+                0,
+                Some("f2"),
+            ),
+            pfill(
+                11,
+                Some(0),
+                "sandwich",
+                3 * ETH as u128,
+                ETH as u128,
+                0,
+                Some("f3"),
+            ),
         ];
         let agg = aggregate_fills(&fills, 1.0);
 
@@ -715,15 +746,46 @@ mod tests {
 
     #[test]
     fn aggregate_fills_dedups_cid_and_keeps_distinct_cidless_fills() {
-        let pool = address!("aaaa000000000000000000000000000000000001");
         // Same canonical id twice → one row, the generic dedup path.
-        let dup1 = pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 4, 0, Some("c1"));
-        let dup2 = pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 4, 0, Some("c1"));
+        let dup1 = pfill(
+            10,
+            Some(0),
+            "two_hop_arb",
+            ETH as u128,
+            ETH as u128 / 4,
+            0,
+            Some("c1"),
+        );
+        let dup2 = pfill(
+            10,
+            Some(0),
+            "two_hop_arb",
+            ETH as u128,
+            ETH as u128 / 4,
+            0,
+            Some("c1"),
+        );
         // No canonical id, same block + strategy + pool, different tx index and a
         // different running wallet: two genuinely distinct fills that the
         // generic (token-less) fallback key would have collapsed into one.
-        let tx0 = pfill(10, Some(1), "sandwich", ETH as u128, ETH as u128 / 4, 7, None);
-        let tx1 = pfill(10, Some(2), "sandwich", ETH as u128, ETH as u128 / 4, 8, None);
+        let tx0 = pfill(
+            10,
+            Some(1),
+            "sandwich",
+            ETH as u128,
+            ETH as u128 / 4,
+            7,
+            None,
+        );
+        let tx1 = pfill(
+            10,
+            Some(2),
+            "sandwich",
+            ETH as u128,
+            ETH as u128 / 4,
+            8,
+            None,
+        );
         // Mempool fill: tx_index None. Also cidless — must not collide with the
         // two tx-anchored fills above.
         let mempool = pfill(10, None, "sandwich", ETH as u128, ETH as u128 / 4, 9, None);
@@ -739,8 +801,24 @@ mod tests {
 
     #[test]
     fn aggregate_fills_skips_unattributable_strategies() {
-        let good = pfill(10, Some(0), "jit", ETH as u128, ETH as u128 / 4, 0, Some("g1"));
-        let bogus = pfill(10, Some(1), "not_a_strategy", ETH as u128, ETH as u128 / 4, 0, Some("b1"));
+        let good = pfill(
+            10,
+            Some(0),
+            "jit",
+            ETH as u128,
+            ETH as u128 / 4,
+            0,
+            Some("g1"),
+        );
+        let bogus = pfill(
+            10,
+            Some(1),
+            "not_a_strategy",
+            ETH as u128,
+            ETH as u128 / 4,
+            0,
+            Some("b1"),
+        );
         let agg = aggregate_fills(&[good, bogus], 0.0);
         assert_eq!(
             agg.summary.total, 1,

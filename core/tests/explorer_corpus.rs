@@ -214,6 +214,23 @@ const CORPUS: &[CorpusCase] = &[
         searcher: Some(address!("ae2fc483527b8ef99eb5d9b44875f005ba1fae13")),
         profit_usd_min: Some(5.0),
     },
+    // Real JIT round trip on UniswapV3 pool 0xd31d41df… (block 26059586):
+    // owner 0x1f2f10d1… mints liquidity over ticks [-129060, -129000] and burns
+    // the same liquidity later in the block, with an in-range swap at tick
+    // -129014 in between, so the position was live for the swap and earned the
+    // fee. Recorded with MEV_SCOUT_RECORD=1 over this single block.
+    // `profit_usd_min` is unset because a jit op carries no realized profit:
+    // it is a fee capture, priced from the pool's in-range swap volume.
+    CorpusCase {
+        id: "eth-jit-v3-round-trip",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_586,
+        to_block: 26_059_586,
+        kind: "jit",
+        min_ops: 1,
+        searcher: Some(address!("1f2f10d1c40777ae1da742455c65828ff36df387")),
+        profit_usd_min: None,
+    },
 ];
 
 /// Build the runtime config for a corpus chain: defaults + chain + the

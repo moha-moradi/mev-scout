@@ -1077,14 +1077,19 @@ mod tests {
                 b256!("0000000000000000000000000000000000000000000000000000000000030246"),
                 b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
             ],
-            hexdata(concat!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
+            hexdata(concat!(
+                "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
                 "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
                 "000000000000000000000000000000000000000000000000000000002d5b38bf",
-                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",
+            )),
         );
         let f = decode_v3_mint_burn(&l).unwrap();
         assert!(f.is_mint);
-        assert_eq!(f.owner, address!("c36442b4a4522e871399cd717abdd847ab11fe88"));
+        assert_eq!(
+            f.owner,
+            address!("c36442b4a4522e871399cd717abdd847ab11fe88")
+        );
         assert_eq!(f.tick_lower, 197190);
         assert_eq!(f.tick_upper, 197620);
         assert_eq!(f.liquidity, 0x4ca38c9eecc93);
@@ -1104,13 +1109,18 @@ mod tests {
                 b256!("000000000000000000000000000000000000000000000000000000000003011a"),
                 b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
             ],
-            hexdata(concat!("000000000000000000000000000000000000000000000000000503364091d046",
+            hexdata(concat!(
+                "000000000000000000000000000000000000000000000000000503364091d046",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",)),
+                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",
+            )),
         );
         let f = decode_v3_mint_burn(&l).unwrap();
         assert!(!f.is_mint);
-        assert_eq!(f.owner, address!("c36442b4a4522e871399cd717abdd847ab11fe88"));
+        assert_eq!(
+            f.owner,
+            address!("c36442b4a4522e871399cd717abdd847ab11fe88")
+        );
         assert_eq!(f.tick_lower, 196890);
         assert_eq!(f.tick_upper, 197300);
         assert_eq!(f.liquidity, 0x0503364091d046);
@@ -1132,10 +1142,12 @@ mod tests {
                 b256!("0000000000000000000000000000000000000000000000000000000000030246"),
                 b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
             ],
-            hexdata(concat!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
+            hexdata(concat!(
+                "000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
                 "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
                 "000000000000000000000000000000000000000000000000000000002d5b38bf",
-                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",
+            )),
         );
         let burn = log(
             address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
@@ -1145,9 +1157,11 @@ mod tests {
                 b256!("000000000000000000000000000000000000000000000000000000000003011a"),
                 b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
             ],
-            hexdata(concat!("000000000000000000000000000000000000000000000000000503364091d046",
+            hexdata(concat!(
+                "000000000000000000000000000000000000000000000000000503364091d046",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",)),
+                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",
+            )),
         );
         let m = decode_v3_mint_burn(&mint).unwrap();
         let b = decode_v3_mint_burn(&burn).unwrap();
@@ -1165,10 +1179,12 @@ mod tests {
                 b256!("0000000000000000000000000000000000000000000000000000000000ffffff"),
                 b256!("0000000000000000000000000000000000000000000000000000000000f27618"),
             ],
-            hexdata(concat!("0000000000000000000000000000000000000000000000000000000000000001",
+            hexdata(concat!(
                 "0000000000000000000000000000000000000000000000000000000000000001",
                 "0000000000000000000000000000000000000000000000000000000000000001",
-                "0000000000000000000000000000000000000000000000000000000000000001",)),
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            )),
         );
         let f = decode_v3_mint_burn(&l).unwrap();
         assert_eq!(f.tick_lower, -1);
@@ -1186,12 +1202,14 @@ mod tests {
                 V3_MINT_TOPIC,
                 b256!("0000000000000000000000000000000000000000000000000000000000000001"),
             ],
-            hexdata(concat!("0000000000000000000000000000000000000000000000000000000000000009",
+            hexdata(concat!(
+                "0000000000000000000000000000000000000000000000000000000000000009",
                 "0000000000000000000000000000000000000000000000000000000000030246",
                 "00000000000000000000000000000000000000000000000000000000000303f4",
                 "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
                 "000000000000000000000000000000000000000000000000000000002d5b38bf",
-                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",
+            )),
         );
         assert!(decode_v3_mint_burn(&l).is_none());
     }
@@ -1452,6 +1470,45 @@ mod tests {
         assert_eq!(
             k("Fill(address,address,bytes,bytes,bytes,bytes,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"),
             ZRX_FILL_TOPIC
+        );
+    }
+
+    /// Pin the Uniswap topic0 values to the signatures declared by Uniswap
+    /// itself, so a refactor cannot silently drift them again:
+    ///   v3-core/contracts/interfaces/pool/IUniswapV3PoolEvents.sol
+    ///   v4-core/src/interfaces/IPoolManager.sol
+    ///
+    /// The layout those declarations imply is what `decode_v3_mint_burn` and
+    /// `decode_swap` assume:
+    ///   V3 Mint  `Mint(address sender, address indexed owner,
+    ///                int24 indexed tickLower, int24 indexed tickUpper,
+    ///                uint128 amount, uint256 amount0, uint256 amount1)`
+    ///         -> 4 topics, 128 bytes of data [sender, amount, amount0, amount1]
+    ///   V3 Burn  `Burn(address indexed owner, int24 indexed tickLower,
+    ///                int24 indexed tickUpper, uint128 amount, uint256 amount0,
+    ///                uint256 amount1)`
+    ///         -> 4 topics, 96 bytes of data [amount, amount0, amount1]
+    ///   V3 Swap  3 topics, 160 bytes, tick in data[156..160]
+    ///   V4 Swap  3 topics, 192 bytes, tick in data[156..160]; V4 has no
+    ///            Mint/Burn at all, it uses `ModifyLiquidity` instead.
+    #[test]
+    fn uniswap_topics_match_official_signatures() {
+        use alloy::primitives::keccak256;
+        assert_eq!(
+            V3_MINT_TOPIC,
+            keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)")
+        );
+        assert_eq!(
+            V3_BURN_TOPIC,
+            keccak256("Burn(address,int24,int24,uint128,uint256,uint256)")
+        );
+        assert_eq!(
+            V3_SWAP_TOPIC,
+            keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
+        );
+        assert_eq!(
+            *V4_SWAP_TOPIC,
+            keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
         );
     }
 

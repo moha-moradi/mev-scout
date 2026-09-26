@@ -282,9 +282,20 @@ Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is i
   per-searcher / USD facts without asserting (plus `_CHAIN` / `_FROM` / `_TO` to hunt a
   window outside the corpus). Offline synthetic tier stays in
   `core/tests/explorer_golden.rs` + `core/src/explorer/golden.rs`.
-  **Remaining:** `jit` / `jit_arb` have no on-chain case in any seed window (recorded
-  as 0 ops), and there is no corpus entry per strategy for the non-MEV ones listed
+  **Remaining:** `jit_arb` has no on-chain case in any seed window (recorded as
+  0 ops), and there is no corpus entry per strategy for the non-MEV ones listed
   above (rebase day, Clip take, V2 drift).
+- **`jit` now has a real on-chain case.** It was undetectable, not just unrecorded:
+  `V3_MINT_TOPIC` held a stale hash, and `decode_v3_mint_burn` required
+  `data.len() >= 160` while a canonical V3 `Mint` is 128 bytes, so every real V3
+  Mint/Burn log was rejected before classification. Fixed against the Uniswap
+  v3-core `IUniswapV3PoolEvents` declarations (`topics = [sig, owner, tickLower,
+  tickUpper]`; Mint data `[sender, amount, amount0, amount1]`, Burn data
+  `[amount, amount0, amount1]`) and pinned by
+  `uniswap_topics_match_official_signatures` in
+  `core/src/explorer/decode.rs` plus real-log fixtures. Case
+  `eth-jit-v3-round-trip` (Ethereum block 26059586) asserts a live mint → in-range
+  swap → burn round trip.
 
 ---
 
