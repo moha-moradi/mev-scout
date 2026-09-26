@@ -389,20 +389,36 @@ fn test_runner_proximity_window() {
     let sender = address!("1111111111111111111111111111111111111111");
     let usdt_addr = address!("c2132d05d31c914a87c6611c10748aeb04b58e8f");
 
+    /// Build a canonical Uniswap V3 `Mint` log, matching
+    /// v3-core `IUniswapV3PoolEvents`:
+    ///   topics: [sig, owner, tickLower, tickUpper]
+    ///   data:   [sender, amount, amount0, amount1]
     fn v3_mint_log(pool: Address, lower: i32, upper: i32, amount: u128) -> ExecutedLog {
+        // A 32-byte topic holding an int24: left-padded, sign-extended when negative.
+        let tick_topic = |v: i32| -> B256 {
+            let fill = if v < 0 { 0xffu8 } else { 0x00u8 };
+            let mut w = [fill; 32];
+            w[28..32].copy_from_slice(&v.to_be_bytes());
+            B256::from(w)
+        };
         let mut data = Vec::new();
-        let mut padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&lower.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&upper.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[16..32].copy_from_slice(&amount.to_be_bytes());
-        data.extend_from_slice(&padded);
+        // sender
+        data.extend_from_slice(&[0u8; 32]);
+        // amount (uint128, left-padded into a 32-byte word)
+        let mut w = [0u8; 32];
+        w[16..32].copy_from_slice(&amount.to_be_bytes());
+        data.extend_from_slice(&w);
+        // amount0, amount1
+        data.extend_from_slice(&[0u8; 32]);
+        data.extend_from_slice(&[0u8; 32]);
         ExecutedLog {
             address: pool,
-            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![
+                V3_MINT_TOPIC,
+                B256::from_slice(&[0u8; 12].iter().chain(sender().as_slice()).copied().collect::<Vec<u8>>()),
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }
