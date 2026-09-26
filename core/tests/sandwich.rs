@@ -150,38 +150,53 @@ fn test_jit_detection_synthetic() {
     let mut detector = JitDetector::new(42);
     let timestamp = 12345u64;
 
+    /// A 32-byte topic holding an int24 tick: left-padded, sign-extended when
+    /// negative, exactly as a canonical Uniswap V3 pool emits it.
+    fn tick_topic(v: i32) -> B256 {
+        let fill = if v < 0 { 0xffu8 } else { 0x00u8 };
+        let mut w = [fill; 32];
+        w[28..32].copy_from_slice(&v.to_be_bytes());
+        B256::from(w)
+    }
+
+    /// Canonical V3 `Mint` per v3-core `IUniswapV3PoolEvents`:
+    /// topics [sig, owner, tickLower, tickUpper], data [sender, amount, amount0, amount1].
     fn v3_mint_log(pool: Address, lower: i32, upper: i32, amount: u128) -> ExecutedLog {
         let mut data = Vec::new();
-        let mut padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&lower.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&upper.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[16..32].copy_from_slice(&amount.to_be_bytes());
-        data.extend_from_slice(&padded);
+        data.extend_from_slice(&[0u8; 32]); // sender
+        let mut w = [0u8; 32];
+        w[16..32].copy_from_slice(&amount.to_be_bytes());
+        data.extend_from_slice(&w); // amount
+        data.extend_from_slice(&[0u8; 32]); // amount0
+        data.extend_from_slice(&[0u8; 32]); // amount1
         ExecutedLog {
             address: pool,
-            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![
+                V3_MINT_TOPIC,
+                B256::ZERO,
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }
 
+    /// Canonical V3 `Burn`: same topics, but data has no leading `sender` word.
     fn v3_burn_log(pool: Address, lower: i32, upper: i32, amount: u128) -> ExecutedLog {
         let mut data = Vec::new();
-        let mut padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&lower.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&upper.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[16..32].copy_from_slice(&amount.to_be_bytes());
-        data.extend_from_slice(&padded);
+        let mut w = [0u8; 32];
+        w[16..32].copy_from_slice(&amount.to_be_bytes());
+        data.extend_from_slice(&w); // amount
+        data.extend_from_slice(&[0u8; 32]); // amount0
+        data.extend_from_slice(&[0u8; 32]); // amount1
         ExecutedLog {
             address: pool,
-            topics: vec![V3_BURN_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![
+                V3_BURN_TOPIC,
+                B256::ZERO,
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }
@@ -312,20 +327,30 @@ fn test_jit_arb_detection_synthetic() {
     let wmatic = address!("0d500b1d8e8ef31e21c99d1db9a6444d3adf1270");
     let usdc = address!("2791bca1f2de4661ed88a30c99a7a9449aa84174");
 
+    /// Canonical V3 `Mint` per v3-core `IUniswapV3PoolEvents`:
+    /// topics [sig, owner, tickLower, tickUpper], data [sender, amount, amount0, amount1].
     fn v3_mint_log(pool: Address, lower: i32, upper: i32, amount: u128) -> ExecutedLog {
+        let tick_topic = |v: i32| -> B256 {
+            let fill = if v < 0 { 0xffu8 } else { 0x00u8 };
+            let mut w = [fill; 32];
+            w[28..32].copy_from_slice(&v.to_be_bytes());
+            B256::from(w)
+        };
         let mut data = Vec::new();
-        let mut padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&lower.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[28..32].copy_from_slice(&upper.to_be_bytes());
-        data.extend_from_slice(&padded);
-        padded = [0u8; 32];
-        padded[16..32].copy_from_slice(&amount.to_be_bytes());
-        data.extend_from_slice(&padded);
+        data.extend_from_slice(&[0u8; 32]); // sender
+        let mut w = [0u8; 32];
+        w[16..32].copy_from_slice(&amount.to_be_bytes());
+        data.extend_from_slice(&w); // amount
+        data.extend_from_slice(&[0u8; 32]); // amount0
+        data.extend_from_slice(&[0u8; 32]); // amount1
         ExecutedLog {
             address: pool,
-            topics: vec![V3_MINT_TOPIC, B256::ZERO, B256::ZERO],
+            topics: vec![
+                V3_MINT_TOPIC,
+                B256::ZERO,
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }

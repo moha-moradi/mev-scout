@@ -415,7 +415,7 @@ fn test_runner_proximity_window() {
             address: pool,
             topics: vec![
                 V3_MINT_TOPIC,
-                B256::from_slice(&[0u8; 12].iter().chain(sender().as_slice()).copied().collect::<Vec<u8>>()),
+                B256::ZERO,
                 tick_topic(lower),
                 tick_topic(upper),
             ],
