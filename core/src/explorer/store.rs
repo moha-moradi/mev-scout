@@ -192,6 +192,26 @@ fn liquidation_pnl(
     }
 }
 
+/// Record why a persisted USD figure is incomplete or capped, and mark it
+/// approximate. Reasons stack (`MULTI_ASSET_PRICING`, `NATIVE_UNPRICED`,
+/// `pricing_clamped`) instead of replacing one another.
+fn note_pricing_issue(details_json: &mut String, reason: &str) {
+    let mut d: serde_json::Value =
+        serde_json::from_str(details_json).unwrap_or(serde_json::json!({}));
+    let mut reasons = reason_list(&d);
+    if !reasons.iter().any(|r| r == reason) {
+        reasons.push(reason.to_string());
+    }
+    if let Some(map) = d.as_object_mut() {
+        map.insert("reasons".into(), serde_json::json!(reasons));
+        map.insert("usd_approximate".into(), serde_json::json!(true));
+        if reason == "pricing_clamped" {
+            map.insert("pricing_clamped".into(), serde_json::json!(true));
+        }
+    }
+    *details_json = d.to_string();
+}
+
 /// Existing `reasons` array from event details (empty when absent).
 fn reason_list(details: &serde_json::Value) -> Vec<String> {
     details
@@ -706,6 +726,9 @@ impl ExplorerStore {
                 // subtract raw amounts when tokens differ.
                 let mut confidence = ev.confidence.as_str();
                 let mut details_json = ev.details.to_string();
+                let mut pricing_clamped = false;
+                let mut unpriced_residual = false;
+                let mut native_unpriced = false;
                 let profit_usd = if ev.kind == MevKind::Liquidation {
                     let (usd, conf, details) = liquidation_pnl(ev, token_prices);
                     confidence = conf;
@@ -715,46 +738,81 @@ impl ExplorerStore {
                     // Phase 2.3: USD-sum across every positive residual
                     // (flash-netting already cleaned the ledger in 2.2) with
                     // Phase 2.4 realized-rate fallback for unpriced tokens.
-                    let total = ev.profit_tokens.iter().fold(0.0f64, |acc, (tok, amt)| {
-                        acc + crate::explorer::pricing::amount_usd_realized(
+                    // A missing quote is not zero: the sum is partial and marked
+                    // approximate instead of being stored as a complete figure.
+                    let mut total = 0.0f64;
+                    for (tok, amt) in &ev.profit_tokens {
+                        if *tok == crate::explorer::profit::NATIVE_MARKER {
+                            native_unpriced = true;
+                            continue;
+                        }
+                        match crate::explorer::pricing::amount_usd_realized(
                             *tok,
                             *amt,
                             token_prices,
                             &ev.details,
-                        )
-                        .unwrap_or(0.0)
-                    });
-                    if total > 0.0 {
-                        // Surface the residual list for forensic display.
-                        details_json = merge_details_json(
-                            &details_json,
-                            [(
-                                "profit_tokens",
-                                serde_json::json!(ev
-                                    .profit_tokens
-                                    .iter()
-                                    .map(|(tok, amt)| serde_json::json!({
-                                        "token": format!("{tok:#x}"),
-                                        "amount": amt.to_string(),
-                                    }))
-                                    .collect::<Vec<_>>()),
-                            )],
-                        );
-                        Some(total)
-                    } else {
-                        None
+                        ) {
+                            Some(q) if q.usd.is_finite() => {
+                                total += q.usd;
+                                pricing_clamped |= q.clamped;
+                            }
+                            _ => unpriced_residual = true,
+                        }
                     }
+                    if !total.is_finite() {
+                        total = 0.0;
+                        unpriced_residual = true;
+                    }
+                    details_json = merge_details_json(
+                        &details_json,
+                        [(
+                            "profit_tokens",
+                            serde_json::json!(ev
+                                .profit_tokens
+                                .iter()
+                                .map(|(tok, amt)| serde_json::json!({
+                                    "token": format!("{tok:#x}"),
+                                    "amount": amt.to_string(),
+                                }))
+                                .collect::<Vec<_>>()),
+                        )],
+                    );
+                    (total > 0.0).then_some(total)
                 } else {
                     match (ev.profit_token, ev.profit_amount) {
-                        (Some(tok), Some(amt)) => crate::explorer::pricing::amount_usd_realized(
-                            tok,
-                            amt,
-                            token_prices,
-                            &ev.details,
-                        ),
+                        (Some(tok), _) if tok == crate::explorer::profit::NATIVE_MARKER => {
+                            native_unpriced = true;
+                            None
+                        }
+                        (Some(tok), Some(amt)) => {
+                            match crate::explorer::pricing::amount_usd_realized(
+                                tok,
+                                amt,
+                                token_prices,
+                                &ev.details,
+                            ) {
+                                Some(q) if q.usd.is_finite() => {
+                                    pricing_clamped |= q.clamped;
+                                    Some(q.usd)
+                                }
+                                _ => {
+                                    unpriced_residual = true;
+                                    None
+                                }
+                            }
+                        }
                         _ => None,
                     }
                 };
+                if unpriced_residual {
+                    note_pricing_issue(&mut details_json, "MULTI_ASSET_PRICING");
+                }
+                if native_unpriced {
+                    note_pricing_issue(&mut details_json, "NATIVE_UNPRICED");
+                }
+                if pricing_clamped {
+                    note_pricing_issue(&mut details_json, "pricing_clamped");
+                }
                 // Phase 2.4: FOT / rebase profit tokens are flagged approximate
                 // (recorded amounts are distorted by the token mechanics).
                 if let Some(reason) = ev
@@ -2485,6 +2543,12 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("\"profit_tokens\""));
+        // Every residual had an external price, so the sum is complete.
+        assert!(!ops[0]
+            .details_json
+            .as_deref()
+            .unwrap_or("")
+            .contains("MULTI_ASSET_PRICING"));
     }
 
     #[test]
@@ -2524,6 +2588,7 @@ mod tests {
                 "amm": "v2",
                 "token_in": format!("{longtail:#x}"),
                 "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
                 "amount_in": "1000000",
                 "amount_out": "2000000",
             }]
@@ -2579,6 +2644,151 @@ mod tests {
             realized_row.net_profit_usd.unwrap(),
             expected_profit - gas_usd
         );
+
+        // Cross-decimal trusted leg: 1e18 raw sold for 2 USDC, so 0.5e18 is $1.
+        // Decimals cancel inside the same-token ratio.
+        let mut cross = sample_event(303);
+        cross.profit_token = Some(longtail);
+        cross.profit_amount = Some(U256::from(500_000_000_000_000_000u64));
+        cross.details = serde_json::json!({
+            "route": [{
+                "pool": "0x3333",
+                "amm": "v2",
+                "token_in": format!("{longtail:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
+                "amount_in": "1000000000000000000",
+                "amount_out": "2000000",
+            }]
+        });
+        // Proximity leg with the block-26059586 ratio must not be stored as a
+        // complete USD figure. 3000 raw against amount_in 1 and ~1.3e17 of a
+        // 6-decimal token is the $394,674,797,029,045 shape.
+        let mut guessed = sample_event(304);
+        guessed.profit_token = Some(longtail);
+        guessed.profit_amount = Some(U256::from(3000u64));
+        guessed.profit_tokens = vec![(longtail, U256::from(3000u64))];
+        guessed.details = serde_json::json!({
+            "route": [{
+                "pool": "0x3333",
+                "amm": "v2",
+                "token_in": format!("{longtail:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "proximity",
+                "amount_in": "1",
+                "amount_out": "131558265676348437",
+            }]
+        });
+        for (block, ev) in [(303u64, cross), (304, guessed)] {
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    ),
+                    ts: 1_700_000_000,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps: &[],
+                    transfers: &[],
+                    events: &[ev],
+                    native_price_usd: Some(0.75),
+                    token_prices: &prices,
+                })
+                .unwrap();
+        }
+        let more = store.ops_in_range(303, 304, &[]).unwrap();
+        assert_eq!(more.len(), 2);
+        assert!(
+            (more[0].profit_usd.unwrap() - 1.0).abs() < 1e-6,
+            "cross-decimal got {:?}",
+            more[0].profit_usd
+        );
+        assert!(more[1].profit_usd.is_none(), "got {:?}", more[1].profit_usd);
+        let guessed_details = more[1].details_json.as_deref().unwrap_or("");
+        assert!(guessed_details.contains("MULTI_ASSET_PRICING"));
+        assert!(guessed_details.contains("\"usd_approximate\":true"));
+    }
+
+    #[test]
+    fn clamped_and_native_residuals_are_explicit() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let longtail = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4444000000000000000000000000000000000004");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            usdc,
+            crate::explorer::pricing::TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+
+        let mut clamped = sample_event(410);
+        clamped.profit_token = Some(longtail);
+        clamped.profit_amount = Some(U256::from(1_000_000u64));
+        clamped.details = serde_json::json!({
+            "route": [{
+                "token_in": format!("{longtail:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
+                "amount_in": "1",
+                "amount_out": "1000000",
+            }]
+        });
+
+        let mut native = sample_event(411);
+        native.profit_token = Some(usdc);
+        native.profit_amount = Some(U256::from(1_000_000u64));
+        native.profit_tokens = vec![
+            (usdc, U256::from(1_000_000u64)),
+            (crate::explorer::profit::NATIVE_MARKER, U256::from(1u64)),
+        ];
+
+        let mut partial = sample_event(412);
+        partial.profit_token = Some(usdc);
+        partial.profit_amount = Some(U256::from(1_000_000u64));
+        partial.profit_tokens = vec![
+            (usdc, U256::from(1_000_000u64)),
+            (longtail, U256::from(100u64)),
+        ];
+
+        for (block, ev) in [(410u64, clamped), (411, native), (412, partial)] {
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    ),
+                    ts: 1_700_000_000,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps: &[],
+                    transfers: &[],
+                    events: &[ev],
+                    native_price_usd: Some(0.75),
+                    token_prices: &prices,
+                })
+                .unwrap();
+        }
+        let ops = store.ops_in_range(410, 412, &[]).unwrap();
+        assert_eq!(ops.len(), 3);
+        assert!((ops[0].profit_usd.unwrap() - 1.0).abs() < 1e-6);
+        let clamped_details = ops[0].details_json.as_deref().unwrap_or("");
+        assert!(clamped_details.contains("pricing_clamped"));
+        assert!(clamped_details.contains("\"usd_approximate\":true"));
+        // USDC residual is $1; the native marker contributes a reason, not $0.
+        assert!((ops[1].profit_usd.unwrap() - 1.0).abs() < 1e-6);
+        let native_details = ops[1].details_json.as_deref().unwrap_or("");
+        assert!(native_details.contains("NATIVE_UNPRICED"));
+        assert!(native_details.contains("\"usd_approximate\":true"));
+        // Priced USDC is kept; the unpriced residual is not silently folded in as $0.
+        assert!((ops[2].profit_usd.unwrap() - 1.0).abs() < 1e-6);
+        let partial_details = ops[2].details_json.as_deref().unwrap_or("");
+        assert!(partial_details.contains("MULTI_ASSET_PRICING"));
+        assert!(partial_details.contains("\"usd_approximate\":true"));
     }
 
     #[test]

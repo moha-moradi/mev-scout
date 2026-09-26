@@ -58,48 +58,153 @@ pub fn approximate_token(token: &Address) -> Option<&'static str> {
     None
 }
 
+/// A USD quote for a raw token amount.
+///
+/// `clamped` is set when the realized-rate fallback exceeded the USD actually
+/// observed on the route's trusted legs and was capped there. A residual
+/// token cannot be worth more than the route it rode on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RealizedUsd {
+    pub usd: f64,
+    pub clamped: bool,
+}
+
 /// USD value of `amount` of `token`, preferring the external price and
 /// falling back to the on-chain realized rate implied by the event's route
 /// legs (Phase 2.4): a leg trading `token` against a priced counterpart
 /// prices `token` at the rate the searcher actually realized.
 ///
+/// Only legs whose `token_source` is `registry` or `transfer` are trusted.
+/// A missing key (legacy rows) or `proximity` is a guess and is skipped.
+/// Among trusted legs, the one with the largest priced notional wins, so a
+/// dust hop cannot set the rate. The resulting fallback is capped at the
+/// summed USD of those trusted priced legs. Non-finite results are `None`.
+///
 /// `details` is the event's `route`-bearing `details` JSON. Returns `None`
-/// when neither an external price nor a usable route leg exists.
+/// when neither an external price nor a usable trusted route leg exists.
 pub fn amount_usd_realized(
     token: Address,
     amount: U256,
     token_prices: &HashMap<Address, TokenUsd>,
     details: &serde_json::Value,
-) -> Option<f64> {
+) -> Option<RealizedUsd> {
     if let Some(p) = token_prices.get(&token) {
-        return Some(token_amount_to_usd(amount, p));
+        let usd = token_amount_to_usd(amount, p);
+        return finite_quote(usd, false);
     }
     if amount.is_zero() {
         return None;
     }
     let route = details.get("route")?.as_array()?;
-    for leg in route {
-        let token_in = as_address(leg.get("token_in")?)?;
-        let token_out = as_address(leg.get("token_out")?)?;
-        let amount_in = as_u256(leg.get("amount_in")?)?;
-        let amount_out = as_u256(leg.get("amount_out")?)?;
-        // Sold `amount_in` of `token` for a priced counterpart: value the same
-        // token amount at that realized rate.
+    let route_usd = trusted_route_usd(route, token_prices);
+    let mut best: Option<(f64, f64)> = None; // (leg notional, quote)
+    for leg in route.iter().filter(|leg| leg_is_trusted(leg)) {
+        let token_in = match leg.get("token_in").and_then(as_address) {
+            Some(a) => a,
+            None => continue,
+        };
+        let token_out = match leg.get("token_out").and_then(as_address) {
+            Some(a) => a,
+            None => continue,
+        };
+        let amount_in = match leg.get("amount_in").and_then(as_u256) {
+            Some(a) => a,
+            None => continue,
+        };
+        let amount_out = match leg.get("amount_out").and_then(as_u256) {
+            Some(a) => a,
+            None => continue,
+        };
+        // Sold `amount_in` of `token` for a priced counterpart.
         if token_in == token && !amount_in.is_zero() {
             if let Some(p) = token_prices.get(&token_out) {
-                let out_usd = token_amount_to_usd(amount_out, p);
-                return Some(out_usd * u256_to_f64(amount) / u256_to_f64(amount_in));
+                consider_leg(
+                    &mut best,
+                    token_amount_to_usd(amount_out, p),
+                    u256_to_f64(amount),
+                    u256_to_f64(amount_in),
+                );
             }
         }
         // Spent a priced counterpart to obtain `amount_out` of `token`.
         if token_out == token && !amount_out.is_zero() {
             if let Some(p) = token_prices.get(&token_in) {
-                let in_usd = token_amount_to_usd(amount_in, p);
-                return Some(in_usd * u256_to_f64(amount) / u256_to_f64(amount_out));
+                consider_leg(
+                    &mut best,
+                    token_amount_to_usd(amount_in, p),
+                    u256_to_f64(amount),
+                    u256_to_f64(amount_out),
+                );
             }
         }
     }
-    None
+    let (_, quote) = best?;
+    if !route_usd.is_finite() || route_usd <= 0.0 {
+        return None;
+    }
+    if quote > route_usd {
+        finite_quote(route_usd, true)
+    } else {
+        finite_quote(quote, false)
+    }
+}
+
+fn finite_quote(usd: f64, clamped: bool) -> Option<RealizedUsd> {
+    usd.is_finite().then_some(RealizedUsd { usd, clamped })
+}
+
+/// Largest priced notional wins. The quote is `leg_usd * amount / same_side`;
+/// both raw amounts are the token being priced, so decimals cancel.
+fn consider_leg(best: &mut Option<(f64, f64)>, leg_usd: f64, amount: f64, same_side: f64) {
+    if !leg_usd.is_finite() || leg_usd <= 0.0 || !amount.is_finite() || same_side <= 0.0 {
+        return;
+    }
+    let quote = leg_usd * amount / same_side;
+    if !quote.is_finite() || quote < 0.0 {
+        return;
+    }
+    match best {
+        Some((prev, _)) if *prev >= leg_usd => {}
+        _ => *best = Some((leg_usd, quote)),
+    }
+}
+
+fn leg_is_trusted(leg: &serde_json::Value) -> bool {
+    matches!(
+        leg.get("token_source").and_then(|v| v.as_str()),
+        Some("registry" | "transfer")
+    )
+}
+
+/// Sum of USD observed on trusted legs. One priced side per leg so a swap is
+/// not counted twice when both tokens have an external price.
+fn trusted_route_usd(
+    route: &[serde_json::Value],
+    token_prices: &HashMap<Address, TokenUsd>,
+) -> f64 {
+    let mut total = 0.0f64;
+    for leg in route.iter().filter(|leg| leg_is_trusted(leg)) {
+        let Some(usd) = observed_leg_usd(leg, token_prices) else {
+            continue;
+        };
+        total += usd;
+    }
+    total
+}
+
+fn observed_leg_usd(
+    leg: &serde_json::Value,
+    token_prices: &HashMap<Address, TokenUsd>,
+) -> Option<f64> {
+    let priced = |token: &serde_json::Value, amount: &serde_json::Value| -> Option<f64> {
+        let token = as_address(token)?;
+        let amount = as_u256(amount)?;
+        let p = token_prices.get(&token)?;
+        let usd = token_amount_to_usd(amount, p);
+        (usd.is_finite() && usd > 0.0).then_some(usd)
+    };
+    priced(leg.get("token_in")?, leg.get("amount_in")?)
+        .or_else(|| priced(leg.get("token_out")?, leg.get("amount_out")?))
 }
 
 fn as_address(v: &serde_json::Value) -> Option<Address> {
@@ -276,24 +381,51 @@ mod tests {
                 "pool": "0x0000000000000000000000000000000000000000",
                 "token_in": format!("{token:#x}"),
                 "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
                 "amount_in": "1000000",
                 "amount_out": "2000000",
             }]
         });
         // 1 token sold for 2 USDC → realized rate 2.0 USD/token; 0.5 token ⇒ 1.0.
-        let usd = amount_usd_realized(token, U256::from(500_000u64), &prices, &details).unwrap();
+        let usd = amount_usd_realized(token, U256::from(500_000u64), &prices, &details)
+            .unwrap()
+            .usd;
         assert!((usd - 1.0).abs() < 1e-6, "got {usd}");
+        // Cross-decimal: 1e18 raw of an 18-decimal token sold for 2 USDC (6 dec).
+        // The ratio is same-token raw / raw, so decimals cancel → 0.5 token = $1.
+        let details_xd = serde_json::json!({
+            "route": [{
+                "pool": "0x0000000000000000000000000000000000000000",
+                "token_in": format!("{token:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "transfer",
+                "amount_in": "1000000000000000000",
+                "amount_out": "2000000",
+            }]
+        });
+        let usd_xd = amount_usd_realized(
+            token,
+            U256::from(500_000_000_000_000_000u64),
+            &prices,
+            &details_xd,
+        )
+        .unwrap()
+        .usd;
+        assert!((usd_xd - 1.0).abs() < 1e-6, "cross-decimal got {usd_xd}");
         // Route leg where the profit token is the OUTPUT of a priced spend.
         let details2 = serde_json::json!({
             "route": [{
                 "pool": "0x0000000000000000000000000000000000000000",
                 "token_in": format!("{usdc:#x}"),
                 "token_out": format!("{token:#x}"),
+                "token_source": "registry",
                 "amount_in": "1000000",
                 "amount_out": "500000",
             }]
         });
-        let usd2 = amount_usd_realized(token, U256::from(250_000u64), &prices, &details2).unwrap();
+        let usd2 = amount_usd_realized(token, U256::from(250_000u64), &prices, &details2)
+            .unwrap()
+            .usd;
         assert!((usd2 - 0.5).abs() < 1e-6, "got {usd2}");
         // External price always wins over the route-derived rate.
         prices.insert(
@@ -303,11 +435,131 @@ mod tests {
                 decimals: 6,
             },
         );
-        let usd3 = amount_usd_realized(token, U256::from(1_000_000u64), &prices, &details).unwrap();
+        let usd3 = amount_usd_realized(token, U256::from(1_000_000u64), &prices, &details)
+            .unwrap()
+            .usd;
         assert!((usd3 - 9.0).abs() < 1e-6, "got {usd3}");
         // No priced counterpart and no route → None.
         let other = address!("0b00000000000000000000000000000000000000");
         assert!(amount_usd_realized(other, U256::from(1u64), &prices, &details).is_none());
+    }
+
+    /// Block 26059586 shape: an 18-decimal residual priced off a proximity leg
+    /// whose `amount_in` is a 6-decimal quantity. The old first-match formula
+    /// returned `3000 * (1.31558265676348437e17 / 1e6) ~= 394674797029045.31`.
+    #[test]
+    #[allow(clippy::excessive_precision)]
+    fn proximity_leg_does_not_blow_up_cross_decimal_residual() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            usdc,
+            TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        // amount_in of 1 raw against ~1.3156e17 of a 6-decimal priced token:
+        // out_usd * 3000 / 1 == 3000 * (1.3156e17 / 1e6).
+        let amount_out = "131558265676348437";
+        let old: f64 = 3000.0 * (131_558_265_676_348_437.0 / 1e6);
+        let expected: f64 = 394_674_797_029_045.31;
+        assert!((old - expected).abs() < 1.0, "blowup shape drifted: {old}");
+        for source in [None, Some("proximity")] {
+            let mut leg = serde_json::json!({
+                "pool": "0x0000000000000000000000000000000000000000",
+                "token_in": format!("{token:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "amount_in": "1",
+                "amount_out": amount_out,
+            });
+            if let Some(src) = source {
+                leg["token_source"] = serde_json::json!(src);
+            }
+            let details = serde_json::json!({ "route": [leg] });
+            assert!(
+                amount_usd_realized(token, U256::from(3000u64), &prices, &details).is_none(),
+                "source {source:?} must not reproduce {old}"
+            );
+        }
+    }
+
+    #[test]
+    fn trusted_legs_best_match_keeps_largest_notional() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            usdc,
+            TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        // First leg is dust ($1 notional → $0.50 on a 500_000 residual).
+        // Second leg is $100 notional → $50. Largest notional wins.
+        let details = serde_json::json!({
+            "route": [
+                {
+                    "token_in": format!("{token:#x}"),
+                    "token_out": format!("{usdc:#x}"),
+                    "token_source": "registry",
+                    "amount_in": "1000000",
+                    "amount_out": "1000000",
+                },
+                {
+                    "token_in": format!("{token:#x}"),
+                    "token_out": format!("{usdc:#x}"),
+                    "token_source": "transfer",
+                    "amount_in": "1000000",
+                    "amount_out": "100000000",
+                }
+            ]
+        });
+        let q = amount_usd_realized(token, U256::from(500_000u64), &prices, &details).unwrap();
+        assert!(!q.clamped);
+        assert!((q.usd - 50.0).abs() < 1e-6, "got {}", q.usd);
+    }
+
+    #[test]
+    fn residual_quote_clamped_to_trusted_route_usd() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            usdc,
+            TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        // 1 raw sold for $1 USDC, residual of 1_000_000 raw would be $1e6.
+        // Cap is the route notional ($1).
+        let details = serde_json::json!({
+            "route": [{
+                "token_in": format!("{token:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
+                "amount_in": "1",
+                "amount_out": "1000000",
+            }]
+        });
+        let q = amount_usd_realized(token, U256::from(1_000_000u64), &prices, &details).unwrap();
+        assert!(q.clamped);
+        assert!((q.usd - 1.0).abs() < 1e-6, "got {}", q.usd);
+
+        prices.insert(
+            token,
+            TokenUsd {
+                usd: f64::INFINITY,
+                decimals: 18,
+            },
+        );
+        assert!(
+            amount_usd_realized(token, U256::from(1u64), &prices, &details).is_none(),
+            "non-finite external price is rejected"
+        );
     }
 
     #[test]

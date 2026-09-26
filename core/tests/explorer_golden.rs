@@ -15,7 +15,9 @@ use mev_scout_core::explorer::profit::ProfitTokenPolicy;
 use mev_scout_core::explorer::store::{
     BlockFactsInput, ExplorerStore, SwapRow, TransferRow, TxRow,
 };
-use mev_scout_core::explorer::types::{Amm, Confidence, JitFact, MevKind, SwapFact, TransferFact};
+use mev_scout_core::explorer::types::{
+    Amm, Confidence, JitFact, LegSource, MevKind, SwapFact, TransferFact,
+};
 
 const BLOCK: u64 = 10_000;
 const USDC: Address = address!("4000000000000000000000000000000000000005");
@@ -41,6 +43,7 @@ fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> Swap
         amm: Amm::V2,
         token_in: tin,
         token_out: tout,
+        token_source: LegSource::Registry,
         amount_in: U256::from(ain),
         amount_out: U256::from(aout),
         tick: None,
@@ -56,6 +59,7 @@ fn swap_v3_at_tick(pool: Address, tin: Address, tout: Address, ain: u64, aout: u
         amm: Amm::V3,
         token_in: tin,
         token_out: tout,
+        token_source: LegSource::Registry,
         amount_in: U256::from(ain),
         amount_out: U256::from(aout),
         tick: Some(0),

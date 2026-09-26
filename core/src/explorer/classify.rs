@@ -284,6 +284,7 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                                 "amm": s.amm.as_str(),
                                 "token_in": format!("{:#x}", s.token_in),
                                 "token_out": format!("{:#x}", s.token_out),
+                                "token_source": s.token_source.as_str(),
                                 "amount_in": s.amount_in.to_string(),
                                 "amount_out": s.amount_out.to_string(),
                             })).collect::<Vec<_>>(),
@@ -1424,7 +1425,7 @@ fn has_transfer_cycle(searcher: Address, transfers: &[TransferFact]) -> bool {
 mod tests {
     use super::*;
     use crate::explorer::store::OpenPosition;
-    use crate::explorer::types::{Amm, FlashLoanFact, LiquidationFact, MevKind};
+    use crate::explorer::types::{Amm, FlashLoanFact, LegSource, LiquidationFact, MevKind};
     use alloy::primitives::{address, b256, U256};
 
     const ATK: Address = address!("1000000000000000000000000000000000000001");
@@ -1443,6 +1444,7 @@ mod tests {
             amm: Amm::V2,
             token_in: tin,
             token_out: tout,
+            token_source: LegSource::Registry,
             amount_in: U256::from(ain),
             amount_out: U256::from(aout),
             tick: None,
@@ -1670,6 +1672,27 @@ mod tests {
         let mut toks = ev.profit_tokens.clone();
         toks.sort();
         assert_eq!(toks, vec![(USDC, U256::from(10)), (TOKB, U256::from(500))]);
+    }
+
+    #[test]
+    fn arb_route_json_records_token_source() {
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        let route = ev.details["route"].as_array().expect("route");
+        assert!(route.len() >= 2);
+        assert!(route
+            .iter()
+            .all(|leg| leg["token_source"].as_str() == Some("registry")));
     }
 
     #[test]

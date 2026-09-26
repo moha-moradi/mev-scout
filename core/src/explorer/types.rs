@@ -193,8 +193,34 @@ impl Amm {
     }
 }
 
+/// How `token_in` / `token_out` were bound to a swap's recorded amounts.
+///
+/// Pricing trusts `Registry` and `Transfer` only. `Proximity` (and a missing
+/// key on legacy rows) is a guess and must not drive a USD rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegSource {
+    /// Both sides came from the pool registry's token0/token1.
+    Registry,
+    /// Bound by the nearest before/after `Transfer` with the pool as counterparty.
+    Transfer,
+    /// ±24-log window, or a leg whose tokens were not resolved by either of the
+    /// trusted paths (including Balancer topic tokens, which skip pairing).
+    Proximity,
+}
+
+impl LegSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LegSource::Registry => "registry",
+            LegSource::Transfer => "transfer",
+            LegSource::Proximity => "proximity",
+        }
+    }
+}
+
 /// A decoded DEX swap fact from a receipt log. Token direction is resolved
-/// via adjacent ERC-20 Transfer legs (registry-free, chain-generic).
+/// via the pool registry, then adjacent ERC-20 Transfer legs. `token_source`
+/// records which path actually bound the tokens so pricing can ignore guesses.
 #[derive(Debug, Clone)]
 pub struct SwapFact {
     pub tx_index: u64,
@@ -205,6 +231,9 @@ pub struct SwapFact {
     pub token_out: Address,
     pub amount_in: U256,
     pub amount_out: U256,
+    /// Provenance of `token_in`/`token_out`. Defaults to [`LegSource::Proximity`]
+    /// until `attach_swap_tokens` resolves the leg.
+    pub token_source: LegSource,
     /// Post-swap pool tick for concentrated-liquidity AMMs (V3/V4/Infinity),
     /// used to validate JIT tick-range overlap. `None` for V2/Curve/Balancer.
     pub tick: Option<i32>,

@@ -81,6 +81,8 @@ struct CorpusCase {
     min_ops: u64,
     searcher: Option<Address>,
     profit_usd_min: Option<f64>,
+    /// Largest priced `profit_usd` in the window must sit at or under this.
+    profit_usd_max: Option<f64>,
 }
 
 const CORPUS: &[CorpusCase] = &[
@@ -93,6 +95,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 500,
         searcher: None,
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "av-arb-whale",
@@ -103,6 +106,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 15,
         searcher: Some(address!("93a9f59d5defaae72702dedc2fc4a8fbc287a1ac")),
         profit_usd_min: Some(1000.0),
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "av-arb-dust-searcher",
@@ -113,6 +117,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 200,
         searcher: Some(address!("92d4ee32bc0f81dbb9923073395a2be7febbc3e5")),
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "av-arb-dense-block",
@@ -123,6 +128,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 6,
         searcher: None,
         profit_usd_min: Some(100.0),
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "av-liquidation-block",
@@ -133,6 +139,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 1,
         searcher: Some(address!("d2a82f1bb41a950ad24829b2f483b1b10f3569dd")),
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-arb-window",
@@ -143,6 +150,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 350,
         searcher: None,
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-arb-whale",
@@ -153,6 +161,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 6,
         searcher: Some(address!("8695330488513a6c3698a2b072ff88aaedbfac3e")),
         profit_usd_min: Some(20.0),
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-arb-searcher",
@@ -163,6 +172,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 20,
         searcher: Some(address!("8c771167beba08d15acd9bee460bc3d14a35201c")),
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-arb-searcher-2",
@@ -173,6 +183,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 10,
         searcher: Some(address!("a6563baa758a7c39960a339750c89663aadf9fd2")),
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-arb-dense-block",
@@ -183,6 +194,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 3,
         searcher: None,
         profit_usd_min: Some(10.0),
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "poly-liquidation-window",
@@ -193,6 +205,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 5,
         searcher: Some(address!("7f1aacb852a7457e8eb97e5196276b92f408d990")),
         profit_usd_min: None,
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "eth-sandwich-window",
@@ -203,6 +216,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 3,
         searcher: None,
         profit_usd_min: Some(5.0),
+        profit_usd_max: None,
     },
     CorpusCase {
         id: "eth-sandwich-searcher",
@@ -213,6 +227,7 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 2,
         searcher: Some(address!("ae2fc483527b8ef99eb5d9b44875f005ba1fae13")),
         profit_usd_min: Some(5.0),
+        profit_usd_max: None,
     },
     // Real JIT round trip on UniswapV3 pool 0xd31d41df… (block 26059586):
     // owner 0x1f2f10d1… mints liquidity over ticks [-129060, -129000] and burns
@@ -230,6 +245,22 @@ const CORPUS: &[CorpusCase] = &[
         min_ops: 1,
         searcher: Some(address!("1f2f10d1c40777ae1da742455c65828ff36df387")),
         profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Same block as the JIT round trip. Before this fix the three arb_atomic
+    // ops on the block were priced at about $394_674_797_029_045. The ceiling
+    // is the missing upper bound: real atomic arb on these pools is low
+    // thousands of dollars, and the ops must still classify as arb_atomic.
+    CorpusCase {
+        id: "eth-arb-atomic-block-26059586",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_586,
+        to_block: 26_059_586,
+        kind: "arb_atomic",
+        min_ops: 3,
+        searcher: None,
+        profit_usd_min: None,
+        profit_usd_max: Some(100_000.0),
     },
 ];
 
@@ -294,6 +325,19 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
         assert!(
             best >= floor,
             "{}: expected best {} profit >= ${floor}, observed ${best}",
+            case.id,
+            case.kind
+        );
+    }
+
+    if let Some(cap) = case.profit_usd_max {
+        let best = ops
+            .iter()
+            .filter_map(|o| o.profit_usd)
+            .fold(0.0f64, f64::max);
+        assert!(
+            best.is_finite() && best <= cap,
+            "{}: expected best {} profit <= ${cap}, observed ${best}",
             case.id,
             case.kind
         );

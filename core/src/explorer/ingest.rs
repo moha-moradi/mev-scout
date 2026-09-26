@@ -482,11 +482,20 @@ pub async fn warm_prices_for_tokens(
 
 /// Collect all token addresses appearing in events (for price warming).
 pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
+    let priceable = |t: Address| !t.is_zero() && t != crate::explorer::profit::NATIVE_MARKER;
     let mut v: Vec<Address> = events
         .iter()
         .filter_map(|e| e.profit_token)
-        .filter(|t| !t.is_zero() && *t != crate::explorer::profit::NATIVE_MARKER)
+        .filter(|t| priceable(*t))
         .collect();
+    // Every positive residual is summed at persist time, so each one needs a
+    // real external price. Native residuals stay out of the warmer; persist
+    // records `NATIVE_UNPRICED` instead of treating them as $0.
+    for (tok, _) in events.iter().flat_map(|e| e.profit_tokens.iter()) {
+        if priceable(*tok) {
+            v.push(*tok);
+        }
+    }
     // Liquidation P&L needs the repaid debt asset priced too (Phase 1.3).
     for e in events.iter().filter(|e| e.kind == MevKind::Liquidation) {
         if let Some(a) = e
@@ -725,6 +734,21 @@ mod tests {
         let ev2 = ev.clone();
         let toks = event_tokens(&[ev, ev2]);
         assert_eq!(toks, vec![a]);
+    }
+
+    #[test]
+    fn event_tokens_includes_every_residual() {
+        let primary = Address::new([4u8; 20]);
+        let residual = Address::new([5u8; 20]);
+        let mut ev = sample();
+        ev.profit_token = Some(primary);
+        ev.profit_tokens = vec![
+            (primary, U256::from(1u64)),
+            (residual, U256::from(2u64)),
+            (crate::explorer::profit::NATIVE_MARKER, U256::from(3u64)),
+        ];
+        let toks = event_tokens(&[ev]);
+        assert_eq!(toks, vec![primary, residual]);
     }
 
     fn sample() -> MevEvent {

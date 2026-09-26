@@ -18,7 +18,7 @@ use alloy::primitives::{Address, B256, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{
-    Amm, FlashLoanFact, JitFact, LiquidationFact, SwapFact, TransferFact,
+    Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact, TransferFact,
 };
 
 use crate::chain::events::{
@@ -71,6 +71,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         amm,
         token_in: Address::ZERO,
         token_out: Address::ZERO,
+        token_source: LegSource::Proximity,
         amount_in: U256::ZERO,
         amount_out: U256::ZERO,
         tick: None,
@@ -90,17 +91,10 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(Amm::V2, log.address);
-        fact.amount_in = a0i.max(a1i);
-        fact.amount_out = a0o.max(a1o);
-        // Direction relative to token0/token1 (resolved via registry, then
-        // transfer pairing as fallback).
-        if !a0i.is_zero() && a0i >= a1i {
-            fact.token_in = TOKEN0_SENTINEL;
-            fact.token_out = TOKEN1_SENTINEL;
-        } else if !a1i.is_zero() {
-            fact.token_in = TOKEN1_SENTINEL;
-            fact.token_out = TOKEN0_SENTINEL;
-        }
+        // One direction decision drives both sides. Independent `max()` calls
+        // pair token0's input with token1's output when a flash swap (or a
+        // router hopping twice through one pool) sets both inputs.
+        apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
         return Some((Amm::V2, fact));
     }
 
@@ -333,15 +327,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(Amm::Solidly, log.address);
-        fact.amount_in = a0i.max(a1i);
-        fact.amount_out = a0o.max(a1o);
-        if !a0i.is_zero() && a0i >= a1i {
-            fact.token_in = TOKEN0_SENTINEL;
-            fact.token_out = TOKEN1_SENTINEL;
-        } else if !a1i.is_zero() {
-            fact.token_in = TOKEN1_SENTINEL;
-            fact.token_out = TOKEN0_SENTINEL;
-        }
+        apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
         return Some((Amm::Solidly, fact));
     }
 
@@ -365,6 +351,7 @@ fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         amm: Amm::Aggregator,
         token_in: Address::ZERO,
         token_out: Address::ZERO,
+        token_source: LegSource::Proximity,
         amount_in: U256::ZERO,
         amount_out: U256::ZERO,
         tick: None,
@@ -908,18 +895,59 @@ fn is_unresolved_token(t: Address) -> bool {
     t.is_zero() || t == TOKEN0_SENTINEL || t == TOKEN1_SENTINEL
 }
 
+/// Bind V2/Solidly amounts from a single direction. `amount0In` wins ties
+/// (`a0i >= a1i`), matching the historical direction rule, and `amount_out`
+/// is the opposite token's output — never an independent `max()` of both outs.
+fn apply_v2_sides(fact: &mut SwapFact, a0i: U256, a1i: U256, a0o: U256, a1o: U256) {
+    if !a0i.is_zero() && a0i >= a1i {
+        fact.amount_in = a0i;
+        fact.amount_out = a1o;
+        fact.token_in = TOKEN0_SENTINEL;
+        fact.token_out = TOKEN1_SENTINEL;
+    } else if !a1i.is_zero() {
+        fact.amount_in = a1i;
+        fact.amount_out = a0o;
+        fact.token_in = TOKEN1_SENTINEL;
+        fact.token_out = TOKEN0_SENTINEL;
+    } else {
+        fact.amount_out = a0o.max(a1o);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SideHow {
+    Registry,
+    Transfer,
+    Proximity,
+}
+
+fn combine_leg_source(token_in: Option<SideHow>, token_out: Option<SideHow>) -> LegSource {
+    match (token_in, token_out) {
+        (Some(SideHow::Proximity), _) | (_, Some(SideHow::Proximity)) | (None, _) | (_, None) => {
+            LegSource::Proximity
+        }
+        (Some(SideHow::Transfer), _) | (_, Some(SideHow::Transfer)) => LegSource::Transfer,
+        (Some(SideHow::Registry), Some(SideHow::Registry)) => LegSource::Registry,
+    }
+}
+
 /// Resolve swap token directions from the tx's transfer stream.
 ///
 /// Resolution order (Phase 1.1):
-/// 1. **Pool registry** (`pool_tokens`: pool → (token0, token1)) — authoritative
-///    mapping for sentinel-encoded directions (V2/Solidly/LB/Fluid/V3/V4/
-///    Infinity/Metric). The remaining side is filled with the opposite token.
-/// 2. **Transfer pairing fallback** for still-unresolved swaps:
-///    - token_in  = nearest Transfer (lower log index) with `to == P`
-///    - token_out = nearest Transfer (higher log index) with `from == P`
 ///
-/// This works across V2/V3/Curve/Solidly without pool metadata and resolves
-/// the V3 sentinel direction when the paired transfer is unambiguous.
+/// 1. Pool registry (`pool_tokens`) maps token0/token1 sentinels. Provenance
+///    is [`LegSource::Registry`].
+/// 2. Nearest before/after `Transfer` with the pool as counterparty.
+///    Provenance is [`LegSource::Transfer`].
+/// 3. A ±24-log window when a side is still unresolved. Provenance is
+///    [`LegSource::Proximity`], and either side resolved this way taints the leg.
+///
+/// Balancer already carries topic tokens and skips pairing; it stays
+/// `Proximity` because those tokens were not bound by (1) or (2).
+///
+/// A leg is `Registry` only when both sides came from the registry, and
+/// `Transfer` when every resolved side is registry or a strict before/after
+/// transfer. Anything else stays `Proximity`.
 pub fn attach_swap_tokens(
     swaps: &mut [SwapFact],
     transfers: &[TransferFact],
@@ -928,11 +956,25 @@ pub fn attach_swap_tokens(
     for s in swaps.iter_mut() {
         // Balancer already carries explicit tokens from topics.
         if s.amm == Amm::Balancer {
+            s.token_source = LegSource::Proximity;
             continue;
         }
 
+        let mut in_how = if is_unresolved_token(s.token_in) {
+            None
+        } else {
+            Some(SideHow::Proximity)
+        };
+        let mut out_how = if is_unresolved_token(s.token_out) {
+            None
+        } else {
+            Some(SideHow::Proximity)
+        };
+
         // 1) Registry resolution (authoritative for known pools).
         if let Some(&(t0, t1)) = pool_tokens.get(&s.pool) {
+            let in_before = s.token_in;
+            let out_before = s.token_out;
             if s.token_in == TOKEN0_SENTINEL {
                 s.token_in = t0;
             } else if s.token_in == TOKEN1_SENTINEL {
@@ -948,6 +990,12 @@ pub fn attach_swap_tokens(
             }
             if is_unresolved_token(s.token_out) && !is_unresolved_token(s.token_in) {
                 s.token_out = if s.token_in == t0 { t1 } else { t0 };
+            }
+            if s.token_in != in_before && !is_unresolved_token(s.token_in) {
+                in_how = Some(SideHow::Registry);
+            }
+            if s.token_out != out_before && !is_unresolved_token(s.token_out) {
+                out_how = Some(SideHow::Registry);
             }
         }
 
@@ -986,9 +1034,11 @@ pub fn attach_swap_tokens(
         }
         if is_unresolved_token(s.token_in) && !token_in.is_zero() {
             s.token_in = token_in;
+            in_how = Some(SideHow::Transfer);
         }
         if is_unresolved_token(s.token_out) && !token_out.is_zero() {
             s.token_out = token_out;
+            out_how = Some(SideHow::Transfer);
         }
 
         // Fallback: router/hop layouts sometimes emit the pool→recipient
@@ -1014,6 +1064,7 @@ pub fn attach_swap_tokens(
             }
             if let Some((_, tok)) = best {
                 s.token_out = tok;
+                out_how = Some(SideHow::Proximity);
             }
         }
         if is_unresolved_token(s.token_in) && !s.token_out.is_zero() {
@@ -1036,8 +1087,11 @@ pub fn attach_swap_tokens(
             }
             if let Some((_, tok)) = best {
                 s.token_in = tok;
+                in_how = Some(SideHow::Proximity);
             }
         }
+
+        s.token_source = combine_leg_source(in_how, out_how);
     }
 }
 
@@ -1440,6 +1494,7 @@ mod tests {
         );
         assert_eq!(s.token_in, tin);
         assert_eq!(s.token_out, tout);
+        assert_eq!(s.token_source, LegSource::Transfer);
         // Flow ownership (§7.1): the funder of the input leg is the `from` of
         // the nearest inbound transfer to the pool before the swap log.
         assert_eq!(
@@ -1532,6 +1587,7 @@ mod tests {
         attach_swap_tokens(std::slice::from_mut(&mut s), &[], &pools);
         assert_eq!(s.token_in, t0);
         assert_eq!(s.token_out, t1);
+        assert_eq!(s.token_source, LegSource::Registry);
 
         // V3 token1-in sentinel: registry resolves token_in = t1, token_out = t0.
         let mut data = vec![0u8; 160];
@@ -1550,6 +1606,66 @@ mod tests {
         attach_swap_tokens(std::slice::from_mut(&mut s3), &[], &pools);
         assert_eq!(s3.token_in, t0); // amount0 < 0 => token0 in
         assert_eq!(s3.token_out, t1);
+        assert_eq!(s3.token_source, LegSource::Registry);
+    }
+
+    #[test]
+    fn proximity_window_marks_leg_untrusted() {
+        let pool = address!("1000000000000000000000000000000000000000");
+        let tin = address!("2000000000000000000000000000000000000000");
+        let tout = address!("3000000000000000000000000000000000000000");
+        let who = address!("4000000000000000000000000000000000000000");
+        let mk = |li: u64, token: Address, from: Address, to: Address| TransferFact {
+            tx_index: 0,
+            log_index: li,
+            token,
+            from,
+            to,
+            amount: U256::from(1),
+        };
+        // Outflow is before the swap, so the strict after-leg misses it and the
+        // ±24-log window binds token_out. That taints the whole leg.
+        let transfers = vec![mk(8, tout, pool, who), mk(9, tin, who, pool)];
+        let (_, mut s) = decode_swap(&log(pool, vec![V2_SWAP_TOPIC, B256::ZERO, B256::ZERO], {
+            let mut d = vec![0u8; 128];
+            d[31] = 5; // amount0In
+            d[96 + 31] = 4; // amount1Out, opposite side
+            d
+        }))
+        .unwrap();
+        s.log_index = 10;
+        attach_swap_tokens(
+            std::slice::from_mut(&mut s),
+            &transfers,
+            &std::collections::HashMap::new(),
+        );
+        assert_eq!(s.token_in, tin);
+        assert_eq!(s.token_out, tout);
+        assert_eq!(s.token_source, LegSource::Proximity);
+    }
+
+    #[test]
+    fn v2_and_solidly_derive_both_sides_from_one_direction() {
+        let pool = address!("1000000000000000000000000000000000000000");
+        // Both inputs non-zero. token0 in (10 >= 4) so the output is amount1Out,
+        // not max(amount0Out, amount1Out) = 100.
+        let mut data = vec![0u8; 128];
+        data[31] = 10; // amount0In
+        data[63] = 4; // amount1In
+        data[95] = 100; // amount0Out
+        data[127] = 7; // amount1Out
+        for topic in [V2_SWAP_TOPIC, *SOLIDLY_SWAP_TOPIC] {
+            let (_, s) = decode_swap(&log(
+                pool,
+                vec![topic, B256::ZERO, B256::ZERO],
+                data.clone(),
+            ))
+            .unwrap();
+            assert_eq!(s.amount_in, U256::from(10));
+            assert_eq!(s.amount_out, U256::from(7));
+            assert_eq!(s.token_in, TOKEN0_SENTINEL);
+            assert_eq!(s.token_out, TOKEN1_SENTINEL);
+        }
     }
 
     fn topic_addr(a: Address) -> B256 {
@@ -1673,6 +1789,7 @@ mod tests {
                 amm,
                 token_in: tin,
                 token_out: tout,
+                token_source: LegSource::Registry,
                 amount_in: U256::from(ain),
                 amount_out: U256::from(aout),
                 tick: None,

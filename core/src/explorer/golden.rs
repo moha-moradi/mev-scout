@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::explorer::classify::{classify_block, BlockInput, TxInput};
 use crate::explorer::profit::ProfitTokenPolicy;
-use crate::explorer::types::{Amm, MevKind, SwapFact, TransferFact};
+use crate::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
 
 const USDC: Address = address!("4000000000000000000000000000000000000005");
 const TOKA: Address = address!("5000000000000000000000000000000000000006");
@@ -93,6 +93,7 @@ fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> Swap
         amm: Amm::V2,
         token_in: tin,
         token_out: tout,
+        token_source: LegSource::Registry,
         amount_in: U256::from(ain),
         amount_out: U256::from(aout),
         tick: None,
