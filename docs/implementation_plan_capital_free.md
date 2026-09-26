@@ -46,7 +46,9 @@ Dune §17 was mostly **A with noisy proxies**. Our on-chain path can do **A** cl
 | Flash-loan atomic liq | 2 | **Yes (best A)** | A | Same fingerprint as `VALIDATE_FLASH_LIQ_PROFIT`. ~323 txs/mo, ~$493/tx avg on Polygon (§17.5). Closest to “Dune but ours.” |
 | Interest accrual liq | 2 | Partial | A + B | Liquidations easy to count; *interest-driven* attribution needs HF-over-time reconstruction (rates + collateral/debt). |
 | Refinance / debt-mgmt arb | 2 | **Yes (A)** | A / C | Repay-on-A + borrow-on-B same tx (DeFi Saver “Loan Shifter” / Instadapp DSL class) → realized refinancing; whether rate-driven needs borrow-rate spread vs gas (C). |
-| New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho) | 2 | **Yes (A)** | A | Same fingerprint as flash-liq but per-protocol `LiquidationCall` selectors/events; chain-gated via `ChainConfig`. |
+| New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho, Silo V2, Spark) | 2 | **Yes (A)** | A | Same fingerprint as flash-liq but per-protocol `LiquidationCall`/`liquidationCall` selectors/events; chain-gated via `ChainConfig`. Spark = Aave-family address alias. |
+| crvUSD LLAMMA soft-liq arb (§25) | 4 / 6 | Partial A; $ → C | A / C | Band `TokenExchange` during oracle divergence countable; extractable $ needs LLAMMA band sim. |
+| Compound V3 absorb + buyCollateral (§26) | 2 | **Yes (A)** | A | `Absorb` + same-/next-block `BuyCollateral`; flash-funded buys share Phase 2 flash stack. |
 | Backrunning | 3 | Noisy A; $ → C | A proxy / C | Same-block opposing flow is a proxy (Dune inflated then corrected). True profit needs post-swap quote sim — treat like arb. |
 | V4 hook MEV | 4 | Activity A; $ → C | A / C | Hook-touched pools countable from logs/addresses; extractable value needs hook-path sim. |
 | Maker OSM kick() | 5 | Frequency A | A / B–C | Easy event count (often 0 in calm months, §17.2). Profit at poke needs next-price / vault safety reconstruction. |
@@ -72,13 +74,15 @@ High-signal historical scanners that do **not** need full Phase 1–6 detectors,
 2. **Flash-loan liquidations** — count, volume, bonus estimate (A).
 3. **Maker Clip `take` / OSM `kick`** — event frequency + notional (A; expect calm-month zeros).
 4. **GMX ADL / v1 keeper liq** — once indexed (A).
-5. **Refinance / debt-mgmt arb** — repay+borrow same-tx count (A); rate-spread attribution deferred to C. The generic flash-loan fingerprint also picks up new-gen lending (Aave V4, Liquity V2, Sky, Euler V2, Morpho) and Fluid vault liquidations.
+5. **Refinance / debt-mgmt arb** — repay+borrow same-tx count (A); rate-spread attribution deferred to C. The generic flash-loan fingerprint also picks up new-gen lending (Aave V4, Liquity V2, Sky, Euler V2, Morpho, Silo V2, Spark) and Fluid vault liquidations.
+6. **Compound V3 absorb / buyCollateral** — absorb→buy pairs (A); rides Phase 2 flash sources.
 
 Keep behind detectors + simulation / paper (mode C):
 
 - Sandwich, backrun *profit*, multi-hop / long-tail arb
 - Interest-liq *attribution*, cascading construction
 - V4 hook extractable value, optimal Clip `take` timing
+- LLAMMA band-optimal sizing (§25)
 
 ---
 
@@ -104,7 +108,8 @@ Keep behind detectors + simulation / paper (mode C):
 3. **`core/src/types/strategy.rs`** (+ strum names) and **`runner.rs` registration** —
    add variants (`Skim`, `SyncRace`, `InterestLiq`, `Backrun`, `V4HookMev`,
    `MakerOsmKick`, `MakerClipTake`, `GmxAdl`, `GmxKeeper`, `CascadingLiq`,
-   `RefinanceArb`, `FluidLiq`, `AutomationKeeper`, `OwnerSalvage`). A detector plugs in at
+   `RefinanceArb`, `FluidLiq`, `AutomationKeeper`, `OwnerSalvage`,
+   `SiloLiq`, `LlammaArb`, `CompoundV3Absorb`). A detector plugs in at
    exactly three spots:
    - construction (`runner.rs` ~L430-440)
    - full-replay invocation (`runner.rs` ~L492-583)
@@ -115,8 +120,12 @@ Keep behind detectors + simulation / paper (mode C):
 Note: the `strategies` config list currently does **not** gate execution — that stays
     as-is (all detectors run; config is for reporting only).
 4. **Shared flash-liq plumbing is protocol-generic** — the Phase 2 flash-liq fingerprint
-   extends to Aave V4, Liquity V2, Sky (USDS/sDAI), Euler V2, Morpho Blue/Midnight and
-   Fluid vault liquidations via `ChainConfig` (same address pattern as `aave_v3_pool`).
+   extends to Aave V4, Liquity V2, Sky (USDS/sDAI), Euler V2, Morpho Blue/Midnight,
+   Silo V2 (`PartialLiquidation`), SparkLend (Aave-family pool address), Fluid vault
+   liquidations, and Compound V3 `buyCollateral` via `ChainConfig` (same address pattern
+   as `aave_v3_pool`). **Flash source order** (see `mev_strategies.md` §11): Morpho 0% →
+   Uniswap V4 `take`/`settle` 0% → Balancer 0% → Aave V3 5 bps → Uni V3. Extend
+   `FlashLoanProvider` accordingly; do not hard-code Balancer-only.
    The refinance detector (`RefinanceArb`) reuses the same `FlashLoanProvider` +
    `AaveReserveCache` reserve/rate plumbing from Phase 2 — only the extraction target
    changes (rate-spread capture vs bonus capture).
@@ -161,8 +170,10 @@ so the report track isn't blocked on Phase 5.
 | Detector | Strategy | Report mode | Notes |
 |---|---|---|---|
 | `interest_liq.rs` | 4.13 interest accrual liq (`InterestLiq`) | A count first / B attribution deferred | Proactive forward HF model. Extend `AaveReserveData` to carry `variableBorrowRate` (already fetched by `AaveReserveCache::fetch_reserve`, `liquidation.rs:63-98`); project HF crossing block from debt compounding; hand to the scheduler. Competition 2/10 — near-zero, continuous income. Ship mode A (counts) first; mode B attribution (which liquidations were *interest-driven*) requires full borrow/repay history per account + rate time series — a separate indexing effort, do not bundle into this phase. |
-| `liquidation.rs` extension | 4.4 flash-loan atomic liq (extends `Liquidation`) | A (strong) | Fee/gas plumbing already exists (`FlashLoanProvider` + `GasConfig::flash_loan_fee`, 0 bps Balancer path). Add flash-borrow → liquidate → swap → repay modeling. Validated market on Polygon: ~323 txs/mo, $493/tx avg (§17.5). Report scanner can ship before this extension. |
+| `liquidation.rs` extension | 4.4 flash-loan atomic liq (extends `Liquidation`) | A (strong) | Fee/gas plumbing already exists (`FlashLoanProvider` + `GasConfig::flash_loan_fee`, 0 bps Balancer path). Add Morpho 0% + V4 `take`/`settle` as preferred sources before Balancer/Aave. Add flash-borrow → liquidate → swap → repay modeling. Validated market on Polygon: ~323 txs/mo, $493/tx avg (§17.5). Report scanner can ship before this extension. ChainConfig: `spark_pool` as Aave-family alias. |
 | `refinance_arb.rs` | 20 cross-market position refinancing / debt-mgmt arb (`RefinanceArb`) | A first / C $ | Flash-borrow debt leg on A, repay, withdraw collateral, redeposit + borrow on B where borrow/supply APR diverges by more than flash fee + gas. Reuses `FlashLoanProvider` + `AaveReserveCache` reserve/rate plumbing. Owner-side salvage (`OwnerSalvage`, §22) slots in here later — same stack, bonus capture instead of rate-spread capture. |
+| `silo_liq.rs` (or `liquidation.rs` protocol arm) | 24 Silo V2 liq (`SiloLiq`) | A | `PartialLiquidation.liquidationCall` + optional Silo ERC-3156 flash; distinct from Aave close-factor. Addresses in `ChainConfig`. Same report fingerprint family as flash-liq. |
+| `compound_v3.rs` | 26 Compound V3 absorb + buyCollateral (`CompoundV3Absorb`) | A | Watch `Absorb` → race `buyCollateral` with flash-funded base asset; Comet addresses per market in `ChainConfig`. |
 
 ### Phase 3 — Backrunning (3–5 days)
 
@@ -179,7 +190,8 @@ this infra.
 
 | Detector | Strategy | Report mode | Notes |
 |---|---|---|---|
-| `v4_hook_mev.rs` | 7.11 V4 hook MEV (`V4HookMev`) | A activity / C $ | `UniswapV4PoolState` + `hook_address` already modeled; flags derivable from address byte 17 (`0x08` = beforeSwap). Hook registry → TWAMM-run remaining flow, dynamic-fee jumps, limit-order triggers; flash accounting = zero capital. Competition 2/10, capital-efficiency score 24.5. |
+| `v4_hook_mev.rs` | 7.11 V4 hook MEV (`V4HookMev`) | A activity / C $ | `UniswapV4PoolState` + `hook_address` already modeled; flags derivable from address byte 17 (`0x08` = beforeSwap). Hook registry → TWAMM-run remaining flow, dynamic-fee jumps, limit-order triggers; flash accounting = zero capital. Competition 2/10, capital-efficiency score 24.5. Same `PoolManager.unlock` path also powers Phase 2 flash *sourcing* (not only hook extraction). |
+| `llamma_arb.rs` | 25 crvUSD LLAMMA soft-liq arb (`LlammaArb`) | A activity / C $ | Band exchange + oracle EMA divergence; ETH L1 `ChainConfig` LLAMMA/controller addresses. Do not reuse Curve stableswap quoter (§7.1) blindly. |
 
 ### Phase 5 — Keeper / event-gated (chain-gated via `ChainConfig`, mostly ETH L1)
 

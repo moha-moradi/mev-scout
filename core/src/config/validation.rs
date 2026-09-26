@@ -71,6 +71,15 @@ fn validate_explorer_tolerances(config: &Config) -> std::result::Result<(), Conf
             "explorer.trace_error_usd_tol",
             config.explorer.trace_error_usd_tol,
         ),
+        // MEV gate (detector expected vs realized net profit).
+        (
+            "explorer.mev_tolerance_pct",
+            config.explorer.mev_tolerance_pct,
+        ),
+        (
+            "explorer.mev_error_usd_tol",
+            config.explorer.mev_error_usd_tol,
+        ),
     ] {
         if !value.is_finite() || value < 0.0 {
             return Err(ConfigError::InvalidValue {
@@ -78,6 +87,20 @@ fn validate_explorer_tolerances(config: &Config) -> std::result::Result<(), Conf
                 message: "must be finite and non-negative".into(),
             });
         }
+    }
+    Ok(())
+}
+
+/// Validate the gas/bidding knobs that feed `GasConfig`. `winning_bid_premium`
+/// multiplies the priority fee, so a negative or NaN value would silently
+/// deflate (or NaN-poison) every per-op gas estimate instead of erroring.
+fn validate_gas_premium(config: &Config) -> std::result::Result<(), ConfigError> {
+    let premium = config.gas.winning_bid_premium;
+    if !premium.is_finite() || premium < 0.0 {
+        return Err(ConfigError::InvalidValue {
+            field: "gas.winning_bid_premium".into(),
+            message: "must be finite and non-negative".into(),
+        });
     }
     Ok(())
 }
@@ -296,6 +319,7 @@ pub fn validate_and_resolve_for(
 ) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
     validate_explorer_tolerances(config)?;
+    validate_gas_premium(config)?;
 
     let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
@@ -390,6 +414,7 @@ pub fn validate_and_resolve_for(
 pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
     validate_explorer_tolerances(config)?;
+    validate_gas_premium(config)?;
 
     let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
 
@@ -441,5 +466,42 @@ mod tests {
         let mut config = Config::default();
         config.explorer.trace_error_usd_tol = f64::NAN;
         assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_negative_mev_tolerance() {
+        let mut config = Config::default();
+        config.explorer.mev_tolerance_pct = -1.0;
+        assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_mev_tolerance() {
+        let mut config = Config::default();
+        config.explorer.mev_error_usd_tol = f64::INFINITY;
+        assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_negative_winning_bid_premium() {
+        let mut config = Config::default();
+        config.gas.winning_bid_premium = -0.01;
+        assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_winning_bid_premium() {
+        let mut config = Config::default();
+        config.gas.winning_bid_premium = f64::NAN;
+        assert!(validate_live(&config).is_err());
+    }
+
+    #[test]
+    fn accepts_winning_bid_premium_zero_and_positive() {
+        let mut config = Config::default();
+        assert_eq!(config.gas.winning_bid_premium, 0.0, "default is off");
+        assert!(validate_live(&config).is_ok());
+        config.gas.winning_bid_premium = 0.25;
+        assert!(validate_live(&config).is_ok());
     }
 }

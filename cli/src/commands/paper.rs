@@ -11,6 +11,7 @@ use mev_scout_core::jobs::{
     job_paper_live, job_paper_run, job_paper_sim, job_paper_stats, PaperLiveOpts, PaperRunOpts,
     PaperSimOpts,
 };
+use mev_scout_core::pipeline::aggregate_fills;
 use mev_scout_core::utils::epoch_secs;
 
 fn since_ts(since: Option<&str>) -> u64 {
@@ -158,6 +159,36 @@ async fn cmd_paper_stats(
             ]);
         }
         println!("{ft}");
+
+        // Aggregated P&L / ROI rollup over the session's fills (MEV-VERIFICATION
+        // §C.3): the same `aggregate` shapes `report` uses, fed from the
+        // persisted paper fills. `paper stats` is offline, so no price snapshot
+        // is available — pass 0.0 and the USD fields read zero by construction
+        // rather than guessing a rate.
+        let agg = aggregate_fills(&outcome.fills, 0.0);
+        let s = &agg.summary;
+        println!();
+        println!("  ── Aggregated P&L ──");
+        println!(
+            "  fills {} ({} profitable) | gross {:.4} ETH | gas {:.4} ETH | net {:.4} ETH",
+            s.total, s.profitable, s.gross_revenue, s.total_cost, s.net_profit,
+        );
+        if let Some(best) = &s.best_strategy {
+            println!("  best strategy: {best}");
+        }
+        println!("  strategy       fills     net (ETH)     ROI%  best (ETH)");
+        let mut strat: Vec<_> = agg.by_strategy.values().collect();
+        strat.sort_by(|a, b| {
+            b.net_profit
+                .partial_cmp(&a.net_profit)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for m in strat {
+            println!(
+                "  {:<12} {:>6} {:>13.4} {:>7.1} {:>11.4}",
+                m.strategy, m.count, m.net_profit, m.roi, m.best_opp,
+            );
+        }
     }
     Ok(())
 }

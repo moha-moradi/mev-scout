@@ -4,7 +4,7 @@
 > (data-driven chain + strategy prioritization).
 > Scope boundary (inherited from `docs/implementation_plan_capital_free.md`):
 > **the capital-free, non-CEX strategy set that the implementation plan actually
-> sequenced** (18 strategies, §2) on the 7 wired chains
+> sequenced** (20 strategies, §2) on the 7 wired chains
 > (polygon, avalanche, bsc, arbitrum, base, ethereum, optimism). "100%" below is
 > defined *relative to this scope* — the broader catalogued strategies are either
 > capital-required (out of scope), permanently deprioritized, or unvalidated
@@ -36,7 +36,7 @@ in a separate "excluded" section with the reason.
 | **G4 Knowledge** | No stale docs; every implemented strategy has a **"measured data"** section (opportunity counts, revenue, gas, chain fit) replacing qualitative guess/Dune; a new engineer can ship a new detector end-to-end by following the detector template; design decisions are documented with why/why-not. |
 
 **Progress metric (single number):** % of the in-scope strategy matrix
-`(18 in-scope strategies × 7 chains)` that is **measured** (report or backtest) and
+`(20 in-scope strategies × 7 chains)` that is **measured** (report or backtest) and
 cycles through the pipeline: report → detector → backtest → paper → prioritize row.
 
 ---
@@ -52,7 +52,7 @@ all 5 pipeline stages exist.
 | S1 | 4.4 flash-loan atomic liquidation | A | Polygon first | report → detector (extend `liquidation.rs`) |
 | S2 | 4.13 interest-accrual liquidation | A/B→C | all lending chains | report → detector → scheduler → sim |
 | S3 | 20 refinance / debt-mgmt arb | A→C | lending chains | report → detector |
-| S4 | New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho) | A | all lending chains | report (rides flash-liq fingerprint) → detector |
+| S4 | New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho, Silo V2, Spark) | A | all lending chains | report (rides flash-liq fingerprint) → detector |
 | S5 | 1.1 `skim()` capture | A + B | All V2 chains | report → detector → sim |
 | S6 | 1.2 `sync()` race (follow-on value) | C | All V2 chains | detector → sim |
 | S7 | 2.1 backrunning | C ($) | Polygon first (48Club/bloXroute) | detector → sim → order-flow |
@@ -67,6 +67,8 @@ all 5 pipeline stages exist.
 | S16 | 22 owner-side liq-protection salvage | A→C | ETH L1 | detector → sim |
 | S17 | 2.2 long-tail multi-hop arb (negative-cycle ext) | C | BSC/Base | detector → sim (Bellman-Ford) |
 | S18 | 5.3 rebase token arb (rides `balance_drift`) | B | ETH, Avalanche | detector (mode B) |
+| S19 | 25 crvUSD LLAMMA soft-liq arb | A→C | ETH L1 | report → detector → band sim |
+| S20 | 26 Compound V3 absorb + buyCollateral | A | ETH, Base, Arb, Polygon | report → detector (flash buy) |
 
 > Mode-A "reports only" row captured inside class: S4. 
 > **Deliberately-not-in-scope** (out of the implementation-plan set): Pendle PT/YT,
@@ -104,7 +106,7 @@ all 5 pipeline stages exist.
 | G1 | No `scan --kind skim\|flash-liq\|maker-keeper\|gmx-adl` per-strategy reports; only generic realized-MEV classification | G1-G0 |
 | G2 | No `balance_drift.rs` (balance-vs-reserve accounting) | S5, S6, S18, skim report |
 | G3 | No `scheduler.rs` (block-scheduled actions) | S2, S9, S10 |
-| G4 | Strategy wiring: no `Skim/SyncRace/…` variants → no classifier `MevKind` → no paper accounting (plan §"three spots") | every new strategy (S1–S18) |
+| G4 | Strategy wiring: no `Skim/SyncRace/…` variants → no classifier `MevKind` → no paper accounting (plan §"three spots") | every new strategy (S1–S20) |
 | G5 | No what-if revm executor (inject our bundles on top of replay) | G2, G3, S7, S15, S17 |
 | G6 | Paper realism: credit pre-exec `expected_profit`, no slippage/inclusion, no token wallet, Liquidation not native | G3 |
 | G7 | `aggregate.rs` summarizer ungated (`#![allow(dead_code)]`) — P&L summaries not wired to CLI | G3-G0 |
@@ -176,17 +178,19 @@ Extend `explorer backfill`/ingest with classify-in-stream fingerprints and range
 - **Done =** every "Report? = Yes" cell in the plan's reportability table has a
   shipped scanner + fixture test + at least one real-window run stored in explorer DB.
 
-### WS-D — Detector expansion (S1–S18, plan Phases 1–6)
+### WS-D — Detector expansion (S1–S20, plan Phases 1–6)
 Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is in
 `docs/implementation_plan_capital_free.md`. Highlights by phase:
 - **Phase 1:** `skim.rs` (runs before sync each block; V4 has no skim), `sync_race.rs`.
 - **Phase 2:** `interest_liq.rs` (forward HF model; requires `variableBorrowRate` in
   `AaveReserveData` — extend `liquidation.rs:43-48`); flash-loan liquidation extension
-  (`FlashLoanProvider` + `GasConfig::flash_loan_fee` already exist); `refinance_arb.rs`.
+  (`FlashLoanProvider` + Morpho/V4/Balancer 0% sources); `refinance_arb.rs`;
+  Silo V2 / Spark arms; `compound_v3.rs` (absorb → buyCollateral).
 - **Phase 3:** `backrun.rs` on mempool + revm post-state; **prerequisite: order-flow
   channel** (WS-G). Until licensed channel exists: mode-C paper-only.
 - **Phase 4:** `v4_hook_mev.rs` using existing `hook_address` + `UniswapV4PoolState`;
-  derive hook flags from address byte 17 (`0x08` = beforeSwap).
+  derive hook flags from address byte 17 (`0x08` = beforeSwap); `llamma_arb.rs`
+  (crvUSD band + oracle EMA).
 - **Phase 5:** `makerdao_osm.rs` (read OSM slot 4 via `get_storage_at`; mempool-watch
   `poke()` and co-bundle `kick()`s), `makerdao_clip.rs` (decay sim + join-adapter
   flash), `gmx_adl.rs` + `gmx_keeper.rs` (share position table + ref-price model),
@@ -269,6 +273,18 @@ Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is i
   and a `prioritize`-output golden test (WS-H).
 - **Done =** CI (or gated E2E) green on the full matrix; every strategy has ≥1
   synthetic + (where data exists) ≥1 on-chain validation test.
+- **Partial (first slice landed).** Real-block corpora now exist and assert derived
+  facts (`kind` present, `min_ops` floor, `searcher` identity, USD band — never exact
+  amounts): `core/tests/explorer_corpus.rs` (explorer classification, 13 cases over
+  Avalanche/Polygon/Ethereum), `core/tests/mev_corpus.rs` (detector, with a
+  detector-vs-realized verdict pass-rate), `core/tests/paper_corpus.rs`. New cases are
+  recorded, not hand-guessed — `MEV_SCOUT_RECORD=1` re-prints observed per-kind /
+  per-searcher / USD facts without asserting (plus `_CHAIN` / `_FROM` / `_TO` to hunt a
+  window outside the corpus). Offline synthetic tier stays in
+  `core/tests/explorer_golden.rs` + `core/src/explorer/golden.rs`.
+  **Remaining:** `jit` / `jit_arb` have no on-chain case in any seed window (recorded
+  as 0 ops), and there is no corpus entry per strategy for the non-MEV ones listed
+  above (rebase day, Clip take, V2 drift).
 
 ---
 
@@ -290,13 +306,13 @@ gated on WS-A/B; WS-C scanners for maker/GMX are gated on WS-A chain addresses.
 | **M0** | WS-E stage 1: what-if bundle executor + state override API on existing 6 strategies | G2 kernel; unblocks WS-F | 1–1.5 w |
 | **M1** | WS-F v1: paper exec re-simulation at fill, token-level wallet (Liquidation settleable), competition/inclusion model (`winning_bid_premium` un-hardcoded), `aggregate.rs` wired into `paper stats`/`report` | **G3 on existing 6** | 1.5–2 w |
 | **M2** | WS-H2 first slice: reconciliation corpus (sim vs paper vs real executed txs on the 6) | G3/G2 validity proof | 3–5 d |
-| **M3** | WS-A plumbing: strategy variants + detector trait + classifier/paper hooks + `ChainConfig` schema (Maker/GMX/Fluid/new-gen) | every new strategy | 3–5 d |
+| **M3** | WS-A plumbing: strategy variants + detector trait + classifier/paper hooks + `ChainConfig` schema (Maker/GMX/Fluid/new-gen/Silo/Spark/Comet/LLAMMA) | every new strategy | 3–5 d |
 | **M4** | WS-B primitives: `balance_drift.rs` + `scheduler.rs` (+ tests) | S2,S5,S6,S9,S10,S18 | 3–5 d |
-| **M5** | WS-C scanners: skim, flash-liq (+new-gen), refinance — Polygon first, `scan` CLI + fixtures, 30-day run | G1: S1,S3,S4,S5 measured | 4–6 d |
+| **M5** | WS-C scanners: skim, flash-liq (+new-gen/Silo/Spark), refinance, Compound V3 absorb — Polygon/ETH first, `scan` CLI + fixtures, 30-day run | G1: S1,S3,S4,S5,S20 measured | 4–6 d |
 | **M6** | WS-C scanners: maker-keeper, gmx (self-indexed) | G1: S9–S12 measured | 3–5 d |
-| **M7** | WS-D Ph1+2: skim, sync, interest_liq, flash-liq ext, refinance detectors (report-first already satisfied) | S1–S6 detector stage | 1.5–2 w |
+| **M7** | WS-D Ph1+2: skim, sync, interest_liq, flash-liq ext, refinance, Silo, Compound V3 detectors (report-first already satisfied) | S1–S6,S4,S20 detector stage | 1.5–2 w |
 | **M8** | WS-D Ph3: backrun detector (+ order-flow channel contractual) | S7 | 3–5 d (detector) |
-| **M9** | WS-D Ph4: v4_hook_mev | S8 | 1 w |
+| **M9** | WS-D Ph4: v4_hook_mev + llamma_arb | S8, S19 | 1–1.5 w |
 | **M10** | WS-D Ph5: maker/gmx/fluid/automation detectors | S9–S14 | 2 w |
 | **M11** | WS-D Ph6: cascading/salvage/Bellman-Ford multi-hop/rebase + WS-E stage 2 latent backtests | S15–S18; G2 fully | 2–3 w |
 | **M12** | WS-G order-flow integration (MEV-Share/BloXroute/48Club) + remaining ChainConfig | S7 live, S14 | 1–2 w |

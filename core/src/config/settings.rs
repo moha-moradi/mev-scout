@@ -47,6 +47,12 @@ pub struct GasConfig {
     /// Priority fee premium in gwei (added on top of base fee)
     #[serde(default = "default_priority_fee_gwei")]
     pub priority_fee_gwei: f64,
+    /// PGA winning-bid premium: fractional markup on the priority fee modeling
+    /// the cost of winning inclusion in a competitive auction (`0.05` = +5% on
+    /// top of `priority_fee_gwei`). `0.0` = disabled, i.e. the plain analytic
+    /// priority fee with no auction modeling. Must be finite and non-negative.
+    #[serde(default = "default_winning_bid_premium")]
+    pub winning_bid_premium: f64,
     /// Optional per-strategy gas limit overrides
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub gas_limits: HashMap<String, u64>,
@@ -292,6 +298,9 @@ fn default_gas_limit() -> u64 {
 fn default_priority_fee_gwei() -> f64 {
     0.0
 }
+fn default_winning_bid_premium() -> f64 {
+    0.0
+}
 fn default_output_format() -> OutputFormat {
     OutputFormat::Table
 }
@@ -371,6 +380,7 @@ impl Default for GasConfig {
             gas_model: default_gas_model(),
             gas_limit: default_gas_limit(),
             priority_fee_gwei: default_priority_fee_gwei(),
+            winning_bid_premium: default_winning_bid_premium(),
             gas_limits: HashMap::new(),
         }
     }

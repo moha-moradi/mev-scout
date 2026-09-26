@@ -166,7 +166,7 @@ pub async fn job_run(
         gas_model: validation_result.gas_model,
         priority_fee_gwei: config.gas.priority_fee_gwei,
         flash_loan_provider: validation_result.flash_loan_provider,
-        winning_bid_premium: 0.0,
+        winning_bid_premium: config.gas.winning_bid_premium,
         percentile_gas_price: None,
         calibration: Default::default(),
     };

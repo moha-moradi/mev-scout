@@ -1,7 +1,10 @@
 // Cross-run opportunity aggregation: summary / per-strategy / per-dex metrics
-// (MEV-VERIFICATION §C.3 re-expose). Consumed by the CLI `report` surface and
-// covered by offline unit tests below; feeds the paper plan's ROI stats.
+// (MEV-VERIFICATION §C.3 re-expose). Two entry points share one rollup:
+// `aggregate*` over detected `MevOpportunity` rows (CLI `report`) and
+// `aggregate_fills` over persisted `PaperFill` rows (CLI `paper stats`).
+// Covered by offline unit tests below.
 
+use crate::paper::types::PaperFill;
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
 use alloy::primitives::Address;
@@ -363,6 +366,62 @@ pub fn aggregate_with_prices(
     }
 }
 
+/// Roll up persisted paper fills into the same `SummaryMetrics` /
+/// `StrategyMetrics` shapes as [`aggregate`].
+///
+/// A paper session persists [`PaperFill`] rows (gross/gas/net in wei, strategy
+/// as `Strategy::to_string()`), not `MevOpportunity`, so the opportunity-shaped
+/// entry point cannot consume them directly. This adapter projects fills back
+/// onto the shared rollup so `paper stats` can surface per-strategy net and ROI
+/// instead of only a flat per-fill table (MEV-VERIFICATION §C.3).
+///
+/// Notes:
+/// - Fills are deduplicated by `canonical_id` exactly as in [`aggregate`]. When
+///   a fill carries no `canonical_id`, the fallback key is built from the full
+///   fill identity — block, tx index, strategy, pools and the running
+///   `wallet_after` (strictly monotone, so unique within a session) — because
+///   `PaperFill` has no token pair and the generic fallback key would collapse
+///   two distinct same-block fills of the same strategy onto one row.
+/// - Fills whose `strategy` string does not parse into a [`Strategy`] are
+///   excluded: they cannot be attributed to a strategy bucket. The raw per-fill
+///   table in `paper stats` still lists them, so nothing is hidden.
+/// - `usd_price` is the **native** token price. Paper is native-normalized by
+///   construction (only `is_native_eligible` strategies are ever filled), so
+///   there is no per-token lookup to do. Pass `0.0` when no price snapshot is
+///   available; the USD fields then read zero rather than guessing.
+pub fn aggregate_fills(fills: &[PaperFill], usd_price: f64) -> AggregationResult {
+    let opps: Vec<MevOpportunity> = fills.iter().filter_map(fill_as_opportunity).collect();
+    aggregate(&opps, &[], usd_price)
+}
+
+/// Project one paper fill onto the opportunity shape the rollup consumes.
+/// `None` when the persisted strategy string is not a known [`Strategy`].
+fn fill_as_opportunity(fill: &PaperFill) -> Option<MevOpportunity> {
+    let strategy: Strategy = fill.strategy.parse().ok()?;
+    let pool_a = fill.pools.first().copied().unwrap_or(Address::ZERO);
+    let pool_b = fill.pools.get(1).copied().unwrap_or(Address::ZERO);
+    let mut opp = MevOpportunity::new(fill.block_number, fill.tx_index.unwrap_or(0), strategy, pool_a, 0);
+    opp.pool_b = pool_b;
+    // Paper is native-normalized, so both token legs are the native unit; that
+    // makes `Address::ZERO` the right key for the native price lookup.
+    opp.token_in = Address::ZERO;
+    opp.token_out = Address::ZERO;
+    opp.expected_profit = alloy::primitives::U256::from(fill.gross_wei);
+    opp.gas_cost_wei = fill.gas_wei;
+    opp.mempool_only = fill.mempool_only;
+    opp.canonical_id = Some(fill.canonical_id.clone().unwrap_or_else(|| {
+        format!(
+            "paper_fill|{}|{}|{}|{:?}|{}",
+            fill.block_number,
+            fill.tx_index.map_or_else(|| "mempool".to_string(), |i| i.to_string()),
+            fill.strategy,
+            fill.pools,
+            fill.wallet_after,
+        )
+    }));
+    Some(opp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +649,104 @@ mod tests {
         assert_eq!(empty.summary.total, 0);
         assert_eq!(empty.by_strategy.len(), 0);
         assert_eq!(empty.by_dex[0].opportunities, 0);
+    }
+
+    fn pfill(
+        block: u64,
+        tx: Option<usize>,
+        strategy: &str,
+        gross: u128,
+        gas: u128,
+        wallet_after: u128,
+        cid: Option<&str>,
+    ) -> PaperFill {
+        PaperFill {
+            block_number: block,
+            tx_index: tx,
+            canonical_id: cid.map(|s| s.to_string()),
+            strategy: strategy.to_string(),
+            gross_wei: gross,
+            gas_wei: gas,
+            net_wei: gross as i128 - gas as i128,
+            wallet_before: wallet_after,
+            wallet_after,
+            pools: vec![address!("aaaa000000000000000000000000000000000001")],
+            mempool_only: tx.is_none(),
+        }
+    }
+
+    #[test]
+    fn aggregate_fills_rolls_up_by_strategy_with_roi() {
+        // One arb fill (1.0 − 0.5 = 0.5 net) and two sandwich fills
+        // ((2.0 − 1.0) + (3.0 − 1.0) = 3.0 net). Sandwich gas total is 2.0,
+        // so its ROI = 3.0 / 2.0 × 100 = 150%.
+        let fills = vec![
+            pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 2, 0, Some("f1")),
+            pfill(10, Some(1), "sandwich", 2 * ETH as u128, ETH as u128, 0, Some("f2")),
+            pfill(11, Some(0), "sandwich", 3 * ETH as u128, ETH as u128, 0, Some("f3")),
+        ];
+        let agg = aggregate_fills(&fills, 1.0);
+
+        assert_eq!(agg.summary.total, 3, "all three fills are attributable");
+        assert_eq!(agg.summary.gross_revenue_wei, 6 * ETH as u128);
+        assert_eq!(agg.summary.total_gas_cost_wei, 5 * ETH as u128 / 2);
+        assert_eq!(
+            agg.summary.net_profit_wei,
+            (ETH as i128 - ETH as i128 / 2) + (ETH as i128) + (2 * ETH as i128),
+            "net = Σgross − Σgas across every fill"
+        );
+        // USD is quoted off the native price (paper is native-normalized).
+        assert_eq!(agg.summary.net_profit_usd, 3.5);
+
+        assert_eq!(agg.by_strategy["arb"].count, 1);
+        assert_eq!(agg.by_strategy["sandwich"].count, 2);
+        assert!(
+            (agg.by_strategy["sandwich"].roi - 150.0).abs() < 1e-9,
+            "roi = net/gas*100, got {}",
+            agg.by_strategy["sandwich"].roi
+        );
+        assert!(
+            (agg.by_strategy["arb"].roi - 100.0).abs() < 1e-9,
+            "roi = net/gas*100, got {}",
+            agg.by_strategy["arb"].roi
+        );
+        assert_eq!(agg.summary.best_strategy.as_deref(), Some("sandwich"));
+    }
+
+    #[test]
+    fn aggregate_fills_dedups_cid_and_keeps_distinct_cidless_fills() {
+        let pool = address!("aaaa000000000000000000000000000000000001");
+        // Same canonical id twice → one row, the generic dedup path.
+        let dup1 = pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 4, 0, Some("c1"));
+        let dup2 = pfill(10, Some(0), "two_hop_arb", ETH as u128, ETH as u128 / 4, 0, Some("c1"));
+        // No canonical id, same block + strategy + pool, different tx index and a
+        // different running wallet: two genuinely distinct fills that the
+        // generic (token-less) fallback key would have collapsed into one.
+        let tx0 = pfill(10, Some(1), "sandwich", ETH as u128, ETH as u128 / 4, 7, None);
+        let tx1 = pfill(10, Some(2), "sandwich", ETH as u128, ETH as u128 / 4, 8, None);
+        // Mempool fill: tx_index None. Also cidless — must not collide with the
+        // two tx-anchored fills above.
+        let mempool = pfill(10, None, "sandwich", ETH as u128, ETH as u128 / 4, 9, None);
+
+        let agg = aggregate_fills(&[dup1, dup2, tx0, tx1, mempool], 0.0);
+        assert_eq!(
+            agg.summary.total, 4,
+            "cid dedup collapses dup1+dup2; the three cid-less fills stay distinct"
+        );
+        assert_eq!(agg.summary.gross_revenue_wei, 4 * ETH as u128);
+        assert_eq!(agg.by_strategy["sandwich"].count, 3);
+    }
+
+    #[test]
+    fn aggregate_fills_skips_unattributable_strategies() {
+        let good = pfill(10, Some(0), "jit", ETH as u128, ETH as u128 / 4, 0, Some("g1"));
+        let bogus = pfill(10, Some(1), "not_a_strategy", ETH as u128, ETH as u128 / 4, 0, Some("b1"));
+        let agg = aggregate_fills(&[good, bogus], 0.0);
+        assert_eq!(
+            agg.summary.total, 1,
+            "an unparseable strategy cannot be attributed to a bucket"
+        );
+        assert_eq!(agg.by_strategy["jit"].count, 1);
+        assert_eq!(agg.by_dex.len(), 0, "fill rollup passes no dex metadata");
     }
 }

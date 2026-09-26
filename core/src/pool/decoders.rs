@@ -11,8 +11,12 @@ use crate::utils::u128_from_be_bytes;
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
 /// Uniswap V3: Mint(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
+///
+/// Must stay equal to `keccak256` of that signature — a mistyped constant here
+/// silently disables every V3 Mint decode, which makes JIT detection
+/// structurally impossible without any other visible failure.
 pub const V3_MINT_TOPIC: B256 =
-    b256!("c323fff568ad2fe0209b149704f229671b4eba951aeed98be07a6e1a07c34dd7");
+    b256!("7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde");
 /// Uniswap V3: Burn(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
 pub const V3_BURN_TOPIC: B256 =
     b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
@@ -182,36 +186,30 @@ pub fn decode_v3_swap(log: &ExecutedLog) -> Option<V3SwapDecoded> {
 }
 
 /// Attempt to decode a V3 Mint or Burn event from an executed log.
+///
+/// Matches `IUniswapV3PoolEvents` in Uniswap v3-core: `owner`, `tickLower` and
+/// `tickUpper` are all `indexed`, so they live in the topics. The non-indexed
+/// data is `[sender, amount, amount0, amount1]` for Mint (128 bytes) and
+/// `[amount, amount0, amount1]` for Burn (96 bytes).
 pub fn decode_v3_mint_burn(log: &ExecutedLog) -> Option<V3MintBurnDecoded> {
-    if log.topics.is_empty() {
+    if log.topics.len() < 4 {
         return None;
     }
-    let is_mint_or_burn = log.topics[0] == *V3_MINT_TOPIC || log.topics[0] == V3_BURN_TOPIC;
-    if !is_mint_or_burn {
-        return None;
-    }
-    // topics: sender, owner
-    // data: int24 tickLower (32), int24 tickUpper (32), uint128 amount (32), ...
-    if log.data.len() < 96 {
+    let is_burn = log.topics[0] == V3_BURN_TOPIC;
+    if log.topics[0] != *V3_MINT_TOPIC && !is_burn {
         return None;
     }
 
-    let lower_bytes: [u8; 32] = log.data[..32].try_into().ok()?;
-    let tick_lower = i32::from_be_bytes([
-        lower_bytes[28],
-        lower_bytes[29],
-        lower_bytes[30],
-        lower_bytes[31],
-    ]);
-    let upper_bytes: [u8; 32] = log.data[32..64].try_into().ok()?;
-    let tick_upper = i32::from_be_bytes([
-        upper_bytes[28],
-        upper_bytes[29],
-        upper_bytes[30],
-        upper_bytes[31],
-    ]);
-    let raw = u128_from_be_bytes(&log.data[64..96]);
-    let amount = if log.topics[0] == V3_BURN_TOPIC {
+    let tick_lower = i24_from_topic(&log.topics[2]);
+    let tick_upper = i24_from_topic(&log.topics[3]);
+
+    // Mint carries a leading `sender` word, Burn does not.
+    let (need, amount_off) = if is_burn { (96, 0) } else { (128, 32) };
+    if log.data.len() < need {
+        return None;
+    }
+    let raw = u128_from_be_bytes(&log.data[amount_off..amount_off + 32]);
+    let amount = if is_burn {
         -(raw as i128)
     } else {
         raw as i128
@@ -222,6 +220,16 @@ pub fn decode_v3_mint_burn(log: &ExecutedLog) -> Option<V3MintBurnDecoded> {
         tick_upper,
         amount,
     })
+}
+
+/// Sign-extend a left-padded 24-bit tick (int24) from a 32-byte topic.
+fn i24_from_topic(word: &B256) -> i32 {
+    let raw = u32::from_be_bytes([word.0[28], word.0[29], word.0[30], word.0[31]]) & 0x00ff_ffff;
+    if raw & 0x0080_0000 != 0 {
+        (raw as i32) - 0x0100_0000
+    } else {
+        raw as i32
+    }
 }
 
 /// Attempt to decode a Curve TokenExchange event.
@@ -435,4 +443,65 @@ pub fn decode_metric_swap(log: &ExecutedLog) -> Option<MetricSwapDecoded> {
         new_tick,
         new_position_in_bin,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::keccak256;
+
+    /// The Uniswap V3 topics are hardcoded `b256!` literals, so nothing else
+    /// checks them. A mistyped hash fails silently: the decoder just never
+    /// matches, and the only symptom is a kind that can never be detected (this
+    /// is exactly how `V3_MINT_TOPIC` was wrong, which made JIT undetectable).
+    #[test]
+    fn uniswap_v3_topics_match_keccak_of_canonical_signatures() {
+        for (topic, sig) in [
+            (
+                V3_SWAP_TOPIC,
+                "Swap(address,address,int256,int256,uint160,uint128,int24)",
+            ),
+            (
+                V3_MINT_TOPIC,
+                "Mint(address,address,int24,int24,uint128,uint256,uint256)",
+            ),
+            (
+                V3_BURN_TOPIC,
+                "Burn(address,int24,int24,uint128,uint256,uint256)",
+            ),
+        ] {
+            assert_eq!(
+                topic,
+                keccak256(sig),
+                "topic drifted from keccak256(\"{sig}\")"
+            );
+        }
+    }
+
+    /// A real V3 Mint log decodes — the end-to-end consequence of the topic
+    /// being right.
+    #[test]
+    fn v3_mint_topic_decodes_a_mint() {
+        let mut data = vec![0u8; 96];
+        data[28..32].copy_from_slice(&100i32.to_be_bytes()); // tickLower
+        data[60..64].copy_from_slice(&200i32.to_be_bytes()); // tickUpper
+        data[95] = 7; // amount = 7 (right-aligned in the 32-byte word)
+        let log = ExecutedLog {
+            address: alloy::primitives::address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            topics: vec![
+                V3_MINT_TOPIC,
+                alloy::primitives::b256!(
+                    "0000000000000000000000000000000000000000000000000000000000000001"
+                ),
+                alloy::primitives::b256!(
+                    "00000000000000000000000000000000000000000000000000000000000000aa"
+                ),
+            ],
+            data: data.into(),
+        };
+        let decoded = decode_v3_mint_burn(&log).expect("Mint log must decode");
+        assert_eq!(decoded.tick_lower, 100);
+        assert_eq!(decoded.tick_upper, 200);
+        assert_eq!(decoded.amount, 7, "a Mint amount is positive");
+    }
 }

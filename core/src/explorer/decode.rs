@@ -726,7 +726,23 @@ fn logdata_to_rpc_log(log: &LogData) -> alloy::rpc::types::Log {
     }
 }
 
+/// Sign-extend a left-padded 24-bit tick value (int24) from a 32-byte topic.
+fn i24_from_topic(word: &B256) -> i32 {
+    let raw = u32::from_be_bytes([word.0[28], word.0[29], word.0[30], word.0[31]]) & 0x00ff_ffff;
+    if raw & 0x0080_0000 != 0 {
+        (raw as i32) - 0x0100_0000
+    } else {
+        raw as i32
+    }
+}
+
 /// Decode a V3 Mint/Burn fact (JIT candidate).
+///
+/// Canonical Uniswap V3 indexes `owner`, `tickLower` and `tickUpper`, so the
+/// topics are `[sig, owner, tickLower, tickUpper]` and the non-indexed data is
+/// `[sender, amount, amount0, amount1]` for Mint and `[amount, amount0, amount1]`
+/// for Burn. Forks that only index `owner` keep the ticks in the data, which is
+/// handled as a fallback.
 pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     let topic0 = *log.topics.first()?;
     let is_mint = topic0 == V3_MINT_TOPIC;
@@ -734,24 +750,55 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if !is_mint && !is_burn {
         return None;
     }
-    // topics: [sig, sender, owner]; data: tickLower, tickUpper, amount, amount0, amount1
-    if log.topics.len() < 3 || log.data.len() < 160 {
+    if log.topics.len() < 2 {
         return None;
     }
-    let tick_lower = i32::from_be_bytes([log.data[28], log.data[29], log.data[30], log.data[31]]);
-    let tick_upper = i32::from_be_bytes([log.data[60], log.data[61], log.data[62], log.data[63]]);
-    let liquidity = crate::utils::u128_from_be_bytes(&log.data[64 + 16..96]);
+    let owner = Address::from_slice(&log.topics[1][12..]);
+
+    let (tick_lower, tick_upper, amount0, amount1, liquidity);
+    if log.topics.len() >= 4 {
+        tick_lower = i24_from_topic(&log.topics[2]);
+        tick_upper = i24_from_topic(&log.topics[3]);
+        if is_mint {
+            // data: sender, amount, amount0, amount1
+            if log.data.len() < 128 {
+                return None;
+            }
+            liquidity = crate::utils::u128_from_be_bytes(&log.data[32 + 16..64]);
+            amount0 = U256::from_be_slice(&log.data[64..96]);
+            amount1 = U256::from_be_slice(&log.data[96..128]);
+        } else {
+            // data: amount, amount0, amount1
+            if log.data.len() < 96 {
+                return None;
+            }
+            liquidity = crate::utils::u128_from_be_bytes(&log.data[0 + 16..32]);
+            amount0 = U256::from_be_slice(&log.data[32..64]);
+            amount1 = U256::from_be_slice(&log.data[64..96]);
+        }
+    } else {
+        // data: sender, tickLower, tickUpper, amount, amount0, amount1
+        if log.data.len() < 192 {
+            return None;
+        }
+        tick_lower = i24_from_topic(&B256::from_slice(&log.data[32..64]));
+        tick_upper = i24_from_topic(&B256::from_slice(&log.data[64..96]));
+        liquidity = crate::utils::u128_from_be_bytes(&log.data[96 + 16..128]);
+        amount0 = U256::from_be_slice(&log.data[128..160]);
+        amount1 = U256::from_be_slice(&log.data[160..192]);
+    }
+
     Some(JitFact {
         tx_index: 0,
         log_index: 0,
         pool: log.address,
-        owner: Address::from_slice(&log.topics[2][12..]),
+        owner,
         tick_lower,
         tick_upper,
         is_mint,
         liquidity,
-        amount0: U256::from_be_slice(&log.data[96..128]),
-        amount1: U256::from_be_slice(&log.data[128..160]),
+        amount0,
+        amount1,
         bin_amm: false,
     })
 }
@@ -1012,6 +1059,183 @@ mod tests {
             topics,
             data: alloy::primitives::Bytes::from(data),
         }
+    }
+
+    fn word(v: u128) -> Vec<u8> {
+        let mut b = [0u8; 32];
+        b[16..].copy_from_slice(&v.to_be_bytes());
+        b.to_vec()
+    }
+
+    fn hexdata(s: &str) -> Vec<u8> {
+        alloy::primitives::hex::decode(s).expect("valid hex")
+    }
+
+    #[test]
+    fn v3_mint_decodes_canonical_indexed_ticks() {
+        // Real mainnet log: UniswapV3 USDC/WETH 0.05% Mint in block 26051637.
+        // topics: [sig, owner, tickLower, tickUpper]
+        // data: [sender, amount, amount0, amount1]
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_MINT_TOPIC,
+                b256!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"),
+                b256!("0000000000000000000000000000000000000000000000000000000000030246"),
+                b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
+            ],
+            hexdata(concat!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
+                "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
+                "000000000000000000000000000000000000000000000000000000002d5b38bf",
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+        );
+        let f = decode_v3_mint_burn(&l).unwrap();
+        assert!(f.is_mint);
+        assert_eq!(f.owner, address!("c36442b4a4522e871399cd717abdd847ab11fe88"));
+        assert_eq!(f.tick_lower, 197190);
+        assert_eq!(f.tick_upper, 197620);
+        assert_eq!(f.liquidity, 0x4ca38c9eecc93);
+        assert_eq!(f.amount0, U256::from(0x2d5b38bfu64));
+        assert_eq!(f.amount1, U256::from(0x3c9c2b775e90ef4u64));
+    }
+
+    #[test]
+    fn v3_burn_decodes_canonical_indexed_ticks() {
+        // Real mainnet log: UniswapV3 USDC/WETH 0.05% Burn in block 26051637.
+        // topics: [sig, owner, tickLower, tickUpper]; data: [amount, amount0, amount1]
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_BURN_TOPIC,
+                b256!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"),
+                b256!("000000000000000000000000000000000000000000000000000000000003011a"),
+                b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
+            ],
+            hexdata(concat!("000000000000000000000000000000000000000000000000000503364091d046",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",)),
+        );
+        let f = decode_v3_mint_burn(&l).unwrap();
+        assert!(!f.is_mint);
+        assert_eq!(f.owner, address!("c36442b4a4522e871399cd717abdd847ab11fe88"));
+        assert_eq!(f.tick_lower, 196890);
+        assert_eq!(f.tick_upper, 197300);
+        assert_eq!(f.liquidity, 0x0503364091d046);
+        assert_eq!(f.amount0, U256::ZERO);
+        assert_eq!(f.amount1, U256::from(0x7a45af71b4f9a78u64));
+    }
+
+    #[test]
+    fn v3_mint_and_burn_ticks_come_from_topics_not_data() {
+        // Both real logs above are in block 26051637 for the same owner but carry
+        // different tick ranges. Reading ticks out of the data payload (the old
+        // behaviour) produced identical garbage for both, which would have paired
+        // them as a false JIT candidate.
+        let mint = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_MINT_TOPIC,
+                b256!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"),
+                b256!("0000000000000000000000000000000000000000000000000000000000030246"),
+                b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
+            ],
+            hexdata(concat!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88",
+                "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
+                "000000000000000000000000000000000000000000000000000000002d5b38bf",
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+        );
+        let burn = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_BURN_TOPIC,
+                b256!("000000000000000000000000c36442b4a4522e871399cd717abdd847ab11fe88"),
+                b256!("000000000000000000000000000000000000000000000000000000000003011a"),
+                b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
+            ],
+            hexdata(concat!("000000000000000000000000000000000000000000000000000503364091d046",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "00000000000000000000000000000000000000000000000007a45af71b4f9a78",)),
+        );
+        let m = decode_v3_mint_burn(&mint).unwrap();
+        let b = decode_v3_mint_burn(&burn).unwrap();
+        assert_eq!(m.owner, b.owner);
+        assert_ne!((m.tick_lower, m.tick_upper), (b.tick_lower, b.tick_upper));
+    }
+
+    #[test]
+    fn v3_mint_sign_extends_negative_ticks_from_topics() {
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_MINT_TOPIC,
+                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+                b256!("0000000000000000000000000000000000000000000000000000000000ffffff"),
+                b256!("0000000000000000000000000000000000000000000000000000000000f27618"),
+            ],
+            hexdata(concat!("0000000000000000000000000000000000000000000000000000000000000001",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                "0000000000000000000000000000000000000000000000000000000000000001",)),
+        );
+        let f = decode_v3_mint_burn(&l).unwrap();
+        assert_eq!(f.tick_lower, -1);
+        assert_eq!(f.tick_upper, -887272);
+    }
+
+    #[test]
+    fn v3_mint_falls_back_to_data_ticks_when_not_indexed() {
+        // Fork layout: only `owner` is indexed, so ticks stay in the data.
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_MINT_TOPIC,
+                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+            ],
+            hexdata(concat!("0000000000000000000000000000000000000000000000000000000000000009",
+                "0000000000000000000000000000000000000000000000000000000000030246",
+                "00000000000000000000000000000000000000000000000000000000000303f4",
+                "0000000000000000000000000000000000000000000000000004ca38c9eecc93",
+                "000000000000000000000000000000000000000000000000000000002d5b38bf",
+                "00000000000000000000000000000000000000000000000003c9c2b775e90ef4",)),
+        );
+        let f = decode_v3_mint_burn(&l).unwrap();
+        assert_eq!(f.tick_lower, 197190);
+        assert_eq!(f.tick_upper, 197620);
+        assert_eq!(f.liquidity, 0x4ca38c9eecc93);
+        assert_eq!(f.amount0, U256::from(0x2d5b38bfu64));
+        assert_eq!(f.amount1, U256::from(0x3c9c2b775e90ef4u64));
+    }
+
+    #[test]
+    fn v3_mint_rejects_truncated_data() {
+        // Canonical Mint needs 128 bytes of data; a 96-byte payload must be rejected.
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_MINT_TOPIC,
+                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+                b256!("0000000000000000000000000000000000000000000000000000000000030246"),
+                b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
+            ],
+            [word(0), word(0), word(0)].concat(),
+        );
+        assert!(decode_v3_mint_burn(&l).is_none());
+    }
+
+    #[test]
+    fn v3_burn_rejects_truncated_data() {
+        // Canonical Burn needs 96 bytes of data; a 64-byte payload must be rejected.
+        let l = log(
+            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
+            vec![
+                V3_BURN_TOPIC,
+                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+                b256!("000000000000000000000000000000000000000000000000000000000003011a"),
+                b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
+            ],
+            [word(0), word(0)].concat(),
+        );
+        assert!(decode_v3_mint_burn(&l).is_none());
     }
 
     #[test]

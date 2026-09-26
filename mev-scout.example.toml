@@ -66,6 +66,11 @@ output = "table"
 # [explorer]
 # arb_likely_parity = false
 # confirmations = 6
+# `explorer show --trace` gate: a traced op whose profit error exceeds
+# ±trace_tolerance_pct fails the command (exit non-zero). Ops with an expected
+# profit near zero are judged on the absolute band instead.
+# trace_tolerance_pct = 20.0
+# trace_error_usd_tol = 0.50
 
 [chains.polygon]
 chain_id = 137

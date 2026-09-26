@@ -163,9 +163,11 @@ WS-F's done-definition (`:229-231`).
 4. Assertions are derived facts (kind present, min-op floor, searcher filter, verdict-pass
    rate band), **never exact profit amounts** — same risk note as explorer §D.
 5. Seed cases by hand-picking windows on Avalanche/Polygon after a live run; deliberately
-   include the **sandwich** and **jit** kinds — the gap in `explorer_corpus.rs:22-25` — and
+   include the **sandwich** and **jit** kinds — no seed window in `explorer_corpus.rs`
+   contains a `jit` mint/burn pair (its `MEV_SCOUT_RECORD=1` report shows 0) — and
    prefer windows overlapping the explorer corpus so the T1 cross-check (`validate`) is
-   exercisable on the same blocks.
+   exercisable on the same blocks. Both corpora share the same record-then-transcribe
+   procedure, so the two seed tables can be filled from one live sweep.
 
 ---
 

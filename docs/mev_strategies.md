@@ -1,6 +1,6 @@
 # MEV Strategies: Complete Reference & Implementation Analysis
 
-> **53 strategies across 8 categories + 5 expansion surfaces (Part IV)** — mechanics, edge, capital requirements, competition level, implementation notes, implementation difficulty, income estimates, codebase status, on-chain validation, and post-2025 capital-free surfaces (Instadapp / DeFi Saver / DefiLlama / DappRadar rails).
+> **53 strategies across 8 categories + 7 expansion surfaces (Part IV)** — mechanics, edge, capital requirements, competition level, implementation notes, implementation difficulty, income estimates, codebase status, on-chain validation, and post-2025 capital-free surfaces (Instadapp / DeFi Saver / DefiLlama / DappRadar rails + Silo / LLAMMA / Compound V3).
 > Profitability and competition scored 1–10. Capital: None / Low / Medium / High.
 > This document combines the strategy reference (`mev_strategies_complete_v2.md`) with the implementation & execution analysis (`mev_strategies_analysis_summary.md`).
 
@@ -96,6 +96,8 @@
 22. [Owner-side liquidation-protection salvage](#22-owner-side-liquidation-protection-salvage)
 23. [Fluid (Instadapp) — DEX + lending vaults](#23-fluid-instadapp--dex--lending-vaults)
 24. [New-gen lending liquidations](#24-new-gen-lending-liquidations)
+25. [crvUSD LLAMMA soft-liquidation arb](#25-crvusd-llamma-soft-liquidation-arb)
+26. [Compound V3 absorb + buyCollateral](#26-compound-v3-absorb--buycollateral)
 
 ---
 
@@ -749,13 +751,15 @@ profitable if:
 
 | Source | Fee | Note |
 |--------|-----|------|
-| Balancer | 0% | Best for large amounts |
-| AAVE v3 | 0.05% | Most flexible collateral |
-| Uniswap V3 | ~0.05–1% | Token-dependent |
+| Morpho Blue | 0% | Preferred default when the asset is in a Morpho market |
+| Uniswap V4 `take`/`settle` | 0% | Singleton flash accounting — general capital, not only hooks |
+| Balancer | 0% | Large amounts / tokens missing from Morpho & V4 |
+| AAVE v3 | 0.05% | Most flexible collateral coverage |
+| Uniswap V3 | ~0.05–1% | Token-dependent fallback |
 
 **Edge**
 
-Removes capital as a constraint. The competition is in swap routing — minimizing slippage on the collateral-to-repay-token swap is where profit leaks.
+Removes capital as a constraint. The competition is in swap routing — minimizing slippage on the collateral-to-repay-token swap is where profit leaks. See §11 for the shared flash hierarchy (Morpho → V4 → Balancer → Aave → Uni V3).
 
 ---
 
@@ -2477,7 +2481,7 @@ Multi-step logic, flash loans, or basic simulation.
 | 15 | Liquity stability pool front-run | Liquidation | 5/10 | Medium | No (needs pre-deposited LUSD) | 20–80 | $100–$1K | 5/10 | 6/10 | Front-runs stability pool deposits or withdrawals during liquidation events to capture discounted ETH. | Monitor liquidation queue; predict stability pool impact on ETH/LUSD price. Pre-deposited LUSD is required — capital-intensive but predictable returns during market stress. |
 | 16 | Interest accrual liquidation | Liquidation | 5/10 | Low | Yes (flash loan) | 100–500 | $200–$1K | 2/10 | 5/10 | Liquidates positions that become undercollateralized purely from interest accrual over time. | Proactive model: project health factor forward in time, schedule liquidation at predicted crossing block. Complementary to Oracle-Latency Liq (§4.3) — that strategy is reactive (real price vs oracle price), this one is time-based (debt growth vs collateral). Very low competition — most MEV bots ignore slow-moving opportunities. |
 | 17 | Stablecoin depeg arbitrage | Oracle | 5/10 | High | No (needs pre-positioned capital) | 1–5 | $5K–$50K | 6/10 | 8/10 | Arbitrage between depegged stablecoins and their peg value across Curve, AAVE, and CEX. | Requires pre-positioned capital but massive per-event profit. Monitor depeg signals (Curve pool ratios, CEX spreads); execute rapid multi-DEX swaps. Shared pattern with LST Depeg Liq (§4.5): both exploit Curve pool price diverging from oracle. Black Swan events are the primary income driver. |
-| 18 | Flash loan atomic liquidation | Liquidation | 6/10 | None | Yes (the whole point) | 100–500 | $500–$3K | 7/10 | 8/10 | Uses flash loans to execute liquidations atomically — borrow, liquidate, repay in one tx. | Optimize flash loan routing (Balancer 0% fee preferred); model liquidation penalty vs flash loan cost. Multi-protocol support (AAVE, Compound, Maker) increases opportunity set. Swap routing optimization within the flash loan is the edge. |
+| 18 | Flash loan atomic liquidation | Liquidation | 6/10 | None | Yes (the whole point) | 100–500 | $500–$3K | 7/10 | 8/10 | Uses flash loans to execute liquidations atomically — borrow, liquidate, repay in one tx. | Optimize flash loan routing (Morpho/V4/Balancer 0% preferred); model liquidation penalty vs flash loan cost. Multi-protocol support (AAVE, Compound, Maker, Silo, Spark) increases opportunity set. Swap routing optimization within the flash loan is the edge. |
 
 ### Tier 4 — Solid Build (Complexity 6/10)
 
@@ -2635,7 +2639,7 @@ Strategies executable with **zero pre-positioned capital** through flash loans, 
 | Flash swap arbitrage | 3 | $500–$5K | Uniswap V2 callback | 7/10 | Speed + routing |
 | Long-tail token arb | 3 | $300–$2K | Flash loan from Balancer/AAVE | 3/10 | Pool graph + SPFA |
 | Interest accrual liq | 3 | $200–$1K | Flash loan + block scheduler | 2/10 | Forward HF model |
-| Flash loan atomic liq | 4 | $500–$3K | Flash loan (Balancer 0% fee) | 7/10 | Swap routing optimization |
+| Flash loan atomic liq | 4 | $500–$3K | Flash loan (Morpho/V4/Balancer 0%) | 7/10 | Swap routing optimization |
 | MakerDAO Clip Dutch auction | 4 | $500–$3K | Flash via join adapter callback | 6/10 | Optimal take() block calc |
 | ERC-4337 AA bundler MEV | 4 | $200–$1K | Bundler reward for UserOp ordering | 4/10 | Alt mempool access |
 | MakerDAO OSM preview + kick() | 6 | $500–$5K | Keeper reward + storage slot read | 3/10 | Vault health DB pre-computed |
@@ -2646,7 +2650,9 @@ Strategies executable with **zero pre-positioned capital** through flash loans, 
 | Automation / keeper-network execution (§21) | 3 | $200–$1K | Public executor race; gas only | 6/10 | Trigger-tx visibility → co-bundle/backrun |
 | Owner-side liq-protection salvage (§22) | 3 | $200–$1K | Flash loan; no penalty auction | 3/10 | HF watch + collateral-swap routing (B.Protocol class) |
 | Fluid lending-vault liq (§23) | 4 | $500–$3K | Flash loan | 3/10 | Single-oracle delegated-liq race |
-| New-gen lending liq — Aave V4 / Liquity V2 / Sky / Euler V2 / Morpho (§24) | 4 | $500–$3K | Flash loan | 5/10 | Extends Aave V3 fingerprint; chain-gated |
+| New-gen lending liq — Aave V4 / Liquity V2 / Sky / Euler V2 / Morpho / Silo V2 / Spark (§24) | 4 | $500–$3K | Flash loan | 5/10 | Extends Aave V3 fingerprint; chain-gated |
+| crvUSD LLAMMA soft-liq arb (§25) | 4 | $300–$2K | Flash (Balancer/Morpho/V4) into band rebalance | 3/10 | P_AMM vs P_ORACLE band math |
+| Compound V3 absorb + buyCollateral (§26) | 4 | $200–$1.5K | Flash purchase of absorbed collateral | 4/10 | Absorb event → buyCollateral race |
 
 **Pattern**: Capital-free and low-competition rarely coincide — but when they do (OSM preview, V4 hooks, interest accrual, multi-block), the ROI per engineering hour is highest.
 
@@ -2654,11 +2660,13 @@ Strategies executable with **zero pre-positioned capital** through flash loans, 
 
 | Source | Fee | Best for |
 |--------|-----|----------|
-| Balancer | 0% | Large amounts, preferred default |
-| AAVE V3 | 0.05% | Flexible collateral, most protocols |
+| Morpho Blue | 0% | Preferred default on ETH/Base/Arb when the asset is in a Morpho market — production liquidators already standardize here |
+| Uniswap V4 `take`/`settle` | 0% | Any token the singleton holds; general-purpose flash capital (not just hook MEV) |
+| Balancer | 0% | Large amounts / tokens absent from Morpho & V4 |
+| AAVE V3 | 0.05% | Flexible collateral coverage when 0% sources lack liquidity |
 | Uniswap V3 | 0.05–1% | Token-dependent, fallback only |
 
-Balancer's zero fee makes it the default flash source. Route through Balancer first, fall back to AAVE V3 for tokens not supported by Balancer pools.
+Prefer **Morpho → V4 → Balancer** (all 0%) before paying Aave/V3 fees. V4 flash accounting is a capital source for *any* flash path (liq, refinance, salvage), not only §7.11 hook MEV.
 
 ---
 
@@ -2698,9 +2706,10 @@ Balancer's zero fee makes it the default flash source. Route through Balancer fi
 | **$3K–$10K** | Cascading liq eng., LST depeg | Lido oracle, GMX V2 ADL | JIT liquidity, Oracle-latency liq | Backrunning, Sandwich, Solver intent |
 | **$10K+** | Multi-block MEV | TWAP manipulation, Governance | — | CEX–DEX arb, PBS/block building |
 
-**Note (2026)**: expansion surfaces in Part IV (§20–§24) — position refinancing arb and new-gen lending
-liquidations land in the $500–$3K/Daily band; automation/keeper fees in the $0–$500 to $1K band across
-Continuous/Daily; Fluid vault liquidations mirror the flash-loan liq band ($500–$3K/Daily).
+**Note (2026)**: expansion surfaces in Part IV (§20–§26) — position refinancing arb and new-gen lending
+liquidations (incl. Silo V2 / Spark) land in the $500–$3K/Daily band; automation/keeper fees in the
+$0–$500 to $1K band across Continuous/Daily; Fluid vault liquidations mirror the flash-loan liq band
+($500–$3K/Daily); LLAMMA soft-liq arb and Compound V3 `buyCollateral` sit in the $200–$2K/Daily–Episodic band.
 
 ---
 
@@ -2872,7 +2881,7 @@ Remaining strategies: chain-specific extensions, high-competition, niche protoco
 | **Pool discovery** | Active | Dune + on-chain discovery for V2, V3, Curve, Balancer, Trader Joe, Pendle |
 | **Test coverage** | 4 test files | `arbitrage.rs` (610 lines), `sandwich.rs` (398 lines), `liquidation.rs` (empty), `e2e.rs` (539 lines) |
 | **46 strategies** | Planned (Phases 0–5) | All mapped to specific files in `plans/implementation_plan.md` (~8K–10K Rust planned) |
-| **5 expansion surfaces (Part IV)** | Not mapped | §20–§24 seen on Instadapp / DeFi Saver rails; no files assigned yet — see Part IV + `docs/implementation_plan_capital_free.md` |
+| **7 expansion surfaces (Part IV)** | Not mapped | §20–§26 (Instadapp / DeFi Saver / Silo / LLAMMA / Compound V3); no files assigned yet — see Part IV + `docs/implementation_plan_capital_free.md` |
 | **3 strategies** | Excluded permanently | TWAP manipulation, NFT floor arb, governance MEV |
 
 ---
@@ -3092,7 +3101,7 @@ Realized liquidations are the cleanest on-chain counts — the notional is in th
 | 8.4 | Token launch snipe | A | New pool (`PairCreated`/V4 `Pool`/Algebra `PoolCreated`) + same-tx add-liquidity + first `Swap` (launch bundle) + subsequent sell. Count = launched-then-churned pools (500–3K/mo). $ = realized `Transfer` net across the launch txs when the snipe sold; unrealized marked-to-block (C). |
 | 8.5 | Multi-block MEV | C + validator intel | On-chain: detect contiguous blocks ordered by the same builder/proposer containing related state flow. Count = such sequences (10–100/mo). $ = only simulable with proposer knowledge (C); not an on-chain report. |
 
-#### 17.8.9 Part IV Expansion Surfaces (§20–§24)
+#### 17.8.9 Part IV Expansion Surfaces (§20–§26)
 
 | # | Strategy | Mode | On-chain fingerprint → count → $ |
 |---|----------|:---:|----------------------------------|
@@ -3100,7 +3109,9 @@ Realized liquidations are the cleanest on-chain counts — the notional is in th
 | 21 | Automation / keeper-network execution | A | Executor txs to keeper registries: Gelato `TaskExecuted`, Keep3r `KeeperWork`, Chainlink Automation `LogTriggered`/`UpkeepPerformed`, DFS Auto `Trigger`. Count = trigger executions (1K–5K/mo). $ = executor fee args (small) + trigger-state co-bundle backrun (C). |
 | 22 | Owner-side liq-protection salvage | A/B | Pre-emptive deleverage txs: collateral swap + repay by the *borrower* in the blocks immediately before projected HF<1 (B.Protocol / DFS "Liquidation Protection" class). Count = self-deleveraging events (50–200/mo). $ = avoided liquidation penalty (bonus the protocol would have taken) reconstructed from the averted `LiquidationCall` args (C for certainty). |
 | 23 | Fluid (Instadapp) vault liq | A | Fluid `Vault` `Liquidate`/`Withdraw` events (single-oracle delegated liquidations). Count = events (200–1K/mo). $ = seized − repaid delta from args; DEX-leg value (continuous-bin jitter) is C. |
-| 24 | New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho) | A | Per-protocol `LiquidationCall`-equivalent events (same generic fingerprint as 4.4, chain-gated via `ChainConfig`). Count = events per protocol (100–500/mo each). $ = repaid/seized notional args, priced at block. |
+| 24 | New-gen lending liq (Aave V4, Liquity V2, Sky, Euler V2, Morpho, Silo V2, Spark) | A | Per-protocol `LiquidationCall`/`liquidationCall`-equivalent events (same generic fingerprint as 4.4, chain-gated via `ChainConfig`). Count = events per protocol (100–500/mo each). $ = repaid/seized notional args, priced at block. Silo: `PartialLiquidation.liquidationCall`; Spark: Aave-family `LiquidationCall` on Spark pool. |
+| 25 | crvUSD LLAMMA soft-liq arb | A / C | LLAMMA band `TokenExchange` / arb txs when pool mid diverges from oracle EMA; count = rebalance windows (200–800/mo). $ = realized arb net from band swaps (A when closed in-tx); latent band inventory needs C. Distinct from Curve stableswap imbalance (§7.1). |
+| 26 | Compound V3 absorb + buyCollateral | A | `Absorb` then same- or next-block `BuyCollateral` on Comet. Count = absorb→buy pairs (50–300/mo). $ = collateral bought at discount vs spot (args + block price); flash-funded buys countable when flash source appears in same tx. |
 
 ---
 
@@ -3333,8 +3344,9 @@ If forced to sequence what to build in strict order:
 
 # Part IV — Expansion Surfaces (2026)
 
-> Sources: Instadapp (`instadapp.io`), DeFi Saver (`defisaver.com`), DefiLlama, DappRadar.
-> Five capital-free (or flash-viable) surfaces that post-date the original 53-strategy reference. All are
+> Sources: Instadapp (`instadapp.io`), DeFi Saver (`defisaver.com`), DefiLlama, DappRadar,
+> Silo V2 docs, Curve crvUSD/LLAMMA, Compound V3 Comet.
+> Seven capital-free (or flash-viable) surfaces that post-date the original 53-strategy reference. All are
 > mode-A reportable from raw logs; detector/phase mapping lives in `docs/implementation_plan_capital_free.md`.
 
 ---
@@ -3360,7 +3372,7 @@ borrow APR on the destination is meaningfully lower than the source (or the supp
 flash-loan fee + gas + swap slippage:
 
 ```
-1. Flash-borrow debt_token (Balancer 0% preferred, else AAVE)
+1. Flash-borrow debt_token (Morpho 0% / V4 / Balancer preferred, else AAVE)
 2. Repay debt on protocol A; withdraw collateral
 3. (optional) swap collateral flavour (e.g. USDC → USDS/sDAI) if the destination needs it
 4. Deposit collateral on protocol B; borrow debt_token (recreate the position)
@@ -3488,8 +3500,8 @@ sim-only (C).
 ### 24. New-gen lending liquidations
 
 **References**: Aave **V4**, Liquity **V2** (BOLD stability pool), **Sky** (USDS / sDAI SAV), Euler **V2**,
-Morpho **Blue / Midnight** — the 2025-26 lending generation, all currently behind the existing Aave-V3-only
-modeling.
+Morpho **Blue / Midnight**, **Silo V2**, **SparkLend** — the 2025-26 lending generation, all currently behind
+the existing Aave-V3-only modeling.
 
 | Attribute | Value |
 |-----------|-------|
@@ -3511,16 +3523,101 @@ Same flash-loan atomic liquidation loop as §4.4 with per-protocol selectors and
 | Sky (USDS/sDAI) | sDAI-style SAV rate feed; USDS soft-liquidation model distinct from DAI/CDP |
 | Euler V2 | Reactive/primary local accounting, sub-accounts; liquidation via `liquidate` on vaults |
 | Morpho Blue / Midnight | Single-oracle markets with no Aave guards (extends §7.10 modeling) |
+| Silo V2 | Isolated two-asset silos; permissionless `PartialLiquidation.liquidationCall`; ERC-3156 flash on the Silo itself; production bots already co-index with Morpho/Euler/Aave |
+| SparkLend | Aave-V3-family pool/ABI — treat as an address alias of §4.4 (`spark_pool` in `ChainConfig`), not a new detector |
+
+**Flash capital**: prefer Morpho 0% / V4 `take`/`settle` / Balancer 0% (see §11 hierarchy) before Aave 5 bps.
 
 **Reportability (mode A)**: same `Repay` + `LiquidationCall` fingerprint as §4.4; new protocols/chains just need
-`ChainConfig` addresses (same pattern as `aave_v3_pool`).
+`ChainConfig` addresses (same pattern as `aave_v3_pool`). Silo uses its own `liquidationCall` topic0; Spark
+reuses Aave's.
 
 ---
 
-*This combined document covers 53 strategies across 8 categories plus five expansion surfaces in Part IV
-(§20–§24): position refinancing arb, automation/keeper-network execution, owner-side liquidation-protection
-salvage, Fluid (DEX + lending vaults), and new-gen lending liquidations. Core catalog: V2 pool mechanics, order
-flow, bundle/positional strategies, liquidations, oracle/rebase/peg, cross-domain, protocol niches (expanded),
+### 25. crvUSD LLAMMA soft-liquidation arb
+
+**References**: Curve crvUSD LLAMMA (Lending-Liquidating AMM Algorithm); soft continuous liquidation via
+price bands — distinct from Maker Clip auctions (§4.10) and Curve stableswap imbalance (§7.1).
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 6/10 |
+| Competition | 3/10 |
+| Capital required | None (flash into band rebalance) |
+| Complexity | 7/10 |
+| Chains | ETH L1 (crvUSD markets) |
+| Frequency | Daily (stress → Continuous) |
+
+**Mechanism**
+
+Borrower collateral sits in an AMM with concentrated bands. As the oracle price (`P_ORACLE`, EMA-filtered)
+moves, the pool mid (`P_AMM`) lags and creates an arb that *is* the soft-liquidation path:
+
+```
+P_AMM diverges from P_ORACLE beyond band threshold:
+1. Flash-borrow crvUSD or collateral (Morpho / V4 / Balancer)
+2. Swap through LLAMMA bands (deposit undervalued side, extract overvalued)
+3. Repay flash; keep band-arb spread − gas
+```
+
+When collateral falls, arbers deposit crvUSD and extract ETH (etc.), converting the borrower's exposure —
+that rebalance *is* soft liquidation. Hard liquidation remains rare; most extractable value is continuous
+band arb, not a discrete `LiquidationCall`.
+
+**Relation to existing entries**: sibling of §7.1 (Curve stableswap imbalance) but band + oracle-EMA math
+is different; complementary to §4.4 (hard liq elsewhere). Do not fold into Curve-imbalance detector without
+LLAMMA-specific quoting.
+
+**Reportability (mode A / C)**: band `TokenExchange` txs during oracle divergence windows are countable (A);
+optimal size and latent inventory need LLAMMA band sim (C).
+
+---
+
+### 26. Compound V3 absorb + buyCollateral
+
+**References**: Compound III (Comet) — protocol `absorb` of underwater accounts, then permissionless
+`buyCollateral` of absorbed inventory at a discount.
+
+| Attribute | Value |
+|-----------|-------|
+| Profitability | 6/10 |
+| Competition | 4/10 |
+| Capital required | None (flash-funded buy) / Low if holding base asset |
+| Complexity | 5/10 |
+| Chains | ETH, Arbitrum, Base, Polygon |
+| Frequency | Episodic → Daily |
+
+**Mechanism**
+
+Unlike Aave's liquidator-pays-debt model, Comet:
+
+1. Anyone (or a keeper) calls `absorb(absorber, accounts[])` — underwater positions are seized into the
+   protocol's collateral reserves; absorber may earn a small incentive.
+2. Absorbed collateral is sold via `buyCollateral(asset, minAmount, baseAmount, recipient)` at a
+   protocol-defined discount to the oracle price.
+
+Capital-free path:
+
+```
+1. Detect Absorb (or predict HF crossing → co-bundle absorb)
+2. Flash-borrow base asset (USDC on cUSDCv3, etc.) via Morpho / V4 / Balancer
+3. buyCollateral at discount; swap collateral → base on DEX if needed
+4. Repay flash; keep discount − swap slippage − gas
+```
+
+**Relation to existing entries**: not an Aave-family `LiquidationCall` — separate detector/fingerprint.
+Complements §4.4 / §24; shares flash-source hierarchy from §11.
+
+**Reportability (mode A)**: `Absorb` + same-/next-block `BuyCollateral` pairs; $ from collateral notional ×
+discount vs block spot.
+
+---
+
+*This combined document covers 53 strategies across 8 categories plus seven expansion surfaces in Part IV
+(§20–§26): position refinancing arb, automation/keeper-network execution, owner-side liquidation-protection
+salvage, Fluid (DEX + lending vaults), new-gen lending liquidations (incl. Silo V2 / Spark), crvUSD LLAMMA
+soft-liq arb, and Compound V3 absorb + buyCollateral. Core catalog: V2 pool mechanics, order flow,
+bundle/positional strategies, liquidations, oracle/rebase/peg, cross-domain, protocol niches (expanded),
 and emerging — plus implementation-difficulty rankings, capital mapping, income estimates, codebase status, and
 on-chain validation. Merged from `mev_strategies_complete_v2.md` (53 strategies, 8 categories, 2,716 lines) and
 `mev_strategies_analysis_summary.md` (analysis cross-referenced with MEV Scout codebase status: 7 detectors
