@@ -2401,6 +2401,7 @@ mod tests {
 
     /// Insert one block with the fixture defaults shared by these tests
     /// (25 gwei base fee, $0.75 native, no txs/transfers).
+    #[allow(clippy::too_many_arguments)]
     fn seed_block(
         store: &ExplorerStore,
         block_number: u64,

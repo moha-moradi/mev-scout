@@ -458,7 +458,8 @@ mod tests {
     fn rejects_non_finite_or_negative_tolerances_and_premium() {
         use crate::error::ConfigError;
 
-        let cases: &[(&str, fn(&mut Config))] = &[
+        type Case = (&'static str, fn(&mut Config));
+        let cases: &[Case] = &[
             ("explorer.trace_tolerance_pct", |c| {
                 c.explorer.trace_tolerance_pct = -1.0
             }),

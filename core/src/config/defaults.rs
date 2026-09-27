@@ -232,13 +232,10 @@ mod tests {
                 "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C",
             );
         }
+        let eth_fluid = ChainName::Ethereum.default_fluid_factories();
         contains(
             ChainName::Ethereum,
-            &ChainName::Ethereum
-                .default_fluid_factories()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
+            eth_fluid.as_slice(),
             "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085",
         );
         assert!(ChainName::Base.default_fluid_factories().is_empty());

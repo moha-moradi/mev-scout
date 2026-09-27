@@ -138,7 +138,7 @@ mod tests {
         let id = explorer_canonical_id(&e);
         assert_eq!(
             id,
-            "Sandwich|0x3000000000000000000000000000000000000000|victim:0|backrun:null"
+            "Sandwich|0x3000000000000000000000000000000000000000|victim:0|backrun:Null"
         );
     }
 }
