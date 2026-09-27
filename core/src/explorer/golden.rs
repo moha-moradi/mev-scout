@@ -101,10 +101,10 @@ fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> Swap
     }
 }
 
-fn transfer(li: u64, token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
+fn transfer(token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
     TransferFact {
         tx_index: 0,
-        log_index: li,
+        log_index: 0,
         token,
         from,
         to,
@@ -112,7 +112,25 @@ fn transfer(li: u64, token: Address, from: Address, to: Address, amt: u64) -> Tr
     }
 }
 
-fn tx(idx: u64, from: Address, swaps: Vec<SwapFact>, transfers: Vec<TransferFact>) -> TxInput {
+fn tx(
+    idx: u64,
+    from: Address,
+    mut swaps: Vec<SwapFact>,
+    mut transfers: Vec<TransferFact>,
+) -> TxInput {
+    // The `swap`/`transfer` helpers cannot know their position, so stamp the
+    // real tx index and per-tx log ordering here. This mirrors the
+    // normalization `from_logs` performs on decoded facts
+    // (explorer::classify); without it every fact in the labeled set claims
+    // tx 0 / log 0 and the set would silently score wrong input.
+    for (log_idx, s) in swaps.iter_mut().enumerate() {
+        s.tx_index = idx;
+        s.log_index = log_idx as u64;
+    }
+    for (log_idx, t) in transfers.iter_mut().enumerate() {
+        t.tx_index = idx;
+        t.log_index = log_idx as u64;
+    }
     TxInput {
         tx_index: idx,
         tx_hash: B256::repeat_byte(idx as u8),
@@ -162,8 +180,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, TOKA, USDC, 100, 110)],
                     vec![
-                        transfer(0, TOKA, VICTIM, POOL_A, 100),
-                        transfer(1, USDC, POOL_A, VICTIM, 110),
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
                     ],
                 ),
                 tx(
@@ -171,8 +189,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     MARKET,
                     vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
                     vec![
-                        transfer(0, USDC, MARKET, POOL_A, 1000),
-                        transfer(1, TOKA, POOL_A, MARKET, 100),
+                        transfer(USDC, MARKET, POOL_A, 1000),
+                        transfer(TOKA, POOL_A, MARKET, 100),
                     ],
                 ),
                 tx(
@@ -183,10 +201,10 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                         swap(POOL_B, USDC, TOKA, 120, 130),
                     ],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_A, 100),
-                        transfer(1, USDC, POOL_A, ATK, 120),
-                        transfer(2, USDC, ATK, POOL_B, 120),
-                        transfer(3, TOKA, POOL_B, ATK, 130),
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
                     ],
                 ),
             ]),
@@ -204,8 +222,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     MARKET,
                     vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
                     vec![
-                        transfer(0, USDC, MARKET, POOL_A, 1000),
-                        transfer(1, TOKA, POOL_A, MARKET, 100),
+                        transfer(USDC, MARKET, POOL_A, 1000),
+                        transfer(TOKA, POOL_A, MARKET, 100),
                     ],
                 ),
                 tx(
@@ -216,10 +234,10 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                         swap(POOL_B, USDC, TOKA, 120, 130),
                     ],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_A, 100),
-                        transfer(1, USDC, POOL_A, ATK, 120),
-                        transfer(2, USDC, ATK, POOL_B, 120),
-                        transfer(3, TOKA, POOL_B, ATK, 130),
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
                     ],
                 ),
             ]),
@@ -236,8 +254,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, TOKA, USDC, 100, 110)],
                     vec![
-                        transfer(0, TOKA, VICTIM, POOL_A, 100),
-                        transfer(1, USDC, POOL_A, VICTIM, 110),
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
                     ],
                 ),
                 tx(
@@ -245,8 +263,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 500, 100)],
                     vec![
-                        transfer(0, USDC, ATK, POOL_A, 500),
-                        transfer(1, TOKA, POOL_A, ATK, 100),
+                        transfer(USDC, ATK, POOL_A, 500),
+                        transfer(TOKA, POOL_A, ATK, 100),
                     ],
                 ),
                 tx(
@@ -257,10 +275,10 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                         swap(POOL_B, USDC, TOKA, 120, 130),
                     ],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_A, 100),
-                        transfer(1, USDC, POOL_A, ATK, 120),
-                        transfer(2, USDC, ATK, POOL_B, 120),
-                        transfer(3, TOKA, POOL_B, ATK, 130),
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
                     ],
                 ),
             ]),
@@ -278,8 +296,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                        transfer(0, USDC, ATK, POOL_A, 100),
-                        transfer(1, TOKA, POOL_A, ATK, 200),
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -287,8 +305,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 100, 150)],
                     vec![
-                        transfer(0, USDC, VICTIM, POOL_A, 100),
-                        transfer(1, TOKA, POOL_A, VICTIM, 150),
+                        transfer(USDC, VICTIM, POOL_A, 100),
+                        transfer(TOKA, POOL_A, VICTIM, 150),
                     ],
                 ),
                 tx(
@@ -296,8 +314,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_B, TOKA, USDC, 200, 250)],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_B, 200),
-                        transfer(1, USDC, POOL_B, ATK, 250),
+                        transfer(TOKA, ATK, POOL_B, 200),
+                        transfer(USDC, POOL_B, ATK, 250),
                     ],
                 ),
             ]),
@@ -315,8 +333,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                        transfer(0, USDC, ATK, POOL_A, 100),
-                        transfer(1, TOKA, POOL_A, ATK, 200),
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -324,8 +342,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                        transfer(0, USDC, VICTIM, POOL_A, 100),
-                        transfer(1, TOKA, POOL_A, VICTIM, 200),
+                        transfer(USDC, VICTIM, POOL_A, 100),
+                        transfer(TOKA, POOL_A, VICTIM, 200),
                     ],
                 ),
                 tx(
@@ -333,8 +351,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_B, TOKA, USDC, 200, 250)],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_B, 200),
-                        transfer(1, USDC, POOL_B, ATK, 250),
+                        transfer(TOKA, ATK, POOL_B, 200),
+                        transfer(USDC, POOL_B, ATK, 250),
                     ],
                 ),
             ]),
@@ -352,8 +370,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                        transfer(0, USDC, ATK, POOL_A, 100),
-                        transfer(1, TOKA, POOL_A, ATK, 200),
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -361,8 +379,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 200, 350)],
                     vec![
-                        transfer(0, USDC, VICTIM, POOL_A, 200),
-                        transfer(1, TOKA, POOL_A, VICTIM, 350),
+                        transfer(USDC, VICTIM, POOL_A, 200),
+                        transfer(TOKA, POOL_A, VICTIM, 350),
                     ],
                 ),
                 tx(
@@ -370,8 +388,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, TOKA, USDC, 350, 195)],
                     vec![
-                        transfer(0, TOKA, ATK, POOL_A, 350),
-                        transfer(1, USDC, POOL_A, ATK, 195),
+                        transfer(TOKA, ATK, POOL_A, 350),
+                        transfer(USDC, POOL_A, ATK, 195),
                     ],
                 ),
             ]),

@@ -9,7 +9,7 @@ use mev_scout_core::types::{
     ChainName, GasModel, MevOpportunity, OutputFormat, ResultsFile, Strategy,
 };
 
-/// ── Test 6: ResultsFile JSON roundtrip ──────────────────────────────────────
+/// ── ResultsFile JSON roundtrip ──────────────────────────────────────────────
 #[test]
 fn test_results_file_roundtrip() {
     let opp = MevOpportunity::new(
@@ -49,7 +49,7 @@ fn test_results_file_roundtrip() {
     assert_eq!(deser.opportunities[0].block_number, 100);
 }
 
-/// ── Test 7: Config TOML output is valid ─────────────────────────────────────
+/// ── Config TOML output is valid ─────────────────────────────────────────────
 #[test]
 fn test_config_toml_output() {
     let config = Config::default();
@@ -67,7 +67,7 @@ fn test_config_toml_output() {
     assert_eq!(config.explorer.trace_error_usd_tol, 0.50);
 }
 
-/// ── Test 8: CLI override merging ────────────────────────────────────────────
+/// ── CLI override merging ────────────────────────────────────────────────────
 #[test]
 fn test_cli_override_merging() {
     let mut config = Config::default();
@@ -101,7 +101,7 @@ fn test_cli_override_merging() {
     assert_eq!(config.output.output, OutputFormat::Table);
 }
 
-/// ── Test 9: Discover V3 pools synthetic (topic verification) ───────────────
+/// ── DiscoveredPool → PoolInfo conversion ────────────────────────────────────
 #[test]
 fn test_discover_v3_pipeline() {
     let dp = DiscoveredPool {
@@ -152,7 +152,7 @@ fn test_discover_v3_pipeline() {
     );
 }
 
-/// ── Test 10: ConfigBuilder produces correct config ───────────────────────────
+/// ── ConfigBuilder produces correct config ───────────────────────────────────
 #[test]
 fn test_config_builder() {
     let config = ConfigBuilder::default()
@@ -166,19 +166,12 @@ fn test_config_builder() {
     assert_eq!(config.chain, ChainName::Ethereum);
     assert_eq!(config.output.output, OutputFormat::Json);
 
-    // Unset fields keep defaults
+    // Unset fields keep defaults — the no-override path is covered here, so a
+    // separate `ConfigBuilder::default().build() == Config::default()` test
+    // would only restate these assertions.
     assert_eq!(config.gas.gas_limit, 200_000);
     assert_eq!(config.backtest.strategies, Strategy::all().to_vec());
     assert!(config.rpc.rpc_url.is_none());
     assert!(config.days.is_none());
     assert!(config.from_block.is_none());
-}
-
-#[test]
-fn test_config_builder_empty_is_default() {
-    let built = ConfigBuilder::default().build();
-    let default = Config::default();
-    assert_eq!(built.chain, default.chain);
-    assert_eq!(built.rpc.rpc_url, default.rpc.rpc_url);
-    assert_eq!(built.gas.gas_limit, default.gas.gas_limit);
 }
