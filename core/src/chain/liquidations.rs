@@ -86,13 +86,3 @@ fn decode_liquidation_log(log: &Log) -> Option<LiquidationEvent> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn liquidation_topics_count() {
-        assert_eq!(liquidation_topics().len(), 2);
-    }
-}

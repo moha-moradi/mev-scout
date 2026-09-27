@@ -455,45 +455,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_negative_trace_tolerance() {
-        let mut config = Config::default();
-        config.explorer.trace_tolerance_pct = -1.0;
-        assert!(validate_live(&config).is_err());
-    }
+    fn rejects_non_finite_or_negative_tolerances_and_premium() {
+        use crate::error::ConfigError;
 
-    #[test]
-    fn rejects_non_finite_trace_tolerance() {
-        let mut config = Config::default();
-        config.explorer.trace_error_usd_tol = f64::NAN;
-        assert!(validate_live(&config).is_err());
-    }
-
-    #[test]
-    fn rejects_negative_mev_tolerance() {
-        let mut config = Config::default();
-        config.explorer.mev_tolerance_pct = -1.0;
-        assert!(validate_live(&config).is_err());
-    }
-
-    #[test]
-    fn rejects_non_finite_mev_tolerance() {
-        let mut config = Config::default();
-        config.explorer.mev_error_usd_tol = f64::INFINITY;
-        assert!(validate_live(&config).is_err());
-    }
-
-    #[test]
-    fn rejects_negative_winning_bid_premium() {
-        let mut config = Config::default();
-        config.gas.winning_bid_premium = -0.01;
-        assert!(validate_live(&config).is_err());
-    }
-
-    #[test]
-    fn rejects_non_finite_winning_bid_premium() {
-        let mut config = Config::default();
-        config.gas.winning_bid_premium = f64::NAN;
-        assert!(validate_live(&config).is_err());
+        let cases: &[(&str, fn(&mut Config))] = &[
+            ("explorer.trace_tolerance_pct", |c| {
+                c.explorer.trace_tolerance_pct = -1.0
+            }),
+            ("explorer.trace_error_usd_tol", |c| {
+                c.explorer.trace_error_usd_tol = f64::NAN
+            }),
+            ("explorer.mev_tolerance_pct", |c| {
+                c.explorer.mev_tolerance_pct = -1.0
+            }),
+            ("explorer.mev_error_usd_tol", |c| {
+                c.explorer.mev_error_usd_tol = f64::INFINITY
+            }),
+            ("gas.winning_bid_premium", |c| {
+                c.gas.winning_bid_premium = -0.01
+            }),
+            ("gas.winning_bid_premium", |c| {
+                c.gas.winning_bid_premium = f64::NAN
+            }),
+        ];
+        for (field, set) in cases {
+            let mut config = Config::default();
+            set(&mut config);
+            match validate_live(&config) {
+                Err(ConfigError::InvalidValue {
+                    field: got,
+                    message,
+                }) => {
+                    assert_eq!(got, *field);
+                    assert_eq!(message, "must be finite and non-negative");
+                }
+                other => panic!("expected InvalidValue for {field}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

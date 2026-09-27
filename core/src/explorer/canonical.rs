@@ -136,6 +136,9 @@ mod tests {
         let pool = address!("3000000000000000000000000000000000000000");
         let e = ev(MevKind::Sandwich, vec![pool]);
         let id = explorer_canonical_id(&e);
-        assert!(id.starts_with("Sandwich|0x3000"));
+        assert_eq!(
+            id,
+            "Sandwich|0x3000000000000000000000000000000000000000|victim:0|backrun:null"
+        );
     }
 }

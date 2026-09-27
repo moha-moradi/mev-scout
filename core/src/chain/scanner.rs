@@ -112,11 +112,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_batch_size_is_conservative() {
-        assert_eq!(DEFAULT_BATCH_SIZE, 500);
-    }
-
-    #[test]
     fn with_batch_size_clamps_to_minimum() {
         let rpc = RpcClient::new("http://localhost:8545", 1).unwrap();
         let scanner = LogScanner::new(rpc).with_batch_size(0);

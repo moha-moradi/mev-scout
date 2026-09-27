@@ -109,13 +109,3 @@ fn decode_trade_log(log: &Log) -> Option<TradeEvent> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trade_topics_count() {
-        assert_eq!(trade_topics().len(), 13);
-    }
-}

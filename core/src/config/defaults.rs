@@ -139,43 +139,25 @@ mod tests {
     use super::*;
     use alloy::primitives::address;
 
-    /// `chains.toml` must stay parseable — discovery silently degrades
-    /// to defaults when chain entries fail to deserialize.
     #[test]
-    fn test_default_chains_parse() {
-        let chains = default_chains();
-        assert!(chains.contains_key("polygon"));
-        assert!(chains.contains_key("ethereum"));
-    }
+    fn chains_toml_registry_covers_builtin_addresses() {
+        use crate::types::ChainName;
 
-    #[test]
-    fn bsc_wires_pancake_infinity_manager() {
         let chains = default_chains();
-        let bsc = &chains["bsc"];
-        assert_eq!(
-            bsc.infinity_cl_pool_manager,
-            Some(address!("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"))
-        );
-    }
+        for key in [
+            "polygon",
+            "avalanche",
+            "bsc",
+            "arbitrum",
+            "base",
+            "ethereum",
+            "optimism",
+        ] {
+            assert!(chains.contains_key(key), "{key} missing from chains.toml");
+        }
 
-    #[test]
-    fn ethereum_wires_fluid_and_metric_factories() {
-        let chains = default_chains();
-        let ethereum = &chains["ethereum"];
-        assert_eq!(
-            ethereum.fluid_factory,
-            Some(address!("0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085"))
-        );
-        assert_eq!(
-            ethereum.metric_factory,
-            Some(address!("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"))
-        );
-    }
-
-    #[test]
-    fn metric_factory_wired_on_all_supported_chains() {
-        let chains = default_chains();
-        let expected = address!("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C");
+        let metric = address!("0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C");
+        let fluid = address!("0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085");
         for name in [
             "polygon",
             "avalanche",
@@ -185,12 +167,136 @@ mod tests {
             "ethereum",
             "optimism",
         ] {
-            let cfg = &chains[name];
-            assert_eq!(
-                cfg.metric_factory,
-                Some(expected),
-                "{name} must wire the Metric V2 factory"
+            assert_eq!(chains[name].metric_factory, Some(metric), "{name}");
+        }
+        assert_eq!(
+            chains["bsc"].infinity_cl_pool_manager,
+            Some(address!("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"))
+        );
+        assert_eq!(chains["ethereum"].fluid_factory, Some(fluid));
+
+        let contains = |chain: ChainName, got: &[&str], want: &str| {
+            assert!(
+                got.iter().any(|s| s.eq_ignore_ascii_case(want)),
+                "{chain:?} missing {want}"
             );
+        };
+        contains(
+            ChainName::Arbitrum,
+            ChainName::Arbitrum.default_uniswap_v3_factories(),
+            "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+        );
+        contains(
+            ChainName::Arbitrum,
+            ChainName::Arbitrum.default_uniswap_v3_factories(),
+            "0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b",
+        );
+        contains(
+            ChainName::Bsc,
+            ChainName::Bsc.default_uniswap_v2_factories(),
+            "0x858E3312ed3A876947EA49d572A7C42DE08af7EE",
+        );
+        contains(
+            ChainName::Base,
+            ChainName::Base.default_uniswap_v2_factories(),
+            "0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6",
+        );
+        contains(
+            ChainName::Polygon,
+            ChainName::Polygon.default_uniswap_v3_factories(),
+            "0x2Bef16A0081565E72100D73CBe19B1Bd2d802380",
+        );
+        for want in [
+            "0xAE6E5c62328ade73ceefD42228528b70c8157D0d",
+            "0x1128F23D0bc0A8396E9FBC3c0c68f5EA228B8256",
+            "0x512eb749541B7cf294be882D636218c84a5e9E5F",
+        ] {
+            contains(
+                ChainName::Avalanche,
+                ChainName::Avalanche.default_uniswap_v3_factories(),
+                want,
+            );
+        }
+        for chain in [
+            ChainName::Ethereum,
+            ChainName::Base,
+            ChainName::Arbitrum,
+            ChainName::Optimism,
+            ChainName::Polygon,
+            ChainName::Bsc,
+            ChainName::Avalanche,
+        ] {
+            contains(
+                chain,
+                &chain.default_metric_factories(),
+                "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C",
+            );
+        }
+        contains(
+            ChainName::Ethereum,
+            &ChainName::Ethereum
+                .default_fluid_factories()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085",
+        );
+        assert!(ChainName::Base.default_fluid_factories().is_empty());
+        let avax_lb = ChainName::Avalanche.default_trader_joe_factories();
+        contains(
+            ChainName::Avalanche,
+            avax_lb.as_slice(),
+            "0xEb480050b016f6c6d45203D2346B68bDDDa23D4D",
+        );
+        contains(
+            ChainName::Bsc,
+            ChainName::Bsc.default_curve_factories(),
+            "0xd7E72f3615aa65b92A4DBdC211E296a35512988B",
+        );
+        contains(
+            ChainName::Polygon,
+            ChainName::Polygon.default_curve_factories(),
+            "0x1764ee18e8B3ccA4787249Ceb249356192594585",
+        );
+        contains(
+            ChainName::Ethereum,
+            ChainName::Ethereum.default_curve_factories(),
+            "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6",
+        );
+
+        for chain in [
+            ChainName::Polygon,
+            ChainName::Avalanche,
+            ChainName::Bsc,
+            ChainName::Arbitrum,
+            ChainName::Base,
+            ChainName::Ethereum,
+            ChainName::Optimism,
+        ] {
+            let metric = chain.default_metric_factories();
+            let fluid_list = chain.default_fluid_factories();
+            let joe = chain.default_trader_joe_factories();
+            let solidly = chain.default_solidly_factories();
+            let camelot = chain.default_camelot_factories();
+            let lists: [&[&str]; 7] = [
+                chain.default_uniswap_v2_factories(),
+                chain.default_uniswap_v3_factories(),
+                solidly.as_slice(),
+                camelot.as_slice(),
+                joe.as_slice(),
+                chain.default_curve_factories(),
+                metric.as_slice(),
+            ];
+            for list in lists {
+                for f in list {
+                    f.parse::<Address>()
+                        .unwrap_or_else(|e| panic!("{chain:?} factory {f}: {e}"));
+                }
+            }
+            for f in fluid_list.as_slice() {
+                f.parse::<Address>()
+                    .unwrap_or_else(|e| panic!("{chain:?} fluid {f}: {e}"));
+            }
         }
     }
 

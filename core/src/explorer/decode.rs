@@ -1269,35 +1269,33 @@ mod tests {
     }
 
     #[test]
-    fn v3_mint_rejects_truncated_data() {
-        // Canonical Mint needs 128 bytes of data; a 96-byte payload must be rejected.
-        let l = log(
-            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
-            vec![
+    fn v3_mint_and_burn_reject_truncated_data() {
+        let pool = address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640");
+        let owner = b256!("0000000000000000000000000000000000000000000000000000000000000001");
+        // Mint needs 128 bytes; Burn needs 96. Shorter payloads must be rejected.
+        let cases: &[(&str, B256, B256, B256, usize)] = &[
+            (
+                "mint",
                 V3_MINT_TOPIC,
-                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
                 b256!("0000000000000000000000000000000000000000000000000000000000030246"),
                 b256!("00000000000000000000000000000000000000000000000000000000000303f4"),
-            ],
-            [word(0), word(0), word(0)].concat(),
-        );
-        assert!(decode_v3_mint_burn(&l).is_none());
-    }
-
-    #[test]
-    fn v3_burn_rejects_truncated_data() {
-        // Canonical Burn needs 96 bytes of data; a 64-byte payload must be rejected.
-        let l = log(
-            address!("88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"),
-            vec![
+                3,
+            ),
+            (
+                "burn",
                 V3_BURN_TOPIC,
-                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
                 b256!("000000000000000000000000000000000000000000000000000000000003011a"),
                 b256!("00000000000000000000000000000000000000000000000000000000000302b4"),
-            ],
-            [word(0), word(0)].concat(),
-        );
-        assert!(decode_v3_mint_burn(&l).is_none());
+                2,
+            ),
+        ];
+        for (name, topic, tick_lo, tick_hi, words) in cases {
+            let data = std::iter::repeat_n(word(0), *words)
+                .flatten()
+                .collect::<Vec<_>>();
+            let l = log(pool, vec![*topic, owner, *tick_lo, *tick_hi], data);
+            assert!(decode_v3_mint_burn(&l).is_none(), "{name}");
+        }
     }
 
     #[test]
@@ -1343,7 +1341,7 @@ mod tests {
     }
 
     #[test]
-    fn aave_v3_flash_loan_decodes() {
+    fn aave_flash_loans_decode() {
         let target = b256!("0000000000000000000000001111111111111111111111111111111111111111");
         let asset = b256!("0000000000000000000000002222222222222222222222222222222222222222");
         let initiator = address!("3333333333333333333333333333333333333333");
@@ -1366,11 +1364,7 @@ mod tests {
         assert_eq!(f.amount, U256::from(1_000));
         assert_eq!(f.fee, Some(U256::from(5)));
         assert_eq!(f.initiator, initiator);
-    }
 
-    #[test]
-    fn aave_v2_flash_loan_decodes() {
-        let target = b256!("0000000000000000000000001111111111111111111111111111111111111111");
         let initiator_topic =
             b256!("0000000000000000000000003333333333333333333333333333333333333333");
         let asset = b256!("0000000000000000000000002222222222222222222222222222222222222222");
@@ -1504,70 +1498,6 @@ mod tests {
     }
 
     #[test]
-    fn topic_hashes_match_canonical_signatures() {
-        use alloy::primitives::keccak256;
-        let k = |s: &str| keccak256(s.as_bytes());
-        // 1inch AggregationRouterV4/V5.
-        assert_eq!(
-            k("Swapped(address,address,address,address,uint256,uint256)"),
-            ONEINCH_SWAPPED_TOPIC
-        );
-        // Paraswap AugustusSwapper (v3/v4) + v6.x.
-        assert_eq!(
-            k("Swapped(address,address,address,address,uint256,uint256,uint256,string)"),
-            PARASWAP_SWAPPED_TOPIC
-        );
-        assert_eq!(
-            k("SwappedV3(bytes16,address,uint256,address,address,address,address,uint256,uint256,uint256)"),
-            PARASWAP_SWAPPED_V3_TOPIC
-        );
-        // 0x Exchange V3/V4 `Fill` (assets + fixed tail).
-        assert_eq!(
-            k("Fill(address,address,bytes,bytes,bytes,bytes,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"),
-            ZRX_FILL_TOPIC
-        );
-    }
-
-    /// Pin the Uniswap topic0 values to the signatures declared by Uniswap
-    /// itself, so a refactor cannot silently drift them again:
-    ///   v3-core/contracts/interfaces/pool/IUniswapV3PoolEvents.sol
-    ///   v4-core/src/interfaces/IPoolManager.sol
-    ///
-    /// The layout those declarations imply is what `decode_v3_mint_burn` and
-    /// `decode_swap` assume:
-    ///   V3 Mint  `Mint(address sender, address indexed owner,
-    ///                int24 indexed tickLower, int24 indexed tickUpper,
-    ///                uint128 amount, uint256 amount0, uint256 amount1)`
-    ///         -> 4 topics, 128 bytes of data [sender, amount, amount0, amount1]
-    ///   V3 Burn  `Burn(address indexed owner, int24 indexed tickLower,
-    ///                int24 indexed tickUpper, uint128 amount, uint256 amount0,
-    ///                uint256 amount1)`
-    ///         -> 4 topics, 96 bytes of data [amount, amount0, amount1]
-    ///   V3 Swap  3 topics, 160 bytes, tick in data[156..160]
-    ///   V4 Swap  3 topics, 192 bytes, tick in data[156..160]; V4 has no
-    ///            Mint/Burn at all, it uses `ModifyLiquidity` instead.
-    #[test]
-    fn uniswap_topics_match_official_signatures() {
-        use alloy::primitives::keccak256;
-        assert_eq!(
-            V3_MINT_TOPIC,
-            keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)")
-        );
-        assert_eq!(
-            V3_BURN_TOPIC,
-            keccak256("Burn(address,int24,int24,uint128,uint256,uint256)")
-        );
-        assert_eq!(
-            V3_SWAP_TOPIC,
-            keccak256("Swap(address,address,int256,int256,uint160,uint128,int24)")
-        );
-        assert_eq!(
-            *V4_SWAP_TOPIC,
-            keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-        );
-    }
-
-    #[test]
     fn registry_resolves_sentinel_direction_without_transfers() {
         // V2 swap where amount0In > 0 => token0 in. Registry resolves without
         // any transfer-pairing hints.
@@ -1694,57 +1624,44 @@ mod tests {
     }
 
     #[test]
-    fn paraswap_swapped_decodes() {
+    fn paraswap_swapped_variants_decode() {
         let router = address!("def171fe48cf0115b1d80b88dc8eab59176fee57");
         let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let beneficiary = address!("cccccccccccccccccccccccccccccccccccccccc");
-        let mut data = vec![0u8; 160];
-        data[32 + 24..64].copy_from_slice(&5000u64.to_be_bytes()); // srcAmount
-        data[64 + 24..96].copy_from_slice(&4900u64.to_be_bytes()); // receivedAmount
-        let (amm, s) = decode_swap(&log(
-            router,
-            vec![
+        // (layout, topic, data words, srcAmount word, receivedAmount word, in, out)
+        let cases = [
+            (
                 PARASWAP_SWAPPED_TOPIC,
-                topic_addr(beneficiary),
-                topic_addr(src),
-                topic_addr(dst),
-            ],
-            data,
-        ))
-        .unwrap();
-        assert_eq!(amm, Amm::Aggregator);
-        assert_eq!(s.token_in, src);
-        assert_eq!(s.token_out, dst);
-        assert_eq!(s.amount_in, U256::from(5000));
-        assert_eq!(s.amount_out, U256::from(4900));
-    }
-
-    #[test]
-    fn paraswap_swapped_v3_decodes() {
-        let router = address!("def171fe48cf0115b1d80b88dc8eab59176fee57");
-        let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        let beneficiary = address!("cccccccccccccccccccccccccccccccccccccccc");
-        let mut data = vec![0u8; 224];
-        data[128 + 24..160].copy_from_slice(&7000u64.to_be_bytes()); // srcAmount
-        data[160 + 24..192].copy_from_slice(&6900u64.to_be_bytes()); // receivedAmount
-        let (amm, s) = decode_swap(&log(
-            router,
-            vec![
-                PARASWAP_SWAPPED_V3_TOPIC,
-                topic_addr(beneficiary),
-                topic_addr(src),
-                topic_addr(dst),
-            ],
-            data,
-        ))
-        .unwrap();
-        assert_eq!(amm, Amm::Aggregator);
-        assert_eq!(s.token_in, src);
-        assert_eq!(s.token_out, dst);
-        assert_eq!(s.amount_in, U256::from(7000));
-        assert_eq!(s.amount_out, U256::from(6900));
+                160usize,
+                32usize,
+                64usize,
+                5000u64,
+                4900u64,
+            ),
+            (PARASWAP_SWAPPED_V3_TOPIC, 224, 128, 160, 7000, 6900),
+        ];
+        for (topic, len, src_at, dst_at, amount_in, amount_out) in cases {
+            let mut data = vec![0u8; len];
+            data[src_at + 24..src_at + 32].copy_from_slice(&amount_in.to_be_bytes());
+            data[dst_at + 24..dst_at + 32].copy_from_slice(&amount_out.to_be_bytes());
+            let (amm, s) = decode_swap(&log(
+                router,
+                vec![
+                    topic,
+                    topic_addr(beneficiary),
+                    topic_addr(src),
+                    topic_addr(dst),
+                ],
+                data,
+            ))
+            .unwrap();
+            assert_eq!(amm, Amm::Aggregator);
+            assert_eq!(s.token_in, src);
+            assert_eq!(s.token_out, dst);
+            assert_eq!(s.amount_in, U256::from(amount_in));
+            assert_eq!(s.amount_out, U256::from(amount_out));
+        }
     }
 
     #[test]
@@ -1853,18 +1770,5 @@ mod tests {
         assert_eq!(j.liquidity, 1);
         assert_eq!(j.amount0, U256::from(9));
         assert_eq!(j.amount1, U256::from(7));
-    }
-
-    #[test]
-    fn lb_topics_match_keccak() {
-        use alloy::primitives::keccak256;
-        assert_eq!(
-            *LB_DEPOSITED_TO_BINS_TOPIC,
-            keccak256(b"DepositedToBins(address,address,uint256[],bytes32[])")
-        );
-        assert_eq!(
-            *LB_WITHDRAWN_FROM_BINS_TOPIC,
-            keccak256(b"WithdrawnFromBins(address,address,uint256[],bytes32[])")
-        );
     }
 }

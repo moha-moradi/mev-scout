@@ -462,3 +462,109 @@ async fn resolve_scan_window(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dex_type::DexType;
+    use alloy::primitives::address;
+
+    fn temp_store(tag: &str) -> (SqliteStore, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("mev_scout_persist_{}_{}", tag, std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("cache.db");
+        (SqliteStore::open(&path).unwrap(), path)
+    }
+
+    #[test]
+    fn persist_universe_roundtrips_remote_pools_with_dex_type() {
+        let (store, path) = temp_store("roundtrip");
+
+        let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let pools = vec![
+            DiscoveredPool::new(
+                address!("1111111111111111111111111111111111111111"),
+                t0,
+                t1,
+                0,
+                DexType::UniswapV3,
+                0,
+            )
+            .with_tvl_usd(Some(50_000.0)),
+            DiscoveredPool::new(
+                address!("2222222222222222222222222222222222222222"),
+                t0,
+                t1,
+                0,
+                DexType::TraderJoeLB,
+                0,
+            ),
+            DiscoveredPool::new(
+                address!("3333333333333333333333333333333333333333"),
+                t0,
+                t1,
+                0,
+                DexType::Pendle,
+                0,
+            ),
+            DiscoveredPool::new(
+                address!("4444444444444444444444444444444444444444"),
+                Address::ZERO,
+                t1,
+                3000,
+                DexType::UniswapV3,
+                0,
+            ),
+        ];
+
+        let persisted = persist_universe(&store, &pools);
+        assert_eq!(persisted, 3, "zero-token entry must not be persisted");
+        drop(store);
+
+        let store = SqliteStore::open(&path).unwrap();
+        for p in pools.iter().take(3) {
+            let got = store
+                .get_discovered_pool(&p.address)
+                .unwrap()
+                .unwrap_or_else(|| panic!("pool {} missing after round-trip", p.address));
+            assert_eq!(got.address, p.address);
+            assert_eq!(got.dex_type, p.dex_type);
+            assert_eq!(got.token0, p.token0);
+            assert_eq!(got.token1, p.token1);
+            assert_eq!(got.tvl_usd, p.tvl_usd);
+        }
+        assert!(store
+            .get_discovered_pool(&address!("4444444444444444444444444444444444444444"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn persist_universe_second_sparser_run_never_clobbers_cached_row() {
+        let (store, _path) = temp_store("merge");
+
+        let addr = address!("5555555555555555555555555555555555555555");
+        let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+        let rich = vec![DiscoveredPool::new(
+            addr,
+            t0,
+            t1,
+            500,
+            DexType::UniswapV3,
+            100,
+        )];
+        assert_eq!(persist_universe(&store, &rich), 1);
+
+        let sparse = vec![DiscoveredPool::new(addr, t0, t1, 0, DexType::UniswapV2, 0)];
+        assert_eq!(persist_universe(&store, &sparse), 1);
+
+        let got = store.get_discovered_pool(&addr).unwrap().unwrap();
+        assert_eq!(got.dex_type, DexType::UniswapV3);
+        assert_eq!(got.fee, 500);
+        assert_eq!(got.creation_block, 100);
+    }
+}

@@ -946,40 +946,8 @@ mod tests {
     fn store_with_fixtures() -> ExplorerStore {
         use alloy::primitives::{address as addr, b256 as b256f, U256 as U256t};
         let store = ExplorerStore::open_in_memory().unwrap();
-        use crate::explorer::types::{Confidence, MevEvent, MevKind};
         use std::collections::HashMap;
 
-        let ev = |block: u64, pools: Vec<alloy::primitives::Address>, cid: &str| {
-            let _ = cid;
-            MevEvent {
-                block,
-                ts: 1_700_000_000,
-                tx_index: 1,
-                tx_hash: b256f!("1111111111111111111111111111111111111111111111111111111111111111"),
-                kind: MevKind::ArbAtomic,
-                searcher: addr!("2222000000000000000000000000000000000002"),
-                contract: None,
-                pools: pools.clone(),
-                profit_token: Some(addr!("4444000000000000000000000000000000000004")),
-                profit_amount: Some(U256t::from(1_000_000u64)),
-                profit_tokens: vec![],
-                profit_usd: None,
-                gas_cost_wei: U256t::from(100_000_000_000_000u64),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
-                details: serde_json::json!({
-                    "route": [
-                        {"pool": format!("{:#x}", pools[0]), "amm": "v3",
-                         "token_in": "0x4444000000000000000000000000000000000004",
-                         "token_out": "0x5555000000000000000000000000000000000005",
-                         "amount_in": "1", "amount_out": "2"}
-                    ]
-                }),
-            }
-        };
         let pool_a = addr!("3333000000000000000000000000000000000003");
         let pool_b = addr!("33330000000000000000000000000000000000ff");
         let mut prices = HashMap::new();
@@ -991,7 +959,7 @@ mod tests {
             },
         );
         // Block 100: realized op with canonical id (scanner knows pool_a + cid)
-        let e = ev(100, vec![pool_a], "ArbAtomic|matching");
+        let e = realized_ev_at(100, vec![pool_a]);
         let hash1 = b256f!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let hash2 = b256f!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         store
@@ -1010,7 +978,7 @@ mod tests {
             })
             .unwrap();
         // Block 102: realized op on an unknown pool (M1) + scanner never there
-        let e2 = ev(102, vec![pool_b], "ArbAtomic|other");
+        let e2 = realized_ev_at(102, vec![pool_b]);
         store
             .insert_block_facts(BlockFactsInput {
                 block_number: 102,

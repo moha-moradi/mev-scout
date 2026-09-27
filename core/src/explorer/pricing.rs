@@ -611,6 +611,5 @@ mod tests {
         assert!((u256_to_f64(U256::from(123u64)) - 123.0).abs() < 1e-9);
         let big = U256::from(1u64) << 100;
         assert!((u256_to_f64(big) - (1u128 << 100) as f64).abs() < 1e6);
-        let _ = address!("0x0000000000000000000000000000000000000001");
     }
 }

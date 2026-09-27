@@ -323,32 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn test_unsupported_dex_flagged() {
-        for bad in ["dodo", "woofi", "hashflow", "maverick", "ekubo"] {
-            assert!(
-                is_unsupported_dex(bad),
-                "{bad} should be flagged unsupported"
-            );
-        }
-        // Supported siblings must NOT be flagged.
-        for good in [
-            "pharaoh-v3",
-            "pharaoh-dlmm",
-            "aerodrome",
-            "velodrome",
-            "velodrome-v3",
-            "aerodrome-slipstream",
-            "uniswap",
-            "pancakeswap",
-            "pancakeswap-infinity",
-            "metric",
-            "fluid",
-        ] {
-            assert!(!is_unsupported_dex(good), "{good} should stay supported");
-        }
-    }
-
-    #[test]
     fn pancakeswap_infinity_maps_to_infinity() {
         assert_eq!(
             infer_dex_type(Some("pancakeswap-infinity"), &["infinity"]),

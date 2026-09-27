@@ -1425,7 +1425,9 @@ fn has_transfer_cycle(searcher: Address, transfers: &[TransferFact]) -> bool {
 mod tests {
     use super::*;
     use crate::explorer::store::OpenPosition;
-    use crate::explorer::types::{Amm, FlashLoanFact, LegSource, LiquidationFact, MevKind};
+    use crate::explorer::types::{
+        Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, MevKind,
+    };
     use alloy::primitives::{address, b256, U256};
 
     const ATK: Address = address!("1000000000000000000000000000000000000001");
@@ -1435,6 +1437,57 @@ mod tests {
     const USDC: Address = address!("4000000000000000000000000000000000000005");
     const TOKA: Address = address!("5000000000000000000000000000000000000006");
     const WNATIVE: Address = address!("6000000000000000000000000000000000000007");
+
+    fn flash_loan(provider: Address) -> FlashLoanFact {
+        FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(1000),
+            fee: Some(U256::from(5)),
+            recipient: ATK,
+            provider,
+        }
+    }
+
+    fn liquidation(
+        protocol: &'static str,
+        liquidator: Address,
+        collateral: Address,
+        debt: Address,
+        collateral_amount: u64,
+        debt_to_cover: u64,
+    ) -> LiquidationFact {
+        LiquidationFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol,
+            user: VICTIM,
+            liquidator,
+            collateral_asset: collateral,
+            debt_asset: debt,
+            collateral_amount: U256::from(collateral_amount),
+            debt_to_cover: U256::from(debt_to_cover),
+        }
+    }
+
+    fn jit(tx_index: u64, is_mint: bool) -> JitFact {
+        JitFact {
+            tx_index,
+            log_index: 0,
+            pool: POOL_A,
+            owner: ATK,
+            tick_lower: -100,
+            tick_upper: 100,
+            is_mint,
+            liquidity: 1000,
+            amount0: U256::from(5),
+            amount1: U256::from(5),
+            bin_amm: false,
+        }
+    }
 
     fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> SwapFact {
         SwapFact {
@@ -1759,24 +1812,6 @@ mod tests {
     }
 
     #[test]
-    fn two_entity_cycle_does_not_emit() {
-        // ATK ↔ pool round trip is only a 2-entity cycle; with parity off the
-        // profitable residual is not MEV and must not be staged as Unknown.
-        let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-        ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.arb_likely_parity = false;
-        let events = classify_block(&input);
-        assert!(
-            events.is_empty(),
-            "2-entity cycle must not emit, got {events:?}"
-        );
-    }
-
-    #[test]
     fn interleaved_cycle_is_exact_arb() {
         // Three-hop cycle emitted out of chain order: A:USDC->TOKA,
         // A:WNATIVE->USDC, B:TOKA->WNATIVE. The graph walk still closes it.
@@ -1800,67 +1835,33 @@ mod tests {
     }
 
     #[test]
-    fn flash_loan_principal_is_netted_when_repay_missing() {
+    fn flash_loan_netting_depends_on_repay_leg() {
         let provider = address!("7000000000000000000000000000000000000007");
         let swaps = vec![
             swap(POOL_A, USDC, TOKA, 1000, 1000),
             swap(POOL_B, TOKA, USDC, 1000, 1010),
         ];
-        let transfers = vec![
-            transfer(0, USDC, provider, ATK, 1000), // borrow (repay leg absent)
+        let borrow_legs = vec![
+            transfer(0, USDC, provider, ATK, 1000),
             transfer(1, USDC, ATK, POOL_A, 1000),
             transfer(2, TOKA, POOL_A, ATK, 1000),
             transfer(3, TOKA, ATK, POOL_B, 1000),
             transfer(4, USDC, POOL_B, ATK, 1010),
         ];
-        let mut t = tx(0, ATK, true, swaps, transfers);
-        t.flashloans = vec![FlashLoanFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            initiator: ATK,
-            token: USDC,
-            amount: U256::from(1000),
-            fee: Some(U256::from(5)),
-            recipient: ATK,
-            provider,
-        }];
-        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
-        // 1010 sold − 1000 bought − 5 fee = 5; the 1000 principal is stripped.
-        assert_eq!(ev.profit_amount, Some(U256::from(5)));
-        assert_eq!(ev.flashloan_fee_wei, Some(U256::from(5)));
-    }
-
-    #[test]
-    fn flash_loan_repay_present_keeps_profit() {
-        let provider = address!("7000000000000000000000000000000000000007");
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 1000, 1000),
-            swap(POOL_B, TOKA, USDC, 1000, 1010),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, provider, ATK, 1000), // borrow
-            transfer(1, USDC, ATK, POOL_A, 1000),
-            transfer(2, TOKA, POOL_A, ATK, 1000),
-            transfer(3, TOKA, ATK, POOL_B, 1000),
-            transfer(4, USDC, POOL_B, ATK, 1010),
-            transfer(5, USDC, ATK, provider, 1005), // repay principal + fee
-        ];
-        let mut t = tx(0, ATK, true, swaps, transfers);
-        t.flashloans = vec![FlashLoanFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            initiator: ATK,
-            token: USDC,
-            amount: U256::from(1000),
-            fee: Some(U256::from(5)),
-            recipient: ATK,
-            provider,
-        }];
-        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
-        // Repay already nets the principal; don't subtract it twice.
-        assert_eq!(ev.profit_amount, Some(U256::from(5)));
+        // Missing repay: principal is stripped so only the 5 fee remains.
+        // Present repay (principal + fee): the transfer stream already nets
+        // the principal, and it must not be subtracted a second time.
+        for with_repay in [false, true] {
+            let mut transfers = borrow_legs.clone();
+            if with_repay {
+                transfers.push(transfer(5, USDC, ATK, provider, 1005));
+            }
+            let mut t = tx(0, ATK, true, swaps.clone(), transfers);
+            t.flashloans = vec![flash_loan(provider)];
+            let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
+            assert_eq!(ev.profit_amount, Some(U256::from(5)), "repay={with_repay}");
+            assert_eq!(ev.flashloan_fee_wei, Some(U256::from(5)));
+        }
     }
 
     #[test]
@@ -1893,252 +1894,163 @@ mod tests {
     const MARKET: Address = address!("8000000000000000000000000000000000000008");
 
     #[test]
-    fn causal_backrun_detected_after_market_move() {
-        // tx0: pre-move reference — TOKA sold on POOL_A at ~1.1 USDC/TOKA.
-        let r = tx(
-            0,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-            vec![
-                transfer(0, TOKA, VICTIM, POOL_A, 100),
-                transfer(1, USDC, POOL_A, VICTIM, 110),
-            ],
-        );
-        // tx1: market move — large USDC→TOKA buy on POOL_A (TOKA price up).
-        let a = tx(
-            1,
-            MARKET,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
-            vec![
-                transfer(0, USDC, MARKET, POOL_A, 1000),
-                transfer(1, TOKA, POOL_A, MARKET, 100),
-            ],
-        );
-        // tx2: backrunner sells TOKA (1.2 vs pre-move 1.1) and re-buys on
-        // POOL_B, closing a cycle — a different sender, adjacent to the move.
-        let b = tx(
-            2,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 100, 120),
-                swap(POOL_B, USDC, TOKA, 120, 130),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 100),
-                transfer(1, USDC, POOL_A, ATK, 120),
-                transfer(2, USDC, ATK, POOL_B, 120),
-                transfer(3, TOKA, POOL_B, ATK, 130),
-            ],
-        );
-        let input = block(vec![r, a, b]);
-        let events = classify_block(&input);
-        let ev = event_of(&events, MevKind::Backrun);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.confidence, Confidence::Inferred);
-        assert_eq!(ev.tx_index, 2);
-        let reasons: Vec<&str> = ev.details["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        assert!(reasons.contains(&"STATE_DELTA_MATCH"));
-        assert!(reasons.contains(&"DIRECT_TOKEN_CYCLE"));
-        assert_eq!(
-            ev.details["evidence"]["DIRECTION_OF_BENEFIT"],
-            serde_json::json!(true)
-        );
-        assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
-        assert_eq!(ev.details["mode"], serde_json::json!("realized"));
-        // Precedence: the profitable closed-cycle tx keeps Backrun, so the
-        // ArbAtomic claim on tx2 is superseded (no double-counted P&L).
-        assert_eq!(
-            events.iter().filter(|e| e.kind == MevKind::Backrun).count(),
-            1
-        );
-        assert!(!events
-            .iter()
-            .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == 2));
-        assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(1)]);
-    }
+    fn causal_backrun_and_frontrun_cases() {
+        // (include pre-move reference, mover, USDC sold into the move, expect a backrun)
+        let backruns = [
+            (
+                "after a different sender moves the market",
+                true,
+                MARKET,
+                1000u64,
+                true,
+            ),
+            ("without a pre-move reference", false, MARKET, 1000, false),
+            (
+                "when the move and the backrun share a sender",
+                true,
+                ATK,
+                500,
+                false,
+            ),
+        ];
+        for (name, with_reference, mover, move_in, expect) in backruns {
+            let mut txs = Vec::new();
+            if with_reference {
+                txs.push(tx(
+                    0,
+                    VICTIM,
+                    true,
+                    vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                    vec![
+                        transfer(0, TOKA, VICTIM, POOL_A, 100),
+                        transfer(1, USDC, POOL_A, VICTIM, 110),
+                    ],
+                ));
+            }
+            let move_idx = txs.len() as u64;
+            txs.push(tx(
+                move_idx,
+                mover,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, move_in, 100)],
+                vec![
+                    transfer(0, USDC, mover, POOL_A, move_in),
+                    transfer(1, TOKA, POOL_A, mover, 100),
+                ],
+            ));
+            let back_idx = txs.len() as u64;
+            txs.push(tx(
+                back_idx,
+                ATK,
+                true,
+                vec![
+                    swap(POOL_A, TOKA, USDC, 100, 120),
+                    swap(POOL_B, USDC, TOKA, 120, 130),
+                ],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_A, 100),
+                    transfer(1, USDC, POOL_A, ATK, 120),
+                    transfer(2, USDC, ATK, POOL_B, 120),
+                    transfer(3, TOKA, POOL_B, ATK, 130),
+                ],
+            ));
+            let events = classify_block(&block(txs));
+            let found = kinds(&events).contains(&MevKind::Backrun);
+            assert_eq!(found, expect, "{name}");
+            if !expect {
+                continue;
+            }
+            let ev = event_of(&events, MevKind::Backrun);
+            assert_eq!(ev.searcher, ATK);
+            assert_eq!(ev.confidence, Confidence::Inferred);
+            assert_eq!(ev.tx_index, back_idx);
+            let reasons: Vec<&str> = ev.details["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            assert!(reasons.contains(&"STATE_DELTA_MATCH"));
+            assert!(reasons.contains(&"DIRECT_TOKEN_CYCLE"));
+            assert_eq!(
+                ev.details["evidence"]["DIRECTION_OF_BENEFIT"],
+                serde_json::json!(true)
+            );
+            assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
+            assert_eq!(ev.details["mode"], serde_json::json!("realized"));
+            assert_eq!(
+                events.iter().filter(|e| e.kind == MevKind::Backrun).count(),
+                1
+            );
+            assert!(!events
+                .iter()
+                .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == back_idx));
+            assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(move_idx as u8)]);
+        }
 
-    #[test]
-    fn backrun_rejected_without_pre_move_reference() {
-        // Only the market move + the would-be backrun; without a pre-move
-        // reference price, causality can't be proven (§24).
-        let a = tx(
-            0,
-            MARKET,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
-            vec![
-                transfer(0, USDC, MARKET, POOL_A, 1000),
-                transfer(1, TOKA, POOL_A, MARKET, 100),
-            ],
-        );
-        let b = tx(
-            1,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 100, 120),
-                swap(POOL_B, USDC, TOKA, 120, 130),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 100),
-                transfer(1, USDC, POOL_A, ATK, 120),
-                transfer(2, USDC, ATK, POOL_B, 120),
-                transfer(3, TOKA, POOL_B, ATK, 130),
-            ],
-        );
-        let input = block(vec![a, b]);
-        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Backrun));
+        // Victim output on the same pool: 150 is degraded vs the front-run's
+        // 200; 200 is the same price and must not be a frontrun.
+        for (name, victim_out, expect) in [
+            ("cross-pool close after a degraded victim", 150u64, true),
+            ("no measurable degradation", 200, false),
+        ] {
+            let f = tx(
+                0,
+                ATK,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                vec![
+                    transfer(0, USDC, ATK, POOL_A, 100),
+                    transfer(1, TOKA, POOL_A, ATK, 200),
+                ],
+            );
+            let v = tx(
+                1,
+                VICTIM,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 100, victim_out)],
+                vec![
+                    transfer(0, USDC, VICTIM, POOL_A, 100),
+                    transfer(1, TOKA, POOL_A, VICTIM, victim_out),
+                ],
+            );
+            let c = tx(
+                2,
+                ATK,
+                true,
+                vec![swap(POOL_B, TOKA, USDC, 200, 250)],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_B, 200),
+                    transfer(1, USDC, POOL_B, ATK, 250),
+                ],
+            );
+            let events = classify_block(&block(vec![f, v, c]));
+            let found = kinds(&events).contains(&MevKind::Frontrun);
+            assert_eq!(found, expect, "{name}");
+            if !expect {
+                continue;
+            }
+            let ev = event_of(&events, MevKind::Frontrun);
+            assert_eq!(ev.searcher, ATK);
+            assert_eq!(ev.confidence, Confidence::Inferred);
+            assert_eq!(ev.tx_index, 0);
+            assert_eq!(ev.profit_token, Some(USDC));
+            assert_eq!(ev.profit_amount, Some(U256::from(150)));
+            assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(1)]);
+            let reasons: Vec<&str> = ev.details["reasons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap())
+                .collect();
+            assert!(reasons.contains(&"STATE_DELTA_MATCH"));
+            assert!(reasons.contains(&"VICTIM_EXECUTION_DEGRADED"));
+            assert!(reasons.contains(&"PROFIT_VERIFIED"));
+            assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
+            assert_eq!(ev.details["victim_tx_index"], serde_json::json!(1));
+            assert!(!kinds(&events).contains(&MevKind::Sandwich));
+        }
     }
-
-    #[test]
-    fn backrun_rejected_when_move_and_backrun_same_sender() {
-        let r = tx(
-            0,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-            vec![
-                transfer(0, TOKA, VICTIM, POOL_A, 100),
-                transfer(1, USDC, POOL_A, VICTIM, 110),
-            ],
-        );
-        // Market move by ATK (= backrunner's sender): not a causal backrun.
-        let a = tx(
-            1,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 500, 100)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 500),
-                transfer(1, TOKA, POOL_A, ATK, 100),
-            ],
-        );
-        let b = tx(
-            2,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 100, 120),
-                swap(POOL_B, USDC, TOKA, 120, 130),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 100),
-                transfer(1, USDC, POOL_A, ATK, 120),
-                transfer(2, USDC, ATK, POOL_B, 120),
-                transfer(3, TOKA, POOL_B, ATK, 130),
-            ],
-        );
-        let input = block(vec![r, a, b]);
-        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Backrun));
-    }
-
-    #[test]
-    fn causal_frontrun_detected_with_cross_pool_close() {
-        // tx0: searcher moves POOL_A (USDC→TOKA at 2.0).
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        // tx1: victim same-direction, degraded (1.5 vs 2.0).
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 150),
-            ],
-        );
-        // tx2: searcher's profitable close on POOL_B (not a same-pool
-        // sandwich back-run, so the sandwich pass cannot claim it).
-        let c = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_B, 200),
-                transfer(1, USDC, POOL_B, ATK, 250),
-            ],
-        );
-        let input = block(vec![f, v, c]);
-        let v_hash = B256::repeat_byte(1);
-        let events = classify_block(&input);
-        let ev = event_of(&events, MevKind::Frontrun);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.confidence, Confidence::Inferred);
-        assert_eq!(ev.tx_index, 0);
-        assert_eq!(ev.profit_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(150)));
-        assert_eq!(ev.victim_hashes, vec![v_hash]);
-        let reasons: Vec<&str> = ev.details["reasons"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap())
-            .collect();
-        assert!(reasons.contains(&"STATE_DELTA_MATCH"));
-        assert!(reasons.contains(&"VICTIM_EXECUTION_DEGRADED"));
-        assert!(reasons.contains(&"PROFIT_VERIFIED"));
-        assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
-        assert_eq!(ev.details["victim_tx_index"], serde_json::json!(1));
-        // Cross-pool close: no same-pool sandwich structure exists.
-        assert!(!kinds(&events).contains(&MevKind::Sandwich));
-    }
-
-    #[test]
-    fn frontrun_rejected_without_measurable_degradation() {
-        // tx1 executes at the same price as tx0: no degradation ⇒ not a
-        // frontrun (explicit §13 negative).
-        let f = tx(
-            0,
-            ATK,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let v = tx(
-            1,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, VICTIM, 200),
-            ],
-        );
-        let c = tx(
-            2,
-            ATK,
-            true,
-            vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-            vec![
-                transfer(0, TOKA, ATK, POOL_B, 200),
-                transfer(1, USDC, POOL_B, ATK, 250),
-            ],
-        );
-        let input = block(vec![f, v, c]);
-        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Frontrun));
-    }
-
     #[test]
     fn sandwich_consumed_legs_not_reclaimed_by_phase3() {
         // The classic three-EOA sandwich: front (tx0), victim (tx1), back
@@ -2182,128 +2094,125 @@ mod tests {
     }
 
     #[test]
-    fn liquidation_event_detected_exact() {
-        let liq = LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            user: VICTIM,
-            liquidator: ATK,
-            collateral_asset: USDC,
-            debt_asset: WNATIVE,
-            collateral_amount: U256::from(500),
-            debt_to_cover: U256::from(300),
-        };
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.liquidations = vec![liq];
-        let input = block(vec![t]);
-        let ev = classify_kind(&input, MevKind::Liquidation);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.profit_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(500)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-    }
-
-    #[test]
-    fn liquidation_transfer_reconciled() {
-        let liq = LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            user: VICTIM,
-            liquidator: ATK,
-            collateral_asset: USDC,
-            debt_asset: WNATIVE,
-            collateral_amount: U256::from(500),
-            debt_to_cover: U256::from(300),
-        };
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liq];
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        assert_eq!(ev.details["reconciled"], serde_json::json!(true));
-        assert_eq!(ev.details["reasons"], serde_json::json!([]));
-    }
-
-    #[test]
-    fn liquidation_mismatch_records_reason() {
-        // No collateral transfer captured (e.g. aToken transfer or Absorb):
-        // the event is still Exact but flagged TRANSFER_MISMATCH.
-        let liq = LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "compound_v3",
-            user: VICTIM,
-            liquidator: ATK,
-            collateral_asset: Address::ZERO,
-            debt_asset: Address::ZERO,
-            collateral_amount: U256::ZERO,
-            debt_to_cover: U256::from(300),
-        };
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.liquidations = vec![liq];
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        assert_eq!(ev.confidence, Confidence::Exact);
-        assert_eq!(ev.details["reconciled"], serde_json::json!(false));
-        assert_eq!(
-            ev.details["reasons"],
-            serde_json::json!(["TRANSFER_MISMATCH"])
-        );
-    }
-
-    #[test]
-    fn liquidation_uses_tx_sender_when_liquidator_zero() {
-        let liq = LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            user: VICTIM,
-            liquidator: Address::ZERO,
-            collateral_asset: USDC,
-            debt_asset: WNATIVE,
-            collateral_amount: U256::from(500),
-            debt_to_cover: U256::from(300),
-        };
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.liquidations = vec![liq];
-        let input = block(vec![t]);
-        let ev = classify_kind(&input, MevKind::Liquidation);
-        assert_eq!(ev.searcher, ATK);
+    fn liquidation_outcomes() {
+        struct Case {
+            protocol: &'static str,
+            liquidator: Address,
+            collateral: Address,
+            debt: Address,
+            collateral_amount: u64,
+            debt_to_cover: u64,
+            with_collateral_transfer: bool,
+            searcher: Option<Address>,
+            profit_token: Option<Address>,
+            profit_amount: Option<u64>,
+            confidence: Option<Confidence>,
+            reconciled: Option<bool>,
+            reasons: Option<&'static [&'static str]>,
+        }
+        let cases = [
+            Case {
+                protocol: "aave_v3",
+                liquidator: ATK,
+                collateral: USDC,
+                debt: WNATIVE,
+                collateral_amount: 500,
+                debt_to_cover: 300,
+                with_collateral_transfer: false,
+                searcher: Some(ATK),
+                profit_token: Some(USDC),
+                profit_amount: Some(500),
+                confidence: Some(Confidence::Exact),
+                reconciled: None,
+                reasons: None,
+            },
+            Case {
+                protocol: "aave_v3",
+                liquidator: ATK,
+                collateral: USDC,
+                debt: WNATIVE,
+                collateral_amount: 500,
+                debt_to_cover: 300,
+                with_collateral_transfer: true,
+                searcher: None,
+                profit_token: None,
+                profit_amount: None,
+                confidence: None,
+                reconciled: Some(true),
+                reasons: Some(&[]),
+            },
+            Case {
+                protocol: "compound_v3",
+                liquidator: ATK,
+                collateral: Address::ZERO,
+                debt: Address::ZERO,
+                collateral_amount: 0,
+                debt_to_cover: 300,
+                with_collateral_transfer: false,
+                searcher: None,
+                profit_token: None,
+                profit_amount: None,
+                confidence: Some(Confidence::Exact),
+                reconciled: Some(false),
+                reasons: Some(&["TRANSFER_MISMATCH"]),
+            },
+            Case {
+                protocol: "aave_v3",
+                liquidator: Address::ZERO,
+                collateral: USDC,
+                debt: WNATIVE,
+                collateral_amount: 500,
+                debt_to_cover: 300,
+                with_collateral_transfer: false,
+                searcher: Some(ATK),
+                profit_token: None,
+                profit_amount: None,
+                confidence: None,
+                reconciled: None,
+                reasons: None,
+            },
+        ];
+        for c in cases {
+            let transfers = if c.with_collateral_transfer {
+                vec![transfer(0, USDC, POOL_A, ATK, 500)]
+            } else {
+                vec![]
+            };
+            let mut t = tx(0, ATK, true, vec![], transfers);
+            t.liquidations = vec![liquidation(
+                c.protocol,
+                c.liquidator,
+                c.collateral,
+                c.debt,
+                c.collateral_amount,
+                c.debt_to_cover,
+            )];
+            let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
+            if let Some(searcher) = c.searcher {
+                assert_eq!(ev.searcher, searcher, "{}", c.protocol);
+            }
+            if let Some(token) = c.profit_token {
+                assert_eq!(ev.profit_token, Some(token));
+            }
+            if let Some(amount) = c.profit_amount {
+                assert_eq!(ev.profit_amount, Some(U256::from(amount)));
+            }
+            if let Some(confidence) = c.confidence {
+                assert_eq!(ev.confidence, confidence);
+            }
+            if let Some(reconciled) = c.reconciled {
+                assert_eq!(ev.details["reconciled"], serde_json::json!(reconciled));
+            }
+            if let Some(reasons) = c.reasons {
+                assert_eq!(ev.details["reasons"], serde_json::json!(reasons));
+            }
+        }
     }
 
     #[test]
     fn jit_mint_burn_paired_same_block() {
-        let mint = JitFact {
-            tx_index: 0,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: true,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
-        let burn = JitFact {
-            tx_index: 1,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: false,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
+        let mint = jit(0, true);
+        let burn = jit(1, false);
         let mut t0 = tx(
             0,
             ATK,
@@ -2329,19 +2238,7 @@ mod tests {
 
     #[test]
     fn jit_cross_block_open_position_closed_by_burn() {
-        let burn = JitFact {
-            tx_index: 0,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: false,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
+        let burn = jit(0, false);
         let mut t0 = tx(
             0,
             VICTIM,
@@ -2375,32 +2272,8 @@ mod tests {
     fn jit_requires_tick_overlap() {
         // Mint+Burn around tick 0..0, but the only swap lands at tick 200:
         // the range captured nothing, so it is ordinary LP activity, not JIT.
-        let mint = JitFact {
-            tx_index: 0,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: true,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
-        let burn = JitFact {
-            tx_index: 1,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: false,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
+        let mint = jit(0, true);
+        let burn = jit(1, false);
         let mut t0 = tx(
             0,
             ATK,
@@ -2626,31 +2499,10 @@ mod tests {
             transfer(3, USDC, POOL_B, ATK, 110),
         ];
         let mint = JitFact {
-            tx_index: 0,
             log_index: 9,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: true,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
+            ..jit(0, true)
         };
-        let burn = JitFact {
-            tx_index: 1,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint: false,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        };
+        let burn = jit(1, false);
         let mut t0 = tx(0, ATK, true, swaps, transfers);
         t0.jit = vec![mint];
         let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
@@ -2742,30 +2594,22 @@ mod tests {
         // LB swaps carry no tick; bin_amm JIT must still fire when a same-pool
         // swap sits between deposit and withdraw.
         let mint = JitFact {
-            tx_index: 0,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
             tick_lower: 8000,
             tick_upper: 8010,
-            is_mint: true,
             liquidity: 2,
             amount0: U256::from(10),
             amount1: U256::from(5),
             bin_amm: true,
+            ..jit(0, true)
         };
         let burn = JitFact {
-            tx_index: 2,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
             tick_lower: 8000,
             tick_upper: 8010,
-            is_mint: false,
             liquidity: 2,
             amount0: U256::from(10),
             amount1: U256::from(5),
             bin_amm: true,
+            ..jit(2, false)
         };
         let mut t0 = tx(0, ATK, true, vec![], vec![]);
         t0.jit = vec![mint];

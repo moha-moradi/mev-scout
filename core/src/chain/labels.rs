@@ -63,6 +63,9 @@ mod tests {
     #[test]
     fn bundled_labels_load() {
         let db = LabelDb::load();
-        assert!(!db.is_empty(), "should have at least some bundled labels");
+        assert_eq!(
+            db.get("0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45"),
+            Some("Uniswap V3 Router")
+        );
     }
 }

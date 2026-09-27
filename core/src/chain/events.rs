@@ -821,30 +821,144 @@ pub fn decode_pendle_swap(log: &Log, pool: Address) -> Option<TradeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{b256, LogData};
+    use alloy::primitives::{b256, keccak256, LogData};
 
+    /// One pin per event kind. Aliases of the same kind (events vs scanner vs
+    /// pool decoders) must match; different kinds must not collide.
     #[test]
-    fn transfer_topic_is_correct() {
-        assert_eq!(
+    fn topic_manifest_is_pinned_and_distinct() {
+        use crate::explorer::decode::{
+            ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC, PARASWAP_SWAPPED_V3_TOPIC,
+            ZRX_FILL_TOPIC,
+        };
+        use crate::pipeline::scanner::topics;
+        use crate::pool::decoders::{
+            self, LB_DEPOSITED_TO_BINS_TOPIC, LB_WITHDRAWN_FROM_BINS_TOPIC,
+        };
+
+        let kinds: std::cell::RefCell<Vec<(&str, B256)>> = std::cell::RefCell::new(Vec::new());
+        let pin_lit = |name: &'static str, topic: B256, expected: B256| {
+            assert_eq!(topic, expected, "{name}");
+            kinds.borrow_mut().push((name, topic));
+        };
+        let pin_sig = |name: &'static str, topic: B256, sig: &'static str| {
+            assert_eq!(topic, keccak256(sig), "{name}");
+            kinds.borrow_mut().push((name, topic));
+        };
+
+        pin_lit(
+            "erc20 transfer",
             TRANSFER_TOPIC,
-            b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef")
+            b256!("ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"),
         );
-    }
-
-    #[test]
-    fn v2_swap_topic_is_correct() {
-        assert_eq!(
+        pin_lit(
+            "v2 swap",
             V2_SWAP_TOPIC,
-            b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822")
+            b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"),
         );
-    }
-
-    #[test]
-    fn v3_swap_topic_is_correct() {
-        assert_eq!(
+        pin_sig(
+            "v3 swap",
             V3_SWAP_TOPIC,
-            b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67")
+            "Swap(address,address,int256,int256,uint160,uint128,int24)",
         );
+        assert_eq!(
+            decoders::V3_SWAP_TOPIC,
+            V3_SWAP_TOPIC,
+            "decoder v3 swap alias"
+        );
+        assert_eq!(*topics::V3_SWAP, V3_SWAP_TOPIC, "scanner v3 swap alias");
+        pin_sig(
+            "v3 mint",
+            decoders::V3_MINT_TOPIC,
+            "Mint(address,address,int24,int24,uint128,uint256,uint256)",
+        );
+        pin_sig(
+            "v3 burn",
+            decoders::V3_BURN_TOPIC,
+            "Burn(address,int24,int24,uint128,uint256,uint256)",
+        );
+        pin_lit(
+            "trader joe lb",
+            *TRADER_JOE_LB_SWAP_TOPIC,
+            b256!("c528cda9e500228b16ce84fadae290d9a49aecb17483110004c5af0a07f6fd73"),
+        );
+        assert_eq!(*topics::TRADER_JOE_LB_SWAP, *TRADER_JOE_LB_SWAP_TOPIC);
+        pin_lit(
+            "trader joe lb legacy",
+            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+            b256!("ad7d6f97abf51ce18e17a38f4d70e975be9c0708474987bb3e26ad21bd93ca70"),
+        );
+        assert_eq!(
+            *topics::TRADER_JOE_LB_SWAP_LEGACY,
+            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC
+        );
+        pin_sig(
+            "pendle market",
+            *topics::PENDLE_MARKET_SWAP,
+            "Swap(address,address,int256,int256,uint256,uint256)",
+        );
+        assert_eq!(*PENDLE_MARKET_SWAP_TOPIC, *topics::PENDLE_MARKET_SWAP);
+        pin_lit(
+            "pendle pt/sy",
+            *topics::PENDLE_SWAP_PT_AND_SY,
+            b256!("3f5e2944826baeaed8eb77f0f74e6088a154a0fc1317f062fd984585607b4739"),
+        );
+        pin_lit(
+            "pendle yt/sy",
+            *topics::PENDLE_SWAP_YT_AND_SY,
+            b256!("05499aba408f669fb848399c146fad5bd604d50b15566bdc19e81c40922fab8d"),
+        );
+        pin_lit(
+            "pendle pt/token",
+            *topics::PENDLE_SWAP_PT_AND_TOKEN,
+            b256!("d3c1d9b397236779b29ee5b5b150c1110fc8221b6b6ec0be49c9f4860ceb2036"),
+        );
+        pin_lit(
+            "pendle yt/token",
+            *topics::PENDLE_SWAP_YT_AND_TOKEN,
+            b256!("a3a2846538c60e47775faa60c6ae79b67dee6d97bb70e386ebbaf4c3a38e8b81"),
+        );
+        pin_sig(
+            "1inch swapped",
+            ONEINCH_SWAPPED_TOPIC,
+            "Swapped(address,address,address,address,uint256,uint256)",
+        );
+        pin_sig(
+            "paraswap swapped",
+            PARASWAP_SWAPPED_TOPIC,
+            "Swapped(address,address,address,address,uint256,uint256,uint256,string)",
+        );
+        pin_sig(
+            "paraswap swapped v3",
+            PARASWAP_SWAPPED_V3_TOPIC,
+            "SwappedV3(bytes16,address,uint256,address,address,address,address,uint256,uint256,uint256)",
+        );
+        pin_sig(
+            "0x fill",
+            ZRX_FILL_TOPIC,
+            "Fill(address,address,bytes,bytes,bytes,bytes,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)",
+        );
+        pin_sig(
+            "lb deposit",
+            *LB_DEPOSITED_TO_BINS_TOPIC,
+            "DepositedToBins(address,address,uint256[],bytes32[])",
+        );
+        pin_sig(
+            "lb withdraw",
+            *LB_WITHDRAWN_FROM_BINS_TOPIC,
+            "WithdrawnFromBins(address,address,uint256[],bytes32[])",
+        );
+
+        let kinds = kinds.into_inner();
+        for i in 0..kinds.len() {
+            for j in (i + 1)..kinds.len() {
+                assert_ne!(
+                    kinds[i].1, kinds[j].1,
+                    "{} collides with {}",
+                    kinds[i].0, kinds[j].0
+                );
+            }
+        }
     }
 
     /// Solidly topic must be the verified Velodrome V2 signature and must
@@ -868,21 +982,6 @@ mod tests {
             *V4_SWAP_TOPIC,
             b256!("40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f")
         );
-    }
-
-    #[test]
-    fn trader_joe_lb_topics_are_verified() {
-        // LB 2.0 / 2.2 form
-        assert_eq!(
-            *TRADER_JOE_LB_SWAP_TOPIC,
-            b256!("c528cda9e500228b16ce84fadae290d9a49aecb17483110004c5af0a07f6fd73")
-        );
-        // LB 2.1 packed-bytes32 form
-        assert_eq!(
-            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-            b256!("ad7d6f97abf51ce18e17a38f4d70e975be9c0708474987bb3e26ad21bd93ca70")
-        );
-        assert_ne!(*TRADER_JOE_LB_SWAP_TOPIC, *TRADER_JOE_LB_SWAP_LEGACY_TOPIC);
     }
 
     fn make_log(address: Address, topics_vec: Vec<B256>, data_bytes: Vec<u8>) -> Log {

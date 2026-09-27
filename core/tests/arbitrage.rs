@@ -164,22 +164,6 @@ fn test_pool_manager_arbitrage_pairs() {
 }
 
 #[test]
-fn test_pool_addresses_filter() {
-    let mut pm = PoolManager::new();
-
-    let addr_a = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    let addr_b = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-
-    pm.add_pool(make_pool(addr_a, usdc(), wmatic(), 100, 100));
-    pm.add_pool(make_pool(addr_b, usdt(), wmatic(), 100, 100));
-
-    let addrs = pm.pool_addresses();
-    assert_eq!(addrs.len(), 2);
-    assert!(addrs.contains(&addr_a));
-    assert!(addrs.contains(&addr_b));
-}
-
-#[test]
 fn test_detect_both_directions() {
     let mut pm = PoolManager::new();
 

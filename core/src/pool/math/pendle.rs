@@ -102,10 +102,8 @@ mod tests {
         // 50% swap: linear damping should reduce output vs CP
         let out = pendle_output_amount(5000, 10000, 10000).unwrap();
         // CP: 5000 * 10000 / (10000 + 5000) = 3333
-        // Damping: 500 permille → damping_permille = max(200, 1000-500) = 500 → 50%
-        // damped = 3333 * 500 / 1000 = 1666
-        assert!(out < 3333, "output {} should be less than CP 3333", out);
-        assert!(out > 1000, "output {} should be > 1000", out);
+        // Damping at 50%: 3333 * 500 / 1000 = 1666
+        assert_eq!(out, 1666);
     }
 
     #[test]

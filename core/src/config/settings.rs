@@ -612,31 +612,11 @@ impl Config {
     /// variable instead. Unset variables are left verbatim so a missing env
     /// never silently corrupts a URL (the provider then fails loudly).
     pub fn expand_env_secrets(&mut self) {
-        fn expand(s: &str) -> String {
-            let mut out = String::with_capacity(s.len());
-            let mut rest = s;
-            while let Some(start) = rest.find("${") {
-                out.push_str(&rest[..start]);
-                let after = &rest[start + 2..];
-                match after.find('}') {
-                    Some(end) => {
-                        let name = &after[..end];
-                        match std::env::var(name) {
-                            Ok(val) => out.push_str(&val),
-                            // Unset → keep the literal ${NAME} placeholder.
-                            Err(_) => out.push_str(&rest[start..start + 2 + end + 1]),
-                        }
-                        rest = &after[end + 1..];
-                    }
-                    None => {
-                        out.push_str(&rest[start..]);
-                        rest = "";
-                    }
-                }
-            }
-            out.push_str(rest);
-            out
-        }
+        self.apply_env_expansion(|name| std::env::var(name).ok());
+    }
+
+    fn apply_env_expansion(&mut self, lookup: impl Fn(&str) -> Option<String>) {
+        let expand = |s: &str| expand_placeholders(s, &lookup);
         if let Some(u) = &self.rpc.rpc_url {
             self.rpc.rpc_url = Some(expand(u));
         }
@@ -680,9 +660,13 @@ impl Config {
     }
 
     #[cfg(test)]
-    fn from_toml_str(s: &str) -> Self {
+    fn from_toml_str_with(s: &str, env: &[(&str, &str)]) -> Self {
         let mut cfg: Config = toml::from_str(s).unwrap();
-        cfg.expand_env_secrets();
+        cfg.apply_env_expansion(|name| {
+            env.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| (*v).to_string())
+        });
         cfg
     }
 
@@ -1112,19 +1096,44 @@ impl Config {
     }
 }
 
+/// Substitute `${NAME}` placeholders. `lookup` returning `None` keeps the
+/// literal `${NAME}` so a missing variable never silently corrupts a URL.
+fn expand_placeholders(s: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find('}') {
+            Some(end) => {
+                let name = &after[..end];
+                match lookup(name) {
+                    Some(val) => out.push_str(&val),
+                    None => out.push_str(&rest[start..start + 2 + end + 1]),
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod env_expansion_tests {
     use super::Config;
 
     #[test]
     fn expands_set_env_vars_in_rpc_urls() {
-        // SAFETY: single-threaded test binary execution for this module; the
-        // variable name is test-specific.
-        std::env::set_var("MS_CONFIG_TEST_RPC_KEY", "sekret123");
-        let cfg = Config::from_toml_str(
+        let cfg = Config::from_toml_str_with(
             r#"
 rpc_urls = ["https://polygon-mainnet.g.alchemy.com/v2/${MS_CONFIG_TEST_RPC_KEY}"]
 "#,
+            &[("MS_CONFIG_TEST_RPC_KEY", "sekret123")],
         );
         assert_eq!(
             cfg.rpc.rpc_urls[0],
@@ -1134,11 +1143,11 @@ rpc_urls = ["https://polygon-mainnet.g.alchemy.com/v2/${MS_CONFIG_TEST_RPC_KEY}"
 
     #[test]
     fn leaves_unset_vars_verbatim() {
-        std::env::remove_var("MS_CONFIG_TEST_MISSING_KEY");
-        let cfg = Config::from_toml_str(
+        let cfg = Config::from_toml_str_with(
             r#"
 rpc_urls = ["https://rpc.example/v2/${MS_CONFIG_TEST_MISSING_KEY}"]
 "#,
+            &[],
         );
         assert_eq!(
             cfg.rpc.rpc_urls[0],
@@ -1148,12 +1157,12 @@ rpc_urls = ["https://rpc.example/v2/${MS_CONFIG_TEST_MISSING_KEY}"]
 
     #[test]
     fn expands_plain_urls_and_env_reference() {
-        std::env::set_var("MS_CONFIG_TEST_CG_KEY", "CG-1");
-        let cfg = Config::from_toml_str(
+        let cfg = Config::from_toml_str_with(
             r#"
 rpc_urls = ["https://plain.example/v3"]
 rpc_url = "https://single.example/${MS_CONFIG_TEST_CG_KEY}"
 "#,
+            &[("MS_CONFIG_TEST_CG_KEY", "CG-1")],
         );
         assert_eq!(cfg.rpc.rpc_urls[0], "https://plain.example/v3");
         assert_eq!(
@@ -1164,10 +1173,11 @@ rpc_url = "https://single.example/${MS_CONFIG_TEST_CG_KEY}"
 
     #[test]
     fn unterminated_placeholder_is_kept_verbatim() {
-        let cfg = Config::from_toml_str(
+        let cfg = Config::from_toml_str_with(
             r#"
 rpc_urls = ["https://broken.example/${NO_CLOSING"]
 "#,
+            &[],
         );
         assert_eq!(cfg.rpc.rpc_urls[0], "https://broken.example/${NO_CLOSING");
     }

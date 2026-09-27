@@ -722,7 +722,7 @@ mod tests {
             .unwrap();
         let ic = IngestConfig::from_chain(ChainName::Polygon, &cfg);
         assert_eq!(ic.chain_id, 137);
-        assert!(ic.profit_token_priority.len() >= 4);
+        assert_eq!(ic.profit_token_priority.len(), 5);
         assert!(!ic.wrapped_native.is_zero());
     }
 

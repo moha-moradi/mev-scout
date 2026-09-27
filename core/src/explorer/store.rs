@@ -2395,6 +2395,39 @@ mod tests {
     use crate::explorer::types::{Confidence, MevEvent};
     use alloy::primitives::{address, b256};
 
+    fn token_usd(usd: f64, decimals: u32) -> crate::explorer::pricing::TokenUsd {
+        crate::explorer::pricing::TokenUsd { usd, decimals }
+    }
+
+    /// Insert one block with the fixture defaults shared by these tests
+    /// (25 gwei base fee, $0.75 native, no txs/transfers).
+    fn seed_block(
+        store: &ExplorerStore,
+        block_number: u64,
+        block_hash: &B256,
+        ts: u64,
+        tx_count: usize,
+        swaps: &[SwapRow],
+        events: &[MevEvent],
+        token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
+    ) -> usize {
+        store
+            .insert_block_facts(BlockFactsInput {
+                block_number,
+                block_hash,
+                ts,
+                base_fee_gwei: Some(25.0),
+                tx_count,
+                txs: &[],
+                swaps,
+                transfers: &[],
+                events,
+                native_price_usd: Some(0.75),
+                token_prices,
+            })
+            .unwrap()
+    }
+
     fn sample_event(block: u64) -> MevEvent {
         MevEvent {
             block,
@@ -2427,28 +2460,18 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd {
-                usd: 0.5,
-                decimals: 6,
-            },
+            token_usd(0.5, 6),
         );
-        let n = store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 100,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                ),
-                ts: 1_700_000_000,
-                base_fee_gwei: Some(25.0),
-                tx_count: 5,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[sample_event(100)],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
+        let n = seed_block(
+            &store,
+            100,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            1_700_000_000,
+            5,
+            &[],
+            &[sample_event(100)],
+            &prices,
+        );
         assert_eq!(n, 1);
         assert!(store.block_classified(100).unwrap());
         assert!(!store.block_classified(101).unwrap());
@@ -2488,37 +2511,18 @@ mod tests {
             (tok_b, U256::from(1_000_000_000_000_000_000u64)), // 1 token @2.0 = 2 USD
         ];
         let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            tok_a,
-            crate::explorer::pricing::TokenUsd {
-                usd: 0.5,
-                decimals: 6,
-            },
+        prices.insert(tok_a, token_usd(0.5, 6));
+        prices.insert(tok_b, token_usd(2.0, 18));
+        seed_block(
+            &store,
+            200,
+            &b256!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            1_700_000_000,
+            1,
+            &[],
+            &[ev],
+            &prices,
         );
-        prices.insert(
-            tok_b,
-            crate::explorer::pricing::TokenUsd {
-                usd: 2.0,
-                decimals: 18,
-            },
-        );
-        store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 200,
-                block_hash: &b256!(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                ),
-                ts: 1_700_000_000,
-                base_fee_gwei: Some(25.0),
-                tx_count: 1,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[ev],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
         let ops = store.ops_in_range(200, 200, &[]).unwrap();
         assert_eq!(ops.len(), 1);
         let expected = 0.5 + 2.0;
@@ -2558,20 +2562,8 @@ mod tests {
         let usdc = address!("4444000000000000000000000000000000000004");
 
         let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            usdt,
-            crate::explorer::pricing::TokenUsd {
-                usd: 0.99,
-                decimals: 6,
-            },
-        );
-        prices.insert(
-            usdc,
-            crate::explorer::pricing::TokenUsd {
-                usd: 1.0,
-                decimals: 6,
-            },
-        );
+        prices.insert(usdt, token_usd(0.99, 6));
+        prices.insert(usdc, token_usd(1.0, 6));
 
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut fot = sample_event(301);
@@ -2595,23 +2587,16 @@ mod tests {
         });
 
         for (block, ev) in [(301u64, fot), (302, realized)] {
-            store
-                .insert_block_facts(BlockFactsInput {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    ),
-                    ts: 1_700_000_000,
-                    base_fee_gwei: Some(25.0),
-                    tx_count: 1,
-                    txs: &[],
-                    swaps: &[],
-                    transfers: &[],
-                    events: &[ev],
-                    native_price_usd: Some(0.75),
-                    token_prices: &prices,
-                })
-                .unwrap();
+            seed_block(
+                &store,
+                block,
+                &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                1_700_000_000,
+                1,
+                &[],
+                &[ev],
+                &prices,
+            );
         }
 
         let ops = store.ops_in_range(301, 302, &[]).unwrap();
@@ -2680,23 +2665,16 @@ mod tests {
             }]
         });
         for (block, ev) in [(303u64, cross), (304, guessed)] {
-            store
-                .insert_block_facts(BlockFactsInput {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    ),
-                    ts: 1_700_000_000,
-                    base_fee_gwei: Some(25.0),
-                    tx_count: 1,
-                    txs: &[],
-                    swaps: &[],
-                    transfers: &[],
-                    events: &[ev],
-                    native_price_usd: Some(0.75),
-                    token_prices: &prices,
-                })
-                .unwrap();
+            seed_block(
+                &store,
+                block,
+                &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                1_700_000_000,
+                1,
+                &[],
+                &[ev],
+                &prices,
+            );
         }
         let more = store.ops_in_range(303, 304, &[]).unwrap();
         assert_eq!(more.len(), 2);
@@ -2717,13 +2695,7 @@ mod tests {
         let longtail = address!("0a00000000000000000000000000000000000000");
         let usdc = address!("4444000000000000000000000000000000000004");
         let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            usdc,
-            crate::explorer::pricing::TokenUsd {
-                usd: 1.0,
-                decimals: 6,
-            },
-        );
+        prices.insert(usdc, token_usd(1.0, 6));
 
         let mut clamped = sample_event(410);
         clamped.profit_token = Some(longtail);
@@ -2755,23 +2727,16 @@ mod tests {
         ];
 
         for (block, ev) in [(410u64, clamped), (411, native), (412, partial)] {
-            store
-                .insert_block_facts(BlockFactsInput {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                    ),
-                    ts: 1_700_000_000,
-                    base_fee_gwei: Some(25.0),
-                    tx_count: 1,
-                    txs: &[],
-                    swaps: &[],
-                    transfers: &[],
-                    events: &[ev],
-                    native_price_usd: Some(0.75),
-                    token_prices: &prices,
-                })
-                .unwrap();
+            seed_block(
+                &store,
+                block,
+                &b256!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+                1_700_000_000,
+                1,
+                &[],
+                &[ev],
+                &prices,
+            );
         }
         let ops = store.ops_in_range(410, 412, &[]).unwrap();
         assert_eq!(ops.len(), 3);
@@ -2854,20 +2819,8 @@ mod tests {
         let collateral = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let debt = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
         let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            collateral,
-            crate::explorer::pricing::TokenUsd {
-                usd: 2.0,
-                decimals: 0,
-            },
-        );
-        prices.insert(
-            debt,
-            crate::explorer::pricing::TokenUsd {
-                usd: 1.0,
-                decimals: 0,
-            },
-        );
+        prices.insert(collateral, token_usd(2.0, 0));
+        prices.insert(debt, token_usd(1.0, 0));
         let ev = liquidation_event(collateral, debt);
         let (usd, conf, details) = liquidation_pnl(&ev, &prices);
         // 500 * $2 − 300 * $1 = 700
@@ -2893,13 +2846,7 @@ mod tests {
     fn liquidation_pnl_same_asset_is_exact() {
         let asset = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let mut prices = std::collections::HashMap::new();
-        prices.insert(
-            asset,
-            crate::explorer::pricing::TokenUsd {
-                usd: 1.0,
-                decimals: 0,
-            },
-        );
+        prices.insert(asset, token_usd(1.0, 0));
         let ev = liquidation_event(asset, asset);
         let (usd, conf, _) = liquidation_pnl(&ev, &prices);
         assert!((usd.unwrap() - 200.0).abs() < 1e-9);
@@ -2912,33 +2859,23 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd {
-                usd: 0.5,
-                decimals: 6,
-            },
+            token_usd(0.5, 6),
         );
         // Zero extractable profit cannot cover front+back gas → not realized MEV.
         let mut loss = sample_event(130);
         loss.kind = MevKind::Sandwich;
         loss.profit_amount = Some(U256::ZERO);
         loss.details = serde_json::json!({ "reason": "test" });
-        let n = store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 130,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"
-                ),
-                ts: 1_700_000_300,
-                base_fee_gwei: Some(25.0),
-                tx_count: 5,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[loss],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
+        let n = seed_block(
+            &store,
+            130,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"),
+            1_700_000_300,
+            5,
+            &[],
+            &[loss],
+            &prices,
+        );
         assert_eq!(n, 0);
         assert!(store.ops_in_range(130, 130, &[]).unwrap().is_empty());
         // ...but the block is still marked classified (0 persisted ops).
@@ -2947,23 +2884,16 @@ mod tests {
         // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept.
         let mut win = sample_event(131);
         win.kind = MevKind::Sandwich;
-        let n = store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 131,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"
-                ),
-                ts: 1_700_000_400,
-                base_fee_gwei: Some(25.0),
-                tx_count: 5,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[win],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
+        let n = seed_block(
+            &store,
+            131,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"),
+            1_700_000_400,
+            5,
+            &[],
+            &[win],
+            &prices,
+        );
         assert_eq!(n, 1);
         assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
     }
@@ -2974,10 +2904,7 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd {
-                usd: 0.5,
-                decimals: 6,
-            },
+            token_usd(0.5, 6),
         );
         let mut sand_evt = sample_event(120);
         sand_evt.ts = 1_700_000_101;
@@ -2985,41 +2912,27 @@ mod tests {
         let mut arb_evt = sample_event(121);
         arb_evt.ts = 1_700_000_200;
         arb_evt.kind = MevKind::ArbAtomic;
-        let n = store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 120,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
-                ),
-                ts: 1_700_000_100,
-                base_fee_gwei: Some(25.0),
-                tx_count: 5,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[sand_evt],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
+        let n = seed_block(
+            &store,
+            120,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
+            1_700_000_100,
+            5,
+            &[],
+            &[sand_evt],
+            &prices,
+        );
         assert_eq!(n, 1);
-        let n = store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 121,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"
-                ),
-                ts: 1_700_000_200,
-                base_fee_gwei: Some(25.0),
-                tx_count: 5,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[arb_evt],
-                native_price_usd: Some(0.75),
-                token_prices: &prices,
-            })
-            .unwrap();
+        let n = seed_block(
+            &store,
+            121,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
+            1_700_000_200,
+            5,
+            &[],
+            &[arb_evt],
+            &prices,
+        );
         assert_eq!(n, 1);
 
         let all = store.stats_by_kind_filtered(1_699_999_000, None).unwrap();
@@ -3086,10 +2999,7 @@ mod tests {
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
-            crate::explorer::pricing::TokenUsd {
-                usd: 1.0,
-                decimals: 6,
-            },
+            token_usd(1.0, 6),
         );
         prices
     }
@@ -3118,23 +3028,16 @@ mod tests {
             swap_leg(7, 1, usdc, 2_000_000),   // $2
             swap_leg(9, 0, usdc, 100_000_000), // other tx, not attributed
         ];
-        store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 400,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
-                ),
-                ts: 1_700_000_000,
-                base_fee_gwei: Some(25.0),
-                tx_count: 10,
-                txs: &[],
-                swaps: &swap_legs,
-                transfers: &[],
-                events: &[ev],
-                native_price_usd: Some(0.75),
-                token_prices: &usdc_price(),
-            })
-            .unwrap();
+        seed_block(
+            &store,
+            400,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+            1_700_000_000,
+            10,
+            &swap_legs,
+            &[ev],
+            &usdc_price(),
+        );
         let ops = store.ops_in_range(400, 400, &[]).unwrap();
         assert_eq!(ops.len(), 1);
         let v = ops[0].volume_usd.unwrap();
@@ -3143,28 +3046,21 @@ mod tests {
         let mut unpr = sample_event(401);
         unpr.tx_index = 11;
         // token not in prices map
-        store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 401,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"
-                ),
-                ts: 1_700_000_000,
-                base_fee_gwei: Some(25.0),
-                tx_count: 1,
-                txs: &[],
-                swaps: &[swap_leg(
-                    11,
-                    0,
-                    address!("9999000000000000000000000000000000000009"),
-                    123,
-                )],
-                transfers: &[],
-                events: &[unpr],
-                native_price_usd: Some(0.75),
-                token_prices: &usdc_price(),
-            })
-            .unwrap();
+        seed_block(
+            &store,
+            401,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"),
+            1_700_000_000,
+            1,
+            &[swap_leg(
+                11,
+                0,
+                address!("9999000000000000000000000000000000000009"),
+                123,
+            )],
+            &[unpr],
+            &usdc_price(),
+        );
         let ops = store.ops_in_range(401, 401, &[]).unwrap();
         assert!(ops[0].volume_usd.is_none());
     }
@@ -3190,23 +3086,16 @@ mod tests {
             (510u64, &arb, &[swp_a.clone()][..], day_a),
             (511, &sand, &[swp_b.clone()][..], day_b),
         ] {
-            store
-                .insert_block_facts(BlockFactsInput {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
-                    ),
-                    ts,
-                    base_fee_gwei: Some(25.0),
-                    tx_count: 1,
-                    txs: &[],
-                    swaps,
-                    transfers: &[],
-                    events: std::slice::from_ref(ev),
-                    native_price_usd: Some(0.75),
-                    token_prices: &usdc_price(),
-                })
-                .unwrap();
+            seed_block(
+                &store,
+                block,
+                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+                ts,
+                1,
+                swaps,
+                std::slice::from_ref(ev),
+                &usdc_price(),
+            );
         }
 
         let ov = store.report_window_overview(0, None).unwrap();
@@ -3244,23 +3133,16 @@ mod tests {
     #[test]
     fn trace_verification_replaces_stale_fields() {
         let store = ExplorerStore::open_in_memory().unwrap();
-        store
-            .insert_block_facts(BlockFactsInput {
-                block_number: 600,
-                block_hash: &b256!(
-                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                ),
-                ts: 1_700_000_000,
-                base_fee_gwei: Some(25.0),
-                tx_count: 1,
-                txs: &[],
-                swaps: &[],
-                transfers: &[],
-                events: &[sample_event(600)],
-                native_price_usd: Some(0.75),
-                token_prices: &usdc_price(),
-            })
-            .unwrap();
+        seed_block(
+            &store,
+            600,
+            &b256!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+            1_700_000_000,
+            1,
+            &[],
+            &[sample_event(600)],
+            &usdc_price(),
+        );
         let tx_hash = store.ops_in_range(600, 600, &[]).unwrap()[0]
             .tx_hash
             .clone();

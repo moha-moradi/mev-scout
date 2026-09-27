@@ -444,35 +444,6 @@ pub fn decode_metric_swap(log: &ExecutedLog) -> Option<MetricSwapDecoded> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::keccak256;
-
-    /// The Uniswap V3 topics are hardcoded `b256!` literals, so nothing else
-    /// checks them. A mistyped hash fails silently: the decoder just never
-    /// matches, and the only symptom is a kind that can never be detected (this
-    /// is exactly how `V3_MINT_TOPIC` was wrong, which made JIT undetectable).
-    #[test]
-    fn uniswap_v3_topics_match_keccak_of_canonical_signatures() {
-        for (topic, sig) in [
-            (
-                V3_SWAP_TOPIC,
-                "Swap(address,address,int256,int256,uint160,uint128,int24)",
-            ),
-            (
-                V3_MINT_TOPIC,
-                "Mint(address,address,int24,int24,uint128,uint256,uint256)",
-            ),
-            (
-                V3_BURN_TOPIC,
-                "Burn(address,int24,int24,uint128,uint256,uint256)",
-            ),
-        ] {
-            assert_eq!(
-                topic,
-                keccak256(sig),
-                "topic drifted from keccak256(\"{sig}\")"
-            );
-        }
-    }
 
     /// A real V3 Mint log decodes — the end-to-end consequence of the topic
     /// being right. Fixture captured from mainnet block 26051637 on the

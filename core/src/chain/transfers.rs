@@ -50,19 +50,3 @@ pub async fn scan_whale_transfers(
     let all = scan_transfers(rpc, from_block, to_block, batch_size, token_addresses).await?;
     Ok(all.into_iter().filter(|e| e.value >= min_value).collect())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloy::primitives::B256;
-
-    #[test]
-    fn transfer_topic_matches_erc20() {
-        assert_eq!(
-            TRANSFER_TOPIC,
-            B256::from(alloy::primitives::b256!(
-                "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-            ))
-        );
-    }
-}

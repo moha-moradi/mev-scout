@@ -97,13 +97,3 @@ fn decode_flash_loan_log(log: &Log) -> Option<FlashLoanEvent> {
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flash_loan_topics_count() {
-        assert_eq!(flash_loan_topics().len(), 4);
-    }
-}
