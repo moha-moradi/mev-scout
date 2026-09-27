@@ -229,6 +229,63 @@ const CORPUS: &[CorpusCase] = &[
         profit_usd_min: Some(5.0),
         profit_usd_max: None,
     },
+    // Adjacent Polygon window (201 blocks) recorded without a pool cache: one
+    // liquidation in block 94431566, from the same liquidator EOA as
+    // `poly-liquidation-window` above. Priced at $0.00 (no position to bill),
+    // so the case is count + searcher only.
+    CorpusCase {
+        id: "poly-liquidation-94431566",
+        chain: ChainName::Polygon,
+        from_block: 94_431_566,
+        to_block: 94_431_566,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("7f1aacb852a7457e8eb97e5196276b92f408d990")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Second sandwich window, 84 blocks below the JIT round trip. Recorded with
+    // MEV_SCOUT_RECORD=1 over 26059500..=26059550: 3 sandwich ops, best profit
+    // $1.07 / net $0.19, spread over two searchers — the window case below
+    // counts all three, the searcher case pins the second EOA on its own.
+    CorpusCase {
+        id: "eth-sandwich-26059500",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_500,
+        to_block: 26_059_550,
+        kind: "sandwich",
+        min_ops: 3,
+        searcher: None,
+        profit_usd_min: Some(0.5),
+        profit_usd_max: None,
+    },
+    CorpusCase {
+        id: "eth-sandwich-searcher-26059521",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_521,
+        to_block: 26_059_521,
+        kind: "sandwich",
+        min_ops: 1,
+        searcher: Some(address!("196c00c1b00000000000007c00739ad9faa3ee77")),
+        profit_usd_min: Some(0.5),
+        profit_usd_max: None,
+    },
+    // Widest sandwich window of the corpus: 26059586..=26059700 recorded 9
+    // sandwich ops at best profit $2.28, three of them from the recurring
+    // 0xae2fc483… searcher. The floor is ~45% of the observed best rather than
+    // the usual 60-70%: this window's best profit is one thin edge, so a
+    // tighter band would turn a pricing regression into a flaky assertion.
+    CorpusCase {
+        id: "eth-sandwich-26059586",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_586,
+        to_block: 26_059_700,
+        kind: "sandwich",
+        min_ops: 9,
+        searcher: None,
+        profit_usd_min: Some(1.0),
+        profit_usd_max: None,
+    },
     // Real JIT round trip on UniswapV3 pool 0xd31d41df… (block 26059586):
     // owner 0x1f2f10d1… mints liquidity over ticks [-129060, -129000] and burns
     // the same liquidity later in the block, with an in-range swap at tick
@@ -244,6 +301,61 @@ const CORPUS: &[CorpusCase] = &[
         kind: "jit",
         min_ops: 1,
         searcher: Some(address!("1f2f10d1c40777ae1da742455c65828ff36df387")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Same window as the sandwich cases above: a jit mint/burn round trip in
+    // block 26059518 from a different searcher, so the kind is pinned on two
+    // distinct round trips rather than one. Priced at $0.00 in the record run
+    // (the pool carried no in-range swap volume to bill), so no USD floor.
+    CorpusCase {
+        id: "eth-jit-26059518",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_518,
+        to_block: 26_059_518,
+        kind: "jit",
+        min_ops: 1,
+        searcher: Some(address!("c36442b4a4522e871399cd717abdd847ab11fe88")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Two jit round trips in 26059586..=26059700 — the densest jit stretch
+    // found, twice the rate of the 51-block window above. Asserted as a
+    // window count because the record report only names the best tx's block;
+    // the single op below pins one of the two to a block and an EOA.
+    CorpusCase {
+        id: "eth-jit-window-26059586",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_586,
+        to_block: 26_059_700,
+        kind: "jit",
+        min_ops: 2,
+        searcher: None,
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    CorpusCase {
+        id: "eth-jit-26059604",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_604,
+        to_block: 26_059_604,
+        kind: "jit",
+        min_ops: 1,
+        searcher: Some(address!("410144dec85bb1929057829d54fb3b8d3f0ea4a3")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // A jit_arb (jit leg crossed with an arb leg) in block 26059522, the only
+    // one the 26059500..=26059550 record run surfaced. Kept because the kind
+    // is otherwise unsampled: jit_arb was in ALL_KINDS but had no case.
+    CorpusCase {
+        id: "eth-jit-arb-26059522",
+        chain: ChainName::Ethereum,
+        from_block: 26_059_522,
+        to_block: 26_059_522,
+        kind: "jit_arb",
+        min_ops: 1,
+        searcher: Some(address!("fc741c4258aaa097b281fecfb4ef9c012fa73db0")),
         profit_usd_min: None,
         profit_usd_max: None,
     },

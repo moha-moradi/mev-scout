@@ -14,6 +14,20 @@
 //!   counterpart — mempool-only, unanchored, or outside the replayed block
 //!   range — surface as `Unverifiable`, degraded coverage rather than a fail).
 //!
+//! ## Expected coverage
+//!
+//! The window also carries a realized `liquidation` (block 95682033, see the
+//! seed notes in `mev_corpus.rs`), and it is *deliberately* absent from these
+//! expectations: `is_native_eligible` (`core/src/paper/ledger.rs:41-50`) admits
+//! only `TwoHopArb` / `MultiHopArb` / `Jit` / `JitArb` / `Sandwich`, so a
+//! liquidation never becomes a paper fill and is never reconciled here. Its
+//! `expected_profit` is not native-normalized, so a wei reconciliation would
+//! compare a token-denominated number against native gas; the ledger records it
+//! as a `FillSkipReason::NotNativeUnit` skip instead
+//! (`core/src/paper/ledger.rs:141-150`). Only the native-eligible kinds above
+//! appear in the fill count and the pass-rate; a liquidation-only window would
+//! leave nothing to reconcile.
+//!
 //! Why re-execution rather than a stored tx trace: the executed ground truth is
 //! produced locally by revm against the same state the backtest replays, so the
 //! comparison never leans on a tracing RPC result or the classifier's price
@@ -313,7 +327,10 @@ fn assert_derived_facts(outcome: &ReconOutcome) {
     );
 }
 
-#[tokio::test]
+// `job_run` + `BlockReplayer` drive `CachedRpcDb`, which blocks on the RPC
+// handle (`replay::db`) — that panics on a current-thread runtime, so the
+// flavor is pinned here exactly as in `backtest.rs`.
+#[tokio::test(flavor = "multi_thread")]
 async fn paper_corpus_reconciles_against_executed() {
     let Some(rpc_url) = rpc_url() else {
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");

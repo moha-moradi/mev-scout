@@ -484,8 +484,14 @@ impl BacktestRunner {
                 // rather than only the residual post-tx leftovers.
                 // H2: Detectors maintain a per-block seen set so the same persistent
                 // arb gap is not re-reported across multiple transactions.
-                let dirty_guard = dirty_pools.borrow();
-                let scope = match dirty_guard.as_ref() {
+                // Snapshot the dirty set instead of holding a `Ref` guard:
+                // `ScanScope::Dirty` borrows the set for the whole detection
+                // block, and the `borrow_mut` that folds this tx's newly-dirty
+                // pools in below would then panic ("RefCell already borrowed")
+                // on every tx after the first dirty one. The snapshot is a
+                // cheap `Option<HashSet>` clone, usually `None`.
+                let dirty_snapshot = dirty_pools.borrow().clone();
+                let scope = match dirty_snapshot.as_ref() {
                     Some(set) => ScanScope::Dirty(set),
                     None => ScanScope::Full,
                 };
