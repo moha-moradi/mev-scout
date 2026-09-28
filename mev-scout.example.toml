@@ -71,6 +71,12 @@ output = "table"
 # profit near zero are judged on the absolute band instead.
 # trace_tolerance_pct = 20.0
 # trace_error_usd_tol = 0.50
+# `explorer show` MEV gate: detector-expected net profit (expected_profit −
+# gas_cost_wei) against the same tx's realized trace delta, joined on tx_hash.
+# Same convention — over the band fails the command, and a tx with no realized
+# figure yet only warns. `--tolerance-pct` overrides both gates.
+# mev_tolerance_pct = 20.0
+# mev_error_usd_tol = 0.50
 
 [chains.polygon]
 chain_id = 137

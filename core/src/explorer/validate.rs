@@ -27,11 +27,21 @@ use crate::types::ChainName;
 /// opportunity matching. Unmapped scanner strategies contribute only to
 /// `precision_signal_count`.
 ///
-/// Strategy strings are matched case-insensitively because the two producers
-/// disagree on casing: unit fixtures write the `Debug` form (`"TwoHopArb"`)
-/// while the production results layer persists `Strategy::to_string()`
-/// (strum `Display` → `"two_hop_arb"`). Normalizing here keeps T2 matching
-/// alive for every persisted production row.
+/// Strategy strings are matched in their **snake_case** form because that is
+/// what production persists: the results layer writes `Strategy::to_string()`
+/// (strum `Display` → `"two_hop_arb"`), so the arms are snake_case and the
+/// lookup lower-cases before matching. Normalizing here is what keeps T2
+/// matching alive for every persisted production row.
+///
+/// The lower-casing does **not** rescue the `Debug` form (`"TwoHopArb"` →
+/// `"twohoparb"`, which no arm matches). That form appears only in
+/// hand-written fixtures, and adding arms for it is a separate decision with a
+/// real blast radius, not a cosmetic fix: the `Debug`-form row in
+/// [`store_with_fixtures`] would start counting as T2, moving
+/// `headline_usd_recall` in `t1_match_and_m1_miss` off 0.5. A fixture that
+/// needs a T2 match must use the production spelling — which is what
+/// `t2_matches_production_snake_case_strategy` pins, via the real
+/// `Strategy::to_string()` persistence path.
 fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
     match strategy.to_ascii_lowercase().as_str() {
         "two_hop_arb" | "multi_hop_arb" => Some("arb_atomic"),

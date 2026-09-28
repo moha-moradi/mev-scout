@@ -8,11 +8,16 @@
 //! — never exact profit amounts:
 //!
 //! - the ledger accepted at least one fill over the window,
-//! - every fill with an executed counterpart actually executed (status=true,
-//!   gas_used>0) — a paper fill whose anchor tx reverted is decisive evidence,
-//! - verifiable pass-rate `pass / (pass + fail)` ≥ 0.5 (fills with no executed
-//!   counterpart — mempool-only, unanchored, or outside the replayed block
-//!   range — surface as `Unverifiable`, degraded coverage rather than a fail).
+//! - `fills ⊆ executed set`: every tx-anchored fill has an executed
+//!   counterpart. A fill with a `tx_index` names a transaction the harness asked
+//!   the what-if executor to re-execute, so a missing counterpart is a
+//!   replay/harness gap rather than degraded coverage — only un-anchored
+//!   (mempool-only) fills are legitimately `Unverifiable`,
+//! - every executed counterpart actually ran (status=true, gas_used>0) — a
+//!   paper fill whose anchor tx reverted is decisive evidence,
+//! - verifiable pass-rate `pass / (pass + fail)` ≥ 0.5, asserted **per kind**
+//!   as well as in aggregate, so one consistently bad kind cannot hide inside
+//!   the total.
 //!
 //! ## Expected coverage
 //!
@@ -205,17 +210,30 @@ fn build_executed(
 }
 
 fn summarize(report: &ReconReport) -> Vec<String> {
-    let mut lines = vec![format!(
-        "  fills {} — {} pass / {} fail / {} unverifiable (rate {})",
-        report.fill_count(),
-        report.pass,
-        report.fail,
-        report.unverifiable,
-        report
-            .verifiable_pass_rate()
-            .map(|r| format!("{r:.2}"))
-            .unwrap_or_else(|| "n/a".into()),
-    )];
+    let anchored = report.anchored_fills().count();
+    let covered = report
+        .anchored_fills()
+        .filter(|f| f.executed_status.is_some())
+        .count();
+    let mut lines = vec![
+        format!(
+            "  fills {} — {} pass / {} fail / {} unverifiable (rate {})",
+            report.fill_count(),
+            report.pass,
+            report.fail,
+            report.unverifiable,
+            report
+                .verifiable_pass_rate()
+                .map(|r| format!("{r:.2}"))
+                .unwrap_or_else(|| "n/a".into()),
+        ),
+        format!("  anchored {anchored} — {covered} with an executed counterpart"),
+    ];
+    // Per-kind rates, so a record run shows which kinds carry the rate rather
+    // than only the aggregate.
+    for (strategy, rate) in report.pass_rate_by_strategy() {
+        lines.push(format!("    {strategy}: {rate:.2}"));
+    }
     let mut hist: Vec<_> = report
         .fills
         .iter()
@@ -303,6 +321,29 @@ fn assert_derived_facts(outcome: &ReconOutcome) {
          nothing to reconcile (peek with `MEV_SCOUT_RECORD=1`)"
     );
 
+    // `fills ⊆ executed set` over the anchored fills. A fill carrying a
+    // `tx_index` names a transaction `build_executed` asked the replayer for,
+    // so a missing counterpart is a harness/replay gap, not degraded coverage —
+    // only un-anchored (mempool-only) fills may be `Unverifiable`.
+    let anchored: Vec<_> = report.anchored_fills().collect();
+    for fill in &anchored {
+        assert!(
+            fill.executed_status.is_some(),
+            "anchored fill {} ({}) has no executed counterpart — the corpus asked the what-if \
+             executor for its tx (block {}, index {:?}) and got nothing back",
+            fill.canonical_id.as_deref().unwrap_or("?"),
+            fill.strategy,
+            fill.block_number,
+            fill.tx_index,
+        );
+    }
+    eprintln!(
+        "anchored coverage: {}/{} fills reconciled",
+        anchored.len(),
+        report.fill_count()
+    );
+
+    // Every executed counterpart must have run cleanly.
     for fill in report.fills.iter().filter(|f| f.executed_status.is_some()) {
         assert!(
             fill.executed_status == Some(true) && fill.executed_gas_used.unwrap_or(0) > 0,
@@ -325,6 +366,21 @@ fn assert_derived_facts(outcome: &ReconOutcome) {
         report.pass,
         report.pass + report.fail
     );
+
+    // Per-kind floor, so one consistently bad kind cannot hide inside the
+    // aggregate. A kind with no verifiable fill has no rate and is skipped.
+    let by_kind = report.pass_rate_by_strategy();
+    assert!(
+        !by_kind.is_empty(),
+        "no kind had a verifiable fill — pass-rate is only judgeable per kind"
+    );
+    for (kind, kind_rate) in &by_kind {
+        assert!(
+            *kind_rate >= PASS_RATE_FLOOR,
+            "kind {kind}: pass-rate {kind_rate:.2} below floor {PASS_RATE_FLOOR} (aggregate is \
+             {rate:.2}, so a single bad kind would otherwise be masked)"
+        );
+    }
 }
 
 // `job_run` + `BlockReplayer` drive `CachedRpcDb`, which blocks on the RPC

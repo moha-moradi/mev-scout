@@ -16,6 +16,7 @@
 //! not have produced.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use crate::paper::types::{LedgerResult, PaperFill};
 use crate::replay::whatif::ExecutedNetMap;
@@ -103,6 +104,40 @@ impl ReconReport {
         } else {
             Some(self.pass as f64 / verifiable as f64)
         }
+    }
+
+    /// `pass / (pass + fail)` per strategy, so a floor can be asserted per kind
+    /// instead of only in aggregate. A kind whose fills are all `Unverifiable`
+    /// is omitted rather than reported as `None` — it has no rate to judge, and
+    /// the global [`Self::verifiable_pass_rate`] already covers "nothing was
+    /// verifiable at all".
+    ///
+    /// `BTreeMap` so record output is ordered, not hash-ordered.
+    pub fn pass_rate_by_strategy(&self) -> BTreeMap<&str, f64> {
+        let mut tally: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+        for f in &self.fills {
+            let (p, fl) = tally.entry(f.strategy.as_str()).or_default();
+            match f.verdict {
+                ReconVerdict::Pass => *p += 1,
+                ReconVerdict::Fail(_) => *fl += 1,
+                ReconVerdict::Unverifiable(_) => {}
+            }
+        }
+        tally
+            .into_iter()
+            .filter_map(|(k, (p, fl))| {
+                let verifiable = p + fl;
+                (verifiable > 0).then(|| (k, p as f64 / verifiable as f64))
+            })
+            .collect()
+    }
+
+    /// Fills that are anchored to a real transaction (`tx_index` is set) and
+    /// therefore *must* have an executed counterpart — the corpus asserts
+    /// `fills ⊆ executed set` over this set. Mempool-only / un-anchored fills
+    /// are excluded: they are `Unverifiable` by design, not a coverage gap.
+    pub fn anchored_fills(&self) -> impl Iterator<Item = &ReconFill> {
+        self.fills.iter().filter(|f| f.tx_index.is_some())
     }
 }
 
@@ -395,5 +430,69 @@ mod tests {
         let r = paper_vs_executed(&l, &exec, TOL, ABS);
         assert_eq!((r.pass, r.fail, r.unverifiable), (1, 1, 1));
         assert_eq!(r.verifiable_pass_rate(), Some(0.5));
+    }
+
+    /// A fill with an explicit strategy, for the per-kind floor.
+    fn fill_kind(cid: &str, strategy: &str, net: i128, tx: Option<usize>) -> PaperFill {
+        let mut f = fill(cid, net, 1, tx.unwrap_or(0));
+        f.strategy = strategy.to_string();
+        f.tx_index = tx;
+        f
+    }
+
+    #[test]
+    fn pass_rate_by_strategy_judges_each_kind_independently() {
+        let l = ledger(vec![
+            // TwoHopArb: one pass, one fail ⇒ 0.5.
+            fill_kind("a1", "TwoHopArb", WEI, Some(0)),
+            fill_kind("a2", "TwoHopArb", WEI, Some(1)),
+            // Sandwich: both pass ⇒ 1.0.
+            fill_kind("s1", "Sandwich", WEI, Some(2)),
+            fill_kind("s2", "Sandwich", WEI, Some(3)),
+            // Jit: only fill, and it is unverifiable ⇒ no rate at all.
+            fill_kind("j1", "Jit", WEI, None),
+        ]);
+        let mut exec = ExecutedNetMap::new();
+        for (cid, net) in [
+            ("a1", WEI),
+            ("a2", WEI / 2),
+            ("s1", WEI),
+            ("s2", WEI - WEI / 100),
+        ] {
+            exec.insert(
+                cid.into(),
+                ExecutedNet {
+                    net_wei: net,
+                    gas_used: 21_000,
+                    status: true,
+                },
+            );
+        }
+
+        let report = paper_vs_executed(&l, &exec, TOL, ABS);
+        let rates = report.pass_rate_by_strategy();
+        assert_eq!(rates.get("Sandwich"), Some(&1.0));
+        assert_eq!(rates.get("TwoHopArb"), Some(&0.5));
+        assert!(
+            !rates.contains_key("Jit"),
+            "a kind with no verifiable fill has no rate to judge: {rates:?}"
+        );
+    }
+
+    #[test]
+    fn anchored_fills_excludes_mempool_only_fills() {
+        // A tx-anchored fill is one the executor was asked to re-execute, so
+        // the corpus requires an executed counterpart for exactly these;
+        // an un-anchored fill is Unverifiable by design.
+        let l = ledger(vec![
+            fill_kind("a", "TwoHopArb", WEI, Some(0)),
+            fill_kind("m", "Jit", WEI, None),
+        ]);
+        let r = paper_vs_executed(&l, &ExecutedNetMap::new(), TOL, ABS);
+        let anchored: Vec<_> = r
+            .anchored_fills()
+            .map(|f| f.canonical_id.as_deref().unwrap())
+            .collect();
+        assert_eq!(anchored, vec!["a"]);
     }
 }

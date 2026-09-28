@@ -173,7 +173,9 @@ fn realized_native_delta_wei(ops: &[MevOpRow]) -> Option<i128> {
 /// Native USD price implied by the trace job itself
 /// (`trace_profit_usd` / |delta wei|), used to turn `mev_error_usd_tol` into a
 /// wei band for the degenerate expected ≈ 0 branch. Falls back to $1/native
-/// when the ratio isn't recoverable from the op's own details.
+/// when no op carries both trace fields — the loop `continue`s per op rather
+/// than bailing, so a multi-op tx whose *first* op predates the trace job
+/// (details without the trace keys) still recovers the price from a later op.
 fn native_price_usd(ops: &[MevOpRow]) -> Option<f64> {
     for op in ops {
         let v: serde_json::Value = op
@@ -181,12 +183,16 @@ fn native_price_usd(ops: &[MevOpRow]) -> Option<f64> {
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or(serde_json::Value::Null);
-        let usd = v.get("trace_profit_usd").and_then(|x| x.as_f64())?;
-        let wei = v
+        let Some(usd) = v.get("trace_profit_usd").and_then(|x| x.as_f64()) else {
+            continue;
+        };
+        let Some(wei) = v
             .get("trace_native_delta_wei")
-            .and_then(|x| x.as_str())?
-            .parse::<i128>()
-            .ok()?;
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<i128>().ok())
+        else {
+            continue;
+        };
         if usd.is_finite() && usd >= 0.0 && wei != 0 {
             return Some(usd / wei.abs() as f64);
         }

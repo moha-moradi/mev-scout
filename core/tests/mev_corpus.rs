@@ -47,30 +47,75 @@
 //! [`seed_pool_registry`] seeds and hydrates it (25 puts → 22 distinct pools,
 //! which matches the run's "Loaded 22 pools from discovery cache").
 //!
-//! The real cause is that **the transaction does not replay**. The replayer
-//! reports:
+//! The replayer reports:
 //!
 //! ```text
 //! Block 26059586 tx 0x0c80d7d2…: status (exec=false, receipt=true),
 //!   gas_used (exec=717946, receipt=845345), log_count (exec=0, receipt=36)
 //! ```
 //!
-//! revm halts partway through that router call, so it emits **0 of the 36**
-//! logs — no `Mint`, no `Swap`. [`JitDetector`] matches a mint against a swap
-//! log, so with no logs it cannot fire, and the burn transaction
-//! (`0x11ee3ade…`, the realizer's `burn_tx_index=2`) fails the same way. The
-//! same tx's logs *are* present in the receipt, which is why the receipt-driven
-//! realizer still classifies it.
+//! **The local execution reverts partway through the router call**, emitting
+//! **0 of the 36** logs — no `Mint`, no `Swap` — while the same tx succeeded
+//! on-chain. `JitDetector` matches a mint against a swap log, so with no logs it
+//! cannot fire, and the burn tx (`0x11ee3ade…`, the realizer's
+//! `burn_tx_index=2`) fails the same way. The realizer still classifies the round
+//! trip because it reads the receipt, which carries all 36 logs.
+//!
+//! Three details of that warning matter when reading it, because none of them is
+//! what the wording suggests:
+//!
+//! - **It is a `Revert`, not a `Halt`.** The warning can only be emitted from
+//!   `build_executed_tx` (`replay/replayer.rs`), which is reached solely from
+//!   the `Ok(result)` arm of `exec_or_revert` (`:349-376`); the other arms go to
+//!   `synthesize_tx`, which never cross-checks a receipt. So the EVM returned a
+//!   real `ExecutionResult`, and `exec=717946` is below both the receipt's
+//!   `845345` and — necessarily — the tx's own gas limit, which must be at least
+//!   `845345` for the on-chain tx to have succeeded. A `Halt` burns the entire
+//!   gas limit, so it is excluded, as is the synthetic-revert arm (which also
+//!   reports the full limit). A `Revert` returns unspent gas, which matches.
+//! - **The logs were never emitted, not discarded afterwards.** revm's
+//!   `ExecutionResult::logs()` yields the log list for `Success`, `Revert` and
+//!   `Halt` alike, so `log_count (exec=0)` means execution produced none before
+//!   stopping.
+//! - **The database answered every read.** A state-layer failure arrives as
+//!   `EVMError::Database` → `StateLoadFailed` → `synthesize_tx`, which cannot
+//!   produce this warning. So the revert comes from *divergent state*, not a
+//!   missing account: a pruned provider answering `eth_getStorageAt` with `0x0`
+//!   (`replay/db.rs` `storage_ref` → `RpcClient::get_storage_at`) is enough to
+//!   trip a router's own guard. That matches the RPC requirement noted below.
 //!
 //! The asymmetry generalizes: `jit`, `sandwich` and `jit_arb` are **log-based**
-//! — they need revm to actually execute the transaction — while `arb_atomic` is
-//! state-based and survives a failed replay (that is why the same block still
-//! yielded 8 arb ops). So a zero-op window for a log-based kind is not evidence
-//! the kind is absent: check the replayer's `status (exec=false, receipt=true)`
-//! warnings first. Seeding a `jit` case therefore means picking a window whose
-//! transactions replay successfully, which is a strong argument for the
-//! Avalanche/Polygon windows the plan names (cheap blocks, and the existing
-//! Avalanche detector cases replay cleanly) over dense mainnet blocks.
+//! — they need logs for the transaction, nothing else — while `arb_atomic` reads
+//! `PoolManager` reserves and so survives a failed replay (that is why the same
+//! block still yielded 8 arb ops; its reserves are merely stale, not empty). A
+//! zero-op window for a log-based kind is therefore not evidence the kind is
+//! absent: check the replayer's `status (exec=false, receipt=true)` warnings
+//! first.
+//!
+//! ### The lever, and why it is not pulled
+//!
+//! The receipt's logs are already in hand and are simply dropped:
+//! `build_executed_tx` reads `gas_used` from the receipt when present
+//! (`replay/replayer.rs`) but takes `logs` from `exec_result` only. A fallback —
+//! use the receipt's logs when execution produced none *and* the receipt reports
+//! success — would hand all 36 logs to the detectors, and the pool manager
+//! advances from the same `tx.logs` (`pipeline/runner.rs`), so state maintenance
+//! would follow too. Nothing else is missing: the three detectors take
+//! `&[ExecutedLog]` plus `&PoolManager` metadata and fire on logs alone, the
+//! `LogData → ExecutedLog` conversion already exists in `synthesize_tx`, and
+//! there is no post-state channel to fix up (`run_block` binds the committed DB
+//! as `_db` and drops it).
+//!
+//! It is not applied because it changes the reserve trajectory of every block
+//! containing a divergent transaction, which would invalidate the seeded
+//! `eth-det-arb-block-26059586` floor until that block is re-recorded — and a
+//! record run needs an archive-state RPC, which this environment does not have.
+//! Unvalidated, it would also be a silent change to production detection. Seeding
+//! a `jit` case is therefore two steps, in this order: decide on the fallback,
+//! then re-record. Until then a hunt should target windows whose transactions
+//! replay successfully, which argues for the Avalanche/Polygon windows the plan
+//! names (cheap blocks, and the existing Avalanche detector cases replay
+//! cleanly) over dense mainnet blocks.
 //!
 //! Unlike the realizer sweep, a detector record run needs seed data on both
 //! sides: `job_run` hydrates pools from the chain's block cache, which is
@@ -111,7 +156,7 @@ use mev_scout_core::jobs::{job_run, RunOpts};
 use mev_scout_core::mev::{mev_verdict, MevVerdict};
 use mev_scout_core::pool::state::PoolInfo;
 use mev_scout_core::progress::NoopProgress;
-use mev_scout_core::types::{ChainName, MevOpportunity, Strategy};
+use mev_scout_core::types::{ChainName, GasModel, MevOpportunity, Strategy};
 
 /// One golden detector expectation.
 struct CorpusCase {
@@ -357,6 +402,22 @@ impl CorpusWorkspace {
     }
 }
 
+/// Pin the gas inputs a corpus run must not inherit from a moving default
+/// (MEV-VERIFICATION §D.3).
+///
+/// `Config::default()` happens to land on `HistoricalExact` via `GasModel`'s
+/// `#[default]`, but a corpus seed that is only deterministic *by accident* is a
+/// seed that goes stale the moment that default moves. `HistoricalExact` is the
+/// one model that ignores `percentile_gas_price`, which `run_range` derives
+/// from *prior* blocks (`pipeline/runner.rs`) — every other model makes a
+/// block's ops depend on where in the range it sits. A zero premium and fee
+/// then keep modeled gas a pure function of the block's own base fee.
+fn pin_gas(config: &mut Config) {
+    config.gas.gas_model = GasModel::HistoricalExact;
+    config.gas.priority_fee_gwei = 0.0;
+    config.gas.winning_bid_premium = 0.0;
+}
+
 /// Runtime config for a corpus chain: defaults + chain + caller RPC, with
 /// block fetch / explorer persistence both redirected into the temp workspace
 /// (the derived `./cache/…` fallbacks would otherwise mutate repo caches).
@@ -368,6 +429,7 @@ fn corpus_config(chain: ChainName, rpc_url: &str, ws: &CorpusWorkspace) -> Confi
     config.rpc.rps_limit = 5.0; // gentle on free-tier providers (fetch + pool hydration retry)
     config.output.db_path = ws.blocks.to_string_lossy().into_owned();
     config.explorer.db_path = ws.explorer_db.to_string_lossy().into_owned();
+    pin_gas(&mut config);
     config
 }
 
@@ -739,4 +801,50 @@ fn every_detector_kind_is_reported_by_a_record_run() {
         assert!(ALL_KINDS.contains(&kind), "{kind} missing from ALL_KINDS");
     }
     assert_eq!(ALL_KINDS.len(), 5, "one entry per Strategy variant");
+}
+
+#[test]
+fn corpus_gas_inputs_are_pinned_for_determinism() {
+    // A `Distribution` model reads `percentile_gas_price`, which `run_range`
+    // derives from prior blocks, so a block's ops would depend on its position
+    // in the range and the seeds would drift with range length.
+    let mut cfg = Config::default();
+    pin_gas(&mut cfg);
+    assert_eq!(cfg.gas.gas_model, GasModel::HistoricalExact);
+    assert_eq!(
+        cfg.gas.gas_model.target_percentile(),
+        None,
+        "a percentile model would make a block's gas depend on the blocks before it"
+    );
+    assert_eq!(cfg.gas.priority_fee_gwei, 0.0);
+    assert_eq!(cfg.gas.winning_bid_premium, 0.0);
+}
+
+#[test]
+fn a_hollow_corpus_run_would_not_be_read_as_a_missing_kind() {
+    // `seed_pool_registry` is the harness precondition: with no swap-derived
+    // pools the detector has no pool universe, and a record run reports 0 ops
+    // for *every* kind. `record_derived_facts` warns about it, so a hollow run
+    // is distinguishable from a genuine "kind absent" reading — this pins the
+    // two apart at the unit level.
+    let sandbox = std::env::temp_dir().join(format!("mev_corpus_pools_{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).unwrap();
+    let blocks = sandbox.join("blocks.sqlite");
+    let explorer_db = sandbox.join("explorer.sqlite");
+
+    // An explorer store with no swaps ⇒ no seedable pools.
+    let explorer = ExplorerStore::open(&explorer_db).unwrap();
+    assert_eq!(
+        explorer.pools_from_swaps().unwrap().len(),
+        0,
+        "a fresh explorer store must yield no swap-derived pools"
+    );
+    let blocks_store = SqliteStore::open(&blocks).unwrap();
+    seed_pool_registry(&blocks_store, &explorer);
+    assert_eq!(
+        blocks_store.list_discovered_pools().unwrap().len(),
+        0,
+        "so the registry stays empty and a run over it would be hollow"
+    );
+    let _ = std::fs::remove_dir_all(&sandbox);
 }

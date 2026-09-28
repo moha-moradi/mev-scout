@@ -120,7 +120,8 @@ pub struct ShowArgs {
     #[arg(long)]
     pub trace: bool,
 
-    /// Override `[explorer] trace_tolerance_pct` for the gate verdict
+    /// Override `[explorer] trace_tolerance_pct` and `mev_tolerance_pct` for
+    /// the `show` gate verdicts
     #[arg(long = "tolerance-pct", value_name = "PCT")]
     pub tolerance_pct: Option<f64>,
 }
