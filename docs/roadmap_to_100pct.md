@@ -12,8 +12,9 @@
 > Priority scheme: **goals 2+3 (revm what-if simulation + paper realism) land first, on
 > the already-shipped 6 strategies**, then report scanners and detector expansion by
 > measured value (see §6).
-> Companion docs: `docs/mev_strategies.md`, `docs/implementation_plan_capital_free.md`,
-> `docs/mev_detection_and_opportunity_engine_spec.md`, `docs/ARCHITECTURE.md`.
+> Companion docs: `docs/mev_strategies.md` (Parts I–IV catalogue + **Part V = engine
+> specification, §27–§83**), `docs/implementation_plan_capital_free.md`,
+> `docs/ARCHITECTURE.md`.
 
 ---
 
