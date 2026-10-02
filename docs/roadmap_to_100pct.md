@@ -94,7 +94,7 @@ all 5 pipeline stages exist.
 | Arb quoting/sim (analytical 2-hop, BFS N-hop ≤4, slippage bands, FOT filter, gas+flash fees) | DONE | `core/src/mev/detectors/{arb_common,two_hop,multi_hop}.rs`, `core/src/pool/*` |
 | Detectors: TwoHop, MultiHop, Jit, JitArb, Sandwich, Liquidation(Aave V3) | DONE | `core/src/mev/detectors/*.rs` |
 | Explorer ingest/classify/store, `explorer index|backfill|report|stats` (realized-MEV forensics, USD pricing CoinGecko/DefiLlama) | DONE | `core/src/explorer/*`, `cli/src/commands/explorer/*` |
-| Paper ledger (`paper run|live|sim|stats`) | DONE (6 strategies; native-gas-only; no exec resim; Liquidation excluded) | `core/src/paper/*`, `core/src/jobs/paper.rs` |
+| Paper ledger (always-on in `live`) | DONE (6 strategies; native-gas-only; no exec resim; Liquidation excluded) | `core/src/paper/*` |
 | Mempool capture (pending block, arb-only detection) | PARTIAL | `core/src/mev/detectors/mempool.rs` |
 | 7 chains wired (Aave V3 + Balancer + DEX factories) | DONE | `core/data/chains.toml`, `core/src/config/defaults.rs` |
 | Strategy enum + GasConfig + FlashLoanProvider | DONE (6 variants) | `core/src/types/strategy.rs` |
@@ -229,9 +229,10 @@ Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is i
 - **Competition/inclusion model:** enable & tune `winning_bid_premium`
   (`GasConfig`, currently hard-set to `0.0` in `jobs/run.rs:151`); per-strategy fill
   probability; mempool-only fills get inclusion-rating; MEV-Share rebates net-ledgered.
-- **Wire `aggregate.rs`** (currently `#![allow(dead_code)]`) into `paper stats` and
-  `report` so per-strategy/per-chain net P&L summaries exist.
-- **Done =** paper `net ≈ verified executed bundle` on the validation corpus for all
+- **Wire `aggregate.rs`** (currently `#![allow(dead_code)]`) into the `live`
+  end-of-session summary and `report` so per-strategy/per-chain net P&L
+  summaries exist.
+- **Done =** ledger `net ≈ verified executed bundle` on the validation corpus for all
   wallet-normalized strategies; Liquidation now settlable; a `paper` gap-analysis
   report lists remaining realism deltas and their $ impact estimate.
 
@@ -316,7 +317,7 @@ gated on WS-A/B; WS-C scanners for maker/GMX are gated on WS-A chain addresses.
 | Milestone | Work | Unblocks / Moves | Est. |
 |---|---|---|---|
 | **M0** | WS-E stage 1: what-if bundle executor + state override API on existing 6 strategies | G2 kernel; unblocks WS-F | 1–1.5 w |
-| **M1** | WS-F v1: paper exec re-simulation at fill, token-level wallet (Liquidation settleable), competition/inclusion model (`winning_bid_premium` un-hardcoded), `aggregate.rs` wired into `paper stats`/`report` | **G3 on existing 6** | 1.5–2 w |
+| **M1** | WS-F v1: ledger exec re-simulation at fill, token-level wallet (Liquidation settleable), competition/inclusion model (`winning_bid_premium` un-hardcoded), `aggregate.rs` wired into the `live` session summary/`report` | **G3 on existing 6** | 1.5–2 w |
 | **M2** | WS-H2 first slice: reconciliation corpus (sim vs paper vs real executed txs on the 6) | G3/G2 validity proof | 3–5 d |
 | **M3** | WS-A plumbing: strategy variants + detector trait + classifier/paper hooks + `ChainConfig` schema (Maker/GMX/Fluid/new-gen/Silo/Spark/Comet/LLAMMA) | every new strategy | 3–5 d |
 | **M4** | WS-B primitives: `balance_drift.rs` + `scheduler.rs` (+ tests) | S2,S5,S6,S9,S10,S18 | 3–5 d |
@@ -350,7 +351,7 @@ are prepared; M5–M6 and M9–M11 parallelize once WS-A lands.
 | G3 | Paper-fill re-sim executed; net-USD < threshold discrepancy vs executed bundles in corpus; Liquidation settleable |
 | G4 | Zero stale doc statements (CI lint for known-stale anchors); every implemented strategy has measured-data section |
 
-Suggested cadence: rerun `scan`/`backfill` monthly per chain; `paper live --loop`
+Suggested cadence: rerun `scan`/`backfill` monthly per chain; `live --loop`
 day-runs; `prioritize` weekly; rebalance which chain/strategy gets implementation
 attention based on the measured table rather than the doc.
 
@@ -392,7 +393,7 @@ attention based on the measured table rather than the doc.
 2. **M1 WS-F v1 (start in parallel)** — paper exec re-simulation at fill
    (consume WS-E), token-level wallet incl. Liquidation settlement,
    un-hardcode `winning_bid_premium` (`jobs/run.rs:151`), wire `aggregate.rs`
-   into `paper stats`/`report`.
+   into the `live` session summary/`report`.
 3. **M3 WS-A (stub prep only, second lane)** — draft `Strategy` enum additions +
    detector trait shape + `ChainConfig` schema fields (Maker/GMX/Fluid/new-gen);
    no wiring yet.

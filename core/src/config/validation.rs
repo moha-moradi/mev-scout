@@ -317,6 +317,30 @@ pub fn validate_and_resolve_for(
     config: &Config,
     check_strategies: bool,
 ) -> std::result::Result<ValidationResult, ConfigError> {
+    validate_common(config, check_strategies, true)
+}
+
+/// Validate config for the `live` subcommand.
+///
+/// Like [`validate_and_resolve`] but skips the block-range check —
+/// live mode auto-detects the chain tip at runtime.
+pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
+    validate_common(config, true, false)
+}
+
+/// Shared body of every validating entry point.
+///
+/// `check_range_conflicts` is the *only* check that differs between
+/// [`validate_and_resolve_for`] and [`validate_live`]: `run` resolves a block
+/// range from flags, while live detects the tip at runtime and must therefore
+/// ignore range flags. Every other check is a plain config invariant and
+/// applies to both — silently skipping them in live meant an invalid config
+/// passed validation there and failed only later, at replay time.
+fn validate_common(
+    config: &Config,
+    check_strategies: bool,
+    check_range: bool,
+) -> std::result::Result<ValidationResult, ConfigError> {
     let (chain_name, chain_config) = resolve_chain(config)?;
     validate_explorer_tolerances(config)?;
     validate_gas_premium(config)?;
@@ -357,7 +381,11 @@ pub fn validate_and_resolve_for(
         Vec::new()
     };
 
-    let range_mode = check_range_conflicts(config)?;
+    let range_mode = if check_range {
+        check_range_conflicts(config)?
+    } else {
+        RangeMode::Single(0)
+    };
 
     validate_chain_rpc_overrides(config)?;
     let rpc = config.effective_rpc(chain_name);
@@ -401,40 +429,6 @@ pub fn validate_and_resolve_for(
         chain_name,
         chain_config,
         range_mode,
-        strategies,
-        flash_loan_provider: provider,
-        gas_model,
-    })
-}
-
-/// Validate config for the `live` subcommand.
-///
-/// Like [`validate_and_resolve`] but skips the block-range check —
-/// live mode auto-detects the chain tip at runtime.
-pub fn validate_live(config: &Config) -> std::result::Result<ValidationResult, ConfigError> {
-    let (chain_name, chain_config) = resolve_chain(config)?;
-    validate_explorer_tolerances(config)?;
-    validate_gas_premium(config)?;
-
-    let provider: FlashLoanProvider = config.backtest.flash_loan_provider;
-
-    let strategies: Vec<Strategy> = config.backtest.strategies.clone();
-
-    validate_chain_rpc_overrides(config)?;
-    let rpc = config.effective_rpc(chain_name);
-    if let Some(url) = &rpc.rpc_url {
-        validate_rpc_url(url)?;
-    }
-    if !rpc.rpc_urls.is_empty() {
-        validate_rpc_urls(&rpc.rpc_urls)?;
-    }
-
-    let gas_model = config.gas.gas_model;
-
-    Ok(ValidationResult {
-        chain_name,
-        chain_config,
-        range_mode: RangeMode::Single(0),
         strategies,
         flash_loan_provider: provider,
         gas_model,
@@ -502,5 +496,180 @@ mod tests {
         assert!(validate_live(&config).is_ok());
         config.gas.winning_bid_premium = 0.25;
         assert!(validate_live(&config).is_ok());
+    }
+
+    /// Live shares every config invariant with `run` except the block-range
+    /// check, which it cannot honour. Regression guard: these three used to be
+    /// silently skipped by `validate_live` and must not drift back.
+    #[test]
+    fn live_enforces_shared_config_invariants() {
+        let cases = [
+            (
+                "gas_limit",
+                (|c: &mut Config| c.gas.gas_limit = 30_000_001) as fn(&mut Config),
+            ),
+            ("rps_limit", |c: &mut Config| c.rpc.rps_limit = 10_001.0),
+            ("proximity_window", |c: &mut Config| {
+                c.backtest.proximity_window = 101
+            }),
+        ];
+        for (field, set) in cases {
+            let mut config = Config::default();
+            set(&mut config);
+            match validate_live(&config) {
+                Err(ConfigError::InvalidValue { field: got, .. }) => {
+                    assert_eq!(got, field);
+                }
+                other => panic!("expected InvalidValue for {field}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn live_ignores_block_range_flags() {
+        // Conflicting range flags: rejected by `run`, irrelevant to live, which
+        // detects the tip at runtime and must not care what the flags say.
+        let config = Config {
+            days: Some(3),
+            blocks: Some(100),
+            ..Config::default()
+        };
+        assert!(validate_live(&config).is_ok());
+        assert!(validate_and_resolve(&config).is_err());
+    }
+
+    // `run` was removed from the CLI in favor of `live`, and `discover`
+    // reaches `init_rpc` before it resolves a range — so the runtime range
+    // branches are no longer reachable from an offline CLI test. They are
+    // locked here instead, where they stay hermetic. `discover` still flattens
+    // `BlockRangeArgs`, so these are exactly the combinations a user can type.
+
+    fn spec(
+        days: Option<u64>,
+        blocks: Option<u64>,
+        block: Option<u64>,
+        from: Option<u64>,
+        to: Option<u64>,
+    ) -> std::result::Result<RangeSpec, ConfigError> {
+        RangeSpec::from_flags(days, blocks, block, from, to)
+    }
+
+    fn msg(r: std::result::Result<RangeSpec, ConfigError>) -> String {
+        match r {
+            Ok(_) => panic!("expected a range validation error"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn no_range_flags_is_rejected() {
+        assert!(msg(spec(None, None, None, None, None)).contains("no block range specified"));
+    }
+
+    #[test]
+    fn from_block_requires_to_block() {
+        assert!(msg(spec(None, None, None, Some(100), None)).contains("must be used together"));
+        assert!(msg(spec(None, None, None, None, Some(100))).contains("must be used together"));
+    }
+
+    #[test]
+    fn to_block_must_exceed_from_block() {
+        assert!(msg(spec(None, None, None, Some(200), Some(200))).contains("must be greater than"));
+        assert!(msg(spec(None, None, None, Some(200), Some(100))).contains("must be greater than"));
+    }
+
+    #[test]
+    fn two_range_forms_conflict() {
+        let e = msg(spec(Some(2), Some(5), None, None, None));
+        assert!(e.contains("cannot be used together"), "msg was: {e}");
+        // The message must name both offenders so the fix is obvious.
+        assert!(
+            e.contains("--days") && e.contains("--blocks"),
+            "msg was: {e}"
+        );
+
+        let e = msg(spec(None, None, Some(7), Some(1), Some(9)));
+        assert!(e.contains("cannot be used together"), "msg was: {e}");
+        assert!(
+            e.contains("--block") && e.contains("--from-block"),
+            "msg was: {e}"
+        );
+    }
+
+    #[test]
+    fn block_zero_rejected_at_library_level() {
+        // Unreachable from the CLI (clap's value_parser rejects 0 first), but
+        // core is a public library, so the invariant is enforced here too.
+        assert!(msg(spec(None, None, Some(0), None, None)).contains("--block must be > 0"));
+    }
+
+    #[test]
+    fn each_single_range_form_is_accepted() {
+        assert!(matches!(
+            spec(Some(7), None, None, None, None).unwrap(),
+            RangeSpec::Days(7)
+        ));
+        assert!(matches!(
+            spec(None, Some(100), None, None, None).unwrap(),
+            RangeSpec::Blocks(100)
+        ));
+        assert!(matches!(
+            spec(None, None, Some(65_000_000), None, None).unwrap(),
+            RangeSpec::Block(65_000_000)
+        ));
+        assert!(matches!(
+            spec(None, None, None, Some(1), Some(9)).unwrap(),
+            RangeSpec::FromTo(1, 9)
+        ));
+    }
+
+    /// `Config.days/blocks/block/from_block/to_block` are `#[serde(skip)]`, so
+    /// the TOML file cannot set them; only CLI flags or library calls can.
+    #[test]
+    fn config_file_range_fields_are_ignored() {
+        // `Config.days/blocks/block/from_block/to_block` are `#[serde(skip)]`,
+        // so TOML that sets them is accepted and then ignored — which is why
+        // the old CLI test saw "no block range specified" rather than the
+        // written values. Locked here now that `run` is gone from the CLI.
+        let toml_src = r#"
+output = "json"
+days = 0
+blocks = 0
+block = 0
+from_block = 500
+to_block = 100
+"#;
+        let parsed: Config = toml::from_str(toml_src).unwrap();
+        assert!(
+            parsed.days.is_none(),
+            "days leaked from TOML: {:?}",
+            parsed.days
+        );
+        assert!(
+            parsed.blocks.is_none(),
+            "blocks leaked: {:?}",
+            parsed.blocks
+        );
+        assert!(parsed.block.is_none(), "block leaked: {:?}", parsed.block);
+        assert!(
+            parsed.from_block.is_none(),
+            "from_block leaked: {:?}",
+            parsed.from_block
+        );
+        assert!(
+            parsed.to_block.is_none(),
+            "to_block leaked: {:?}",
+            parsed.to_block
+        );
+        // And with no range visible, resolving one fails the same way the CLI
+        // used to report.
+        let e = msg(spec(
+            parsed.days,
+            parsed.blocks,
+            parsed.block,
+            parsed.from_block,
+            parsed.to_block,
+        ));
+        assert!(e.contains("no block range specified"), "msg was: {e}");
     }
 }

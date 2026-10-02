@@ -51,7 +51,9 @@ output = "table"
 # [live]
 # poll_interval_ms = 2000
 
-# ── Paper virtual-fund P&L ─────────────────────────────────────────
+# ── Ledger (virtual-fund P&L, always on in `live`) ──────────────────
+# Overridable per session: --initial-balance / --initial-balance-usd,
+# --reserve, --max-fills-per-block, --native-usd
 # [paper]
 # starting_gas_wei = "10000000000000000000"  # 10 native
 # reserve_wei = "0"

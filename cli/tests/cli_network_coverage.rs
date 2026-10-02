@@ -128,23 +128,28 @@ fn discover_hybrid_incremental_and_enrich() {
 }
 
 #[test]
-fn run_smoke() {
+fn live_smoke() {
     let _guard = rpc_lock();
-    let Some(ws) = ensure_gate_and_rpc("netcov_run") else {
+    let Some(ws) = ensure_gate_and_rpc("netcov_live") else {
         return;
     };
     let db_s = ws.join("cache.db").to_str().unwrap().to_string();
 
-    let run_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
+    // One-shot live (no --loop) is the CLI replacement for `run --blocks N`:
+    // it detects at the tip and writes a manifest, so `report` still works.
+    let live_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &run_cfg, "run", "--blocks", "2"]);
-    if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "run 2 blocks") {
-        expect_ok(&out, "run 2 blocks");
+    c.args(["-f", &live_cfg, "live"]);
+    if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "live one-shot") {
+        expect_ok(&out, "live one-shot");
         let report_cfg = make_cfg(&ws, &[("db_path", &db_s)]);
         let mut c2 = scout(&ws);
         c2.args(["-f", &report_cfg, "report"]);
-        if let Some(out2) = tolerant(run_timed(&mut c2, common::TEST_TIMEOUT), "report after run") {
-            expect_ok(&out2, "report after run");
+        if let Some(out2) = tolerant(
+            run_timed(&mut c2, common::TEST_TIMEOUT),
+            "report after live",
+        ) {
+            expect_ok(&out2, "report after live");
             assert!(
                 out2.stdout.contains("Run ID:"),
                 "report should contain Run ID"

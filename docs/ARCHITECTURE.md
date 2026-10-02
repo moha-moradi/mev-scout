@@ -4,10 +4,9 @@ An MEV opportunity scanner & backtester for EVM chains (primary target: Polygon)
 Two crates: one engine library and one CLI host:
 
 - **`core/`** — `mev-scout-core`: engine + stores + shared job orchestration.
-- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 8 top-level
-  subcommands (`run live discover tokens report config explorer paper`, plus
-  the `explorer` / `paper` nests). Parses args, loads config, presentation,
-  dispatches to core.
+- **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 6 top-level
+  subcommands (`live discover tokens report config explorer`, plus the
+  `explorer` nest). Parses args, loads config, presentation, dispatches to core.
 
 ---
 
@@ -17,7 +16,7 @@ Two crates: one engine library and one CLI host:
 flowchart TB
     subgraph CLI["mev-scout-cli (binary: mev-scout)"]
         MAIN["main.rs<br/>parse args · load config · logging"]
-        CLIDEF["cli.rs<br/>clap: run live discover tokens report config explorer paper"]
+        CLIDEF["cli.rs<br/>clap: live discover tokens report config explorer"]
         DISPATCH["commands/mod.rs<br/>CliCommand trait → dispatch"]
         UI["display.rs · overrides.rs<br/>tables · config merge"]
     end
@@ -26,7 +25,7 @@ flowchart TB
         direction TB
 
         subgraph ORCH["Orchestration"]
-            COREJOBS["jobs<br/>run · live · discover · tokens · report<br/>index · backfill · validate · paper · trace · export"]
+            COREJOBS["jobs<br/>live · discover · tokens · report<br/>index · backfill · validate · run · trace · export"]
             PIPE["pipeline<br/>BacktestRunner · run_block / run_range(_hybrid)<br/>aggregate → metrics · gas model"]
         end
 
@@ -93,9 +92,9 @@ flowchart TB
 
 - The CLI is the only host: `CLI → core`. Shared long-running flows live in `core::jobs`.
 - `pipeline` is the hub: `BacktestRunner` owns `BlockReplayer` + `PoolManager` and drives every detector per transaction.
-- `cache` (SQLite) is the local-first backbone — `run`/`live` fetch blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
+- `cache` (SQLite) is the local-first backbone — `live` fetches blocks into it; the runner reads from it; pool discovery persists pools/tokens into it.
 - `rpc` fronts the chain for everything: fetching, `eth_call` pool state, and replay's on-demand state misses (via `CachedRpcDb`).
-- `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `run`/`live` always persist detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution.
+- `explorer` answers "what was made" (realized MEV forensics) vs the detectors' "what could be made" — it ingests via RPC into its own SQLite store (`explorer-{chain}.sqlite`) so live index writes never contend with replay-path cache reads. Scanner `live` always persists detected opportunities there (via in-memory `ResultsFile` DTO); `record_rejections = true` also stores rejected candidates for miss attribution.
 
 ---
 
@@ -103,16 +102,21 @@ flowchart TB
 
 | Command | Purpose | Chain access | Writes |
 |---|---|---|---|
-| `run` | Full backtest → opportunities | yes (fetch + eth_call) | SQLite cache, explorer SQLite |
-| `live` | Stream new blocks, detect as they arrive | yes | SQLite cache, explorer SQLite |
+| `live` | Detect at tip → opportunities + virtual P&L ledger | yes | SQLite cache, explorer SQLite |
 | `discover` | Find pools (on-chain factories / aggregators) | yes (RPC and/or REST) | SQLite cache |
 | `tokens` | Populate / view token metadata cache | optional REST (`--enrich`) | SQLite `token_symbols` |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
 | `explorer` | Realized-MEV forensics (`index` / `stats` / `show` / `report` / `backfill` / `validate`) | yes (logs; optional traces); backfill/index yes | Explorer SQLite store |
-| `paper` | Virtual-fund bot P&L (`run` / `live` / `sim` / `stats`) | yes (run/live); no (sim/stats) | Explorer SQLite (`paper_*`) |
 
-Product split: **`run`/`live`** = what *could* be made; **`explorer`** = what *was* made; **`paper`** = theoretical session P&L if we took detections with a virtual gas wallet (no competition).
+Product split: **`live`** = what *could* be made, plus the theoretical session
+P&L of taking those detections with a virtual gas wallet (no competition);
+**`explorer`** = what *was* made.
+
+The `run` and `paper` commands were removed. `live` absorbed both: it detects at
+chain tip (replacing `run`'s one-shot range scan) and its paper ledger is always
+on (replacing `paper run` / `paper live`). `report` prints a run's ledger session
+alongside its results.
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -128,7 +132,7 @@ Every subcommand accepts:
 
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml --verbose config
-mev-scout --quiet run --blocks 10
+mev-scout --quiet live
 mev-scout -f custom.toml config
 ```
 
@@ -158,16 +162,17 @@ format for `tokens`, `report`, and `discover` is the TOML `output` key
 
 ### Block range (exactly one)
 
-`run` and `discover` (on-chain / hybrid) require exactly one of:
+`discover` (on-chain / hybrid) requires exactly one of:
 
 ```powershell
-mev-scout run --days 7
-mev-scout run --blocks 100
-mev-scout run --block 65000000
-mev-scout run --from-block 65000000 --to-block 65000100
+mev-scout discover --days 7
+mev-scout discover --blocks 100
+mev-scout discover --block 65000000
+mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-`--days` is 1–365. `live` uses chain tip (no range flags).
+`--days` is 1–365. `live` uses chain tip (no range flags) — it was the
+replacement for `run`, which took a range and scanned it once.
 
 ### Two SQLite stores
 
@@ -180,14 +185,14 @@ flowchart LR
     toml --> cli
     cli --> cache
     cli --> explorer
-    cache -->|"run live report discover tokens"| cli
+    cache -->|"live report discover tokens"| cli
     explorer -->|"report explorer"| cli
 ```
 
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
-| Scanner cache | `cache/` per-chain DB | `run`, `live`, `discover`, `tokens` | `run`, `live`, `discover --incremental`, `tokens`, `report` (manifests) |
-| Explorer store | `explorer-{chain}.sqlite` (`./cache/`) | `run`/`live` (opportunities; rejections when `record_rejections = true`), `explorer index`/`backfill`, `paper` (`paper_sessions` / `paper_fills`) | `report`, `explorer *`, `paper stats`/`sim` |
+| Scanner cache | `cache/` per-chain DB | `live`, `discover`, `tokens` | `live`, `discover --incremental`, `tokens`, `report` (manifests) |
+| Explorer store | `explorer-{chain}.sqlite` (`./cache/`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index`/`backfill` | `report`, `explorer *` |
 
 ---
 
@@ -301,26 +306,22 @@ flowchart LR
     K -- no --> N["table / json / csv"]
 ```
 
-### 4.4 `run` — the full backtest
+### 4.4 Detection pipeline (shared by `live`)
 
-The main pipeline. Everything is cached first, then replayed and detected.
+The core engine. Everything is cached first, then replayed and detected.
 Opportunities always land in the explorer store; set `record_rejections = true`
-in TOML to also store rejected candidates for offline analysis.
+in TOML to also store rejected candidates for offline analysis. The paper
+ledger is always on, so every session also reports virtual P&L.
 
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml run --blocks 100
-mev-scout run --days 7
-mev-scout run --block 65000000
-mev-scout run --from-block 65000000 --to-block 65000100
-# batch_rpc / record_rejections → TOML
-```
+The range-scanning entry point (`run`) was removed from the CLI; `live` drives
+this engine at chain tip. `core::jobs::job_run` remains as a library function.
 
 ```mermaid
 flowchart TB
-    A["validate config<br/>(validation::validate_and_resolve)"] --> B["init_rpc<br/>multi-provider client"]
+    A["validate config<br/>(validation::validate_live —<br/>no range flags; tip is resolved<br/>at runtime)"] --> B["init_rpc<br/>multi-provider client"]
     B --> C["SqliteStore::open<br/>(per-chain cache.db)"]
-    C --> D["RangeResolver.resolve<br/>--days / --blocks / --block / --from--to<br/>→ ResolvedRange"]
-    D --> E["RunManifest → SQLite<br/>(run_id = run_{epoch})"]
+    C --> D["get_block_number → tip<br/>(one-shot: re-read per call;<br/>loop: re-read each pass)"]
+    D --> E["RunManifest → SQLite<br/>(run_id fixed for the session,<br/>INSERT OR REPLACE widens<br/>start/end each pass)"]
     E --> F{"discovered pools<br/>in cache?"}
     F -- "yes" --> G["Fetcher.fetch_relevant<br/>log-first: only blocks with<br/>pool activity"]
     F -- "no" --> H["Fetcher.fetch_range<br/>all blocks"]
@@ -336,6 +337,7 @@ flowchart TB
     N -- no --> P
     O --> P["runner.run_range<br/>per block: filtered revm replay<br/>→ detectors → MevOpportunities"]
     P --> Q["ResultsFile DTO → explorer SQLite<br/>(opportunities always)<br/>render results + block summary tables<br/>(record_rejections TOML: rejected<br/>candidates → explorer store)"]
+    Q --> R["LedgerPolicy.apply(accumulated<br/>session opportunities) →<br/>net P&L, fills, skips;<br/>paper_sessions written once<br/>at session end"]
 ```
 
 Inside `run_range` — per block:
@@ -353,19 +355,55 @@ flowchart LR
 
 ### 4.5 `live` — real-time streaming detection
 
-Same engine as `run`, against chain tip. One-shot (default) or continuous
-polling with `--loop`.
+Same engine as the range scanner, against chain tip. One-shot (default) or
+continuous polling with `--loop`.
 
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml live
 mev-scout live --loop
 mev-scout live --loop --duration 1h
 mev-scout live --loop --max-blocks 50
+mev-scout live --initial-balance 1000000000000000000
+mev-scout live --initial-balance-usd 10 --native-usd 0.42
 # poll_interval_ms → [live]; record_rejections → TOML
 ```
 
 `--duration` and `--max-blocks` require `--loop`. Poll interval defaults to
 `[live].poll_interval_ms` (2000).
+
+Ledger overrides (all optional, falling back to `[paper]`):
+`--initial-balance <wei>` or `--initial-balance-usd <usd>` (mutually exclusive),
+`--reserve <wei>`, `--max-fills-per-block <n>`, `--native-usd <price>`.
+`--initial-balance-usd` needs a price — pass `--native-usd` to stay offline.
+
+#### End-of-session report
+
+When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
+`--loop`), the ledger prints and persists:
+
+```
+  ledger: 4 fill(s), 1 skipped | net 7200000000000000000 wei ($3.0240)
+  wallet: 100000000000000000000 ($42.0000) → 107200000000000000000 ($45.0240) | reserve 0 | max drawdown 0 wei
+  by strategy (fills accepted):
+    jit       1 fill   gas  0.800000  net      +4.200000 wei  $   1.7640
+    arb       2 fills  gas  1.500000  net      +2.500000 wei  $   1.0500
+    sandwich  1 fill   gas  1.500000  net      +0.500000 wei  $   0.2100
+  note: 1 candidate(s) skipped as not_native_unit (profit not native-denominated, e.g. liquidation)
+```
+
+- `wallet` is gas paid → gas plus realized net, so `ending − starting` is the
+  session's profit.
+- The `by strategy` rows come from `pipeline::aggregate_fills`, the same rollup
+  `report` uses, so they cannot drift from it. They are ordered by absolute net,
+  and their sum always equals the headline `net`.
+- Every accepted fill has `net > 0` by construction — `LedgerPolicy::apply`
+  skips `net <= 0` as `NonPositiveNet`. The breakdown therefore only ever
+  attributes profit; a gas-heavy candidate shows up under `skipped`, not as a
+  losing row.
+- USD columns appear only when a price is known (`--native-usd`, or a resolved
+  native price). Without one, amounts stay in wei rather than being guessed.
+- One `paper_sessions` row plus its `paper_fills` are written once at session
+  end; `report` re-renders the same figures offline.
 
 ```mermaid
 flowchart TB
@@ -402,6 +440,17 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml report
 mev-scout report --run-id run_1717…
 # set output = "csv" or "json" in mev-scout.toml for machine-readable forms
 ```
+
+**One run per session, not per pass.** Before the `live`/`run` consolidation,
+every `live --loop` pass wrote its own `run_id`, so `report` described a single
+block-range scan. Now a whole `live` session — however many passes and blocks it
+covers — is one run with one `run_id`: the manifest is `INSERT OR REPLACE`d to
+widen `start_block`/`end_block` on each pass, and every pass's opportunities are
+appended to the same run. `report` therefore always shows the whole session, and
+its `Ledger session:` block is the session's cumulative P&L, not a single pass.
+
+Runs written by the old per-pass scheme are still readable — they keep their own
+`run_id`s and appear as separate entries.
 
 ```mermaid
 flowchart LR
@@ -523,32 +572,30 @@ mev-scout explorer report --windows 1d,7d,30d
 mev-scout explorer report --windows all --kind sandwich --top 20
 ```
 
-### 4.8 `paper` — virtual-fund bot P&L
+### 4.8 Ledger (was `paper`)
 
 Theoretical session accounting over detected opportunities: a native gas wallet,
 greedy per-block fill selection (pool-conflict aware), labeled
-`PAPER (theoretical, no competition)`. Reuses `job_run` / `job_live` for
-detection; ledger is a pure post-process. No mempool racing, no Solidity
-executor.
+`PAPER (theoretical, no competition)`. The ledger is a pure post-process applied
+by `live` after every pass, and persisted once at session end. No mempool
+racing, no Solidity executor.
 
-```powershell
-mev-scout paper run --blocks 100
-mev-scout paper live --loop --duration 15m
-mev-scout paper sim --run run_1717… --wallet-multiplier 2
-mev-scout paper stats
-mev-scout paper stats --session paper_run_…
-mev-scout paper stats --since 7d
-```
+The standalone `paper` command was removed — see §4.5 for the flags.
 
 `[paper]` TOML: `starting_gas_wei`, `reserve_wei`, `max_fills_per_block`
-(hard-capped at 32/block). `paper sim` replays stored `opportunities` offline;
-`paper stats --since` accepts `1d` | `7d` | `30d` | `all` (default all).
+(hard-capped at 32/block). Each may be overridden per session:
+
+```powershell
+mev-scout live --initial-balance 1000000000000000000
+mev-scout live --initial-balance-usd 10 --native-usd 0.42
+mev-scout live --reserve 500000000000000000 --max-fills-per-block 4
+```
 
 ```mermaid
 flowchart TB
-  detect["job_run / job_live / opportunities table"] --> ledger["paper::LedgerPolicy"]
+  detect["live / opportunities"] --> ledger["paper::LedgerPolicy"]
   ledger --> sess["paper_sessions + paper_fills"]
-  sess --> stats["paper stats"]
+  sess --> rep["report (session P&L)"]
 ```
 
 #### Classifier-change replay recipe (wipe + reindex)
@@ -652,8 +699,8 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | Artifact | Produced by | Consumed by |
 |---|---|---|
 | SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `discover` | `run`, `live`, `discover` (incremental), `tokens`, `report` (manifests) |
-| Explorer store `explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `run`, `live` (always opportunities; rejections when `record_rejections = true`) | `report`, `paper sim` |
-| Explorer store — `paper_sessions` / `paper_fills` | `paper run` / `live` / `sim` | `paper stats` |
+| Explorer store `explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
+| Explorer store — `paper_sessions` / `paper_fills` | `live` (one session row written at session end) | `report` (session P&L) |
 | Explorer store `explorer-{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` / `backfill` | `explorer` CLI |
 | Signature DB (4byte directory snapshot) | module exists (`core::sigs`, resolver + downloader) but is **not wired** into `run`/`live` ingest yet | tx decoding (future) |
 

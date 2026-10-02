@@ -143,6 +143,30 @@ impl ExplorerStore {
         }
     }
 
+    /// Most recent session linked to `run_id`.
+    ///
+    /// `live` writes its ledger session once at session end with a stable
+    /// `run_id`, so this is the lookup `report` uses to attach P&L to a run.
+    pub fn paper_session_for_run(&self, run_id: &str) -> anyhow::Result<Option<PaperSession>> {
+        self.ensure_paper_tables()?;
+        let conn = self.connection();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
+                    starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
+                    net_profit_wei, max_drawdown_wei, created_at
+             FROM paper_sessions
+             WHERE linked_run_id = ?1
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![run_id])?;
+        if let Some(r) = rows.next()? {
+            Ok(Some(row_to_session(r)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// List paper sessions, newest first. `since_ts == 0` means all.
     pub fn list_paper_sessions(
         &self,

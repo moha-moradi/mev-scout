@@ -11,7 +11,7 @@ otherwise.
 only**. It is a `static` per binary, and `cargo test` runs all test binaries in
 parallel processes, so:
 
-- `cli_run_replay`, `cli_live_mode`, `cli_data_foundation`, and
+- `cli_live_report`, `cli_live_mode`, `cli_data_foundation`, and
   `cli_network_coverage` each serialize internally via `common::rpc_lock()`
   (poison-recovering) followed by `common::ensure_gate_and_rpc` — the RPC
   probe runs *inside* the lock.
@@ -23,7 +23,7 @@ To serialize everything, run the gated binaries one at a time:
 ```powershell
 $env:MEV_SCOUT_E2E = "1"
 cargo test -p mev-scout-cli --test cli_e2e -- --test-threads=1
-cargo test -p mev-scout-cli --test cli_run_replay -- --test-threads=1
+cargo test -p mev-scout-cli --test cli_live_report -- --test-threads=1
 cargo test -p mev-scout-cli --test cli_live_mode -- --test-threads=1
 cargo test -p mev-scout-cli --test cli_data_foundation -- --test-threads=1
 cargo test -p mev-scout-cli --test cli_network_coverage -- --test-threads=1

@@ -220,6 +220,28 @@ pub fn wei_to_usd(wei: U256, native_usd: f64) -> f64 {
     u256_to_f64(wei) / 1e18 * native_usd
 }
 
+/// USD → wei (18-decimals native).
+///
+/// Inverse of [`wei_to_usd`]. Saturates at `u128::MAX` rather than wrapping,
+/// since callers use this to size a gas wallet.
+pub fn usd_to_wei(usd: f64, native_usd: f64) -> Option<u128> {
+    if !usd.is_finite() || !native_usd.is_finite() || native_usd <= 0.0 || usd < 0.0 {
+        return None;
+    }
+    let wei = usd / native_usd * 1e18;
+    if !wei.is_finite() || wei > u128::MAX as f64 {
+        return None;
+    }
+    Some(wei as u128)
+}
+
+/// Format a signed wei amount as USD. Sign is preserved; magnitude is absolute.
+pub fn signed_wei_to_usd(wei: i128, native_usd: f64) -> f64 {
+    let magnitude = wei.unsigned_abs();
+    let sign = if wei < 0 { -1.0 } else { 1.0 };
+    sign * wei_to_usd(U256::from(magnitude), native_usd)
+}
+
 /// U256 → f64 (precision loss acceptable at report layer).
 pub fn u256_to_f64(v: U256) -> f64 {
     let limbs = v.as_limbs();
@@ -362,6 +384,33 @@ mod tests {
                 < 1e-9
         );
         assert!((wei_to_usd(U256::from(1_000_000_000_000_000_000u64), 2.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usd_to_wei_inverts_wei_to_usd() {
+        let wei = 10u128.pow(18);
+        let back = usd_to_wei(2.0, 2.0).unwrap();
+        assert_eq!(back, wei);
+        assert!((wei_to_usd(U256::from(back), 2.0) - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn usd_to_wei_rejects_unrepresentable_input() {
+        assert!(usd_to_wei(10.0, 0.0).is_none(), "zero price");
+        assert!(usd_to_wei(10.0, -1.0).is_none(), "negative price");
+        assert!(usd_to_wei(10.0, f64::NAN).is_none(), "nan price");
+        assert!(usd_to_wei(-1.0, 2.0).is_none(), "negative usd");
+        assert!(usd_to_wei(f64::NAN, 2.0).is_none(), "nan usd");
+        assert!(usd_to_wei(f64::INFINITY, 2.0).is_none(), "infinite usd");
+        // Overflow must not wrap into a small wallet.
+        assert!(usd_to_wei(f64::MAX, 1e-18).is_none(), "overflow");
+    }
+
+    #[test]
+    fn signed_wei_to_usd_preserves_sign() {
+        assert!((signed_wei_to_usd(2 * 10i128.pow(18), 2.0) - 4.0).abs() < 1e-9);
+        assert!((signed_wei_to_usd(-2 * 10i128.pow(18), 2.0) + 4.0).abs() < 1e-9);
+        assert!((signed_wei_to_usd(0, 2.0)).abs() < 1e-9);
     }
 
     #[test]

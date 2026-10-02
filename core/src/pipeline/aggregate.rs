@@ -1,7 +1,9 @@
 // Cross-run opportunity aggregation: summary / per-strategy / per-dex metrics
 // (MEV-VERIFICATION §C.3 re-expose). Two entry points share one rollup:
 // `aggregate*` over detected `MevOpportunity` rows (CLI `report`) and
-// `aggregate_fills` over persisted `PaperFill` rows (CLI `paper stats`).
+// `aggregate_fills` over persisted `PaperFill` rows (library API — the
+// `paper stats` CLI that consumed it was removed with the `paper` command;
+// `live` still writes `paper_fills` rows, so the rollup remains reachable).
 // Covered by offline unit tests below.
 
 use crate::paper::types::PaperFill;
@@ -372,7 +374,7 @@ pub fn aggregate_with_prices(
 /// A paper session persists [`PaperFill`] rows (gross/gas/net in wei, strategy
 /// as `Strategy::to_string()`), not `MevOpportunity`, so the opportunity-shaped
 /// entry point cannot consume them directly. This adapter projects fills back
-/// onto the shared rollup so `paper stats` can surface per-strategy net and ROI
+/// onto the shared rollup so callers can surface per-strategy net and ROI
 /// instead of only a flat per-fill table (MEV-VERIFICATION §C.3).
 ///
 /// Notes:
@@ -383,8 +385,9 @@ pub fn aggregate_with_prices(
 ///   `PaperFill` has no token pair and the generic fallback key would collapse
 ///   two distinct same-block fills of the same strategy onto one row.
 /// - Fills whose `strategy` string does not parse into a [`Strategy`] are
-///   excluded: they cannot be attributed to a strategy bucket. The raw per-fill
-///   table in `paper stats` still lists them, so nothing is hidden.
+///   excluded: they cannot be attributed to a strategy bucket. Callers that
+///   render a raw per-fill table alongside this rollup should still list them,
+///   so nothing is hidden.
 /// - `usd_price` is the **native** token price. Paper is native-normalized by
 ///   construction (only `is_native_eligible` strategies are ever filled), so
 ///   there is no per-token lookup to do. Pass `0.0` when no price snapshot is

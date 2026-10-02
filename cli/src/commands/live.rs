@@ -2,7 +2,7 @@ use anyhow::Context;
 use std::time::{Duration, Instant};
 
 use crate::cli::LiveArgs;
-use crate::display::render_results_table;
+use crate::display::{render_block_summary_table, render_results_table};
 use crate::job_progress::JobProgress;
 use mev_scout_core::config::Config;
 use mev_scout_core::jobs::{job_live, LiveOpts, LiveOutcome};
@@ -38,21 +38,29 @@ pub async fn cmd_live(
     }
     let _ = deadline_from(args.r#loop, args.duration.as_deref(), Instant::now())?;
 
+    // Ledger flags are validated in `resolve_ledger_policy` /
+    // `resolve_native_price` so the rules live in one place and apply to any
+    // caller, not just this CLI.
     let opts = LiveOpts {
         loop_enabled: args.r#loop,
         duration: args.duration.clone(),
         poll_interval_ms: config.live.poll_interval_ms,
         record_rejections: config.backtest.record_rejections,
         max_blocks: args.max_blocks,
+        // `live` owns its session end to end.
+        persist_session: true,
+        initial_balance_wei: args.initial_balance,
+        initial_balance_usd: args.initial_balance_usd,
+        reserve_wei: args.reserve,
+        max_fills_per_block: args.max_fills_per_block,
+        native_usd: args.native_usd,
     };
 
     match job_live(config, &opts, progress).await? {
         LiveOutcome::OneShot(pass) => {
-            progress.log(&format!(
-                "\nBlock {} — {} opportunity(ies) detected",
-                pass.tip,
-                pass.opportunities.len()
-            ));
+            // The "Block N — … detected" headline is already emitted by
+            // `job_live` (core), together with the ledger summary. Only the
+            // rendering and the scan counters are left to the CLI here.
             if pass.opportunities.is_empty() {
                 progress.log("No MEV opportunities in this block.");
             } else {
@@ -66,7 +74,15 @@ pub async fn cmd_live(
                 ));
             }
         }
-        LiveOutcome::Loop(_) => {}
+        LiveOutcome::Loop(session) => {
+            if session.block_stats.len() > 1 {
+                render_block_summary_table(&session.block_stats);
+            }
+            // Ledger totals were already logged per pass plus once at session
+            // end; only the session id is echoed here for copy-paste into
+            // `report` / `explorer`.
+            progress.log(&format!("\nPaper session: {}", session.session_id));
+        }
     }
 
     Ok(())

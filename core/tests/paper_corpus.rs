@@ -1,8 +1,8 @@
 //! Paper ↔ executed-profit corpus (MEV-VERIFICATION §B.3).
 //!
 //! Pipeline: `job_run` (detector) over a fixed historical window → pure
-//! [`LedgerPolicy::apply`] (the same arithmetic `paper run` performs; wallet
-//! delta = `expected_profit − gas_cost_wei`) → re-execute each fill's real
+//! [`LedgerPolicy::apply`] (the same arithmetic `live` applies each pass;
+//! wallet delta = `expected_profit − gas_cost_wei`) → re-execute each fill's real
 //! anchored tx through revm ([`BlockReplayer::what_if_real_txs`], the §B.1
 //! executor) → reconcile via [`paper_vs_executed`] and assert **derived facts**
 //! — never exact profit amounts:

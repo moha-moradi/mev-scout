@@ -1,7 +1,7 @@
 //! Opt-in end-to-end test for the real `mev-scout` CLI binary.
 //!
 //! Exercises the full CLI path against a live Polygon RPC:
-//! RPC init → range resolution → fetch → pool init → backtest → JSON export.
+//! RPC init → tip resolution → fetch → pool init → backtest → ledger → JSON export.
 //!
 //! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL comes from the
 //! `RPC_URL` env var only.
@@ -18,7 +18,7 @@ fn skip(reason: &str) {
 }
 
 #[test]
-fn cli_real_run_smoke() {
+fn cli_real_live_smoke() {
     if std::env::var("MEV_SCOUT_E2E").as_deref() != Ok("1") {
         skip("set MEV_SCOUT_E2E=1 to run the real CLI-path E2E test");
         return;
@@ -48,20 +48,15 @@ fn cli_real_run_smoke() {
     );
 
     let mut cmd = Command::new(BIN);
-    cmd.args([
-        "--quiet",
-        "-f",
-        cfg_path.to_str().unwrap(),
-        "run",
-        "--blocks",
-        "1",
-    ]);
+    cmd.args(["--quiet", "-f", cfg_path.to_str().unwrap(), "live"]);
 
     eprintln!("Running: {}", cmd.get_program().to_string_lossy());
     let out = match run_timed(&mut cmd, HEAVY_TIMEOUT) {
         Ok(o) => o,
         Err(e) => {
-            skip(&format!("cli run exceeded budget (public-RPC stall):\n{e}"));
+            skip(&format!(
+                "cli live exceeded budget (public-RPC stall):\n{e}"
+            ));
             return;
         }
     };
@@ -70,7 +65,7 @@ fn cli_real_run_smoke() {
     eprintln!("--- stderr ---");
     eprintln!("{}", out.stderr);
 
-    assert!(out.success, "mev-scout run exited with {:?}", out.code);
+    assert!(out.success, "mev-scout live exited with {:?}", out.code);
 
     // `--quiet` must suppress tracing lines (error-level filter); progress
     // bars and the final summary still go to stdout.
@@ -95,7 +90,7 @@ fn cli_real_run_smoke() {
     let mut report_cmd = Command::new(BIN);
     report_cmd.args(["--quiet", "-f", report_cfg.to_str().unwrap(), "report"]);
     let report_out =
-        run_timed(&mut report_cmd, HEAVY_TIMEOUT).expect("report after run exceeded budget");
+        run_timed(&mut report_cmd, HEAVY_TIMEOUT).expect("report after live exceeded budget");
     assert!(
         report_out.success,
         "mev-scout report after run exited with {:?}",

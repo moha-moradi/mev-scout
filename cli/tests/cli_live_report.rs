@@ -3,20 +3,23 @@ mod common;
 use common::{ensure_gate_and_rpc, expect_ok, make_cfg, rpc_lock, run_timed, scout, HEAVY_TIMEOUT};
 use serde_json::Value;
 
+/// `run` used to drive this; `live` is its replacement. Kept (rather than
+/// deleted) because it is the only place that pins `report`'s *rendered*
+/// shapes — table and CSV — not just its JSON payload.
 #[test]
-fn run_report_chain() {
+fn live_report_shapes() {
     let _guard = rpc_lock();
-    let Some(ws) = ensure_gate_and_rpc("runrep") else {
+    let Some(ws) = ensure_gate_and_rpc("liverep") else {
         return;
     };
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    let run_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
+    let live_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &run_cfg, "run", "--blocks", "5"]);
-    let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("run spawn failed");
-    expect_ok(&out, "run 5 blocks");
+    c.args(["-f", &live_cfg, "live"]);
+    let out = run_timed(&mut c, HEAVY_TIMEOUT).expect("live spawn failed");
+    expect_ok(&out, "live one-shot");
 
     // Read run history from SQLite via report
     let report_json_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
@@ -38,10 +41,6 @@ fn run_report_chain() {
         .as_u64()
         .expect("end_block numeric");
     assert!(end_block >= start_block, "end_block must be >= start_block");
-    assert!(
-        end_block - start_block <= 5,
-        "range wider than requested: {start_block}..{end_block}"
-    );
     assert!(
         results_json["opportunities"].is_array(),
         "opportunities array missing"

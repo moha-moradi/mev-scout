@@ -6,7 +6,6 @@ mod explorer_validate;
 mod export;
 mod index;
 mod live;
-mod paper;
 mod report;
 mod rpc;
 mod run;
@@ -23,10 +22,6 @@ pub use export::{
 pub use index::load_pool_registry;
 pub use index::{job_index, IndexOpts, IndexOutcome};
 pub use live::{job_live, LiveLoopOutcome, LiveOneShotOutcome, LiveOpts, LiveOutcome};
-pub use paper::{
-    job_paper_live, job_paper_run, job_paper_sim, job_paper_stats, PaperLiveOpts, PaperOutcome,
-    PaperRunOpts, PaperSimOpts, PaperStatsOutcome,
-};
 pub use report::{job_report, ReportOpts, ReportOutcome};
 pub use rpc::{init_rpc, RpcSetup};
 pub use run::{job_run, RunOpts, RunOutcome};

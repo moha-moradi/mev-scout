@@ -29,15 +29,13 @@ fn help_lists_kept_commands() {
     let ws = temp_ws("args_help");
     let out = run(&ws, &["--help"]);
     expect_ok(&out, "mev-scout --help");
-    for cmd in [
-        "run", "report", "config", "discover", "tokens", "live", "explorer", "paper",
-    ] {
+    for cmd in ["report", "config", "discover", "tokens", "live", "explorer"] {
         assert!(
             help_lists_subcommand(&out.stdout, cmd),
             "--help output missing subcommand '{cmd}'"
         );
     }
-    for removed in ["fetch", "replay", "validate-pools", "scan"] {
+    for removed in ["run", "paper", "fetch", "replay", "validate-pools", "scan"] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "--help still lists removed subcommand '{removed}'"
@@ -65,16 +63,57 @@ fn explorer_help_lists_subcommands() {
 }
 
 #[test]
-fn paper_help_lists_subcommands() {
-    let ws = temp_ws("args_paper_help");
-    let out = run(&ws, &["paper", "--help"]);
-    expect_ok(&out, "paper --help");
-    for sub in ["run", "live", "sim", "stats"] {
+fn live_help_lists_ledger_flags() {
+    let ws = temp_ws("args_live_ledger_help");
+    let out = run(&ws, &["live", "--help"]);
+    expect_ok(&out, "live --help");
+    for flag in [
+        "--initial-balance",
+        "--initial-balance-usd",
+        "--reserve",
+        "--max-fills-per-block",
+        "--native-usd",
+    ] {
         assert!(
-            help_lists_subcommand(&out.stdout, sub),
-            "paper --help missing subcommand '{sub}'"
+            out.stdout.contains(flag),
+            "live --help missing ledger flag '{flag}'"
         );
     }
+}
+
+/// Both balance forms describe the same wallet, so accepting both would mean
+/// silently picking one. The pair must be rejected before any network access.
+#[test]
+fn live_rejects_both_balance_forms() {
+    let ws = temp_ws("args_live_balance_conflict");
+    let out = run(
+        &ws,
+        &[
+            "live",
+            "--initial-balance",
+            "1000000000000000000",
+            "--initial-balance-usd",
+            "10",
+        ],
+    );
+    expect_fail(&out, "live with both balance forms");
+    assert!(
+        out.stderr.contains("mutually exclusive"),
+        "expected a mutual-exclusion error, got: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn removed_paper_subcommand_fails() {
+    let ws = temp_ws("args_paper_removed");
+    let out = run(&ws, &["paper"]);
+    expect_fail(&out, "removed paper subcommand");
+    assert!(
+        out.combined().contains("unrecognized subcommand 'paper'"),
+        "expected clap to reject 'paper', got:\n{}",
+        out.combined()
+    );
 }
 
 #[test]
@@ -92,13 +131,13 @@ fn explorer_removed_top_subcommand_fails() {
 }
 
 #[test]
-fn run_without_block_range_fails_offline() {
-    let ws = temp_ws("args_run_norange");
+fn removed_run_subcommand_fails() {
+    let ws = temp_ws("args_run_removed");
     let out = run(&ws, &["run"]);
-    expect_fail(&out, "run without block range");
+    expect_fail(&out, "removed run subcommand");
     assert!(
-        out.combined().contains("no block range specified"),
-        "expected validation error, got:\n{}",
+        out.combined().contains("unrecognized subcommand 'run'"),
+        "expected clap to reject 'run', got:\n{}",
         out.combined()
     );
 }
@@ -115,28 +154,6 @@ fn removed_scan_subcommand_fails() {
     let ws = temp_ws("args_scan_removed");
     let out = run(&ws, &["scan"]);
     expect_fail(&out, "removed scan subcommand");
-}
-
-#[test]
-fn days_above_365_rejected_by_clap() {
-    let ws = temp_ws("args_days_400");
-    let out = run(&ws, &["run", "--days", "400"]);
-    expect_fail(&out, "run --days 400");
-    assert!(
-        out.stderr.contains("error") || out.stdout.contains("error"),
-        "expected clap error output"
-    );
-}
-
-#[test]
-fn block_zero_rejected_by_clap() {
-    let ws = temp_ws("args_block_0");
-    let out = run(&ws, &["run", "--block", "0"]);
-    expect_fail(&out, "run --block 0");
-    assert!(
-        out.stderr.contains("error") || out.stdout.contains("error"),
-        "expected clap error output"
-    );
 }
 
 #[test]
@@ -215,90 +232,46 @@ fn invalid_duration_format_rejected_before_network() {
     assert!(started.elapsed() < Duration::from_secs(60));
 }
 
-// ── Block-range validation (offline; validation.rs paths) ───────────────────
-
-#[test]
-fn from_block_without_to_block_rejected() {
-    let ws = temp_ws("args_from_only");
-    let out = run(&ws, &["run", "--from-block", "100"]);
-    expect_fail(&out, "run --from-block without --to-block");
-    assert!(
-        out.combined().contains("must be used together"),
-        "expected explicit validation error, got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn to_block_without_from_block_rejected() {
-    let ws = temp_ws("args_to_only");
-    let out = run(&ws, &["run", "--to-block", "100"]);
-    expect_fail(&out, "run --to-block without --from-block");
-    assert!(
-        out.combined().contains("must be used together"),
-        "expected explicit validation error, got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn to_block_lte_from_block_rejected() {
-    let ws = temp_ws("args_reversed_range");
-    let out = run(&ws, &["run", "--from-block", "200", "--to-block", "200"]);
-    expect_fail(&out, "run with to_block == from_block");
-    assert!(
-        out.combined().contains("must be greater than"),
-        "expected explicit validation error, got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn days_and_blocks_conflict_rejected() {
-    let ws = temp_ws("args_days_blocks_conflict");
-    let out = run(&ws, &["run", "--days", "2", "--blocks", "5"]);
-    expect_fail(&out, "run --days 2 --blocks 5");
-    assert!(
-        out.combined().contains("cannot be used together"),
-        "expected explicit validation error, got:\n{}",
-        out.combined()
-    );
-}
-
-// ── Config file block-range fields (real behavior: CLI-only, ignored) ───────
+// ── Block-range validation (offline; clap + validation.rs paths) ─────────────
 //
-// `Config.days/blocks/block/from_block/to_block` are `#[serde(skip)]`
-// (core/src/config/settings.rs) — the TOML file can NOT set them. Values
-// written to the config file are silently ignored, so `run` then fails with
-// the generic "no block range specified" validation error. This test locks
-// that real behavior; the fine-grained validation.rs branches (days bounds,
-// blocks >= 1, block > 0, range order) are unreachable from both the CLI
-// (clap value_parser rejects them first) and the config file (serde skip) —
-// they only guard direct library use of core.
+// These live on `discover`, the remaining CLI surface that flattens
+// `BlockRangeArgs`. Only the clap-level rejections are asserted here, because
+// `discover` calls `init_rpc` before it resolves a range — the runtime range
+// branches (paired --from-block/--to-block, range order, days+blocks conflict,
+// missing range) are therefore covered as unit tests against
+// `RangeSpec::from_flags` in core/src/config/validation.rs, where they stay
+// offline.
 
 #[test]
-fn config_file_block_range_fields_are_ignored_cli_only() {
-    let ws = temp_ws("args_cfg_range_ignored");
-    let cfg_path = make_cfg(
-        &ws,
-        &[
-            ("days", "0"),
-            ("blocks", "0"),
-            ("block", "0"),
-            ("from_block", "500"),
-            ("to_block", "100"),
-        ],
-    );
-    let out = run(&ws, &["-f", &cfg_path, "run"]);
-    expect_fail(
-        &out,
-        "config file with invalid range values written to TOML",
-    );
+fn days_above_365_rejected_by_clap() {
+    let ws = temp_ws("args_days_400");
+    let out = run(&ws, &["discover", "--days", "400"]);
+    expect_fail(&out, "discover --days 400");
     assert!(
-        out.combined().contains("no block range specified"),
-        "config-file range fields must be ignored (serde skip), yielding the \
-         generic no-range validation error, got:\n{}",
-        out.combined()
+        out.stderr.contains("error") || out.stdout.contains("error"),
+        "expected clap error output"
+    );
+}
+
+#[test]
+fn blocks_zero_rejected_by_clap() {
+    let ws = temp_ws("args_blocks_0");
+    let out = run(&ws, &["discover", "--blocks", "0"]);
+    expect_fail(&out, "discover --blocks 0");
+    assert!(
+        out.stderr.contains("error") || out.stdout.contains("error"),
+        "expected clap error output"
+    );
+}
+
+#[test]
+fn block_zero_rejected_by_clap() {
+    let ws = temp_ws("args_block_0");
+    let out = run(&ws, &["discover", "--block", "0"]);
+    expect_fail(&out, "discover --block 0");
+    assert!(
+        out.stderr.contains("error") || out.stdout.contains("error"),
+        "expected clap error output"
     );
 }
 

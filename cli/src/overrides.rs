@@ -12,9 +12,6 @@ fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
 pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
     let mut o = CliOverrides::default();
     match cmd {
-        Command::Run(args) => {
-            apply_block_range(&mut o, &args.block_range);
-        }
         Command::Report(_) => {}
         Command::Config => {}
         Command::Discover(args) => {
@@ -23,12 +20,6 @@ pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
         Command::Tokens(_) => {}
         Command::Live(_) => {}
         Command::Explorer(_) => {}
-        Command::Paper(args) => {
-            use crate::cli::PaperCommand;
-            if let PaperCommand::Run(a) = &args.command {
-                apply_block_range(&mut o, &a.block_range);
-            }
-        }
     }
     o
 }

@@ -130,7 +130,9 @@ pub struct LiveConfig {
     pub poll_interval_ms: u64,
 }
 
-/// Paper sub-config: `[paper]` TOML section (virtual-fund bot P&L).
+/// Ledger sub-config: `[paper]` TOML section (virtual-fund bot P&L). The
+/// section name is retained for config compatibility; it configures the
+/// `live` ledger, which is always on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaperConfig {
     /// Starting native gas wallet in wei (default: 10 × 10^18). Stored as
@@ -498,7 +500,8 @@ pub struct Config {
     /// Live polling knobs — `[live]` TOML section.
     #[serde(default)]
     pub live: LiveConfig,
-    /// Paper virtual-fund P&L knobs — `[paper]` TOML section.
+    /// Virtual-fund P&L knobs — `[paper]` TOML section, used by the always-on
+    /// `live` ledger.
     #[serde(default)]
     pub paper: PaperConfig,
 }

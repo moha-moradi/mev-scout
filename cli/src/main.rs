@@ -23,9 +23,9 @@ fn setup_logging(verbose: bool, quiet: bool) {
         .init();
 }
 
-/// Pick the presentation sink: indicatif bar for run/live, noop otherwise.
+/// Pick the presentation sink: indicatif bar for live, noop otherwise.
 fn make_sink(cmd: &Command) -> Box<dyn JobProgress> {
-    if matches!(cmd, Command::Run(_) | Command::Live(_) | Command::Paper(_)) {
+    if matches!(cmd, Command::Live(_)) {
         Box::new(BarProgress::new())
     } else {
         Box::new(NoopProgress)

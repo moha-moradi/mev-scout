@@ -55,9 +55,9 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml discover --source hybrid -
 # Enrich token metadata (DefiLlama coins + CoinGecko name/icon)
 mev-scout tokens --enrich
 
-# Backtest the last 100 blocks → opportunities in the explorer store
-# (fetches and caches blocks as part of the run)
-mev-scout run --blocks 100
+# Detect at the tip → opportunities + paper P&L (ledger is always on)
+# (fetches and caches blocks as part of the session)
+mev-scout live
 
 # Re-render the latest run offline
 mev-scout report
@@ -65,10 +65,6 @@ mev-scout report
 # Index realized MEV near tip, then summarize
 mev-scout explorer index --duration 15m
 mev-scout explorer stats --since 7d
-
-# Virtual-fund P&L over a backtest (theoretical, no competition)
-mev-scout paper run --blocks 100
-mev-scout paper stats
 ```
 
 ### 3. Command index
@@ -78,11 +74,15 @@ mev-scout paper stats
 | `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
 | `discover` | Find pools (on-chain / remote / hybrid) | [§4.2](docs/ARCHITECTURE.md#42-discover--build-the-pool-universe) |
 | `tokens` | Populate / view token metadata cache | [§4.3](docs/ARCHITECTURE.md#43-tokens--token-metadata-cache) |
-| `run` | Full backtest → opportunities | [§4.4](docs/ARCHITECTURE.md#44-run--the-full-backtest) |
-| `live` | Stream tip blocks and detect | [§4.5](docs/ARCHITECTURE.md#45-live--real-time-streaming-detection) |
+| `live` | Detect at tip → opportunities + virtual P&L ledger | [§4.5](docs/ARCHITECTURE.md#45-live--real-time-streaming-detection) |
 | `report` | Re-render a recorded run from SQLite | [§4.6](docs/ARCHITECTURE.md#46-report--re-render-saved-results) |
 | `explorer` | Realized-MEV forensics (`index`, `stats`, `show`, `report`, `backfill`, `validate`) | [§4.7](docs/ARCHITECTURE.md#47-explorer--realized-mev-forensics) |
-| `paper` | Virtual-fund bot P&L (`run`, `live`, `sim`, `stats`) | [§4.8](docs/ARCHITECTURE.md#48-paper--virtual-fund-bot-pl) |
+
+The `run` and `paper` commands were removed: `live` now covers both — it
+detects at chain tip and its paper ledger is always on (`--initial-balance`,
+`--reserve`, `--max-fills-per-block`, `--native-usd`). At session end it prints
+and persists cost, remaining balance, net P&L and a per-strategy breakdown;
+`report` shows a run's ledger session alongside its results.
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. Block-range
 commands take exactly one of `--days`, `--blocks`, `--block`, or
@@ -93,7 +93,7 @@ commands take exactly one of `--days`, `--blocks`, `--block`, or
 | Path | What it is |
 |---|---|
 | `core/` | Library: pool state, quoting, detectors, cache & explorer stores, config |
-| `cli/` | `mev-scout` binary — `run`, `live`, `discover`, `tokens`, `report`, `explorer`, `paper`, … |
+| `cli/` | `mev-scout` binary — `live`, `discover`, `tokens`, `report`, `explorer`, … |
 | `cache/` | SQLite DBs (per-chain scanner cache + explorer stores), gitignored |
 
 Pool discovery remotes are **GeckoTerminal + DexScreener** (plus on-chain

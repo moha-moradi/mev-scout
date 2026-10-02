@@ -4,6 +4,7 @@ use crate::cache::{RunManifest, SqliteStore};
 use crate::config::validation;
 use crate::config::Config;
 use crate::explorer::store::ExplorerStore;
+use crate::paper::PaperSession;
 use crate::progress::JobProgress;
 use crate::types::MevOpportunity;
 
@@ -15,6 +16,10 @@ pub struct ReportOpts {
 pub struct ReportOutcome {
     pub manifest: RunManifest,
     pub opportunities: Vec<MevOpportunity>,
+    /// Ledger session attached to this run, when one exists. `live` always
+    /// writes one; runs from before the ledger was always-on only have one if
+    /// the (now-removed) `paper run` was used.
+    pub ledger_session: Option<PaperSession>,
 }
 
 pub async fn job_report(
@@ -31,7 +36,7 @@ pub async fn job_report(
         Some(id) => id.clone(),
         None => {
             let latest = cache.latest_manifest()?.context(
-                "no runs recorded in the run-history db — execute 'mev-scout run' first",
+                "no runs recorded in the run-history db — execute 'mev-scout live' first",
             )?;
             latest.run_id
         }
@@ -53,8 +58,27 @@ pub async fn job_report(
     progress.log(&format!("Mode:          {}", manifest.range_mode));
     progress.log(&format!("Opportunities: {}", opportunities.len()));
 
+    // `linked_run_id` is what ties the ledger session back to the run, so a
+    // `live` session shows its P&L here without a separate `paper stats` call.
+    let ledger_session = store
+        .paper_session_for_run(&run_id)
+        .with_context(|| format!("ledger lookup failed for run '{run_id}'"))?;
+
+    if let Some(session) = &ledger_session {
+        progress.log(&format!("Ledger:        {}", session.session_id));
+        progress.log(&format!(
+            "  fills: {} | skipped: {} | net profit: {} wei | max drawdown: {} wei",
+            session.fills, session.skipped, session.net_profit_wei, session.max_drawdown_wei,
+        ));
+        progress.log(&format!(
+            "  wallet: {} → {} wei (reserve {})",
+            session.starting_gas_wei, session.ending_gas_wei, session.reserve_wei
+        ));
+    }
+
     Ok(ReportOutcome {
         manifest,
         opportunities,
+        ledger_session,
     })
 }

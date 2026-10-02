@@ -24,9 +24,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Execute the full backtest
-    Run(RunArgs),
-
     /// Re-render a recorded run from SQLite (run_manifests + explorer opportunities)
     Report(ReportArgs),
 
@@ -52,9 +49,6 @@ pub enum Command {
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
     /// raw chain data (index, stats, show, report, backfill).
     Explorer(ExplorerArgs),
-
-    /// Virtual-fund bot P&L over detected opportunities (theoretical, no competition).
-    Paper(PaperArgs),
 }
 
 /// Explorer subcommand group.
@@ -229,12 +223,6 @@ impl TryFrom<&BlockRangeArgs> for mev_scout_core::config::validation::RangeSpec 
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct RunArgs {
-    #[command(flatten)]
-    pub block_range: BlockRangeArgs,
-}
-
-#[derive(Args, Debug, Clone)]
 pub struct ReportArgs {
     /// Specific run ID to report (default: latest)
     #[arg(long, value_name = "ID")]
@@ -298,66 +286,38 @@ pub struct LiveArgs {
     /// (requires --loop).
     #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
     pub max_blocks: Option<u64>,
-}
 
-/// Paper subcommand group (virtual-fund P&L).
-#[derive(Args, Debug, Clone)]
-pub struct PaperArgs {
-    #[command(subcommand)]
-    pub command: PaperCommand,
-}
+    /// Starting gas wallet in wei (native, 18 decimals). Overrides
+    /// [paper].starting_gas_wei. Exact and needs no network.
+    #[arg(long = "initial-balance", value_name = "WEI", help_heading = "Ledger")]
+    pub initial_balance: Option<u128>,
 
-#[derive(Subcommand, Debug, Clone)]
-pub enum PaperCommand {
-    /// Backtest range then apply paper ledger
-    Run(PaperRunArgs),
-    /// Tip detection (optional --loop) then paper ledger
-    Live(PaperLiveArgs),
-    /// Offline ledger replay over a stored run's opportunities
-    Sim(PaperSimArgs),
-    /// Summarize paper sessions
-    Stats(PaperStatsArgs),
-}
+    /// Starting gas wallet in USD. Resolved to wei using the native token
+    /// price, so it requires either a cached/online price or --native-usd.
+    /// Cannot be combined with --initial-balance.
+    #[arg(
+        long = "initial-balance-usd",
+        value_name = "USD",
+        help_heading = "Ledger"
+    )]
+    pub initial_balance_usd: Option<f64>,
 
-#[derive(Args, Debug, Clone)]
-pub struct PaperRunArgs {
-    #[command(flatten)]
-    pub block_range: BlockRangeArgs,
-}
+    /// Native wei kept idle so one large fill cannot starve later blocks.
+    /// Overrides [paper].reserve_wei.
+    #[arg(long, value_name = "WEI", help_heading = "Ledger")]
+    pub reserve: Option<u128>,
 
-#[derive(Args, Debug, Clone)]
-pub struct PaperLiveArgs {
-    /// Continuously poll and process new blocks until Ctrl+C / deadline
-    #[arg(long, help_heading = "Live")]
-    pub r#loop: bool,
+    /// Soft per-block fill cap (also clamped to the hard cap of 32).
+    /// Overrides [paper].max_fills_per_block.
+    #[arg(
+        long = "max-fills-per-block",
+        value_name = "N",
+        help_heading = "Ledger"
+    )]
+    pub max_fills_per_block: Option<usize>,
 
-    /// Stop continuous polling after this duration (requires --loop).
-    #[arg(long = "duration", value_name = "DURATION", help_heading = "Live")]
-    pub duration: Option<String>,
-
-    /// Stop after processing this many tip passes (requires --loop).
-    #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
-    pub max_blocks: Option<u64>,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct PaperSimArgs {
-    /// Existing detection run id (`run_…` / `live_…`)
-    #[arg(long = "run", value_name = "RUN_ID")]
-    pub run_id: String,
-
-    /// Multiply `[paper].starting_gas_wei` (e.g. 2 = twice the wallet)
-    #[arg(long = "wallet-multiplier", value_name = "N", default_value = "1")]
-    pub wallet_multiplier: f64,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct PaperStatsArgs {
-    /// Specific paper session id
-    #[arg(long, value_name = "ID")]
-    pub session: Option<String>,
-
-    /// Time window: 1d|7d|30d|all (default all)
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
+    /// Native token price in USD, supplied explicitly so P&L needs no price
+    /// lookup. Also resolves --initial-balance-usd offline.
+    #[arg(long = "native-usd", value_name = "PRICE", help_heading = "Ledger")]
+    pub native_usd: Option<f64>,
 }
