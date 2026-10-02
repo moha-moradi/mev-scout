@@ -1,51 +1,11 @@
 //! Trader Joe V2 Liquidity Book (LB) bin math.
 //!
 //! LB pools use discrete bins with a configurable bin step (basis points).
-//! The price of bin `i` relative to bin 0 is:
-//!   price(i) = ((BPS_DENOMINATOR + binStep) / BPS_DENOMINATOR) ^ i
-//!
 //! Within the active bin, swaps follow constant-product x * y = k.
 //! Cross-bin swaps aggregate liquidity across multiple bins, each at a
-//! different price. This module provides:
-//!   - `lb_get_price_from_id`: compute the price for a given bin ID
-//!   - `lb_output_amount`: quote a swap within the active bin
-//!   - `lb_max_output`: maximum output draining the active bin
+//! different price. This module quotes a swap within the active bin.
 
-use super::consts::{BPS_DENOMINATOR, Q64_SHIFT};
 use super::fee::FeeTier;
-use alloy::primitives::U256;
-
-/// Compute the price of bin `active_id` relative to bin 0.
-///
-/// Uses integer math: `price = ((BPS_DENOMINATOR + binStep) / BPS_DENOMINATOR) ^ active_id`
-/// Returned as a Q64.64 fixed-point number (1.0 = 2^64).
-///
-/// Uses Q64.64 internally to avoid U256 overflow during squaring.
-/// For `active_id` values up to ~100,000, this provides sufficient precision.
-pub fn lb_get_price_from_id(active_id: u32, bin_step: u32) -> u128 {
-    if active_id == 0 {
-        return 1u128 << Q64_SHIFT;
-    }
-    // Q64.64: 1.0 = 2^64
-    let base_num = BPS_DENOMINATOR + bin_step as u128;
-    let scale = BPS_DENOMINATOR;
-    let mut result: u128 = 1u128 << Q64_SHIFT;
-    // base in Q64.64
-    let mut base: u128 = (base_num << Q64_SHIFT) / scale;
-    let mut exp = active_id;
-    while exp > 0 {
-        if exp & 1 == 1 {
-            let product: U256 = U256::from(result) * U256::from(base);
-            let shifted: U256 = product >> 64;
-            result = shifted.to::<u128>();
-        }
-        let sq: U256 = U256::from(base) * U256::from(base);
-        let shifted_sq: U256 = sq >> 64;
-        base = shifted_sq.to::<u128>();
-        exp >>= 1;
-    }
-    result
-}
 
 /// Quote an output amount for a swap within the active bin.
 ///
@@ -78,39 +38,9 @@ pub fn lb_output_amount(
     Some(output)
 }
 
-/// Maximum output draining the active bin (swap entire reserve).
-///
-/// Returns `reserve_out * kept / feeDen` — the maximum extractable
-/// output after fee deduction.
-pub fn lb_max_output(reserve_out: u128, fee: FeeTier) -> Option<u128> {
-    if reserve_out == 0 {
-        return None;
-    }
-    let (fee_factor, fee_den) = fee.kept_fraction();
-    let output = (reserve_out * fee_factor) / fee_den;
-    if output == 0 {
-        return None;
-    }
-    Some(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_price_bin0() {
-        let price = lb_get_price_from_id(0, 10);
-        assert_eq!(price, 1u128 << 64);
-    }
-
-    #[test]
-    fn test_price_bin1_1bp() {
-        let price = lb_get_price_from_id(1, 1);
-        // 10001/10000 = 1.0001 in Q64
-        let expected = (10001u128 << 64) / 10000u128;
-        assert!((price.abs_diff(expected)) < 1u128 << 30);
-    }
 
     #[test]
     fn test_output_basic() {
@@ -121,11 +51,5 @@ mod tests {
         // out = 99700000000 / 109970000 ≈ 906
         assert!(out > 900);
         assert!(out < 910);
-    }
-
-    #[test]
-    fn test_max_output() {
-        let out = lb_max_output(10000, FeeTier::Bps(30)).unwrap();
-        assert_eq!(out, 9970);
     }
 }

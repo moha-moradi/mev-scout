@@ -12,7 +12,7 @@ use crate::error;
 use crate::rpc::RpcClient;
 
 /// DEX event topic signatures used for activity detection.
-pub mod topics {
+pub(crate) mod topics {
     use alloy::primitives::{b256, keccak256, B256};
     use std::sync::LazyLock;
 

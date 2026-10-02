@@ -3,7 +3,6 @@
 mod backfill;
 mod discover;
 mod explorer_validate;
-mod export;
 mod index;
 mod live;
 mod report;
@@ -15,10 +14,6 @@ mod trace;
 pub use backfill::{job_backfill, BackfillOpts, BackfillOutcome};
 pub use discover::{job_discover, DiscoverOpts, DiscoverOutcome};
 pub use explorer_validate::{job_explorer_validate, ExplorerValidateOpts, ExplorerValidateOutcome};
-pub use export::{
-    collect_export_ops, collect_export_ops_filtered, format_export_body, job_export, ExportOpts,
-    ExportOutcome,
-};
 pub use index::load_pool_registry;
 pub use index::{job_index, IndexOpts, IndexOutcome};
 pub use live::{job_live, LiveLoopOutcome, LiveOneShotOutcome, LiveOpts, LiveOutcome};

@@ -1,5 +1,5 @@
-pub mod defaults;
-pub mod settings;
+pub(crate) mod defaults;
+pub(crate) mod settings;
 pub mod validation;
 pub use defaults::{default_chains, merge_default_chains, ChainConfig};
 pub use settings::{

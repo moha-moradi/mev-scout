@@ -1,7 +1,7 @@
 pub mod decoders;
 pub mod discovery;
 pub mod math;
-pub mod selectors;
+pub(crate) mod selectors;
 pub mod state;
 
 pub use crate::dex_type::DexType;

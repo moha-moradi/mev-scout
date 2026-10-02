@@ -677,11 +677,6 @@ impl PoolManager {
             .count()
     }
 
-    /// Check if the given address is the wrapped native token (e.g., WMATIC, WETH).
-    pub fn is_wrapped_native(&self, token: &Address) -> bool {
-        self.wrapped_native.as_ref() == Some(token)
-    }
-
     /// Get the wrapped native token address (e.g., WMATIC, WETH), if set.
     pub fn wrapped_native(&self) -> Option<Address> {
         self.wrapped_native

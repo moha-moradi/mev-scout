@@ -4,10 +4,10 @@
 //! applies a gas-wallet ledger to answer "what would our theoretical P&L
 //! have been?" without competition or on-chain execution.
 
-pub mod ledger;
-pub mod recon;
-pub mod store;
-pub mod types;
+pub(crate) mod ledger;
+pub(crate) mod recon;
+pub(crate) mod store;
+pub(crate) mod types;
 
 pub use ledger::{
     default_starting_gas_wei, is_native_eligible, LedgerPolicy, HARD_MAX_FILLS_PER_BLOCK,

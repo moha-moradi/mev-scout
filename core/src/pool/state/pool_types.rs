@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 
 /// Serde helpers for `Option<Arc<str>>` fields.
-pub mod arc_str_opt {
+pub(crate) mod arc_str_opt {
     use serde::de::Deserializer;
     use serde::ser::Serializer;
     use std::sync::Arc;

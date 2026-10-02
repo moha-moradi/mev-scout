@@ -1,6 +1,6 @@
 mod arb_common;
 pub mod jit;
-pub mod mempool;
+pub(crate) mod mempool;
 pub mod multi_hop;
 pub mod two_hop;
 

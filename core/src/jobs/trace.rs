@@ -184,11 +184,6 @@ pub fn parse_prestatediff_deltas(raw: &serde_json::Value) -> Vec<(Address, I256)
 }
 
 /// Signed sum of native deltas over `addrs` (searcher EOA + its contract).
-#[allow(dead_code)]
-pub fn native_delta_for(raw: &serde_json::Value, addrs: &[Address]) -> I256 {
-    native_delta_for_checked(raw, addrs).unwrap_or(I256::ZERO)
-}
-
 fn native_delta_for_checked(raw: &serde_json::Value, addrs: &[Address]) -> Option<I256> {
     let deltas = parse_prestatediff_deltas(raw);
     if deltas.is_empty() || !deltas.iter().any(|(address, _)| addrs.contains(address)) {
@@ -446,8 +441,8 @@ mod tests {
             deltas,
             vec![(a, I256::try_from(2_000_000_000_000_000_000i128).unwrap())]
         );
-        assert_eq!(native_delta_for(&raw, &[a]), deltas[0].1);
-        assert!(native_delta_for(&raw, &[Address::ZERO]).is_zero());
+        assert_eq!(native_delta_for_checked(&raw, &[a]), Some(deltas[0].1));
+        assert_eq!(native_delta_for_checked(&raw, &[Address::ZERO]), None);
     }
 
     #[test]

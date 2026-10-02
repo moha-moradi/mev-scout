@@ -16,8 +16,8 @@
 //! `poolMeta`, but that is not a pool contract address. Use GeckoTerminal /
 //! DexScreener for remote pool discovery instead.
 
-pub mod dexscreener;
-pub mod geckoterminal;
+pub(crate) mod dexscreener;
+pub(crate) mod geckoterminal;
 
 use alloy::primitives::Address;
 use serde_json::Value;

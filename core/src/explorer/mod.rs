@@ -25,15 +25,15 @@
 //! (`exact`) unless the cycle is unowned (`estimated`); it is otherwise skipped
 //! to control false positives.
 
-pub mod canonical;
+pub(crate) mod canonical;
 pub mod classify;
-pub mod decode;
-pub mod golden;
+pub(crate) mod decode;
+pub(crate) mod golden;
 pub mod ingest;
 pub mod pricing;
 pub mod profit;
-pub mod reject;
-pub mod results;
+pub(crate) mod reject;
+pub(crate) mod results;
 pub mod store;
 pub mod types;
 pub mod validate;

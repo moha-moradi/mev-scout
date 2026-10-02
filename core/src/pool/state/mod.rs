@@ -1,8 +1,8 @@
-pub mod apply;
-pub mod factory;
-pub mod manager;
-pub mod pool_types;
-pub mod quoting;
+pub(crate) mod apply;
+pub(crate) mod factory;
+pub(crate) mod manager;
+pub(crate) mod pool_types;
+pub(crate) mod quoting;
 pub use factory::PoolInitResult;
 pub use manager::{check_dedup_key, PoolManager, ScanScope};
 pub use pool_types::{

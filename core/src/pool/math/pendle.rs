@@ -13,7 +13,7 @@
 //! large swaps more), so we catch opportunities that may have smaller
 //! actual profit. This is safer than underestimating.
 
-use super::consts::{MAX_EXTRACTION_NUMERATOR, MIN_DAMPING_PERMILLE, PERMILLE_DENOMINATOR};
+use super::consts::{MIN_DAMPING_PERMILLE, PERMILLE_DENOMINATOR};
 
 /// Quote an output amount for a Pendle AMM swap using the logistic UAMM model.
 ///
@@ -73,18 +73,6 @@ pub fn pendle_output_amount(amount_in: u128, total_in: u128, total_out: u128) ->
     }
 }
 
-/// Maximum extractable output from a Pendle AMM (draining the output reserve).
-///
-/// In practice, the AMM never fully drains due to the logistic invariant.
-/// Returns ~99.9% of the output reserve as a reasonable upper bound.
-pub fn pendle_max_output(total_out: u128) -> Option<u128> {
-    if total_out == 0 {
-        return None;
-    }
-    let max = total_out * MAX_EXTRACTION_NUMERATOR / PERMILLE_DENOMINATOR;
-    (max != 0).then_some(max)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,11 +102,5 @@ mod tests {
     #[test]
     fn test_zero_reserves() {
         assert_eq!(pendle_output_amount(1000, 0, 10000), None);
-    }
-
-    #[test]
-    fn test_max_output() {
-        let max = pendle_max_output(10000).unwrap();
-        assert_eq!(max, 9990);
     }
 }

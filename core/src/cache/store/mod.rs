@@ -5,12 +5,12 @@
 //! storage slots, contract code, pool state) is stored in a single SQLite
 //! database file for portability and offline querying.
 
-pub mod accounts;
-pub mod blocks;
-pub mod integrity;
-pub mod manifests;
-pub mod pools;
-pub mod ticks;
+pub(crate) mod accounts;
+pub(crate) mod blocks;
+pub(crate) mod integrity;
+pub(crate) mod manifests;
+pub(crate) mod pools;
+pub(crate) mod ticks;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

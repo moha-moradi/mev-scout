@@ -1,8 +1,2 @@
-pub mod events;
-pub mod flashloans;
-pub mod labels;
-pub mod liquidations;
-pub mod scanner;
+pub(crate) mod events;
 pub mod timing;
-pub mod trades;
-pub mod transfers;

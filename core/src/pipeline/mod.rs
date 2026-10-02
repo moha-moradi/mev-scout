@@ -1,6 +1,6 @@
 pub mod aggregate;
-pub mod gas;
-pub mod runner;
+pub(crate) mod gas;
+pub(crate) mod runner;
 pub mod scanner;
 pub use crate::types::gas::{GasCalibration, GasCalibrationSnapshot};
 pub use aggregate::{
@@ -9,7 +9,8 @@ pub use aggregate::{
 };
 pub use gas::GasPriceDistribution;
 pub use runner::{add_pool_to_manager, BacktestRunner};
-pub use scanner::{topics, ActivityScanner};
+pub(crate) use scanner::topics;
+pub use scanner::ActivityScanner;
 
 use serde::{Deserialize, Serialize};
 
