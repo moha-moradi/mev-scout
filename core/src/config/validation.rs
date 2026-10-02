@@ -415,16 +415,6 @@ fn validate_common(
         });
     }
 
-    if config.backtest.proximity_window > 100 {
-        return Err(ConfigError::InvalidValue {
-            field: "proximity_window".into(),
-            message: format!(
-                "must be between 0 and 100, got {}",
-                config.backtest.proximity_window
-            ),
-        });
-    }
-
     Ok(ValidationResult {
         chain_name,
         chain_config,
@@ -509,9 +499,6 @@ mod tests {
                 (|c: &mut Config| c.gas.gas_limit = 30_000_001) as fn(&mut Config),
             ),
             ("rps_limit", |c: &mut Config| c.rpc.rps_limit = 10_001.0),
-            ("proximity_window", |c: &mut Config| {
-                c.backtest.proximity_window = 101
-            }),
         ];
         for (field, set) in cases {
             let mut config = Config::default();

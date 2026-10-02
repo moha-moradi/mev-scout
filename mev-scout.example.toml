@@ -23,7 +23,10 @@ rpc_rps = [1.0, 1.0, 0.8]
 # Global default RPS (used when rpc_rps is not set for a provider). 0 = unlimited.
 rps_limit = 1
 
-# Default strategy set (comma-separated or "all")
+# Default strategy set (comma-separated or "all").
+# NOTE: currently inert — no detector tests this list (see
+# docs/plan_prune_strategies.md §10). "all" resolves to
+# two_hop_arb, multi_hop_arb, jit.
 strategies = "all"
 
 # Backtest gas price model: historical_exact | p90 | fixed | live

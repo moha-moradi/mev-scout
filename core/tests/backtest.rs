@@ -268,8 +268,7 @@ async fn test_rpc_guided_backtest() {
         // Create replayer and runner
         let handle = tokio::runtime::Handle::current();
         let replayer = BlockReplayer::new(handle, cache, rpc.clone(), CHAIN_ID);
-        let mut runner =
-            BacktestRunner::new(replayer, pm, GasConfig::default()).with_proximity_window(5);
+        let mut runner = BacktestRunner::new(replayer, pm, GasConfig::default());
 
         // Run backtest
         let (opps, _stats) = match runner.run_block(block) {

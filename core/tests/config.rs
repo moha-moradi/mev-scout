@@ -75,8 +75,7 @@ fn test_cli_override_merging() {
     let overrides = CliOverrides {
         chain: Some("avalanche".into()),
         backtest: BacktestOverrides {
-            strategies: Some("two_hop_arb,sandwich".into()),
-            proximity_window: Some(5),
+            strategies: Some("two_hop_arb,jit".into()),
             ..BacktestOverrides::default()
         },
         gas: GasOverrides {
@@ -90,10 +89,9 @@ fn test_cli_override_merging() {
     assert_eq!(config.chain, ChainName::Avalanche);
     assert_eq!(
         config.backtest.strategies,
-        vec![Strategy::TwoHopArb, Strategy::Sandwich]
+        vec![Strategy::TwoHopArb, Strategy::Jit]
     );
     assert_eq!(config.gas.gas_model, GasModel::Distribution(90));
-    assert_eq!(config.backtest.proximity_window, 5);
 
     // Unset fields keep defaults
     assert_eq!(config.gas.gas_limit, 200_000);

@@ -30,7 +30,7 @@ flowchart TB
         end
 
         subgraph DETECT["Detection"]
-            MEV["mev::detectors<br/>two-hop · multi-hop · sandwich<br/>JIT · JIT-arb · liquidation · mempool"]
+            MEV["mev::detectors<br/>two-hop · multi-hop<br/>JIT · mempool"]
             POOL["pool<br/>state: PoolManager (reserves/ticks)<br/>discovery: V2/V3/V4/Solidly/Curve/<br/>Balancer/Fluid/Infinity/…<br/>math: AMM curves per DEX"]
         end
 
@@ -331,11 +331,8 @@ flowchart TB
     I -- no --> K
     J --> K["PoolManager::init_pools<br/>load pools from discovery cache<br/>skip pools created after start<br/>fetch reserves at start_block−1"]
     K --> L["BlockReplayer::new<br/>(revm, chain_id)"]
-    L --> M["BacktestRunner::new<br/>+ proximity window · min profit<br/>+ capture pending · persistence scoring"]
-    M --> N{"aave_v3_pool<br/>configured?"}
-    N -- yes --> O["prefetch_aave_reserves<br/>(for LiquidationDetector)"]
-    N -- no --> P
-    O --> P["runner.run_range<br/>per block: filtered revm replay<br/>→ detectors → MevOpportunities"]
+    L --> M["BacktestRunner::new<br/>+ min profit<br/>+ capture pending · persistence scoring"]
+    M --> P["runner.run_range<br/>per block: filtered revm replay<br/>→ detectors → MevOpportunities"]
     P --> Q["ResultsFile DTO → explorer SQLite<br/>(opportunities always)<br/>render results + block summary tables<br/>(record_rejections TOML: rejected<br/>candidates → explorer store)"]
     Q --> R["LedgerPolicy.apply(accumulated<br/>session opportunities) →<br/>net P&L, fills, skips;<br/>paper_sessions written once<br/>at session end"]
 ```
@@ -349,7 +346,7 @@ flowchart LR
     B1 -- no --> B3["synthesized ExecutedTx<br/>from cached receipts<br/>(fast path)"]
     B2 --> B4["apply Swap/Sync logs<br/>→ PoolManager state"]
     B3 --> B4
-    B4 --> B5["detectors per tx:<br/>1 two-hop arb<br/>2 multi-hop arb (BFS ≤4)<br/>3 JIT liquidity<br/>4 sandwich<br/>5 JIT+arb hybrid<br/>(+ liquidation, mempool)"]
+    B4 --> B5["detectors per tx:<br/>1 two-hop arb<br/>2 multi-hop arb (BFS ≤4)<br/>3 JIT liquidity<br/>(+ mempool)"]
     B5 --> B6["filter: min_profit_wei<br/>max_candidates_per_tx<br/>persistence confidence decay"]
 ```
 
@@ -382,13 +379,11 @@ When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
 `--loop`), the ledger prints and persists:
 
 ```
-  ledger: 4 fill(s), 1 skipped | net 7200000000000000000 wei ($3.0240)
-  wallet: 100000000000000000000 ($42.0000) → 107200000000000000000 ($45.0240) | reserve 0 | max drawdown 0 wei
+  ledger: 3 fill(s), 0 skipped | net 6700000000000000000 wei ($2.8140)
+  wallet: 100000000000000000000 ($42.0000) → 106700000000000000000 ($44.8140) | reserve 0 | max drawdown 0 wei
   by strategy (fills accepted):
     jit       1 fill   gas  0.800000  net      +4.200000 wei  $   1.7640
     arb       2 fills  gas  1.500000  net      +2.500000 wei  $   1.0500
-    sandwich  1 fill   gas  1.500000  net      +0.500000 wei  $   0.2100
-  note: 1 candidate(s) skipped as not_native_unit (profit not native-denominated, e.g. liquidation)
 ```
 
 - `wallet` is gas paid → gas plus realized net, so `ending − starting` is the
@@ -689,7 +684,7 @@ Gates that depend on this table:
 1. **Load** block + txs from SQLite.
 2. **Filter** — only txs whose `to` or log emitter matches a tracked pool/token are replayed through revm; all others are synthesized from cached receipts (the main performance optimization for large backtests).
 3. **Apply** decoded Swap/Sync/Mint/Burn events to `PoolManager`, so all detectors see post-tx reserves.
-4. **Detect** per tx, in order: two-hop arb → multi-hop arb (BFS ≤ depth 4) → JIT liquidity → sandwich → JIT+arb hybrid; liquidation and mempool strategies where context allows.
+4. **Detect** per tx, in order: two-hop arb → multi-hop arb (BFS ≤ depth 4) → JIT liquidity; mempool strategies where context allows.
 5. **Post-process** — dust filter (`min_profit_wei`), per-tx candidate cap, cross-block persistence scoring (decaying confidence, `PERSISTENCE_DECAY = 0.75`, grace 5 blocks), gas calibration from observed `gasUsed`.
 
 The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogOnly` per block based on `RpcClient::detect_state_horizon` (an on-chain archive-state probe, not a TOML key) — blocks deeper than available archive state skip EVM execution and lose only the EVM-context strategies.

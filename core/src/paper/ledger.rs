@@ -41,11 +41,7 @@ pub fn default_starting_gas_wei() -> u128 {
 pub fn is_native_eligible(strategy: Strategy) -> bool {
     matches!(
         strategy,
-        Strategy::TwoHopArb
-            | Strategy::MultiHopArb
-            | Strategy::Jit
-            | Strategy::JitArb
-            | Strategy::Sandwich
+        Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::Jit
     )
 }
 

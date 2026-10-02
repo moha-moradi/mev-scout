@@ -75,24 +75,17 @@ pub enum Strategy {
     MultiHopArb,
     #[strum(serialize = "jit")]
     Jit,
-    #[strum(serialize = "jit_arb")]
-    JitArb,
-    #[strum(serialize = "sandwich")]
-    Sandwich,
+    /// Observation-only: the variant survives so the persisted `kind` column and
+    /// historical reports keep parsing, but no live detector emits it.
     #[strum(serialize = "liquidation")]
     Liquidation,
 }
 
 impl Strategy {
+    /// The strategies the execution path actually runs. `Liquidation` is a
+    /// parseable variant, not a runnable one — see the enum doc.
     pub fn all() -> &'static [Strategy] {
-        &[
-            Strategy::TwoHopArb,
-            Strategy::MultiHopArb,
-            Strategy::Jit,
-            Strategy::JitArb,
-            Strategy::Sandwich,
-            Strategy::Liquidation,
-        ]
+        &[Strategy::TwoHopArb, Strategy::MultiHopArb, Strategy::Jit]
     }
 
     pub fn from_comma_list(s: &str) -> Result<Vec<Strategy>, String> {

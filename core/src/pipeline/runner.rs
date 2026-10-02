@@ -7,13 +7,10 @@ use crate::cache::SqliteStore;
 use crate::data::ExecutedLog;
 use crate::dex_type::DexType;
 use crate::error;
-use crate::mev::detectors::JitArbDetector;
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
-use crate::mev::detectors::SandwichDetector;
 use crate::mev::detectors::TwoHopArbDetector;
 use crate::mev::detectors::{detect_pending_opportunities, mempool};
-use crate::mev::detectors::{AaveReserveCache, LiquidationDetector};
 use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
@@ -64,8 +61,6 @@ pub struct BacktestRunner {
     replayer: BlockReplayer,
     pool_manager: PoolManager,
     gas_config: GasConfig,
-    proximity_window: usize,
-    aave_reserve_cache: AaveReserveCache,
     capture_pending: bool,
     /// Minimum profit in wei to keep an opportunity (filters dust). 0 = disabled.
     min_profit_wei: u64,
@@ -105,8 +100,6 @@ impl BacktestRunner {
             replayer,
             pool_manager,
             gas_config,
-            proximity_window: 3,
-            aave_reserve_cache: AaveReserveCache::default(),
             capture_pending: false,
             min_profit_wei: 0,
             max_candidates_per_tx: 0,
@@ -117,12 +110,6 @@ impl BacktestRunner {
             pending_rejections: Vec::new(),
             last_processed_block: 0,
         }
-    }
-
-    /// Set the JitArb proximity window (tx index gap for related swaps).
-    pub fn with_proximity_window(mut self, window: usize) -> Self {
-        self.proximity_window = window;
-        self
     }
 
     /// Enable or disable pending transaction capture from the mempool.
@@ -269,32 +256,6 @@ impl BacktestRunner {
             });
     }
 
-    /// Pre-fetch Aave V3 reserve data for all known token addresses.
-    /// This populates the reserve cache so `LiquidationDetector` can use
-    /// real per-asset liquidation thresholds and bonuses during replay.
-    ///
-    /// Should be called once before `run_block()` / `run_range()`.
-    pub async fn prefetch_aave_reserves(&mut self, aave_pool: Address, block: u64) {
-        let tokens: Vec<Address> = self.pool_manager.token_addresses();
-        if tokens.is_empty() {
-            tracing::warn!("No tokens in pool manager, skipping Aave reserve pre-fetch");
-            return;
-        }
-        tracing::info!(
-            "Pre-fetching Aave V3 reserve data for {} tokens at block {}",
-            tokens.len(),
-            block,
-        );
-        self.aave_reserve_cache
-            .prefetch(self.replayer.rpc(), aave_pool, &tokens, block)
-            .await;
-        tracing::info!(
-            "Aave reserve cache: {}/{} tokens resolved",
-            self.aave_reserve_cache.len(),
-            tokens.len(),
-        );
-    }
-
     /// Initialize the pool manager by loading pool definitions and fetching
     /// on-chain reserve state at a reference block.
     ///
@@ -396,8 +357,6 @@ impl BacktestRunner {
     /// 1. Two-hop arbitrage (all pool pairs, both directions)
     /// 2. Multi-hop arbitrage (BFS paths up to depth 4)
     /// 3. JIT liquidity (Mint→Swap→Burn pattern)
-    /// 4. Sandwich attacks (frontrun/victim/backrun triple)
-    /// 5. JIT+Arb hybrid (Mint + cross-pool swap by same sender)
     pub fn run_block(
         &mut self,
         block_num: u64,
@@ -433,11 +392,6 @@ impl BacktestRunner {
         // Seed JIT detector tick cache BEFORE taking pool_manager
         let mut jit_detector = JitDetector::new(block_num);
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
-        let mut sandwich_detector = SandwichDetector::new(block_num);
-        let mut jit_arb_detector =
-            JitArbDetector::new(block_num).with_proximity_window(self.proximity_window);
-        let mut liquidation_detector =
-            LiquidationDetector::new(block_num).with_reserve_cache(self.aave_reserve_cache.clone());
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let mut pool_manager = std::mem::take(&mut self.pool_manager);
@@ -546,48 +500,6 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(jit_opps);
 
-                // Sandwich detector
-                sandwich_detector.process_tx(i, &tx.logs, sender, &pm);
-                let sandwich_opps =
-                    sandwich_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
-                if !sandwich_opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} sandwich opportunities",
-                        block_num,
-                        i,
-                        sandwich_opps.len()
-                    );
-                }
-                all_opportunities.extend(sandwich_opps);
-
-                // JitArb detector — use &pm (auto-derefs to &PoolManager)
-                jit_arb_detector.process_tx(i, &tx.logs, sender, &pm);
-                let jit_arb_opps =
-                    jit_arb_detector.detect(timestamp, &pm, base_fee_per_gas, &self.gas_config);
-                if !jit_arb_opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} JitArb opportunities",
-                        block_num,
-                        i,
-                        jit_arb_opps.len()
-                    );
-                }
-                all_opportunities.extend(jit_arb_opps);
-
-                // Liquidation detector — catches Aave V3 LiquidationCall events
-                liquidation_detector.process_tx(i, &tx.logs);
-                let liq_opps =
-                    liquidation_detector.detect(&pm, timestamp, base_fee_per_gas, self.gas_config);
-                if !liq_opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} liquidation opportunities",
-                        block_num,
-                        i,
-                        liq_opps.len()
-                    );
-                }
-                all_opportunities.extend(liq_opps);
-
                 // Collect effective gas price for H10 distribution modeling
                 gas_prices.borrow_mut().push(tx.gas_effective);
 
@@ -661,8 +573,6 @@ impl BacktestRunner {
                     pool_b: opp.pool_b,
                     token_in: opp.token_in,
                     token_out: opp.token_out,
-                    victim_tx: opp.victim_tx_index,
-                    backrun_tx: opp.backrun_tx_index,
                 },
             ));
             opp.detection_path = Some(crate::mev::detectors::REPLAY_PATH.to_string());
@@ -703,7 +613,7 @@ impl BacktestRunner {
     /// node is required.
     ///
     /// Two-hop and multi-hop arb detection still run against the updated state,
-    /// but EVM-context strategies (JIT, sandwich, liquidation) are skipped
+    /// but EVM-context strategies (JIT, liquidation) are skipped
     /// because they require full transaction execution.
     pub fn sync_block_from_logs(
         &mut self,
@@ -855,8 +765,6 @@ impl BacktestRunner {
                     pool_b: opp.pool_b,
                     token_in: opp.token_in,
                     token_out: opp.token_out,
-                    victim_tx: opp.victim_tx_index,
-                    backrun_tx: opp.backrun_tx_index,
                 },
             ));
             opp.detection_path =
@@ -1085,6 +993,7 @@ impl BacktestRunner {
         let mut all_stats = Vec::new();
         let mut all_modes = Vec::new();
         let mut processed: u64 = 0;
+        let mut not_fetched: u64 = 0;
         let mut gas_dist = GasPriceDistribution::new(50);
 
         let log_only_count =
@@ -1112,6 +1021,26 @@ impl BacktestRunner {
         );
 
         for block_num in resolved.start_block..=resolved.end_block {
+            // `fetch_relevant` deliberately skips blocks with no tracked-pool
+            // activity, so the resolved range can be wider than what was
+            // fetched. That is an expected condition, not a replay failure:
+            // without cached block data there is nothing to replay, and the
+            // correct result is zero opportunities. Attempting it anyway makes
+            // both the full-replay and log-only paths fail with "block not
+            // found in cache" and logs an ERROR for a quiet block.
+            match self.replayer.has_cached_block(block_num) {
+                Ok(false) => {
+                    not_fetched += 1;
+                    continue;
+                }
+                Ok(true) => {}
+                Err(e) => {
+                    tracing::warn!("cache probe failed for block {block_num}: {e}");
+                    not_fetched += 1;
+                    continue;
+                }
+            }
+
             let use_full = block_num >= state_horizon;
             let mode = if use_full {
                 BlockMode::FullReplay
@@ -1215,6 +1144,15 @@ impl BacktestRunner {
                     return Err(error::Error::Cancelled);
                 }
             }
+        }
+
+        if not_fetched > 0 {
+            tracing::info!(
+                "{not_fetched} block(s) in {}–{} were not fetched (no tracked-pool \
+                 activity) and contributed 0 opportunities",
+                resolved.start_block,
+                resolved.end_block,
+            );
         }
 
         if self.capture_pending {

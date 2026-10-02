@@ -51,7 +51,7 @@ pub async fn capture_pending_block(rpc: &RpcClient) -> Option<PendingBlockCaptur
 /// state to find opportunities visible in the mempool (pending/unconfirmed txs).
 ///
 /// Unlike settled blocks, pending txs have no execution logs, so detectors that
-/// require log parsing (JIT, Sandwich, JitArb, Liquidation) are skipped. Only
+/// require log parsing (JIT) are skipped. Only
 /// pool-state-based arbitrage detection is performed.
 ///
 /// Returns opportunities with `mempool_only = true`.

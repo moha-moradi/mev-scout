@@ -18,6 +18,7 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
     // Core's discarding sink: the CLI renders the payload itself, and JSON/CSV
     // must stay machine-parseable (job_report also logs human-readable lines).
     let outcome = job_report(config, &opts, &NoopProgress).await?;
+    let ledger_session = outcome.ledger_session;
     let manifest = outcome.manifest;
     let output_format = config.output.output;
 
@@ -47,6 +48,25 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
             println!("  Strategies:    {}", results_file.strategies.join(", "));
             println!("  Flash loan:    {}", results_file.flash_loan_provider);
             println!("  Opportunities: {}", results_file.opportunities.len());
+            println!();
+
+            // The ledger session is rendered here rather than relying on
+            // `job_report`'s progress lines: this command hands core a
+            // `NoopProgress` so JSON/CSV stay machine-parseable, which means
+            // anything core logs never reaches the user. `live` always writes
+            // one, so this is the offline view of a session's P&L.
+            if let Some(s) = &ledger_session {
+                println!("  Ledger session: {}", s.session_id);
+                println!(
+                    "    fills {} | skipped {} | net {} wei | max drawdown {} wei",
+                    s.fills, s.skipped, s.net_profit_wei, s.max_drawdown_wei
+                );
+                println!(
+                    "    wallet {} → {} wei (reserve {})",
+                    s.starting_gas_wei, s.ending_gas_wei, s.reserve_wei
+                );
+                println!("    blocks {}-{}", s.start_block, s.end_block);
+            }
             println!();
 
             if results_file.opportunities.is_empty() {

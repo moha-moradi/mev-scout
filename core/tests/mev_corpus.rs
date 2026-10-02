@@ -26,11 +26,12 @@
 //! the current cases and print observed per-kind / per-searcher / verdict
 //! facts without asserting — record those into a `CorpusCase` below.
 //!
-//! `sandwich` and `jit` are the remaining gap on the *detector* side. The
-//! realizer corpus already carries windows for both (`eth-sandwich-window` /
-//! `eth-sandwich-searcher`, Ethereum 26055651..=26055745, and
-//! `eth-jit-v3-round-trip`, Ethereum 26059586 — see `explorer_corpus.rs`), so
-//! a detector sweep over those same blocks is what turns them into cases here.
+//! `jit` is the remaining gap on the *detector* side. (`sandwich` no longer
+//! applies: the live detector was pruned — the explorer still classifies
+//! `MevKind::Sandwich`, which is a separate taxonomy.) The realizer corpus
+//! already carries a window for it (`eth-jit-v3-round-trip`, Ethereum 26059586
+//! — see `explorer_corpus.rs`), so a detector sweep over those same blocks is
+//! what turns it into a case here.
 //! To hunt a window outside the seeded ones, set
 //! `MEV_SCOUT_RECORD_CHAIN=ethereum` + `MEV_SCOUT_RECORD_FROM` +
 //! `MEV_SCOUT_RECORD_TO` (both bounds required, that chain only, exactly as
@@ -84,8 +85,8 @@
 //!   (`replay/db.rs` `storage_ref` → `RpcClient::get_storage_at`) is enough to
 //!   trip a router's own guard. That matches the RPC requirement noted below.
 //!
-//! The asymmetry generalizes: `jit`, `sandwich` and `jit_arb` are **log-based**
-//! — they need logs for the transaction, nothing else — while `arb_atomic` reads
+//! The asymmetry generalizes: `jit` is **log-based** — it needs logs for the
+//! transaction, nothing else — while `arb_atomic` reads
 //! `PoolManager` reserves and so survives a failed replay (that is why the same
 //! block still yielded 8 arb ops; its reserves are merely stale, not empty). A
 //! zero-op window for a log-based kind is therefore not evidence the kind is
@@ -233,18 +234,19 @@ const CORPUS: &[CorpusCase] = &[
 fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => Some("arb_atomic"),
-        Strategy::Sandwich => Some("sandwich"),
         Strategy::Liquidation => Some("liquidation"),
         Strategy::Jit => Some("jit"),
-        Strategy::JitArb => Some("jit_arb"),
     }
 }
 
 /// Every kind the detector can emit. A record run prints all of them, so a
 /// kind it found nothing for reads as an explicit `0 ops` line — that is how a
-/// rare kind (`sandwich`, `jit`) is *confirmed absent* over a hunt window
-/// rather than merely unlisted.
-const ALL_KINDS: &[&str] = &["arb_atomic", "sandwich", "liquidation", "jit", "jit_arb"];
+/// rare kind (`jit`) is *confirmed absent* over a hunt window rather than
+/// merely unlisted. Note this is the *detector* taxonomy: the live `Sandwich`
+/// and `JitArb` detectors are gone, so `sandwich`/`jit_arb` are never produced
+/// here even though the explorer's `MevKind::Sandwich` / `MevKind::JitArb`
+/// still exist.
+const ALL_KINDS: &[&str] = &["arb_atomic", "liquidation", "jit"];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
 fn recording() -> bool {
@@ -796,11 +798,11 @@ fn a_single_block_window_uses_the_block_field() {
 #[test]
 fn every_detector_kind_is_reported_by_a_record_run() {
     // A kind missing from ALL_KINDS would print no line at all, so a hunt for
-    // a rare kind (`sandwich`, `jit`) could never confirm it absent.
-    for kind in ["arb_atomic", "sandwich", "liquidation", "jit", "jit_arb"] {
+    // a rare kind (`jit`) could never confirm it absent.
+    for kind in ["arb_atomic", "liquidation", "jit"] {
         assert!(ALL_KINDS.contains(&kind), "{kind} missing from ALL_KINDS");
     }
-    assert_eq!(ALL_KINDS.len(), 5, "one entry per Strategy variant");
+    assert_eq!(ALL_KINDS.len(), 3, "one entry per Strategy variant");
 }
 
 #[test]

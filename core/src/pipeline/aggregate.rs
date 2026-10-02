@@ -81,8 +81,6 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => "arb",
         Strategy::Jit => "jit",
-        Strategy::JitArb => "jitarb",
-        Strategy::Sandwich => "sandwich",
         Strategy::Liquidation => "liquidation",
     }
 }
@@ -385,9 +383,11 @@ pub fn aggregate_with_prices(
 ///   `PaperFill` has no token pair and the generic fallback key would collapse
 ///   two distinct same-block fills of the same strategy onto one row.
 /// - Fills whose `strategy` string does not parse into a [`Strategy`] are
-///   excluded: they cannot be attributed to a strategy bucket. Callers that
-///   render a raw per-fill table alongside this rollup should still list them,
-///   so nothing is hidden.
+///   excluded: they cannot be attributed to a strategy bucket. This also
+///   silently drops historical rows for the pruned `sandwich` and `jit_arb`
+///   strategies, which no longer exist in the enum. Callers that render a raw
+///   per-fill table alongside this rollup should still list them, so nothing is
+///   hidden.
 /// - `usd_price` is the **native** token price. Paper is native-normalized by
 ///   construction (only `is_native_eligible` strategies are ever filled), so
 ///   there is no per-token lookup to do. Pass `0.0` when no price snapshot is
@@ -543,7 +543,7 @@ mod tests {
         let o0 = opp(
             11,
             0,
-            Strategy::Sandwich,
+            Strategy::Jit,
             pool_a,
             pool_b,
             ETH,
@@ -551,7 +551,7 @@ mod tests {
             Some("c3"),
         );
         let agg0 = aggregate(&[o0], &[], 0.0);
-        assert_eq!(agg0.by_strategy["sandwich"].roi, 0.0);
+        assert_eq!(agg0.by_strategy["jit"].roi, 0.0);
     }
 
     #[test]
@@ -572,18 +572,18 @@ mod tests {
             opp(
                 10,
                 1,
-                Strategy::Sandwich,
+                Strategy::Jit,
                 pool_b,
                 pool_a,
                 2 * ETH,
                 ETH,
                 Some("x2"),
             ),
-            // second sandwich, dedup-free canonical: adds to sandwich count
+            // second jit, dedup-free canonical: adds to jit count
             opp(
                 11,
                 0,
-                Strategy::Sandwich,
+                Strategy::Jit,
                 pool_b,
                 pool_a,
                 3 * ETH,
@@ -593,20 +593,20 @@ mod tests {
         ];
         let agg = aggregate(&ops, &[], 1.0);
         assert_eq!(agg.summary.total, 3);
-        // all three are net-positive: arb 1.0−0.25, sandwich 2.0−1.0, 3.0−1.0.
+        // all three are net-positive: arb 1.0−0.5, jit 2.0−1.0, 3.0−1.0.
         assert_eq!(agg.summary.profitable, 3);
         assert_eq!(agg.by_strategy["arb"].count, 1);
-        assert_eq!(agg.by_strategy["sandwich"].count, 2);
+        assert_eq!(agg.by_strategy["jit"].count, 2);
         assert_eq!(
-            agg.by_strategy["sandwich"].net_profit,
+            agg.by_strategy["jit"].net_profit,
             (2.0 - 1.0) + (3.0 - 1.0)
         );
         assert_eq!(
-            agg.by_strategy["sandwich"].net_profit_usd,
+            agg.by_strategy["jit"].net_profit_usd,
             // token price 1.0 quoted from pool: (2-1)+(3-1) = 3.0
             3.0
         );
-        assert_eq!(agg.summary.best_strategy.as_deref(), Some("sandwich"));
+        assert_eq!(agg.summary.best_strategy.as_deref(), Some("jit"));
     }
 
     #[test]
@@ -687,8 +687,8 @@ mod tests {
 
     #[test]
     fn aggregate_fills_rolls_up_by_strategy_with_roi() {
-        // One arb fill (1.0 − 0.5 = 0.5 net) and two sandwich fills
-        // ((2.0 − 1.0) + (3.0 − 1.0) = 3.0 net). Sandwich gas total is 2.0,
+        // One arb fill (1.0 − 0.5 = 0.5 net) and two jit fills
+        // ((2.0 − 1.0) + (3.0 − 1.0) = 3.0 net). jit gas total is 2.0,
         // so its ROI = 3.0 / 2.0 × 100 = 150%.
         let fills = vec![
             pfill(
@@ -703,7 +703,7 @@ mod tests {
             pfill(
                 10,
                 Some(1),
-                "sandwich",
+                "jit",
                 2 * ETH as u128,
                 ETH as u128,
                 0,
@@ -712,7 +712,7 @@ mod tests {
             pfill(
                 11,
                 Some(0),
-                "sandwich",
+                "jit",
                 3 * ETH as u128,
                 ETH as u128,
                 0,
@@ -733,18 +733,18 @@ mod tests {
         assert_eq!(agg.summary.net_profit_usd, 3.5);
 
         assert_eq!(agg.by_strategy["arb"].count, 1);
-        assert_eq!(agg.by_strategy["sandwich"].count, 2);
+        assert_eq!(agg.by_strategy["jit"].count, 2);
         assert!(
-            (agg.by_strategy["sandwich"].roi - 150.0).abs() < 1e-9,
+            (agg.by_strategy["jit"].roi - 150.0).abs() < 1e-9,
             "roi = net/gas*100, got {}",
-            agg.by_strategy["sandwich"].roi
+            agg.by_strategy["jit"].roi
         );
         assert!(
             (agg.by_strategy["arb"].roi - 100.0).abs() < 1e-9,
             "roi = net/gas*100, got {}",
             agg.by_strategy["arb"].roi
         );
-        assert_eq!(agg.summary.best_strategy.as_deref(), Some("sandwich"));
+        assert_eq!(agg.summary.best_strategy.as_deref(), Some("jit"));
     }
 
     #[test]
@@ -774,7 +774,7 @@ mod tests {
         let tx0 = pfill(
             10,
             Some(1),
-            "sandwich",
+            "jit",
             ETH as u128,
             ETH as u128 / 4,
             7,
@@ -783,7 +783,7 @@ mod tests {
         let tx1 = pfill(
             10,
             Some(2),
-            "sandwich",
+            "jit",
             ETH as u128,
             ETH as u128 / 4,
             8,
@@ -791,7 +791,7 @@ mod tests {
         );
         // Mempool fill: tx_index None. Also cidless — must not collide with the
         // two tx-anchored fills above.
-        let mempool = pfill(10, None, "sandwich", ETH as u128, ETH as u128 / 4, 9, None);
+        let mempool = pfill(10, None, "jit", ETH as u128, ETH as u128 / 4, 9, None);
 
         let agg = aggregate_fills(&[dup1, dup2, tx0, tx1, mempool], 0.0);
         assert_eq!(
@@ -799,7 +799,7 @@ mod tests {
             "cid dedup collapses dup1+dup2; the three cid-less fills stay distinct"
         );
         assert_eq!(agg.summary.gross_revenue_wei, 4 * ETH as u128);
-        assert_eq!(agg.by_strategy["sandwich"].count, 3);
+        assert_eq!(agg.by_strategy["jit"].count, 3);
     }
 
     #[test]

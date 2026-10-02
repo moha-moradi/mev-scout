@@ -301,18 +301,11 @@ impl<'a> LiveContext<'a> {
             rpc.clone(),
             validation.chain_config.chain_id,
         );
-        let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-            .with_proximity_window(config.backtest.proximity_window)
+        let runner = BacktestRunner::new(replayer, pool_manager, gas_config)
             .with_capture_pending(config.backtest.capture_pending)
             .with_min_profit_wei(config.backtest.min_profit_wei)
             .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
             .with_record_rejections(record_rejections);
-
-        if let Some(aave_pool) = validation.chain_config.aave_v3_pool {
-            runner
-                .prefetch_aave_reserves(aave_pool, tip.saturating_sub(1))
-                .await;
-        }
 
         Ok(LiveContext {
             config,
@@ -455,12 +448,23 @@ impl<'a> LiveContext<'a> {
     fn persist_ledger_session(&self, ledger: &LedgerResult) -> anyhow::Result<String> {
         let chain = self.validation.chain_name;
         let store = ExplorerStore::open(self.config.effective_explorer_db_path(&chain))?;
+        // `insert_paper_session` derives the block range from the ledger
+        // (`paper/store.rs:66`), but those fields come from the *fills* and are
+        // `None` when a session finds nothing — which would record the session
+        // as blocks 0-0 despite having scanned a real range. The context
+        // tracks the true session span via `extend_session`, so prefer it and
+        // keep the ledger's value only as a fallback.
+        let mut ledger = ledger.clone();
+        if self.session_end_block > 0 {
+            ledger.start_block = Some(self.session_start_block);
+            ledger.end_block = Some(self.session_end_block);
+        }
         store.insert_paper_session(
             &self.session_id,
             &chain.to_string(),
             PaperMode::Live,
             Some(&self.session_run_id),
-            ledger,
+            &ledger,
         )?;
         Ok(self.session_id.clone())
     }
@@ -1248,7 +1252,13 @@ mod tests {
                 10u128.pow(17),
             ),
             strat_opp(11, 0, Strategy::Jit, 5 * 10u128.pow(18), 10u128.pow(17)),
-            strat_opp(12, 0, Strategy::Sandwich, 10u128.pow(17), 10u128.pow(17)),
+            strat_opp(
+                12,
+                0,
+                Strategy::MultiHopArb,
+                10u128.pow(17),
+                10u128.pow(17),
+            ),
         ]);
         let agg = aggregate_fills(&ledger.fills, 0.0);
         let summed: i128 = agg.by_strategy.values().map(|m| m.net_profit_wei).sum();
@@ -1275,7 +1285,7 @@ mod tests {
         let ledger = policy.apply(&[strat_opp(
             10,
             0,
-            Strategy::Sandwich,
+            Strategy::MultiHopArb,
             10u128.pow(17),
             5 * 10u128.pow(17),
         )]);
@@ -1326,12 +1336,12 @@ mod tests {
         };
         let ledger = policy.apply(&[
             strat_opp(10, 0, Strategy::Jit, 10u128.pow(18), 0),
-            strat_opp(11, 0, Strategy::Sandwich, 90 * 10u128.pow(17), 0),
+            strat_opp(11, 0, Strategy::TwoHopArb, 90 * 10u128.pow(17), 0),
         ]);
         let text = render_by_strategy(&ledger.fills, None);
-        let sandwich = text.find("sandwich").expect("sandwich row");
+        let arb = text.find("arb").expect("arb row");
         let jit = text.find("jit").expect("jit row");
-        assert!(sandwich < jit, "largest |net| must come first:\n{text}");
+        assert!(arb < jit, "largest |net| must come first:\n{text}");
     }
 
     #[test]

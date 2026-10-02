@@ -446,9 +446,9 @@ mod tests {
             // TwoHopArb: one pass, one fail ⇒ 0.5.
             fill_kind("a1", "TwoHopArb", WEI, Some(0)),
             fill_kind("a2", "TwoHopArb", WEI, Some(1)),
-            // Sandwich: both pass ⇒ 1.0.
-            fill_kind("s1", "Sandwich", WEI, Some(2)),
-            fill_kind("s2", "Sandwich", WEI, Some(3)),
+            // Liquidation: both pass ⇒ 1.0.
+            fill_kind("s1", "Liquidation", WEI, Some(2)),
+            fill_kind("s2", "Liquidation", WEI, Some(3)),
             // Jit: only fill, and it is unverifiable ⇒ no rate at all.
             fill_kind("j1", "Jit", WEI, None),
         ]);
@@ -471,7 +471,7 @@ mod tests {
 
         let report = paper_vs_executed(&l, &exec, TOL, ABS);
         let rates = report.pass_rate_by_strategy();
-        assert_eq!(rates.get("Sandwich"), Some(&1.0));
+        assert_eq!(rates.get("Liquidation"), Some(&1.0));
         assert_eq!(rates.get("TwoHopArb"), Some(&0.5));
         assert!(
             !rates.contains_key("Jit"),

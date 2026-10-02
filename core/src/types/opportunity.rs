@@ -11,13 +11,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// Different strategies populate different optional fields:
 /// - `path` for multi-hop strategies,
-/// - `tick_lower`/`tick_upper`/`liquidity_amount` for JIT strategies,
-/// - `victim_tx_index`/`backrun_tx_index` for sandwich attacks.
+/// - `tick_lower`/`tick_upper`/`liquidity_amount` for JIT strategies.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpportunity {
     /// Canonical dedup ID (L9): derived from strategy + key fields to uniquely
     /// identify this opportunity across detectors and aggregation passes.
-    /// Example: "TwoHopArb|0xaaa|0xbbb|0xccc|0xddd" or "Sandwich|0xaaa|tx:1|tx:2".
+    /// Example: "TwoHopArb|0xaaa|0xbbb|0xccc|0xddd".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canonical_id: Option<String>,
     /// Block where the opportunity was detected
@@ -69,10 +68,13 @@ pub struct MevOpportunity {
     /// Amount of liquidity deployed (JIT positions)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liquidity_amount: Option<u128>,
-    /// Transaction index of the victim's swap (sandwich attacks)
+    /// Transaction index of the victim swap. Always `None` in the current tree —
+/// only the removed sandwich detector populated it — but kept for wire
+/// compatibility with historical result files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victim_tx_index: Option<usize>,
-    /// Transaction index of the backrun (sandwich attacks)
+    /// Transaction index of the backrun. Same provenance as
+    /// [`victim_tx_index`](Self::victim_tx_index).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backrun_tx_index: Option<usize>,
     /// Whether this opportunity was detected from mempool/pending transactions
@@ -107,26 +109,14 @@ pub struct CanonicalIdParts {
     pub pool_b: Address,
     pub token_in: Address,
     pub token_out: Address,
-    pub victim_tx: Option<usize>,
-    pub backrun_tx: Option<usize>,
 }
 
 /// Build a canonical dedup string from the opportunity's key fields (L9).
 pub fn compute_canonical_id(parts: CanonicalIdParts) -> String {
-    match parts.strategy {
-        Strategy::Sandwich => {
-            format!(
-                "Sandwich|{:#x}|victim:{:?}|backrun:{:?}",
-                parts.pool_a, parts.victim_tx, parts.backrun_tx
-            )
-        }
-        _ => {
-            format!(
-                "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",
-                parts.strategy, parts.pool_a, parts.pool_b, parts.token_in, parts.token_out,
-            )
-        }
-    }
+    format!(
+        "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",
+        parts.strategy, parts.pool_a, parts.pool_b, parts.token_in, parts.token_out,
+    )
 }
 
 impl MevOpportunity {

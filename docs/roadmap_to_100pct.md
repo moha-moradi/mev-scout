@@ -80,8 +80,11 @@ all 5 pipeline stages exist.
 > justifies them.
 > **Deferred-optional in plan:** ERC-4337 bundler (needs alt-mempool), multi-block MEV
 > (needs validator relations) — explicit non-goals in this roadmap.
-> **Excluded from the capital-free build but already in the engine:** Sandwich (needs
-> ordering sim; classified only — see §8).
+> **Removed from the engine** (`docs/plan_prune_strategies.md`): Sandwich and
+> JitArb detectors deleted, Liquidation wiring disabled. Sandwich was never
+> capital-free (it needs ordering sim + builder access); JitArb had no honest P&L
+> model. The explorer still observes all three on chain as `MevKind` — that
+> subtree is untouched.
 
 ---
 
@@ -92,9 +95,10 @@ all 5 pipeline stages exist.
 | Backtest runner (per-tx detector loop, gas distribution, calibration) | DONE | `core/src/pipeline/runner.rs` |
 | revm `BlockReplayer` + `CachedRpcDb` (historical replay, lazy state) | DONE | `core/src/replay/{replayer,db}.rs` |
 | Arb quoting/sim (analytical 2-hop, BFS N-hop ≤4, slippage bands, FOT filter, gas+flash fees) | DONE | `core/src/mev/detectors/{arb_common,two_hop,multi_hop}.rs`, `core/src/pool/*` |
-| Detectors: TwoHop, MultiHop, Jit, JitArb, Sandwich, Liquidation(Aave V3) | DONE | `core/src/mev/detectors/*.rs` |
+| Detectors: TwoHop, MultiHop, Jit | DONE | `core/src/mev/detectors/*.rs` |
+| Detectors: Sandwich, JitArb, Liquidation | REMOVED / UNWIRED (2026-10-02, `docs/plan_prune_strategies.md`) | — |
 | Explorer ingest/classify/store, `explorer index|backfill|report|stats` (realized-MEV forensics, USD pricing CoinGecko/DefiLlama) | DONE | `core/src/explorer/*`, `cli/src/commands/explorer/*` |
-| Paper ledger (always-on in `live`) | DONE (6 strategies; native-gas-only; no exec resim; Liquidation excluded) | `core/src/paper/*` |
+| Paper ledger (always-on in `live`) | DONE (3 strategies: arb, jit; native-gas-only; no exec resim) | `core/src/paper/*` |
 | Mempool capture (pending block, arb-only detection) | PARTIAL | `core/src/mev/detectors/mempool.rs` |
 | 7 chains wired (Aave V3 + Balancer + DEX factories) | DONE | `core/data/chains.toml`, `core/src/config/defaults.rs` |
 | Strategy enum + GasConfig + FlashLoanProvider | DONE (6 variants) | `core/src/types/strategy.rs` |
@@ -143,7 +147,7 @@ Order within the build sequence is in §6; workstreams are the *units* of work.
 - Multi-chain: move new protocol addresses into `ChainConfig` (`config/defaults.rs`)
   + `chains.toml` + `core/src/types/chain.rs` default tables, gated per chain.
 - **Done =** a "hello world" new strategy ships end-to-end (detector stub →
-  classifier → paper row) with a passing `core/tests/sandwich.rs`-style detector test.
+  classifier → paper row) with a passing `core/tests/jit.rs`-style detector test.
 
 ### WS-B — Structural primitives
 **Deliverables:**
@@ -183,8 +187,9 @@ Extend `explorer backfill`/ingest with classify-in-stream fingerprints and range
 Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is in
 `docs/implementation_plan_capital_free.md`. Highlights by phase:
 - **Phase 1:** `skim.rs` (runs before sync each block; V4 has no skim), `sync_race.rs`.
-- **Phase 2:** `interest_liq.rs` (forward HF model; requires `variableBorrowRate` in
-  `AaveReserveData` — extend `liquidation.rs:43-48`); flash-loan liquidation extension
+- **Phase 2:** `interest_liq.rs` (forward HF model; needs an Aave `variableBorrowRate`
+  reader, which was removed with `liquidation.rs` in the 2026-10-02 prune and must
+  be re-added); flash-loan liquidation extension
   (`FlashLoanProvider` + Morpho/V4/Balancer 0% sources); `refinance_arb.rs`;
   Silo V2 / Spark arms; `compound_v3.rs` (absorb → buyCollateral).
 - **Phase 3:** `backrun.rs` on mempool + revm post-state; **prerequisite: order-flow
@@ -284,9 +289,12 @@ Built on WS-A/B; each detector consumes the plumbing. Full detector catalog is i
   per-searcher / USD facts without asserting (plus `_CHAIN` / `_FROM` / `_TO` to hunt a
   window outside the corpus). Offline synthetic tier stays in
   `core/tests/explorer_golden.rs` + `core/src/explorer/golden.rs`.
-  **Remaining:** `jit_arb` has no on-chain case in any seed window (recorded as
-  0 ops), and there is no corpus entry per strategy for the non-MEV ones listed
-  above (rebase day, Clip take, V2 drift).
+  **Remaining:** `jit` is the only live strategy without a corpus case, and there
+  is no corpus entry per strategy for the non-MEV ones listed
+  above (rebase day, Clip take, V2 drift). The detector-side corpus
+  (`mev_corpus.rs`) covers `arb_atomic`, `liquidation` and `jit` only after the
+  Sandwich/JitArb prune; the explorer's `MevKind` corpus is unaffected and still
+  carries real sandwich and jit-arb cases.
 - **`jit` now has a real on-chain case.** It was undetectable, not just unrecorded:
   `V3_MINT_TOPIC` held a stale hash, and `decode_v3_mint_burn` required
   `data.len() >= 160` while a canonical V3 `Mint` is 128 bytes, so every real V3
@@ -397,5 +405,5 @@ attention based on the measured table rather than the doc.
 3. **M3 WS-A (stub prep only, second lane)** — draft `Strategy` enum additions +
    detector trait shape + `ChainConfig` schema fields (Maker/GMX/Fluid/new-gen);
    no wiring yet.
-4. Keep `core/tests/e2e.rs`, `backtest.rs`, `sandwich.rs` patterns; every PR adds a
+4. Keep `core/tests/e2e.rs`, `backtest.rs`, `jit.rs` patterns; every PR adds a
    test per §WS-H2 (M2 reconciliation fixtures first).

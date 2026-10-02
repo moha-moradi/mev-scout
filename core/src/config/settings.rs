@@ -66,7 +66,7 @@ pub struct BacktestConfig {
         deserialize_with = "de_flash_loan_provider"
     )]
     pub flash_loan_provider: FlashLoanProvider,
-    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit,sandwich", "all")
+    /// Comma-separated strategy filter (e.g. "two_hop_arb,jit", "all")
     #[serde(
         default = "default_strategies",
         deserialize_with = "de_strategy_list",
@@ -76,9 +76,6 @@ pub struct BacktestConfig {
     /// Maximum number of pool pairs per token for two-hop arbitrage search
     #[serde(default = "default_max_pairs_per_token")]
     pub max_pairs_per_token: usize,
-    /// Proximity window (in tx indices) for JitArb detection (default: 3)
-    #[serde(default = "default_proximity_window")]
-    pub proximity_window: usize,
     /// Capture pending transactions from the mempool during backtest
     #[serde(default)]
     pub capture_pending: bool,
@@ -358,9 +355,6 @@ fn default_db_path() -> String {
 fn default_max_pairs_per_token() -> usize {
     50
 }
-fn default_proximity_window() -> usize {
-    3
-}
 
 // ── Default impls for sub-structs ───────────────────────────────────
 
@@ -394,7 +388,6 @@ impl Default for BacktestConfig {
             flash_loan_provider: default_flash_loan_provider(),
             strategies: default_strategies(),
             max_pairs_per_token: default_max_pairs_per_token(),
-            proximity_window: default_proximity_window(),
             capture_pending: false,
             min_profit_wei: 0,
             max_candidates_per_tx: 0,
@@ -941,7 +934,6 @@ pub struct BacktestOverrides {
     pub flash_loan_provider: Option<String>,
     pub strategies: Option<String>,
     pub max_pairs_per_token: Option<usize>,
-    pub proximity_window: Option<usize>,
     pub capture_pending: Option<bool>,
     pub min_profit_wei: Option<u64>,
     pub max_candidates_per_tx: Option<usize>,
@@ -1080,7 +1072,6 @@ impl Config {
                 (flash_loan_provider, parse),
                 (strategies, parse_list),
                 (max_pairs_per_token, copy),
-                (proximity_window, copy),
                 (capture_pending, copy),
                 (min_profit_wei, copy),
                 (max_candidates_per_tx, copy),

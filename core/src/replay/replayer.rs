@@ -264,6 +264,15 @@ impl BlockReplayer {
         &self.rpc
     }
 
+    /// Whether this block's data is already in the local cache.
+    ///
+    /// Used to tell "block absent because nothing was fetched for it"
+    /// (expected when pool discovery narrowed the fetch set) apart from
+    /// "block present but replay failed" (a real error).
+    pub fn has_cached_block(&self, block_num: u64) -> anyhow::Result<bool> {
+        self.cache.has_block(block_num)
+    }
+
     pub(crate) fn build_cfg_env(&self, block_num: u64) -> CfgEnv {
         let spec = spec_id_for_block(self.chain_id, block_num);
         let mut cfg = CfgEnv::new_with_spec(spec);

@@ -171,15 +171,10 @@ pub async fn job_run(
         calibration: Default::default(),
     };
     let mut runner = BacktestRunner::new(replayer, pool_manager, gas_config)
-        .with_proximity_window(config.backtest.proximity_window)
         .with_capture_pending(config.backtest.capture_pending)
         .with_min_profit_wei(config.backtest.min_profit_wei)
         .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
         .with_record_rejections(opts.record_rejections);
-
-    if let Some(aave_pool) = validation_result.chain_config.aave_v3_pool {
-        runner.prefetch_aave_reserves(aave_pool, prev_block).await;
-    }
 
     let start = Instant::now();
 

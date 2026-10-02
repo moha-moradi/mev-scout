@@ -24,7 +24,7 @@
 //! The window also carries a realized `liquidation` (block 95682033, see the
 //! seed notes in `mev_corpus.rs`), and it is *deliberately* absent from these
 //! expectations: `is_native_eligible` (`core/src/paper/ledger.rs:41-50`) admits
-//! only `TwoHopArb` / `MultiHopArb` / `Jit` / `JitArb` / `Sandwich`, so a
+//! only `TwoHopArb` / `MultiHopArb` / `Jit`, so a
 //! liquidation never becomes a paper fill and is never reconciled here. Its
 //! `expected_profit` is not native-normalized, so a wei reconciliation would
 //! compare a token-denominated number against native gas; the ledger records it
