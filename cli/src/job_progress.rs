@@ -1,6 +1,6 @@
 //! Job progress sinks for the CLI binary. The shared trait/event types live
 //! in `mev_scout_core::progress`; here we pick a presentation sink per mode:
-//! indicatif bar for `run`/`live`, noop otherwise.
+//! indicatif bar for `live`, noop otherwise.
 //!
 //! [`StdoutJsonProgress`] remains available for embedding hosts that want NDJSON.
 

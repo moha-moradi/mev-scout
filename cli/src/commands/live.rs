@@ -47,8 +47,6 @@ pub async fn cmd_live(
         poll_interval_ms: config.live.poll_interval_ms,
         record_rejections: config.backtest.record_rejections,
         max_blocks: args.max_blocks,
-        // `live` owns its session end to end.
-        persist_session: true,
         initial_balance_wei: args.initial_balance,
         initial_balance_usd: args.initial_balance_usd,
         reserve_wei: args.reserve,

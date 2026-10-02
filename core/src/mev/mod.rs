@@ -9,7 +9,8 @@
 pub mod detectors;
 pub mod verdict;
 pub use detectors::{
-    balancer_quote_exact_in, capture_pending_block, curve_output_amount, detect_pending_opportunities,
-    quote_path, JitDetector, MultiHopArbDetector, PendingBlockCapture, TwoHopArbDetector,
+    balancer_quote_exact_in, capture_pending_block, curve_output_amount,
+    detect_pending_opportunities, quote_path, JitDetector, MultiHopArbDetector,
+    PendingBlockCapture, TwoHopArbDetector,
 };
 pub use verdict::{mev_verdict, MevVerdict};

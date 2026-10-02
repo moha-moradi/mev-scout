@@ -540,16 +540,7 @@ mod tests {
             arb.roi
         );
         // Zero gas must not divide-by-zero.
-        let o0 = opp(
-            11,
-            0,
-            Strategy::Jit,
-            pool_a,
-            pool_b,
-            ETH,
-            0,
-            Some("c3"),
-        );
+        let o0 = opp(11, 0, Strategy::Jit, pool_a, pool_b, ETH, 0, Some("c3"));
         let agg0 = aggregate(&[o0], &[], 0.0);
         assert_eq!(agg0.by_strategy["jit"].roi, 0.0);
     }
@@ -597,10 +588,7 @@ mod tests {
         assert_eq!(agg.summary.profitable, 3);
         assert_eq!(agg.by_strategy["arb"].count, 1);
         assert_eq!(agg.by_strategy["jit"].count, 2);
-        assert_eq!(
-            agg.by_strategy["jit"].net_profit,
-            (2.0 - 1.0) + (3.0 - 1.0)
-        );
+        assert_eq!(agg.by_strategy["jit"].net_profit, (2.0 - 1.0) + (3.0 - 1.0));
         assert_eq!(
             agg.by_strategy["jit"].net_profit_usd,
             // token price 1.0 quoted from pool: (2-1)+(3-1) = 3.0
@@ -771,24 +759,8 @@ mod tests {
         // No canonical id, same block + strategy + pool, different tx index and a
         // different running wallet: two genuinely distinct fills that the
         // generic (token-less) fallback key would have collapsed into one.
-        let tx0 = pfill(
-            10,
-            Some(1),
-            "jit",
-            ETH as u128,
-            ETH as u128 / 4,
-            7,
-            None,
-        );
-        let tx1 = pfill(
-            10,
-            Some(2),
-            "jit",
-            ETH as u128,
-            ETH as u128 / 4,
-            8,
-            None,
-        );
+        let tx0 = pfill(10, Some(1), "jit", ETH as u128, ETH as u128 / 4, 7, None);
+        let tx1 = pfill(10, Some(2), "jit", ETH as u128, ETH as u128 / 4, 8, None);
         // Mempool fill: tx_index None. Also cidless — must not collide with the
         // two tx-anchored fills above.
         let mempool = pfill(10, None, "jit", ETH as u128, ETH as u128 / 4, 9, None);

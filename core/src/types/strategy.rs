@@ -118,17 +118,6 @@ impl fmt::Display for RangeMode {
     }
 }
 
-impl RangeMode {
-    pub fn resolve_description(&self) -> String {
-        match self {
-            RangeMode::Days(_) => "resolves at runtime via binary search on timestamps".to_string(),
-            RangeMode::Blocks(_) => "resolves at runtime from chain tip".to_string(),
-            RangeMode::Single(_) => "single block mode".to_string(),
-            RangeMode::Range(from, to) => format!("blocks {from}–{to} ({} blocks)", to - from + 1),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum GasModel {
     #[serde(rename = "historical_exact")]

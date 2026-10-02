@@ -26,21 +26,13 @@ use crate::utils::epoch_secs;
 
 use super::rpc::init_rpc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LiveOpts {
     pub loop_enabled: bool,
     pub duration: Option<String>,
     pub poll_interval_ms: u64,
     pub record_rejections: bool,
     pub max_blocks: Option<u64>,
-    /// Write the `paper_sessions` row for this session.
-    ///
-    /// `true` for `mev-scout live`, which owns its session end to end.
-    /// `false` for callers that already persist their own row — notably
-    /// `jobs::paper`, which calls this job and then applies and stores its own
-    /// ledger. Leaving it on there wrote two rows per paper session and made
-    /// `report` resolve the wrong one.
-    pub persist_session: bool,
     /// Ledger overrides. `None` falls back to the `[paper]` config section.
     pub initial_balance_wei: Option<u128>,
     pub initial_balance_usd: Option<f64>,
@@ -49,42 +41,15 @@ pub struct LiveOpts {
     pub native_usd: Option<f64>,
 }
 
-impl Default for LiveOpts {
-    fn default() -> Self {
-        Self {
-            loop_enabled: false,
-            duration: None,
-            poll_interval_ms: 0,
-            record_rejections: false,
-            max_blocks: None,
-            persist_session: true,
-            initial_balance_wei: None,
-            initial_balance_usd: None,
-            reserve_wei: None,
-            max_fills_per_block: None,
-            native_usd: None,
-        }
-    }
-}
-
 pub struct LiveOneShotOutcome {
-    pub run_id: String,
-    pub tip: u64,
     pub opportunities: Vec<MevOpportunity>,
     pub block_stats: Vec<BlockReplayStats>,
-    pub elapsed: Duration,
 }
 
 pub struct LiveLoopOutcome {
-    pub blocks_processed: u64,
-    pub total_txs_scanned: usize,
-    pub total_opportunities: usize,
     /// Per-block stats accumulated across every pass of the session, so the
     /// CLI can render the same summary table the one-shot path produces.
     pub block_stats: Vec<BlockReplayStats>,
-    /// Cumulative ledger over the whole session. `None` only if persistence
-    /// failed, which is already logged.
-    pub ledger: Option<LedgerResult>,
     pub session_id: String,
 }
 
@@ -191,11 +156,20 @@ async fn resolve_native_price(
     }
 }
 
+/// Inclusive span of blocks that were actually scanned. An empty `span`
+/// means nothing has been scanned yet, so the first range becomes the span
+/// instead of being unioned with a tip that was only observed at startup.
+fn widen_span(span: Option<(u64, u64)>, start: u64, end: u64) -> (u64, u64) {
+    match span {
+        None => (start, end),
+        Some((lo, hi)) => (start.min(lo), end.max(hi)),
+    }
+}
+
 /// Ledger inputs resolved once at session start.
 struct ResolvedLedger {
     policy: LedgerPolicy,
     native_usd: Option<f64>,
-    persist_session: bool,
 }
 
 pub enum LiveOutcome {
@@ -213,17 +187,15 @@ struct LiveContext<'a> {
     progress: &'a dyn JobProgress,
     runner: BacktestRunner,
     tip: u64,
-    /// Latest tip observed during this session, refreshed on every loop pass.
-    /// One-shot reads it here instead of reusing the value captured at startup.
-    current_tip: u64,
     /// Stable for the whole session. One-shot is a single pass and generates
     /// one id; the loop reuses this for every pass.
     session_run_id: String,
-    /// Growing session-wide block range, widened by [`Self::extend_session`].
-    /// The manifest is rewritten on each pass with these bounds so `report`
-    /// and `explorer validate --run-id` see the whole session as one run.
-    session_start_block: u64,
-    session_end_block: u64,
+    /// Inclusive span of blocks actually fetched and scanned, widened by
+    /// [`Self::extend_session`]. Unset until the first successful pass, so the
+    /// tip observed during setup is not recorded as scanned. The manifest is
+    /// rewritten on each pass with these bounds so `report` and
+    /// `explorer validate --run-id` see the whole session as one run.
+    scanned_span: Option<(u64, u64)>,
     /// Ledger applied over every opportunity seen so far this session.
     /// Recomputed from scratch each pass — `LedgerPolicy::apply` is pure and
     /// re-derives block grouping itself, so no incremental state to thread.
@@ -235,9 +207,6 @@ struct LiveContext<'a> {
     /// Persisted once at session end — `paper_sessions` keys on a plain
     /// `session_id`, so re-inserting the same id would violate the constraint.
     session_id: String,
-    /// Whether this context owns the `paper_sessions` row. False when the
-    /// caller persists its own ledger row after borrowing this context.
-    persist_session: bool,
 }
 
 impl<'a> LiveContext<'a> {
@@ -317,15 +286,12 @@ impl<'a> LiveContext<'a> {
             progress,
             runner,
             tip,
-            current_tip: tip,
             session_run_id: format!("live_{}", epoch_secs()),
-            session_start_block: tip,
-            session_end_block: tip,
+            scanned_span: None,
             policy: ledger.policy,
             session_opps: Vec::new(),
             native_usd: ledger.native_usd,
             session_id: format!("paper_live_{}", epoch_secs()),
-            persist_session: ledger.persist_session,
         })
     }
 
@@ -374,14 +340,20 @@ impl<'a> LiveContext<'a> {
         Ok((opps, stats))
     }
 
-    /// Widen the session-wide block range to cover `resolved`.
+    /// Widen the scanned span to cover `resolved`. The first call sets the
+    /// span; later calls only grow it. Callers must pass blocks that were
+    /// actually fetched — a tip observed but not scanned must not be included.
     fn extend_session(&mut self, resolved: &ResolvedRange) {
-        if resolved.start_block < self.session_start_block {
-            self.session_start_block = resolved.start_block;
-        }
-        if resolved.end_block > self.session_end_block {
-            self.session_end_block = resolved.end_block;
-        }
+        self.scanned_span = Some(widen_span(
+            self.scanned_span,
+            resolved.start_block,
+            resolved.end_block,
+        ));
+    }
+
+    fn scanned_bounds(&self) -> (u64, u64) {
+        self.scanned_span
+            .expect("persist called before any block was scanned")
     }
 
     /// Persist one pass's opportunities plus the session manifest.
@@ -402,11 +374,12 @@ impl<'a> LiveContext<'a> {
             .collect();
         let flash_loan_provider = self.validation.flash_loan_provider.to_string();
 
+        let (start_block, end_block) = self.scanned_bounds();
         let results_file = ResultsFile {
             run_id: run_id.clone(),
             chain: chain_name.to_string(),
-            start_block: self.session_start_block,
-            end_block: self.session_end_block,
+            start_block,
+            end_block,
             range_mode: "live".to_string(),
             strategies: strategies.clone(),
             flash_loan_provider: flash_loan_provider.clone(),
@@ -417,8 +390,8 @@ impl<'a> LiveContext<'a> {
         let manifest = RunManifest {
             run_id: run_id.clone(),
             chain: chain_name.to_string(),
-            start_block: self.session_start_block,
-            end_block: self.session_end_block,
+            start_block,
+            end_block,
             resolved_at: epoch_secs(),
             range_mode: "live".to_string(),
             strategies,
@@ -455,9 +428,9 @@ impl<'a> LiveContext<'a> {
         // tracks the true session span via `extend_session`, so prefer it and
         // keep the ledger's value only as a fallback.
         let mut ledger = ledger.clone();
-        if self.session_end_block > 0 {
-            ledger.start_block = Some(self.session_start_block);
-            ledger.end_block = Some(self.session_end_block);
+        if let Some((start, end)) = self.scanned_span {
+            ledger.start_block = Some(start);
+            ledger.end_block = Some(end);
         }
         store.insert_paper_session(
             &self.session_id,
@@ -473,9 +446,9 @@ impl<'a> LiveContext<'a> {
 /// Render one ledger line set for progress output.
 ///
 /// `not_native_unit` is counted and labelled rather than lumped in with real
-/// skips: `is_native_eligible` rejects liquidation outright, so with the
-/// ledger always on this counter is routinely non-zero and an unlabelled count
-/// reads like a problem.
+/// skips. `is_native_eligible` rejects liquidation, which the live detectors
+/// no longer emit; a historical liquidation row must still read as a labeled
+/// skip, not as a silent failure.
 pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> String {
     let mut out = String::new();
     // Net P&L is signed (a losing session must read as negative), so it cannot
@@ -586,6 +559,15 @@ pub async fn job_live(
     if opts.max_blocks.is_some() && !opts.loop_enabled {
         anyhow::bail!("--max-blocks requires --loop");
     }
+    // Before any price lookup or RPC: both flags describe the same wallet,
+    // and resolving a price first would hit the network for a request that
+    // cannot succeed.
+    if opts.initial_balance_wei.is_some() && opts.initial_balance_usd.is_some() {
+        anyhow::bail!(
+            "--initial-balance and --initial-balance-usd are mutually exclusive; \
+             pass the wallet in wei (exact, no price lookup) or in USD (needs a price)"
+        );
+    }
     let deadline = match opts.duration.as_deref() {
         Some(d) => {
             if !opts.loop_enabled {
@@ -614,11 +596,7 @@ pub async fn job_live(
     // every pass would both cost RPC calls and make the wallet drift mid-session.
     let native_usd = resolve_native_price(config, &validation, opts.native_usd).await?;
     let policy = resolve_ledger_policy(config, opts, native_usd)?;
-    let ledger = ResolvedLedger {
-        policy,
-        native_usd,
-        persist_session: opts.persist_session,
-    };
+    let ledger = ResolvedLedger { policy, native_usd };
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
     let mut ctx = LiveContext::new(
@@ -658,7 +636,6 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
             ctx.tip
         }
     };
-    ctx.current_tip = tip;
     progress.log(&format!("Run ID: {run_id}"));
     progress.log(&format!("Latest block: {tip}"));
 
@@ -707,13 +684,11 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
     ctx.extend_session(&resolved);
     ctx.persist_results(&opps);
     let ledger = ctx.update_ledger(&opps);
-    if ctx.persist_session {
-        if let Err(e) = ctx.persist_ledger_session(&ledger) {
-            // Not fatal: the run results and manifest are already written, so
-            // the session is still usable via `report`. Losing only the P&L row
-            // should not discard a completed scan.
-            tracing::warn!("paper-session persist failed: {e}");
-        }
+    if let Err(e) = ctx.persist_ledger_session(&ledger) {
+        // Not fatal: the run results and manifest are already written, so
+        // the session is still usable via `report`. Losing only the P&L row
+        // should not discard a completed scan.
+        tracing::warn!("paper-session persist failed: {e}");
     }
     progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
 
@@ -732,11 +707,8 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
     ));
 
     Ok(LiveOneShotOutcome {
-        run_id,
-        tip,
         opportunities: opps,
         block_stats,
-        elapsed,
     })
 }
 
@@ -918,7 +890,6 @@ async fn run_loop(
             elapsed_ms: Some(pass_elapsed.as_millis() as u64),
         });
         ctx.runner.advance_to(current_tip);
-        ctx.current_tip = current_tip;
         last_block = current_tip;
         blocks_processed += resolved.block_count;
         total_opportunities += opps.len();
@@ -935,32 +906,22 @@ async fn run_loop(
     }
     progress.log(&format!("  Opportunities:    {total_opportunities}"));
 
-    // Recomputed from the full accumulated list rather than reusing the last
-    // pass's result: passes with no opportunities skip `update_ledger` output,
-    // so the in-loop value can be stale by one pass.
+    // Recomputed over the full accumulated list. `update_ledger` already ran
+    // after every pass, including passes that found nothing; this last apply
+    // is the row written at session end.
     let ledger = ctx.update_ledger(&[]);
-    let session_id = if ctx.persist_session {
-        match ctx.persist_ledger_session(&ledger) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!("paper-session persist failed: {e}");
-                ctx.session_id.clone()
-            }
+    let session_id = match ctx.persist_ledger_session(&ledger) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("paper-session persist failed: {e}");
+            ctx.session_id.clone()
         }
-    } else {
-        ctx.session_id.clone()
     };
-    if ctx.persist_session {
-        progress.log(&format!("  Ledger session:   {session_id}"));
-    }
+    progress.log(&format!("  Ledger session:   {session_id}"));
     progress.log("");
 
     Ok(LiveLoopOutcome {
-        blocks_processed,
-        total_txs_scanned,
-        total_opportunities,
         block_stats,
-        ledger: Some(ledger),
         session_id,
     })
 }
@@ -968,6 +929,17 @@ async fn run_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scanned_span_does_not_include_a_tip_that_was_only_observed() {
+        // Setup saw an earlier tip. One-shot then scanned only the block that
+        // was current when fetch started. The gap in between was not scanned,
+        // so it must not show up as the session range.
+        let span = widen_span(None, 96_596_041, 96_596_041);
+        assert_eq!(span, (96_596_041, 96_596_041));
+        let span = widen_span(Some(span), 96_596_042, 96_596_045);
+        assert_eq!(span, (96_596_041, 96_596_045));
+    }
 
     fn opts() -> LiveOpts {
         LiveOpts::default()
@@ -1170,8 +1142,8 @@ mod tests {
         assert!(text.contains("4.0000"), "text was: {text}");
     }
 
-    /// `is_native_eligible` rejects liquidation, so with the ledger always on
-    /// this count is routinely non-zero. It must be labelled, not hidden.
+    /// Liquidation is no longer detected live, but a historical row of that
+    /// strategy is still rejected by the ledger and must be labelled.
     #[test]
     fn summary_labels_not_native_unit_skips() {
         use crate::types::Strategy;
@@ -1252,13 +1224,7 @@ mod tests {
                 10u128.pow(17),
             ),
             strat_opp(11, 0, Strategy::Jit, 5 * 10u128.pow(18), 10u128.pow(17)),
-            strat_opp(
-                12,
-                0,
-                Strategy::MultiHopArb,
-                10u128.pow(17),
-                10u128.pow(17),
-            ),
+            strat_opp(12, 0, Strategy::MultiHopArb, 10u128.pow(17), 10u128.pow(17)),
         ]);
         let agg = aggregate_fills(&ledger.fills, 0.0);
         let summed: i128 = agg.by_strategy.values().map(|m| m.net_profit_wei).sum();

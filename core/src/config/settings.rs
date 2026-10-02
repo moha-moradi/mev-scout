@@ -9,7 +9,7 @@ use super::defaults::{default_chains, merge_default_chains, ChainConfig};
 use super::validation::RangeSpec;
 use crate::error;
 
-use crate::types::{ChainName, FlashLoanProvider, GasModel, OutputFormat, RangeMode, Strategy};
+use crate::types::{ChainName, FlashLoanProvider, GasModel, OutputFormat, Strategy};
 
 // ── Sub-config structs ──────────────────────────────────────────────
 
@@ -85,7 +85,8 @@ pub struct BacktestConfig {
     /// Maximum candidates to keep per transaction (top by profit). 0 = unlimited.
     #[serde(default)]
     pub max_candidates_per_tx: usize,
-    /// Enable JSON-RPC batching (block+receipts in one HTTP POST). Off by default.
+    /// Enable JSON-RPC batching (block+receipts in one HTTP POST) for
+    /// `job_run`. Off by default. `live` does not read this flag.
     #[serde(default)]
     pub batch_rpc: bool,
     /// Record rejected candidates into the explorer store for false-negative analysis.
@@ -706,17 +707,6 @@ impl Config {
         Ok(urls)
     }
 
-    /// Human-readable RPC summary for the startup plan display.
-    fn effective_rpc_display(&self, chain: ChainName) -> String {
-        let rpc = self.effective_rpc(chain);
-        let user_count = rpc.rpc_urls.len() + usize::from(rpc.rpc_url.is_some());
-        if user_count > 0 {
-            format!("{user_count} provider(s) configured")
-        } else {
-            "No RPC configured — using public fallbacks".to_string()
-        }
-    }
-
     /// Build full provider configs by merging the chain-effective user URLs
     /// with public fallbacks.
     pub fn effective_provider_configs(
@@ -828,48 +818,6 @@ impl Config {
             .map_err(|e| error::Error::Other(format!("Failed to serialize config: {}", e)))?;
         toml::to_string(&value)
             .map_err(|e| error::Error::Other(format!("Failed to serialize config: {}", e)))
-    }
-
-    pub fn plan_summary(
-        &self,
-        chain_name: ChainName,
-        chain_cfg: &ChainConfig,
-        range_mode: &RangeMode,
-        strategies: &[Strategy],
-        provider: FlashLoanProvider,
-    ) -> String {
-        let provider_desc = match provider {
-            FlashLoanProvider::Auto => {
-                "auto (Balancer V2 → Aave V3 → Uniswap Flash Swap)".to_string()
-            }
-            other => format!("forced ({other})"),
-        };
-
-        let strat_list = strategies
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        format!(
-            r#"Chain:               {} (chain ID {})
-RPC:                 {}
-Block range:         {} → {}
-Strategies:          {}
-Flash loan:          {}
-Gas model:           {}
-DB path:             {}
-"#,
-            chain_name,
-            chain_cfg.chain_id,
-            self.effective_rpc_display(chain_name),
-            range_mode,
-            range_mode.resolve_description(),
-            strat_list,
-            provider_desc,
-            self.gas.gas_model,
-            self.effective_db_path(&chain_name),
-        )
     }
 }
 

@@ -98,7 +98,10 @@ pub async fn job_run(
 
     let mut fetcher = Fetcher::new(rpc.clone(), cache.clone());
     fetcher = fetcher.with_parallelism(provider_configs.len());
-    fetcher = fetcher.with_batch_rpc(opts.batch_rpc);
+    // `live` deliberately leaves batching off. `job_run` still honours the
+    // TOML flag the removed `run` command used to copy in, and an explicit
+    // `RunOpts` value turns it on even when the config does not.
+    fetcher = fetcher.with_batch_rpc(opts.batch_rpc || config.backtest.batch_rpc);
     let bc = config.effective_block_concurrency(validation_result.chain_name, &provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
 
@@ -174,7 +177,7 @@ pub async fn job_run(
         .with_capture_pending(config.backtest.capture_pending)
         .with_min_profit_wei(config.backtest.min_profit_wei)
         .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
-        .with_record_rejections(opts.record_rejections);
+        .with_record_rejections(opts.record_rejections || config.backtest.record_rejections);
 
     let start = Instant::now();
 

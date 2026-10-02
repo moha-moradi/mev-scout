@@ -69,8 +69,8 @@ pub struct MevOpportunity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liquidity_amount: Option<u128>,
     /// Transaction index of the victim swap. Always `None` in the current tree —
-/// only the removed sandwich detector populated it — but kept for wire
-/// compatibility with historical result files.
+    /// only the removed sandwich detector populated it — but kept for wire
+    /// compatibility with historical result files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victim_tx_index: Option<usize>,
     /// Transaction index of the backrun. Same provenance as

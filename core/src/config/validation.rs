@@ -488,8 +488,8 @@ mod tests {
         assert!(validate_live(&config).is_ok());
     }
 
-    /// Live shares every config invariant with `run` except the block-range
-    /// check, which it cannot honour. Regression guard: these three used to be
+    /// Live shares every config invariant with `job_run` except the block-range
+    /// check, which it cannot honour. Regression guard: these used to be
     /// silently skipped by `validate_live` and must not drift back.
     #[test]
     fn live_enforces_shared_config_invariants() {

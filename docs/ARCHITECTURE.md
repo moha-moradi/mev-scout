@@ -157,8 +157,8 @@ Prefer `${ENV_VAR}` placeholders in RPC URLs; export keys in the same shell.
 Unset placeholders stay literal and fail loudly at the provider. The listing
 format for `tokens`, `report`, and `discover` is the TOML `output` key
 (`table` | `csv` | `json`). Tuning knobs that used to be CLI flags live under
-`batch_rpc` / `record_rejections`, `[discover]`, `[live]`, and `[paper]` (see
-`mev-scout.example.toml`).
+`record_rejections`, `[discover]`, `[live]`, and `[paper]` (see
+`mev-scout.example.toml`). `batch_rpc` applies only to `job_run`; `live` leaves batching off.
 
 ### Block range (exactly one)
 
@@ -405,8 +405,8 @@ flowchart TB
     A["validate_live + init_rpc<br/>+ open cache"] --> B["read pool addresses<br/>from discovery cache"]
     B --> C{"--loop?"}
     C -- "no (one-shot)" --> D["tip = get_block_number"]
-    C -- "yes" --> E["init: tip, PoolManager,<br/>runner, Aave prefetch"]
-    D --> F["init pools at tip−1<br/>+ Aave prefetch"]
+    C -- "yes" --> E["init: tip, PoolManager,<br/>runner"]
+    D --> F["init pools at tip−1"]
     F --> G["fetch tip block"] --> H["RpcClient state-horizon probe<br/>detect_state_horizon<br/>→ run_range_hybrid"] --> I["persist → explorer SQLite<br/>print table"]
     E --> J["poll loop"]
     J --> K["sleep(poll_interval)"]

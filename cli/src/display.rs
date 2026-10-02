@@ -1,59 +1,8 @@
 use alloy::primitives::Address;
 use comfy_table::Table;
 
-use mev_scout_core::config::validation;
-use mev_scout_core::config::Config;
 use mev_scout_core::pipeline::BlockReplayStats;
 use mev_scout_core::pool::state::PoolManager;
-use mev_scout_core::types::ResultsFile;
-
-pub fn print_startup_plan(result: &validation::ValidationResult, config: &Config) {
-    let divider = "═".repeat(55);
-
-    println!();
-    println!("  ╔{divider}╗");
-    println!("  ║        MEV Backtest Engine — Startup Plan        ║");
-    println!("  ╚{divider}╝");
-    println!();
-
-    let plan = config.plan_summary(
-        result.chain_name,
-        &result.chain_config,
-        &result.range_mode,
-        &result.strategies,
-        result.flash_loan_provider,
-    );
-
-    for line in plan.lines() {
-        println!("  {line}");
-    }
-
-    println!("  [DRY RUN — no simulation yet]");
-    println!();
-}
-
-/// Persist run/live results into the explorer store's `opportunities` table
-/// (the results layer feeds offline analysis of rejected candidates). The
-/// execution history lives only in SQLite; failures here warn only.
-pub fn persist_opportunities_to_explorer(
-    config: &Config,
-    chain: mev_scout_core::types::ChainName,
-    run_id: &str,
-    results_file: &ResultsFile,
-) {
-    mev_scout_core::explorer::persist_opportunities_to_explorer(config, chain, run_id, results_file)
-}
-
-/// Persist drained runner rejections into the explorer store.
-/// Only called when `--record-rejections` is enabled.
-pub fn persist_rejections_to_explorer(
-    config: &Config,
-    chain: mev_scout_core::types::ChainName,
-    run_id: &str,
-    rejections: &[mev_scout_core::explorer::RejectedCandidate],
-) {
-    mev_scout_core::explorer::persist_rejections_to_explorer(config, chain, run_id, rejections)
-}
 
 fn pool_name(pm: &PoolManager, addr: &Address) -> String {
     pm.get(addr)

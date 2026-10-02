@@ -1439,8 +1439,7 @@ async fn discover_pools_shard(
 }
 
 /// Discover pools and save them to the cache.
-/// This is the standard discovery mode used by `mev-scout discover` and the
-/// first-run pool bootstrap inside `mev-scout live`.
+/// Called by `mev-scout discover`. `live` only reads pools already cached.
 pub async fn discover_and_cache(
     rpc: &RpcClient,
     cache: &SqliteStore,

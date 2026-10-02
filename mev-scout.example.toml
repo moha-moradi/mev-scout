@@ -35,7 +35,8 @@ gas_model = "historical_exact"
 # Default output format: table | csv | json
 output = "table"
 
-# JSON-RPC batching for run/live block+receipt fetches (off by default)
+# JSON-RPC batching for historical job_run fetches (off by default).
+# `live` does not use this flag.
 # batch_rpc = false
 # Record rejected candidates into the explorer store (off by default)
 # record_rejections = false
