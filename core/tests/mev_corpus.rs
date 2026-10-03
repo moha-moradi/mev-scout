@@ -234,7 +234,6 @@ const CORPUS: &[CorpusCase] = &[
 fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => Some("arb_atomic"),
-        Strategy::Liquidation => Some("liquidation"),
         Strategy::Jit => Some("jit"),
     }
 }
@@ -243,10 +242,10 @@ fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
 /// kind it found nothing for reads as an explicit `0 ops` line — that is how a
 /// rare kind (`jit`) is *confirmed absent* over a hunt window rather than
 /// merely unlisted. Note this is the *detector* taxonomy: the live `Sandwich`
-/// and `JitArb` detectors are gone, so `sandwich`/`jit_arb` are never produced
-/// here even though the explorer's `MevKind::Sandwich` / `MevKind::JitArb`
-/// still exist.
-const ALL_KINDS: &[&str] = &["arb_atomic", "liquidation", "jit"];
+/// and `JitArb` detectors are gone, and liquidation capture has no `Strategy`
+/// variant at all, so `sandwich`/`jit_arb`/`liquidation` are never produced
+/// here even though the explorer still classifies all three as a `MevKind`.
+const ALL_KINDS: &[&str] = &["arb_atomic", "jit"];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
 fn recording() -> bool {
@@ -799,10 +798,10 @@ fn a_single_block_window_uses_the_block_field() {
 fn every_detector_kind_is_reported_by_a_record_run() {
     // A kind missing from ALL_KINDS would print no line at all, so a hunt for
     // a rare kind (`jit`) could never confirm it absent.
-    for kind in ["arb_atomic", "liquidation", "jit"] {
+    for kind in ["arb_atomic", "jit"] {
         assert!(ALL_KINDS.contains(&kind), "{kind} missing from ALL_KINDS");
     }
-    assert_eq!(ALL_KINDS.len(), 3, "one entry per Strategy variant");
+    assert_eq!(ALL_KINDS.len(), 2, "one entry per emittable MevKind");
 }
 
 #[test]

@@ -1,10 +1,11 @@
 //! MEV detection strategies: JIT liquidity and arbitrage (two-hop, multi-hop),
 //! PGA simulation for competition-adjusted profit estimates, and competitor extraction analysis.
 //!
-//! Liquidation capture is observation-only in this tree: `Strategy::Liquidation`
-//! still parses so the DB `kind` column and historical reports keep working,
-//! but no detector produces it (see `docs/plan_prune_strategies.md` §6). The
-//! explorer independently classifies realized liquidations as `MevKind`.
+//! Liquidation capture is not implemented here: there is no `Strategy`
+//! variant and no detector for it. Configs that still say `liquidation` keep
+//! loading — the name is retired and dropped by
+//! [`crate::types::Strategy::from_comma_list`]. The explorer independently
+//! classifies realized liquidations as `MevKind::Liquidation`.
 
 pub mod detectors;
 pub(crate) mod verdict;

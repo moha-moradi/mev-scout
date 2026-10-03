@@ -81,7 +81,6 @@ fn ui_strategy_name(strategy: Strategy) -> &'static str {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => "arb",
         Strategy::Jit => "jit",
-        Strategy::Liquidation => "liquidation",
     }
 }
 

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Why a detected opportunity was not taken as a paper fill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FillSkipReason {
-    /// Profit is not native-normalized (e.g. liquidation).
+    /// Profit is not native-normalized.
     NotNativeUnit,
     /// `expected_profit <= gas_cost_wei`.
     NonPositiveNet,

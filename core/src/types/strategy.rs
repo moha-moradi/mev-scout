@@ -75,15 +75,20 @@ pub enum Strategy {
     MultiHopArb,
     #[strum(serialize = "jit")]
     Jit,
-    /// Observation-only: the variant survives so the persisted `kind` column and
-    /// historical reports keep parsing, but no live detector emits it.
-    #[strum(serialize = "liquidation")]
-    Liquidation,
 }
 
+/// Strategy names that used to be variants and are now retired from the
+/// execution path. Liquidation capture was pruned: no detector emits it, so the
+/// `Strategy` variant is gone and configs that still name it keep loading — the
+/// name is dropped instead of failing TOML parsing. The explorer classifies
+/// realized liquidations independently as `MevKind::Liquidation`, which is
+/// unaffected by this list.
+const RETIRED_STRATEGY_NAMES: &[&str] = &["liquidation"];
+
 impl Strategy {
-    /// The strategies the execution path actually runs. `Liquidation` is a
-    /// parseable variant, not a runnable one — see the enum doc.
+    /// The strategies the execution path actually runs. This is the single
+    /// source of truth: `all()` is both the `"all"` config expansion and the
+    /// default (`config::settings::default_strategies`).
     pub fn all() -> &'static [Strategy] {
         &[Strategy::TwoHopArb, Strategy::MultiHopArb, Strategy::Jit]
     }
@@ -93,9 +98,34 @@ impl Strategy {
         if s.eq_ignore_ascii_case("all") {
             return Ok(Strategy::all().to_vec());
         }
-        s.split(',')
-            .map(|part| part.trim().parse::<Strategy>().map_err(|e| e.to_string()))
-            .collect()
+        let mut out: Vec<Strategy> = Vec::new();
+        let mut saw_retired = false;
+        for part in s.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if RETIRED_STRATEGY_NAMES
+                .iter()
+                .any(|n| part.eq_ignore_ascii_case(n))
+            {
+                saw_retired = true;
+                continue;
+            }
+            out.push(part.parse::<Strategy>().map_err(|e| e.to_string())?);
+        }
+        // An empty list is load-bearing: `job_live` / `job_run` gate
+        // `init_pools` on `!strategies.is_empty()`, so a config that named only
+        // retired strategies would skip pool sync and silently report zero
+        // opportunities. Fail loudly instead.
+        if out.is_empty() && saw_retired {
+            return Err(format!(
+                "no runnable strategies remain: '{}' only names retired strategies ({})",
+                s,
+                RETIRED_STRATEGY_NAMES.join(", ")
+            ));
+        }
+        Ok(out)
     }
 }
 

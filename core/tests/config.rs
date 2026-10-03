@@ -173,3 +173,46 @@ fn test_config_builder() {
     assert!(config.days.is_none());
     assert!(config.from_block.is_none());
 }
+
+/// ── Retired strategy names ───────────────────────────────────────────────────
+/// Liquidation capture has no `Strategy` variant any more, but configs written
+/// before the prune must keep loading. `from_comma_list` drops the retired name
+/// instead of failing TOML parsing.
+#[test]
+fn retired_strategy_name_is_dropped_not_fatal() {
+    let parsed = Strategy::from_comma_list("two_hop_arb,liquidation").unwrap();
+    assert_eq!(parsed, vec![Strategy::TwoHopArb]);
+}
+
+#[test]
+fn retired_strategy_name_alongside_live_ones_is_dropped() {
+    assert_eq!(
+        Strategy::from_comma_list("liquidation, jit").unwrap(),
+        vec![Strategy::Jit]
+    );
+}
+
+/// An empty list is load-bearing: `job_live` / `job_run` gate `init_pools` on
+/// `!strategies.is_empty()`, so a config naming only retired strategies must
+/// fail loudly rather than resolve to an empty selection that skips pool sync
+/// and silently reports zero opportunities.
+#[test]
+fn only_retired_strategy_names_is_an_error() {
+    let err = Strategy::from_comma_list("liquidation").unwrap_err();
+    assert!(err.contains("retired"), "error was: {err}");
+}
+
+/// `"all"` must keep expanding to the runnable set and stay unaffected by the
+/// tombstone list.
+#[test]
+fn all_still_expands_to_runnable_strategies() {
+    assert_eq!(Strategy::from_comma_list("all").unwrap(), Strategy::all());
+    assert_eq!(Strategy::from_comma_list("ALL").unwrap(), Strategy::all());
+}
+
+/// A genuinely unknown name is still a hard error — the tombstone list must not
+/// degrade into a blanket "ignore what you cannot parse".
+#[test]
+fn unknown_strategy_name_is_still_an_error() {
+    assert!(Strategy::from_comma_list("sandwich").is_err());
+}

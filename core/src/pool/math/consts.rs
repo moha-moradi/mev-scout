@@ -14,7 +14,6 @@ pub const DEFAULT_POOL_GAS: u64 = 80_000;
 pub const V3_POOL_GAS: u64 = 120_000;
 pub const STABLE_POOL_GAS: u64 = 100_000;
 pub const JIT_OVERHEAD: u64 = 150_000;
-pub const LIQUIDATION_GAS_LIMIT: u64 = 180_000;
 
 // Iteration bounds for numerical solvers
 pub const TERNARY_SEARCH_ITERATIONS: i32 = 80;

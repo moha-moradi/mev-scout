@@ -446,9 +446,9 @@ impl<'a> LiveContext<'a> {
 /// Render one ledger line set for progress output.
 ///
 /// `not_native_unit` is counted and labelled rather than lumped in with real
-/// skips. `is_native_eligible` rejects liquidation, which the live detectors
-/// no longer emit; a historical liquidation row must still read as a labeled
-/// skip, not as a silent failure.
+/// skips. `is_native_eligible` only admits native-normalized strategies, so a
+/// row in another profit unit must still read as a labeled skip, not as a
+/// silent failure.
 pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> String {
     let mut out = String::new();
     // Net P&L is signed (a losing session must read as negative), so it cannot
@@ -488,7 +488,7 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
     if not_native > 0 {
         out.push_str(&format!(
             "\n  note: {not_native} candidate(s) skipped as not_native_unit \
-             (profit not native-denominated, e.g. liquidation)"
+             (profit not native-denominated)"
         ));
     }
     out
@@ -1142,14 +1142,32 @@ mod tests {
         assert!(text.contains("4.0000"), "text was: {text}");
     }
 
-    /// Liquidation is no longer detected live, but a historical row of that
-    /// strategy is still rejected by the ledger and must be labelled.
+    /// Every runnable strategy is native-eligible today, so `apply` cannot
+    /// produce `NotNativeUnit` on its own. Build the skip directly to keep the
+    /// rendering pinned for when a non-native strategy returns.
     #[test]
     fn summary_labels_not_native_unit_skips() {
-        use crate::types::Strategy;
-        let mut liq = MevOpportunity::new(10, 0, Strategy::Liquidation, Address::repeat_byte(1), 0);
-        liq.expected_profit = alloy::primitives::U256::from(1_000);
-        let ledger = LedgerPolicy::default().apply(&[liq]);
+        use crate::paper::PaperSkip;
+        let ledger = LedgerResult {
+            starting_gas_wei: 1_000_000,
+            ending_gas_wei: 1_000_000,
+            reserve_wei: 0,
+            max_drawdown_wei: 0,
+            fills: Vec::new(),
+            skips: vec![PaperSkip {
+                block_number: 10,
+                tx_index: Some(0),
+                canonical_id: None,
+                strategy: "legacy".into(),
+                reason: FillSkipReason::NotNativeUnit,
+            }],
+            gross_wei: 0,
+            gas_wei: 0,
+            net_profit_wei: 0,
+            best_net_wei: 0,
+            start_block: Some(10),
+            end_block: Some(10),
+        };
         let text = render_ledger_summary(&ledger, None);
         assert!(
             text.contains("not_native_unit"),

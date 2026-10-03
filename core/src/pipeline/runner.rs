@@ -613,7 +613,7 @@ impl BacktestRunner {
     /// node is required.
     ///
     /// Two-hop and multi-hop arb detection still run against the updated state,
-    /// but EVM-context strategies (JIT, liquidation) are skipped
+    /// but EVM-context strategies (JIT) are skipped
     /// because they require full transaction execution.
     pub fn sync_block_from_logs(
         &mut self,

@@ -335,22 +335,16 @@ mod tests {
         assert_eq!(r.skips[0].reason, FillSkipReason::InsufficientGas);
     }
 
+    /// Every runnable strategy is native-eligible, so `apply` never emits
+    /// `NotNativeUnit` today. This pins the invariant: adding a strategy whose
+    /// `expected_profit` is not native-normalized must also extend
+    /// `is_native_eligible`'s complement deliberately, not by accident.
     #[test]
-    fn liquidation_skipped_as_not_native() {
-        let policy = LedgerPolicy::default();
-        let a = address!("0x0000000000000000000000000000000000000001");
-        let opps = [opp(
-            1,
-            0,
-            Strategy::Liquidation,
-            a,
-            Address::ZERO,
-            1_000_000,
-            1,
-        )];
-        let r = policy.apply(&opps);
-        assert!(r.fills.is_empty());
-        assert_eq!(r.skips[0].reason, FillSkipReason::NotNativeUnit);
+    fn every_runnable_strategy_is_native_eligible() {
+        for s in Strategy::all() {
+            assert!(is_native_eligible(*s), "{s} is not native-eligible");
+        }
+        assert_eq!(Strategy::all().len(), 3, "one entry per Strategy variant");
     }
 
     #[test]
