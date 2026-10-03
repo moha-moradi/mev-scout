@@ -33,6 +33,12 @@ pub struct LiveOpts {
     pub poll_interval_ms: u64,
     pub record_rejections: bool,
     pub max_blocks: Option<u64>,
+    /// Width of the one-shot window, in blocks ending at the tip. `0` is
+    /// normalized to `1`, which preserves the historical "scan the tip block
+    /// only" behaviour for callers that never set it. The CLI default-subcommand
+    /// path sets a wider window so a bare run yields an immediately useful
+    /// result. Ignored when [`Self::loop_enabled`] is set.
+    pub single_pass_blocks: u64,
     /// Ledger overrides. `None` falls back to the `[paper]` config section.
     pub initial_balance_wei: Option<u128>,
     pub initial_balance_usd: Option<f64>,
@@ -616,12 +622,15 @@ pub async fn job_live(
         let summary = run_loop(&mut ctx, deadline, opts.poll_interval_ms, opts.max_blocks).await?;
         Ok(LiveOutcome::Loop(summary))
     } else {
-        let pass = run_once(&mut ctx).await?;
+        let pass = run_once(&mut ctx, opts.single_pass_blocks).await?;
         Ok(LiveOutcome::OneShot(pass))
     }
 }
 
-async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcome> {
+async fn run_once(
+    ctx: &mut LiveContext<'_>,
+    single_pass_blocks: u64,
+) -> anyhow::Result<LiveOneShotOutcome> {
     let progress = ctx.progress;
     let run_id = ctx.session_run_id.clone();
     // Re-read the tip: `ctx.tip` was captured during setup, and pool
@@ -636,18 +645,33 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
             ctx.tip
         }
     };
+
+    // `0` means "unspecified" for `LiveOpts::default()`, so clamp to the tip
+    // block rather than emitting a zero-width range.
+    let width = single_pass_blocks.max(1);
+    let start_block = tip.saturating_sub(width.saturating_sub(1));
+    let span_label = if width == 1 {
+        format!("Latest block: {tip}")
+    } else {
+        format!("Latest {width} blocks: {start_block}-{tip}")
+    };
     progress.log(&format!("Run ID: {run_id}"));
-    progress.log(&format!("Latest block: {tip}"));
+    progress.log(&span_label);
 
     let resolved = ResolvedRange {
-        start_block: tip,
+        start_block,
         end_block: tip,
-        block_count: 1,
-        mode: RangeMode::Single(tip),
+        block_count: tip - start_block + 1,
+        mode: if width == 1 {
+            RangeMode::Single(tip)
+        } else {
+            RangeMode::Range(start_block, tip)
+        },
     };
 
     let start = Instant::now();
     let fetch_done = Arc::new(AtomicU64::new(0));
+    let total_blocks = resolved.block_count;
     let tick = move || {
         if progress.cancelled() {
             return false;
@@ -656,7 +680,7 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
         progress.emit(ProgressEvent {
             stage: "fetch".to_string(),
             done: Some(d),
-            total: Some(1),
+            total: Some(total_blocks),
             run_id: None,
             ops: None,
             elapsed_ms: None,
@@ -702,7 +726,7 @@ async fn run_once(ctx: &mut LiveContext<'_>) -> anyhow::Result<LiveOneShotOutcom
     });
 
     progress.log(&format!(
-        "Block {tip} — {} opportunity(ies) detected",
+        "Block {start_block}-{tip} — {} opportunity(ies) detected",
         opps.len()
     ));
 

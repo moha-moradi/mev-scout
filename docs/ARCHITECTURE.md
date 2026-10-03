@@ -5,7 +5,7 @@ Two crates: one engine library and one CLI host:
 
 - **`core/`** — `mev-scout-core`: engine + stores + shared job orchestration.
 - **`cli/`** — `mev-scout-cli`: thin binary (`mev-scout`) with 6 top-level
-  subcommands (`live discover tokens report config explorer`, plus the
+  subcommands (`live discover report config explorer`, plus the
   `explorer` nest). Parses args, loads config, presentation, dispatches to core.
 
 ---
@@ -16,7 +16,7 @@ Two crates: one engine library and one CLI host:
 flowchart TB
     subgraph CLI["mev-scout-cli (binary: mev-scout)"]
         MAIN["main.rs<br/>parse args · load config · logging"]
-        CLIDEF["cli.rs<br/>clap: live discover tokens report config explorer"]
+        CLIDEF["cli.rs<br/>clap: live discover report config explorer"]
         DISPATCH["commands/mod.rs<br/>CliCommand trait → dispatch"]
         UI["display.rs · overrides.rs<br/>tables · config merge"]
     end
@@ -102,21 +102,33 @@ flowchart TB
 
 | Command | Purpose | Chain access | Writes |
 |---|---|---|---|
+| *(no subcommand)* | Same as `live` — bootstrap if needed, scan the latest 64 blocks, exit | yes | SQLite cache, explorer SQLite |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | yes | SQLite cache, explorer SQLite |
-| `discover` | Find pools (on-chain factories / aggregators) | yes (RPC and/or REST) | SQLite cache |
-| `tokens` | Populate / view token metadata cache | optional REST (`--enrich`) | SQLite `token_symbols` |
+| `discover` | Find pools (on-chain factory scan) | yes (RPC getLogs) | SQLite cache |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Realized-MEV forensics (`index` / `stats` / `show` / `report` / `backfill` / `validate`) | yes (logs; optional traces); backfill/index yes | Explorer SQLite store |
+| `explorer` | Realized-MEV forensics (`index` / `show` / `report` / `backfill`) | yes (logs; optional traces); backfill yes | Explorer SQLite store |
 
 Product split: **`live`** = what *could* be made, plus the theoretical session
 P&L of taking those detections with a virtual gas wallet (no competition);
 **`explorer`** = what *was* made.
 
-The `run` and `paper` commands were removed. `live` absorbed both: it detects at
-chain tip (replacing `run`'s one-shot range scan) and its paper ledger is always
-on (replacing `paper run` / `paper live`). `report` prints a run's ledger session
-alongside its results.
+**Zero-config entrypoint.** The subcommand is optional: `mev-scout` with no
+arguments behaves exactly like `mev-scout live`, and `live`'s window defaults to
+the most recent 64 blocks, scanned once. On first run it seeds the token cache
+from the bundled known-token list and runs an on-chain pool discovery, so there
+is no setup command to remember. Both steps are skipped once their caches are
+populated, and the config is validated offline *before* any bootstrap RPC.
+
+The `run`, `paper` and `tokens` commands were removed. `live` absorbed the first
+two: it detects at chain tip and its paper ledger is always on. `tokens` became
+the implicit bootstrap step. The range-scanning entry point (`run`) was dropped
+from the CLI in favour of `live --blocks` for a bounded window; `report` prints a
+run's ledger session alongside its results.
+
+`explorer stats` was removed — `explorer report` covers the same ground with
+per-window cost/profit/volume. `explorer validate` is a research command hidden
+behind the non-default `validate` Cargo feature (`--features validate`).
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -155,14 +167,14 @@ mev-scout config
 
 Prefer `${ENV_VAR}` placeholders in RPC URLs; export keys in the same shell.
 Unset placeholders stay literal and fail loudly at the provider. The listing
-format for `tokens`, `report`, and `discover` is the TOML `output` key
+format for `report` and `discover` is the TOML `output` key
 (`table` | `csv` | `json`). Tuning knobs that used to be CLI flags live under
 `record_rejections`, `[discover]`, `[live]`, and `[paper]` (see
 `mev-scout.example.toml`). `batch_rpc` applies only to `job_run`; `live` leaves batching off.
 
 ### Block range (exactly one)
 
-`discover` (on-chain / hybrid) requires exactly one of:
+`discover`, `explorer index` and `explorer backfill` require exactly one of:
 
 ```powershell
 mev-scout discover --days 7
@@ -171,8 +183,13 @@ mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-`--days` is 1–365. `live` uses chain tip (no range flags) — it was the
-replacement for `run`, which took a range and scanned it once.
+`--days` is 1–365. With no range at all, `discover` resumes from the newest
+cached `creation_block` when the pool cache is populated, and otherwise falls
+back to `[discover].pool_discovery_lookback_blocks` up to the tip; `backfill`
+defaults to the trailing 7 days.
+
+`live` takes no range flags — it follows the chain tip. Its one-shot window is
+`--blocks N` (default 64), scanned as `tip − N + 1 ..= tip`.
 
 ### Two SQLite stores
 
@@ -185,13 +202,13 @@ flowchart LR
     toml --> cli
     cli --> cache
     cli --> explorer
-    cache -->|"live report discover tokens"| cli
+    cache -->|"live report discover"| cli
     explorer -->|"report explorer"| cli
 ```
 
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
-| Scanner cache | `cache/` per-chain DB | `live`, `discover`, `tokens` | `live`, `discover --incremental`, `tokens`, `report` (manifests) |
+| Scanner cache | `cache/` per-chain DB | `live` (incl. bootstrap token + pool seeding), `discover` | `live`, `discover`, `report` (manifests) |
 | Explorer store | `explorer-{chain}.sqlite` (`./cache/`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index`/`backfill` | `report`, `explorer *` |
 
 ---
@@ -216,94 +233,149 @@ flowchart LR
     A["main.rs: load -f file,<br/>mev-scout.toml, or defaults"] --> B["merge CLI overrides<br/>(overrides.rs)"] --> C["to_toml_string → stdout"]
 ```
 
-### 4.2 `discover` — build the pool universe
+### 4.2 `live` — the default command
 
-Finds pools from factory events and/or free aggregators; result feeds all other
-commands (they read the discovery cache). Default `--source` is `onchain`.
-DefiLlama yields is **not** a pool source (UUID ids, no AMM pool addresses).
+The zero-config entrypoint. `mev-scout` with no subcommand is `mev-scout live`;
+the run is bounded and exits, so it is safe to invoke from a script or a
+scheduled job. Same engine as the removed range scanner, against chain tip.
 
 ```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml discover --days 30
-mev-scout discover --source onchain --days 30
-mev-scout discover --source hybrid --days 14 --enrich
-mev-scout discover --incremental
-# remote pagination / TVL / Multicall3 / health_check → [discover] in TOML
+cargo run -p mev-scout-cli -- --config mev-scout.toml live
+cargo run -p mev-scout-cli --                 # identical to the line above
+mev-scout live --blocks 500                   # widen the one-shot window
+mev-scout live --loop                         # keep following the chain
+mev-scout live --loop --duration 1h
+mev-scout live --loop --max-blocks 50
+mev-scout live --initial-balance 1000000000000000000
+mev-scout live --initial-balance-usd 10 --native-usd 0.42
+# poll_interval_ms → [live]; record_rejections → TOML
+```
+
+| Flag | Meaning |
+|---|---|
+| *(none)* | Scan the latest 64 blocks once, then exit |
+| `--blocks <n>` | Width of the one-shot window (`tip − n + 1 ..= tip`); zero is rejected |
+| `--loop` | Follow the tip, polling every `[live].poll_interval_ms` (2000) |
+| `--duration` / `--max-blocks` | Stop conditions; **both require `--loop`** |
+| `--initial-balance` / `--initial-balance-usd` | Virtual wallet seed (mutually exclusive) |
+| `--reserve <wei>` | Gas kept back from the wallet |
+| `--native-usd <price>` | Offline native price; required by `--initial-balance-usd` |
+
+#### Implicit bootstrap
+
+There is no setup command. Before the scan, `live` checks its own caches and
+fills whatever is missing:
+
+```mermaid
+flowchart TB
+    A["validate_live — offline<br/>(config invariants, no network)"] --> B{"pools in cache?"}
+    B -- "yes" --> E
+    B -- "no" --> C["on-chain discovery<br/>factory getLogs over<br/>pool_discovery_lookback_blocks"]
+    C --> D["persist universe → SQLite"]
+    B -- "yes, but tokens empty" --> E
+    D --> E{"tokens in cache?"}
+    E -- "yes" --> G
+    E -- "no" --> F["TokenCache::warm<br/>bundled known tokens<br/>+ merge from SQLite"]
+    F --> G["scan latest 64 blocks"]
+```
+
+Bootstrap is deliberately narrow: it is **on-chain only** and uses **no
+third-party HTTP**. Tokens come from the bundled known-token list, pools from
+factory event logs. Both steps log what they did and are skipped on later runs,
+so a warm cache adds no work. Bootstrap failures warn rather than abort — the
+subsequent scan reports the real problem.
+
+#### End-of-session report
+
+When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
+`--loop`), the ledger prints and persists:
+
+```
+  ledger: 3 fill(s), 0 skipped | net 6700000000000000000 wei ($2.8140)
+  wallet: 100000000000000000000 ($42.0000) → 106700000000000000000 ($44.8140) | reserve 0 | max drawdown 0 wei
+  by strategy (fills accepted):
+    jit       1 fill   gas  0.800000  net      +4.200000 wei  $   1.7640
+    arb       2 fills  gas  1.500000  net      +2.500000 wei  $   1.0500
+```
+
+- `wallet` is gas paid → gas plus realized net, so `ending − starting` is the
+  session's profit.
+- The `by strategy` rows come from `pipeline::aggregate_fills`, the same rollup
+  `report` uses, so they cannot drift from it. They are ordered by absolute net,
+  and their sum always equals the headline `net`.
+- Every accepted fill has `net > 0` by construction — `LedgerPolicy::apply`
+  skips `net <= 0` as `NonPositiveNet`. The breakdown therefore only ever
+  attributes profit; a gas-heavy candidate shows up under `skipped`, not as a
+  losing row.
+- USD columns appear only when a price is known (`--native-usd`, or a resolved
+  native price). Without one, amounts stay in wei rather than being guessed.
+- One `paper_sessions` row plus its `paper_fills` are written once at session
+  end; `report` re-renders the same figures offline.
+
+#### Session flow
+
+```mermaid
+flowchart TB
+    A["validate_live — offline<br/>+ init_rpc + open cache<br/>+ implicit bootstrap"] --> B["read pool addresses<br/>from discovery cache"]
+    B --> C{"--loop?"}
+    C -- "no (one-shot)" --> D["tip = get_block_number<br/>start = tip − --blocks + 1"]
+    C -- "yes" --> E["init: tip, PoolManager,<br/>runner"]
+    D --> F["init pools at start−1"]
+    F --> G["fetch start..tip<br/>(fetch_relevant if pools known)"]
+    G --> H["RpcClient state-horizon probe<br/>detect_state_horizon<br/>→ run_range_hybrid"]
+    H --> I["persist → explorer SQLite<br/>print table + ledger summary"]
+    E --> J["poll loop"]
+    J --> K["sleep(poll_interval)"]
+    K --> L["get_block_number"]
+    L --> M{"tip > last_block?"}
+    M -- no --> K
+    M -- yes --> N["fetch blocks last+1..tip"]
+    N --> O["run_range_hybrid<br/>FullReplay within state horizon,<br/>LogOnly beyond"]
+    O --> P{"error?"}
+    P -- "yes (<5 consecutive)" --> K
+    P -- no --> Q["persist → explorer SQLite<br/>print per-range summary"]
+    Q --> R{"deadline reached?"}
+    R -- no --> K
+    R -- yes --> S["session summary<br/>(blocks, txs, opportunities)"]
+    P -- "≥5 consecutive" --> T["bail out"]
+```
+
+### 4.3 `discover` — build the pool universe
+
+Finds pools from DEX factory event logs; the result feeds every other command
+(they read the discovery cache). On-chain only — there is no `--source`,
+`--enrich` or remote aggregator leg on the CLI, so discovery needs nothing but
+an RPC endpoint.
+
+```powershell
+cargo run -p mev-scout-cli -- --config mev-scout.toml discover --blocks 2000
+mev-scout discover --days 30
+mev-scout discover --block 65000000
+mev-scout discover --from-block 65000000 --to-block 65000100
+mev-scout discover                          # incremental over a warm cache
+# chunking / health check / concurrency → [discover] in TOML
 # machine-readable listing → output = "json" in TOML
 ```
 
 | Flag / config | Concept |
 |---|---|
-| `--source onchain\|remote\|hybrid` | Factory logs only, GeckoTerminal+DexScreener only, or union deduped by address |
-| `--days` / `--blocks` / … | On-chain / hybrid lookback (remote skips the range) |
-| `--incremental` | Resume from max cached `creation_block` |
-| `--enrich` | Attach TVL / volume from GeckoTerminal |
-| `[discover].min_tvl` / `max_pools` | Remote dust filter and pagination cap |
-| `[discover].resolve_remote_metadata` | Multicall3 fill of fee/tickSpacing/tokens for remote CL pools |
+| `--days` / `--blocks` / `--block` / `--from-block`+`--to-block` | Lookback window, exactly one form |
+| *(no range)* | Resume from max cached `creation_block` if the cache is populated, else `pool_discovery_lookback_blocks` → tip |
 | `[discover].health_check` | Drop drained/paused pools (default on) |
+| `[discover].max_pools` | Pagination cap |
 | `output = "json"` | Machine-readable pool list |
 | `[discover].batch_size` / `rpc_concurrency` | getLogs chunk size and metadata concurrency |
 | `[discover].solidly_fee_bps` | Fee override for Solidly-style pools |
 
 ```mermaid
 flowchart TB
-    A["resolve_chain + init_rpc<br/>+ open cache + warm TokenCache"] --> B{"--source"}
-    B -- "remote" --> R["skip block range & on-chain scan"]
-    B -- "onchain / hybrid" --> C["resolve range<br/>(default: last pool_discovery_lookback_blocks → tip)"]
-    B -- "hybrid / remote" --> R2["remote leg (below)"]
-    C --> D{"--incremental?"}
-    D -- yes --> E["from = max cached creation_block + 1<br/>(skip if cache is current)"]
-    D -- no --> F
-    E --> F["Phase 1: discover_and_cache<br/>factory event scan (chunked getLogs):<br/>V2 · V3 · V4 · Solidly · Camelot<br/>Curve registry · Balancer vault<br/>TraderJoe LB · Pendle · Fluid<br/>Pancake Infinity CL<br/>+ pool metadata via Multicall3"]
-    F --> G
-    R --> G["merge sources"]
-    R2 --> H["Phase 2: remote aggregators<br/>GeckoTerminal + DexScreener<br/>(not DefiLlama yields)<br/>([discover] max_pools, min_tvl)"]
-    H --> G
-    G --> I{"--source semantics"}
-    I -- onchain --> J["on-chain pools only"]
-    I -- remote --> K["remote pools only"]
-    I -- hybrid --> L["union, dedup by address"]
-    J --> M
-    K --> M
-    L --> M
-    M{"[discover].resolve_remote_metadata?"}
-    M -- yes --> N["Multicall3: fill fee/tickSpacing/<br/>tokens for remote CL pools"]
-    M -- no --> O
-    N --> O{"[discover].health_check? (default on)"}
-    O -- yes --> P["drop drained/paused pools<br/>(on-chain state probe)"]
-    O -- no --> Q
-    P --> Q["Phase 5.3: persist universe → SQLite<br/>(cache-first merge, never clobber richer rows)"]
-    Q --> T["output: table / json / csv from TOML"]
-```
-
-### 4.3 `tokens` — token metadata cache
-
-Offline by default (bundled known-token list + SQLite). Optional `--enrich`
-pulls missing **symbol/decimals** from DefiLlama coins and **name/icon URL**
-from CoinGecko's contract endpoint. Listing format follows TOML `output`
-(capped at 100 rows).
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml tokens
-mev-scout tokens --cache-only
-mev-scout tokens --enrich
-# set output = "json" or "csv" in mev-scout.toml for machine-readable listing
-```
-
-```mermaid
-flowchart LR
-    A["resolve chain → chain_id"] --> B["open SQLite cache"]
-    B --> C["TokenCache::warm(chain_id)<br/>bundled known tokens"]
-    C --> D["merge persisted tokens<br/>from SQLite"]
-    D --> E{"--enrich?"}
-    E -- yes --> F["seed addresses from pool_info"]
-    F --> G["DefiLlama coins<br/>symbol / decimals"]
-    G --> H["CoinGecko contract<br/>name / icon_url (capped)"]
-    H --> I["persist_all → SQLite"]
-    I --> J
-    E -- no --> J["list up to 100 entries"]
-    J --> K{"--cache-only?"}
-    K -- yes --> M["print count only"]
-    K -- no --> N["table / json / csv"]
+    A["resolve_chain + init_rpc<br/>+ open cache"] --> C["resolve range<br/>(none given: max cached<br/>creation_block + 1 → tip)"]
+    C --> F["discover_and_cache<br/>factory event scan (chunked getLogs):<br/>V2 · V3 · V4 · Solidly · Camelot<br/>Curve registry · Balancer vault<br/>TraderJoe LB · Pendle · Fluid<br/>Pancake Infinity CL<br/>+ pool metadata via Multicall3"]
+    F --> Q{"[discover].health_check? (default on)"}
+    Q -- yes --> P["drop drained/paused pools<br/>(on-chain state probe)"]
+    Q -- no --> T
+    P --> T["persist universe → SQLite<br/>(cache-first merge, never clobber richer rows)"]
+    T --> U["output: table / json / csv from TOML"]
 ```
 
 ### 4.4 Detection pipeline (shared by `live`)
@@ -350,81 +422,7 @@ flowchart LR
     B5 --> B6["filter: min_profit_wei<br/>max_candidates_per_tx<br/>persistence confidence decay"]
 ```
 
-### 4.5 `live` — real-time streaming detection
-
-Same engine as the range scanner, against chain tip. One-shot (default) or
-continuous polling with `--loop`.
-
-```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml live
-mev-scout live --loop
-mev-scout live --loop --duration 1h
-mev-scout live --loop --max-blocks 50
-mev-scout live --initial-balance 1000000000000000000
-mev-scout live --initial-balance-usd 10 --native-usd 0.42
-# poll_interval_ms → [live]; record_rejections → TOML
-```
-
-`--duration` and `--max-blocks` require `--loop`. Poll interval defaults to
-`[live].poll_interval_ms` (2000).
-
-Ledger overrides (all optional, falling back to `[paper]`):
-`--initial-balance <wei>` or `--initial-balance-usd <usd>` (mutually exclusive),
-`--reserve <wei>`, `--max-fills-per-block <n>`, `--native-usd <price>`.
-`--initial-balance-usd` needs a price — pass `--native-usd` to stay offline.
-
-#### End-of-session report
-
-When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
-`--loop`), the ledger prints and persists:
-
-```
-  ledger: 3 fill(s), 0 skipped | net 6700000000000000000 wei ($2.8140)
-  wallet: 100000000000000000000 ($42.0000) → 106700000000000000000 ($44.8140) | reserve 0 | max drawdown 0 wei
-  by strategy (fills accepted):
-    jit       1 fill   gas  0.800000  net      +4.200000 wei  $   1.7640
-    arb       2 fills  gas  1.500000  net      +2.500000 wei  $   1.0500
-```
-
-- `wallet` is gas paid → gas plus realized net, so `ending − starting` is the
-  session's profit.
-- The `by strategy` rows come from `pipeline::aggregate_fills`, the same rollup
-  `report` uses, so they cannot drift from it. They are ordered by absolute net,
-  and their sum always equals the headline `net`.
-- Every accepted fill has `net > 0` by construction — `LedgerPolicy::apply`
-  skips `net <= 0` as `NonPositiveNet`. The breakdown therefore only ever
-  attributes profit; a gas-heavy candidate shows up under `skipped`, not as a
-  losing row.
-- USD columns appear only when a price is known (`--native-usd`, or a resolved
-  native price). Without one, amounts stay in wei rather than being guessed.
-- One `paper_sessions` row plus its `paper_fills` are written once at session
-  end; `report` re-renders the same figures offline.
-
-```mermaid
-flowchart TB
-    A["validate_live + init_rpc<br/>+ open cache"] --> B["read pool addresses<br/>from discovery cache"]
-    B --> C{"--loop?"}
-    C -- "no (one-shot)" --> D["tip = get_block_number"]
-    C -- "yes" --> E["init: tip, PoolManager,<br/>runner"]
-    D --> F["init pools at tip−1"]
-    F --> G["fetch tip block"] --> H["RpcClient state-horizon probe<br/>detect_state_horizon<br/>→ run_range_hybrid"] --> I["persist → explorer SQLite<br/>print table"]
-    E --> J["poll loop"]
-    J --> K["sleep(poll_interval)"]
-    K --> L["get_block_number"]
-    L --> M{"tip > last_block?"}
-    M -- no --> K
-    M -- yes --> N["fetch blocks last+1..tip<br/>(fetch_relevant if pools known)"]
-    N --> O["run_range_hybrid<br/>FullReplay within state horizon,<br/>LogOnly beyond"]
-    O --> P{"error?"}
-    P -- "yes (<5 consecutive)" --> K
-    P -- no --> Q["persist → explorer SQLite<br/>print per-range summary"]
-    Q --> R{"deadline reached?"}
-    R -- no --> K
-    R -- yes --> S["session summary<br/>(blocks, txs, opportunities)"]
-    P -- "≥5 consecutive" --> T["bail out"]
-```
-
-### 4.6 `report` — re-render saved results
+### 4.5 `report` — re-render saved results
 
 Offline. Reads run metadata from the cache DB (`run_manifests`) and
 opportunities from the explorer DB. No chain access; no on-disk JSON result
@@ -460,7 +458,7 @@ flowchart LR
     F -- json --> I["pretty-print full run"]
 ```
 
-### 4.7 `explorer` — realized-MEV forensics
+### 4.6 `explorer` — realized-MEV forensics
 
 Forensic reconstruction of MEV that was actually extracted on-chain — the
 counterpart to the scanner's simulated opportunities. Pipeline: ingest → decode
@@ -482,13 +480,13 @@ flowchart TB
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
-#### 4.7.1 `explorer index`
+#### 4.6.1 `explorer index`
 
 Stream-index tip blocks into the explorer store (live). On each start, jumps to
 the current confirmed tip and only follows new blocks forward — no resume of a
 historical `indexed_to` gap. Idempotent, reorg-aware; classifies in-stream.
 Follows `head − confirmations` until cancelled (Ctrl+C) or `--duration` elapses.
-For historical windows use `explorer backfill` (see 4.7.5) — `index` itself is
+For historical windows use `explorer backfill` (see 4.6.4) — `index` itself is
 live-only.
 
 ```powershell
@@ -500,61 +498,52 @@ mev-scout explorer index --duration 1h
 Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`,
 `arb_likely_parity`, `trace_tolerance_pct`.
 
-#### 4.7.2 `explorer stats`
-
-Pure SQL aggregates: op counts, profit totals, daily breakdown, top
-searchers/pools.
-
-```powershell
-mev-scout explorer stats
-mev-scout explorer stats --since 7d
-mev-scout explorer stats --since 1d --kind sandwich
-```
-
-`--since` accepts `1d` | `7d` | `30d` | `all` (default all). `--kind` filters
-to one pattern.
-
-#### 4.7.3 `explorer show`
+#### 4.6.2 `explorer show`
 
 Operation detail for a transaction hash. `--trace` recomputes exact profit via
-`debug_traceTransaction` (prestateTracer diffMode). `--tolerance-pct PCT`
-overrides `[explorer] trace_tolerance_pct` for the trace-vs-accounted
-profit-mismatch gate (determines the `TraceVerdict`).
+`debug_traceTransaction` (prestateTracer diffMode). The profit-mismatch gate
+that decides the `TraceVerdict` reads `[explorer] trace_tolerance_pct` and
+`trace_error_usd_tol` from TOML — there is no per-invocation override flag.
 
 ```powershell
 mev-scout explorer show 0xabc…
 mev-scout explorer show 0xabc… --trace
-mev-scout explorer show 0xabc… --trace --tolerance-pct 2.5
 ```
 
-#### 4.7.4 `explorer validate`
+#### 4.6.3 `explorer validate`
 
 Cross-validation report: realized-MEV ops in the store vs scanner `opportunities`
 (T1 exact canonical-id / T2 pool+token overlap / T3 block-level tiers). Read-only —
 pure SQL, no RPC. Supports windowing, per-run filtering, a profit-threshold sweep,
 and precision-review/pool-coverage exports.
 
+This is a research command, not part of the default surface: it is compiled only
+under the non-default `validate` Cargo feature.
+
 ```powershell
+cargo build -p mev-scout-cli --features validate
 mev-scout explorer validate --since all --json
-mev-scout explorer validate --since 7d
 mev-scout explorer validate --since 30d --match-window 2 --run-id run_1717…
 mev-scout explorer validate --since all --threshold-sweep --emit-missing-pools
 mev-scout explorer validate --since all --review-csv results/review.csv --golden-causal
 ```
 
-#### 4.7.5 `explorer backfill`
+#### 4.6.4 `explorer backfill`
 
 Index a historical block range into the store so the revenue-report windows
 (1d/7d/30d) have realized data. Idempotent and gap-resumable via
-`blocks_classified`. Takes `--days` up to the current confirmed tip, or an exact
-inclusive `--from-block`/`--to-block` range (mutually exclusive).
+`blocks_classified`. With no range at all it defaults to the trailing 7 days,
+so a bare `mev-scout explorer backfill` seeds the common case. Otherwise pass
+either `--days` up to the current confirmed tip, or an exact inclusive
+`--from-block`/`--to-block` range (mutually exclusive).
 
 ```powershell
+mev-scout explorer backfill
 mev-scout explorer backfill --days 30
 mev-scout explorer backfill --from-block 65000000 --to-block 65001000
 ```
 
-#### 4.7.6 `explorer report`
+#### 4.6.5 `explorer report`
 
 Revenue report: cost, profit, and volume per time window, broken out per MEV
 kind, with per-window block coverage, daily trend, top searchers/pools, and a
@@ -567,7 +556,7 @@ mev-scout explorer report --windows 1d,7d,30d
 mev-scout explorer report --windows all --kind sandwich --top 20
 ```
 
-### 4.8 Ledger (was `paper`)
+### 4.7 Ledger (was `paper`)
 
 Theoretical session accounting over detected opportunities: a native gas wallet,
 greedy per-block fill selection (pool-conflict aware), labeled
@@ -575,15 +564,17 @@ greedy per-block fill selection (pool-conflict aware), labeled
 by `live` after every pass, and persisted once at session end. No mempool
 racing, no Solidity executor.
 
-The standalone `paper` command was removed — see §4.5 for the flags.
+The standalone `paper` command was removed — see §4.2 for the flags.
 
 `[paper]` TOML: `starting_gas_wei`, `reserve_wei`, `max_fills_per_block`
-(hard-capped at 32/block). Each may be overridden per session:
+(hard-capped at 32/block). Balance and reserve may be overridden per session;
+`max_fills_per_block` is TOML-only, since it is a tuning knob against the hard
+cap rather than a per-run decision:
 
 ```powershell
 mev-scout live --initial-balance 1000000000000000000
 mev-scout live --initial-balance-usd 10 --native-usd 0.42
-mev-scout live --reserve 500000000000000000 --max-fills-per-block 4
+mev-scout live --reserve 500000000000000000
 ```
 
 ```mermaid
@@ -618,11 +609,11 @@ mev-scout explorer index --duration 1h
 #### Phase-0 baseline recipe and ship gates
 
 Live-window recipe (e.g. Avalanche / Polygon): run the indexer for a measurement
-window, then inspect with `stats` / `show`:
+window, then inspect with `report` / `show`:
 
 ```bash
 mev-scout explorer index --duration 1h
-mev-scout explorer stats --since 1d
+mev-scout explorer report --windows 1d,7d,30d
 ```
 
 Record coverage notes on every phase merge (`cargo test` + clippy alone are not the
@@ -639,12 +630,12 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 
 ```bash
 # config: chain = "avalanche"
-mev-scout discover --source hybrid --days 7
+mev-scout discover --blocks 2000
 mev-scout explorer index --duration 1h
-mev-scout explorer stats --since 1d
+mev-scout explorer report --windows 1d,7d,30d
 ```
 
-Paste stats / sample `show` output into notes above. `arb_likely_parity` defaults to
+Paste report / sample `show` output into notes above. `arb_likely_parity` defaults to
 `false` (closed-cycle-only arb) to match the opportunity detection spec.
 
 Gates that depend on this table:
@@ -693,7 +684,7 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 
 | Artifact | Produced by | Consumed by |
 |---|---|---|
-| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `run`, `live`, `discover` | `run`, `live`, `discover` (incremental), `tokens`, `report` (manifests) |
+| SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `live` (incl. bootstrap), `discover` | `live`, `discover`, `report` (manifests) |
 | Explorer store `explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
 | Explorer store — `paper_sessions` / `paper_fills` | `live` (one session row written at session end) | `report` (session P&L) |
 | Explorer store `explorer-{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` / `backfill` | `explorer` CLI |

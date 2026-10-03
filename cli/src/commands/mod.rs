@@ -1,4 +1,4 @@
-use crate::cli::{DiscoverArgs, ExplorerArgs, LiveArgs, ReportArgs, TokensArgs};
+use crate::cli::{DiscoverArgs, ExplorerArgs, LiveArgs, ReportArgs};
 use crate::job_progress::JobProgress;
 use async_trait::async_trait;
 use mev_scout_core::config::Config;
@@ -8,16 +8,14 @@ mod discover;
 mod explorer;
 mod live;
 mod report;
-mod tokens;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-pub use explorer::{
-    cmd_backfill, cmd_explorer_report, cmd_explorer_validate, cmd_index, cmd_show, cmd_stats,
-};
+#[cfg(feature = "validate")]
+pub use explorer::cmd_explorer_validate;
+pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, cmd_show};
 pub use live::cmd_live;
 pub use report::cmd_report;
-pub use tokens::cmd_tokens;
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
@@ -44,14 +42,6 @@ impl CliCommand for DiscoverArgs {
 }
 
 #[async_trait(?Send)]
-impl CliCommand for TokensArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        let _ = progress;
-        cmd_tokens(config, self).await
-    }
-}
-
-#[async_trait(?Send)]
 impl CliCommand for LiveArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         cmd_live(config, self, progress).await
@@ -64,12 +54,7 @@ impl CliCommand for ExplorerArgs {
         use crate::cli::ExplorerCommand;
         match &self.command {
             ExplorerCommand::Index(a) => cmd_index(config, a.duration.as_deref(), progress).await,
-            ExplorerCommand::Stats(a) => {
-                cmd_stats(config, a.since.as_deref(), a.kind.as_deref()).await
-            }
-            ExplorerCommand::Show(a) => {
-                cmd_show(config, &a.tx_hash, a.trace, a.tolerance_pct).await
-            }
+            ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
             ExplorerCommand::Report(a) => {
                 let _ = progress;
                 cmd_explorer_report(config, &a.windows, a.kind.as_deref(), a.top).await
@@ -78,6 +63,7 @@ impl CliCommand for ExplorerArgs {
                 cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
                 Ok(())
             }
+            #[cfg(feature = "validate")]
             ExplorerCommand::Validate(a) => cmd_explorer_validate(config, a, progress).await,
         }
     }
@@ -94,7 +80,6 @@ pub async fn execute(
         Report(a) => a.execute(config, progress).await,
         Config => cmd_config(config).await,
         Discover(a) => a.execute(config, progress).await,
-        Tokens(a) => a.execute(config, progress).await,
         Live(a) => a.execute(config, progress).await,
         Explorer(a) => a.execute(config, progress).await,
     }

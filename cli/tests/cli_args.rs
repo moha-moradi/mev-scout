@@ -29,13 +29,21 @@ fn help_lists_kept_commands() {
     let ws = temp_ws("args_help");
     let out = run(&ws, &["--help"]);
     expect_ok(&out, "mev-scout --help");
-    for cmd in ["report", "config", "discover", "tokens", "live", "explorer"] {
+    for cmd in ["report", "config", "discover", "live", "explorer"] {
         assert!(
             help_lists_subcommand(&out.stdout, cmd),
             "--help output missing subcommand '{cmd}'"
         );
     }
-    for removed in ["run", "paper", "fetch", "replay", "validate-pools", "scan"] {
+    for removed in [
+        "tokens",
+        "run",
+        "paper",
+        "fetch",
+        "replay",
+        "validate-pools",
+        "scan",
+    ] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "--help still lists removed subcommand '{removed}'"
@@ -48,16 +56,31 @@ fn explorer_help_lists_subcommands() {
     let ws = temp_ws("args_explorer_help");
     let out = run(&ws, &["explorer", "--help"]);
     expect_ok(&out, "explorer --help");
-    for sub in ["index", "stats", "show", "validate"] {
+    for sub in ["index", "show", "report", "backfill"] {
         assert!(
             help_lists_subcommand(&out.stdout, sub),
             "explorer --help missing subcommand '{sub}'"
         );
     }
-    for removed in ["doctor", "live-feed", "top", "explain", "export"] {
+    // `stats` was dropped as redundant with `explorer report`.
+    for removed in ["stats", "doctor", "live-feed", "top", "explain", "export"] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "explorer --help still lists removed subcommand '{removed}'"
+        );
+    }
+
+    // `validate` is gated behind the non-default `validate` cargo feature: it
+    // must be absent by default and present once the feature is compiled in.
+    if cfg!(feature = "validate") {
+        assert!(
+            help_lists_subcommand(&out.stdout, "validate"),
+            "explorer --help must list 'validate' under --features validate"
+        );
+    } else {
+        assert!(
+            !help_lists_subcommand(&out.stdout, "validate"),
+            "explorer --help must hide 'validate' unless --features validate"
         );
     }
 }
@@ -67,41 +90,50 @@ fn live_help_lists_ledger_flags() {
     let ws = temp_ws("args_live_ledger_help");
     let out = run(&ws, &["live", "--help"]);
     expect_ok(&out, "live --help");
-    for flag in [
-        "--initial-balance",
-        "--initial-balance-usd",
-        "--reserve",
-        "--max-fills-per-block",
-        "--native-usd",
-    ] {
+    for flag in ["--initial-balance", "--reserve"] {
         assert!(
             out.stdout.contains(flag),
             "live --help missing ledger flag '{flag}'"
         );
     }
+    // Price-injection and internal tuning knobs moved to config-only.
+    for removed in [
+        "--initial-balance-usd",
+        "--max-fills-per-block",
+        "--native-usd",
+    ] {
+        assert!(
+            !out.stdout.contains(removed),
+            "live --help still lists removed flag '{removed}'"
+        );
+    }
 }
 
-/// Both balance forms describe the same wallet, so accepting both would mean
-/// silently picking one. The pair must be rejected before any network access.
 #[test]
-fn live_rejects_both_balance_forms() {
-    let ws = temp_ws("args_live_balance_conflict");
-    let out = run(
-        &ws,
-        &[
-            "live",
-            "--initial-balance",
-            "1000000000000000000",
-            "--initial-balance-usd",
-            "10",
-        ],
-    );
-    expect_fail(&out, "live with both balance forms");
+fn removed_tokens_subcommand_fails() {
+    let ws = temp_ws("args_tokens_removed");
+    let out = run(&ws, &["tokens"]);
+    expect_fail(&out, "removed tokens subcommand");
     assert!(
-        out.stderr.contains("mutually exclusive"),
-        "expected a mutual-exclusion error, got: {}",
-        out.stderr
+        out.combined().contains("unrecognized subcommand 'tokens'"),
+        "expected clap to reject 'tokens', got:\n{}",
+        out.combined()
     );
+}
+
+#[test]
+fn explorer_removed_stats_subcommand_fails() {
+    let ws = temp_ws("args_explorer_stats_removed");
+    let out = run(&ws, &["explorer", "stats"]);
+    expect_fail(&out, "removed explorer stats subcommand");
+}
+
+/// `--tolerance-pct` moved to `[explorer]` config, so the flag must be gone.
+#[test]
+fn explorer_show_rejects_tolerance_pct() {
+    let ws = temp_ws("args_show_tolerance_removed");
+    let out = run(&ws, &["explorer", "show", "0xabc", "--tolerance-pct", "10"]);
+    expect_fail(&out, "explorer show --tolerance-pct");
 }
 
 #[test]
@@ -232,26 +264,16 @@ fn invalid_duration_format_rejected_before_network() {
     assert!(started.elapsed() < Duration::from_secs(60));
 }
 
-// ── Block-range validation (offline; clap + validation.rs paths) ─────────────
+// â”€â”€ Block-range validation (offline; clap + validation.rs paths) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // These live on `discover`, the remaining CLI surface that flattens
-// `BlockRangeArgs`. Only the clap-level rejections are asserted here, because
-// `discover` calls `init_rpc` before it resolves a range — the runtime range
-// branches (paired --from-block/--to-block, range order, days+blocks conflict,
-// missing range) are therefore covered as unit tests against
+// `BlockRangeArgs`. The range is optional: with no flag, core falls back to the
+// chain's `pool_discovery_lookback_blocks`. Only the clap-level rejections are
+// asserted here, because `discover` calls `init_rpc` before it resolves a range
+// â€” the runtime range branches (paired --from-block/--to-block, range order,
+// mutually-exclusive flags) are therefore covered as unit tests against
 // `RangeSpec::from_flags` in core/src/config/validation.rs, where they stay
 // offline.
-
-#[test]
-fn days_above_365_rejected_by_clap() {
-    let ws = temp_ws("args_days_400");
-    let out = run(&ws, &["discover", "--days", "400"]);
-    expect_fail(&out, "discover --days 400");
-    assert!(
-        out.stderr.contains("error") || out.stdout.contains("error"),
-        "expected clap error output"
-    );
-}
 
 #[test]
 fn blocks_zero_rejected_by_clap() {
@@ -275,7 +297,7 @@ fn block_zero_rejected_by_clap() {
     );
 }
 
-// ── Config file loading behavior (missing file → defaults; parse error → fail) ──
+// â”€â”€ Config file loading behavior (missing file â†’ defaults; parse error â†’ fail) â”€â”€
 
 #[test]
 fn missing_config_file_falls_back_to_default() {
@@ -321,7 +343,7 @@ fn config_env_var_placeholders_expand_from_environment() {
     );
 
     // Without the variable set the placeholder stays verbatim (visible in the
-    // resolved config) — a missing key never silently corrupts the URL.
+    // resolved config) â€” a missing key never silently corrupts the URL.
     let out = run(&ws, &["-f", &cfg_path, "config"]);
     expect_ok(&out, "config without env var set");
     assert!(
@@ -347,7 +369,7 @@ fn config_env_var_placeholders_expand_from_environment() {
     std::env::remove_var("MS_E2E_TEST_KEY");
 }
 
-// ── Global flags & misc offline behaviors ────────────────────────────────────
+// â”€â”€ Global flags & misc offline behaviors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn version_flag_exits_zero_with_version() {
@@ -362,16 +384,56 @@ fn version_flag_exits_zero_with_version() {
     );
 }
 
+/// A bare `mev-scout` is the zero-config entrypoint: it must parse without a
+/// usage error and dispatch to the implicit `live` run.
+///
+/// The config parses but fails `validate_live` (negative `winning_bid_premium`),
+/// so the run stops at validation — offline and fast. Reaching that error at all
+/// proves the default subcommand was materialized and dispatched; a clap usage
+/// error would mean it was not.
 #[test]
-fn no_subcommand_fails_with_usage_error() {
+fn no_subcommand_parses_and_defaults_to_live() {
     let ws = temp_ws("args_no_cmd");
-    let out = run(&ws, &[]);
-    expect_fail(&out, "invocation without a subcommand");
+    let bad_gas = make_cfg(&ws, &[("winning_bid_premium", "-1.0")]);
+
+    let started = std::time::Instant::now();
+    let out = run(&ws, &["-f", &bad_gas]);
     assert!(
-        out.stderr.contains("Usage") || out.stderr.contains("usage"),
-        "expected clap usage error, got: {}",
+        !(out.stderr.contains("Usage") || out.stderr.contains("usage")),
+        "bare invocation must not produce a clap usage error, got:\n{}",
         out.stderr
     );
+    // `live` wraps `validate_live` with this context, and nothing else does.
+    assert!(
+        out.combined().contains("invalid configuration"),
+        "expected the implicit `live` run to reach its config validation, got:\n{}",
+        out.combined()
+    );
+    // Must fail fast: nothing may touch the network before validation.
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "bare invocation must fail fast without touching the network"
+    );
+}
+
+/// The typed default must match the clap defaults for `live`, so bare
+/// `mev-scout` and explicit `mev-scout live` are equivalent.
+#[test]
+fn default_subcommand_matches_live_defaults() {
+    use clap::Parser;
+    use mev_scout_cli::cli::{Cli, Command};
+
+    let bare = Cli::parse_from(["mev-scout"]).command_or_default();
+    let explicit = Cli::parse_from(["mev-scout", "live"]).command_or_default();
+    match (bare, explicit) {
+        (Command::Live(a), Command::Live(b)) => {
+            assert_eq!(a.blocks, b.blocks, "--blocks default must agree");
+            assert!(!a.r#loop, "bare invocation must be single-pass");
+            assert!(a.duration.is_none());
+            assert!(a.max_blocks.is_none());
+        }
+        _ => panic!("both invocations must resolve to `live`"),
+    }
 }
 
 #[test]
@@ -383,52 +445,7 @@ fn quiet_and_verbose_flags_parse_ok_offline() {
     expect_ok(&out, "--verbose config");
 }
 
-// ── tokens (fully offline: SQLite + bundled known-token list) ────────────────
-
-#[test]
-fn tokens_cache_and_listing_work_offline() {
-    let ws = temp_ws("args_tokens");
-    let db = ws.join("tokens.db");
-    let db_s: &str = db.to_str().unwrap();
-
-    // Full dump via JSON. NB: tracing INFO lines share stdout, so
-    // the JSON array must be extracted rather than parsed whole.
-    let json_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
-    let out = run(&ws, &["-f", &json_cfg, "tokens"]);
-    expect_ok(&out, "tokens --output json (seeds cache offline)");
-    let entries = common::extract_json_array(&out.stdout)
-        .expect("tokens --output json should print a JSON array");
-    let entries = entries.as_array().expect("tokens json must be an array");
-    assert!(
-        entries.len() >= 5,
-        "bundled known-token list should seed the cache offline"
-    );
-
-    // cache-only summary
-    let base = make_cfg(&ws, &[("db_path", db_s)]);
-    let out = run(&ws, &["-f", &base, "tokens", "--cache-only"]);
-    expect_ok(&out, "tokens --cache-only");
-    assert!(
-        out.stdout.contains("Token cache:"),
-        "expected cache summary line, got:\n{}",
-        out.stdout
-    );
-
-    // Default human-readable table
-    let out = run(&ws, &["-f", &base, "tokens"]);
-    expect_ok(&out, "tokens default table output");
-    assert!(
-        out.stdout.contains("token(s) found"),
-        "default table output should end with a token count line, got:\n{}",
-        out.stdout
-    );
-    assert!(
-        db.exists(),
-        "tokens runs must persist their cache to the configured db_path"
-    );
-}
-
-// ── report positive selection with a hand-written SQLite fixture (offline) ───
+// â”€â”€ report positive selection with a hand-written SQLite fixture (offline) â”€â”€â”€
 
 /// Seed a cache DB and an explorer DB in `ws/cache/` with two run manifests
 /// and a couple of opportunity rows, so the offline `report` tests can run.
@@ -557,136 +574,34 @@ fn report_selects_explicit_run_id_offline() {
     assert!(
         out.stdout.lines().any(|l| {
             l.trim()
-            == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"
+                == "block_number,tx_index,strategy,input_amount,expected_profit,gas_cost_wei,confidence"
         }),
         "csv header line missing:\n{}",
         out.stdout
     );
 }
 
-// ── explorer validate positive selection with a hand-written fixture (offline) ──
+// ── explorer validate is hidden behind a non-default cargo feature ───────────
+//
+// The positive coverage for `validate` lives in `cli_explorer_validate.rs`,
+// compiled only with `--features validate`.
 
-/// Seed an explorer DB with one T1-matching op+opportunity pair (same
-/// `canonical_id`) so `explorer validate --since all --json` produces a real
-/// report offline. `validate` itself does no RPC (validate.rs).
-fn seed_validate_fixture(ws: &Path) {
-    use rusqlite::Connection;
-    std::fs::create_dir_all(ws.join("cache")).unwrap();
-    let explorer_path = ws.join("cache/explorer-avalanche.sqlite");
-    let conn = Connection::open(&explorer_path).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS mev_ops(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            block_number INTEGER NOT NULL,
-            tx_index INTEGER,
-            tx_hash TEXT NOT NULL,
-            ts INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            eoa TEXT NOT NULL,
-            contract TEXT,
-            confidence TEXT NOT NULL,
-            canonical_id TEXT,
-            profit_token TEXT,
-            profit_amount TEXT,
-            profit_usd REAL,
-            volume_usd REAL,
-            gas_cost_usd REAL,
-            flashloan_fee_usd REAL,
-            net_profit_usd REAL,
-            route_json TEXT,
-            victim_hashes TEXT,
-            details_json TEXT,
-            detector TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        );
-        INSERT INTO mev_ops
-            (block_number, tx_index, tx_hash, ts, kind, eoa, confidence, canonical_id,
-             profit_usd, gas_cost_usd, net_profit_usd, detector, created_at)
-        VALUES
-            (50000001, 10, '0x1111111111111111111111111111111111111111111111111111111111111111',
-             1700000000, 'arb_atomic', '0x0000000000000000000000000000000000000001', 'exact',
-             'ArbAtomic|fixture-1', 500.0, 10.0, 490.0, 'fixture', 1700000000);
-
-        CREATE TABLE IF NOT EXISTS opportunities(
-            run_id TEXT,
-            chain TEXT,
-            block_number INTEGER NOT NULL,
-            tx_index INTEGER,
-            strategy TEXT NOT NULL,
-            pool_a TEXT,
-            pool_b TEXT,
-            token_in TEXT,
-            token_out TEXT,
-            input_amount TEXT,
-            expected_profit TEXT,
-            gas_cost_wei TEXT,
-            path TEXT,
-            timestamp INTEGER,
-            mempool_only INTEGER,
-            confidence TEXT,
-            sender TEXT,
-            tx_hash TEXT,
-            detection_path TEXT,
-            canonical_id TEXT
-        );
-        INSERT INTO opportunities
-            (run_id, chain, block_number, tx_index, strategy, canonical_id)
-        VALUES
-            ('run_1111111111', 'avalanche', 50000001, 10, 'TwoHopArb', 'ArbAtomic|fixture-1');
-
-        CREATE TABLE IF NOT EXISTS rejected_candidates(
-            run_id TEXT,
-            chain TEXT,
-            block_number INTEGER NOT NULL,
-            tx_index INTEGER,
-            strategy TEXT NOT NULL,
-            pool_a TEXT,
-            pool_b TEXT,
-            token_in TEXT,
-            token_out TEXT,
-            expected_profit TEXT,
-            gas_cost_wei TEXT,
-            reject_reason TEXT,
-            detail TEXT
-        );",
-    )
-    .unwrap();
-}
-
+// `validate` must be invisible in a default build. Under `--features validate`
+// the subcommand legitimately exists, so the absence assertion does not apply;
+// the positive coverage lives in `cli_explorer_validate.rs`.
+#[cfg(not(feature = "validate"))]
 #[test]
-fn explorer_validate_reports_t1_match_offline() {
-    let ws = temp_ws("args_validate_pos");
-    seed_validate_fixture(&ws);
-
-    let explorer_db = ws
-        .join("cache/explorer-avalanche.sqlite")
-        .to_str()
-        .unwrap()
-        .replace('\\', "/");
-    let cfg_path = make_cfg(&ws, &[]);
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&cfg_path)
-        .unwrap();
-    use std::io::Write;
-    writeln!(f, "\n[explorer]\ndb_path = \"{explorer_db}\"").unwrap();
-
+fn explorer_validate_is_hidden_by_default() {
+    let ws = temp_ws("args_validate_gated");
     let out = run(
         &ws,
-        &[
-            "-f", &cfg_path, "explorer", "validate", "--since", "all", "--json",
-        ],
+        &["-f", &make_cfg(&ws, &[]), "explorer", "validate", "--json"],
     );
-    expect_ok(&out, "explorer validate --since all --json offline");
+    expect_fail(&out, "explorer validate without the `validate` feature");
     assert!(
-        out.stdout.contains("arb_atomic"),
-        "JSON report should mention the seeded arb_atomic kind, got:\n{}",
-        out.stdout
-    );
-    // The single seeded op must appear as matched (T1 count ≥ 1) in the report.
-    assert!(
-        out.stdout.contains("fixture-1"),
-        "report should carry the seeded canonical_id, got:\n{}",
-        out.stdout
+        out.combined()
+            .contains("unrecognized subcommand 'validate'"),
+        "expected clap to reject 'validate' in the default build, got:\n{}",
+        out.combined()
     );
 }

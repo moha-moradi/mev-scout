@@ -1,5 +1,7 @@
 //! ``explorer validate`` — cross-validation report (realized ops vs scanner
 //! opportunities). Pure SQL over the store; does no RPC.
+//!
+//! Research tooling gated behind the non-default `validate` cargo feature.
 
 use super::*;
 

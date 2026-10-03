@@ -226,15 +226,7 @@ pub fn rpc_ready(ws: &Path) -> bool {
     };
     let mut c = scout(ws);
     let cfg = temp_config(ws, &[("rpc_urls", &format!("[\"{url}\"]"))]);
-    c.args([
-        "-f",
-        cfg.to_str().unwrap(),
-        "discover",
-        "--source",
-        "onchain",
-        "--blocks",
-        "1",
-    ]);
+    c.args(["-f", cfg.to_str().unwrap(), "discover", "--blocks", "1"]);
     matches!(run_timed(&mut c, NETWORK_TIMEOUT), Ok(o) if o.success)
 }
 

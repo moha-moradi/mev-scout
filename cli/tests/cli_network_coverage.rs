@@ -6,10 +6,7 @@
 
 mod common;
 
-use common::{
-    ensure_gate_and_rpc, expect_ok, extract_json_array, make_cfg, rpc_lock, run_timed, scout,
-    HEAVY_TIMEOUT,
-};
+use common::{ensure_gate_and_rpc, expect_ok, make_cfg, rpc_lock, run_timed, scout, HEAVY_TIMEOUT};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Duration;
@@ -33,7 +30,7 @@ fn append_toml(path: &str, extra: &str) {
 }
 
 #[test]
-fn discover_hybrid_incremental_and_enrich() {
+fn discover_incremental_and_implicit_window() {
     let _guard = rpc_lock();
     let Some(ws) = ensure_gate_and_rpc("netcov_disc") else {
         return;
@@ -42,11 +39,9 @@ fn discover_hybrid_incremental_and_enrich() {
 
     let base_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args([
-        "-f", &base_cfg, "discover", "--source", "onchain", "--blocks", "2",
-    ]);
+    c.args(["-f", &base_cfg, "discover", "--blocks", "2"]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover baseline") {
-        expect_ok(&out, "discover onchain baseline");
+        expect_ok(&out, "discover baseline");
 
         let mut c = scout(&ws);
         c.args([
@@ -60,70 +55,20 @@ fn discover_hybrid_incremental_and_enrich() {
         if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover incremental") {
             expect_ok(&out, "discover --incremental after baseline");
         }
-    }
 
-    // hybrid — union of onchain + remote; tolerant to remote-side failures.
-    let hybrid_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
-    append_toml(&hybrid_cfg, "[discover]\nmax_pools = 20");
-    let mut c = scout(&ws);
-    c.args(["-f", &hybrid_cfg, "discover", "--source", "hybrid"]);
-    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover hybrid") {
-        Some(out) if out.success => {
-            let pools = extract_json_array(&out.stdout)
-                .expect("hybrid discover success must print a JSON array");
-            if let Some(entries) = pools.as_array() {
-                eprintln!("hybrid discovery returned {} pools", entries.len());
-                let addrs: Vec<_> = entries
-                    .iter()
-                    .filter_map(|p| p.get("address").and_then(|a| a.as_str()))
-                    .collect();
-                let unique: std::collections::HashSet<_> =
-                    addrs.iter().map(|s| s.to_lowercase()).collect();
-                assert_eq!(
-                    addrs.len(),
-                    unique.len(),
-                    "hybrid union must dedup pools by address"
-                );
-            }
+        // Zero-arg discover on a populated cache must resume incrementally
+        // rather than rescanning the lookback window.
+        let mut c = scout(&ws);
+        c.args(["-f", &base_cfg, "discover"]);
+        if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover implicit") {
+            expect_ok(&out, "zero-arg discover with a populated cache");
+            assert!(
+                out.combined().contains("resuming incrementally")
+                    || out.combined().contains("Incremental mode"),
+                "zero-arg discover must take the implicit incremental path:\n{}",
+                out.combined()
+            );
         }
-        Some(out) => eprintln!(
-            "WARN (tolerant): hybrid discover failed (remote aggregator side?)\n{}",
-            out.combined()
-        ),
-        None => {}
-    }
-
-    // --enrich via remote source
-    let enrich_cfg = make_cfg(&ws, &[("db_path", &db_s), ("output", "\"json\"")]);
-    append_toml(&enrich_cfg, "[discover]\nmax_pools = 20");
-    let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &enrich_cfg,
-        "discover",
-        "--source",
-        "remote",
-        "--enrich",
-    ]);
-    match tolerant(run_timed(&mut c, EXTRA_HEAVY), "discover --enrich") {
-        Some(out) if out.success => {
-            let pools = extract_json_array(&out.stdout)
-                .expect("enriched discover success must print a JSON array");
-            if let Some(entries) = pools.as_array() {
-                eprintln!("enriched remote discovery returned {} pools", entries.len());
-                for p in entries {
-                    assert!(
-                        p.get("tvl_usd").is_some() && p.get("volume_usd_24h").is_some(),
-                        "enriched pool must carry tvl/volume fields: {p}"
-                    );
-                }
-            }
-        }
-        Some(out) => eprintln!(
-            "WARN (tolerant): --enrich discover failed (aggregator side?)\n{}",
-            out.combined()
-        ),
-        None => {}
     }
 }
 
@@ -223,17 +168,15 @@ fn show_trace_reconciles_live_op() {
         return;
     };
 
-    let mut c = scout(&ws);
-    c.args([
-        "-f",
+    // A wide tolerance keeps a live-op trace from failing the gate on rounding
+    // alone; it is set via config since `--tolerance-pct` is gone.
+    append_toml(
         &cfg,
-        "explorer",
-        "show",
-        &op.tx_hash,
-        "--trace",
-        "--tolerance-pct",
-        "1000000",
-    ]);
+        "trace_tolerance_pct = 1000000.0\nmev_tolerance_pct = 1000000.0",
+    );
+
+    let mut c = scout(&ws);
+    c.args(["-f", &cfg, "explorer", "show", &op.tx_hash, "--trace"]);
     let Some(out) = tolerant(run_timed(&mut c, EXTRA_HEAVY), "show --trace") else {
         return;
     };

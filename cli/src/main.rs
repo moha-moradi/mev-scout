@@ -38,6 +38,9 @@ async fn main() -> anyhow::Result<()> {
 
     setup_logging(cli.verbose, cli.quiet);
 
+    // A bare `mev-scout` runs the default subcommand (`live`, single-pass).
+    let command = cli.command_or_default();
+
     let mut config = match &cli.config {
         // Explicit --config: a missing file is still a fallback to defaults
         // (logged), but a malformed file is a hard error.
@@ -52,9 +55,9 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let overrides = overrides::build_overrides_from_command(&cli.command);
+    let overrides = overrides::build_overrides_from_command(&command);
     config.merge_cli(&overrides)?;
 
-    let progress = make_sink(&cli.command);
-    commands::execute(&cli.command, &config, progress.as_ref()).await
+    let progress = make_sink(&command);
+    commands::execute(&command, &config, progress.as_ref()).await
 }

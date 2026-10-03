@@ -99,6 +99,14 @@ impl super::SqliteStore {
         Ok(out)
     }
 
+    /// Number of cached pools. Cheap `COUNT(*)` so callers can decide whether
+    /// a discovery bootstrap is needed without materializing every row.
+    pub fn pool_count(&self) -> anyhow::Result<usize> {
+        let conn = self.conn();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM pool_info", [], |row| row.get(0))?;
+        Ok(count.max(0) as usize)
+    }
+
     pub fn max_creation_block(&self) -> anyhow::Result<Option<u64>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT MAX(creation_block) FROM pool_info")?;

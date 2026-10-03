@@ -2,7 +2,7 @@ use crate::cli::{BlockRangeArgs, Command};
 use mev_scout_core::config::CliOverrides;
 
 fn apply_block_range(o: &mut CliOverrides, b: &BlockRangeArgs) {
-    o.days = b.days;
+    o.days = None;
     o.blocks = b.blocks;
     o.block = b.block;
     o.from_block = b.from_block;
@@ -17,7 +17,6 @@ pub fn build_overrides_from_command(cmd: &Command) -> CliOverrides {
         Command::Discover(args) => {
             apply_block_range(&mut o, &args.block_range);
         }
-        Command::Tokens(_) => {}
         Command::Live(_) => {}
         Command::Explorer(_) => {}
     }

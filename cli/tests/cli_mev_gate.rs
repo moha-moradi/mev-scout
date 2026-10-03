@@ -143,8 +143,10 @@ fn seed(
     format!("{hash:#x}")
 }
 
-/// `explorer show <tx> --tolerance-pct <pct>` against the seeded store. The
-/// config is rebuilt per call because `make_cfg` always writes the same path.
+/// `explorer show <tx>` against the seeded store, with the MEV-gate tolerance
+/// supplied through `[explorer] mev_tolerance_pct` (the `--tolerance-pct` flag
+/// was removed). The config is rebuilt per call because `make_cfg` always
+/// writes the same path.
 fn show(ws: &std::path::Path, db_s: &str, hash: &str, tol: Option<&str>) -> common::TimedOutput {
     let cfg = make_cfg(ws, &[]);
     let mut f = OpenOptions::new().append(true).open(&cfg).unwrap();
@@ -155,22 +157,13 @@ fn show(ws: &std::path::Path, db_s: &str, hash: &str, tol: Option<&str>) -> comm
         db_s.replace('\\', "\\\\")
     )
     .unwrap();
+    if let Some(pct) = tol {
+        writeln!(f, "mev_tolerance_pct = {pct}").unwrap();
+    }
     drop(f);
 
     let mut c = scout(ws);
-    let hash_owned = hash.to_string();
-    match tol {
-        Some(pct) => c.args([
-            "-f",
-            &cfg,
-            "explorer",
-            "show",
-            &hash_owned,
-            "--tolerance-pct",
-            pct,
-        ]),
-        None => c.args(["-f", &cfg, "explorer", "show", &hash_owned]),
-    };
+    c.args(["-f", &cfg, "explorer", "show", hash]);
     run_timed(&mut c, TEST_TIMEOUT).expect("explorer show spawns")
 }
 
@@ -242,7 +235,7 @@ fn mev_gate_unverifiable_without_realized_delta_warns_and_exits_zero() {
     let db_s = ws.join("explorer.sqlite").to_string_lossy().into_owned();
     let hash = seed(&ws, 2, 2 * ONE, ONE / 10, &[(None, 1.0)]);
 
-    // No --tolerance-pct: this must read `explorer.mev_tolerance_pct`.
+    // No explicit tolerance: this must read the config default.
     let out = show(&ws, &db_s, &hash, None);
     let line = gate_line(&out);
     assert!(

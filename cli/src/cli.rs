@@ -3,11 +3,15 @@
 use clap::{Args, Parser, Subcommand};
 
 /// MEV Scout — MEV opportunity scanner & backtester for EVM-compatible chains.
+///
+/// Run bare to scan the most recent blocks for MEV opportunities: that is
+/// exactly equivalent to `mev-scout live`.
 #[derive(Parser, Debug)]
 #[command(name = "mev-scout", version, about)]
 pub struct Cli {
+    /// Subcommand; defaults to `live` (single-pass) when omitted.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 
     /// Path to TOML config file
     #[arg(global = true, short = 'f', long = "config", value_name = "FILE")]
@@ -22,7 +26,28 @@ pub struct Cli {
     pub quiet: bool,
 }
 
-#[derive(Subcommand, Debug)]
+/// Width of the zero-config single-pass window, in blocks, used when neither
+/// `--blocks` nor `--max-blocks` narrows it down. Chosen so a bare `mev-scout`
+/// scans enough recent history to actually contain arbitrage activity while
+/// still finishing quickly.
+pub const DEFAULT_SINGLE_PASS_BLOCKS: u64 = 64;
+
+/// Trailing window `explorer backfill` uses when no range flag is given, so the
+/// 1d/7d/30d revenue reports have data without the user picking a range.
+pub const DEFAULT_BACKFILL_DAYS: u64 = 7;
+
+impl Cli {
+    /// The subcommand to run, materializing the implicit `live` default when
+    /// none was given. Built programmatically so the zero-arg path cannot drift
+    /// from the typed `live` definition.
+    pub fn command_or_default(&self) -> Command {
+        self.command
+            .clone()
+            .unwrap_or_else(|| Command::Live(LiveArgs::default()))
+    }
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Re-render a recorded run from SQLite (run_manifests + explorer opportunities)
     Report(ReportArgs),
@@ -30,24 +55,23 @@ pub enum Command {
     /// Print the fully resolved config as TOML
     Config,
 
-    /// Discover pools from on-chain factory events and/or remote aggregators.
-    /// Factory addresses are resolved from the chain config.
+    /// Discover pools from on-chain factory events.
+    /// Factory addresses are resolved from the chain config; with no range flag
+    /// it scans the chain's default lookback window and resumes incrementally
+    /// when the pool cache is already populated.
     /// Found pools are printed to stdout and saved to the local cache.
     Discover(DiscoverArgs),
-
-    /// Discover and cache token metadata.
-    /// Uses the bundled known-token list, SQLite cache, optional DefiLlama
-    /// coins (symbol/decimals) and CoinGecko contract (name/icon URL) via
-    /// `--enrich`. Populates the token cache used by pool discovery.
-    Tokens(TokensArgs),
 
     /// Stream blocks in real-time, detecting MEV opportunities as they arrive.
     /// Processes new blocks via log-based pool state updates (arb strategies)
     /// with optional full EVM replay for complete detection.
+    ///
+    /// Without `--loop` this is a single pass over the most recent blocks that
+    /// prints the opportunity table plus a ledger summary, then exits.
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data (index, stats, show, report, backfill).
+    /// raw chain data (index, show, report, backfill).
     Explorer(ExplorerArgs),
 }
 
@@ -57,10 +81,6 @@ pub enum ExplorerCommand {
     /// Stream-index tip blocks into the explorer store (live only).
     /// Idempotent, resumable, reorg-aware; classify-in-stream.
     Index(IndexArgs),
-
-    /// Overview: op counts per kind, profit totals, daily breakdown, top
-    /// searchers/pools. Pure SQL over the store.
-    Stats(StatsArgs),
 
     /// Operation detail for a tx hash; --trace recomputes exact profit via
     /// debug_traceTransaction (prestateTracer diffMode).
@@ -77,6 +97,10 @@ pub enum ExplorerCommand {
 
     /// Cross-validation report: realized explorer ops vs scanner
     /// opportunities (T1/T2/T3 matching). Read-only; does no RPC.
+    ///
+    /// Research tooling, hidden from the default surface. Enable with
+    /// `cargo build -p mev-scout-cli --features validate`.
+    #[cfg(feature = "validate")]
     Validate(ExplorerValidateArgs),
 }
 
@@ -94,17 +118,6 @@ pub struct IndexArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-pub struct StatsArgs {
-    /// Time window: 1d|7d|30d|all (default all)
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Filter to one kind
-    #[arg(long, value_name = "KIND")]
-    pub kind: Option<String>,
-}
-
-#[derive(Args, Debug, Clone)]
 pub struct ShowArgs {
     /// Transaction hash
     #[arg(value_name = "TX_HASH")]
@@ -113,11 +126,6 @@ pub struct ShowArgs {
     /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
     #[arg(long)]
     pub trace: bool,
-
-    /// Override `[explorer] trace_tolerance_pct` and `mev_tolerance_pct` for
-    /// the `show` gate verdicts
-    #[arg(long = "tolerance-pct", value_name = "PCT")]
-    pub tolerance_pct: Option<f64>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -143,6 +151,7 @@ pub struct ExplorerReportArgs {
 #[derive(Args, Debug, Clone)]
 pub struct ExplorerBackfillArgs {
     /// Backfill the trailing N days up to the current confirmed tip
+    /// (default 7 when no range flag is given).
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
     pub days: Option<u64>,
 
@@ -155,6 +164,7 @@ pub struct ExplorerBackfillArgs {
     pub to_block: Option<u64>,
 }
 
+#[cfg(feature = "validate")]
 #[derive(Args, Debug, Clone)]
 pub struct ExplorerValidateArgs {
     /// Window: 1d|7d|30d|all (default all; 'all' means every indexed op)
@@ -191,12 +201,8 @@ pub struct ExplorerValidateArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-#[command(next_help_heading = "Block Range (exactly one required)")]
+#[command(next_help_heading = "Block Range (optional — defaults to the chain lookback window)")]
 pub struct BlockRangeArgs {
-    /// Last N days of blocks (1–365)
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
-    pub days: Option<u64>,
-
     /// Last N blocks from chain tip (≥1)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub blocks: Option<u64>,
@@ -214,11 +220,22 @@ pub struct BlockRangeArgs {
     pub to_block: Option<u64>,
 }
 
+impl BlockRangeArgs {
+    /// True when the user pinned an explicit range, which suppresses the
+    /// implicit incremental/lookback resolution.
+    pub fn is_specified(&self) -> bool {
+        self.blocks.is_some()
+            || self.block.is_some()
+            || self.from_block.is_some()
+            || self.to_block.is_some()
+    }
+}
+
 impl TryFrom<&BlockRangeArgs> for mev_scout_core::config::validation::RangeSpec {
     type Error = mev_scout_core::error::ConfigError;
 
     fn try_from(a: &BlockRangeArgs) -> Result<Self, Self::Error> {
-        Self::from_flags(a.days, a.blocks, a.block, a.from_block, a.to_block)
+        Self::from_flags(None, a.blocks, a.block, a.from_block, a.to_block)
     }
 }
 
@@ -236,39 +253,10 @@ pub struct DiscoverArgs {
 
     /// Resume from the latest cached block instead of the full range.
     /// Queries the cache for the highest creation_block and scans from there.
+    /// Implied automatically when no range flag is given and the pool cache is
+    /// already populated.
     #[arg(long)]
     pub incremental: bool,
-
-    /// Pool source: onchain (RPC events only), remote (GeckoTerminal
-    /// aggregator only), or hybrid (union of both, deduped by address).
-    /// Default onchain — zero behavior change.
-    #[arg(long, default_value = "onchain", value_name = "SOURCE")]
-    pub source: DiscoverySource,
-
-    /// Attach tvl_usd / volume_usd_24h / volume_usd_30d to discovered pools
-    /// from the free GeckoTerminal aggregator. Implies one remote fetch.
-    #[arg(long)]
-    pub enrich: bool,
-}
-
-/// Pool discovery source selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum DiscoverySource {
-    Onchain,
-    Remote,
-    Hybrid,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct TokensArgs {
-    /// Only populate / report cache size; skip detailed listing
-    #[arg(long)]
-    pub cache_only: bool,
-
-    /// Enrich missing fields via DefiLlama coins (symbol/decimals) and
-    /// CoinGecko contract API (name + icon URL). Offline by default.
-    #[arg(long)]
-    pub enrich: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -287,37 +275,39 @@ pub struct LiveArgs {
     #[arg(long = "max-blocks", value_name = "NUMBER", help_heading = "Live")]
     pub max_blocks: Option<u64>,
 
+    /// Width of the single-pass window in blocks, ending at the tip
+    /// (default 64). Ignored with --loop.
+    #[arg(
+        long = "blocks",
+        value_name = "NUMBER",
+        default_value_t = DEFAULT_SINGLE_PASS_BLOCKS,
+        value_parser = clap::value_parser!(u64).range(1..),
+        help_heading = "Live"
+    )]
+    pub blocks: u64,
+
     /// Starting gas wallet in wei (native, 18 decimals). Overrides
     /// [paper].starting_gas_wei. Exact and needs no network.
     #[arg(long = "initial-balance", value_name = "WEI", help_heading = "Ledger")]
     pub initial_balance: Option<u128>,
 
-    /// Starting gas wallet in USD. Resolved to wei using the native token
-    /// price, so it requires either a cached/online price or --native-usd.
-    /// Cannot be combined with --initial-balance.
-    #[arg(
-        long = "initial-balance-usd",
-        value_name = "USD",
-        help_heading = "Ledger"
-    )]
-    pub initial_balance_usd: Option<f64>,
-
     /// Native wei kept idle so one large fill cannot starve later blocks.
     /// Overrides [paper].reserve_wei.
     #[arg(long, value_name = "WEI", help_heading = "Ledger")]
     pub reserve: Option<u128>,
+}
 
-    /// Soft per-block fill cap (also clamped to the hard cap of 32).
-    /// Overrides [paper].max_fills_per_block.
-    #[arg(
-        long = "max-fills-per-block",
-        value_name = "N",
-        help_heading = "Ledger"
-    )]
-    pub max_fills_per_block: Option<usize>,
-
-    /// Native token price in USD, supplied explicitly so P&L needs no price
-    /// lookup. Also resolves --initial-balance-usd offline.
-    #[arg(long = "native-usd", value_name = "PRICE", help_heading = "Ledger")]
-    pub native_usd: Option<f64>,
+impl Default for LiveArgs {
+    /// Mirrors the clap defaults so the implicit bare-`mev-scout` path and the
+    /// explicit `live` subcommand behave identically.
+    fn default() -> Self {
+        LiveArgs {
+            r#loop: false,
+            duration: None,
+            max_blocks: None,
+            blocks: DEFAULT_SINGLE_PASS_BLOCKS,
+            initial_balance: None,
+            reserve: None,
+        }
+    }
 }

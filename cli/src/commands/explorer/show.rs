@@ -34,12 +34,7 @@ fn route_text(ev: &MevOpRow) -> String {
     hops.join(" -> ")
 }
 
-pub async fn cmd_show(
-    config: &Config,
-    tx_hash: &str,
-    trace: bool,
-    tolerance_pct: Option<f64>,
-) -> anyhow::Result<()> {
+pub async fn cmd_show(config: &Config, tx_hash: &str, trace: bool) -> anyhow::Result<()> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
     let store = explorer_store(config, chain)?;
@@ -80,17 +75,7 @@ pub async fn cmd_show(
         use crate::job_progress::NoopProgress;
         use mev_scout_core::jobs::{job_trace_op, TraceVerdict};
 
-        // `--tolerance-pct` overrides the config on a throwaway clone.
-        let cfg = match tolerance_pct {
-            Some(p) => {
-                let mut c = config.clone();
-                c.explorer.trace_tolerance_pct = p;
-                c
-            }
-            None => config.clone(),
-        };
-
-        let outcome = job_trace_op(&cfg, tx_hash, &NoopProgress).await?;
+        let outcome = job_trace_op(config, tx_hash, &NoopProgress).await?;
         let err = outcome
             .profit_error_pct
             .map(|p| format!("{p:+.1}%"))
@@ -122,10 +107,10 @@ pub async fn cmd_show(
     let opps = store.opportunities_for_tx(tx_hash)?;
     if !opps.is_empty() {
         let opp = &opps[0];
-        let verdict = mev_verdict_for(config, tolerance_pct, opp, &ops);
+        let verdict = mev_verdict_for(config, opp, &ops);
         let expected = expected_net_wei(opp);
         let realized = realized_native_delta_wei(&ops);
-        let tol = tolerance_pct.unwrap_or(config.explorer.mev_tolerance_pct);
+        let tol = config.explorer.mev_tolerance_pct;
         println!(
             "  mev gate: {} | expected {expected:?} wei | realized {realized:?} wei | tol ±{tol:.1}%",
             verdict,
@@ -201,13 +186,9 @@ fn native_price_usd(ops: &[MevOpRow]) -> Option<f64> {
 }
 
 /// Assemble the §A verdict for one detector opportunity vs its realized ops.
-fn mev_verdict_for(
-    config: &Config,
-    tolerance_pct: Option<f64>,
-    opp: &OpportunityRow,
-    ops: &[MevOpRow],
-) -> MevVerdict {
-    let tol = tolerance_pct.unwrap_or(config.explorer.mev_tolerance_pct);
+/// The tolerance band comes from `[explorer] mev_tolerance_pct`.
+fn mev_verdict_for(config: &Config, opp: &OpportunityRow, ops: &[MevOpRow]) -> MevVerdict {
+    let tol = config.explorer.mev_tolerance_pct;
     let expected = expected_net_wei(opp);
     let realized = realized_native_delta_wei(ops);
     let abs_wei = match native_price_usd(ops) {

@@ -1,4 +1,4 @@
-//! `mev-scout explorer` subcommands: index, stats, show.
+//! `mev-scout explorer` subcommands: index, show, report, backfill.
 
 use comfy_table::Table;
 
@@ -41,12 +41,12 @@ mod backfill;
 mod index;
 mod report;
 mod show;
-mod stats;
+#[cfg(feature = "validate")]
 mod validate;
 
 pub use backfill::cmd_backfill;
 pub use index::cmd_index;
 pub use report::cmd_explorer_report;
 pub use show::cmd_show;
-pub use stats::cmd_stats;
+#[cfg(feature = "validate")]
 pub use validate::cmd_explorer_validate;

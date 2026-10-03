@@ -36,7 +36,15 @@ pub async fn cmd_backfill(
             }
             (f, t)
         }
-        (None, None, None) => anyhow::bail!("provide --days or --from-block with --to-block"),
+        (None, None, None) => {
+            // Zero-arg backfill defaults to the trailing week so the 1d/7d/30d
+            // revenue reports have data without the user picking a range.
+            let d = crate::cli::DEFAULT_BACKFILL_DAYS;
+            let setup = init_rpc(config, chain, false).await?;
+            let head = safe_head(&setup.rpc, &cfg).await?;
+            let span = d.saturating_mul(blocks_per_day(chain));
+            (head.saturating_sub(span), head)
+        }
         _ => anyhow::bail!("--days cannot be combined with --from-block/--to-block"),
     };
     if to < from {
