@@ -351,6 +351,52 @@ fn test_multi_hop_detection_three_pool() {
     }
 }
 
+/// Cross-DEX multi-hop: Uni (WETH→USDC→WBTC) then Sushi (WBTC→WETH).
+///
+/// With only these three pools the sole simple cycle is the 3-hop mixing both
+/// DEXes — so a hit proves `multi_hop` does not restrict cycles to one DEX.
+///
+/// Note on the longer shape Uni(WETH→USDC→WBTC) + Sushi(WBTC→USDC→WETH):
+/// that 4-cycle's spot product factors into the two parallel Uni↔Sushi
+/// 2-cycles on WETH/USDC and USDC/WBTC. Whenever it is profitable, a shorter
+/// cross-DEX 2-hop is too, and the detector emits/bans that shorter cycle
+/// first — so the literal 4-hop is not a separate opportunity.
+#[test]
+fn test_multi_hop_cross_dex_uni_then_sushi() {
+    let weth = address!("7ceb23fd6bc0add59e62ac25578270cff1b9f619");
+    let wbtc = address!("1bfd67037b42cf73acf2047067bd4f2c47d9bfd6");
+    let uni_weth_usdc = address!("1111111111111111111111111111111111111111");
+    let uni_usdc_wbtc = address!("2222222222222222222222222222222222222222");
+    let sushi_wbtc_weth = address!("3333333333333333333333333333333333333333");
+
+    let mut pm = PoolManager::new();
+    // Uni WETH/USDC — abundant USDC ⇒ WETH buys a lot of USDC
+    pm.add_pool(make_pool(uni_weth_usdc, weth, usdc(), 1_000_000, 2_000_000));
+    // Uni USDC/WBTC — abundant WBTC ⇒ USDC buys a lot of WBTC
+    pm.add_pool(make_pool(uni_usdc_wbtc, usdc(), wbtc, 1_000_000, 2_000_000));
+    // Sushi WBTC/WETH — abundant WETH ⇒ WBTC buys a lot of WETH (closes cycle)
+    pm.add_pool(make_pool(sushi_wbtc_weth, wbtc, weth, 1_000_000, 2_000_000));
+
+    let opps = multi_hop_detect(&pm, 1, 12345);
+    assert!(
+        !opps.is_empty(),
+        "Should detect Uni→Uni→Sushi cross-DEX multi-hop arb"
+    );
+
+    let cross = opps.iter().find(|o| {
+        o.strategy == Strategy::MultiHopArb
+            && o.path.as_ref().is_some_and(|p| {
+                p.len() == 3
+                    && p.contains(&uni_weth_usdc)
+                    && p.contains(&uni_usdc_wbtc)
+                    && p.contains(&sushi_wbtc_weth)
+            })
+    });
+    let opp = cross.expect("expected 3-hop path using both Uni pools and the Sushi closer");
+    assert!(opp.expected_profit > U256::ZERO);
+    assert!(opp.gas_cost_wei > 0);
+}
+
 #[test]
 fn test_multi_hop_path_field_populated() {
     let mut pm = PoolManager::new();
