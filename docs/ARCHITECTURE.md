@@ -499,9 +499,11 @@ flowchart TB
 #### 4.6.1 Bare `explorer` — revenue report
 
 Revenue report: cost, profit, and volume per time window, broken out per MEV
-kind, with per-window block coverage, daily trend, top searchers/pools, and a
-top-op detail list. Pure SQL over the store — requires history (seed it with
-`explorer index`).
+kind, with per-window block coverage, daily trend, competitors (bot =
+`COALESCE(contract, eoa)`), top searchers/pools, and a top-op detail list.
+Pure SQL over the store — requires history (seed it with `explorer index`).
+Competitor identities are persisted in `labels` during ingest (and backfilled
+on report).
 
 ```powershell
 mev-scout explorer

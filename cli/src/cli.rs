@@ -123,8 +123,8 @@ pub struct ExplorerArgs {
     #[arg(long, value_name = "KIND")]
     pub kind: Option<String>,
 
-    /// Detail depth: top-N ops by net profit per window (default 10).
-    /// Only valid on bare `explorer`.
+    /// Detail depth: top-N competitors and ops by net profit per window
+    /// (default 10). Only valid on bare `explorer`.
     #[arg(long, value_name = "N")]
     pub top: Option<usize>,
 }

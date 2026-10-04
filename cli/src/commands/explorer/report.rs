@@ -1,7 +1,7 @@
 //! Bare ``explorer`` — revenue report: cost, profit, and volume per time
 //! window (1d/7d/30d default), broken out per MEV kind, with a daily trend,
-//! top searchers/pools, and a top-op detail list. Pure SQL over the store —
-//! requires history (see ``explorer index``).
+//! competitors / top searchers/pools, and a top-op detail list. Pure SQL over
+//! the store — requires history (see ``explorer index``).
 
 use super::*;
 
@@ -23,6 +23,7 @@ struct WindowReport {
     overview: ReportOverview,
     by_kind: Vec<ReportRow>,
     daily: Vec<ReportRow>,
+    top_competitors: Vec<StatsRow>,
     top_senders: Vec<StatsRow>,
     top_pools: Vec<StatsRow>,
     top_ops: Vec<MevOpRow>,
@@ -168,6 +169,9 @@ pub async fn cmd_explorer_report(
     }
     let top = top.min(100);
 
+    // Fill labels for ops ingested before competitor wiring (idempotent).
+    let _ = store.backfill_competitor_labels()?;
+
     let now = epoch_secs();
     let mut reports: Vec<WindowReport> = Vec::with_capacity(window_list.len());
     for window in &window_list {
@@ -175,6 +179,7 @@ pub async fn cmd_explorer_report(
         let overview = store.report_window_overview(since, kind_str)?;
         let by_kind = store.report_by_kind(since, kind_str)?;
         let daily = store.report_daily(since, kind_str)?;
+        let top_competitors = store.top_competitors_filtered(since, top, kind_str)?;
         let top_senders = store.top_senders_filtered(since, 10, kind_str)?;
         let top_pools = store.top_pools_filtered(since, 10, kind_str)?;
         let top_ops = store.top_ops(since, top, kind_str)?;
@@ -193,6 +198,7 @@ pub async fn cmd_explorer_report(
             overview,
             by_kind,
             daily,
+            top_competitors,
             top_senders,
             top_pools,
             top_ops,
@@ -281,9 +287,10 @@ fn render_window(r: &WindowReport) {
         }
     }
     println!(
-        "  ops: {} | searchers: {} | volume: ${} | gross: ${} | gas: ${} | \
-         flash fees: ${} | net: ${} | highest single: ${}",
+        "  ops: {} | competitors: {} | searchers: {} | volume: ${} | gross: ${} | \
+         gas: ${} | flash fees: ${} | net: ${} | highest single: ${}",
         o.ops,
+        o.competitors,
         o.searchers,
         usd(o.volume_usd),
         usd(o.gross_usd),
@@ -314,6 +321,9 @@ fn render_window(r: &WindowReport) {
 
     println!("\n  Daily trend:");
     print_report_table(&r.daily, "date");
+
+    println!("\n  Competitors (bot = contract or eoa):");
+    print_stats_table(&r.top_competitors);
 
     println!("\n  Top searchers:");
     print_stats_table(&r.top_senders);

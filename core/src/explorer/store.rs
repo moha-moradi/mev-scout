@@ -645,7 +645,7 @@ impl ExplorerStore {
         let now = crate::utils::epoch_secs() as i64;
         let conn = &self.conn;
         conn.execute("BEGIN IMMEDIATE", [])?;
-        let result = (|| -> anyhow::Result<usize> {
+        let result = (|| -> anyhow::Result<(usize, Vec<(Address, Option<Address>, u64)>)> {
             conn.execute(
                 "INSERT OR IGNORE INTO blocks
                    (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
@@ -720,6 +720,7 @@ impl ExplorerStore {
             }
 
             let mut inserted = 0usize;
+            let mut pending_labels: Vec<(Address, Option<Address>, u64)> = Vec::new();
             for ev in events {
                 // Liquidation P&L (Phase 1.3): profit ≈ collateral_usd −
                 // debt_usd, valued at persist with hourly prices. Never
@@ -913,6 +914,7 @@ impl ExplorerStore {
                         now,
                     ],
                 )?;
+                pending_labels.push((ev.searcher, ev.contract, ev.block));
                 inserted += 1;
             }
 
@@ -921,12 +923,15 @@ impl ExplorerStore {
                  VALUES(?1, ?2, ?3)",
                 rusqlite::params![block_number as i64, now, inserted as i64],
             )?;
-            Ok(inserted)
+            Ok((inserted, pending_labels))
         })();
 
         match result {
-            Ok(n) => {
+            Ok((n, pending_labels)) => {
                 conn.execute("COMMIT", [])?;
+                for (eoa, contract, block) in pending_labels {
+                    self.label_competitor(eoa, contract, block)?;
+                }
                 Ok(n)
             }
             Err(e) => {
@@ -1060,6 +1065,37 @@ impl ExplorerStore {
         kind: Option<&str>,
     ) -> anyhow::Result<Vec<StatsRow>> {
         top_grouped(&self.conn, "eoa", since_ts, limit, kind)
+    }
+
+    /// Competitor leaderboard: group by bot identity
+    /// `COALESCE(contract, eoa)` so EOAs sharing an executor collapse.
+    pub fn top_competitors_filtered(
+        &self,
+        since_ts: u64,
+        limit: usize,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        let kind_clause = kind
+            .map(|k| format!("AND kind = '{k}'"))
+            .unwrap_or_default();
+        let sql = format!(
+            "SELECT COALESCE(NULLIF(contract, ''), eoa) AS label,
+                    COUNT(*) AS ops,
+                    COALESCE(SUM(profit_usd), 0) AS gross_usd,
+                    COALESCE(SUM(net_profit_usd), 0) AS net_usd
+             FROM mev_ops
+             WHERE ts >= {since_ts} {kind_clause}
+             GROUP BY label
+             ORDER BY gross_usd DESC
+             LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_stats_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Most profitable tokens (`top --by token`).
@@ -1667,25 +1703,87 @@ impl ExplorerStore {
     }
 
     /// Insert an address label (classifier growth loop).
+    ///
+    /// `entity` is the competitor bot id (`COALESCE(contract, eoa)` hex).
     pub fn upsert_label(
         &self,
         address: Address,
         name: &str,
         source: &str,
         first_seen_block: u64,
+        entity: Option<&str>,
     ) -> anyhow::Result<()> {
         self.conn.execute(
             "INSERT INTO labels(address, kind, name, entity, evidence, first_seen_block, source)
-             VALUES(?1, 'searcher', ?2, NULL, NULL, ?3, ?4)
+             VALUES(?1, 'searcher', ?2, ?3, NULL, ?4, ?5)
              ON CONFLICT(address) DO NOTHING",
             rusqlite::params![
                 format!("{:#x}", address),
                 name,
+                entity,
                 first_seen_block as i64,
                 source
             ],
         )?;
         Ok(())
+    }
+
+    /// Label a realized-MEV searcher (and optional executor contract) under one
+    /// competitor `entity` = `COALESCE(contract, eoa)`.
+    pub fn label_competitor(
+        &self,
+        eoa: Address,
+        contract: Option<Address>,
+        block: u64,
+    ) -> anyhow::Result<()> {
+        let bot_id = format!("{:#x}", contract.unwrap_or(eoa));
+        self.upsert_label(
+            eoa,
+            "unclassified-searcher",
+            "classifier",
+            block,
+            Some(&bot_id),
+        )?;
+        if let Some(c) = contract {
+            if c != eoa {
+                self.upsert_label(c, "searcher-contract", "classifier", block, Some(&bot_id))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Idempotent: ensure every distinct `mev_ops` (eoa, contract) has labels.
+    /// Returns how many new `labels` rows were inserted.
+    pub fn backfill_competitor_labels(&self) -> anyhow::Result<usize> {
+        let before: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT eoa, contract, MIN(block_number)
+             FROM mev_ops
+             GROUP BY eoa, contract",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)? as u64,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (eoa_s, contract_s, block) in rows {
+            let Ok(eoa) = eoa_s.parse::<Address>() else {
+                continue;
+            };
+            let contract = contract_s.and_then(|s| s.parse::<Address>().ok());
+            self.label_competitor(eoa, contract, block)?;
+        }
+        let after: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
+        Ok((after - before).max(0) as usize)
     }
 
     /// Pools seen in realized ops (missing-pool report, `--emit-missing-pools`).
@@ -1875,7 +1973,8 @@ impl ExplorerStore {
                     COALESCE(SUM(flashloan_fee_usd), 0),
                     COALESCE(SUM(net_profit_usd), 0),
                     COALESCE(MAX(profit_usd), 0),
-                    COUNT(DISTINCT eoa)
+                    COUNT(DISTINCT eoa),
+                    COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa))
              FROM mev_ops WHERE ts >= {since_ts} {kind_clause}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
@@ -1888,6 +1987,7 @@ impl ExplorerStore {
                 net_usd: r.get(5)?,
                 highest_single_usd: r.get(6)?,
                 searchers: r.get::<_, i64>(7)?,
+                competitors: r.get::<_, i64>(8)?,
             })
         })?;
         Ok(row)
@@ -2088,17 +2188,27 @@ impl ExplorerStore {
     /// Label a searcher automatically after a confirmed classifier hit
     /// (growth loop): address → label with `source = classifier`.
     pub fn label_searcher_auto(&self, address: Address, block: u64) -> anyhow::Result<()> {
+        self.label_competitor(address, None, block)
+    }
+
+    /// `(name, entity)` for an address label, if present.
+    pub fn get_label(&self, address: Address) -> anyhow::Result<Option<(String, Option<String>)>> {
         let addr = format!("{address:#x}");
-        let exists: Option<i64> = self
+        let mut stmt = self
             .conn
-            .query_row("SELECT 1 FROM labels WHERE address = ?1", [&addr], |r| {
-                r.get(0)
-            })
-            .map(Some)
-            .unwrap_or(None);
-        if exists.is_none() {
-            self.upsert_label(address, "unclassified-searcher", "classifier", block)?;
+            .prepare("SELECT name, entity FROM labels WHERE address = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![addr])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?)))
+        } else {
+            Ok(None)
         }
+    }
+
+    /// Test helper: wipe the labels table (simulate a pre-competitor DB).
+    #[cfg(test)]
+    fn clear_labels(&self) -> anyhow::Result<()> {
+        self.conn.execute("DELETE FROM labels", [])?;
         Ok(())
     }
 }
@@ -2250,6 +2360,8 @@ pub struct ReportOverview {
     pub net_usd: f64,
     pub highest_single_usd: f64,
     pub searchers: i64,
+    /// Distinct competitor bots (`COALESCE(contract, eoa)`).
+    pub competitors: i64,
 }
 
 fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
@@ -3101,6 +3213,8 @@ mod tests {
 
         let ov = store.report_window_overview(0, None).unwrap();
         assert_eq!(ov.ops, 2);
+        assert_eq!(ov.searchers, 1);
+        assert_eq!(ov.competitors, 1);
         assert!(
             (ov.volume_usd - 15.0).abs() < 1e-6,
             "volume {}",
@@ -3217,5 +3331,87 @@ mod tests {
         let third: serde_json::Value = serde_json::from_str(&third).unwrap();
         assert_eq!(third["trace_check"], "pass");
         assert!(third.get("trace_check_reason").is_none());
+    }
+
+    #[test]
+    fn competitors_group_by_shared_contract_and_label() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let contract = address!("5555000000000000000000000000000000000005");
+        let eoa_a = address!("2222000000000000000000000000000000000002");
+        let eoa_b = address!("222200000000000000000000000000000000000b");
+        let mut ev_a = sample_event(700);
+        ev_a.searcher = eoa_a;
+        ev_a.contract = Some(contract);
+        ev_a.tx_index = 1;
+        ev_a.tx_hash = b256!("1111111111111111111111111111111111111111111111111111111111111111");
+        let mut ev_b = sample_event(701);
+        ev_b.searcher = eoa_b;
+        ev_b.contract = Some(contract);
+        ev_b.tx_index = 2;
+        ev_b.tx_hash = b256!("2222222222222222222222222222222222222222222222222222222222222222");
+        seed_block(
+            &store,
+            700,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70"),
+            1_700_000_000,
+            2,
+            &[],
+            &[ev_a],
+            &usdc_price(),
+        );
+        seed_block(
+            &store,
+            701,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa71"),
+            1_700_000_100,
+            2,
+            &[],
+            &[ev_b],
+            &usdc_price(),
+        );
+
+        let ov = store.report_window_overview(0, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert_eq!(ov.searchers, 2);
+        assert_eq!(ov.competitors, 1);
+
+        let comps = store.top_competitors_filtered(0, 10, None).unwrap();
+        assert_eq!(comps.len(), 1);
+        assert_eq!(comps[0].label, format!("{contract:#x}"));
+        assert_eq!(comps[0].ops, 2);
+
+        let bot = format!("{contract:#x}");
+        let (name_a, entity_a) = store.get_label(eoa_a).unwrap().expect("eoa labeled");
+        assert_eq!(name_a, "unclassified-searcher");
+        assert_eq!(entity_a.as_deref(), Some(bot.as_str()));
+        let (name_c, entity_c) = store.get_label(contract).unwrap().expect("contract labeled");
+        assert_eq!(name_c, "searcher-contract");
+        assert_eq!(entity_c.as_deref(), Some(bot.as_str()));
+    }
+
+    #[test]
+    fn backfill_competitor_labels_is_idempotent() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        // Seed then wipe labels to simulate a pre-wiring DB.
+        seed_block(
+            &store,
+            800,
+            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa80"),
+            1_700_000_000,
+            1,
+            &[],
+            &[sample_event(800)],
+            &usdc_price(),
+        );
+        store.clear_labels().unwrap();
+        let searcher = address!("2222000000000000000000000000000000000002");
+        assert!(store.get_label(searcher).unwrap().is_none());
+        let n = store.backfill_competitor_labels().unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(store.backfill_competitor_labels().unwrap(), 0);
+        let (name, entity) = store.get_label(searcher).unwrap().expect("backfilled");
+        assert_eq!(name, "unclassified-searcher");
+        let bot = format!("{searcher:#x}");
+        assert_eq!(entity.as_deref(), Some(bot.as_str()));
     }
 }

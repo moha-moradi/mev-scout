@@ -131,8 +131,10 @@ resolved config with `mev-scout config`. Change chain, RPC URLs, or
 `output` in the TOML (or pass `-f` to pick a different file); those are
 not clap flags.
 
-To avoid public / free-tier RPCs, run AvalancheGo locally and point
-`[chains.avalanche.rpc]` at `http://127.0.0.1:9650/ext/bc/C/rpc` — see
+To avoid public / free-tier RPCs, run AvalancheGo natively on Ubuntu and
+point `[chains.avalanche.rpc]` at `http://127.0.0.1:9650/ext/bc/C/rpc`
+(C-Chain WebSocket is also on the same node at
+`ws://127.0.0.1:9650/ext/bc/C/ws`) — see
 [`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md).
 
 ## Validation
