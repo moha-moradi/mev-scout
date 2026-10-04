@@ -97,6 +97,9 @@ pub struct BacktestConfig {
 /// Discover sub-config: `[discover]` TOML section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoverConfig {
+    /// Pool source: `hybrid` (default, explorer-like), `remote`, or `onchain`.
+    #[serde(default = "default_discover_source")]
+    pub source: String,
     /// Batch size for each getLogs request (default: 500).
     #[serde(default = "default_discover_batch_size")]
     pub batch_size: u64,
@@ -106,14 +109,15 @@ pub struct DiscoverConfig {
     /// Post-discovery health check filtering drained pools (default: true).
     #[serde(default = "default_true")]
     pub health_check: bool,
-    /// Minimum USD TVL for remote-sourced pools (default: 0).
-    #[serde(default)]
+    /// Minimum USD TVL for explorer-style ranking (default: 25000).
+    /// Applied when remote/hybrid sourcing is active; ignored for pure onchain.
+    #[serde(default = "default_discover_min_tvl")]
     pub min_tvl: f64,
-    /// Per-source pagination cap for remote discovery (default: 1000).
+    /// Cap after TVL ranking for remote/hybrid (default: 1000).
     #[serde(default = "default_discover_max_pools")]
     pub max_pools: usize,
-    /// Resolve missing fee/tickSpacing/token metadata for remote CL pools via Multicall3.
-    #[serde(default)]
+    /// Resolve missing fee/tickSpacing/token metadata for CL pools via Multicall3.
+    #[serde(default = "default_true")]
     pub resolve_remote_metadata: bool,
     /// Solidly-style pool fee override in basis points (optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,11 +238,17 @@ fn default_false() -> bool {
 fn default_true() -> bool {
     true
 }
+fn default_discover_source() -> String {
+    "hybrid".to_string()
+}
 fn default_discover_batch_size() -> u64 {
     500
 }
 fn default_discover_rpc_concurrency() -> usize {
     8
+}
+fn default_discover_min_tvl() -> f64 {
+    25_000.0
 }
 fn default_discover_max_pools() -> usize {
     1000
@@ -401,12 +411,13 @@ impl Default for BacktestConfig {
 impl Default for DiscoverConfig {
     fn default() -> Self {
         DiscoverConfig {
+            source: default_discover_source(),
             batch_size: default_discover_batch_size(),
             rpc_concurrency: default_discover_rpc_concurrency(),
             health_check: true,
-            min_tvl: 0.0,
+            min_tvl: default_discover_min_tvl(),
             max_pools: default_discover_max_pools(),
-            resolve_remote_metadata: false,
+            resolve_remote_metadata: true,
             solidly_fee_bps: None,
         }
     }

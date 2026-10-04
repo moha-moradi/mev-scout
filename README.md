@@ -51,10 +51,11 @@ cargo run -p mev-scout-cli
 ```
 
 On first run it seeds the token cache from the bundled known-token list and
-discovers pools on-chain over the chain's configured lookback window
-(~1000 blocks), so there is no separate setup step. Both are skipped once the
-caches are warm. Widen the window with `--blocks N`, or keep following the
-chain with `--loop`.
+discovers an explorer-like pool universe (`hybrid`: on-chain lookback plus
+aggregator TVL ranking, default `min_tvl = 25000`). Both are skipped once the
+caches are warm. Use `discover --source onchain` for a pure factory scan.
+Widen the live window with `--blocks N`, or keep following the chain with
+`--loop`.
 
 ### 3. Typical pipeline
 
@@ -67,8 +68,9 @@ and CWD). Full flag coverage lives in
 # Detect at the tip → opportunities + paper P&L (ledger is always on)
 cargo run -p mev-scout-cli -- --config mev-scout.toml live
 
-# Rebuild the pool universe explicitly (on-chain factory scan)
-mev-scout discover --blocks 2000
+# Rebuild the pool universe (hybrid TVL ranking by default)
+mev-scout discover
+mev-scout discover --source onchain --blocks 2000
 
 # Re-render the latest run offline
 mev-scout report
@@ -84,7 +86,7 @@ mev-scout explorer backfill
 |---|---|---|
 | *(none)* | Default: bootstrap if needed, scan the latest 64 blocks, exit | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
 | `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
-| `discover` | Find pools (on-chain factory scan) | [§4.3](docs/ARCHITECTURE.md#43-discover--build-the-pool-universe) |
+| `discover` | Find pools (hybrid TVL ranking; `--source onchain` for factory-only) | [§4.3](docs/ARCHITECTURE.md#43-discover--build-the-pool-universe) |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
 | `report` | Re-render a recorded run from SQLite | [§4.5](docs/ARCHITECTURE.md#45-report--re-render-saved-results) |
 | `explorer` | Realized-MEV forensics (`index`, `show`, `report`, `backfill`) | [§4.6](docs/ARCHITECTURE.md#46-explorer--realized-mev-forensics) |
@@ -101,10 +103,10 @@ feature — build with `--features validate` to expose it.
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
-`discover` takes an optional `--blocks`, `--block`, or
-`--from-block`/`--to-block` (and `--incremental`). `explorer index` takes
-`--duration`. `explorer backfill` takes `--days` or `--from-block`/`--to-block`,
-and defaults to the trailing 7 days.
+`discover` takes optional `--source {hybrid,remote,onchain}`, `--enrich`,
+`--blocks` / `--block` / `--from-block`/`--to-block`, and `--incremental`.
+`explorer index` takes `--duration`. `explorer backfill` takes `--days` or
+`--from-block`/`--to-block`, and defaults to the trailing 7 days.
 
 ## Layout
 
@@ -114,9 +116,10 @@ and defaults to the trailing 7 days.
 | `cli/` | `mev-scout` binary — `live`, `discover`, `report`, `explorer`, … |
 | `cache/` | SQLite DBs (per-chain scanner cache + explorer stores), gitignored |
 
-Pool discovery is on-chain only: DEX factory event logs are scanned over the
-configured lookback window. Token metadata is seeded offline from the bundled
-known-token list, so the default path needs no third-party HTTP service.
+Pool discovery defaults to `hybrid`: factory events over the lookback window
+merged with GeckoTerminal/DexScreener, then ranked by TVL (`min_tvl` /
+`max_pools`). `--source onchain` disables aggregator HTTP. Token metadata is
+seeded offline from the bundled known-token list.
 
 ## Configuration & secrets
 
@@ -125,6 +128,10 @@ via `${ENV_VAR}` placeholders — never commit live keys. Print the fully
 resolved config with `mev-scout config`. Change chain, RPC URLs, or
 `output` in the TOML (or pass `-f` to pick a different file); those are
 not clap flags.
+
+To avoid public / free-tier RPCs, run AvalancheGo locally and point
+`[chains.avalanche.rpc]` at `http://127.0.0.1:9650/ext/bc/C/rpc` — see
+[`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md).
 
 ## Validation
 

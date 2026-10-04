@@ -104,7 +104,7 @@ flowchart TB
 |---|---|---|---|
 | *(no subcommand)* | Same as `live` — bootstrap if needed, scan the latest 64 blocks, exit | yes | SQLite cache, explorer SQLite |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | yes | SQLite cache, explorer SQLite |
-| `discover` | Find pools (on-chain factory scan) | yes (RPC getLogs) | SQLite cache |
+| `discover` | Find pools (hybrid TVL ranking by default) | yes (RPC; aggregator HTTP unless `--source onchain`) | SQLite cache |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
 | `explorer` | Realized-MEV forensics (`index` / `show` / `report` / `backfill`) | yes (logs; optional traces); backfill yes | Explorer SQLite store |
@@ -116,9 +116,10 @@ P&L of taking those detections with a virtual gas wallet (no competition);
 **Zero-config entrypoint.** The subcommand is optional: `mev-scout` with no
 arguments behaves exactly like `mev-scout live`, and `live`'s window defaults to
 the most recent 64 blocks, scanned once. On first run it seeds the token cache
-from the bundled known-token list and runs an on-chain pool discovery, so there
-is no setup command to remember. Both steps are skipped once their caches are
-populated, and the config is validated offline *before* any bootstrap RPC.
+from the bundled known-token list and runs hybrid pool discovery (on-chain
+lookback + aggregator TVL ranking), so there is no setup command to remember.
+Both steps are skipped once their caches are populated, and the config is
+validated offline *before* any bootstrap RPC.
 
 The `run`, `paper` and `tokens` commands were removed. `live` absorbed the first
 two: it detects at chain tip and its paper ledger is always on. `tokens` became
@@ -274,7 +275,7 @@ fills whatever is missing:
 flowchart TB
     A["validate_live — offline<br/>(config invariants, no network)"] --> B{"pools in cache?"}
     B -- "yes" --> E
-    B -- "no" --> C["on-chain discovery<br/>factory getLogs over<br/>pool_discovery_lookback_blocks"]
+    B -- "no" --> C["hybrid discovery<br/>factory getLogs lookback<br/>+ aggregator TVL ranking"]
     C --> D["persist universe → SQLite"]
     B -- "yes, but tokens empty" --> E
     D --> E{"tokens in cache?"}
@@ -283,11 +284,13 @@ flowchart TB
     F --> G["scan latest 64 blocks"]
 ```
 
-Bootstrap is deliberately narrow: it is **on-chain only** and uses **no
-third-party HTTP**. Tokens come from the bundled known-token list, pools from
-factory event logs. Both steps log what they did and are skipped on later runs,
-so a warm cache adds no work. Bootstrap failures warn rather than abort — the
-subsequent scan reports the real problem.
+Pool bootstrap follows `[discover]` defaults (`source = hybrid`,
+`min_tvl = 25000`): liquid pools first, like a DEX explorer. Override with
+`[discover].source = "onchain"` (or `discover --source onchain`) for a pure
+factory scan with no aggregator HTTP. Tokens still come from the bundled
+known-token list. Both steps log what they did and are skipped on later runs.
+Bootstrap failures warn rather than abort — the subsequent scan reports the
+real problem.
 
 #### End-of-session report
 
@@ -346,13 +349,15 @@ flowchart TB
 
 ### 4.3 `discover` — build the pool universe
 
-Finds pools from DEX factory event logs; the result feeds every other command
-(they read the discovery cache). On-chain only — there is no `--source`,
-`--enrich` or remote aggregator leg on the CLI, so discovery needs nothing but
-an RPC endpoint.
+Builds the pool set that detection reads from cache. Default source is
+**`hybrid`**: on-chain factory events over the lookback window, merged with
+GeckoTerminal/DexScreener, then ranked by TVL (`min_tvl` / `max_pools`) so the
+list resembles a DEX explorer. Use `--source onchain` for a pure factory scan
+with no aggregator HTTP.
 
 ```powershell
-cargo run -p mev-scout-cli -- --config mev-scout.toml discover --blocks 2000
+cargo run -p mev-scout-cli -- --config mev-scout.toml discover
+mev-scout discover --source onchain --blocks 2000
 mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 mev-scout discover                          # incremental over a warm cache
@@ -362,11 +367,14 @@ mev-scout discover                          # incremental over a warm cache
 
 | Flag / config | Concept |
 |---|---|
+| `--source {hybrid,remote,onchain}` | Default `hybrid` (or `[discover].source`) |
+| `--enrich` | Fill TVL on on-chain pools without adding remote-only rows |
 | `--blocks` / `--block` / `--from-block`+`--to-block` | Lookback window, at most one form |
 | `--incremental` | Resume from max cached `creation_block` |
 | *(no range)* | Same as `--incremental` when the cache is populated, else `pool_discovery_lookback_blocks` → tip |
+| `[discover].min_tvl` | TVL floor for hybrid/remote ranking (default 25000) |
 | `[discover].health_check` | Drop drained/paused pools (default on) |
-| `[discover].max_pools` | Pagination cap |
+| `[discover].max_pools` | Cap after TVL ranking (default 1000) |
 | `output = "json"` | Machine-readable pool list |
 | `[discover].batch_size` / `rpc_concurrency` | getLogs chunk size and metadata concurrency |
 | `[discover].solidly_fee_bps` | Fee override for Solidly-style pools |
@@ -374,8 +382,10 @@ mev-scout discover                          # incremental over a warm cache
 ```mermaid
 flowchart TB
     A["resolve_chain + init_rpc<br/>+ open cache"] --> C["resolve range<br/>(none given: max cached<br/>creation_block + 1 → tip)"]
-    C --> F["discover_and_cache<br/>factory event scan (chunked getLogs):<br/>V2 · V3 · V4 · Solidly · Camelot<br/>Curve registry · Balancer vault<br/>TraderJoe LB · Pendle · Fluid<br/>Pancake Infinity CL<br/>+ pool metadata via Multicall3"]
-    F --> Q{"[discover].health_check? (default on)"}
+    C --> F["on-chain factory scan<br/>(skipped for source=remote)"]
+    F --> R["optional remote aggregators<br/>GeckoTerminal + DexScreener"]
+    R --> K["merge + explorer ranking<br/>min_tvl / max_pools"]
+    K --> Q{"[discover].health_check? (default on)"}
     Q -- yes --> P["drop drained/paused pools<br/>(on-chain state probe)"]
     Q -- no --> T
     P --> T["persist universe → SQLite<br/>(cache-first merge, never clobber richer rows)"]

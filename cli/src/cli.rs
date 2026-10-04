@@ -257,6 +257,17 @@ pub struct DiscoverArgs {
     /// already populated.
     #[arg(long)]
     pub incremental: bool,
+
+    /// Pool source: hybrid (default, explorer-like TVL ranking), remote, or
+    /// onchain (full factory scan, no aggregator HTTP).
+    /// Overrides `[discover].source` when set.
+    #[arg(long, value_parser = ["hybrid", "remote", "onchain"], value_name = "SOURCE")]
+    pub source: Option<String>,
+
+    /// Enrich on-chain pools with aggregator TVL/volume without adding
+    /// remote-only addresses. Ignored when `--source` is `hybrid` or `remote`.
+    #[arg(long)]
+    pub enrich: bool,
 }
 
 #[derive(Args, Debug, Clone)]

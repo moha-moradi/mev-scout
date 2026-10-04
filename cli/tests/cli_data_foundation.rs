@@ -28,11 +28,18 @@ fn data_foundation_pipeline_discover() {
     let db = ws.join("cache.db");
     let db_s = db.to_str().unwrap();
 
-    // Discovery is on-chain factory events only; the source is no longer a
-    // user-visible choice.
+    // E2E stays on pure on-chain so it does not depend on aggregator HTTP.
     let discover_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
     let mut c = scout(&ws);
-    c.args(["-f", &discover_cfg, "discover", "--blocks", "5"]);
+    c.args([
+        "-f",
+        &discover_cfg,
+        "discover",
+        "--source",
+        "onchain",
+        "--blocks",
+        "5",
+    ]);
     let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover baseline") else {
         return;
     };
@@ -57,7 +64,7 @@ fn data_foundation_pipeline_discover() {
     // A second zero-arg run must resume incrementally rather than rescan the
     // whole lookback window.
     let mut c = scout(&ws);
-    c.args(["-f", &discover_cfg, "discover"]);
+    c.args(["-f", &discover_cfg, "discover", "--source", "onchain"]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover implicit") {
         if out.success {
             assert!(
@@ -70,26 +77,17 @@ fn data_foundation_pipeline_discover() {
     }
 }
 
-/// `discover --source` and `--enrich` are gone: the default path must not
-/// depend on a third-party HTTP aggregator. Purely offline — clap rejects the
-/// flags before any RPC is touched.
+/// Invalid `--source` values are rejected by clap before any RPC is touched.
 #[test]
-fn discover_rejects_removed_source_and_enrich_flags() {
-    let ws = common::temp_ws("dataf_flags_removed");
-    for args in [
-        vec!["discover", "--source", "remote"],
-        vec!["discover", "--source", "hybrid"],
-        vec!["discover", "--source", "onchain"],
-        vec!["discover", "--enrich"],
-    ] {
-        let mut c = scout(&ws);
-        c.args(&args);
-        let out = run_timed(&mut c, TEST_TIMEOUT).expect("spawn/wait failed");
-        expect_fail(&out, &format!("removed discover flag: {args:?}"));
-        assert!(
-            out.combined().contains("unexpected argument"),
-            "expected a clap rejection for {args:?}, got:\n{}",
-            out.combined()
-        );
-    }
+fn discover_rejects_invalid_source() {
+    let ws = common::temp_ws("dataf_flags_source");
+    let mut c = scout(&ws);
+    c.args(["discover", "--source", "subgraph"]);
+    let out = run_timed(&mut c, TEST_TIMEOUT).expect("spawn/wait failed");
+    expect_fail(&out, "invalid discover --source");
+    assert!(
+        out.combined().contains("invalid value") || out.combined().contains("possible values"),
+        "expected a clap value-parser rejection, got:\n{}",
+        out.combined()
+    );
 }

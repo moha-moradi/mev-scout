@@ -199,7 +199,8 @@ impl ChainName {
                 "0x512eb749541B7cf294be882D636218c84a5e9E5F", // Blackhole CLMM (Algebra Integral)
             ],
             ChainName::Bsc => &[
-                "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", // PancakeSwap V3
+                "0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7", // Uniswap V3
+                "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", // PancakeSwap V3
                 "0xcb010ed373523942706F730b89792aA1C1597b20", // ListaV3 (UniV3 fork)
             ],
             ChainName::Arbitrum => &[
@@ -275,7 +276,7 @@ impl ChainName {
             ChainName::Optimism => &["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"],
             // Same Stableswap Factory NG address as Polygon (deterministic deploy).
             ChainName::Avalanche => &["0x1764ee18e8B3ccA4787249Ceb249356192594585"],
-            _ => &[],
+            ChainName::Base => &["0xd2002373543Ce3527023C75e7518C274A51ce712"],
         }
     }
 
@@ -306,10 +307,10 @@ impl ChainName {
     }
 
     /// Fluid DEX factory address (Instadapp unified-liquidity pools).
-    /// Deployed on Ethereum only.
+    /// Same deterministic address on Ethereum, Base, and Arbitrum.
     pub fn default_fluid_factories(&self) -> Vec<&'static str> {
         match self {
-            ChainName::Ethereum => vec![
+            ChainName::Ethereum | ChainName::Base | ChainName::Arbitrum => vec![
                 "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085", // Fluid DEX
             ],
             _ => vec![],

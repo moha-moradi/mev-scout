@@ -38,9 +38,9 @@ pub struct DiscoverOpts {
 impl Default for DiscoverOpts {
     fn default() -> Self {
         DiscoverOpts {
-            source: "onchain".to_string(),
+            source: "hybrid".to_string(),
             enrich: false,
-            min_tvl: None,
+            min_tvl: Some(25_000.0),
             max_pools: 1000,
             batch_size: 500,
             rpc_concurrency: 8,
@@ -48,7 +48,31 @@ impl Default for DiscoverOpts {
             health_check: true,
             json: false,
             solidly_fee_bps: None,
-            resolve_remote_metadata: false,
+            resolve_remote_metadata: true,
+        }
+    }
+}
+
+impl DiscoverOpts {
+    /// Build opts from `[discover]` config; callers overlay CLI flags afterward.
+    pub fn from_config(config: &Config) -> Self {
+        let d = &config.discover;
+        Self {
+            source: d.source.clone(),
+            enrich: false,
+            min_tvl: if d.min_tvl > 0.0 {
+                Some(d.min_tvl)
+            } else {
+                None
+            },
+            max_pools: d.max_pools,
+            batch_size: d.batch_size,
+            rpc_concurrency: d.rpc_concurrency,
+            incremental: false,
+            health_check: d.health_check,
+            json: matches!(config.output.output, crate::types::OutputFormat::Json),
+            solidly_fee_bps: d.solidly_fee_bps.map(u64::from),
+            resolve_remote_metadata: d.resolve_remote_metadata,
         }
     }
 }
@@ -95,6 +119,26 @@ fn dedup_by_address(pools: Vec<DiscoveredPool>) -> Vec<DiscoveredPool> {
         }
     }
     out
+}
+
+/// Explorer-style ranking: drop below `min_tvl`, sort by TVL desc, cap length.
+fn apply_explorer_ranking(
+    mut pools: Vec<DiscoveredPool>,
+    min_tvl: Option<f64>,
+    max_pools: usize,
+) -> Vec<DiscoveredPool> {
+    if let Some(min) = min_tvl {
+        pools.retain(|p| p.tvl_usd.is_some_and(|v| v >= min));
+    }
+    pools.sort_by(|a, b| {
+        b.tvl_usd
+            .partial_cmp(&a.tvl_usd)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if max_pools > 0 && pools.len() > max_pools {
+        pools.truncate(max_pools);
+    }
+    pools
 }
 
 #[allow(clippy::field_reassign_with_default)]
@@ -202,6 +246,10 @@ pub async fn job_discover(
     let chain_id = chain_name.chain_id();
 
     let source = opts.source.clone();
+    anyhow::ensure!(
+        matches!(source.as_str(), "onchain" | "remote" | "hybrid"),
+        "unknown discover source '{source}' (expected onchain|remote|hybrid)"
+    );
     let is_remote_only = source == "remote";
     let is_hybrid = source == "hybrid";
     let enrich = opts.enrich;
@@ -248,25 +296,38 @@ pub async fn job_discover(
     }
 
     // Phase 5.1: incremental mode.
+    // When the on-chain window is already covered, pure onchain exits early.
+    // Hybrid/remote still continue so aggregator TVL ranking can refresh.
+    let mut skip_onchain_scan = false;
     let (from, to) = if incremental && !is_remote_only {
         match cache.max_creation_block() {
             Ok(Some(max_block)) if max_block > 0 => {
                 let new_from = max_block + 1;
                 if new_from > to {
+                    if should_fetch_remote {
+                        progress.log(&format!(
+                            "Incremental mode: on-chain cache up-to-date (max block {max_block}); \
+                             refreshing remote ranking."
+                        ));
+                        skip_onchain_scan = true;
+                        (from, to)
+                    } else {
+                        progress.log(&format!(
+                            "Incremental mode: cache is up-to-date (max block {max_block}). No scan needed."
+                        ));
+                        return Ok(DiscoverOutcome {
+                            pools_found: 0,
+                            active_blocks: 0,
+                            remote_count: 0,
+                            pools: Vec::new(),
+                        });
+                    }
+                } else {
                     progress.log(&format!(
-                        "Incremental mode: cache is up-to-date (max block {max_block}). No scan needed."
+                        "Incremental mode: scanning from block {new_from} (cache max: {max_block})"
                     ));
-                    return Ok(DiscoverOutcome {
-                        pools_found: 0,
-                        active_blocks: 0,
-                        remote_count: 0,
-                        pools: Vec::new(),
-                    });
+                    (new_from, to)
                 }
-                progress.log(&format!(
-                    "Incremental mode: scanning from block {new_from} (cache max: {max_block})"
-                ));
-                (new_from, to)
             }
             Ok(_) => {
                 progress.log("Incremental mode: no cached pools found, running full scan.");
@@ -288,7 +349,7 @@ pub async fn job_discover(
     ));
 
     // Phase 1: factory/event scan.
-    let (all_pools, all_active_blocks) = if is_remote_only {
+    let (all_pools, all_active_blocks) = if is_remote_only || skip_onchain_scan {
         (Vec::new(), std::collections::HashSet::new())
     } else {
         let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
@@ -323,6 +384,21 @@ pub async fn job_discover(
         pools = remote_src::merge_pools(pools, remote_pools);
     } else if enrich && !remote_pools.is_empty() {
         enrich_from_remote(&mut pools, &remote_pools);
+    }
+
+    // Explorer-like ranking for any path that pulled aggregator TVL.
+    if should_fetch_remote {
+        let before = pools.len();
+        pools = apply_explorer_ranking(pools, min_tvl_opt, max_pools_opt);
+        if pools.len() != before {
+            progress.log(&format!(
+                "Explorer ranking: {} → {} pool(s) (min_tvl={:?}, max_pools={})",
+                before,
+                pools.len(),
+                min_tvl_opt,
+                max_pools_opt
+            ));
+        }
     }
 
     // Phase 3.5: resolve missing CL metadata (opt-in).
@@ -566,5 +642,58 @@ mod tests {
         assert_eq!(got.dex_type, DexType::UniswapV3);
         assert_eq!(got.fee, 500);
         assert_eq!(got.creation_block, 100);
+    }
+
+    #[test]
+    fn explorer_ranking_filters_sorts_and_caps() {
+        let t0 = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let t1 = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let pools = vec![
+            DiscoveredPool::new(
+                address!("1111111111111111111111111111111111111111"),
+                t0,
+                t1,
+                0,
+                DexType::UniswapV2,
+                0,
+            )
+            .with_tvl_usd(Some(10_000.0)),
+            DiscoveredPool::new(
+                address!("2222222222222222222222222222222222222222"),
+                t0,
+                t1,
+                0,
+                DexType::UniswapV2,
+                0,
+            )
+            .with_tvl_usd(Some(100_000.0)),
+            DiscoveredPool::new(
+                address!("3333333333333333333333333333333333333333"),
+                t0,
+                t1,
+                0,
+                DexType::UniswapV2,
+                0,
+            )
+            .with_tvl_usd(Some(50_000.0)),
+            DiscoveredPool::new(
+                address!("4444444444444444444444444444444444444444"),
+                t0,
+                t1,
+                0,
+                DexType::UniswapV2,
+                0,
+            ),
+        ];
+        let ranked = apply_explorer_ranking(pools, Some(25_000.0), 2);
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(
+            ranked[0].address,
+            address!("2222222222222222222222222222222222222222")
+        );
+        assert_eq!(
+            ranked[1].address,
+            address!("3333333333333333333333333333333333333333")
+        );
     }
 }

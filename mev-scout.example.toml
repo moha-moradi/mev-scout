@@ -42,13 +42,16 @@ output = "table"
 # record_rejections = false
 
 # ── Discover tuning ────────────────────────────────────────────────
+# Default source is hybrid (on-chain + GeckoTerminal/DexScreener), ranked by
+# TVL like a DEX explorer. Use source = "onchain" for a pure factory scan.
 # [discover]
+# source = "hybrid"          # hybrid | remote | onchain
 # batch_size = 500
 # rpc_concurrency = 8
 # health_check = true
-# min_tvl = 0.0
+# min_tvl = 25000.0
 # max_pools = 1000
-# resolve_remote_metadata = false
+# resolve_remote_metadata = true
 # solidly_fee_bps = 30
 
 # ── Live polling ───────────────────────────────────────────────────

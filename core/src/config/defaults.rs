@@ -174,6 +174,32 @@ mod tests {
             Some(address!("0xa0FfB9c1CE1Fe56963B0321B32E7A0302114058b"))
         );
         assert_eq!(chains["ethereum"].fluid_factory, Some(fluid));
+        assert_eq!(chains["base"].fluid_factory, Some(fluid));
+        assert_eq!(chains["arbitrum"].fluid_factory, Some(fluid));
+        let pancake_v3 = address!("0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865");
+        let ramses_v3 = address!("0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b");
+        let base_curve = address!("0xd2002373543Ce3527023C75e7518C274A51ce712");
+        assert!(
+            chains["bsc"]
+                .uniswap_v3_factories
+                .as_ref()
+                .is_some_and(|v| v.contains(&pancake_v3)),
+            "bsc missing Pancake V3"
+        );
+        assert!(
+            chains["arbitrum"]
+                .uniswap_v3_factories
+                .as_ref()
+                .is_some_and(|v| v.contains(&pancake_v3) && v.contains(&ramses_v3)),
+            "arbitrum missing Pancake V3 / Ramses V3"
+        );
+        assert!(
+            chains["base"]
+                .curve_factories
+                .as_ref()
+                .is_some_and(|v| v.contains(&base_curve)),
+            "base missing Curve Stableswap NG"
+        );
 
         let contains = |chain: ChainName, got: &[&str], want: &str| {
             assert!(
@@ -190,6 +216,11 @@ mod tests {
             ChainName::Arbitrum,
             ChainName::Arbitrum.default_uniswap_v3_factories(),
             "0xd0019e86edB35E1fedaaB03aED5c3c60f115d28b",
+        );
+        contains(
+            ChainName::Bsc,
+            ChainName::Bsc.default_uniswap_v3_factories(),
+            "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
         );
         contains(
             ChainName::Bsc,
@@ -232,13 +263,14 @@ mod tests {
                 "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C",
             );
         }
-        let eth_fluid = ChainName::Ethereum.default_fluid_factories();
-        contains(
-            ChainName::Ethereum,
-            eth_fluid.as_slice(),
-            "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085",
-        );
-        assert!(ChainName::Base.default_fluid_factories().is_empty());
+        for chain in [ChainName::Ethereum, ChainName::Base, ChainName::Arbitrum] {
+            contains(
+                chain,
+                chain.default_fluid_factories().as_slice(),
+                "0x91716C4EDA1Fb55e84Bf8b4c7085f84285c19085",
+            );
+        }
+        assert!(ChainName::Bsc.default_fluid_factories().is_empty());
         let avax_lb = ChainName::Avalanche.default_trader_joe_factories();
         contains(
             ChainName::Avalanche,
@@ -259,6 +291,11 @@ mod tests {
             ChainName::Ethereum,
             ChainName::Ethereum.default_curve_factories(),
             "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6",
+        );
+        contains(
+            ChainName::Base,
+            ChainName::Base.default_curve_factories(),
+            "0xd2002373543Ce3527023C75e7518C274A51ce712",
         );
 
         for chain in [

@@ -1,8 +1,11 @@
 # mev-scout CLI — Simplification & Zero-Config Plan
 
-Status: **implemented**. Where this document and the code disagree, the code
-(and the decisions in §9) win. User-facing command docs live in
-[`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`README.md`](../README.md).
+Status: **implemented**, with one later default change: `discover` /
+bootstrap now default to **`hybrid` + `min_tvl = 25000`** (explorer-like
+ranking) instead of onchain-only. `--source onchain` remains the offline
+escape hatch. Where this document and the code disagree, the code wins.
+User-facing command docs live in [`ARCHITECTURE.md`](./ARCHITECTURE.md) and
+[`README.md`](../README.md).
 
 Goal: shrink the `mev-scout` command surface to the smallest set that still
 delivers the project's core objective — *detect MEV opportunities, record them,

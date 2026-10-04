@@ -87,29 +87,12 @@ async fn bootstrap_pools(config: &Config, cache: &SqliteStore, progress: &dyn Jo
     }
 
     progress.log("Bootstrap: no pools cached, running pool discovery...");
-    let d = &config.discover;
-    let opts = DiscoverOpts {
-        source: "onchain".to_string(),
-        enrich: false,
-        min_tvl: if d.min_tvl > 0.0 {
-            Some(d.min_tvl)
-        } else {
-            None
-        },
-        max_pools: d.max_pools,
-        batch_size: d.batch_size,
-        rpc_concurrency: d.rpc_concurrency,
-        // A fresh cache has nothing to resume from; the window falls back to
-        // the chain's configured lookback.
-        incremental: false,
-        health_check: d.health_check,
-        json: matches!(
-            config.output.output,
-            mev_scout_core::types::OutputFormat::Json
-        ),
-        solidly_fee_bps: d.solidly_fee_bps.map(u64::from),
-        resolve_remote_metadata: false,
-    };
+    // Same defaults as `discover` (hybrid + min_tvl) so a fresh `live` run
+    // seeds an explorer-like liquid universe. Override via `[discover].source`.
+    let mut opts = DiscoverOpts::from_config(config);
+    // A fresh cache has nothing to resume from; the window falls back to
+    // the chain's configured lookback.
+    opts.incremental = false;
 
     match job_discover(config, &opts, progress).await {
         Ok(outcome) => progress.log(&format!(
