@@ -53,7 +53,7 @@ cargo run -p mev-scout-cli
 On first run it seeds the token cache from the bundled known-token list and
 discovers an explorer-like pool universe (`hybrid`: on-chain lookback plus
 aggregator TVL ranking, default `min_tvl = 25000`). Both are skipped once the
-caches are warm. Use `discover --source onchain` for a pure factory scan.
+caches are warm. Set `[discover].source = "onchain"` for a pure factory scan.
 Widen the live window with `--blocks N`, or keep following the chain with
 `--loop`.
 
@@ -70,14 +70,15 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml live
 
 # Rebuild the pool universe (hybrid TVL ranking by default)
 mev-scout discover
-mev-scout discover --source onchain --blocks 2000
+mev-scout discover --blocks 2000
 
 # Re-render the latest run offline
 mev-scout report
 
-# Index realized MEV near tip, then summarize
-mev-scout explorer index --duration 15m
-mev-scout explorer backfill
+# Index realized MEV (trailing 7 days), follow tip, then summarize
+mev-scout explorer index
+mev-scout explorer index --loop --duration 15m
+mev-scout explorer
 ```
 
 ### 4. Command index
@@ -86,27 +87,28 @@ mev-scout explorer backfill
 |---|---|---|
 | *(none)* | Default: bootstrap if needed, scan the latest 64 blocks, exit | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
 | `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
-| `discover` | Find pools (hybrid TVL ranking; `--source onchain` for factory-only) | [§4.3](docs/ARCHITECTURE.md#43-discover--build-the-pool-universe) |
+| `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§4.3](docs/ARCHITECTURE.md#43-discover--build-the-pool-universe) |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
 | `report` | Re-render a recorded run from SQLite | [§4.5](docs/ARCHITECTURE.md#45-report--re-render-saved-results) |
-| `explorer` | Realized-MEV forensics (`index`, `show`, `report`, `backfill`) | [§4.6](docs/ARCHITECTURE.md#46-explorer--realized-mev-forensics) |
+| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | [§4.6](docs/ARCHITECTURE.md#46-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
 always runs its paper ledger (`--initial-balance`, `--reserve`). At session
 end it prints and persists cost, remaining balance, net P&L and a
 per-strategy breakdown; `report` shows a run's ledger session alongside its
-results. `--max-fills-per-block` moved to `[paper]` in the TOML, and
-`explorer stats` is covered by `explorer report`.
+results. `--max-fills-per-block` moved to `[paper]` in the TOML.
+Bare `explorer` is the revenue report; `explorer index` covers both historical
+backfill (default trailing 7 days) and tip-follow (`--loop`).
 
 `explorer validate` is a research command hidden behind a non-default Cargo
 feature — build with `--features validate` to expose it.
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
-`discover` takes optional `--source {hybrid,remote,onchain}`, `--enrich`,
-`--blocks` / `--block` / `--from-block`/`--to-block`, and `--incremental`.
-`explorer index` takes `--duration`. `explorer backfill` takes `--days` or
-`--from-block`/`--to-block`, and defaults to the trailing 7 days.
+`discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
+and `--incremental`. Source and enrich live under `[discover]` in TOML.
+`explorer` takes `--windows` / `--kind` / `--top`. `explorer index` takes
+`--days` or `--from-block`/`--to-block` (bounded), or `--loop [--duration]`.
 
 ## Layout
 
@@ -118,8 +120,8 @@ Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 
 Pool discovery defaults to `hybrid`: factory events over the lookback window
 merged with GeckoTerminal/DexScreener, then ranked by TVL (`min_tvl` /
-`max_pools`). `--source onchain` disables aggregator HTTP. Token metadata is
-seeded offline from the bundled known-token list.
+`max_pools`). `[discover].source = "onchain"` disables aggregator HTTP. Token
+metadata is seeded offline from the bundled known-token list.
 
 ## Configuration & secrets
 

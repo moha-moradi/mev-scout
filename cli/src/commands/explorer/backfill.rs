@@ -1,6 +1,7 @@
-//! ``explorer backfill`` — index a historical block range (clock or exact)
-//! into the explorer store so the revenue-report windows (1d/7d/30d) have
-//! realized data. Idempotent and gap-resumable via `blocks_classified`.
+//! ``explorer index`` (without ``--loop``) — index a historical block range
+//! (clock or exact) into the explorer store so the revenue-report windows
+//! (1d/7d/30d) have realized data. Idempotent and gap-resumable via
+//! `blocks_classified`.
 
 use super::*;
 

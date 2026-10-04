@@ -56,17 +56,32 @@ fn explorer_help_lists_subcommands() {
     let ws = temp_ws("args_explorer_help");
     let out = run(&ws, &["explorer", "--help"]);
     expect_ok(&out, "explorer --help");
-    for sub in ["index", "show", "report", "backfill"] {
+    for sub in ["index", "show"] {
         assert!(
             help_lists_subcommand(&out.stdout, sub),
             "explorer --help missing subcommand '{sub}'"
         );
     }
-    // `stats` was dropped as redundant with `explorer report`.
-    for removed in ["stats", "doctor", "live-feed", "top", "explain", "export"] {
+    // Revenue report is bare `explorer`; `backfill` folded into `index`.
+    for removed in [
+        "report",
+        "backfill",
+        "stats",
+        "doctor",
+        "live-feed",
+        "top",
+        "explain",
+        "export",
+    ] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
             "explorer --help still lists removed subcommand '{removed}'"
+        );
+    }
+    for flag in ["--windows", "--kind", "--top"] {
+        assert!(
+            out.stdout.contains(flag),
+            "explorer --help missing report flag '{flag}'"
         );
     }
 
@@ -126,6 +141,20 @@ fn explorer_removed_stats_subcommand_fails() {
     let ws = temp_ws("args_explorer_stats_removed");
     let out = run(&ws, &["explorer", "stats"]);
     expect_fail(&out, "removed explorer stats subcommand");
+}
+
+#[test]
+fn explorer_removed_report_subcommand_fails() {
+    let ws = temp_ws("args_explorer_report_removed");
+    let out = run(&ws, &["explorer", "report"]);
+    expect_fail(&out, "removed explorer report subcommand");
+}
+
+#[test]
+fn explorer_removed_backfill_subcommand_fails() {
+    let ws = temp_ws("args_explorer_backfill_removed");
+    let out = run(&ws, &["explorer", "backfill"]);
+    expect_fail(&out, "removed explorer backfill subcommand");
 }
 
 /// `--tolerance-pct` moved to `[explorer]` config, so the flag must be gone.
@@ -434,6 +463,111 @@ fn default_subcommand_matches_live_defaults() {
         }
         _ => panic!("both invocations must resolve to `live`"),
     }
+}
+
+/// Bare `explorer` is the revenue report; report flags resolve their defaults.
+#[test]
+fn bare_explorer_is_revenue_report() {
+    use clap::Parser;
+    use mev_scout_cli::cli::{Cli, Command, DEFAULT_EXPLORER_TOP, DEFAULT_EXPLORER_WINDOWS};
+
+    let cli = Cli::parse_from(["mev-scout", "explorer"]);
+    match cli.command {
+        Some(Command::Explorer(a)) => {
+            assert!(a.command.is_none(), "bare explorer has no subcommand");
+            assert_eq!(a.resolved_windows(), DEFAULT_EXPLORER_WINDOWS);
+            assert_eq!(a.resolved_top(), DEFAULT_EXPLORER_TOP);
+            assert!(!a.report_flags_set());
+        }
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let cli = Cli::parse_from(["mev-scout", "explorer", "--windows", "7d", "--top", "20"]);
+    match cli.command {
+        Some(Command::Explorer(a)) => {
+            assert!(a.command.is_none());
+            assert!(a.report_flags_set());
+            assert_eq!(a.resolved_windows(), vec!["7d".to_string()]);
+            assert_eq!(a.resolved_top(), 20);
+        }
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+}
+
+/// `explorer index` without `--loop` is a bounded backfill (default 7 days).
+#[test]
+fn explorer_index_defaults_to_backfill_shape() {
+    use clap::Parser;
+    use mev_scout_cli::cli::{Cli, Command, ExplorerCommand};
+
+    let cli = Cli::parse_from(["mev-scout", "explorer", "index"]);
+    match cli.command {
+        Some(Command::Explorer(a)) => match a.command {
+            Some(ExplorerCommand::Index(i)) => {
+                assert!(!i.r#loop);
+                assert!(i.duration.is_none());
+                assert!(i.days.is_none());
+                assert!(i.from_block.is_none());
+                assert!(i.to_block.is_none());
+            }
+            other => panic!("expected Index, got {other:?}"),
+        },
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--loop", "--duration", "15m"]);
+    match cli.command {
+        Some(Command::Explorer(a)) => match a.command {
+            Some(ExplorerCommand::Index(i)) => {
+                assert!(i.r#loop);
+                assert_eq!(i.duration.as_deref(), Some("15m"));
+            }
+            other => panic!("expected Index, got {other:?}"),
+        },
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+}
+
+/// `--loop` + `--days` is rejected at dispatch (after clap parse).
+#[test]
+fn explorer_index_rejects_loop_with_days() {
+    let ws = temp_ws("args_explorer_index_loop_days");
+    let out = run(
+        &ws,
+        &["-f", &cfg(), "explorer", "index", "--loop", "--days", "7"],
+    );
+    expect_fail(&out, "explorer index --loop --days");
+    assert!(
+        out.combined().contains("cannot be combined with --loop"),
+        "expected loop/days conflict message, got:\n{}",
+        out.combined()
+    );
+}
+
+/// Report flags on a subcommand are rejected.
+#[test]
+fn explorer_show_rejects_report_flags() {
+    let ws = temp_ws("args_explorer_show_windows");
+    let out = run(
+        &ws,
+        &[
+            "-f",
+            &cfg(),
+            "explorer",
+            "--windows",
+            "7d",
+            "show",
+            "0xabc",
+        ],
+    );
+    expect_fail(&out, "explorer --windows show");
+    assert!(
+        out.combined().contains("belong on bare `explorer`")
+            || out.combined().contains("unexpected argument")
+            || out.combined().contains("unrecognized"),
+        "expected report-flag conflict or clap rejection, got:\n{}",
+        out.combined()
+    );
 }
 
 #[test]

@@ -32,9 +32,16 @@ pub struct Cli {
 /// still finishing quickly.
 pub const DEFAULT_SINGLE_PASS_BLOCKS: u64 = 64;
 
-/// Trailing window `explorer backfill` uses when no range flag is given, so the
-/// 1d/7d/30d revenue reports have data without the user picking a range.
+/// Trailing window `explorer index` (without `--loop`) uses when no range flag
+/// is given, so the 1d/7d/30d revenue reports have data without the user
+/// picking a range.
 pub const DEFAULT_BACKFILL_DAYS: u64 = 7;
+
+/// Default windows for bare `explorer` (revenue report).
+pub const DEFAULT_EXPLORER_WINDOWS: &[&str] = &["1d", "7d", "30d"];
+
+/// Default top-N ops for bare `explorer`.
+pub const DEFAULT_EXPLORER_TOP: usize = 10;
 
 impl Cli {
     /// The subcommand to run, materializing the implicit `live` default when
@@ -71,29 +78,25 @@ pub enum Command {
     Live(LiveArgs),
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
-    /// raw chain data (index, show, report, backfill).
+    /// raw chain data. Bare `explorer` prints the revenue report; use
+    /// `index` to populate history and `show` for per-tx detail.
     Explorer(ExplorerArgs),
 }
 
-/// Explorer subcommand group.
+/// Explorer subcommand group. Omitted → revenue report (same as the former
+/// `explorer report`).
 #[derive(Subcommand, Debug, Clone)]
 pub enum ExplorerCommand {
-    /// Stream-index tip blocks into the explorer store (live only).
-    /// Idempotent, resumable, reorg-aware; classify-in-stream.
+    /// Index blocks into the explorer store.
+    ///
+    /// Without `--loop` this backfills a historical range (default: trailing
+    /// 7 days) and exits. With `--loop` it streams tip blocks until Ctrl+C
+    /// (or `--duration`). Idempotent, resumable, reorg-aware.
     Index(IndexArgs),
 
     /// Operation detail for a tx hash; --trace recomputes exact profit via
     /// debug_traceTransaction (prestateTracer diffMode).
     Show(ShowArgs),
-
-    /// Revenue report: cost, profit, and volume per time window (1d/7d/30d
-    /// default), broken out per MEV kind, with daily trend and top-op detail.
-    /// Requires the store to hold history — populate it with `backfill`.
-    Report(ExplorerReportArgs),
-
-    /// Index a historical block range into the store so the revenue-report
-    /// windows (1d/7d/30d) have realized data. Idempotent + resumable.
-    Backfill(ExplorerBackfillArgs),
 
     /// Cross-validation report: realized explorer ops vs scanner
     /// opportunities (T1/T2/T3 matching). Read-only; does no RPC.
@@ -106,15 +109,88 @@ pub enum ExplorerCommand {
 
 #[derive(Args, Debug, Clone)]
 pub struct ExplorerArgs {
+    /// Subcommand; omitted → revenue report.
     #[command(subcommand)]
-    pub command: ExplorerCommand,
+    pub command: Option<ExplorerCommand>,
+
+    /// Time windows: comma-separated 1d|7d|30d|all (default 1d,7d,30d).
+    /// Only valid on bare `explorer` (the revenue report).
+    #[arg(long, value_name = "WINDOWS", value_delimiter = ',')]
+    pub windows: Vec<String>,
+
+    /// Filter the whole report to one kind.
+    /// Only valid on bare `explorer`.
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
+
+    /// Detail depth: top-N ops by net profit per window (default 10).
+    /// Only valid on bare `explorer`.
+    #[arg(long, value_name = "N")]
+    pub top: Option<usize>,
+}
+
+impl ExplorerArgs {
+    /// True when any revenue-report flag was set on the command line.
+    pub fn report_flags_set(&self) -> bool {
+        !self.windows.is_empty() || self.kind.is_some() || self.top.is_some()
+    }
+
+    /// Resolved windows for the revenue report.
+    pub fn resolved_windows(&self) -> Vec<String> {
+        if self.windows.is_empty() {
+            DEFAULT_EXPLORER_WINDOWS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        } else {
+            self.windows.clone()
+        }
+    }
+
+    /// Resolved top-N for the revenue report.
+    pub fn resolved_top(&self) -> usize {
+        self.top.unwrap_or(DEFAULT_EXPLORER_TOP)
+    }
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct IndexArgs {
-    /// Stop live indexing after this duration (e.g. 90s, 15m, 1h)
-    #[arg(long, value_name = "DURATION")]
+    /// Continuously index new tip blocks until Ctrl+C
+    #[arg(long, help_heading = "Live")]
+    pub r#loop: bool,
+
+    /// Stop continuous indexing after this duration (requires --loop).
+    /// Accepts humantime suffixes: 90s, 15m, 1h.
+    #[arg(long, value_name = "DURATION", help_heading = "Live")]
     pub duration: Option<String>,
+
+    /// Backfill the trailing N days up to the current confirmed tip
+    /// (default 7 when no range flag is given). Incompatible with --loop.
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..=365),
+        help_heading = "Range"
+    )]
+    pub days: Option<u64>,
+
+    /// Exact range start (requires --to-block). Inclusive. Incompatible with --loop.
+    #[arg(
+        long = "from-block",
+        value_name = "NUMBER",
+        requires = "to_block",
+        help_heading = "Range"
+    )]
+    pub from_block: Option<u64>,
+
+    /// Exact range end (requires --from-block). Inclusive. Incompatible with --loop.
+    #[arg(
+        long = "to-block",
+        value_name = "NUMBER",
+        requires = "from_block",
+        help_heading = "Range"
+    )]
+    pub to_block: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -126,42 +202,6 @@ pub struct ShowArgs {
     /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
     #[arg(long)]
     pub trace: bool,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ExplorerReportArgs {
-    /// Time windows: comma-separated 1d|7d|30d|all (default 1d,7d,30d)
-    #[arg(
-        long,
-        value_name = "WINDOWS",
-        value_delimiter = ',',
-        default_value = "1d,7d,30d"
-    )]
-    pub windows: Vec<String>,
-
-    /// Filter the whole report to one kind
-    #[arg(long, value_name = "KIND")]
-    pub kind: Option<String>,
-
-    /// Detail depth: top-N ops by net profit per window
-    #[arg(long, value_name = "N", default_value = "10")]
-    pub top: usize,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ExplorerBackfillArgs {
-    /// Backfill the trailing N days up to the current confirmed tip
-    /// (default 7 when no range flag is given).
-    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=365))]
-    pub days: Option<u64>,
-
-    /// Exact range start (requires --to-block). Inclusive.
-    #[arg(long = "from-block", value_name = "NUMBER", requires = "to_block")]
-    pub from_block: Option<u64>,
-
-    /// Exact range end (requires --from-block). Inclusive.
-    #[arg(long = "to-block", value_name = "NUMBER", requires = "from_block")]
-    pub to_block: Option<u64>,
 }
 
 #[cfg(feature = "validate")]
@@ -257,17 +297,6 @@ pub struct DiscoverArgs {
     /// already populated.
     #[arg(long)]
     pub incremental: bool,
-
-    /// Pool source: hybrid (default, explorer-like TVL ranking), remote, or
-    /// onchain (full factory scan, no aggregator HTTP).
-    /// Overrides `[discover].source` when set.
-    #[arg(long, value_parser = ["hybrid", "remote", "onchain"], value_name = "SOURCE")]
-    pub source: Option<String>,
-
-    /// Enrich on-chain pools with aggregator TVL/volume without adding
-    /// remote-only addresses. Ignored when `--source` is `hybrid` or `remote`.
-    #[arg(long)]
-    pub enrich: bool,
 }
 
 #[derive(Args, Debug, Clone)]

@@ -142,16 +142,16 @@ fn show_trace_reconciles_live_op() {
         "-f",
         &cfg,
         "explorer",
-        "backfill",
+        "index",
         "--from-block",
         &from.to_string(),
         "--to-block",
         &to.to_string(),
     ]);
-    let Some(out) = tolerant(run_timed(&mut c, EXTRA_HEAVY), "backfill for show --trace") else {
+    let Some(out) = tolerant(run_timed(&mut c, EXTRA_HEAVY), "index for show --trace") else {
         return;
     };
-    expect_ok(&out, "backfill small window");
+    expect_ok(&out, "index small window");
 
     let store = mev_scout_core::explorer::store::ExplorerStore::open(&db_s).unwrap();
     let ops = store.ops_in_range(from, to, &[]).unwrap();

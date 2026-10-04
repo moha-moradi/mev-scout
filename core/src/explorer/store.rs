@@ -1858,7 +1858,7 @@ impl ExplorerStore {
 
     // ── revenue report queries (1d/7d/30d cost · profit · volume) ────────
 
-    /// Window-wide revenue aggregates (`explorer report` overview).
+    /// Window-wide revenue aggregates (bare `explorer` overview).
     pub fn report_window_overview(
         &self,
         since_ts: u64,
@@ -1893,7 +1893,7 @@ impl ExplorerStore {
         Ok(row)
     }
 
-    /// Per-kind revenue rows in a window (`explorer report` kinds table).
+    /// Per-kind revenue rows in a window (bare `explorer` kinds table).
     pub fn report_by_kind(
         &self,
         since_ts: u64,
@@ -1923,7 +1923,7 @@ impl ExplorerStore {
         Ok(out)
     }
 
-    /// Daily revenue series in a window (`explorer report` trend).
+    /// Daily revenue series in a window (bare `explorer` trend).
     pub fn report_daily(
         &self,
         since_ts: u64,
@@ -2239,7 +2239,7 @@ pub struct ReportRow {
     pub net_usd: f64,
 }
 
-/// Revenue-report window header (`explorer report` overview).
+/// Revenue-report window header (bare `explorer` overview).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportOverview {
     pub ops: i64,

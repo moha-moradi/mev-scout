@@ -100,6 +100,10 @@ pub struct DiscoverConfig {
     /// Pool source: `hybrid` (default, explorer-like), `remote`, or `onchain`.
     #[serde(default = "default_discover_source")]
     pub source: String,
+    /// Enrich on-chain pools with aggregator TVL/volume without adding
+    /// remote-only addresses. Ignored when `source` is `hybrid` or `remote`.
+    #[serde(default = "default_false")]
+    pub enrich: bool,
     /// Batch size for each getLogs request (default: 500).
     #[serde(default = "default_discover_batch_size")]
     pub batch_size: u64,
@@ -412,6 +416,7 @@ impl Default for DiscoverConfig {
     fn default() -> Self {
         DiscoverConfig {
             source: default_discover_source(),
+            enrich: false,
             batch_size: default_discover_batch_size(),
             rpc_concurrency: default_discover_rpc_concurrency(),
             health_check: true,

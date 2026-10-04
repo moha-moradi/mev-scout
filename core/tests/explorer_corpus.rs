@@ -2,7 +2,7 @@
 //!
 //! Re-ingests fixed historical windows from a live RPC and asserts derived
 //! facts (kind present, op counts above a floor, searcher identity, USD
-//! profit floor). Expected numbers were collected with `explorer backfill`
+//! profit floor). Expected numbers were collected with `explorer index`
 //! and are not exact — thresholds sit near 60-70% of what that run stored.
 //!
 //! Avalanche seed (`cache/explorer-avalanche.sqlite`, blocks 95681722..=95682322):

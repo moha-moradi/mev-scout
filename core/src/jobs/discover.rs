@@ -59,7 +59,7 @@ impl DiscoverOpts {
         let d = &config.discover;
         Self {
             source: d.source.clone(),
-            enrich: false,
+            enrich: d.enrich,
             min_tvl: if d.min_tvl > 0.0 {
                 Some(d.min_tvl)
             } else {

@@ -33,10 +33,6 @@ pub async fn cmd_discover(
 
     let json = matches!(config.output.output, OutputFormat::Json);
     let mut opts = DiscoverOpts::from_config(config);
-    if let Some(source) = &args.source {
-        opts.source = source.clone();
-    }
-    opts.enrich = args.enrich;
     opts.incremental = incremental;
     opts.json = json;
 

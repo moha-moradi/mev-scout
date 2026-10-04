@@ -104,10 +104,10 @@ flowchart TB
 |---|---|---|---|
 | *(no subcommand)* | Same as `live` — bootstrap if needed, scan the latest 64 blocks, exit | yes | SQLite cache, explorer SQLite |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | yes | SQLite cache, explorer SQLite |
-| `discover` | Find pools (hybrid TVL ranking by default) | yes (RPC; aggregator HTTP unless `--source onchain`) | SQLite cache |
+| `discover` | Find pools (hybrid TVL ranking by default) | yes (RPC; aggregator HTTP unless `[discover].source = "onchain"`) | SQLite cache |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Realized-MEV forensics (`index` / `show` / `report` / `backfill`) | yes (logs; optional traces); backfill yes | Explorer SQLite store |
+| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | yes (logs; optional traces); index yes | Explorer SQLite store |
 
 Product split: **`live`** = what *could* be made, plus the theoretical session
 P&L of taking those detections with a virtual gas wallet (no competition);
@@ -127,9 +127,11 @@ the implicit bootstrap step. The range-scanning entry point (`run`) was dropped
 from the CLI in favour of `live --blocks` for a bounded window; `report` prints a
 run's ledger session alongside its results.
 
-`explorer stats` was removed — `explorer report` covers the same ground with
-per-window cost/profit/volume. `explorer validate` is a research command hidden
-behind the non-default `validate` Cargo feature (`--features validate`).
+`explorer stats`, `explorer report`, and `explorer backfill` were removed —
+bare `explorer` is the revenue report, and `explorer index` covers both
+historical backfill (default trailing 7 days) and tip-follow (`--loop`).
+`explorer validate` is a research command hidden behind the non-default
+`validate` Cargo feature (`--features validate`).
 
 Invocation convention: the first example under each command uses
 `cargo run -p mev-scout-cli -- --config mev-scout.toml …`. Later examples
@@ -188,9 +190,10 @@ mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-`explorer index` takes `--duration` only. `explorer backfill` takes `--days`
-(1–365) or `--from-block`/`--to-block`; with no range it indexes the trailing
-7 days.
+Bare `explorer` takes `--windows` / `--kind` / `--top` (revenue report).
+`explorer index` without `--loop` takes `--days` (1–365) or
+`--from-block`/`--to-block` (default trailing 7 days). With `--loop` it
+follows the tip (`--duration` optional).
 
 `live --blocks N` (default 64) is the one-shot window, scanned as
 `tip − N + 1 ..= tip`. It is not a discover-style range. `--loop` follows the
@@ -214,7 +217,7 @@ flowchart LR
 | Store | Typical path | Written by | Read by |
 |---|---|---|---|
 | Scanner cache | `cache/` per-chain DB | `live` (incl. bootstrap token + pool seeding), `discover` | `live`, `discover`, `report` (manifests) |
-| Explorer store | `explorer-{chain}.sqlite` (`./cache/`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index`/`backfill` | `report`, `explorer *` |
+| Explorer store | `explorer-{chain}.sqlite` (`./cache/`) | `live` (opportunities; rejections when `record_rejections = true`; one `paper_sessions` ledger row per session), `explorer index` | `report`, `explorer *` |
 
 ---
 
@@ -286,11 +289,10 @@ flowchart TB
 
 Pool bootstrap follows `[discover]` defaults (`source = hybrid`,
 `min_tvl = 25000`): liquid pools first, like a DEX explorer. Override with
-`[discover].source = "onchain"` (or `discover --source onchain`) for a pure
-factory scan with no aggregator HTTP. Tokens still come from the bundled
-known-token list. Both steps log what they did and are skipped on later runs.
-Bootstrap failures warn rather than abort — the subsequent scan reports the
-real problem.
+`[discover].source = "onchain"` for a pure factory scan with no aggregator
+HTTP. Tokens still come from the bundled known-token list. Both steps log
+what they did and are skipped on later runs. Bootstrap failures warn rather
+than abort — the subsequent scan reports the real problem.
 
 #### End-of-session report
 
@@ -352,23 +354,23 @@ flowchart TB
 Builds the pool set that detection reads from cache. Default source is
 **`hybrid`**: on-chain factory events over the lookback window, merged with
 GeckoTerminal/DexScreener, then ranked by TVL (`min_tvl` / `max_pools`) so the
-list resembles a DEX explorer. Use `--source onchain` for a pure factory scan
-with no aggregator HTTP.
+list resembles a DEX explorer. Set `[discover].source = "onchain"` for a pure
+factory scan with no aggregator HTTP.
 
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml discover
-mev-scout discover --source onchain --blocks 2000
+mev-scout discover --blocks 2000
 mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 mev-scout discover                          # incremental over a warm cache
-# chunking / health check / concurrency → [discover] in TOML
+# source / enrich / chunking / health check → [discover] in TOML
 # machine-readable listing → output = "json" in TOML
 ```
 
 | Flag / config | Concept |
 |---|---|
-| `--source {hybrid,remote,onchain}` | Default `hybrid` (or `[discover].source`) |
-| `--enrich` | Fill TVL on on-chain pools without adding remote-only rows |
+| `[discover].source` | `hybrid` (default) \| `remote` \| `onchain` |
+| `[discover].enrich` | Fill TVL on on-chain pools without adding remote-only rows |
 | `--blocks` / `--block` / `--from-block`+`--to-block` | Lookback window, at most one form |
 | `--incremental` | Resume from max cached `creation_block` |
 | *(no range)* | Same as `--incremental` when the cache is populated, else `pool_discovery_lookback_blocks` → tip |
@@ -484,35 +486,51 @@ adds rejected candidates for offline analysis.
 flowchart TB
     A["resolve_chain + init_rpc"] --> B["ExplorerStore::open<br/>(explorer-{chain}.sqlite, WAL)"]
     B --> C{"subcommand"}
-    C -- index --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
-    E --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
-    C -- backfill --> F
-    C -- stats --> H["pure SQL aggregates:<br/>op counts · profit · daily · top searchers/pools"]
+    C -- "bare / none" --> R["revenue report:<br/>cost · profit · volume per window"]
+    C -- "index no --loop" --> BF["ingest: historical range<br/>(default trailing 7 days)"]
+    C -- "index --loop" --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
+    BF --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
+    E --> F
     C -- show --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)"]
-    C -- report --> R["revenue report:<br/>cost · profit · volume per window"]
     C -- validate --> V["T1/T2/T3 cross-check vs opportunities<br/>(read-only, no RPC)"]
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
-#### 4.6.1 `explorer index`
+#### 4.6.1 Bare `explorer` — revenue report
 
-Stream-index tip blocks into the explorer store (live). On each start, jumps to
-the current confirmed tip and only follows new blocks forward — no resume of a
-historical `indexed_to` gap. Idempotent, reorg-aware; classifies in-stream.
-Follows `head − confirmations` until cancelled (Ctrl+C) or `--duration` elapses.
-For historical windows use `explorer backfill` (see 4.6.4) — `index` itself is
-live-only.
+Revenue report: cost, profit, and volume per time window, broken out per MEV
+kind, with per-window block coverage, daily trend, top searchers/pools, and a
+top-op detail list. Pure SQL over the store — requires history (seed it with
+`explorer index`).
+
+```powershell
+mev-scout explorer
+mev-scout explorer --windows 1d,7d,30d
+mev-scout explorer --windows all --kind sandwich --top 20
+```
+
+#### 4.6.2 `explorer index`
+
+Index blocks into the explorer store. Without `--loop` this backfills a
+historical range (default: trailing 7 days) and exits — idempotent and
+gap-resumable via `blocks_classified`. With `--loop` it streams tip blocks
+(`head − confirmations`) until Ctrl+C or `--duration` elapses; on each start
+it jumps to the current confirmed tip and only follows new blocks forward.
+`--days` / `--from-block`+`--to-block` cannot be combined with `--loop`;
+`--duration` requires `--loop`.
 
 ```powershell
 mev-scout explorer index
-mev-scout explorer index --duration 15m
-mev-scout explorer index --duration 1h
+mev-scout explorer index --days 30
+mev-scout explorer index --from-block 65000000 --to-block 65001000
+mev-scout explorer index --loop
+mev-scout explorer index --loop --duration 15m
 ```
 
 Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`,
 `arb_likely_parity`, `trace_tolerance_pct`.
 
-#### 4.6.2 `explorer show`
+#### 4.6.3 `explorer show`
 
 Operation detail for a transaction hash. `--trace` recomputes exact profit via
 `debug_traceTransaction` (prestateTracer diffMode). The profit-mismatch gate
@@ -524,7 +542,7 @@ mev-scout explorer show 0xabc…
 mev-scout explorer show 0xabc… --trace
 ```
 
-#### 4.6.3 `explorer validate`
+#### 4.6.4 `explorer validate`
 
 Cross-validation report: realized-MEV ops in the store vs scanner `opportunities`
 (T1 exact canonical-id / T2 pool+token overlap / T3 block-level tiers). Read-only —
@@ -540,34 +558,6 @@ mev-scout explorer validate --since all --json
 mev-scout explorer validate --since 30d --match-window 2 --run-id run_1717…
 mev-scout explorer validate --since all --threshold-sweep --emit-missing-pools
 mev-scout explorer validate --since all --review-csv results/review.csv --golden-causal
-```
-
-#### 4.6.4 `explorer backfill`
-
-Index a historical block range into the store so the revenue-report windows
-(1d/7d/30d) have realized data. Idempotent and gap-resumable via
-`blocks_classified`. With no range at all it defaults to the trailing 7 days,
-so a bare `mev-scout explorer backfill` seeds the common case. Otherwise pass
-either `--days` up to the current confirmed tip, or an exact inclusive
-`--from-block`/`--to-block` range (mutually exclusive).
-
-```powershell
-mev-scout explorer backfill
-mev-scout explorer backfill --days 30
-mev-scout explorer backfill --from-block 65000000 --to-block 65001000
-```
-
-#### 4.6.5 `explorer report`
-
-Revenue report: cost, profit, and volume per time window, broken out per MEV
-kind, with per-window block coverage, daily trend, top searchers/pools, and a
-top-op detail list. Pure SQL over the store — requires history (seed it with
-`explorer backfill`).
-
-```powershell
-mev-scout explorer report
-mev-scout explorer report --windows 1d,7d,30d
-mev-scout explorer report --windows all --kind sandwich --top 20
 ```
 
 ### 4.7 Ledger (was `paper`)
@@ -603,8 +593,8 @@ Any change to `decode` / `classify` / P&L invalidates existing `mev_ops` rows fo
 the affected window, so before/after Phase numbers are only comparable after a
 replay. `index` is replay-safe (INSERT OR REPLACE, reorg-aware, idempotent), so
 the wipe is required only for classifier *semantics* changes, not plain re-indexes.
-Because `explorer index` is live-only, rewind the checkpoint and let live
-re-index from tip (or from a lowered `indexed_to`):
+Rewind the checkpoint and re-index from tip with `--loop`, or rewrite a
+historical window with a bounded `explorer index`:
 
 ```bash
 # 1) Wipe the affected window on the forensic DB (example: Polygon, from N).
@@ -614,19 +604,19 @@ sqlite3 explorer-polygon.sqlite \
    DELETE FROM blocks_classified WHERE block >= N;
    UPDATE sync_state SET indexed_to = N-1 WHERE chain_id = 137;"
 
-# 2) Resume live indexing from the current tip (or rewrite the historical
-#    window with explorer backfill if you prefer range-based re-indexing).
-mev-scout explorer index --duration 1h
+# 2) Resume tip-follow indexing, or rewrite a historical window with --days /
+#    --from-block/--to-block.
+mev-scout explorer index --loop --duration 1h
 ```
 
 #### Phase-0 baseline recipe and ship gates
 
 Live-window recipe (e.g. Avalanche / Polygon): run the indexer for a measurement
-window, then inspect with `report` / `show`:
+window, then inspect with bare `explorer` / `show`:
 
 ```bash
-mev-scout explorer index --duration 1h
-mev-scout explorer report --windows 1d,7d,30d
+mev-scout explorer index --loop --duration 1h
+mev-scout explorer --windows 1d,7d,30d
 ```
 
 Record coverage notes on every phase merge (`cargo test` + clippy alone are not the
@@ -644,8 +634,8 @@ Pangolin V3, LFJ LB + Pharaoh DLMM. Use public endpoints from
 ```bash
 # config: chain = "avalanche"
 mev-scout discover --blocks 2000
-mev-scout explorer index --duration 1h
-mev-scout explorer report --windows 1d,7d,30d
+mev-scout explorer index --loop --duration 1h
+mev-scout explorer --windows 1d,7d,30d
 ```
 
 Paste report / sample `show` output into notes above. `arb_likely_parity` defaults to
@@ -700,7 +690,7 @@ The hybrid path (`run_range_hybrid`, used by `live`) picks `FullReplay` vs `LogO
 | SQLite `cache.db` (blocks, receipts, state, discovered pools, tokens, run manifests) | `live` (incl. bootstrap), `discover` | `live`, `discover`, `report` (manifests) |
 | Explorer store `explorer-{chain}.sqlite` — `opportunities` (+ optional `rejected_candidates`) | `live` (always opportunities; rejections when `record_rejections = true`) | `report` |
 | Explorer store — `paper_sessions` / `paper_fills` | `live` (one session row written at session end) | `report` (session P&L) |
-| Explorer store `explorer-{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` / `backfill` | `explorer` CLI |
+| Explorer store `explorer-{chain}.sqlite` — forensic layer (blocks, txs, transfers, swaps, `mev_ops`, sync_state, …) | `explorer index` | `explorer` CLI |
 | Signature DB (4byte directory snapshot) | resolver only (`core::sigs::SignatureResolver`); the downloader and bundled fallback tables were removed as unreachable. Still **not wired** into `run`/`live` ingest | tx decoding (future) |
 
 `ResultsFile` is an in-memory / presentation DTO (CLI tables) — not a durable on-disk JSON artifact.

@@ -30,16 +30,14 @@ fn data_foundation_pipeline_discover() {
 
     // E2E stays on pure on-chain so it does not depend on aggregator HTTP.
     let discover_cfg = make_cfg(&ws, &[("db_path", db_s), ("output", "\"json\"")]);
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let mut f = OpenOptions::new().append(true).open(&discover_cfg).unwrap();
+        writeln!(f, "\n[discover]\nsource = \"onchain\"").unwrap();
+    }
     let mut c = scout(&ws);
-    c.args([
-        "-f",
-        &discover_cfg,
-        "discover",
-        "--source",
-        "onchain",
-        "--blocks",
-        "5",
-    ]);
+    c.args(["-f", &discover_cfg, "discover", "--blocks", "5"]);
     let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover baseline") else {
         return;
     };
@@ -64,7 +62,7 @@ fn data_foundation_pipeline_discover() {
     // A second zero-arg run must resume incrementally rather than rescan the
     // whole lookback window.
     let mut c = scout(&ws);
-    c.args(["-f", &discover_cfg, "discover", "--source", "onchain"]);
+    c.args(["-f", &discover_cfg, "discover"]);
     if let Some(out) = tolerant(run_timed(&mut c, HEAVY_TIMEOUT), "discover implicit") {
         if out.success {
             assert!(
@@ -77,17 +75,18 @@ fn data_foundation_pipeline_discover() {
     }
 }
 
-/// Invalid `--source` values are rejected by clap before any RPC is touched.
+/// `--source` moved to `[discover]` config, so the CLI flag must be gone.
 #[test]
-fn discover_rejects_invalid_source() {
+fn discover_rejects_source_flag() {
     let ws = common::temp_ws("dataf_flags_source");
     let mut c = scout(&ws);
     c.args(["discover", "--source", "subgraph"]);
     let out = run_timed(&mut c, TEST_TIMEOUT).expect("spawn/wait failed");
-    expect_fail(&out, "invalid discover --source");
+    expect_fail(&out, "removed discover --source");
     assert!(
-        out.combined().contains("invalid value") || out.combined().contains("possible values"),
-        "expected a clap value-parser rejection, got:\n{}",
+        out.combined().contains("unexpected argument")
+            || out.combined().contains("unrecognized"),
+        "expected clap to reject --source, got:\n{}",
         out.combined()
     );
 }

@@ -217,8 +217,9 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml config
 ## 6. Run mev-scout against the local node
 
 ```powershell
-# Pool universe (on-chain-only avoids aggregator HTTP)
-cargo run -p mev-scout-cli -- --config mev-scout.toml discover --source onchain
+# Pool universe (on-chain-only avoids aggregator HTTP — set in TOML)
+# [discover] source = "onchain"
+cargo run -p mev-scout-cli -- --config mev-scout.toml discover
 
 # One-shot tip scan (default entrypoint with this config)
 cargo run -p mev-scout-cli -- --config mev-scout.toml
@@ -227,11 +228,11 @@ cargo run -p mev-scout-cli -- --config mev-scout.toml
 cargo run -p mev-scout-cli -- --config mev-scout.toml live --loop
 
 # Optional forensics (needs tip + debug-tracer for --trace)
-cargo run -p mev-scout-cli -- --config mev-scout.toml explorer index --duration 15m
+cargo run -p mev-scout-cli -- --config mev-scout.toml explorer index --loop --duration 15m
 ```
 
 On first `live` / bare `mev-scout`, token + pool bootstrap still runs if the
-caches are empty. Prefer `discover --source onchain` when you want zero
+caches are empty. Prefer `[discover].source = "onchain"` when you want zero
 third-party HTTP.
 
 ## Layout next to the tool

@@ -46,6 +46,7 @@ output = "table"
 # TVL like a DEX explorer. Use source = "onchain" for a pure factory scan.
 # [discover]
 # source = "hybrid"          # hybrid | remote | onchain
+# enrich = false             # onchain-only: add aggregator TVL without remote addresses
 # batch_size = 500
 # rpc_concurrency = 8
 # health_check = true

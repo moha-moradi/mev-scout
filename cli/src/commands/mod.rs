@@ -52,19 +52,45 @@ impl CliCommand for LiveArgs {
 impl CliCommand for ExplorerArgs {
     async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
         use crate::cli::ExplorerCommand;
+
+        if self.command.is_some() && self.report_flags_set() {
+            anyhow::bail!(
+                "--windows / --kind / --top belong on bare `explorer` (the revenue report)"
+            );
+        }
+
         match &self.command {
-            ExplorerCommand::Index(a) => cmd_index(config, a.duration.as_deref(), progress).await,
-            ExplorerCommand::Show(a) => cmd_show(config, &a.tx_hash, a.trace).await,
-            ExplorerCommand::Report(a) => {
+            None => {
                 let _ = progress;
-                cmd_explorer_report(config, &a.windows, a.kind.as_deref(), a.top).await
+                cmd_explorer_report(
+                    config,
+                    &self.resolved_windows(),
+                    self.kind.as_deref(),
+                    self.resolved_top(),
+                )
+                .await
             }
-            ExplorerCommand::Backfill(a) => {
-                cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
-                Ok(())
+            Some(ExplorerCommand::Index(a)) => {
+                if a.r#loop {
+                    if a.days.is_some() || a.from_block.is_some() || a.to_block.is_some() {
+                        anyhow::bail!(
+                            "--days / --from-block / --to-block cannot be combined with --loop"
+                        );
+                    }
+                    cmd_index(config, a.duration.as_deref(), progress).await
+                } else {
+                    if a.duration.is_some() {
+                        anyhow::bail!("--duration requires --loop");
+                    }
+                    cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
+                    Ok(())
+                }
             }
+            Some(ExplorerCommand::Show(a)) => cmd_show(config, &a.tx_hash, a.trace).await,
             #[cfg(feature = "validate")]
-            ExplorerCommand::Validate(a) => cmd_explorer_validate(config, a, progress).await,
+            Some(ExplorerCommand::Validate(a)) => {
+                cmd_explorer_validate(config, a, progress).await
+            }
         }
     }
 }

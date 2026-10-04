@@ -1,4 +1,4 @@
-//! ``explorer index`` - live indexing loop.
+//! ``explorer index --loop`` - live indexing loop.
 
 use super::*;
 use crate::job_progress::JobProgress;

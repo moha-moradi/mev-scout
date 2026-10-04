@@ -1,7 +1,7 @@
-//! ``explorer report`` — revenue report: cost, profit, and volume per time
+//! Bare ``explorer`` — revenue report: cost, profit, and volume per time
 //! window (1d/7d/30d default), broken out per MEV kind, with a daily trend,
 //! top searchers/pools, and a top-op detail list. Pure SQL over the store —
-//! requires history (see ``explorer backfill``).
+//! requires history (see ``explorer index``).
 
 use super::*;
 
@@ -274,7 +274,7 @@ fn render_window(r: &WindowReport) {
         if c < 0.7 {
             eprintln!(
                 "  warning: {} window is under-filled ({:.0}% coverage). Run \
-                 `mev-scout explorer backfill --days 30` first.",
+                 `mev-scout explorer index --days 30` first.",
                 r.window,
                 c * 100.0
             );
