@@ -56,15 +56,15 @@ output = "table"
 # poll_interval_ms = 2000
 
 # ── Ledger (virtual-fund P&L, always on in `live`) ──────────────────
-# Overridable per session: --initial-balance / --initial-balance-usd,
-# --reserve, --max-fills-per-block, --native-usd
+# Overridable per session: --initial-balance, --reserve.
+# max_fills_per_block is TOML-only.
 # [paper]
 # starting_gas_wei = "10000000000000000000"  # 10 native
 # reserve_wei = "0"
 # max_fills_per_block = 32
 
 # ── Per-chain public RPC overrides ─────────────────────────────────
-# Switching chains via `--chain` / config just works — every chain gets its
+# Switching chains in this file just works — every chain gets its
 # own public endpoints from chainlist. `rps_limit` / `block_concurrency` stay
 # global.
 
@@ -80,7 +80,7 @@ output = "table"
 # `explorer show` MEV gate: detector-expected net profit (expected_profit −
 # gas_cost_wei) against the same tx's realized trace delta, joined on tx_hash.
 # Same convention — over the band fails the command, and a tx with no realized
-# figure yet only warns. `--tolerance-pct` overrides both gates.
+# figure yet only warns. Both gates are TOML-only.
 # mev_tolerance_pct = 20.0
 # mev_error_usd_tol = 0.50
 

@@ -1,6 +1,8 @@
 # mev-scout CLI — Simplification & Zero-Config Plan
 
-Status: **proposed** (no code changed yet)
+Status: **implemented**. Where this document and the code disagree, the code
+(and the decisions in §9) win. User-facing command docs live in
+[`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`README.md`](../README.md).
 
 Goal: shrink the `mev-scout` command surface to the smallest set that still
 delivers the project's core objective — *detect MEV opportunities, record them,
@@ -62,7 +64,9 @@ Current flags: `BlockRangeArgs` (exactly one required), `--incremental`,
 
 1. Pool cache non-empty → treat as `--incremental` (resume from highest
    `creation_block`).
-2. Pool cache empty → treat as `--blocks 2048` from the confirmed tip.
+2. Pool cache empty → scan the chain's `pool_discovery_lookback_blocks`
+   (1000 in `core/data/chains.toml`) ending at the tip. The original draft
+   used a hardcoded `--blocks 2048`; the per-chain lookback is what shipped.
 
 **Target signature**
 
@@ -87,17 +91,21 @@ mev-scout discover [--incremental] [--blocks N | --block N | --from-block A --to
 
 **New behaviors**
 
-- **Implicit pool bootstrap** — if the pool cache is empty (or below a small
-  threshold), `live` runs `discover` with its default range before streaming.
+- **Implicit pool bootstrap** — if the pool cache is empty (`pool_count == 0`),
+  `live` runs on-chain `discover` over the chain lookback before scanning.
+  A non-empty cache is left alone, even when it is small.
 - **Implicit token bootstrap** — if the token cache is empty, populate it from
-  the bundled known-token list (offline). No network.
-- **Single-pass default** — with no `--loop`, process a bounded recent window
-  once, print the opportunity table + aggregated summary, and exit 0.
+  the bundled known-token list (offline). No network. There is no
+  `discover --tokens-only`.
+- **Single-pass default** — with no `--loop`, scan `tip − N + 1 ..= tip`
+  once (`--blocks`, default 64), print the opportunity table + ledger
+  summary, and exit 0. `--duration` and `--max-blocks` require `--loop`.
 
 **Target signature**
 
 ```text
-mev-scout live [--loop] [--duration D] [--max-blocks N] [--initial-balance WEI] [--reserve WEI]
+mev-scout live [--loop] [--duration D] [--max-blocks N] [--blocks N]
+               [--initial-balance WEI] [--reserve WEI]
 ```
 
 ---
@@ -109,7 +117,7 @@ Current subcommands: `index`, `stats`, `show`, `report`, `backfill`, `validate`.
 | Subcommand | Verdict | Notes |
 |---|---|---|
 | `index [--duration D]` | **Keep** | Live, idempotent, resumable, reorg-aware ingestion. Opt-in only. |
-| `backfill` | **Keep, tighten** | Required for 1d/7d/30d revenue windows. Exactly one of `--days` / `--from-block`+`--to-block`. |
+| `backfill` | **Keep, tighten** | Required for 1d/7d/30d revenue windows. `--days` or `--from-block`+`--to-block`; no flags defaults to `--days 7`. |
 | `show <TX_HASH>` | **Keep, minimal** | Drop `--tolerance-pct` (belongs in `[explorer]` config). Keep `--trace` — on-demand `debug_traceTransaction` profit recompute is high-value. |
 | `report` | **Keep, minimal** | `--windows` (default `1d,7d,30d`), `--kind`, `--top` (default `10`) already have good defaults; no-arg invocation works. |
 | `stats` | **Remove** | Redundant with `explorer report` for almost all users (windowed revenue + breakdowns). |
@@ -125,25 +133,27 @@ Current subcommands: `index`, `stats`, `show`, `report`, `backfill`, `validate`.
 |---|---|---|
 | `-f, --config <FILE>` | **Keep** | Standard. |
 | `-v, --verbose` | **Keep** | Debug path; default stays `info`. |
-| `--quiet` | **Consider removing** | Niche; log-level control via `RUST_LOG` already covers it. Drop if the surface must shrink further. |
+| `--quiet` | **Keep** | Sets the tracing filter to `error`. Program tables and summaries on stdout are unchanged. |
 
 ---
 
 ## 7. Proposed final CLI surface
 
 ```text
-mev-scout                                  # == live, single-pass, prints summary, exits 0
+mev-scout                                  # == live, single-pass over the last 64 blocks, exits 0
 mev-scout --config FILE
 mev-scout -v | --verbose
+mev-scout --quiet
 
   discover [--incremental] [--blocks N | --block N | --from-block A --to-block B]
-  live     [--loop] [--duration D] [--max-blocks N] [--initial-balance WEI] [--reserve WEI]
+  live     [--loop] [--duration D] [--max-blocks N] [--blocks N]
+           [--initial-balance WEI] [--reserve WEI]
   report   [--run-id ID]
   config
 
   explorer
     index    [--duration D]
-    backfill [--days N | --from-block A --to-block B]
+    backfill [--days N | --from-block A --to-block B]   # no range → --days 7
     show     <TX_HASH> [--trace]
     report   [--windows 1d,7d,30d] [--kind KIND] [--top 10]
 ```
@@ -160,37 +170,42 @@ subcommands → 4, and a zero-argument `mev-scout` that works.
 
 ## 8. Implementation order
 
-1. Add the implicit subcommand (`#[command(subcommand)] Option<Command>` +
-   default to `Live`) in `cli/src/cli.rs`; keep `Command::Live` unreachable as
-   a *typed* default by constructing it programmatically.
-2. Make `LiveArgs` single-pass the default: `--loop` gates the streaming loop;
-   one-shot processes the default window and exits.
-3. Add bootstrap hooks (`pool cache empty → discover`, `token cache empty →
-   bundled list`) inside `commands/live.rs` / `commands/discover.rs`.
-4. Make `BlockRangeArgs` optional on `DiscoverArgs` and implement the
-   resolution rule (cache → incremental, else `--blocks 2048`).
-5. Drop the removed flags from `cli.rs` and delete their `overrides.rs` and
-   `commands/*.rs` handling; move `--max-fills-per-block`, `--native-usd`,
-   `--initial-balance-usd`, `tolerance_pct` to config-only (already mapped in
-   `overrides::build_overrides_from_command`).
-6. Remove `explorer stats` and gate `explorer validate` behind a cargo feature
-   (default off) rather than deleting the core implementation.
-7. Update `docs/ARCHITECTURE.md` §CLI section + `README.md` examples.
-8. Re-run `cargo clippy --workspace --all-targets` and `cargo test`.
+All eight steps landed:
+
+1. Implicit subcommand: `Option<Command>` plus `Cli::command_or_default()`
+   builds `Command::Live(LiveArgs::default())`.
+2. `LiveArgs` is single-pass unless `--loop`. `--blocks` (default 64) is the
+   one-shot window. `--duration` and `--max-blocks` require `--loop`.
+3. Bootstrap lives in `cli/src/commands/live.rs` (tokens from the bundled
+   list, pools via on-chain discover). `discover` implies `--incremental`
+   when no range is given and the pool cache is non-empty.
+4. `BlockRangeArgs` is optional. Empty cache uses
+   `pool_discovery_lookback_blocks`, not a hardcoded 2048.
+5. Removed flags are gone from clap. `[paper].max_fills_per_block` and
+   `[paper].starting_gas_wei` are the config homes for fill cap and wallet
+   seed. `--initial-balance-usd` and `--native-usd` were not given new config
+   keys; USD columns use a resolved native price when one is already cached
+   or fetched for display. Show-gate tolerances are
+   `[explorer].trace_tolerance_pct` and `[explorer].mev_tolerance_pct`.
+6. `explorer stats` is gone. `explorer validate` is behind the `validate`
+   Cargo feature (default off). The library API stays.
+7. `docs/ARCHITECTURE.md` and `README.md` describe this surface.
+8. Clippy and tests were part of the implementation; re-run them when the
+   surface changes again.
 
 ---
 
-## 9. Open decisions (need confirmation)
+## 9. Decisions
 
-1. **Zero-arg behavior** — `mev-scout` = single-pass `live` over the last *N*
-   blocks, or = catch-up-to-tip-then-stop? ("Desired initial result" differs.)
-2. **First-run discover window** — `2048` blocks (better coverage, slower first
-   run) or `256–512` (fast first result, thinner pool set)?
-3. **Exact definition of "single-pass"** — from `tip - N` → `tip` once, or
-   "resume from the last processed block up to tip, then stop"?
-4. **`explorer backfill` with no range** — default to `--days 7` (zero-config
-   usable) or hard error?
-5. **Chain default** — which chain does the zero-config path assume, and what
-   happens when no `rpc.url` is configured at all? (Should produce one clear
-   error, not a degraded run.)
-6. **`--quiet`** — drop, or keep as a first-class citizen?
+1. **Zero-arg behavior** — `mev-scout` is single-pass `live` over the last 64
+   blocks (`tip − 63 ..= tip`), then exit.
+2. **First-run discover window** — the chain's
+   `pool_discovery_lookback_blocks` (1000), not 2048 and not 256–512.
+3. **Single-pass** — `tip − N + 1 ..= tip` once. It does not resume from the
+   last processed block. `--loop` is the continuous path.
+4. **`explorer backfill` with no range** — trailing 7 days
+   (`DEFAULT_BACKFILL_DAYS`).
+5. **Chain default** — Polygon (`ChainName::Polygon`), with the built-in
+   public RPC list from `default_chains()`. A bad or empty RPC URL fails in
+   `validate_live` before bootstrap.
+6. **`--quiet`** — kept.

@@ -172,24 +172,28 @@ format for `report` and `discover` is the TOML `output` key
 `record_rejections`, `[discover]`, `[live]`, and `[paper]` (see
 `mev-scout.example.toml`). `batch_rpc` applies only to `job_run`; `live` leaves batching off.
 
-### Block range (exactly one)
+### Block range
 
-`discover`, `explorer index` and `explorer backfill` require exactly one of:
+`discover` takes at most one of `--blocks`, `--block`, or
+`--from-block`/`--to-block`. With no range it resumes from the newest cached
+`creation_block` when the pool cache is populated, and otherwise scans the
+chain's `pool_discovery_lookback_blocks` (1000) up to the tip.
 
 ```powershell
-mev-scout discover --days 7
+mev-scout discover
+mev-scout discover --incremental
 mev-scout discover --blocks 100
 mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-`--days` is 1–365. With no range at all, `discover` resumes from the newest
-cached `creation_block` when the pool cache is populated, and otherwise falls
-back to `[discover].pool_discovery_lookback_blocks` up to the tip; `backfill`
-defaults to the trailing 7 days.
+`explorer index` takes `--duration` only. `explorer backfill` takes `--days`
+(1–365) or `--from-block`/`--to-block`; with no range it indexes the trailing
+7 days.
 
-`live` takes no range flags — it follows the chain tip. Its one-shot window is
-`--blocks N` (default 64), scanned as `tip − N + 1 ..= tip`.
+`live --blocks N` (default 64) is the one-shot window, scanned as
+`tip − N + 1 ..= tip`. It is not a discover-style range. `--loop` follows the
+tip instead.
 
 ### Two SQLite stores
 
@@ -247,19 +251,19 @@ mev-scout live --loop                         # keep following the chain
 mev-scout live --loop --duration 1h
 mev-scout live --loop --max-blocks 50
 mev-scout live --initial-balance 1000000000000000000
-mev-scout live --initial-balance-usd 10 --native-usd 0.42
+mev-scout live --reserve 500000000000000000
 # poll_interval_ms → [live]; record_rejections → TOML
+# starting wallet with no flag → [paper].starting_gas_wei
 ```
 
 | Flag | Meaning |
 |---|---|
 | *(none)* | Scan the latest 64 blocks once, then exit |
-| `--blocks <n>` | Width of the one-shot window (`tip − n + 1 ..= tip`); zero is rejected |
+| `--blocks <n>` | Width of the one-shot window (`tip − n + 1 ..= tip`); ignored with `--loop`; zero is rejected |
 | `--loop` | Follow the tip, polling every `[live].poll_interval_ms` (2000) |
 | `--duration` / `--max-blocks` | Stop conditions; **both require `--loop`** |
-| `--initial-balance` / `--initial-balance-usd` | Virtual wallet seed (mutually exclusive) |
-| `--reserve <wei>` | Gas kept back from the wallet |
-| `--native-usd <price>` | Offline native price; required by `--initial-balance-usd` |
+| `--initial-balance <wei>` | Virtual wallet seed; overrides `[paper].starting_gas_wei` |
+| `--reserve <wei>` | Gas kept back from the wallet; overrides `[paper].reserve_wei` |
 
 #### Implicit bootstrap
 
@@ -307,8 +311,8 @@ When the session finishes (one-shot, or `--duration` / `--max-blocks` reached in
   skips `net <= 0` as `NonPositiveNet`. The breakdown therefore only ever
   attributes profit; a gas-heavy candidate shows up under `skipped`, not as a
   losing row.
-- USD columns appear only when a price is known (`--native-usd`, or a resolved
-  native price). Without one, amounts stay in wei rather than being guessed.
+- USD columns appear only when a native price is already cached or can be
+  resolved for display. Without one, amounts stay in wei.
 - One `paper_sessions` row plus its `paper_fills` are written once at session
   end; `report` re-renders the same figures offline.
 
@@ -349,7 +353,6 @@ an RPC endpoint.
 
 ```powershell
 cargo run -p mev-scout-cli -- --config mev-scout.toml discover --blocks 2000
-mev-scout discover --days 30
 mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 mev-scout discover                          # incremental over a warm cache
@@ -359,8 +362,9 @@ mev-scout discover                          # incremental over a warm cache
 
 | Flag / config | Concept |
 |---|---|
-| `--days` / `--blocks` / `--block` / `--from-block`+`--to-block` | Lookback window, exactly one form |
-| *(no range)* | Resume from max cached `creation_block` if the cache is populated, else `pool_discovery_lookback_blocks` → tip |
+| `--blocks` / `--block` / `--from-block`+`--to-block` | Lookback window, at most one form |
+| `--incremental` | Resume from max cached `creation_block` |
+| *(no range)* | Same as `--incremental` when the cache is populated, else `pool_discovery_lookback_blocks` → tip |
 | `[discover].health_check` | Drop drained/paused pools (default on) |
 | `[discover].max_pools` | Pagination cap |
 | `output = "json"` | Machine-readable pool list |
@@ -573,7 +577,6 @@ cap rather than a per-run decision:
 
 ```powershell
 mev-scout live --initial-balance 1000000000000000000
-mev-scout live --initial-balance-usd 10 --native-usd 0.42
 mev-scout live --reserve 500000000000000000
 ```
 

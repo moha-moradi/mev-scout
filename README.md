@@ -90,19 +90,21 @@ mev-scout explorer backfill
 | `explorer` | Realized-MEV forensics (`index`, `show`, `report`, `backfill`) | [§4.6](docs/ARCHITECTURE.md#46-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
-always runs its paper ledger (`--initial-balance`, `--reserve`,
-`--native-usd`). At session end it prints and persists cost, remaining
-balance, net P&L and a per-strategy breakdown; `report` shows a run's ledger
-session alongside its results. `--max-fills-per-block` moved to `[paper]` in
-the TOML, and `explorer stats` is covered by `explorer report`.
+always runs its paper ledger (`--initial-balance`, `--reserve`). At session
+end it prints and persists cost, remaining balance, net P&L and a
+per-strategy breakdown; `report` shows a run's ledger session alongside its
+results. `--max-fills-per-block` moved to `[paper]` in the TOML, and
+`explorer stats` is covered by `explorer report`.
 
 `explorer validate` is a research command hidden behind a non-default Cargo
 feature — build with `--features validate` to expose it.
 
-Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live` takes
-no range flags (it follows the tip); `discover`, `explorer index` and
-`explorer backfill` take exactly one of `--days`, `--blocks`, `--block`, or
-`--from-block/--to-block`.
+Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
+--blocks` sets the one-shot window (default 64); `--loop` follows the tip.
+`discover` takes an optional `--blocks`, `--block`, or
+`--from-block`/`--to-block` (and `--incremental`). `explorer index` takes
+`--duration`. `explorer backfill` takes `--days` or `--from-block`/`--to-block`,
+and defaults to the trailing 7 days.
 
 ## Layout
 
