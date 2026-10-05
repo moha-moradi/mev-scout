@@ -64,7 +64,7 @@ use alloy::primitives::{address, Address};
 
 use mev_scout_core::config::validation::resolve_chain;
 use mev_scout_core::config::Config;
-use mev_scout_core::explorer::ingest::{run_range, IngestConfig};
+use mev_scout_core::explorer::ingest::{run_range, IngestConfig, PoolViews};
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::explorer::MevKind;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
@@ -527,7 +527,7 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
 
-    let pool_tokens = load_pool_registry(&config, &chain);
+    let registry = load_pool_registry(&config, &chain);
     let store = match ExplorerStore::open_in_memory() {
         Ok(s) => s,
         Err(e) => {
@@ -545,7 +545,10 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
             &setup.rpc,
             &store,
             &cfg,
-            &pool_tokens,
+            PoolViews {
+                tokens: &registry.tokens,
+                v2_like: &registry.v2_like,
+            },
             *from,
             *to,
             &NoopProgress,
@@ -578,6 +581,7 @@ const ALL_KINDS: &[&str] = &[
     "liquidation",
     "jit",
     "jit_arb",
+    "skim",
     "unknown",
 ];
 
@@ -755,6 +759,7 @@ fn every_classifier_kind_is_reported_by_a_record_run() {
         "liquidation",
         "jit",
         "jit_arb",
+        "skim",
         "unknown",
     ] {
         assert!(

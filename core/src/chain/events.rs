@@ -25,6 +25,19 @@ pub const TRANSFER_TOPIC: B256 =
 pub const V2_SWAP_TOPIC: B256 =
     b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
+/// `Sync(uint112 reserve0, uint112 reserve1)` — emitted by swap/mint/burn/sync;
+/// not emitted by `skim()`.
+pub const V2_SYNC_TOPIC: B256 =
+    b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
+
+/// `Mint(address indexed sender, uint amount0, uint amount1)`.
+pub static V2_MINT_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Mint(address,uint256,uint256)"));
+
+/// `Burn(address indexed sender, uint amount0, uint amount1, address indexed to)`.
+pub static V2_BURN_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Burn(address,uint256,uint256,address)"));
+
 // ── Uniswap V3 ──────────────────────────────────────────────────────
 
 pub const V3_SWAP_TOPIC: B256 =

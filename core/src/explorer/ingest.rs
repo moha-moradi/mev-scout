@@ -6,7 +6,7 @@
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
 //! lag applied before indexing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, B256};
 use tracing::{debug, warn};
@@ -107,6 +107,13 @@ fn build_profit_priority(chain: ChainName, wrapped_native: Address) -> Vec<Addre
     v
 }
 
+/// Token0/token1 map plus V2-like skim-eligible pairs, shared by ingest callers.
+#[derive(Debug, Clone, Copy)]
+pub struct PoolViews<'a> {
+    pub tokens: &'a HashMap<Address, (Address, Address)>,
+    pub v2_like: &'a HashSet<Address>,
+}
+
 /// Result of indexing one block.
 #[derive(Debug, Clone)]
 pub struct IndexedBlock {
@@ -129,7 +136,7 @@ pub async fn index_block(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
-    pool_tokens: &HashMap<Address, (Address, Address)>,
+    pools: PoolViews<'_>,
     block_number: u64,
     native_price: Option<f64>,
     token_prices: Option<HashMap<Address, TokenUsd>>,
@@ -166,8 +173,8 @@ pub async fn index_block(
             continue; // failed txs carry no realized MEV
         }
 
-        let (transfers, swaps, liquidations, flashloans, jit) =
-            classify::decode_tx_logs(tx.index, &receipt.logs, pool_tokens);
+        let (transfers, swaps, liquidations, flashloans, jit, v2_pair_ops) =
+            classify::decode_tx_logs(tx.index, &receipt.logs, pools.tokens);
         let jit_count = jit.len();
 
         // Real gas (Phase 2.1): prefer the receipt's `effectiveGasPrice`, then
@@ -240,6 +247,7 @@ pub async fn index_block(
             liquidations,
             flashloans,
             jit,
+            v2_pair_ops,
         });
     }
 
@@ -255,6 +263,7 @@ pub async fn index_block(
         },
         arb_likely_parity: cfg.arb_likely_parity,
         open_positions,
+        v2_like_pools: pools.v2_like.clone(),
         txs: tx_inputs,
     };
 
@@ -559,7 +568,7 @@ pub async fn run_live(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
-    pool_tokens: &HashMap<Address, (Address, Address)>,
+    pools: PoolViews<'_>,
     poll_ms: u64,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<u64> {
@@ -622,7 +631,7 @@ pub async fn run_live(
             let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             for block in cursor..=safe {
                 let indexed =
-                    index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
+                    index_block(rpc, store, cfg, pools, block, native_price, None).await?;
                 indexed_total += indexed.ops as u64;
             }
             store.set_sync_state(cfg.chain_id, safe, safe)?;
@@ -654,7 +663,7 @@ pub async fn run_range(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
-    pool_tokens: &HashMap<Address, (Address, Address)>,
+    pools: PoolViews<'_>,
     from_block: u64,
     to_block: u64,
     progress: &dyn JobProgress,
@@ -695,7 +704,7 @@ pub async fn run_range(
         if store.block_classified(block)? {
             continue;
         }
-        let indexed = index_block(rpc, store, cfg, pool_tokens, block, native_price, None).await?;
+        let indexed = index_block(rpc, store, cfg, pools, block, native_price, None).await?;
         outcome.blocks_processed += 1;
         outcome.ops += indexed.ops as u64;
         if done.is_multiple_of(500) || done == total {

@@ -9,7 +9,7 @@ use anyhow::{bail, Context};
 use crate::chain::timing::blocks_per_day;
 use crate::config::validation;
 use crate::config::Config;
-use crate::explorer::ingest::{run_range, safe_head, IngestConfig};
+use crate::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews};
 use crate::explorer::store::ExplorerStore;
 use crate::progress::JobProgress;
 use crate::types::ChainName;
@@ -51,7 +51,7 @@ pub async fn job_backfill(
     cfg.confirmations = config.explorer.confirmations;
     cfg.arb_likely_parity = config.explorer.arb_likely_parity;
 
-    let pool_tokens = load_pool_registry(config, &chain);
+    let registry = load_pool_registry(config, &chain);
 
     let (from, to) = resolve_range(&setup, &cfg, chain, opts).await?;
     if to < from {
@@ -66,7 +66,19 @@ pub async fn job_backfill(
     ));
 
     let t0 = Instant::now();
-    let out = run_range(&setup.rpc, &store, &cfg, &pool_tokens, from, to, progress).await?;
+    let out = run_range(
+        &setup.rpc,
+        &store,
+        &cfg,
+        PoolViews {
+            tokens: &registry.tokens,
+            v2_like: &registry.v2_like,
+        },
+        from,
+        to,
+        progress,
+    )
+    .await?;
     let elapsed = t0.elapsed();
     progress.log(&format!(
         "Backfill done — {} new blocks indexed, {} ops in {:.1}s",

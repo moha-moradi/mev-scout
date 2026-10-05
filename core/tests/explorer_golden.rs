@@ -99,6 +99,7 @@ fn tx_input(
         liquidations: vec![],
         flashloans: vec![],
         jit,
+        v2_pair_ops: vec![],
     }
 }
 
@@ -191,6 +192,7 @@ fn golden_input() -> BlockInput {
         },
         arb_likely_parity: true,
         open_positions: vec![],
+        v2_like_pools: std::collections::HashSet::new(),
         txs: vec![arb_tx, front, victim, back, mint_tx, burn_tx],
     }
 }

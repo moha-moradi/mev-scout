@@ -77,6 +77,9 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
             );
             format!("Jit|{:#x}|{}|{}", first_pool(&ev.pools), lo, hi)
         }
+        crate::explorer::types::MevKind::Skim => {
+            format!("Skim|{:#x}|{:#x}", first_pool(&ev.pools), ev.searcher)
+        }
         _ => {
             let mut pools = ev.pools.clone();
             pools.sort();

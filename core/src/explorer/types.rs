@@ -25,6 +25,8 @@ pub enum MevKind {
     Jit,
     /// JIT combined with a same-tx/block arb.
     JitArb,
+    /// UniV2-style `skim()`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
+    Skim,
     /// Profitable pattern not matching any rule (incl. probable CEX-DEX bots).
     Unknown,
 }
@@ -39,6 +41,7 @@ impl MevKind {
             MevKind::Liquidation => "liquidation",
             MevKind::Jit => "jit",
             MevKind::JitArb => "jit_arb",
+            MevKind::Skim => "skim",
             MevKind::Unknown => "unknown",
         }
     }
@@ -52,6 +55,7 @@ impl MevKind {
             "liquidation" => Some(MevKind::Liquidation),
             "jit" => Some(MevKind::Jit),
             "jit_arb" => Some(MevKind::JitArb),
+            "skim" => Some(MevKind::Skim),
             "unknown" => Some(MevKind::Unknown),
             _ => None,
         }
@@ -295,4 +299,22 @@ pub struct JitFact {
     pub amount1: U256,
     /// When true, overlap is any same-pool swap (LB has no tick on Swap).
     pub bin_amm: bool,
+}
+
+/// UniV2 pair lifecycle op used to exclude Swap/Mint/Burn/Sync outflows from
+/// skim classification (skim itself emits Transfers only — never Sync).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum V2PairOpKind {
+    Sync,
+    Mint,
+    Burn,
+}
+
+/// A decoded UniV2-style Sync/Mint/Burn log (pool address + kind only).
+#[derive(Debug, Clone)]
+pub struct V2PairOpFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub pool: Address,
+    pub kind: V2PairOpKind,
 }

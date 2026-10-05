@@ -15,7 +15,7 @@ pub use backfill::{job_backfill, BackfillOpts, BackfillOutcome};
 pub use discover::{job_discover, DiscoverOpts, DiscoverOutcome};
 pub use explorer_validate::{job_explorer_validate, ExplorerValidateOpts, ExplorerValidateOutcome};
 pub use index::load_pool_registry;
-pub use index::{job_index, IndexOpts, IndexOutcome};
+pub use index::{job_index, IndexOpts, IndexOutcome, PoolRegistry};
 pub use live::{job_live, LiveLoopOutcome, LiveOneShotOutcome, LiveOpts, LiveOutcome};
 pub use report::{job_report, ReportOpts, ReportOutcome};
 pub use rpc::{init_rpc, RpcSetup};

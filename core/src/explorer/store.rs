@@ -14,6 +14,8 @@ use std::path::Path;
 
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 type PoolSwapRow = (String, Option<String>, String, String);
+/// Persist-block return: `(ops_written, open_jit_positions)`.
+type PersistBlockStats = (usize, Vec<(Address, Option<Address>, u64)>);
 
 use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
@@ -314,7 +316,7 @@ impl ExplorerStore {
               tx_hash TEXT NOT NULL,
               ts INTEGER NOT NULL,
               kind TEXT NOT NULL CHECK(kind IN
-                ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','unknown')),
+                ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
               eoa TEXT NOT NULL,
               contract TEXT,
               confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
@@ -478,6 +480,68 @@ impl ExplorerStore {
         // flash-loan fee column existed. `volume_usd` likewise for pre-report DBs.
         Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
         Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;
+        Self::ensure_mev_ops_kind_skim(&self.conn)?;
+        Ok(())
+    }
+
+    /// Widen `mev_ops.kind` CHECK to include `'skim'` (SQLite cannot ALTER CHECK).
+    fn ensure_mev_ops_kind_skim(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        let sql: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='mev_ops'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let Some(sql) = sql else {
+            return Ok(());
+        };
+        if sql.contains("'skim'") {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "
+            BEGIN;
+            CREATE TABLE mev_ops_new(
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              block_number INTEGER NOT NULL,
+              tx_index INTEGER,
+              tx_hash TEXT NOT NULL,
+              ts INTEGER NOT NULL,
+              kind TEXT NOT NULL CHECK(kind IN
+                ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
+              eoa TEXT NOT NULL,
+              contract TEXT,
+              confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
+              canonical_id TEXT,
+              profit_token TEXT,
+              profit_amount TEXT,
+              profit_usd REAL,
+              volume_usd REAL,
+              gas_cost_usd REAL,
+              flashloan_fee_usd REAL,
+              net_profit_usd REAL,
+              route_json TEXT,
+              victim_hashes TEXT,
+              details_json TEXT,
+              detector TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            INSERT INTO mev_ops_new SELECT
+              id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+              canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+              gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+              victim_hashes, details_json, detector, created_at
+            FROM mev_ops;
+            DROP TABLE mev_ops;
+            ALTER TABLE mev_ops_new RENAME TO mev_ops;
+            CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
+            CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
+            CREATE INDEX IF NOT EXISTS mev_ops_kind_ts ON mev_ops(kind, ts);
+            CREATE INDEX IF NOT EXISTS mev_ops_canonical ON mev_ops(canonical_id);
+            COMMIT;
+            ",
+        )?;
         Ok(())
     }
 
@@ -645,7 +709,7 @@ impl ExplorerStore {
         let now = crate::utils::epoch_secs() as i64;
         let conn = &self.conn;
         conn.execute("BEGIN IMMEDIATE", [])?;
-        let result = (|| -> anyhow::Result<(usize, Vec<(Address, Option<Address>, u64)>)> {
+        let result = (|| -> anyhow::Result<PersistBlockStats> {
             conn.execute(
                 "INSERT OR IGNORE INTO blocks
                    (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)

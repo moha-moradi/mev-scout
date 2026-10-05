@@ -13,10 +13,11 @@
 //! `query` (live/stats/top/show/export CLI surface).
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
-//! atomic-arbitrage cycles (`ArbAtomic`, exact/estimated), three-leg sandwiches
-//! (`Sandwich`), frontruns (`Frontrun`), backruns (`Backrun`), and narrowly
-//!-intersected JIT liquidity (`Jit`). Kinds are mutually exclusive by priority
-//! (`Sandwich` > `Frontrun` > `Backrun` > `ArbAtomic` > `JitArb` > `Jit`).
+//! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
+//! (`ArbAtomic`, exact/estimated), three-leg sandwiches (`Sandwich`), frontruns
+//! (`Frontrun`), backruns (`Backrun`), and narrowly-intersected JIT liquidity
+//! (`Jit`). Kinds are mutually exclusive by priority (`Sandwich` > `Frontrun` >
+//! `Backrun` > `ArbAtomic` > `JitArb` > `Jit` > `Liquidation` > `Skim`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
 //! is non-positive is dropped at persist time (Phase 1.4 profitability gate).

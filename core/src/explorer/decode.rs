@@ -8,6 +8,7 @@
 //!   Fluid, Metric
 //! - liquidation registry: Aave V3 `LiquidationCall`, Compound V3 `Absorb`
 //! - V3 `Mint`/`Burn` (JIT positions)
+//! - UniV2 `Sync`/`Mint`/`Burn` (skim exclusion)
 //!
 //! Swap token direction is resolved by pairing each swap log with the ERC-20
 //! Transfer legs that move tokens into/out of the pool in the same tx
@@ -18,14 +19,15 @@ use alloy::primitives::{Address, B256, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{
-    Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact, TransferFact,
+    Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact, TransferFact, V2PairOpFact,
+    V2PairOpKind,
 };
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
     AAVE_V3_LIQUIDATION_CALL_TOPIC, BALANCER_FLASH_LOAN_TOPIC, COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
-    COMPOUND_V3_ABSORB_TOPIC, INF_CL_SWAP_TOPIC, TRANSFER_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
-    V4_SWAP_TOPIC,
+    COMPOUND_V3_ABSORB_TOPIC, INF_CL_SWAP_TOPIC, TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC,
+    V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -48,6 +50,29 @@ pub fn decode_transfer(log: &LogData) -> Option<TransferFact> {
         from: Address::from_slice(&log.topics[1][12..]),
         to: Address::from_slice(&log.topics[2][12..]),
         amount: U256::from_be_slice(&log.data[0..32]),
+    })
+}
+
+/// Decode a UniV2-style Sync/Mint/Burn log (exclusion signal for skim).
+///
+/// Only the pool address and op kind are needed — amounts are irrelevant for
+/// skim negatives.
+pub fn decode_v2_pair_op(log: &LogData) -> Option<V2PairOpFact> {
+    let topic0 = *log.topics.first()?;
+    let kind = if topic0 == V2_SYNC_TOPIC {
+        V2PairOpKind::Sync
+    } else if topic0 == *V2_MINT_TOPIC {
+        V2PairOpKind::Mint
+    } else if topic0 == *V2_BURN_TOPIC {
+        V2PairOpKind::Burn
+    } else {
+        return None;
+    };
+    Some(V2PairOpFact {
+        tx_index: 0,
+        log_index: 0,
+        pool: log.address,
+        kind,
     })
 }
 

@@ -6,12 +6,13 @@
 //!
 //! Pass order (first match wins, disjoint):
 //! 1. Liquidation pass — exact event match on configured lending pools.
-//! 2. Swap attribution — per-tx per-address net token deltas.
-//! 3. Atomic arb pass — ≥2 swaps in one tx + closed cycle + positive net
+//! 2. Skim pass — V2-like pair outbound Transfers with no Swap/Mint/Burn/Sync.
+//! 3. Swap attribution — per-tx per-address net token deltas.
+//! 4. Atomic arb pass — ≥2 swaps in one tx + closed cycle + positive net
 //!    delta of a single profit token.
-//! 4. Sandwich pass — same sender, same pool, opposite directions, with a
+//! 5. Sandwich pass — same sender, same pool, opposite directions, with a
 //!    third-party swap between front-run and back-run (tx-index ordered).
-//! 5. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
+//! 6. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
 //!    same tx also closed an arb cycle. Leftover profitable patterns →
 //!    `unknown` (inferred).
 
@@ -24,7 +25,9 @@ use crate::explorer::profit::{
     has_closed_cycle, net_flash_loan, select_profit_token, DeltaLedger, ProfitTokenPolicy,
 };
 use crate::explorer::store::OpenPosition;
-use crate::explorer::types::{Confidence, JitFact, MevEvent, MevKind, SwapFact, TransferFact};
+use crate::explorer::types::{
+    Confidence, JitFact, MevEvent, MevKind, SwapFact, TransferFact, V2PairOpFact,
+};
 
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
 #[derive(Debug, Clone, Default)]
@@ -42,6 +45,8 @@ pub struct TxInput {
     pub liquidations: Vec<crate::explorer::types::LiquidationFact>,
     pub flashloans: Vec<crate::explorer::types::FlashLoanFact>,
     pub jit: Vec<JitFact>,
+    /// UniV2 Sync/Mint/Burn logs — exclusion signal for skim.
+    pub v2_pair_ops: Vec<V2PairOpFact>,
 }
 
 /// One block's classified input.
@@ -57,6 +62,8 @@ pub struct BlockInput {
     /// Cross-block JIT open Mint positions (Phase 1.5), loaded from the store
     /// window for the current block.
     pub open_positions: Vec<OpenPosition>,
+    /// Registry addresses that expose UniV2-style `skim()` (V2/Solidly/Camelot).
+    pub v2_like_pools: HashSet<Address>,
     pub txs: Vec<TxInput>,
 }
 
@@ -124,6 +131,9 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
         }
     }
     let liq_txs: std::collections::HashSet<u64> = events.iter().map(|e| e.tx_index).collect();
+
+    // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
+    events.extend(classify_skims(input));
 
     // ── 2-3. Swap attribution + atomic arb pass ─────────────────────────
     for tx in &input.txs {
@@ -415,8 +425,118 @@ fn kind_order(k: MevKind) -> u8 {
         MevKind::JitArb => 4,
         MevKind::Jit => 5,
         MevKind::Liquidation => 6,
-        MevKind::Unknown => 7,
+        MevKind::Skim => 7,
+        MevKind::Unknown => 8,
     }
+}
+
+/// Realized UniV2 `skim()` capture: registry V2-like pair outbound Transfers
+/// that are not accompanied by a same-tx Swap, Sync, Mint, or Burn on that pair.
+fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
+    if input.v2_like_pools.is_empty() {
+        return Vec::new();
+    }
+    let mut events = Vec::new();
+    for tx in &input.txs {
+        if !tx.success {
+            continue;
+        }
+        let mut excluded: HashSet<Address> = HashSet::new();
+        for s in &tx.swaps {
+            excluded.insert(s.pool);
+        }
+        for op in &tx.v2_pair_ops {
+            excluded.insert(op.pool);
+        }
+
+        // pool → (token → amount, recipients)
+        let mut by_pool: HashMap<Address, HashMap<Address, (U256, HashSet<Address>)>> =
+            HashMap::new();
+        for t in &tx.transfers {
+            if t.amount.is_zero() || t.from.is_zero() {
+                continue;
+            }
+            if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
+                continue;
+            }
+            let entry = by_pool.entry(t.from).or_default();
+            let slot = entry.entry(t.token).or_insert((U256::ZERO, HashSet::new()));
+            slot.0 = slot.0.saturating_add(t.amount);
+            if !t.to.is_zero() {
+                slot.1.insert(t.to);
+            }
+        }
+
+        for (pool, tokens) in by_pool {
+            let mut profit_tokens: Vec<(Address, U256)> = tokens
+                .iter()
+                .filter(|(_, (amt, _))| !amt.is_zero())
+                .map(|(tok, (amt, _))| (*tok, *amt))
+                .collect();
+            if profit_tokens.is_empty() {
+                continue;
+            }
+            profit_tokens.sort_by_key(|a| a.0);
+            // Primary display token: prefer profit-policy priority, else largest amount.
+            let (profit_token, profit_amount) = profit_tokens
+                .iter()
+                .find(|(tok, _)| input.profit_policy.priority.contains(tok))
+                .copied()
+                .or_else(|| {
+                    profit_tokens
+                        .iter()
+                        .max_by(|a, b| a.1.cmp(&b.1))
+                        .copied()
+                })
+                .unwrap_or((Address::ZERO, U256::ZERO));
+
+            let recipients: Vec<String> = tokens
+                .values()
+                .flat_map(|(_, recips)| recips.iter())
+                .copied()
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .map(|a| format!("{:#x}", a))
+                .collect();
+            let amounts: Vec<serde_json::Value> = profit_tokens
+                .iter()
+                .map(|(tok, amt)| {
+                    serde_json::json!({
+                        "token": format!("{:#x}", tok),
+                        "amount": amt.to_string(),
+                    })
+                })
+                .collect();
+
+            events.push(MevEvent {
+                block: input.block,
+                ts: input.ts,
+                tx_index: tx.tx_index,
+                tx_hash: tx.tx_hash,
+                kind: MevKind::Skim,
+                searcher: tx.from,
+                contract: tx.to,
+                pools: vec![pool],
+                profit_token: Some(profit_token),
+                profit_amount: Some(profit_amount),
+                profit_tokens: profit_tokens.clone(),
+                profit_usd: None,
+                gas_cost_wei: U256::from(tx.gas_used)
+                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                flashloan_fee_wei: None,
+                flashloan_fee_token: None,
+                confidence: Confidence::Exact,
+                victim_hashes: vec![],
+                victim_swap_size: None,
+                details: serde_json::json!({
+                    "pool": format!("{:#x}", pool),
+                    "recipients": recipients,
+                    "amounts": amounts,
+                }),
+            });
+        }
+    }
+    events
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1273,13 +1393,14 @@ pub fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B25
 }
 
 /// Decoded facts for one transaction: (transfers, swaps, liquidations,
-/// flash loans, JIT).
+/// flash loans, JIT, V2 pair ops).
 pub type TxFacts = (
     Vec<TransferFact>,
     Vec<SwapFact>,
     Vec<crate::explorer::types::LiquidationFact>,
     Vec<crate::explorer::types::FlashLoanFact>,
     Vec<JitFact>,
+    Vec<V2PairOpFact>,
 );
 
 /// Convenience: decode a tx's receipt logs into facts (used by ingest).
@@ -1294,6 +1415,7 @@ pub fn decode_tx_logs(
     let mut liquidations = Vec::new();
     let mut flashloans = Vec::new();
     let mut jit = Vec::new();
+    let mut v2_pair_ops = Vec::new();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
         if let Some(mut t) = decode::decode_transfer(log) {
@@ -1326,11 +1448,16 @@ pub fn decode_tx_logs(
             j.log_index = log_idx;
             jit.push(j);
         }
+        if let Some(mut op) = decode::decode_v2_pair_op(log) {
+            op.tx_index = tx_index;
+            op.log_index = log_idx;
+            v2_pair_ops.push(op);
+        }
     }
     decode::attach_swap_tokens(&mut swaps, &transfers, pool_tokens);
     // Phase 1.6: drop aggregator edges already covered by DEX swap edges.
     decode::dedup_aggregator_facts(&mut swaps);
-    (transfers, swaps, liquidations, flashloans, jit)
+    (transfers, swaps, liquidations, flashloans, jit, v2_pair_ops)
 }
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
@@ -1434,7 +1561,8 @@ mod tests {
     use super::*;
     use crate::explorer::store::OpenPosition;
     use crate::explorer::types::{
-        Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, MevKind,
+        Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, MevKind, V2PairOpFact,
+        V2PairOpKind,
     };
     use alloy::primitives::{address, b256, U256};
 
@@ -1579,6 +1707,7 @@ mod tests {
             liquidations: vec![],
             flashloans: vec![],
             jit: vec![],
+            v2_pair_ops: vec![],
         }
     }
 
@@ -1594,8 +1723,15 @@ mod tests {
             },
             arb_likely_parity: true,
             open_positions: vec![],
+            v2_like_pools: HashSet::new(),
             txs,
         }
+    }
+
+    fn block_with_v2(txs: Vec<TxInput>, v2_like: &[Address]) -> BlockInput {
+        let mut input = block(txs);
+        input.v2_like_pools = v2_like.iter().copied().collect();
+        input
     }
 
     fn event_of(events: &[MevEvent], kind: MevKind) -> &MevEvent {
@@ -2640,5 +2776,131 @@ mod tests {
         let ev = event_of(&events, MevKind::Jit);
         assert_eq!(ev.details["bin_amm"], serde_json::json!(true));
         assert_eq!(ev.details["mode"], serde_json::json!("realized"));
+    }
+
+    #[test]
+    fn skim_happy_path_single_token() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        let ev = classify_kind(&input, MevKind::Skim);
+        assert_eq!(ev.searcher, ATK);
+        assert_eq!(ev.pools, vec![POOL_A]);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(42)));
+        assert_eq!(ev.confidence, Confidence::Exact);
+    }
+
+    #[test]
+    fn skim_dual_token_profit_tokens() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, USDC, POOL_A, ATK, 10),
+                transfer(1, TOKA, POOL_A, ATK, 20),
+            ],
+        );
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        let ev = classify_kind(&input, MevKind::Skim);
+        assert_eq!(ev.profit_tokens.len(), 2);
+        assert!(ev
+            .profit_tokens
+            .iter()
+            .any(|(tok, amt)| *tok == USDC && *amt == U256::from(10)));
+        assert!(ev
+            .profit_tokens
+            .iter()
+            .any(|(tok, amt)| *tok == TOKA && *amt == U256::from(20)));
+        // Priority prefers USDC as primary display token.
+        assert_eq!(ev.profit_token, Some(USDC));
+    }
+
+    #[test]
+    fn skim_excluded_when_same_pair_has_swap() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Skim));
+    }
+
+    #[test]
+    fn skim_excluded_when_same_pair_has_sync() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        t.v2_pair_ops = vec![V2PairOpFact {
+            tx_index: 0,
+            log_index: 1,
+            pool: POOL_A,
+            kind: V2PairOpKind::Sync,
+        }];
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        assert!(!kinds(&classify_block(&input)).contains(&MevKind::Skim));
+    }
+
+    #[test]
+    fn skim_ignored_for_non_registry_address() {
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        // Empty v2_like set → no skim.
+        assert!(!kinds(&classify_block(&block(vec![t]))).contains(&MevKind::Skim));
+    }
+
+    #[test]
+    fn skim_coexists_with_unrelated_arb_in_same_block() {
+        let skim_tx = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        let arb_tx = tx(
+            1,
+            VICTIM,
+            true,
+            vec![
+                swap_owned(VICTIM, POOL_A, USDC, TOKA, 100, 200),
+                swap_owned(VICTIM, POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 200),
+                transfer(2, TOKA, VICTIM, POOL_B, 200),
+                transfer(3, USDC, POOL_B, VICTIM, 110),
+            ],
+        );
+        // Only POOL_A is skim-eligible; arb on A+B still classifies separately.
+        // Skim tx has no swap on POOL_A so skim fires; arb tx has swaps so no skim.
+        let input = block_with_v2(vec![skim_tx, arb_tx], &[POOL_A]);
+        let events = classify_block(&input);
+        let ks = kinds(&events);
+        assert!(ks.contains(&MevKind::Skim), "got {ks:?}");
+        assert!(ks.contains(&MevKind::ArbAtomic), "got {ks:?}");
     }
 }

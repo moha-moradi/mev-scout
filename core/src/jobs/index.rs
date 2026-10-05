@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -9,7 +9,8 @@ use anyhow::Context;
 use crate::cache::SqliteStore;
 use crate::config::validation;
 use crate::config::Config;
-use crate::explorer::ingest::{run_live, IngestConfig};
+use crate::dex_type::DexType;
+use crate::explorer::ingest::{run_live, IngestConfig, PoolViews};
 use crate::explorer::store::ExplorerStore;
 use crate::progress::JobProgress;
 use crate::types::ChainName;
@@ -25,6 +26,20 @@ pub struct IndexOutcome {
     pub blocks_indexed: u64,
     pub ops: u64,
     pub elapsed: Duration,
+}
+
+/// Pool → (token0, token1) plus the skim-eligible V2-like pair set.
+#[derive(Debug, Clone, Default)]
+pub struct PoolRegistry {
+    pub tokens: HashMap<Address, (Address, Address)>,
+    pub v2_like: HashSet<Address>,
+}
+
+fn is_v2_like(dex: DexType) -> bool {
+    matches!(
+        dex,
+        DexType::UniswapV2 | DexType::Solidly | DexType::Camelot
+    )
 }
 
 pub async fn job_index(
@@ -44,7 +59,7 @@ pub async fn job_index(
 
     // Phase 1.1: pool registry (pool → token0/token1) for swap-direction
     // resolution. Missing/empty registry degrades to transfer pairing.
-    let pool_tokens = load_pool_registry(config, &chain);
+    let registry = load_pool_registry(config, &chain);
 
     let t0 = Instant::now();
 
@@ -83,7 +98,10 @@ pub async fn job_index(
             &setup.rpc,
             &store,
             &cfg,
-            &pool_tokens,
+            PoolViews {
+                tokens: &registry.tokens,
+                v2_like: &registry.v2_like,
+            },
             config.explorer.poll_interval_ms,
             stop,
         )
@@ -102,20 +120,21 @@ pub async fn job_index(
     })
 }
 
-/// Load the pool → (token0, token1) registry from the scanner cache (Phase 1.1).
-/// Best-effort: an absent/locked cache yields an empty map and ingest degrades
-/// to transfer-pairing resolution.
-pub fn load_pool_registry(
-    config: &Config,
-    chain: &ChainName,
-) -> HashMap<Address, (Address, Address)> {
-    let mut map = HashMap::new();
+/// Load the pool → (token0, token1) registry and V2-like skim set from the
+/// scanner cache (Phase 1.1). Best-effort: an absent/locked cache yields empty
+/// maps and ingest degrades to transfer-pairing resolution (no skim).
+pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
+    let mut tokens = HashMap::new();
+    let mut v2_like = HashSet::new();
     match SqliteStore::open(config.effective_db_path(chain)) {
         Ok(cache) => match cache.list_discovered_pools() {
             Ok(pools) => {
                 for p in pools {
                     if !p.token0.is_zero() && !p.token1.is_zero() {
-                        map.insert(p.address, (p.token0, p.token1));
+                        tokens.insert(p.address, (p.token0, p.token1));
+                        if is_v2_like(p.dex_type) {
+                            v2_like.insert(p.address);
+                        }
                     }
                 }
             }
@@ -123,5 +142,5 @@ pub fn load_pool_registry(
         },
         Err(e) => tracing::warn!("pool registry open failed: {e}"),
     }
-    map
+    PoolRegistry { tokens, v2_like }
 }

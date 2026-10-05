@@ -8,7 +8,7 @@ use super::*;
 use crate::job_progress::BarProgress;
 
 use mev_scout_core::chain::timing::blocks_per_day;
-use mev_scout_core::explorer::ingest::{run_range, safe_head, IngestConfig};
+use mev_scout_core::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews};
 use mev_scout_core::jobs::{init_rpc, load_pool_registry, BackfillOutcome};
 
 pub async fn cmd_backfill(
@@ -62,7 +62,7 @@ pub async fn cmd_backfill(
 
     let setup = init_rpc(config, chain, true).await?;
     let store = explorer_store(config, chain)?;
-    let pool_tokens = load_pool_registry(config, &chain);
+    let registry = load_pool_registry(config, &chain);
 
     println!("Historical backfill — {chain} indexing {from}..={to} (~{span} blocks, resumable)");
     let t0 = std::time::Instant::now();
@@ -70,7 +70,10 @@ pub async fn cmd_backfill(
         &setup.rpc,
         &store,
         &cfg,
-        &pool_tokens,
+        PoolViews {
+            tokens: &registry.tokens,
+            v2_like: &registry.v2_like,
+        },
         from,
         to,
         &BarProgress::new(),

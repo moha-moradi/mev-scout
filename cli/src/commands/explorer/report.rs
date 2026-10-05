@@ -142,7 +142,7 @@ pub async fn cmd_explorer_report(
         Some(k) => {
             let parsed = MevKind::parse(k).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "invalid --kind '{k}' (expected one of arb_atomic, sandwich, frontrun, backrun, liquidation, jit, jit_arb, unknown)"
+                    "invalid --kind '{k}' (expected one of arb_atomic, sandwich, frontrun, backrun, liquidation, jit, jit_arb, skim, unknown)"
                 )
             })?;
             Some(parsed.as_str())

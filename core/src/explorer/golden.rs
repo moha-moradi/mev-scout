@@ -10,6 +10,7 @@
 
 use alloy::primitives::{address, Address, B256, U256};
 use serde::Serialize;
+use std::collections::HashSet;
 
 use crate::explorer::classify::{classify_block, BlockInput, TxInput};
 use crate::explorer::profit::ProfitTokenPolicy;
@@ -145,6 +146,7 @@ fn tx(
         liquidations: vec![],
         flashloans: vec![],
         jit: vec![],
+        v2_pair_ops: vec![],
     }
 }
 
@@ -160,6 +162,7 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
         },
         arb_likely_parity: true,
         open_positions: vec![],
+        v2_like_pools: HashSet::new(),
         txs,
     }
 }
