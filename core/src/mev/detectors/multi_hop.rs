@@ -46,6 +46,7 @@ const RELAX_EPS: f64 = 1e-12;
 /// Cycles are found by Bellman–Ford relaxation over the token graph, then
 /// validated and priced numerically. Maintains a per-block dedup set so the same
 /// persistent path is not re-reported across multiple transactions.
+#[derive(Debug)]
 pub struct MultiHopArbDetector {
     block_number: u64,
     seen: std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,
@@ -264,116 +265,154 @@ impl MultiHopArbDetector {
             return None;
         }
 
-        let pool_a = pm.get(&path[0])?;
-        let pool_b = pm.get(&path[path.len() - 1])?;
-
+        let info_first = pm.get(&path[0])?.info();
+        let info_second = pm.get(&path[1])?.info();
+        let first_shared =
+            if info_first.token0 == info_second.token0 || info_first.token0 == info_second.token1 {
+                info_first.token0
+            } else {
+                info_first.token1
+            };
         // token_in = non-shared side of first pool
-        let next = pm.get(&path[1])?;
-        let info_a = pool_a.info();
-        let info_next = next.info();
-        let first_shared = if info_a.token0 == info_next.token0 || info_a.token0 == info_next.token1
-        {
-            info_a.token0
+        let token_in = if info_first.token0 == first_shared {
+            info_first.token1
         } else {
-            info_a.token1
-        };
-        let token_in = if info_a.token0 == first_shared {
-            info_a.token1
-        } else {
-            info_a.token0
+            info_first.token0
         };
 
         // token_out = non-shared side of last pool
-        let prev = pm.get(&path[path.len() - 2])?;
-        let info_b = pool_b.info();
+        let info_last = pm.get(&path[path.len() - 1])?.info();
+        let info_prev = pm.get(&path[path.len() - 2])?.info();
         let last_shared =
-            if info_b.token0 == prev.info().token0 || info_b.token0 == prev.info().token1 {
-                info_b.token0
+            if info_last.token0 == info_prev.token0 || info_last.token0 == info_prev.token1 {
+                info_last.token0
             } else {
-                info_b.token1
+                info_last.token1
             };
-        let token_out = if info_b.token0 == last_shared {
-            info_b.token1
+        let token_out = if info_last.token0 == last_shared {
+            info_last.token1
         } else {
-            info_b.token0
+            info_last.token0
         };
 
-        // Fee-on-transfer filter: quotes assume full output received; sell-tax
-        // tokens produce phantom opportunities. Exclude known and dynamically
-        // learned FOT tokens.
-        if arb_common::is_fot_pair(pm, token_in, token_out) {
-            return None;
+        // Candidate (walk, token_in, token_out) triples.
+        let candidates: Vec<(Vec<Address>, Address, Address)> = if path.len() == 2
+            && (info_first.token0 == info_second.token0 || info_first.token0 == info_second.token1)
+            && (info_first.token1 == info_second.token0 || info_first.token1 == info_second.token1)
+        {
+            // Both pools hold both tokens: the "non-shared side" that anchors
+            // longer paths does not exist, so entry token *and* rotation are
+            // ambiguous. two_hop resolves the same cycle through its
+            // shared-token bucket — the smallest-address token claims the pair
+            // in the (deterministic) `arbitrage_pairs` scan, making its key
+            // `(max, max)` for a 2-token pair. Mirror that: spend the
+            // larger-address token, pricing both rotations — the two rotation
+            // products are reciprocal up to fees, so at most one can clear.
+            let entry = info_first.token0.max(info_first.token1);
+            let mut reversed = path.to_vec();
+            reversed.reverse();
+            vec![(path.to_vec(), entry, entry), (reversed, entry, entry)]
+        } else {
+            vec![(path.to_vec(), token_in, token_out)]
+        };
+
+        for (walk, token_in, token_out) in candidates {
+            let pool_a = pm.get(&walk[0])?;
+            let pool_b = pm.get(&walk[walk.len() - 1])?;
+
+            // Fee-on-transfer filter: quotes assume full output received; sell-tax
+            // tokens produce phantom opportunities. Exclude known and dynamically
+            // learned FOT tokens.
+            if arb_common::is_fot_pair(pm, token_in, token_out) {
+                continue;
+            }
+
+            // 2-pool cycles get the same exact-integer spot prefilter the
+            // analytical front-end uses: aligned marginal prices provably bound
+            // every trade size below break-even, so skip the optimizer entirely.
+            // Either orientation can be the profitable one (path order is not
+            // chosen for profitability), so accept when either direction clears
+            // fees. The answer is identical for every candidate walk of a pair.
+            if walk.len() == 2
+                && !arb_common::passes_spot_prefilter(pool_a, pool_b, first_shared)
+                && !arb_common::passes_spot_prefilter(pool_b, pool_a, first_shared)
+            {
+                return None;
+            }
+
+            let max_input = pool_a.max_cycle_input();
+
+            let quote_fn = |x: u128| Self::walk_quote(pm, &walk, token_in, x);
+
+            // Deterministic segment-wise optimization (#6 generalization): brackets
+            // the input domain at V3 tick-band crossings inverted into input space
+            // through the prefix quotes, golden-section-searching each concave
+            // bracket. Replaces grid + random restarts with a deterministic pass.
+            let breakpoints = Self::compose_n_hop_breakpoints(pm, &walk, token_in, max_input);
+            let Some((input_amount, output_amount)) =
+                optimal_on_segments(max_input, &breakpoints, &quote_fn)
+            else {
+                continue;
+            };
+
+            if output_amount <= input_amount {
+                continue;
+            }
+
+            let gas_limit = estimate_gas_for_multi_hop(
+                &walk,
+                pm,
+                gas_config.flash_loan_provider.gas_overhead(),
+                &gas_config.calibration,
+            );
+            let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+
+            let gross_profit = output_amount.saturating_sub(input_amount);
+            // Subtract flash loan fee from gross profit
+            let flash_fee = gas_config.flash_loan_fee(input_amount);
+            let net_profit = gross_profit.saturating_sub(flash_fee);
+
+            // Normalize profit to native when token_in != token_out (H6).
+            let (expected_profit, raw_profit) =
+                arb_common::normalize_profit(pm, token_in, token_out, net_profit, input_amount);
+
+            // Compute slippage-adjusted profits: evaluate the same path walk at
+            // ±1%/±2% of the optimum, normalized to native with the shared C5
+            // datapoint semantics (an unpriceable probe is an absent datapoint).
+            let slippage = arb_common::slippage_profits(input_amount, |x| {
+                Self::walk_quote(pm, &walk, token_in, x)
+                    .and_then(|out| (out > x).then(|| out - x))
+                    .and_then(|p| {
+                        arb_common::normalize_profit_native(
+                            pm,
+                            token_in,
+                            token_out,
+                            p,
+                            input_amount,
+                        )
+                    })
+            });
+
+            return Some(arb_common::build_arb_opportunity(
+                arb_common::ArbOpportunityInput {
+                    strategy: Strategy::MultiHopArb,
+                    block_number,
+                    tx_index,
+                    timestamp,
+                    pool_a: walk[0],
+                    pool_b: walk[walk.len() - 1],
+                    token_in,
+                    token_out,
+                    input_amount,
+                    expected_profit,
+                    raw_profit,
+                    slippage,
+                    gas_cost_wei,
+                    path: Some(walk),
+                },
+            ));
         }
-
-        // 2-pool cycles get the same exact-integer spot prefilter the
-        // analytical front-end uses: aligned marginal prices provably bound
-        // every trade size below break-even, so skip the optimizer entirely.
-        if path.len() == 2 && !arb_common::passes_spot_prefilter(pool_a, pool_b, first_shared) {
-            return None;
-        }
-
-        let max_input = pool_a.max_cycle_input();
-
-        let quote_fn = |x: u128| Self::walk_quote(pm, path, token_in, x);
-
-        // Deterministic segment-wise optimization (#6 generalization): brackets
-        // the input domain at V3 tick-band crossings inverted into input space
-        // through the prefix quotes, golden-section-searching each concave
-        // bracket. Replaces grid + random restarts with a deterministic pass.
-        let breakpoints = Self::compose_n_hop_breakpoints(pm, path, token_in, max_input);
-        let (input_amount, output_amount) =
-            optimal_on_segments(max_input, &breakpoints, &quote_fn)?;
-
-        if output_amount <= input_amount {
-            return None;
-        }
-
-        let gas_limit = estimate_gas_for_multi_hop(
-            path,
-            pm,
-            gas_config.flash_loan_provider.gas_overhead(),
-            &gas_config.calibration,
-        );
-        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
-
-        let gross_profit = output_amount.saturating_sub(input_amount);
-        // Subtract flash loan fee from gross profit
-        let flash_fee = gas_config.flash_loan_fee(input_amount);
-        let net_profit = gross_profit.saturating_sub(flash_fee);
-
-        // Normalize profit to native when token_in != token_out (H6).
-        let (expected_profit, raw_profit) =
-            arb_common::normalize_profit(pm, token_in, token_out, net_profit, input_amount);
-
-        // Compute slippage-adjusted profits: evaluate the same path walk at
-        // ±1%/±2% of the optimum, normalized to native with the shared C5
-        // datapoint semantics (an unpriceable probe is an absent datapoint).
-        let slippage = arb_common::slippage_profits(input_amount, |x| {
-            Self::walk_quote(pm, path, token_in, x)
-                .and_then(|out| (out > x).then(|| out - x))
-                .and_then(|p| {
-                    arb_common::normalize_profit_native(pm, token_in, token_out, p, input_amount)
-                })
-        });
-
-        Some(arb_common::build_arb_opportunity(
-            arb_common::ArbOpportunityInput {
-                strategy: Strategy::MultiHopArb,
-                block_number,
-                tx_index,
-                timestamp,
-                pool_a: path[0],
-                pool_b: path[path.len() - 1],
-                token_in,
-                token_out,
-                input_amount,
-                expected_profit,
-                raw_profit,
-                slippage,
-                gas_cost_wei,
-                path: Some(path.to_vec()),
-            },
-        ))
+        None
     }
 
     /// Compose deterministic input-domain breakpoints for an N-hop path.

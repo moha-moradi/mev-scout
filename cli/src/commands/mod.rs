@@ -88,9 +88,7 @@ impl CliCommand for ExplorerArgs {
             }
             Some(ExplorerCommand::Show(a)) => cmd_show(config, &a.tx_hash, a.trace).await,
             #[cfg(feature = "validate")]
-            Some(ExplorerCommand::Validate(a)) => {
-                cmd_explorer_validate(config, a, progress).await
-            }
+            Some(ExplorerCommand::Validate(a)) => cmd_explorer_validate(config, a, progress).await,
         }
     }
 }

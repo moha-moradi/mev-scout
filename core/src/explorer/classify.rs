@@ -482,12 +482,7 @@ fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 .iter()
                 .find(|(tok, _)| input.profit_policy.priority.contains(tok))
                 .copied()
-                .or_else(|| {
-                    profit_tokens
-                        .iter()
-                        .max_by(|a, b| a.1.cmp(&b.1))
-                        .copied()
-                })
+                .or_else(|| profit_tokens.iter().max_by(|a, b| a.1.cmp(&b.1)).copied())
                 .unwrap_or((Address::ZERO, U256::ZERO));
 
             let recipients: Vec<String> = tokens

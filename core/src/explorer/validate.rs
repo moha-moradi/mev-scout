@@ -21,11 +21,13 @@ use crate::types::ChainName;
 
 /// Kind mapping opportunity strategy → realized kind (taxonomy).
 ///
-/// Note: scanner strategies do **not** map to `backrun` / `frontrun`. Those
-/// realized kinds are measured via the Phase 0.5 labeled golden set
-/// (`explorer::golden` / `explorer validate --golden-causal`), not via
-/// opportunity matching. Unmapped scanner strategies contribute only to
-/// `precision_signal_count`.
+/// Note: `backrun` **is** mapped — it is the first scanner strategy joinable
+/// to the realized `MevKind::Backrun`, scored via the state-differential
+/// detector (`core/src/mev/detectors/backrun.rs`, `docs/plan_backrun.md`).
+/// `frontrun` remains unmapped (no scanner strategy emits it); realized
+/// frontrun is still measured via the Phase 0.5 labeled golden set
+/// (`explorer::golden` / `explorer validate --golden-causal`). Unmapped
+/// scanner strategies contribute only to `precision_signal_count`.
 ///
 /// Strategy strings are matched in their **snake_case** form because that is
 /// what production persists: the results layer writes `Strategy::to_string()`
@@ -49,6 +51,7 @@ fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
         "liquidation" => Some("liquidation"),
         "jit" => Some("jit"),
         "jit_arb" => Some("jit_arb"),
+        "backrun" => Some("backrun"),
         _ => None,
     }
 }

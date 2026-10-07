@@ -31,6 +31,7 @@ const MAX_INVERTED_BREAKPOINTS: usize = 12;
 /// arb gap is not re-reported across multiple transactions in the same block.
 /// If pool reserves change by >0.1% within the same block, the dedup is cleared
 /// for that pair so the changed opportunity can be re-detected (H2).
+#[derive(Debug)]
 pub struct TwoHopArbDetector {
     block_number: u64,
     seen: std::collections::HashMap<(Address, Address, Address, Address), (u128, u128)>,

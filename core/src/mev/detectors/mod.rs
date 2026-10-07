@@ -1,4 +1,5 @@
 mod arb_common;
+pub mod backrun;
 pub mod jit;
 pub(crate) mod mempool;
 pub mod multi_hop;
@@ -37,6 +38,7 @@ pub const PENDING_PATH: &str = DetectionPath::Pending.as_str();
 /// Detection-path tag for log-only synthesis in live mode.
 pub const LOG_ONLY_PATH: &str = DetectionPath::LogOnly.as_str();
 
+pub use backrun::BackrunDetector;
 pub use jit::JitDetector;
 pub use mempool::{capture_pending_block, detect_pending_opportunities, PendingBlockCapture};
 pub use multi_hop::MultiHopArbDetector;

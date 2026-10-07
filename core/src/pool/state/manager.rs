@@ -381,7 +381,15 @@ impl PoolManager {
         let mut pairs = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        for (_token, pool_addrs) in &self.token_index {
+        // Deterministic bucket order (ascending address): a pair that shares
+        // more than one token is claimed by the first bucket that contains it,
+        // and that bucket decides `shared_token` — and therefore the token pair
+        // two_hop reports. HashMap iteration order would make that choice vary
+        // per process.
+        let mut tokens: Vec<Address> = self.token_index.keys().copied().collect();
+        tokens.sort_unstable();
+        for token in &tokens {
+            let pool_addrs = &self.token_index[token];
             let mut sorted: Vec<Address> = pool_addrs.clone();
             // Sort by estimated liquidity descending so the most meaningful pairs come first
             sorted.sort_by(|a, b| {
@@ -390,7 +398,7 @@ impl PoolManager {
                 lb.cmp(&la)
             });
             // Use per-token-tier max_pairs if configured, else global default (H3)
-            let token_limit = self.effective_max_pairs(_token);
+            let token_limit = self.effective_max_pairs(token);
             let limit = if token_limit == 0 {
                 sorted.len()
             } else {
@@ -405,7 +413,7 @@ impl PoolManager {
                         pairs.push(ArbPair {
                             pool_a: key.0,
                             pool_b: key.1,
-                            shared_token: *_token,
+                            shared_token: *token,
                         });
                     }
                 }

@@ -1819,9 +1819,9 @@ impl ExplorerStore {
     /// Idempotent: ensure every distinct `mev_ops` (eoa, contract) has labels.
     /// Returns how many new `labels` rows were inserted.
     pub fn backfill_competitor_labels(&self) -> anyhow::Result<usize> {
-        let before: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
+        let before: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
         let mut stmt = self.conn.prepare(
             "SELECT eoa, contract, MIN(block_number)
              FROM mev_ops
@@ -1844,9 +1844,9 @@ impl ExplorerStore {
             let contract = contract_s.and_then(|s| s.parse::<Address>().ok());
             self.label_competitor(eoa, contract, block)?;
         }
-        let after: i64 =
-            self.conn
-                .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
+        let after: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM labels", [], |r| r.get(0))?;
         Ok((after - before).max(0) as usize)
     }
 
@@ -3448,7 +3448,10 @@ mod tests {
         let (name_a, entity_a) = store.get_label(eoa_a).unwrap().expect("eoa labeled");
         assert_eq!(name_a, "unclassified-searcher");
         assert_eq!(entity_a.as_deref(), Some(bot.as_str()));
-        let (name_c, entity_c) = store.get_label(contract).unwrap().expect("contract labeled");
+        let (name_c, entity_c) = store
+            .get_label(contract)
+            .unwrap()
+            .expect("contract labeled");
         assert_eq!(name_c, "searcher-contract");
         assert_eq!(entity_c.as_deref(), Some(bot.as_str()));
     }

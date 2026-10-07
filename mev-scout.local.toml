@@ -1,0 +1,43 @@
+# Full-speed profile — local AvalancheGo node (docs/LOCAL_AVALANCHE.md).
+# No secrets here: if the node sits behind an auth proxy, the password comes
+# from the environment via ${RPC_PASS} inside the URL.
+chain = "avalanche"
+gas_model = "historical_exact"
+strategies = "all"
+output = "table"
+
+# 0 = unlimited: no rate limiter is created for a0-RPS provider.
+rps_limit = 0
+# Parallel blocks per provider shard (auto mode falls back to 10 when RPS
+# is unlimited).
+block_concurrency = 32
+# One batched JSON-RPC POST for block+txs+receipts in backtest / explorer
+# index fetches. AvalancheGo allows up to 1000 requests per batch.
+batch_rpc = true
+
+[chains.avalanche]
+chain_id = 43114
+
+[chains.avalanche.rpc]
+# Local node first (unlimited), public archive second: the pruned local node
+# cannot serve deep history, and mev-scout routes those reads to the archive
+# provider automatically while tip work stays on the local node.
+rpc_urls = [
+  "http://127.0.0.1:9650/ext/bc/C/rpc",
+  "https://avalanche-c-chain.publicnode.com",
+]
+rpc_rps = [0.0, 1.0]
+
+[discover]
+source = "onchain"
+# Concurrent calls for on-chain factory scans / multicall metadata (default 8).
+rpc_concurrency = 32
+
+[live]
+# Default 2000; C-Chain blocks are ~2 s.
+poll_interval_ms = 500
+
+[explorer]
+confirmations = 4
+# Closed-cycle arb only (spec §7.1). Set true only for mevlive Type=Arbitrage parity.
+arb_likely_parity = false

@@ -2870,7 +2870,7 @@ Capital-free strategies with capital-efficiency score > 10 or high frequency. Le
 | # | Strategy | File (planned) | ~Lines | Capital | Score |
 |---|----------|----------------|:---:|---------|:---:|
 | 10 | **Flash loan liq** (extend existing) | `core/src/mev/detectors/liquidation.rs` | +200 | None | 7.0 |
-| 11 | **Backrunning** | `core/src/mev/detectors/backrun.rs` | ~300 | Low | — |
+| 11 | **Backrunning** — **coded** | `core/src/mev/detectors/backrun.rs` | ~300 | Low | — |
 | 12 | **MakerDAO OSM preview** | `core/src/mev/detectors/makerdao_osm.rs` | ~250 | None | **27.0** |
 | 13 | **GMX V2 ADL front-run** | `core/src/mev/detectors/gmx_adl.rs` | ~200 | None | **24.5** |
 | 14 | **sync() race** | `core/src/mev/detectors/sync_race.rs` | ~80 | None | — |
@@ -3726,7 +3726,7 @@ the left column is what the engine builds, the right column is where the economi
 | `arbitrage` | §37 (detection), §38 (size optimization), §36 (routes), §46 (P&L) | §1.3, §1.4, §2.2, §2.3, §2.4, §5.1, §5.3, §5.4, §7.1, §7.7, §7.11, §7.13, §25 | Coded (`two_hop.rs`, `multi_hop.rs`) |
 | `liquidation` | §39 (detection), §46 (P&L) | §4.1–§4.15, §4.4 flash-loan atomic, §4.13 interest accrual, §20, §22, §23, §24, §25, §26 | **Unwired** — `Strategy::Liquidation` parses for historical rows, but no detector runs (see `docs/plan_prune_strategies.md` §6) |
 | `sandwich` | §40 (detection), §50 (counterfactual) | §3.1 | **Removed** — not flash-loan-aware, capital-intensive, needs builder access (§4 Phase 2) |
-| `backrun` | §41 (detection), §51 (workflows) | §2.1, §21 automation-trigger backrun | Planned (`backrun.rs`) |
+| `backrun` | §41 (detection), §51 (workflows) | §2.1, §21 automation-trigger backrun | Implemented (scanner, historical) |
 | `frontrun` | §42 (detection) | §1.4, §3.4, §4.9, §7.3, §7.8, §7.9, §8.4 | Planned |
 | `jit` | §43 (V3 JIT) | §3.2, §7.13 (Trader Joe LB bin-level JIT) | Coded (`jit.rs`) |
 | `jit_arbitrage` | §44 (composite) | §3.3 | **Removed** — live copy had no honest P&L model (§5 Phase 3) |
@@ -3917,8 +3917,10 @@ jit
 jit_arbitrage
 ```
 
-**Implemented subset.** Only `arbitrage` (`two_hop_arb`, `multi_hop_arb`) and `jit`
-are wired into the live/execution path today. `sandwich` and `jit_arbitrage` were
+**Implemented subset.** Only `arbitrage` (`two_hop_arb`, `multi_hop_arb`), `jit` and
+`backrun` (scanner-side state-differential, historical only — §41.2 live pending-tx
+backrun remains out of scope, see `docs/plan_backrun.md`) are wired into the
+live/execution path today. `sandwich` and `jit_arbitrage` were
 removed from it (`docs/plan_prune_strategies.md` §4–§5); `liquidation` is unwired
 while its `Strategy` variant survives so historical rows keep parsing (§6). The
 explorer is a separate system with its own `MevKind` taxonomy and still observes

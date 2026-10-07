@@ -515,7 +515,14 @@ fn explorer_index_defaults_to_backfill_shape() {
         other => panic!("expected Explorer, got {other:?}"),
     }
 
-    let cli = Cli::parse_from(["mev-scout", "explorer", "index", "--loop", "--duration", "15m"]);
+    let cli = Cli::parse_from([
+        "mev-scout",
+        "explorer",
+        "index",
+        "--loop",
+        "--duration",
+        "15m",
+    ]);
     match cli.command {
         Some(Command::Explorer(a)) => match a.command {
             Some(ExplorerCommand::Index(i)) => {
@@ -550,15 +557,7 @@ fn explorer_show_rejects_report_flags() {
     let ws = temp_ws("args_explorer_show_windows");
     let out = run(
         &ws,
-        &[
-            "-f",
-            &cfg(),
-            "explorer",
-            "--windows",
-            "7d",
-            "show",
-            "0xabc",
-        ],
+        &["-f", &cfg(), "explorer", "--windows", "7d", "show", "0xabc"],
     );
     expect_fail(&out, "explorer --windows show");
     assert!(

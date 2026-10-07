@@ -26,7 +26,7 @@ rps_limit = 1
 # Default strategy set (comma-separated or "all").
 # NOTE: currently inert — no detector tests this list (see
 # docs/plan_prune_strategies.md §10). "all" resolves to
-# two_hop_arb, multi_hop_arb, jit.
+# two_hop_arb, multi_hop_arb, jit, backrun.
 strategies = "all"
 
 # Backtest gas price model: historical_exact | p90 | fixed | live

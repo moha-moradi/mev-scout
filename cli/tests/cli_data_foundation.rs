@@ -84,8 +84,7 @@ fn discover_rejects_source_flag() {
     let out = run_timed(&mut c, TEST_TIMEOUT).expect("spawn/wait failed");
     expect_fail(&out, "removed discover --source");
     assert!(
-        out.combined().contains("unexpected argument")
-            || out.combined().contains("unrecognized"),
+        out.combined().contains("unexpected argument") || out.combined().contains("unrecognized"),
         "expected clap to reject --source, got:\n{}",
         out.combined()
     );

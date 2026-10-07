@@ -235,6 +235,7 @@ fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => Some("arb_atomic"),
         Strategy::Jit => Some("jit"),
+        Strategy::Backrun => Some("backrun"),
     }
 }
 
@@ -245,7 +246,7 @@ fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
 /// and `JitArb` detectors are gone, and liquidation capture has no `Strategy`
 /// variant at all, so `sandwich`/`jit_arb`/`liquidation` are never produced
 /// here even though the explorer still classifies all three as a `MevKind`.
-const ALL_KINDS: &[&str] = &["arb_atomic", "jit"];
+const ALL_KINDS: &[&str] = &["arb_atomic", "jit", "backrun"];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
 fn recording() -> bool {
@@ -798,10 +799,10 @@ fn a_single_block_window_uses_the_block_field() {
 fn every_detector_kind_is_reported_by_a_record_run() {
     // A kind missing from ALL_KINDS would print no line at all, so a hunt for
     // a rare kind (`jit`) could never confirm it absent.
-    for kind in ["arb_atomic", "jit"] {
+    for kind in ["arb_atomic", "jit", "backrun"] {
         assert!(ALL_KINDS.contains(&kind), "{kind} missing from ALL_KINDS");
     }
-    assert_eq!(ALL_KINDS.len(), 2, "one entry per emittable MevKind");
+    assert_eq!(ALL_KINDS.len(), 3, "one entry per emittable MevKind");
 }
 
 #[test]

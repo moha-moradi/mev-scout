@@ -41,7 +41,7 @@ pub fn default_starting_gas_wei() -> u128 {
 pub fn is_native_eligible(strategy: Strategy) -> bool {
     matches!(
         strategy,
-        Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::Jit
+        Strategy::TwoHopArb | Strategy::MultiHopArb | Strategy::Jit | Strategy::Backrun
     )
 }
 
@@ -344,7 +344,7 @@ mod tests {
         for s in Strategy::all() {
             assert!(is_native_eligible(*s), "{s} is not native-eligible");
         }
-        assert_eq!(Strategy::all().len(), 3, "one entry per Strategy variant");
+        assert_eq!(Strategy::all().len(), 4, "one entry per Strategy variant");
     }
 
     #[test]

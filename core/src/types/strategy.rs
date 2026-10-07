@@ -75,6 +75,8 @@ pub enum Strategy {
     MultiHopArb,
     #[strum(serialize = "jit")]
     Jit,
+    #[strum(serialize = "backrun")]
+    Backrun,
 }
 
 /// Strategy names that used to be variants and are now retired from the
@@ -90,7 +92,12 @@ impl Strategy {
     /// source of truth: `all()` is both the `"all"` config expansion and the
     /// default (`config::settings::default_strategies`).
     pub fn all() -> &'static [Strategy] {
-        &[Strategy::TwoHopArb, Strategy::MultiHopArb, Strategy::Jit]
+        &[
+            Strategy::TwoHopArb,
+            Strategy::MultiHopArb,
+            Strategy::Jit,
+            Strategy::Backrun,
+        ]
     }
 
     pub fn from_comma_list(s: &str) -> Result<Vec<Strategy>, String> {

@@ -7,6 +7,7 @@ use crate::cache::SqliteStore;
 use crate::data::ExecutedLog;
 use crate::dex_type::DexType;
 use crate::error;
+use crate::mev::detectors::BackrunDetector;
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
@@ -389,6 +390,7 @@ impl BacktestRunner {
         // Create stateful detectors (H2: persistent per-block dedup across transactions)
         let mut two_hop_detector = TwoHopArbDetector::new(block_num);
         let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
+        let mut backrun_detector = BackrunDetector::new(block_num);
         // Seed JIT detector tick cache BEFORE taking pool_manager
         let mut jit_detector = JitDetector::new(block_num);
         jit_detector.seed_pool_tick_cache(&self.pool_manager);
@@ -526,11 +528,49 @@ impl BacktestRunner {
 
                 // Learn taxed tokens from this tx, then apply its log
                 // updates to pool state — both AFTER detection.
+                // Backrun pre-image: capture opportunities on S_{i-1} BEFORE the
+                // state update; `post_detect` consumes this after update_from_logs.
+                let will_touch: std::collections::HashSet<_> = tx
+                    .logs
+                    .iter()
+                    .map(|l| l.address)
+                    .filter(|a| pool_addrs.contains(a))
+                    .collect();
+                if !will_touch.is_empty() {
+                    let scope_pre = ScanScope::Dirty(&will_touch);
+                    backrun_detector.pre_detect(
+                        &pm,
+                        i,
+                        timestamp,
+                        base_fee_per_gas,
+                        self.gas_config,
+                        &scope_pre,
+                    );
+                }
+
                 pm.learn_taxes_from_tx(&tx.logs);
                 pm.update_from_logs(&tx.logs);
 
                 // Accumulate dirtied pools for the next incremental scan
                 let newly_dirty = pm.take_dirty_pools();
+                // Backrun detection: post-image
+                if !newly_dirty.is_empty() {
+                    let scope_post = ScanScope::Dirty(&newly_dirty);
+                    let backrun_opps = backrun_detector.post_detect(
+                        &pm,
+                        i,
+                        timestamp,
+                        base_fee_per_gas,
+                        self.gas_config,
+                        &scope_post,
+                        &tx.logs,
+                        &txs,
+                    );
+                    if !backrun_opps.is_empty() {
+                        all_opportunities.extend(backrun_opps);
+                    }
+                }
+
                 if !newly_dirty.is_empty() {
                     dirty_pools
                         .borrow_mut()
@@ -549,6 +589,11 @@ impl BacktestRunner {
         self.gas_calibration = gas_calibration.into_inner();
         replay_result?;
 
+        // D2: a backrun claim supersedes the plain arb claim for the same key,
+        // so P&L is never double-counted. Before `retain_with_rejections` so
+        // superseded rows are not mis-recorded as gas/min-profit rejections.
+        crate::mev::detectors::backrun::suppress_superseded_arbs(&mut all_opportunities);
+
         // Filter: drop opportunities where expected profit doesn't cover gas
         self.retain_with_rejections(&mut all_opportunities, block_num);
 
@@ -566,15 +611,20 @@ impl BacktestRunner {
 
         // Assign canonical dedup IDs (L9) to all opportunities
         for opp in &mut all_opportunities {
-            opp.canonical_id = Some(crate::types::compute_canonical_id(
-                crate::types::CanonicalIdParts {
-                    strategy: opp.strategy,
-                    pool_a: opp.pool_a,
-                    pool_b: opp.pool_b,
-                    token_in: opp.token_in,
-                    token_out: opp.token_out,
-                },
-            ));
+            // Backrun ids carry the victim index (docs/plan_backrun.md §2.5) and
+            // were stamped at emission — the generic id would collapse two
+            // victims in one block under aggregate's canonical-id dedup.
+            if opp.strategy != crate::types::Strategy::Backrun {
+                opp.canonical_id = Some(crate::types::compute_canonical_id(
+                    crate::types::CanonicalIdParts {
+                        strategy: opp.strategy,
+                        pool_a: opp.pool_a,
+                        pool_b: opp.pool_b,
+                        token_in: opp.token_in,
+                        token_out: opp.token_out,
+                    },
+                ));
+            }
             opp.detection_path = Some(crate::mev::detectors::REPLAY_PATH.to_string());
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
@@ -647,6 +697,7 @@ impl BacktestRunner {
         let mut all_opportunities = Vec::new();
         let mut two_hop_detector = TwoHopArbDetector::new(block_num);
         let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
+        let mut backrun_detector = BackrunDetector::new(block_num);
         let mut dex_tx_count = 0usize;
         // Dirty pools touched by earlier transactions (incremental scanning)
         let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
@@ -712,10 +763,49 @@ impl BacktestRunner {
             );
             all_opportunities.extend(multi_opps);
 
+            // Backrun pre-image: opportunities on the pre-tx state, captured
+            // before the log updates below (mirrors run_block §3.5 A).
+            let will_touch: std::collections::HashSet<_> = logs
+                .iter()
+                .map(|l| l.address)
+                .filter(|a| pool_addrs.contains(a))
+                .collect();
+            if !will_touch.is_empty() {
+                let scope_pre = ScanScope::Dirty(&will_touch);
+                backrun_detector.pre_detect(
+                    &self.pool_manager,
+                    i,
+                    timestamp,
+                    base_fee_per_gas,
+                    self.gas_config,
+                    &scope_pre,
+                );
+            }
+
             // #9: learn taxed tokens, then apply state updates
             self.pool_manager.learn_taxes_from_tx(&logs);
             self.pool_manager.update_from_logs(&logs);
             let newly_dirty = self.pool_manager.take_dirty_pools();
+
+            // Backrun post-image + differential (mirrors run_block §3.5 D).
+            // Before the `dirty_pools` extend below, which consumes the set.
+            if !newly_dirty.is_empty() {
+                let scope_post = ScanScope::Dirty(&newly_dirty);
+                let backrun_opps = backrun_detector.post_detect(
+                    &self.pool_manager,
+                    i,
+                    timestamp,
+                    base_fee_per_gas,
+                    self.gas_config,
+                    &scope_post,
+                    &logs,
+                    &txs,
+                );
+                if !backrun_opps.is_empty() {
+                    all_opportunities.extend(backrun_opps);
+                }
+            }
+
             if !newly_dirty.is_empty() {
                 dirty_pools
                     .get_or_insert_with(Default::default)
@@ -742,6 +832,9 @@ impl BacktestRunner {
             }
         }
 
+        // D2: supersede plain arb claims already emitted as backruns (§2.4).
+        crate::mev::detectors::backrun::suppress_superseded_arbs(&mut all_opportunities);
+
         // Filter: drop opportunities where expected profit doesn't cover gas
         self.retain_with_rejections(&mut all_opportunities, block_num);
 
@@ -758,15 +851,19 @@ impl BacktestRunner {
         }
 
         for opp in &mut all_opportunities {
-            opp.canonical_id = Some(crate::types::compute_canonical_id(
-                crate::types::CanonicalIdParts {
-                    strategy: opp.strategy,
-                    pool_a: opp.pool_a,
-                    pool_b: opp.pool_b,
-                    token_in: opp.token_in,
-                    token_out: opp.token_out,
-                },
-            ));
+            // Backrun ids carry the victim index (§2.5) and were stamped at
+            // emission — do not collapse them onto the generic form.
+            if opp.strategy != crate::types::Strategy::Backrun {
+                opp.canonical_id = Some(crate::types::compute_canonical_id(
+                    crate::types::CanonicalIdParts {
+                        strategy: opp.strategy,
+                        pool_a: opp.pool_a,
+                        pool_b: opp.pool_b,
+                        token_in: opp.token_in,
+                        token_out: opp.token_out,
+                    },
+                ));
+            }
             opp.detection_path = Some(crate::mev::detectors::LOG_ONLY_PATH.to_string());
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);

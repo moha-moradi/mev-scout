@@ -53,7 +53,9 @@ pub(super) fn slippage_profits(
 
 /// Normalize an arbitrage profit to wrapped native when `token_in != token_out`,
 /// falling back to `output_native - input_native` when direct normalization is
-/// unavailable (C5). `token_in == token_out` is returned as-is (no raw variant).
+/// unavailable (C5). A same-token cycle's profit is denominated in `token_in`,
+/// so it is converted to native too — identity for the native token itself,
+/// with an as-is fallback when no pricing path exists.
 pub(super) fn normalize_profit(
     pm: &PoolManager,
     token_in: Address,
@@ -62,7 +64,8 @@ pub(super) fn normalize_profit(
     input_amount: u128,
 ) -> (U256, Option<U256>) {
     if token_in == token_out {
-        (U256::from(profit), None)
+        let native = pm.normalize_to_native(token_in, profit).unwrap_or(profit);
+        (U256::from(native), None)
     } else {
         let raw = U256::from(profit);
         let native_profit = normalize_profit_native(pm, token_in, token_out, profit, input_amount)
@@ -84,7 +87,9 @@ pub(super) fn normalize_profit_native(
     ref_input: u128,
 ) -> Option<U256> {
     if token_in == token_out {
-        return Some(U256::from(profit));
+        return Some(U256::from(
+            pm.normalize_to_native(token_in, profit).unwrap_or(profit),
+        ));
     }
     pm.normalize_to_native(token_out, profit)
         .or_else(|| {

@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 /// Different strategies populate different optional fields:
 /// - `path` for multi-hop strategies,
 /// - `tick_lower`/`tick_upper`/`liquidity_amount` for JIT strategies.
+///
+/// For `Strategy::Backrun`, `sender` / `tx_hash` / `tx_index` denote the
+/// **anchor** (victim) transaction, not a searcher transaction;
+/// `victim_tx_index` carries the same index semantically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpportunity {
     /// Canonical dedup ID (L9): derived from strategy + key fields to uniquely
@@ -68,13 +72,12 @@ pub struct MevOpportunity {
     /// Amount of liquidity deployed (JIT positions)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liquidity_amount: Option<u128>,
-    /// Transaction index of the victim swap. Always `None` in the current tree —
-    /// only the removed sandwich detector populated it — but kept for wire
-    /// compatibility with historical result files.
+    /// Transaction index of the victim swap. For `Strategy::Backrun`, this
+    /// identifies the anchor transaction that triggered the backrun opportunity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub victim_tx_index: Option<usize>,
-    /// Transaction index of the backrun. Same provenance as
-    /// [`victim_tx_index`](Self::victim_tx_index).
+    /// Transaction index of the backrun. For regular backtests, this is typically
+    /// `None` (backrun candidates are not observed as realized searcher txs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backrun_tx_index: Option<usize>,
     /// Whether this opportunity was detected from mempool/pending transactions
@@ -117,6 +120,11 @@ pub fn compute_canonical_id(parts: CanonicalIdParts) -> String {
         "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",
         parts.strategy, parts.pool_a, parts.pool_b, parts.token_in, parts.token_out,
     )
+}
+
+/// Build a canonical id for backrun opportunities that matches the explorer's form.
+pub fn compute_backrun_canonical_id(anchor_pool: Address, victim_tx_index: usize) -> String {
+    format!("Backrun|{anchor_pool:#x}|source_tx:{victim_tx_index}")
 }
 
 impl MevOpportunity {
