@@ -274,12 +274,52 @@ pub struct LiquidationFact {
     pub tx_index: u64,
     pub log_index: u64,
     pub protocol: &'static str,
+    /// Emitting contract (pool / vault / PartialLiquidation). Used to remap
+    /// Aave-family topic aliases (Spark) via `ChainConfig` without new code.
+    pub emitter: Address,
     pub user: Address,
     pub liquidator: Address,
     pub collateral_asset: Address,
     pub debt_asset: Address,
     pub collateral_amount: U256,
     pub debt_to_cover: U256,
+}
+
+/// Compound V3 Comet `BuyCollateral` — discount capture after Absorb (§26).
+#[derive(Debug, Clone)]
+pub struct BuyCollateralFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub protocol: &'static str,
+    pub emitter: Address,
+    pub buyer: Address,
+    pub collateral_asset: Address,
+    /// Base-token amount paid (coins).
+    pub base_amount: U256,
+    /// Collateral amount received.
+    pub collateral_amount: U256,
+}
+
+/// Realized P&L valuation basis (§0.1 of explorer_strategy_tracking_plan).
+/// Stored on every classified instance as `details.pnl_basis`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PnlBasis {
+    /// Realized in-tx net token deltas (arb, sandwich, skim, flash-arb).
+    R,
+    /// Oracle-valued (liquidations, auction takes, discount captures).
+    O,
+    /// Explicit fee/reward event fields (keeper, flash premium, JIT tip).
+    F,
+}
+
+impl PnlBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PnlBasis::R => "R",
+            PnlBasis::O => "O",
+            PnlBasis::F => "F",
+        }
+    }
 }
 
 /// A decoded V3 concentrated-liquidity Mint/Burn fact, or an LFJ/Pharaoh

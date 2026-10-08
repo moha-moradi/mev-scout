@@ -86,6 +86,8 @@ metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 chain_id = 42161
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
+# Morpho Blue singleton (deterministic across ETH/Base/Arb).
+morpho_blue = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
 uniswap_v3_factories = [
   "0x1F98431c8aD98523631AE4a59f267346ea31F984", # Uniswap V3
   "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865", # PancakeSwap V3
@@ -112,6 +114,7 @@ metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 chain_id = 8453
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
+morpho_blue = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
 uniswap_v3_factories = [
   "0x33128a8fC17869897dcE68Ed026d694621f6FDfD",
   "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
@@ -135,6 +138,9 @@ metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 chain_id = 1
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+# SparkLend Pool (Aave-V3 ABI alias — LiquidationCall topic0 identical).
+spark_pool = "0xC13e21B648A5Ee794902342038FF3aDAB66BE987"
+morpho_blue = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
 # PancakeSwap V3 deterministic factory (same address as on BSC).
 uniswap_v3_factories = [
   "0x1F98431c8aD98523631AE4a59f267346ea31F984",

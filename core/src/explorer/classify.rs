@@ -26,7 +26,8 @@ use crate::explorer::profit::{
 };
 use crate::explorer::store::OpenPosition;
 use crate::explorer::types::{
-    Confidence, JitFact, MevEvent, MevKind, SwapFact, TransferFact, V2PairOpFact,
+    BuyCollateralFact, Confidence, JitFact, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
+    V2PairOpFact,
 };
 
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
@@ -44,6 +45,8 @@ pub struct TxInput {
     pub swaps: Vec<SwapFact>,
     pub liquidations: Vec<crate::explorer::types::LiquidationFact>,
     pub flashloans: Vec<crate::explorer::types::FlashLoanFact>,
+    /// Compound V3 `BuyCollateral` facts (discount capture after Absorb).
+    pub buy_collaterals: Vec<BuyCollateralFact>,
     pub jit: Vec<JitFact>,
     /// UniV2 Sync/Mint/Burn logs — exclusion signal for skim.
     pub v2_pair_ops: Vec<V2PairOpFact>,
@@ -73,12 +76,16 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     let mut events: Vec<MevEvent> = Vec::new();
 
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
+    // Mode A (§17.8.4): flash-loan atomic liq when same tx has FlashLoanFact
+    // + LiquidationFact → tag `flash_loan_liq` (plan P0.1 / P2.3 routing).
     for tx in &input.txs {
         if tx.liquidations.is_empty() {
             continue;
         }
         let ledger =
             DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
+        let flash_funded = !tx.flashloans.is_empty();
+        let primary_flash = tx.flashloans.first();
         for liq in &tx.liquidations {
             let searcher = if liq.liquidator.is_zero() {
                 tx.from
@@ -94,6 +101,49 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
             let mut reasons: Vec<&str> = Vec::new();
             if !reconciled {
                 reasons.push("TRANSFER_MISMATCH");
+            }
+            let mut tags: Vec<&str> = Vec::new();
+            if flash_funded {
+                tags.push("flash_loan_liq");
+            }
+            let (flashloan_fee_wei, flashloan_fee_token) = if flash_funded {
+                primary_flash
+                    .map(|fl| (fl.fee.filter(|f| !f.is_zero()), Some(fl.token)))
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+            // P&L basis O: seized − repaid components (USD at persist); flash
+            // premium recorded as F component when present (§0.1).
+            let mut details = serde_json::json!({
+                "protocol": liq.protocol,
+                "user": format!("{:#x}", liq.user),
+                "collateral_asset": format!("{:#x}", liq.collateral_asset),
+                "debt_asset": format!("{:#x}", liq.debt_asset),
+                "collateral_amount": liq.collateral_amount.to_string(),
+                "debt_to_cover": liq.debt_to_cover.to_string(),
+                "reconciled": reconciled,
+                "reasons": reasons,
+                "tags": tags,
+                "pnl_basis": PnlBasis::O.as_str(),
+                "pnl": {
+                    "basis": PnlBasis::O.as_str(),
+                    "collateral_amount": liq.collateral_amount.to_string(),
+                    "debt_to_cover": liq.debt_to_cover.to_string(),
+                },
+            });
+            if let Some(fl) = primary_flash {
+                details["flash_provider"] = serde_json::json!(fl.protocol);
+                details["flash_provider_address"] =
+                    serde_json::json!(format!("{:#x}", fl.provider));
+                if let Some(fee) = fl.fee {
+                    details["flash_premium"] = serde_json::json!(fee.to_string());
+                    details["flash_premium_token"] =
+                        serde_json::json!(format!("{:#x}", fl.token));
+                    details["pnl"]["flash_premium"] = serde_json::json!(fee.to_string());
+                    details["pnl"]["flash_premium_basis"] =
+                        serde_json::json!(PnlBasis::F.as_str());
+                }
             }
             events.push(MevEvent {
                 block: input.block,
@@ -112,25 +162,99 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 profit_usd: None,
                 gas_cost_wei: U256::from(tx.gas_used)
                     .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
+                flashloan_fee_wei,
+                flashloan_fee_token,
                 confidence: Confidence::Exact,
                 victim_hashes: vec![],
                 victim_swap_size: None,
-                details: serde_json::json!({
-                    "protocol": liq.protocol,
-                    "user": format!("{:#x}", liq.user),
-                    "collateral_asset": format!("{:#x}", liq.collateral_asset),
-                    "debt_asset": format!("{:#x}", liq.debt_asset),
-                    "collateral_amount": liq.collateral_amount.to_string(),
-                    "debt_to_cover": liq.debt_to_cover.to_string(),
-                    "reconciled": reconciled,
-                    "reasons": reasons,
-                }),
+                details,
             });
         }
     }
-    let liq_txs: std::collections::HashSet<u64> = events.iter().map(|e| e.tx_index).collect();
+
+    // ── 1a. BuyCollateral discount capture (Compound V3, §26 / P0.3) ────
+    // Mode A: BuyCollateral in a block that also has (or just had) Absorb.
+    // Same-tx or prior-tx Absorb in this block pairs the discount capture.
+    {
+        let absorb_txs: HashSet<u64> = input
+            .txs
+            .iter()
+            .filter(|t| {
+                t.liquidations
+                    .iter()
+                    .any(|l| l.protocol == "compound_v3")
+            })
+            .map(|t| t.tx_index)
+            .collect();
+        for tx in &input.txs {
+            for buy in &tx.buy_collaterals {
+                let paired = absorb_txs
+                    .iter()
+                    .any(|&idx| idx <= tx.tx_index);
+                let mut tags = vec!["buycollateral"];
+                if !tx.flashloans.is_empty() {
+                    tags.push("flash_loan_liq");
+                }
+                let mut details = serde_json::json!({
+                    "protocol": buy.protocol,
+                    "buyer": format!("{:#x}", buy.buyer),
+                    "collateral_asset": format!("{:#x}", buy.collateral_asset),
+                    "debt_asset": format!("{:#x}", Address::ZERO),
+                    "collateral_amount": buy.collateral_amount.to_string(),
+                    "debt_to_cover": buy.base_amount.to_string(),
+                    "base_amount": buy.base_amount.to_string(),
+                    "absorb_paired": paired,
+                    "tags": tags,
+                    "pnl_basis": PnlBasis::O.as_str(),
+                    "pnl": {
+                        "basis": PnlBasis::O.as_str(),
+                        "collateral_amount": buy.collateral_amount.to_string(),
+                        "base_paid": buy.base_amount.to_string(),
+                        "coins_basis": PnlBasis::R.as_str(),
+                    },
+                });
+                if !paired {
+                    details["reasons"] = serde_json::json!(["ABSORB_UNPAIRED"]);
+                }
+                events.push(MevEvent {
+                    block: input.block,
+                    ts: input.ts,
+                    tx_index: tx.tx_index,
+                    tx_hash: tx.tx_hash,
+                    kind: MevKind::Liquidation,
+                    searcher: if buy.buyer.is_zero() {
+                        tx.from
+                    } else {
+                        buy.buyer
+                    },
+                    contract: tx.to,
+                    pools: vec![],
+                    profit_token: Some(buy.collateral_asset),
+                    profit_amount: Some(buy.collateral_amount),
+                    profit_tokens: vec![],
+                    profit_usd: None,
+                    gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
+                        (tx.effective_gas_price_gwei * 1e9) as u128,
+                    )),
+                    flashloan_fee_wei: None,
+                    flashloan_fee_token: None,
+                    confidence: if paired {
+                        Confidence::Exact
+                    } else {
+                        Confidence::Inferred
+                    },
+                    victim_hashes: vec![],
+                    victim_swap_size: None,
+                    details,
+                });
+            }
+        }
+    }
+    let liq_txs: std::collections::HashSet<u64> = events
+        .iter()
+        .filter(|e| e.kind == MevKind::Liquidation)
+        .map(|e| e.tx_index)
+        .collect();
 
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
     events.extend(classify_skims(input));
@@ -262,6 +386,12 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                     } else {
                         MevKind::Unknown
                     };
+                    // P0.4: flash-swap / flash-loan flag when principal was borrowed.
+                    let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
+                    let mut tags: Vec<&str> = Vec::new();
+                    if flash_arb && arb_likely {
+                        tags.push("flash_arb");
+                    }
                     events.push(MevEvent {
                         block: input.block,
                         ts: input.ts,
@@ -289,6 +419,13 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                         victim_swap_size: None,
                         details: serde_json::json!({
                             "mode": "realized",
+                            "tags": tags,
+                            "pnl_basis": PnlBasis::R.as_str(),
+                            "pnl": {
+                                "basis": PnlBasis::R.as_str(),
+                                "profit_amount": amount.to_string(),
+                                "profit_token": format!("{:#x}", token),
+                            },
                             "route": tx.swaps.iter().map(|s| serde_json::json!({
                                 "pool": format!("{:#x}", s.pool),
                                 "amm": s.amm.as_str(),
@@ -298,7 +435,7 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                                 "amount_in": s.amount_in.to_string(),
                                 "amount_out": s.amount_out.to_string(),
                             })).collect::<Vec<_>>(),
-                            "arb_meta": arb_route_meta(&tx.swaps, flashloan_fee_wei.is_some()),
+                            "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
                         }),
                     });
                     continue;
@@ -1388,27 +1525,40 @@ pub fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B25
 }
 
 /// Decoded facts for one transaction: (transfers, swaps, liquidations,
-/// flash loans, JIT, V2 pair ops).
+/// flash loans, buy-collateral, JIT, V2 pair ops).
 pub type TxFacts = (
     Vec<TransferFact>,
     Vec<SwapFact>,
     Vec<crate::explorer::types::LiquidationFact>,
     Vec<crate::explorer::types::FlashLoanFact>,
+    Vec<BuyCollateralFact>,
     Vec<JitFact>,
     Vec<V2PairOpFact>,
 );
 
 /// Convenience: decode a tx's receipt logs into facts (used by ingest).
 /// `pool_tokens` = pool → (token0, token1) registry for swap direction (1.1).
+/// `aave_family_aliases` remaps Aave-V3-ABI emitters (Spark) → protocol label.
 pub fn decode_tx_logs(
     tx_index: u64,
     logs: &[crate::data::LogData],
     pool_tokens: &HashMap<Address, (Address, Address)>,
 ) -> TxFacts {
+    decode_tx_logs_with_aliases(tx_index, logs, pool_tokens, &HashMap::new())
+}
+
+/// Like [`decode_tx_logs`] but applies Aave-family address aliases (Spark).
+pub fn decode_tx_logs_with_aliases(
+    tx_index: u64,
+    logs: &[crate::data::LogData],
+    pool_tokens: &HashMap<Address, (Address, Address)>,
+    aave_family_aliases: &HashMap<Address, &'static str>,
+) -> TxFacts {
     let mut transfers = Vec::new();
     let mut swaps = Vec::new();
     let mut liquidations = Vec::new();
     let mut flashloans = Vec::new();
+    let mut buy_collaterals = Vec::new();
     let mut jit = Vec::new();
     let mut v2_pair_ops = Vec::new();
     for (log_idx, log) in logs.iter().enumerate() {
@@ -1427,12 +1577,18 @@ pub fn decode_tx_logs(
         if let Some(mut l) = decode::decode_liquidation(log) {
             l.tx_index = tx_index;
             l.log_index = log_idx;
+            decode::remap_aave_family(&mut l, aave_family_aliases);
             liquidations.push(l);
         }
         if let Some(mut f) = decode::decode_flash_loan(log) {
             f.tx_index = tx_index;
             f.log_index = log_idx;
             flashloans.push(f);
+        }
+        if let Some(mut b) = decode::decode_buy_collateral(log) {
+            b.tx_index = tx_index;
+            b.log_index = log_idx;
+            buy_collaterals.push(b);
         }
         if let Some(mut j) = decode::decode_v3_mint_burn(log) {
             j.tx_index = tx_index;
@@ -1452,7 +1608,15 @@ pub fn decode_tx_logs(
     decode::attach_swap_tokens(&mut swaps, &transfers, pool_tokens);
     // Phase 1.6: drop aggregator edges already covered by DEX swap edges.
     decode::dedup_aggregator_facts(&mut swaps);
-    (transfers, swaps, liquidations, flashloans, jit, v2_pair_ops)
+    (
+        transfers,
+        swaps,
+        liquidations,
+        flashloans,
+        buy_collaterals,
+        jit,
+        v2_pair_ops,
+    )
 }
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
@@ -1595,6 +1759,7 @@ mod tests {
             tx_index: 0,
             log_index: 0,
             protocol,
+            emitter: Address::ZERO,
             user: VICTIM,
             liquidator,
             collateral_asset: collateral,
@@ -1701,6 +1866,7 @@ mod tests {
             swaps,
             liquidations: vec![],
             flashloans: vec![],
+            buy_collaterals: vec![],
             jit: vec![],
             v2_pair_ops: vec![],
         }
@@ -2345,7 +2511,177 @@ mod tests {
             if let Some(reasons) = c.reasons {
                 assert_eq!(ev.details["reasons"], serde_json::json!(reasons));
             }
+            assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
         }
+    }
+
+    /// P0.1 positive: same tx has FlashLoanFact + LiquidationFact → tag
+    /// `flash_loan_liq` with provider/premium and pnl_basis O (+ F premium).
+    #[test]
+    fn flash_loan_liq_tagged_when_flash_and_liq_same_tx() {
+        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 500)],
+        );
+        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        t.flashloans = vec![flash_loan(provider)];
+        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
+        let tags: Vec<&str> = ev.details["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert!(tags.contains(&"flash_loan_liq"));
+        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
+        assert_eq!(ev.details["flash_provider"], serde_json::json!("aave_v3"));
+        assert_eq!(ev.details["flash_premium"], serde_json::json!("5"));
+        assert_eq!(ev.details["pnl"]["flash_premium_basis"], serde_json::json!("F"));
+        assert_eq!(ev.flashloan_fee_wei, Some(U256::from(5)));
+        assert_eq!(ev.flashloan_fee_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(500)));
+        assert_eq!(ev.details["pnl"]["collateral_amount"], serde_json::json!("500"));
+        assert_eq!(ev.details["pnl"]["debt_to_cover"], serde_json::json!("300"));
+    }
+
+    /// P0.1 negative: flash loan without liquidation must not emit liquidation
+    /// or a `flash_loan_liq` tag.
+    #[test]
+    fn flash_without_liquidation_is_not_flash_loan_liq() {
+        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.flashloans = vec![flash_loan(provider)];
+        let events = classify_block(&block(vec![t]));
+        assert!(!events.iter().any(|e| e.kind == MevKind::Liquidation));
+        assert!(!events.iter().any(|e| {
+            e.details
+                .get("tags")
+                .and_then(|t| t.as_array())
+                .is_some_and(|arr| arr.iter().any(|x| x.as_str() == Some("flash_loan_liq")))
+        }));
+    }
+
+    /// P0.3 positive: Absorb then BuyCollateral in the same block →
+    /// `buycollateral` tag, pnl_basis O, Exact confidence.
+    #[test]
+    fn buycollateral_pairs_with_same_block_absorb() {
+        let mut absorb_tx = tx(0, ATK, true, vec![], vec![]);
+        absorb_tx.liquidations = vec![liquidation(
+            "compound_v3",
+            ATK,
+            Address::ZERO,
+            Address::ZERO,
+            0,
+            300,
+        )];
+        let mut buy_tx = tx(1, ATK, true, vec![], vec![]);
+        buy_tx.buy_collaterals = vec![BuyCollateralFact {
+            tx_index: 1,
+            log_index: 0,
+            protocol: "compound_v3",
+            emitter: Address::ZERO,
+            buyer: ATK,
+            collateral_asset: USDC,
+            base_amount: U256::from(90),
+            collateral_amount: U256::from(100),
+        }];
+        let events = classify_block(&block(vec![absorb_tx, buy_tx]));
+        let buy = events
+            .iter()
+            .find(|e| {
+                e.kind == MevKind::Liquidation
+                    && e.details
+                        .get("tags")
+                        .and_then(|t| t.as_array())
+                        .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("buycollateral")))
+            })
+            .expect("buycollateral event");
+        assert_eq!(buy.confidence, Confidence::Exact);
+        assert_eq!(buy.details["pnl_basis"], serde_json::json!("O"));
+        assert_eq!(buy.details["absorb_paired"], serde_json::json!(true));
+        assert_eq!(buy.details["pnl"]["base_paid"], serde_json::json!("90"));
+        assert_eq!(buy.profit_amount, Some(U256::from(100)));
+    }
+
+    /// P0.3 negative: BuyCollateral without a prior Absorb is Inferred + unpaired.
+    #[test]
+    fn buycollateral_without_absorb_is_inferred() {
+        let mut buy_tx = tx(0, ATK, true, vec![], vec![]);
+        buy_tx.buy_collaterals = vec![BuyCollateralFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "compound_v3",
+            emitter: Address::ZERO,
+            buyer: ATK,
+            collateral_asset: USDC,
+            base_amount: U256::from(90),
+            collateral_amount: U256::from(100),
+        }];
+        let ev = classify_kind(&block(vec![buy_tx]), MevKind::Liquidation);
+        assert_eq!(ev.confidence, Confidence::Inferred);
+        assert_eq!(ev.details["absorb_paired"], serde_json::json!(false));
+        assert_eq!(
+            ev.details["reasons"],
+            serde_json::json!(["ABSORB_UNPAIRED"])
+        );
+    }
+
+    /// P0.4 positive: ArbAtomic funded by flash loan → `flash_arb` tag, pnl_basis R.
+    #[test]
+    fn flash_arb_tagged_on_flash_funded_atomic_arb() {
+        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let mut t = tx(0, ATK, true, swaps, transfers);
+        t.flashloans = vec![flash_loan(provider)];
+        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
+        let tags: Vec<&str> = ev.details["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert!(tags.contains(&"flash_arb"));
+        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
+        assert_eq!(ev.details["pnl"]["profit_amount"], serde_json::json!("10"));
+        assert_eq!(ev.details["arb_meta"]["flashloan_funded"], serde_json::json!(true));
+        assert_eq!(ev.profit_amount, Some(U256::from(10)));
+    }
+
+    /// P0.4 negative: closed-cycle arb without flash must not carry `flash_arb`.
+    #[test]
+    fn atomic_arb_without_flash_has_no_flash_arb_tag() {
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let ev = classify_kind(&block(vec![tx(0, ATK, true, swaps, transfers)]), MevKind::ArbAtomic);
+        let tags = ev
+            .details
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(!tags.iter().any(|x| x.as_str() == Some("flash_arb")));
+        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
     }
 
     #[test]

@@ -145,6 +145,7 @@ fn tx(
         swaps,
         liquidations: vec![],
         flashloans: vec![],
+        buy_collaterals: vec![],
         jit: vec![],
         v2_pair_ops: vec![],
     }

@@ -662,8 +662,13 @@ Gates that depend on this table:
   scanner differential is a separate change.
 - JIT covers Uni V3 Mint/Burn **and** LFJ/Pharaoh LB DepositedToBins/WithdrawnFromBins
   (bin range mapped into tick_lower/tick_upper; overlap = any same-pool swap).
-- Avalanche liquidations: Aave V3 topic decode (pool in chains.toml). Benqi/GMX
-  not in the explorer liquidation registry yet.
+- Avalanche liquidations: Aave V3 topic decode (pool in chains.toml). Benqi
+  already matches the Compound-V2 `LiquidateBorrow` topic0 branch but is
+  labeled `compound_v2` — address→protocol relabel is plan P0.2
+  (`docs/explorer_strategy_tracking_plan.md`). GMX V2 is deployed on
+  Avalanche (docs.gmx.io contract addresses: `LiquidationHandler`
+  0x1eAa0E46a40CB7D6F656193d053493658548114e) — plan P3.7; GMX V1
+  status on 43114 unverified (V1 keeper race is a gated §6.1 row).
 
 | Bias | Status | Notes |
 |---|---|---|

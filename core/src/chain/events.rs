@@ -151,6 +151,12 @@ pub static AAVE_V3_LIQUIDATION_CALL_TOPIC: LazyLock<B256> = LazyLock::new(|| {
 pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Absorb(address,address[],uint256[],uint256)"));
 
+/// Compound V3 Comet `BuyCollateral(address indexed buyer, address indexed asset,
+/// uint256 baseAmount, uint256 collateralAmount)` — discount capture after Absorb
+/// (§26 / explorer plan P0.3).
+pub static COMPOUND_V3_BUY_COLLATERAL_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("BuyCollateral(address,address,uint256,uint256)"));
+
 // ── Compound V2 ─────────────────────────────────────────────────────
 
 /// Compound V2 cToken `LiquidateBorrow(address liquidator, address borrower,
@@ -158,6 +164,36 @@ pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
 /// (`liquidator`/`borrower` indexed).
 pub static COMPOUND_V2_LIQUIDATE_BORROW_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("LiquidateBorrow(address,address,uint256,address,uint256)"));
+
+// ── Morpho Blue ─────────────────────────────────────────────────────
+
+/// Morpho Blue `Liquidate(bytes32 id, address caller, address borrower,
+/// uint256 repaidAssets, uint256 repaidShares, uint256 seizedAssets,
+/// uint256 badDebtAssets, uint256 badDebtShares)` — all three of id/caller/
+/// borrower indexed (§24 / explorer plan P0.2).
+pub static MORPHO_BLUE_LIQUIDATE_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Liquidate(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"));
+
+/// Morpho Blue `FlashLoan(address caller, address token, uint256 assets)` —
+/// 0% fee provider (§11 hierarchy / plan P2.3 routing).
+pub static MORPHO_BLUE_FLASH_LOAN_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("FlashLoan(address,address,uint256)"));
+
+// ── Silo V2 ─────────────────────────────────────────────────────────
+
+/// Silo V2 PartialLiquidation `LiquidationCall(address liquidator, address silo,
+/// address borrower, uint256 repayDebtAssets, uint256 withdrawCollateral,
+/// bool receiveSToken)` — liquidator/silo/borrower indexed (§24).
+pub static SILO_V2_LIQUIDATION_CALL_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LiquidationCall(address,address,address,uint256,uint256,bool)"));
+
+// ── Euler V2 ────────────────────────────────────────────────────────
+
+/// Euler V2 EVault `Liquidate(address liquidator, address violator,
+/// address collateral, uint256 repayAssets, uint256 yieldBalance)` —
+/// liquidator/violator indexed (§24).
+pub static EULER_V2_LIQUIDATE_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Liquidate(address,address,address,uint256,uint256)"));
 
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 

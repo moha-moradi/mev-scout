@@ -6,7 +6,9 @@
 //! - raw ERC-20 `Transfer` (the accounting primitive for profit attribution)
 //! - DEX swap events: V2, V3, V4, Curve, Balancer, Solidly, Trader Joe LB, Pendle,
 //!   Fluid, Metric
-//! - liquidation registry: Aave V3 `LiquidationCall`, Compound V3 `Absorb`
+//! - liquidation registry: Aave V3 `LiquidationCall` (+ Spark address alias),
+//!   Compound V3 `Absorb`/`BuyCollateral`, Compound V2 `LiquidateBorrow`,
+//!   Morpho Blue / Silo V2 / Euler V2 liquidations (§17.8.4 / §24 / §26)
 //! - V3 `Mint`/`Burn` (JIT positions)
 //! - UniV2 `Sync`/`Mint`/`Burn` (skim exclusion)
 //!
@@ -19,15 +21,17 @@ use alloy::primitives::{Address, B256, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{
-    Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact, TransferFact, V2PairOpFact,
-    V2PairOpKind,
+    Amm, BuyCollateralFact, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact,
+    TransferFact, V2PairOpFact, V2PairOpKind,
 };
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
     AAVE_V3_LIQUIDATION_CALL_TOPIC, BALANCER_FLASH_LOAN_TOPIC, COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
-    COMPOUND_V3_ABSORB_TOPIC, INF_CL_SWAP_TOPIC, TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC,
-    V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    COMPOUND_V3_ABSORB_TOPIC, COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
+    INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
+    SILO_V2_LIQUIDATION_CALL_TOPIC, TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SWAP_TOPIC,
+    V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -585,8 +589,11 @@ pub const ZRX_FILL_TOPIC: B256 =
     alloy::primitives::b256!("6869791f0a34781b29882982cc39e882768cf2c96995c2a110c577c53bc932d5");
 
 /// Decode a liquidation fact via the per-protocol event registry.
-/// Aave-style `LiquidationCall` and Compound V3 `Absorb` are covered; the
-/// registry is intentionally not one hardcoded topic.
+///
+/// Mode A fingerprints (§17.8.4 / §24): Aave-family `LiquidationCall` (Spark
+/// remapped by emitter address via [`remap_aave_family`]), Compound V3
+/// `Absorb`, Compound V2 `LiquidateBorrow`, Morpho Blue `Liquidate`, Silo V2
+/// `LiquidationCall`, Euler V2 `Liquidate`.
 pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
     let topic0 = *log.topics.first()?;
     if topic0 == *AAVE_V3_LIQUIDATION_CALL_TOPIC {
@@ -598,7 +605,9 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
         return Some(LiquidationFact {
             tx_index: 0,
             log_index: 0,
+            // Spark and other Aave-V3 ABI aliases remap via emitter address.
             protocol: "aave_v3",
+            emitter: log.address,
             user: Address::from_slice(&log.topics[3][12..]),
             // `LiquidationCall` does not carry the liquidator (msg.sender);
             // attribution falls back to the tx sender at classify time.
@@ -618,6 +627,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             tx_index: 0,
             log_index: 0,
             protocol: "compound_v3",
+            emitter: log.address,
             user: Address::from_slice(&log.data[12..32]),
             liquidator: Address::from_slice(&log.topics[1][12..]),
             collateral_asset: Address::ZERO,
@@ -636,6 +646,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             tx_index: 0,
             log_index: 0,
             protocol: "compound_v2",
+            emitter: log.address,
             user: Address::from_slice(&log.topics[2][12..]),
             liquidator: Address::from_slice(&log.topics[1][12..]),
             // Repaid market is the emitting cToken; seized collateral is a
@@ -646,7 +657,108 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             collateral_amount: U256::from_be_slice(&log.data[64..96]),
         });
     }
+    if topic0 == *MORPHO_BLUE_LIQUIDATE_TOPIC {
+        // topics: [sig, id, caller, borrower]
+        // data: repaidAssets, repaidShares, seizedAssets, badDebtAssets, badDebtShares
+        if log.topics.len() < 4 || log.data.len() < 96 {
+            return None;
+        }
+        return Some(LiquidationFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "morpho_blue",
+            emitter: log.address,
+            user: Address::from_slice(&log.topics[3][12..]),
+            liquidator: Address::from_slice(&log.topics[2][12..]),
+            // Market loan/collateral tokens live off-event (market id); transfer
+            // reconciliation fills them when present.
+            collateral_asset: Address::ZERO,
+            debt_asset: Address::ZERO,
+            debt_to_cover: U256::from_be_slice(&log.data[0..32]),
+            collateral_amount: U256::from_be_slice(&log.data[64..96]),
+        });
+    }
+    if topic0 == *SILO_V2_LIQUIDATION_CALL_TOPIC {
+        // topics: [sig, liquidator, silo, borrower]
+        // data: repayDebtAssets, withdrawCollateral, receiveSToken
+        if log.topics.len() < 4 || log.data.len() < 64 {
+            return None;
+        }
+        return Some(LiquidationFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "silo_v2",
+            emitter: log.address,
+            user: Address::from_slice(&log.topics[3][12..]),
+            liquidator: Address::from_slice(&log.topics[1][12..]),
+            collateral_asset: Address::ZERO,
+            debt_asset: Address::ZERO,
+            debt_to_cover: U256::from_be_slice(&log.data[0..32]),
+            collateral_amount: U256::from_be_slice(&log.data[32..64]),
+        });
+    }
+    if topic0 == *EULER_V2_LIQUIDATE_TOPIC {
+        // topics: [sig, liquidator, violator]
+        // data: collateral, repayAssets, yieldBalance
+        if log.topics.len() < 3 || log.data.len() < 96 {
+            return None;
+        }
+        return Some(LiquidationFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "euler_v2",
+            emitter: log.address,
+            user: Address::from_slice(&log.topics[2][12..]),
+            liquidator: Address::from_slice(&log.topics[1][12..]),
+            collateral_asset: Address::from_slice(&log.data[12..32]),
+            // Debt asset is the emitting vault's underlying — unknown from the
+            // event alone; leave zero for transfer reconciliation.
+            debt_asset: Address::ZERO,
+            debt_to_cover: U256::from_be_slice(&log.data[32..64]),
+            collateral_amount: U256::from_be_slice(&log.data[64..96]),
+        });
+    }
     None
+}
+
+/// Remap Aave-V3-ABI emitters to a configured protocol label (Spark etc.).
+///
+/// Mode A (§24): Spark reuses the Aave `LiquidationCall` topic0; only the
+/// pool address distinguishes it. `aliases` maps emitter → protocol name.
+pub fn remap_aave_family(
+    liq: &mut LiquidationFact,
+    aliases: &std::collections::HashMap<Address, &'static str>,
+) {
+    if liq.protocol != "aave_v3" {
+        return;
+    }
+    if let Some(label) = aliases.get(&liq.emitter) {
+        liq.protocol = label;
+    }
+}
+
+/// Decode Compound V3 `BuyCollateral` (§26 / plan P0.3).
+///
+/// Mode A: `BuyCollateral(address buyer, address asset, uint256 baseAmount,
+/// uint256 collateralAmount)` with buyer/asset indexed.
+pub fn decode_buy_collateral(log: &LogData) -> Option<BuyCollateralFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *COMPOUND_V3_BUY_COLLATERAL_TOPIC {
+        return None;
+    }
+    if log.topics.len() < 3 || log.data.len() < 64 {
+        return None;
+    }
+    Some(BuyCollateralFact {
+        tx_index: 0,
+        log_index: 0,
+        protocol: "compound_v3",
+        emitter: log.address,
+        buyer: Address::from_slice(&log.topics[1][12..]),
+        collateral_asset: Address::from_slice(&log.topics[2][12..]),
+        base_amount: U256::from_be_slice(&log.data[0..32]),
+        collateral_amount: U256::from_be_slice(&log.data[32..64]),
+    })
 }
 
 /// Decode a flash-loan fact from a receipt log (Phase 2.2).
@@ -711,6 +823,26 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
             amount: ev.amount,
             fee: ev.fee,
             recipient: ev.target,
+            provider: log.address,
+        });
+    }
+
+    // Morpho Blue: FlashLoan(address indexed caller, address indexed token,
+    //   uint256 assets) — 0% premium (§11 / P2.3 routing).
+    if topic0 == *MORPHO_BLUE_FLASH_LOAN_TOPIC {
+        if log.topics.len() < 3 || log.data.len() < 32 {
+            return None;
+        }
+        let caller = Address::from_slice(&log.topics[1][12..]);
+        return Some(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "morpho_blue",
+            initiator: caller,
+            recipient: caller,
+            token: Address::from_slice(&log.topics[2][12..]),
+            amount: U256::from_be_slice(&log.data[0..32]),
+            fee: Some(U256::ZERO),
             provider: log.address,
         });
     }

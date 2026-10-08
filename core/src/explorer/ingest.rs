@@ -39,12 +39,18 @@ pub struct IngestConfig {
     /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default false —
     /// only closed multi-pool cycles are labeled arb (spec §7.1 / §8.1).
     pub arb_likely_parity: bool,
+    /// Aave-V3-ABI emitter → protocol label (Spark etc., plan P0.2 / §24).
+    pub aave_family_aliases: HashMap<Address, &'static str>,
 }
 
 impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
         let wrapped_native = chain_config.wrapped_native_token.unwrap_or(Address::ZERO);
         let priority = build_profit_priority(chain, wrapped_native);
+        let mut aave_family_aliases = HashMap::new();
+        if let Some(spark) = chain_config.spark_pool {
+            aave_family_aliases.insert(spark, "spark");
+        }
         IngestConfig {
             chain,
             chain_id: chain.chain_id(),
@@ -52,6 +58,7 @@ impl IngestConfig {
             wrapped_native,
             profit_token_priority: priority,
             arb_likely_parity: false,
+            aave_family_aliases,
         }
     }
 }
@@ -173,8 +180,13 @@ pub async fn index_block(
             continue; // failed txs carry no realized MEV
         }
 
-        let (transfers, swaps, liquidations, flashloans, jit, v2_pair_ops) =
-            classify::decode_tx_logs(tx.index, &receipt.logs, pools.tokens);
+        let (transfers, swaps, liquidations, flashloans, buy_collaterals, jit, v2_pair_ops) =
+            classify::decode_tx_logs_with_aliases(
+                tx.index,
+                &receipt.logs,
+                pools.tokens,
+                &cfg.aave_family_aliases,
+            );
         let jit_count = jit.len();
 
         // Real gas (Phase 2.1): prefer the receipt's `effectiveGasPrice`, then
@@ -246,6 +258,7 @@ pub async fn index_block(
             swaps,
             liquidations,
             flashloans,
+            buy_collaterals,
             jit,
             v2_pair_ops,
         });

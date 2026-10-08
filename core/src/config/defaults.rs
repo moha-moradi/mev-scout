@@ -22,6 +22,18 @@ pub struct ChainConfig {
     pub balancer_vault: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aave_v3_pool: Option<Address>,
+    /// SparkLend pool (Aave-V3 ABI alias — same `LiquidationCall` topic0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spark_pool: Option<Address>,
+    /// Morpho Blue singleton (shared address on ETH/Base/Arb).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub morpho_blue: Option<Address>,
+    /// Silo V2 PartialLiquidation hook receiver(s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silo_v2_partial_liquidation: Option<Vec<Address>>,
+    /// Euler V2 vault factory / known liquidatable vault set (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub euler_v2_evault_factory: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v3_factories: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,6 +106,10 @@ impl ChainConfig {
             rpc,
             balancer_vault,
             aave_v3_pool,
+            spark_pool,
+            morpho_blue,
+            silo_v2_partial_liquidation,
+            euler_v2_evault_factory,
             uniswap_v3_factories,
             uniswap_v2_factories,
             solidly_factories,
