@@ -62,7 +62,7 @@ Widen the live window with `--blocks N`, or keep following the chain with
 Each step is a separate command. The first invocation shows the full
 `cargo run` form; later steps use the short `mev-scout` form (same config
 and CWD). Full flag coverage lives in
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+[`docs/CLI.md`](docs/CLI.md).
 
 ```powershell
 # Detect at the tip → opportunities + paper P&L (ledger is always on)
@@ -85,12 +85,12 @@ mev-scout explorer
 
 | Command | Purpose | Details |
 |---|---|---|
-| *(none)* | Default: bootstrap if needed, scan the latest 64 blocks, exit | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
-| `config` | Print fully-resolved TOML | [§4.1](docs/ARCHITECTURE.md#41-config--print-resolved-toml) |
-| `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§4.3](docs/ARCHITECTURE.md#43-discover--build-the-pool-universe) |
-| `live` | Detect at tip → opportunities + virtual P&L ledger | [§4.2](docs/ARCHITECTURE.md#42-live--the-default-command) |
-| `report` | Re-render a recorded run from SQLite | [§4.5](docs/ARCHITECTURE.md#45-report--re-render-saved-results) |
-| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | [§4.6](docs/ARCHITECTURE.md#46-explorer--realized-mev-forensics) |
+| *(none)* | Default: bootstrap if needed, scan the latest 64 blocks, exit | [§3.2](docs/CLI.md#32-live--the-default-command) |
+| `config` | Print fully-resolved TOML | [§3.1](docs/CLI.md#31-config--print-resolved-toml) |
+| `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§3.3](docs/CLI.md#33-discover--build-the-pool-universe) |
+| `live` | Detect at tip → opportunities + virtual P&L ledger | [§3.2](docs/CLI.md#32-live--the-default-command) |
+| `report` | Re-render a recorded run from SQLite | [§3.5](docs/CLI.md#35-report--re-render-saved-results) |
+| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
 always runs its paper ledger (`--initial-balance`, `--reserve`). At session

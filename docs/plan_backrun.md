@@ -318,7 +318,7 @@ into the recall denominator, which is the point.
 * `core/src/config/settings.rs:69` doc comment example.
 * `docs/mev_strategies.md:2873` — flip `Backrunning` row from `Planned (backrun.rs)` to coded.
 * `docs/mev_strategies.md:3920–3926` — extend the "Implemented subset" sentence.
-* `docs/ARCHITECTURE.md:656–666` — add a line contrasting the realized logs-only proxy with
+* `docs/CLI.md:521–536` — add a line contrasting the realized logs-only proxy with
   the scanner's state-differential (this is the first `profit(B|before)` vs
   `profit(B|after)` computation in the tree).
 
@@ -415,7 +415,7 @@ cargo test -p mev-scout-core --test explorer_golden
 ```
 
 `explorer::golden::score_embedded_causal_set` (`golden.rs:506`) is the labelled backrun /
-frontrun set referenced as the Phase 3 ship gate in `docs/ARCHITECTURE.md:649–651`.
+frontrun set referenced as the Phase 3 ship gate in `docs/CLI.md:514–516`.
 Once `strategy_to_kind` maps `backrun`, the scanner's backrun rows can be scored against it
 via `validate` — **the first scanner-level backrun precision/recall number in the project.**
 
@@ -445,7 +445,7 @@ cargo test --workspace
 3. **Config gating of detectors** — the `strategies` list stays inert (§3.7).
 4. **`FRONTRUN` scanner strategy** — same differential, opposite ordering; not attempted.
 5. **REVM counterfactual for the realized explorer backrun** — the explorer's
-   `classify_backruns` stays logs-only (`ARCHITECTURE.md:656`). This plan adds the scanner-side
+   `classify_backruns` stays logs-only (`CLI.md:521`). This plan adds the scanner-side
    differential only; wiring the explorer to consume it is a separate change.
 
 ---
@@ -620,7 +620,7 @@ dedup, D2, or the canonical-id form. New file, using the §6.1 harness plus:
 | 2 | `docs/mev_strategies.md:2873` | row 11 `Backrunning` → mark **coded** (`core/src/mev/detectors/backrun.rs`) |
 | 3 | `docs/mev_strategies.md:3729` | status table: `Planned (backrun.rs)` → `Implemented (scanner, historical)` |
 | 4 | `docs/mev_strategies.md:3920–3926` | extend the "Implemented subset" sentence with backrun (scanner-side state-differential, historical only; §41.2 live still out of scope) |
-| 5 | `docs/ARCHITECTURE.md:656–666` | add the contrast line: realized backrun stays logs-only proxy, while the scanner now computes the tree's first `profit(B\|before)` vs `profit(B\|after)` differential (`plan_backrun.md` D3) |
+| 5 | `docs/CLI.md:521–536` | add the contrast line: realized backrun stays logs-only proxy, while the scanner now computes the tree's first `profit(B\|before)` vs `profit(B\|after)` differential (`plan_backrun.md` D3) |
 | 6 | `core/src/explorer/validate.rs:22–28` | rewrite the stale comment: `backrun` **is** now mapped (`:52`) and is the first scanner strategy joinable to realized `MevKind::Backrun`; `frontrun` remains unmapped (no scanner strategy) |
 | 7 | `core/tests/paper_corpus.rs:27` | `is_native_eligible` list now includes `Backrun` |
 | 8 | `core/tests/replay.rs:248` | **no change** — the synthetic fixture has empty receipt logs (`setup.rs:252`), so `will_touch` is always empty and no backrun is emitted; record the decision here so it is not re-litigated |

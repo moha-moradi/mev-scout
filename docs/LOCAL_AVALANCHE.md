@@ -504,6 +504,6 @@ The script detects the existing service and upgrades in place. Data in
 ## Related
 
 - Main quick start: [`README.md`](../README.md)
-- CLI surface: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- CLI surface: [`CLI.md`](./CLI.md)
 - Example public RPCs (fallback only): [`mev-scout.example.toml`](../mev-scout.example.toml)
 - Full-speed local profile: [`mev-scout.local.toml`](../mev-scout.local.toml)

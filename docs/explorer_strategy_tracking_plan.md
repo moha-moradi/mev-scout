@@ -230,13 +230,13 @@ admission gates.
 |---|----------|---|:---:|-----------|---------|--------|------|
 | P3.1 | Trader Joe V2 LB bin-JIT | 7.13 | A | `F`/`R` (JIT tip, completed swaps) | low | 3 d | LB math exists in `pool/math`; Avalanche config |
 | P3.2 | Balancer rate-provider staleness arb | 7.7 | A | `R` | flash | 3 d | staleness cause = inferred label |
-| P3.5 | Curve pool imbalance arb | 7.1 | A | `R` | flash | 3 d | raw logs work (§17.4) |
-| P3.7 | GMX V2 ADL-adjacent arb | 7.8 | A | `R` | none | 3 d | raw decode via `EventEmitter` topics (§17.3); **GMX V2 live on 43114** (docs.gmx.io contract addresses: `LiquidationHandler` 0x1eAa0E…, `EventEmitter` 0xDb17B2…) — volume phase-gated (§8.6) |
+| P3.5 | Curve pool imbalance arb | 7.1 | A | `R` | flash | 3 d | raw logs work (§17.4); Avalanche Curve volume thin ($9.8k/24h, defillama 2026-10) → volume phase-gated (§8.6) |
+| P3.7 | GMX V2 ADL-adjacent arb | 7.8 | A | `R` | none | 3 d | raw decode via `EventEmitter` topics (§17.3); **GMX V2 live on 43114** (docs.gmx.io contract addresses: `LiquidationHandler` 0x1eAa0E…, `EventEmitter` 0xDb17B2…); GMX DEX vol ≈ $35k/24h across 5 chains (defillama 2026-10) → volume phase-gate (§8.6) justified |
 | P3.11 | ERC-4337 bundler executions | 7.4 | A | `R` (bundler/builder deltas incl. tips) | none | 3 d | EntryPoint event decode; volume phase-gated (§8.6) |
 | P3.12 | Rebase + FoT token arb | 5.3/5.4 | A | `R` | low | 2 d | drift flag secondary; realized swaps only |
 | P3.13 | Airdrop claim-and-sell | 7.3 | A | `R` — only txs that sell in the same tx | none | 2 d | held claims are **not** counted (no MTM) |
 | P3.14 | Bad-debt / near-insolvent liq attribution | 4.15 | A | `O` (standard liq formula) + post-liq HF flag (B) | flash | 3 d | attribution only; P&L is the liq itself |
-| P3.15 | Pharaoh epoch-transition arb | 7.5 (note at 2214) | A | `R` (epoch-boundary realized swaps) | medium | 3 d | §7.5's strategy maps to Pharaoh Exchange, the ve(3,3) fork on Avalanche (`mev_strategies.md:2214`); Pharaoh V3 + DLMM factories configured (`chains.toml`); ~4 opps/mo expected → `sparse` likely |
+| P3.15 | Pharaoh epoch-transition arb | 7.5 (note at 2214) | A | `R` (epoch-boundary realized swaps) | medium | 3 d | §7.5's strategy maps to Pharaoh Exchange, the ve(3,3) fork on Avalanche (`mev_strategies.md:2214`); Pharaoh V3 + DLMM factories configured (`chains.toml`); **#1 DEX on Avalanche — $154.6m/24h ≈ 72% of chain DEX volume, $3.06b/30d** (defillama 2026-10) → first row of Week 8+; ~4 epoch opps/mo → `sparse` likely. Second venue: **Blackhole** ($10.7m/24h, Avalanche-native Gauge + veBLACK + bribes) — verify its epoch/gauge model, then fold in (factory not yet in `chains.toml`) |
 | P3.16 | sAVAX rate arb | non-catalogue (Avalanche audit) | A | `R` | flash | 2 d | `exchangeRate()` on Benqi StakedAvax vs sAVAX/AVAX pool price (Joe/Curve); Avalanche-native so gate 1 is certain — volume unproven → phase-gated (§8.6) |
 
 > **Numbering is frozen.** Rows removed by the Avalanche scoping revision
@@ -252,6 +252,16 @@ admission gates.
 NFT collateral liquidation (`pnl_not_exact` — floor oracle unreliable),
 solver/intent fills (`pnl_not_exact` — surplus is mode C), bridge MEV
 (`partial` — destination leg outside single-chain ingest).
+
+**Venue coverage audit (defillama 2026-10):** configured in `chains.toml` →
+Pharaoh (V3 + DLMM), LFJ V1/V2.1/V2.2 (LB), Uniswap V2/V3/V4, Pangolin
+V2/V3, Sushi, Curve Stableswap NG, Balancer, Metric, GMX V2; **Blackhole**
+(#4 by volume, $10.7m/24h) pending factory — fold into P3.15 after its
+epoch model is verified. Not scheduled — each ≪3% of chain 24h volume
+and/or needs a dedicated decoder: DODO (PMM math), WOOFi (cross-chain
+PMM), Frax Swap, Wombat (stableswap), Dexalot (CLOB, not an AMM), and
+dust venues (The Arena, Axial, RadioShack, Swapsicle, Complus). Revisit
+if any crosses ~$5m/30d.
 
 ---
 
@@ -367,8 +377,9 @@ Week 1–2   P0.1 flash-liq tag → P0.2 Benqi relabel → P0.4 flash-arb flag
 Week 3–5   P1.1 interest accrual → P1.3 long-tail → P1.4 oracle-latency
            → P1.5 keeper exec (Gelato/Chainlink)
 Week 5–6   P2.3 flash-liq routing stats
-Week 8+    P3.1 / P3.2 / P3.5 / P3.7 / P3.11–P3.16 by comp/capital/effort
-           order (P3.7 first if GMX V2 43114 volume proves out)
+Week 8+    P3.15 first (Pharaoh ≈ 72% of Avalanche DEX volume), then
+           P3.1 / P3.2 / P3.5 / P3.7 / P3.11–P3.16 by comp/capital/effort
+           order (P3.7 next if GMX V2 43114 volume proves out)
 Never      §6 dropped (until a new exact-P&L method exists)
            + §6.1 not-on-Avalanche (until the protocol ships on 43114)
            + §7 excluded

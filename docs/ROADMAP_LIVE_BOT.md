@@ -77,7 +77,7 @@ normal `live` ledger summary.
 |---|---|---|
 | 1 | **Competition model** — win probability per opportunity, and a non-zero `winning_bid_premium` | Largest single overstatement: today every opportunity is assumed won |
 | 2 | **Detect from pending** — `capture_pending` is off by default (`core/src/config/settings.rs:406`) | Removes the foresight the detector gets from confirmed blocks |
-| 3 | **Restore deleted detectors** — sandwich, backrun, liquidation (gone per `ARCHITECTURE.md:660`) | Coverage is honesty: the opportunity surface today is three strategies wide |
+| 3 | **Restore deleted detectors** — sandwich, backrun, liquidation (gone per `CLI.md:519–547`) | Coverage is honesty: the opportunity surface today is three strategies wide |
 | 4 | **Honest gas auction model** | The cheapest overstatement, worth fixing last of these |
 | 5 | **Fork corpus test** | Keeps fidelity from drifting as the rest changes |
 | 6 | **Record what was observable at time T** | Without a tape of heads + pending txs, any latency claim stays a guess |
