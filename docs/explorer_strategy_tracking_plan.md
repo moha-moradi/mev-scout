@@ -7,6 +7,10 @@
 > Tracking = post-hoc classification of settled on-chain activity (the
 > explorer's `MevKind` + `details` pipeline). It does **not** imply live
 > detection or execution — that is `ROADMAP_LIVE_BOT.md` territory.
+>
+> **Scenarios:** synthetic CI fixtures + Avalanche real-block hunt recipes are
+> catalogued in [`explorer_strategy_scenarios.md`](./explorer_strategy_scenarios.md)
+> (`core/src/explorer/scenario_targets.rs`).
 > Fingerprints are the §17.8 on-chain algorithms (mode A = realized event
 > count, mode B = latent/storage reconstructable, mode C = needs simulation).
 >

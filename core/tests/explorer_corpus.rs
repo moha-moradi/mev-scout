@@ -65,6 +65,9 @@ use alloy::primitives::{address, Address};
 use mev_scout_core::config::validation::resolve_chain;
 use mev_scout_core::config::Config;
 use mev_scout_core::explorer::ingest::{run_range, IngestConfig, PoolViews};
+use mev_scout_core::explorer::scenario_targets::{
+    hunt_targets, seeded_targets, RealSeedStatus, STRATEGY_SCENARIO_TARGETS,
+};
 use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::explorer::MevKind;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
@@ -633,6 +636,20 @@ fn parse_chain_list(raw: &str) -> Vec<ChainName> {
 /// run can be transcribed into a case field-for-field.
 fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
     let mut lines = Vec::new();
+    lines.push("--- strategy scenario hunt checklist ---".into());
+    lines.push(format!(
+        "catalogue {} rows ({} seeded, {} hunt, {} synthetic-only)",
+        STRATEGY_SCENARIO_TARGETS.len(),
+        seeded_targets().count(),
+        hunt_targets().count(),
+        STRATEGY_SCENARIO_TARGETS
+            .iter()
+            .filter(|t| t.real == RealSeedStatus::SyntheticOnly)
+            .count(),
+    ));
+    for t in hunt_targets() {
+        lines.push(format!("  HUNT {} [{}]: {}", t.id, t.label, t.hunt));
+    }
     for (from, to) in windows {
         lines.push(format!("{from}..={to}"));
         let ops = match store.ops_in_range(*from, *to, &[]) {
@@ -766,6 +783,32 @@ fn every_classifier_kind_is_reported_by_a_record_run() {
         assert!(
             ALL_KINDS.contains(&kind),
             "{kind} is emittable but missing from ALL_KINDS"
+        );
+    }
+}
+
+#[test]
+fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
+    // Seeded catalogue rows must sit inside an Avalanche CORPUS window of the
+    // same kind (or a kind-compatible label such as arb_atomic / liquidation).
+    for t in seeded_targets() {
+        let from = t.seed_from.expect("seeded");
+        let to = t.seed_to.expect("seeded");
+        let kind = match t.label {
+            "arb_atomic" | "long_tail" | "flash_arb" => "arb_atomic",
+            "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
+            other => other,
+        };
+        let hit = CORPUS.iter().any(|c| {
+            c.chain == ChainName::Avalanche
+                && c.kind == kind
+                && c.from_block <= from
+                && c.to_block >= to
+        });
+        assert!(
+            hit,
+            "seeded target {} [{}] {}..={} has no Avalanche CORPUS cover",
+            t.id, t.label, from, to
         );
     }
 }

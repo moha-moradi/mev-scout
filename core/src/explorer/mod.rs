@@ -39,6 +39,7 @@ pub(crate) mod reject;
 pub(crate) mod results;
 #[cfg(test)]
 mod scenarios;
+pub mod scenario_targets;
 pub mod store;
 pub mod types;
 pub mod validate;
