@@ -10,7 +10,9 @@
 //! - rejection capture: `rejected_candidates`
 //! - checkpointing: `sync_state` + `blocks_classified` (gap-safe resume)
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 type PoolSwapRow = (String, Option<String>, String, String);
@@ -385,6 +387,25 @@ impl ExplorerStore {
             CREATE INDEX IF NOT EXISTS jit_open_positions_prune
               ON jit_open_positions(opened_block);
 
+            -- Plan P1.1 / P1.4 mode-B lookback: prior oracle answers + reserve
+            -- borrow-rate series (single-chain, logs-only).
+            CREATE TABLE IF NOT EXISTS oracle_answers(
+              block_number INTEGER NOT NULL,
+              feed TEXT NOT NULL,
+              answer TEXT NOT NULL,
+              PRIMARY KEY(block_number, feed)
+            );
+            CREATE INDEX IF NOT EXISTS oracle_answers_feed
+              ON oracle_answers(feed, block_number);
+            CREATE TABLE IF NOT EXISTS reserve_rates(
+              block_number INTEGER NOT NULL,
+              reserve TEXT NOT NULL,
+              variable_borrow_rate TEXT NOT NULL,
+              PRIMARY KEY(block_number, reserve)
+            );
+            CREATE INDEX IF NOT EXISTS reserve_rates_reserve
+              ON reserve_rates(reserve, block_number);
+
             CREATE TABLE IF NOT EXISTS opportunities(
               run_id TEXT,
               chain TEXT,
@@ -671,7 +692,134 @@ impl ExplorerStore {
             "DELETE FROM jit_open_positions WHERE opened_block >= ?1",
             [fork_block as i64],
         )?;
+        self.conn.execute(
+            "DELETE FROM oracle_answers WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
+        self.conn.execute(
+            "DELETE FROM reserve_rates WHERE block_number >= ?1",
+            [fork_block as i64],
+        )?;
         Ok(())
+    }
+
+    /// Persist Chainlink answers for mode-B pre-poke divergence (plan P1.4).
+    pub fn record_oracle_answers(
+        &self,
+        block: u64,
+        rows: &[(Address, i128)],
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT OR REPLACE INTO oracle_answers(block_number, feed, answer) VALUES (?1, ?2, ?3)",
+        )?;
+        for (feed, answer) in rows {
+            stmt.execute(rusqlite::params![
+                block as i64,
+                format!("{feed:#x}"),
+                answer.to_string(),
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Latest answer per feed strictly before `block`.
+    pub fn prior_oracle_answers(
+        &self,
+        block: u64,
+        feeds: &[Address],
+    ) -> anyhow::Result<HashMap<Address, i128>> {
+        let mut out = HashMap::new();
+        if feeds.is_empty() {
+            return Ok(out);
+        }
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT answer FROM oracle_answers
+             WHERE feed = ?1 AND block_number < ?2
+             ORDER BY block_number DESC LIMIT 1",
+        )?;
+        for feed in feeds {
+            let feed_s = format!("{feed:#x}");
+            if let Ok(ans) = stmt.query_row(rusqlite::params![feed_s, block as i64], |r| {
+                r.get::<_, String>(0)
+            }) {
+                if let Ok(v) = ans.parse::<i128>() {
+                    out.insert(*feed, v);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Persist Aave ReserveDataUpdated rates for mode-B interest (plan P1.1).
+    pub fn record_reserve_rates(
+        &self,
+        block: u64,
+        rows: &[(Address, U256)],
+    ) -> anyhow::Result<()> {
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT OR REPLACE INTO reserve_rates(block_number, reserve, variable_borrow_rate)
+             VALUES (?1, ?2, ?3)",
+        )?;
+        for (reserve, rate) in rows {
+            stmt.execute(rusqlite::params![
+                block as i64,
+                format!("{reserve:#x}"),
+                rate.to_string(),
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Reserve + oracle rows in `[block - window, block)` for interest lookback.
+    pub fn interest_lookback(
+        &self,
+        block: u64,
+        window: u64,
+    ) -> anyhow::Result<crate::explorer::interest_attr::InterestLookback> {
+        let from = block.saturating_sub(window) as i64;
+        let to = block as i64;
+        let mut oracle_updates = Vec::new();
+        {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT block_number, feed FROM oracle_answers
+                 WHERE block_number >= ?1 AND block_number < ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![from, to], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (b, feed_s) = row?;
+                if let Ok(feed) = feed_s.parse::<Address>() {
+                    oracle_updates.push((b, feed));
+                }
+            }
+        }
+        let mut reserve_updates = Vec::new();
+        {
+            let mut stmt = self.conn.prepare_cached(
+                "SELECT block_number, reserve, variable_borrow_rate FROM reserve_rates
+                 WHERE block_number >= ?1 AND block_number < ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![from, to], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (b, reserve_s, rate_s) = row?;
+                if let (Ok(reserve), Ok(rate)) =
+                    (reserve_s.parse::<Address>(), rate_s.parse::<U256>())
+                {
+                    reserve_updates.push((b, reserve, rate));
+                }
+            }
+        }
+        Ok(crate::explorer::interest_attr::InterestLookback {
+            oracle_updates,
+            reserve_updates,
+        })
     }
 
     /// Stored block hash for reorg detection.

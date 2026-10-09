@@ -548,6 +548,7 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
             PoolViews {
                 tokens: &registry.tokens,
                 v2_like: &registry.v2_like,
+                epoch_venue: &registry.epoch_venue,
             },
             *from,
             *to,

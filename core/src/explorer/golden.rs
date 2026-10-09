@@ -150,6 +150,7 @@ fn tx(
         v2_pair_ops: vec![],
         oracle_updates: vec![],
         reserve_updates: vec![],
+        rate_cache_updates: vec![],
         keepers: vec![],
         epoch_rewards: vec![],
         gmx_events: vec![],
@@ -174,6 +175,9 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
         savax: None,
         epoch_venue_pools: HashSet::new(),
         gmx_event_emitters: HashSet::new(),
+        interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
+        prior_oracle_answers: HashMap::new(),
+        savax_exchange_rate_wad: None,
         txs,
     }
 }

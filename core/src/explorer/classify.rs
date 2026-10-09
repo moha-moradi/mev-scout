@@ -3306,6 +3306,7 @@ mod tests {
             tx_index: 0,
             log_index: 1,
             feed,
+            answer: 100,
         }];
         let mut input = block(vec![t]);
         input.chainlink_feeds = HashMap::from([(feed, USDC)]);
@@ -3379,6 +3380,7 @@ mod tests {
             tx_index: 0,
             log_index: 2,
             feed,
+            answer: 100,
         }];
         let mut input = block(vec![t]);
         input.chainlink_feeds = HashMap::from([(feed, WNATIVE)]);
@@ -3430,13 +3432,13 @@ mod tests {
         }));
     }
 
-    /// P3.5: Curve leg on a closed arb → `curve_imbalance`.
+    /// P3.5: Curve + other venue on a closed arb → `curve_imbalance`.
     #[test]
     fn curve_imbalance_tagged_on_curve_arb() {
         let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
         s0.amm = Amm::Curve;
         let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
-        s1.amm = Amm::Curve;
+        s1.amm = Amm::V2;
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ATK, 200),
@@ -3452,7 +3454,7 @@ mod tests {
         assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
     }
 
-    /// P3.14: Morpho badDebtAssets > 0 → `bad_debt_liq`.
+    /// P3.14: Morpho badDebtAssets > 0 → `bad_debt_liq` + post_liq_insolvent.
     #[test]
     fn bad_debt_liq_tagged_when_bad_debt_assets_nonzero() {
         let mut t = tx(
@@ -3469,6 +3471,7 @@ mod tests {
         let tags = ev.details["tags"].as_array().unwrap();
         assert!(tags.iter().any(|x| x.as_str() == Some("bad_debt_liq")));
         assert_eq!(ev.details["bad_debt"], serde_json::json!(true));
+        assert_eq!(ev.details["post_liq_insolvent"], serde_json::json!(true));
         assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
     }
 

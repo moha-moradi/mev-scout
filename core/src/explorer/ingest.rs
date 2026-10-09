@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, B256, Bytes, U256};
 use tracing::{debug, warn};
 
 use crate::explorer::classify::{self, BlockInput, TxInput};
@@ -139,11 +139,13 @@ fn build_profit_priority(chain: ChainName, wrapped_native: Address) -> Vec<Addre
     v
 }
 
-/// Token0/token1 map plus V2-like skim-eligible pairs, shared by ingest callers.
+/// Token0/token1 map plus V2-like skim-eligible and epoch-venue pairs.
 #[derive(Debug, Clone, Copy)]
 pub struct PoolViews<'a> {
     pub tokens: &'a HashMap<Address, (Address, Address)>,
     pub v2_like: &'a HashSet<Address>,
+    /// Pharaoh / Blackhole pools for plan P3.15.
+    pub epoch_venue: &'a HashSet<Address>,
 }
 
 /// Result of indexing one block.
@@ -215,6 +217,7 @@ pub async fn index_block(
             v2_pair_ops,
             oracle_updates,
             reserve_updates,
+            rate_cache_updates,
             keepers,
             epoch_rewards,
             gmx_events,
@@ -301,6 +304,7 @@ pub async fn index_block(
             v2_pair_ops,
             oracle_updates,
             reserve_updates,
+            rate_cache_updates,
             keepers,
             epoch_rewards,
             gmx_events,
@@ -309,6 +313,14 @@ pub async fn index_block(
     }
 
     let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    let interest_lookback = store
+        .interest_lookback(block_number, crate::explorer::interest_attr::LOOKBACK_BLOCKS)
+        .unwrap_or_default();
+    let feeds: Vec<Address> = cfg.chainlink_feeds.keys().copied().collect();
+    let prior_oracle_answers = store
+        .prior_oracle_answers(block_number, &feeds)
+        .unwrap_or_default();
+    let savax_exchange_rate_wad = fetch_savax_exchange_rate(rpc, cfg.savax, block_number).await;
     let input = BlockInput {
         block: block_number,
         ts: block_data.timestamp,
@@ -323,14 +335,33 @@ pub async fn index_block(
         v2_like_pools: pools.v2_like.clone(),
         chainlink_feeds: cfg.chainlink_feeds.clone(),
         savax: cfg.savax,
-        epoch_venue_pools: HashSet::new(), // filled when pool→venue map is available
+        epoch_venue_pools: pools.epoch_venue.clone(),
         gmx_event_emitters: cfg.gmx_event_emitters.clone(),
+        interest_lookback,
+        prior_oracle_answers,
+        savax_exchange_rate_wad,
         txs: tx_inputs,
     };
 
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classify::classify_block(&input));
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
+
+    // Persist oracle/reserve rows for subsequent blocks' mode-B lookback.
+    {
+        let mut oracle_rows: Vec<(Address, i128)> = Vec::new();
+        let mut reserve_rows: Vec<(Address, U256)> = Vec::new();
+        for t in &input.txs {
+            for o in &t.oracle_updates {
+                oracle_rows.push((o.feed, o.answer));
+            }
+            for r in &t.reserve_updates {
+                reserve_rows.push((r.reserve, r.variable_borrow_rate));
+            }
+        }
+        let _ = store.record_oracle_answers(block_number, &oracle_rows);
+        let _ = store.record_reserve_rates(block_number, &reserve_rows);
+    }
 
     let mut token_prices = match token_prices {
         Some(p) => p,
@@ -462,6 +493,25 @@ pub async fn verify_indexed_tip(
         Err(e) => {
             warn!(block, "indexed-tip reorg check failed: {e}");
             Ok(None)
+        }
+    }
+}
+
+/// Benqi sAVAX `getPooledAvaxByShares(1e18)` → AVAX wad per 1 sAVAX (plan P3.16).
+async fn fetch_savax_exchange_rate(
+    rpc: &RpcClient,
+    savax: Option<Address>,
+    block: u64,
+) -> Option<U256> {
+    let savax = savax.filter(|a| !a.is_zero())?;
+    let mut data = crate::pool::selectors::SAVAX_GET_POOLED_AVAX_BY_SHARES.to_vec();
+    data.extend_from_slice(&U256::from(10u64.pow(18)).to_be_bytes::<32>());
+    match rpc.call(savax, Bytes::from(data), block).await {
+        Ok(ret) if ret.len() >= 32 => Some(U256::from_be_slice(&ret[..32])),
+        Ok(_) => None,
+        Err(e) => {
+            debug!(block, "sAVAX exchangeRate eth_call failed: {e}");
+            None
         }
     }
 }

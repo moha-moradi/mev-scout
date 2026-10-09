@@ -73,6 +73,7 @@ pub async fn job_backfill(
         PoolViews {
             tokens: &registry.tokens,
             v2_like: &registry.v2_like,
+            epoch_venue: &registry.epoch_venue,
         },
         from,
         to,

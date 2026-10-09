@@ -160,6 +160,7 @@ fn tx(
         v2_pair_ops: vec![],
         oracle_updates: vec![],
         reserve_updates: vec![],
+        rate_cache_updates: vec![],
         keepers: vec![],
         epoch_rewards: vec![],
         gmx_events: vec![],
@@ -184,6 +185,9 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
         savax: None,
         epoch_venue_pools: HashSet::new(),
         gmx_event_emitters: HashSet::new(),
+        interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
+        prior_oracle_answers: HashMap::new(),
+        savax_exchange_rate_wad: None,
         txs,
     }
 }
@@ -690,6 +694,7 @@ fn p1_1_interest_accrual() {
                 tx_index: 0,
                 log_index: 2,
                 feed,
+                answer: 100,
             }];
         }
         let mut input = block(vec![t]);
@@ -763,6 +768,7 @@ fn p1_4_oracle_poke_block() {
                 tx_index: 0,
                 log_index: 1,
                 feed,
+                answer: 100,
             }];
         }
         let mut input = block(vec![t]);
@@ -884,14 +890,15 @@ fn p3_1_lb_bin_jit() {
 }
 
 /// P3.2 — Balancer rate-provider staleness (inferred cause, R P&L).
-/// Negative: the same cycle routed through plain V2 pools is unlabeled.
+/// Positive: Balancer + V2 cross-venue cycle with no TokenRateCacheUpdated.
+/// Negative: plain V2-only cycle, or Balancer cycle with a rate-cache refresh.
 #[test]
 fn p3_2_balancer_staleness() {
-    let with_amm = |amm: Amm| {
+    let cross = |amm0: Amm, amm1: Amm| {
         let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
-        s0.amm = amm;
+        s0.amm = amm0;
         let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
-        s1.amm = amm;
+        s1.amm = amm1;
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ATK, 200),
@@ -903,27 +910,52 @@ fn p3_2_balancer_staleness() {
             MevKind::ArbAtomic,
         )
     };
-    let ev = with_amm(Amm::Balancer);
+    let ev = cross(Amm::Balancer, Amm::V2);
     assert!(has_tag(
         std::slice::from_ref(&ev),
         "rate_provider_staleness"
     ));
     assert_eq!(pnl_basis(&ev), Some("R"));
-    let ev = with_amm(Amm::V2);
+    let ev = cross(Amm::V2, Amm::V2);
+    assert!(!has_tag(
+        std::slice::from_ref(&ev),
+        "rate_provider_staleness"
+    ));
+
+    let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
+    s0.amm = Amm::Balancer;
+    let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
+    s1.amm = Amm::V2;
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, USDC, POOL_B, ATK, 110),
+    ];
+    let mut t = tx(0, ATK, true, vec![s0, s1], transfers);
+    t.rate_cache_updates = vec![crate::explorer::types::RateCacheFact {
+        tx_index: 0,
+        log_index: 9,
+        pool: address!("cccccccccccccccccccccccccccccccccccccccc"),
+        token_index: 0,
+        rate: U256::from(1),
+    }];
+    let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
     assert!(!has_tag(
         std::slice::from_ref(&ev),
         "rate_provider_staleness"
     ));
 }
 
-/// P3.5 — Curve pool imbalance arb. Negative: non-Curve route.
+/// P3.5 — Curve pool imbalance arb. Positive: Curve + other venue.
+/// Negative: Curve-only or non-Curve route.
 #[test]
 fn p3_5_curve_imbalance() {
-    let with_amm = |amm: Amm| {
+    let cross = |amm0: Amm, amm1: Amm| {
         let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
-        s0.amm = amm;
+        s0.amm = amm0;
         let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
-        s1.amm = amm;
+        s1.amm = amm1;
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ATK, 200),
@@ -935,10 +967,12 @@ fn p3_5_curve_imbalance() {
             MevKind::ArbAtomic,
         )
     };
-    let ev = with_amm(Amm::Curve);
+    let ev = cross(Amm::Curve, Amm::V2);
     assert!(has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
     assert_eq!(pnl_basis(&ev), Some("R"));
-    let ev = with_amm(Amm::V2);
+    let ev = cross(Amm::Curve, Amm::Curve);
+    assert!(!has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
+    let ev = cross(Amm::V2, Amm::V2);
     assert!(!has_tag(std::slice::from_ref(&ev), "curve_imbalance"));
 }
 
@@ -1073,6 +1107,7 @@ fn p3_14_bad_debt_liq() {
     let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
     assert!(has_tag(std::slice::from_ref(&ev), "bad_debt_liq"));
     assert_eq!(ev.details["bad_debt"], serde_json::json!(true));
+    assert_eq!(ev.details["post_liq_insolvent"], serde_json::json!(true));
     assert_eq!(pnl_basis(&ev), Some("O"));
 
     let mut clean = tx(

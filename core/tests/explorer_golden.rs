@@ -199,6 +199,9 @@ fn golden_input() -> BlockInput {
         savax: None,
         epoch_venue_pools: std::collections::HashSet::new(),
         gmx_event_emitters: std::collections::HashSet::new(),
+        interest_lookback: Default::default(),
+        prior_oracle_answers: HashMap::new(),
+        savax_exchange_rate_wad: None,
         txs: vec![arb_tx, front, victim, back, mint_tx, burn_tx],
     }
 }
