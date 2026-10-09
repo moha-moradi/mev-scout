@@ -236,7 +236,7 @@ admission gates.
 | P3.12 | Rebase + FoT token arb | 5.3/5.4 | A | `R` | low | 2 d | drift flag secondary; realized swaps only |
 | P3.13 | Airdrop claim-and-sell | 7.3 | A | `R` — only txs that sell in the same tx | none | 2 d | held claims are **not** counted (no MTM) |
 | P3.14 | Bad-debt / near-insolvent liq attribution | 4.15 | A | `O` (standard liq formula) + post-liq HF flag (B) | flash | 3 d | attribution only; P&L is the liq itself |
-| P3.15 | Pharaoh epoch-transition arb | 7.5 (note at 2214) | A | `R` (epoch-boundary realized swaps) | medium | 3 d | §7.5's strategy maps to Pharaoh Exchange, the ve(3,3) fork on Avalanche (`mev_strategies.md:2214`); Pharaoh V3 + DLMM factories configured (`chains.toml`); **#1 DEX on Avalanche — $154.6m/24h ≈ 72% of chain DEX volume, $3.06b/30d** (defillama 2026-10) → first row of Week 8+; ~4 epoch opps/mo → `sparse` likely. Second venue: **Blackhole** ($10.7m/24h, Avalanche-native Gauge + veBLACK + bribes) — verify its epoch/gauge model, then fold in (factory not yet in `chains.toml`) |
+| P3.15 | Pharaoh epoch-transition arb | 7.5 (note at 2214) | A | `R` (epoch-boundary realized swaps) | medium | 3 d | §7.5's strategy maps to Pharaoh Exchange, the ve(3,3) fork on Avalanche (`mev_strategies.md:2214`); Pharaoh V3 + DLMM factories configured (`chains.toml`); **#1 DEX on Avalanche — $154.6m/24h ≈ 72% of chain DEX volume, $3.06b/30d** (defillama 2026-10) → first row of Week 8+; ~4 epoch opps/mo → `sparse` likely. Second venue: **Blackhole** ($10.7m/24h, Avalanche-native Gauge + veBLACK + bribes) — epoch model confirmed (DefiLlama adapter: GaugeManager 0x59aa17… routes staked-LP fees as veBLACK bribes). CLMM factory configured (`chains.toml:33`); AMM (V2) factory 0xfe9260… added to `chains.toml` + `protocol_names.rs` (2026-10) |
 | P3.16 | sAVAX rate arb | non-catalogue (Avalanche audit) | A | `R` | flash | 2 d | `exchangeRate()` on Benqi StakedAvax vs sAVAX/AVAX pool price (Joe/Curve); Avalanche-native so gate 1 is certain — volume unproven → phase-gated (§8.6) |
 
 > **Numbering is frozen.** Rows removed by the Avalanche scoping revision
@@ -256,8 +256,8 @@ solver/intent fills (`pnl_not_exact` — surplus is mode C), bridge MEV
 **Venue coverage audit (defillama 2026-10):** configured in `chains.toml` →
 Pharaoh (V3 + DLMM), LFJ V1/V2.1/V2.2 (LB), Uniswap V2/V3/V4, Pangolin
 V2/V3, Sushi, Curve Stableswap NG, Balancer, Metric, GMX V2; **Blackhole**
-(#4 by volume, $10.7m/24h) pending factory — fold into P3.15 after its
-epoch model is verified. Not scheduled — each ≪3% of chain 24h volume
+(#4 by volume, $10.7m/24h) — CLMM + AMM factories both configured →
+covered under P3.15. Not scheduled — each ≪3% of chain 24h volume
 and/or needs a dedicated decoder: DODO (PMM math), WOOFi (cross-chain
 PMM), Frax Swap, Wombat (stableswap), Dexalot (CLOB, not an AMM), and
 dust venues (The Arena, Axial, RadioShack, Swapsicle, Complus). Revisit

@@ -25,6 +25,26 @@ pub struct ChainConfig {
     /// SparkLend pool (Aave-V3 ABI alias — same `LiquidationCall` topic0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spark_pool: Option<Address>,
+    /// Liquidation-emitter → protocol label relabels (plan P0.2 / §24):
+    /// markets whose event topic0 is shared with another protocol are
+    /// distinguished only by the emitting address (Benqi qiTokens emit the
+    /// Compound V2 `LiquidateBorrow` topic). Map the *emitting market*, not
+    /// the comptroller — the comptroller never emits `LiquidateBorrow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liquidation_protocol_aliases: Option<HashMap<Address, String>>,
+    /// Chainlink aggregator proxy → underlying asset (plan P1.1 / P1.4).
+    /// Used for oracle-poke co-block and interest-accrual attribution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chainlink_feeds: Option<HashMap<Address, Address>>,
+    /// Benqi Staked AVAX (sAVAX) — plan P3.16 rate-arb tagging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub savax: Option<Address>,
+    /// GMX V2 EventEmitter contract(s) — plan P3.7 ADL-adjacent arb.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gmx_event_emitters: Option<Vec<Address>>,
+    /// ERC-4337 EntryPoint (plan P3.11); optional allowlist hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_point: Option<Address>,
     /// Morpho Blue singleton (shared address on ETH/Base/Arb).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub morpho_blue: Option<Address>,
@@ -107,6 +127,11 @@ impl ChainConfig {
             balancer_vault,
             aave_v3_pool,
             spark_pool,
+            liquidation_protocol_aliases,
+            chainlink_feeds,
+            savax,
+            gmx_event_emitters,
+            entry_point,
             morpho_blue,
             silo_v2_partial_liquidation,
             euler_v2_evault_factory,

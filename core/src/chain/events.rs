@@ -171,8 +171,9 @@ pub static COMPOUND_V2_LIQUIDATE_BORROW_TOPIC: LazyLock<B256> =
 /// uint256 repaidAssets, uint256 repaidShares, uint256 seizedAssets,
 /// uint256 badDebtAssets, uint256 badDebtShares)` — all three of id/caller/
 /// borrower indexed (§24 / explorer plan P0.2).
-pub static MORPHO_BLUE_LIQUIDATE_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256("Liquidate(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)"));
+pub static MORPHO_BLUE_LIQUIDATE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Liquidate(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)")
+});
 
 /// Morpho Blue `FlashLoan(address caller, address token, uint256 assets)` —
 /// 0% fee provider (§11 hierarchy / plan P2.3 routing).
@@ -194,6 +195,64 @@ pub static SILO_V2_LIQUIDATION_CALL_TOPIC: LazyLock<B256> =
 /// liquidator/violator indexed (§24).
 pub static EULER_V2_LIQUIDATE_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Liquidate(address,address,address,uint256,uint256)"));
+
+// ── Oracles / keepers (explorer plan P1.1 / P1.4 / P1.5) ─────────────
+
+/// Chainlink AggregatorV3 `AnswerUpdated(int256 current, uint256 roundId,
+/// uint256 updatedAt)` — `current`/`roundId` indexed (P1.4 / §17.8.4).
+pub static CHAINLINK_ANSWER_UPDATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("AnswerUpdated(int256,uint256,uint256)"));
+
+/// Aave V3 `ReserveDataUpdated(address reserve, uint256 liquidityRate,
+/// uint256 stableBorrowRate, uint256 variableBorrowRate, uint256
+/// liquidityIndex, uint256 variableBorrowIndex)` — `reserve` indexed
+/// (P1.1 interest-accrual attribution).
+pub static AAVE_V3_RESERVE_DATA_UPDATED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("ReserveDataUpdated(address,uint256,uint256,uint256,uint256,uint256)")
+});
+
+/// Gelato Automate `ExecSuccess(uint256 txFee, address feeToken, address
+/// execAddress, bytes execData, bytes32 taskId, bool callSuccess)` — the
+/// catalogue's "TaskExecuted" fee fingerprint (P1.5 / §17.8.9 / §21).
+pub static GELATO_EXEC_SUCCESS_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("ExecSuccess(uint256,address,address,bytes,bytes32,bool)")
+});
+
+/// Chainlink Automation Registry `UpkeepPerformed(uint256 id, bool success,
+/// uint96 totalPayment, uint256 gasUsed, uint256 gasOverhead, bytes trigger)`
+/// — `id`/`success` indexed (P1.5; DefiLlama fee decoder layout).
+pub static CHAINLINK_UPKEEP_PERFORMED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("UpkeepPerformed(uint256,bool,uint96,uint256,uint256,bytes)")
+});
+
+/// Chainlink Automation log-trigger `LogTriggered(uint256 upkeepId,
+/// bytes32 triggerConfigId, bytes32 logBlockHash)` — `upkeepId`/
+/// `triggerConfigId`/`logBlockHash` indexed (P1.5).
+pub static CHAINLINK_LOG_TRIGGERED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LogTriggered(uint256,bytes32,bytes32)"));
+
+/// Solidly / Ramses / Pharaoh / Blackhole gauge
+/// `NotifyReward(address from, address reward, uint256 amount)` with
+/// `from`/`reward` indexed (plan P3.15 epoch-transition fingerprint).
+pub static NOTIFY_REWARD_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("NotifyReward(address,address,uint256)"));
+
+/// Keccak of GMX V2 `eventName` strings — matched against the indexed
+/// `eventNameHash` topic on EventEmitter logs (plan P3.7). Emitter address
+/// is the primary filter; topic0 layout varies across EventLog/EventLog1/2.
+pub static GMX_ADL_STATE_UPDATED_HASH: LazyLock<B256> =
+    LazyLock::new(|| keccak256("AdlStateUpdated"));
+pub static GMX_LIQUIDATE_POSITION_HASH: LazyLock<B256> =
+    LazyLock::new(|| keccak256("LiquidatePosition"));
+pub static GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH: LazyLock<B256> =
+    LazyLock::new(|| keccak256("PositionImpactPoolDistributed"));
+
+/// ERC-4337 EntryPoint v0.6/v0.7
+/// `UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)`
+/// — userOpHash/sender/paymaster indexed (P3.11).
+pub static USER_OPERATION_EVENT_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("UserOperationEvent(bytes32,address,address,uint256,bool,uint256,uint256)")
+});
 
 // ── Solidly / Velodrome / Aerodrome ─────────────────────────────────
 

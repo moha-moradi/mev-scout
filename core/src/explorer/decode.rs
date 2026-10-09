@@ -21,17 +21,21 @@ use alloy::primitives::{Address, B256, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{
-    Amm, BuyCollateralFact, FlashLoanFact, JitFact, LegSource, LiquidationFact, SwapFact,
-    TransferFact, V2PairOpFact, V2PairOpKind,
+    Amm, BuyCollateralFact, EpochRewardFact, FlashLoanFact, GmxEventFact, JitFact, KeeperFact,
+    LegSource, LiquidationFact, OracleUpdateFact, ReserveDataFact, SwapFact, TransferFact,
+    UserOpFact, V2PairOpFact, V2PairOpKind,
 };
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
-    AAVE_V3_LIQUIDATION_CALL_TOPIC, BALANCER_FLASH_LOAN_TOPIC, COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
-    COMPOUND_V3_ABSORB_TOPIC, COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC,
-    INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
-    SILO_V2_LIQUIDATION_CALL_TOPIC, TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SWAP_TOPIC,
-    V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    AAVE_V3_LIQUIDATION_CALL_TOPIC, AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
+    CHAINLINK_ANSWER_UPDATED_TOPIC, CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
+    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC, COMPOUND_V3_BUY_COLLATERAL_TOPIC,
+    EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC, GMX_ADL_STATE_UPDATED_HASH,
+    GMX_LIQUIDATE_POSITION_HASH, GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH, INF_CL_SWAP_TOPIC,
+    MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC,
+    SILO_V2_LIQUIDATION_CALL_TOPIC, TRANSFER_TOPIC, USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC,
+    V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -591,9 +595,9 @@ pub const ZRX_FILL_TOPIC: B256 =
 /// Decode a liquidation fact via the per-protocol event registry.
 ///
 /// Mode A fingerprints (§17.8.4 / §24): Aave-family `LiquidationCall` (Spark
-/// remapped by emitter address via [`remap_aave_family`]), Compound V3
-/// `Absorb`, Compound V2 `LiquidateBorrow`, Morpho Blue `Liquidate`, Silo V2
-/// `LiquidationCall`, Euler V2 `Liquidate`.
+/// remapped by emitter address via [`remap_liquidation_protocol`]), Compound V3
+/// `Absorb`, Compound V2 `LiquidateBorrow` (Benqi remapped by emitter address),
+/// Morpho Blue `Liquidate`, Silo V2 `LiquidationCall`, Euler V2 `Liquidate`.
 pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
     let topic0 = *log.topics.first()?;
     if topic0 == *AAVE_V3_LIQUIDATION_CALL_TOPIC {
@@ -616,6 +620,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_asset: Address::from_slice(&log.topics[2][12..]),
             collateral_amount: U256::from_be_slice(&log.data[32..64]),
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
+            bad_debt_assets: U256::ZERO,
         });
     }
     if topic0 == *COMPOUND_V3_ABSORB_TOPIC {
@@ -634,6 +639,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_asset: Address::ZERO,
             collateral_amount: U256::ZERO,
             debt_to_cover: U256::from_be_slice(&log.data[52..84]),
+            bad_debt_assets: U256::ZERO,
         });
     }
     if topic0 == *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC {
@@ -655,6 +661,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
             collateral_asset: Address::from_slice(&log.data[44..64]),
             collateral_amount: U256::from_be_slice(&log.data[64..96]),
+            bad_debt_assets: U256::ZERO,
         });
     }
     if topic0 == *MORPHO_BLUE_LIQUIDATE_TOPIC {
@@ -663,6 +670,11 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
         if log.topics.len() < 4 || log.data.len() < 96 {
             return None;
         }
+        let bad_debt = if log.data.len() >= 128 {
+            U256::from_be_slice(&log.data[96..128])
+        } else {
+            U256::ZERO
+        };
         return Some(LiquidationFact {
             tx_index: 0,
             log_index: 0,
@@ -676,6 +688,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_asset: Address::ZERO,
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
             collateral_amount: U256::from_be_slice(&log.data[64..96]),
+            bad_debt_assets: bad_debt,
         });
     }
     if topic0 == *SILO_V2_LIQUIDATION_CALL_TOPIC {
@@ -695,6 +708,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_asset: Address::ZERO,
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
             collateral_amount: U256::from_be_slice(&log.data[32..64]),
+            bad_debt_assets: U256::ZERO,
         });
     }
     if topic0 == *EULER_V2_LIQUIDATE_TOPIC {
@@ -716,22 +730,24 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             debt_asset: Address::ZERO,
             debt_to_cover: U256::from_be_slice(&log.data[32..64]),
             collateral_amount: U256::from_be_slice(&log.data[64..96]),
+            bad_debt_assets: U256::ZERO,
         });
     }
     None
 }
 
-/// Remap Aave-V3-ABI emitters to a configured protocol label (Spark etc.).
+/// Remap a decoded liquidation's protocol label by emitting-contract address.
 ///
-/// Mode A (§24): Spark reuses the Aave `LiquidationCall` topic0; only the
-/// pool address distinguishes it. `aliases` maps emitter → protocol name.
-pub fn remap_aave_family(
+/// Mode A (§24 / plan P0.2): protocols whose event topic0 is shared with
+/// another deployment are distinguished only by the emitter — Spark reuses
+/// the Aave V3 `LiquidationCall` topic, Benqi qiTokens reuse the Compound V2
+/// `LiquidateBorrow` topic. `aliases` maps emitter → protocol label; the
+/// lookup is unconditional because emitter addresses of distinct protocols
+/// never collide.
+pub fn remap_liquidation_protocol(
     liq: &mut LiquidationFact,
     aliases: &std::collections::HashMap<Address, &'static str>,
 ) {
-    if liq.protocol != "aave_v3" {
-        return;
-    }
     if let Some(label) = aliases.get(&liq.emitter) {
         liq.protocol = label;
     }
@@ -758,6 +774,164 @@ pub fn decode_buy_collateral(log: &LogData) -> Option<BuyCollateralFact> {
         collateral_asset: Address::from_slice(&log.topics[2][12..]),
         base_amount: U256::from_be_slice(&log.data[0..32]),
         collateral_amount: U256::from_be_slice(&log.data[32..64]),
+    })
+}
+
+/// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / §17.8.4 mode A).
+///
+/// Fingerprint is the feed emitter address; answer value is unused for the
+/// co-block oracle-poke label.
+pub fn decode_oracle_update(log: &LogData) -> Option<OracleUpdateFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *CHAINLINK_ANSWER_UPDATED_TOPIC || log.topics.len() < 3 {
+        return None;
+    }
+    Some(OracleUpdateFact {
+        tx_index: 0,
+        log_index: 0,
+        feed: log.address,
+    })
+}
+
+/// Decode Aave V3 `ReserveDataUpdated` (plan P1.1 / §17.8.4).
+///
+/// Mode A in-block signal that the debt reserve's borrow index moved; paired
+/// with a price-flat check in [`crate::explorer::interest_attr`].
+pub fn decode_reserve_data(log: &LogData) -> Option<ReserveDataFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *AAVE_V3_RESERVE_DATA_UPDATED_TOPIC {
+        return None;
+    }
+    if log.topics.len() < 2 || log.data.len() < 160 {
+        return None;
+    }
+    Some(ReserveDataFact {
+        tx_index: 0,
+        log_index: 0,
+        reserve: Address::from_slice(&log.topics[1][12..]),
+        // data: liquidityRate, stableBorrowRate, variableBorrowRate, …
+        variable_borrow_rate: U256::from_be_slice(&log.data[64..96]),
+    })
+}
+
+/// Decode Gelato Automate / Chainlink Automation keeper executions
+/// (plan P1.5 / §17.8.9 mode A).
+///
+/// P&L basis `F` comes from the explicit fee field when present
+/// (`ExecSuccess.txFee`, `UpkeepPerformed.totalPayment`); `LogTriggered`
+/// carries no fee → fee stays `None` and residual `R` is left to transfers.
+pub fn decode_keeper(log: &LogData) -> Option<KeeperFact> {
+    let topic0 = *log.topics.first()?;
+
+    if topic0 == *GELATO_EXEC_SUCCESS_TOPIC {
+        // data: txFee, feeToken, execAddress, offset(execData), taskId, callSuccess
+        if log.data.len() < 192 {
+            return None;
+        }
+        let fee = U256::from_be_slice(&log.data[0..32]);
+        let fee_token = Address::from_slice(&log.data[44..64]);
+        return Some(KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "gelato",
+            emitter: log.address,
+            fee: Some(fee),
+            fee_token: Some(fee_token),
+        });
+    }
+
+    if topic0 == *CHAINLINK_UPKEEP_PERFORMED_TOPIC {
+        // topics: [sig, id, success]; data starts with totalPayment (uint96 word)
+        if log.topics.len() < 3 || log.data.len() < 32 {
+            return None;
+        }
+        return Some(KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink_automation",
+            emitter: log.address,
+            fee: Some(U256::from_be_slice(&log.data[0..32])),
+            fee_token: None, // LINK / native settled off the event args
+        });
+    }
+
+    if topic0 == *CHAINLINK_LOG_TRIGGERED_TOPIC {
+        if log.topics.len() < 4 {
+            return None;
+        }
+        return Some(KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink_automation",
+            emitter: log.address,
+            fee: None,
+            fee_token: None,
+        });
+    }
+
+    None
+}
+
+/// Decode Solidly/Pharaoh/Blackhole `NotifyReward` (plan P3.15 / §7.5).
+///
+/// Mode A epoch fingerprint: gauge emission/bribe notification co-occurring
+/// with realized arbs on venue pools.
+pub fn decode_epoch_reward(log: &LogData) -> Option<EpochRewardFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *NOTIFY_REWARD_TOPIC || log.topics.len() < 3 || log.data.len() < 32 {
+        return None;
+    }
+    Some(EpochRewardFact {
+        tx_index: 0,
+        log_index: 0,
+        emitter: log.address,
+        reward_token: Address::from_slice(&log.topics[2][12..]),
+        amount: U256::from_be_slice(&log.data[0..32]),
+    })
+}
+
+/// Decode GMX V2 EventEmitter ADL/liquidation-adjacent logs (plan P3.7).
+///
+/// `eventNameHash` is topics[1] (Solidity `string indexed`). Optional
+/// emitter allowlist is applied at classify/ingest via config.
+pub fn decode_gmx_event(log: &LogData) -> Option<GmxEventFact> {
+    if log.topics.len() < 2 {
+        return None;
+    }
+    let name = log.topics[1];
+    let kind = if name == *GMX_ADL_STATE_UPDATED_HASH {
+        "adl"
+    } else if name == *GMX_LIQUIDATE_POSITION_HASH {
+        "liquidation"
+    } else if name == *GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH {
+        "impact"
+    } else {
+        return None;
+    };
+    Some(GmxEventFact {
+        tx_index: 0,
+        log_index: 0,
+        emitter: log.address,
+        kind,
+    })
+}
+
+/// Decode ERC-4337 EntryPoint `UserOperationEvent` (plan P3.11 / §7.4).
+pub fn decode_user_op(log: &LogData) -> Option<UserOpFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *USER_OPERATION_EVENT_TOPIC || log.topics.len() < 4 || log.data.len() < 128 {
+        return None;
+    }
+    // data: nonce, success, actualGasCost, actualGasUsed
+    let success_word = U256::from_be_slice(&log.data[32..64]);
+    Some(UserOpFact {
+        tx_index: 0,
+        log_index: 0,
+        entry_point: log.address,
+        sender: Address::from_slice(&log.topics[2][12..]),
+        paymaster: Address::from_slice(&log.topics[3][12..]),
+        actual_gas_cost: U256::from_be_slice(&log.data[64..96]),
+        success: !success_word.is_zero(),
     })
 }
 
@@ -1601,6 +1775,98 @@ mod tests {
         );
         assert_eq!(liq.debt_to_cover, U256::from(99));
         assert_eq!(liq.collateral_amount, U256::from(500));
+    }
+
+    /// P0.2 positive (§17.8.4 mode A / §24): Compound V2 `LiquidateBorrow`
+    /// emitted by a Benqi qiToken market shares topic0 with Compound, so only
+    /// the emitter address identifies the protocol — the alias registry
+    /// relabels it to `benqi`. Amounts (the `O` P&L inputs) are untouched.
+    #[test]
+    fn liquidation_benqi_market_relabels_to_benqi() {
+        let liquidator = b256!("000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let mut data = vec![0u8; 96];
+        data[24..32].copy_from_slice(&99u64.to_be_bytes()); // repayAmount
+        data[44..64]
+            .copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice()); // cTokenCollateral
+        data[88..96].copy_from_slice(&500u64.to_be_bytes()); // seizeTokens
+                                                             // qiAVAX — Benqi core market on Avalanche (43114).
+        let l = log(
+            address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"),
+            vec![*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, liquidator, borrower],
+            data,
+        );
+        let mut liq = decode_liquidation(&l).unwrap();
+        assert_eq!(liq.protocol, "compound_v2"); // shared topic0 pre-relabel
+        let aliases = std::collections::HashMap::from([(l.address, "benqi")]);
+        remap_liquidation_protocol(&mut liq, &aliases);
+        assert_eq!(liq.protocol, "benqi");
+        assert_eq!(liq.debt_to_cover, U256::from(99));
+        assert_eq!(liq.collateral_amount, U256::from(500));
+    }
+
+    /// P0.2 negative: the same event from an emitter that is not in the
+    /// registry keeps the generic `compound_v2` label.
+    #[test]
+    fn liquidation_unaliased_emitter_keeps_compound_v2() {
+        let liquidator = b256!("000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let mut data = vec![0u8; 96];
+        data[24..32].copy_from_slice(&99u64.to_be_bytes());
+        data[44..64]
+            .copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice());
+        data[88..96].copy_from_slice(&500u64.to_be_bytes());
+        let l = log(
+            address!("dddddddddddddddddddddddddddddddddddddddd"),
+            vec![*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, liquidator, borrower],
+            data,
+        );
+        let mut liq = decode_liquidation(&l).unwrap();
+        let aliases = std::collections::HashMap::from([(
+            address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"),
+            "benqi",
+        )]);
+        remap_liquidation_protocol(&mut liq, &aliases);
+        assert_eq!(liq.protocol, "compound_v2");
+    }
+
+    /// P1.4: Chainlink AnswerUpdated decodes to the feed emitter.
+    #[test]
+    fn decode_chainlink_answer_updated() {
+        use crate::chain::events::CHAINLINK_ANSWER_UPDATED_TOPIC;
+        let feed = address!("0a77230d17318075983913bc2145db16c7366156");
+        let l = log(
+            feed,
+            vec![
+                *CHAINLINK_ANSWER_UPDATED_TOPIC,
+                b256!("0000000000000000000000000000000000000000000000000000000000000064"),
+                b256!("0000000000000000000000000000000000000000000000000000000000000001"),
+            ],
+            vec![0u8; 32],
+        );
+        let o = decode_oracle_update(&l).unwrap();
+        assert_eq!(o.feed, feed);
+    }
+
+    /// P1.5: Gelato ExecSuccess carries fee + feeToken (basis F inputs).
+    #[test]
+    fn decode_gelato_exec_success_fee() {
+        use crate::chain::events::GELATO_EXEC_SUCCESS_TOPIC;
+        let mut data = vec![0u8; 192];
+        data[24..32].copy_from_slice(&42u64.to_be_bytes()); // txFee
+        data[44..64].copy_from_slice(address!("4000000000000000000000000000000000000005").as_slice());
+        let l = log(
+            address!("cccccccccccccccccccccccccccccccccccccccc"),
+            vec![*GELATO_EXEC_SUCCESS_TOPIC],
+            data,
+        );
+        let k = decode_keeper(&l).unwrap();
+        assert_eq!(k.protocol, "gelato");
+        assert_eq!(k.fee, Some(U256::from(42)));
+        assert_eq!(
+            k.fee_token,
+            Some(address!("4000000000000000000000000000000000000005"))
+        );
     }
 
     #[test]

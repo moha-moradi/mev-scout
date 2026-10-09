@@ -17,6 +17,8 @@ pub fn protocol_name_for_factory(factory: Address) -> Option<&'static str> {
         a if a == address!("0xc35DADB65012eC5796536bD9864eD8773aBc74C4") => Some("SushiSwap"),
         // Pangolin V2
         a if a == address!("0xefa94DE7a4656D787667C749f7E1223D71E9FD88") => Some("Pangolin V2"),
+        // Blackhole AMM (UniV2 fork; fees via GaugeManager → veBLACK)
+        a if a == address!("0xfe926062fb99ca5653080d6c14fe945ad68c265c") => Some("Blackhole AMM"),
         // Uniswap V3 (canonical Avalanche deployment)
         a if a == address!("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD") => Some("Uniswap V3"),
         // Pharaoh V3 (RamsesV3Factory)
@@ -73,6 +75,10 @@ mod tests {
         assert_eq!(
             protocol_name_for_factory(address!("0xefa94DE7a4656D787667C749f7E1223D71E9FD88")),
             Some("Pangolin V2")
+        );
+        assert_eq!(
+            protocol_name_for_factory(address!("0xfe926062fb99ca5653080d6c14fe945ad68c265c")),
+            Some("Blackhole AMM")
         );
         assert_eq!(
             protocol_name_for_factory(address!("0x0000000000000000000000000000000000000001")),

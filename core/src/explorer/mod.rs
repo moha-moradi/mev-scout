@@ -31,6 +31,8 @@ pub mod classify;
 pub(crate) mod decode;
 pub(crate) mod golden;
 pub mod ingest;
+pub(crate) mod interest_attr;
+pub(crate) mod strategy_tags;
 pub mod pricing;
 pub mod profit;
 pub(crate) mod reject;

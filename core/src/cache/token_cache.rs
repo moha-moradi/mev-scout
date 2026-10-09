@@ -337,4 +337,54 @@ mod tests {
         );
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn diag_env() {
+        use std::path::PathBuf;
+        let d = std::env::temp_dir();
+        println!("exe={:?}", std::env::current_exe().unwrap());
+        println!("temp_dir={:?}", d);
+        println!(
+            "TEMP={:?} TMP={:?}",
+            std::env::var("TEMP"),
+            std::env::var("TMP")
+        );
+        let home = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_default());
+        let probes: Vec<(String, PathBuf)> = vec![
+            ("temp_root".into(), d.join("diag-probe1.txt")),
+            (
+                "temp_opencode".into(),
+                d.join("opencode").join("diag-probe2.txt"),
+            ),
+            ("user_home".into(), home.join("diag-probe3.txt")),
+            (
+                "workspace".into(),
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("diag-probe4.txt"),
+            ),
+        ];
+        for (name, p) in probes {
+            match std::fs::write(&p, b"x") {
+                Ok(()) => {
+                    println!("probe {name}: OK");
+                    let _ = std::fs::remove_file(&p);
+                }
+                Err(e) => println!("probe {name}: ERR {e}"),
+            }
+        }
+        let mem = rusqlite::Connection::open_in_memory().map_err(|e| e.to_string());
+        println!(
+            "mem_sqlite={:?}",
+            mem.as_ref().map(|_| "ok").map_err(|s| s.clone())
+        );
+        let sq: PathBuf = d.join(format!("diag-{}-777.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&sq);
+        let f = rusqlite::Connection::open(&sq).map_err(|e| e.to_string());
+        println!(
+            "file_sqlite={:?}",
+            f.as_ref().map(|_| "ok").map_err(|s| s.clone())
+        );
+        println!("sqlite_version={}", rusqlite::version());
+        println!("cwd={:?}", std::env::current_dir().unwrap());
+        let _ = std::fs::remove_file(&sq);
+    }
 }

@@ -39,18 +39,40 @@ pub struct IngestConfig {
     /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default false —
     /// only closed multi-pool cycles are labeled arb (spec §7.1 / §8.1).
     pub arb_likely_parity: bool,
-    /// Aave-V3-ABI emitter → protocol label (Spark etc., plan P0.2 / §24).
-    pub aave_family_aliases: HashMap<Address, &'static str>,
+    /// Emitter-address → protocol label relabels for liquidation events whose
+    /// topic0 is shared with another protocol (Aave-V3 ABI: Spark; Compound V2
+    /// ABI: Benqi qiTokens — plan P0.2 / §24).
+    pub liquidation_protocol_aliases: HashMap<Address, &'static str>,
+    /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
+    pub chainlink_feeds: HashMap<Address, Address>,
+    pub savax: Option<Address>,
+    pub gmx_event_emitters: HashSet<Address>,
 }
 
 impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
         let wrapped_native = chain_config.wrapped_native_token.unwrap_or(Address::ZERO);
         let priority = build_profit_priority(chain, wrapped_native);
-        let mut aave_family_aliases = HashMap::new();
+        // Config labels are deserialized as owned `String`s; intern them once
+        // here so the per-log remap stays a `&'static str` pointer compare.
+        let intern = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
+        let mut liquidation_protocol_aliases = HashMap::new();
         if let Some(spark) = chain_config.spark_pool {
-            aave_family_aliases.insert(spark, "spark");
+            liquidation_protocol_aliases.insert(spark, "spark");
         }
+        if let Some(aliases) = &chain_config.liquidation_protocol_aliases {
+            liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
+        }
+        let chainlink_feeds = chain_config
+            .chainlink_feeds
+            .clone()
+            .unwrap_or_default();
+        let gmx_event_emitters = chain_config
+            .gmx_event_emitters
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         IngestConfig {
             chain,
             chain_id: chain.chain_id(),
@@ -58,7 +80,10 @@ impl IngestConfig {
             wrapped_native,
             profit_token_priority: priority,
             arb_likely_parity: false,
-            aave_family_aliases,
+            liquidation_protocol_aliases,
+            chainlink_feeds,
+            savax: chain_config.savax,
+            gmx_event_emitters,
         }
     }
 }
@@ -180,13 +205,26 @@ pub async fn index_block(
             continue; // failed txs carry no realized MEV
         }
 
-        let (transfers, swaps, liquidations, flashloans, buy_collaterals, jit, v2_pair_ops) =
-            classify::decode_tx_logs_with_aliases(
-                tx.index,
-                &receipt.logs,
-                pools.tokens,
-                &cfg.aave_family_aliases,
-            );
+        let (
+            transfers,
+            swaps,
+            liquidations,
+            flashloans,
+            buy_collaterals,
+            jit,
+            v2_pair_ops,
+            oracle_updates,
+            reserve_updates,
+            keepers,
+            epoch_rewards,
+            gmx_events,
+            user_ops,
+        ) = classify::decode_tx_logs_with_aliases(
+            tx.index,
+            &receipt.logs,
+            pools.tokens,
+            &cfg.liquidation_protocol_aliases,
+        );
         let jit_count = jit.len();
 
         // Real gas (Phase 2.1): prefer the receipt's `effectiveGasPrice`, then
@@ -261,6 +299,12 @@ pub async fn index_block(
             buy_collaterals,
             jit,
             v2_pair_ops,
+            oracle_updates,
+            reserve_updates,
+            keepers,
+            epoch_rewards,
+            gmx_events,
+            user_ops,
         });
     }
 
@@ -277,6 +321,10 @@ pub async fn index_block(
         arb_likely_parity: cfg.arb_likely_parity,
         open_positions,
         v2_like_pools: pools.v2_like.clone(),
+        chainlink_feeds: cfg.chainlink_feeds.clone(),
+        savax: cfg.savax,
+        epoch_venue_pools: HashSet::new(), // filled when pool→venue map is available
+        gmx_event_emitters: cfg.gmx_event_emitters.clone(),
         txs: tx_inputs,
     };
 
@@ -746,6 +794,50 @@ mod tests {
         assert_eq!(ic.chain_id, 137);
         assert_eq!(ic.profit_token_priority.len(), 5);
         assert!(!ic.wrapped_native.is_zero());
+    }
+
+    /// P0.2 config wiring: the Address-keyed `liquidation_protocol_aliases`
+    /// table in `chains.toml` deserializes and reaches the ingest config —
+    /// Avalanche carries the Benqi registry, Ethereum keeps Spark, Polygon
+    /// has none configured.
+    #[test]
+    fn liquidation_protocol_aliases_from_chain_config() {
+        use alloy::primitives::address;
+        let chains = crate::config::defaults::default_chains();
+        let avax = IngestConfig::from_chain(ChainName::Avalanche, &chains["avalanche"]);
+        assert_eq!(avax.liquidation_protocol_aliases.len(), 22);
+        assert_eq!(
+            avax.liquidation_protocol_aliases
+                .get(&address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"))
+                .copied(),
+            Some("benqi")
+        );
+        let eth = IngestConfig::from_chain(ChainName::Ethereum, &chains["ethereum"]);
+        assert_eq!(
+            eth.liquidation_protocol_aliases
+                .get(&address!("c13e21b648a5ee794902342038ff3adab66be987"))
+                .copied(),
+            Some("spark")
+        );
+        let poly = IngestConfig::from_chain(ChainName::Polygon, &chains["polygon"]);
+        assert!(poly.liquidation_protocol_aliases.is_empty());
+    }
+
+    /// P1.4 config wiring: Avalanche ships Chainlink feed → asset map.
+    #[test]
+    fn chainlink_feeds_from_chain_config() {
+        use alloy::primitives::address;
+        let chains = crate::config::defaults::default_chains();
+        let avax = IngestConfig::from_chain(ChainName::Avalanche, &chains["avalanche"]);
+        assert!(avax.chainlink_feeds.len() >= 5);
+        assert_eq!(
+            avax.chainlink_feeds
+                .get(&address!("0x0A77230d17318075983913bC2145DB16C7366156"))
+                .copied(),
+            Some(address!("0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"))
+        );
+        let poly = IngestConfig::from_chain(ChainName::Polygon, &chains["polygon"]);
+        assert!(poly.chainlink_feeds.is_empty());
     }
 
     #[test]

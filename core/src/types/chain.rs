@@ -162,6 +162,7 @@ impl ChainName {
                 "0xc35DADB65012eC5796536bD9864eD8773aBc74C4", // SushiSwap
                 "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10", // Trader Joe / LFJ V1
                 "0xefa94DE7a4656D787667C749f7E1223D71E9FD88", // Pangolin V2
+                "0xfe926062fb99ca5653080d6c14fe945ad68c265c", // Blackhole AMM (UniV2 fork)
             ],
             ChainName::Bsc => &[
                 "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73", // PancakeSwap V2

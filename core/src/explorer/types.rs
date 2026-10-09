@@ -274,8 +274,9 @@ pub struct LiquidationFact {
     pub tx_index: u64,
     pub log_index: u64,
     pub protocol: &'static str,
-    /// Emitting contract (pool / vault / PartialLiquidation). Used to remap
-    /// Aave-family topic aliases (Spark) via `ChainConfig` without new code.
+    /// Emitting contract (pool / market / vault). Used to remap emitters that
+    /// share a topic0 with another protocol (Spark, Benqi) via `ChainConfig`
+    /// without new code.
     pub emitter: Address,
     pub user: Address,
     pub liquidator: Address,
@@ -283,6 +284,8 @@ pub struct LiquidationFact {
     pub debt_asset: Address,
     pub collateral_amount: U256,
     pub debt_to_cover: U256,
+    /// Morpho Blue `badDebtAssets` (plan P3.14); zero when the event has none.
+    pub bad_debt_assets: U256,
 }
 
 /// Compound V3 Comet `BuyCollateral` — discount capture after Absorb (§26).
@@ -320,6 +323,70 @@ impl PnlBasis {
             PnlBasis::F => "F",
         }
     }
+}
+
+/// Chainlink AggregatorV3 `AnswerUpdated` (explorer plan P1.4).
+#[derive(Debug, Clone)]
+pub struct OracleUpdateFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    /// Aggregator proxy / feed contract that emitted the update.
+    pub feed: Address,
+}
+
+/// Aave-family `ReserveDataUpdated` (explorer plan P1.1 interest attribution).
+#[derive(Debug, Clone)]
+pub struct ReserveDataFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub reserve: Address,
+    pub variable_borrow_rate: U256,
+}
+
+/// Keeper / automation execution (Gelato Automate, Chainlink Automation —
+/// explorer plan P1.5 / §21).
+#[derive(Debug, Clone)]
+pub struct KeeperFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub protocol: &'static str,
+    /// Emitting registry / Automate contract.
+    pub emitter: Address,
+    /// Fee paid to the keeper network when the event carries it.
+    pub fee: Option<U256>,
+    pub fee_token: Option<Address>,
+}
+
+/// ve(3,3) gauge `NotifyReward` — epoch emission / bribe signal (P3.15).
+#[derive(Debug, Clone)]
+pub struct EpochRewardFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub emitter: Address,
+    pub reward_token: Address,
+    pub amount: U256,
+}
+
+/// GMX V2 EventEmitter ADL / liquidation-adjacent log (P3.7).
+#[derive(Debug, Clone)]
+pub struct GmxEventFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub emitter: Address,
+    /// `"adl"` | `"liquidation"` | `"impact"`.
+    pub kind: &'static str,
+}
+
+/// ERC-4337 EntryPoint `UserOperationEvent` (P3.11).
+#[derive(Debug, Clone)]
+pub struct UserOpFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    pub entry_point: Address,
+    pub sender: Address,
+    pub paymaster: Address,
+    pub actual_gas_cost: U256,
+    pub success: bool,
 }
 
 /// A decoded V3 concentrated-liquidity Mint/Burn fact, or an LFJ/Pharaoh

@@ -12,28 +12,34 @@ Official source of truth:
 - [Upgrade your node](https://build.avax.network/docs/nodes/maintain/upgrade)
 - [AvalancheGo releases](https://github.com/ava-labs/avalanchego/releases)
 
+
+
 ## What you get
 
-| Endpoint | URL |
-|---|---|
-| C-Chain JSON-RPC | `http://127.0.0.1:9650/ext/bc/C/rpc` |
-| C-Chain WebSocket | `ws://127.0.0.1:9650/ext/bc/C/ws` |
-| AvalancheGo HTTP API | `http://127.0.0.1:9650` |
-| P2P | TCP `9651` |
+
+| Endpoint             | URL                                  |
+| -------------------- | ------------------------------------ |
+| C-Chain JSON-RPC     | `http://127.0.0.1:9650/ext/bc/C/rpc` |
+| C-Chain WebSocket    | `ws://127.0.0.1:9650/ext/bc/C/ws`    |
+| AvalancheGo HTTP API | `http://127.0.0.1:9650`              |
+| P2P                  | TCP `9651`                           |
+
 
 HTTP and WebSocket share port `9650`; WS comes up with the node (no separate
-flag). With installer **`private`** RPC, both bind to localhost only.
+flag). With installer `private` RPC, both bind to localhost only.
 `mev-scout` today points at HTTP via `rpc_urls` — it has no `ws_url` yet.
 
 `mev-scout` uses the **C-Chain** only (`chain_id = 43114`).
 
 ## Hardware
 
-| | Spec |
-|---|---|
-| OS | Ubuntu 22.04 or 24.04 (amd64 / arm64) |
+
+|                  | Spec                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------- |
+| OS               | Ubuntu 22.04 or 24.04 (amd64 / arm64)                                                        |
 | CPU / RAM / disk | Avalanche minimum: **8 vCPU / 16 GiB / SSD**; plan **~200–400 GB** with state-sync + pruning |
-| Sync | Hours → ~1 day to tip (I/O-bound) |
+| Sync             | Hours → ~1 day to tip (I/O-bound)                                                            |
+
 
 Windows is not a supported AvalancheGo platform — run the node on Ubuntu.
 
@@ -44,29 +50,31 @@ smallest node role that keeps mev-scout fully working: **plan ~200–400 GB and
 do not switch to archival** — that turns sync into multi-days and 1 TB+ of
 disk, and mev-scout does not need it.
 
-| Workload | On this pruned, state-synced node |
-|---|---|
-| `live`, `backtest`, `explorer index` (tip + recent blocks) | yes |
-| `eth_getLogs` within the pruning window (discover lookback = 1000 blocks) | yes |
-| `debug_traceTransaction` on recent blocks (`explorer show --trace`) | yes |
-| Deep historical `eth_call` / `eth_getProof` / long `eth_getLogs` ranges | no — served by the public archive fallback in `rpc_urls` |
+
+| Workload                                                                  | On this pruned, state-synced node                        |
+| ------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `live`, `explorer index` (tip + recent blocks)                            | yes                                                      |
+| `eth_getLogs` within the pruning window (discover lookback = 1000 blocks) | yes                                                      |
+| `debug_traceTransaction` on recent blocks (`explorer show --trace`)       | yes                                                      |
+| Deep historical `eth_call` / `eth_getProof` / long `eth_getLogs` ranges   | no — served by the public archive fallback in `rpc_urls` |
+
 
 Keeping the tool healthy while staying minimal:
 
-- **Keep a second (archive-capable) provider in `rpc_urls`** — as in
-  `mev-scout.local.toml`. mev-scout probes each provider's capability and
-  routes deep-history reads away from the pruned local node automatically;
-  all tip work still runs against the local node at full speed.
+- **Keep a second (archive-capable) provider in** `rpc_urls` — as in
+`mev-scout.local.toml`. mev-scout probes each provider's capability and
+routes deep-history reads away from the pruned local node automatically;
+all tip work still runs against the local node at full speed.
 - Cap journal logs so they cannot eat the disk:
-
   ```bash
   echo 'SystemMaxUse=500M' | sudo tee /etc/systemd/journald.conf.d/size.conf
   sudo systemctl restart systemd-journald
   ```
-
 - `mev-scout/cache/*.sqlite` (blocks / pools / ticks) grows with indexing
-  runs — bound it with `--duration` / `--days`. Deleting the cache files is
-  always safe: they are gitignored and rebuildable.
+runs — bound it with `--duration` / `--days`. Deleting the cache files is
+always safe: they are gitignored and rebuildable.
+
+
 
 ## OS tuning (optional)
 
@@ -76,15 +84,17 @@ the *Skip* list below is genuinely not worth doing.
 
 ### Worth it
 
-| Tweak | Effect | How |
-|---|---|---|
-| `noatime` mount | Fewer wasted writes during sync / indexing | add `,noatime` to the data partition in `/etc/fstab` |
-| I/O scheduler `none` | No unnecessary fsync reordering on an SSD | `echo none | sudo tee /sys/block/sda/queue/scheduler` (NVMe already defaults to none) |
-| `vm.swappiness = 10` | Keep AvalancheGo in RAM, not swap | sysctl (block below) |
-| 32 GiB RAM | Biggest single win — beats every tweak on this page | upgrade the VM rather than the settings |
-| High `LimitNOFILE` | Handle many concurrent RPC connections from mev-scout | unit drop-in (block below) |
-| BBR congestion control | Faster remote state-sync transfers | sysctl (block below) |
-| TRIM + ~30% free disk | SSD keeps its IOPS — IOPS collapse when full | `systemctl status fstrim.timer`; leave headroom |
+
+| Tweak                  | Effect                                                | How                                                  |
+| ---------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
+| `noatime` mount        | Fewer wasted writes during sync / indexing            | add `,noatime` to the data partition in `/etc/fstab` |
+| I/O scheduler `none`   | No unnecessary fsync reordering on an SSD             | `echo none                                           |
+| `vm.swappiness = 10`   | Keep AvalancheGo in RAM, not swap                     | sysctl (block below)                                 |
+| 32 GiB RAM             | Biggest single win — beats every tweak on this page   | upgrade the VM rather than the settings              |
+| High `LimitNOFILE`     | Handle many concurrent RPC connections from mev-scout | unit drop-in (block below)                           |
+| BBR congestion control | Faster remote state-sync transfers                    | sysctl (block below)                                 |
+| TRIM + ~30% free disk  | SSD keeps its IOPS — IOPS collapse when full          | `systemctl status fstrim.timer`; leave headroom      |
+
 
 ```bash
 # persistent sysctls (apply live with `sudo sysctl --system`)
@@ -107,13 +117,19 @@ sudo systemctl daemon-reload && sudo systemctl restart avalanchego
 echo none | sudo tee /sys/block/sda/queue/scheduler
 ```
 
+
+
 ### Skip
 
-| Setting | Why not |
-|---|---|
+
+| Setting                                        | Why not                                                      |
+| ---------------------------------------------- | ------------------------------------------------------------ |
 | `vm.dirty_ratio` / `vm.dirty_background_ratio` | Data-loss risk on power cut, no benefit for a DB that fsyncs |
-| Disabling Transparent Huge Pages | No measurable effect for Go / the C-Chain VM |
-| CPU governor `performance` | Already active on essentially all VPS / cloud |
+| Disabling Transparent Huge Pages               | No measurable effect for Go / the C-Chain VM                 |
+| CPU governor `performance`                     | Already active on essentially all VPS / cloud                |
+
+
+
 
 ## 1. Install AvalancheGo
 
@@ -125,11 +141,13 @@ chmod 755 avalanchego-installer.sh
 
 Answer the prompts:
 
-| Prompt | Answer |
-|---|---|
-| Connection type | `1` home / dynamic IP, or `2` cloud / static IP |
-| RPC public / private | **`private`** (RPC only on this machine) |
-| State sync | **`on`** |
+
+| Prompt               | Answer                                          |
+| -------------------- | ----------------------------------------------- |
+| Connection type      | `1` home / dynamic IP, or `2` cloud / static IP |
+| RPC public / private | `private` (RPC only on this machine)            |
+| State sync           | `on`                                            |
+
 
 Then:
 
@@ -144,7 +162,7 @@ Binary: `~/avalanche-node/` · Data / configs: `~/.avalanchego/`
 
 Avalanche recommends overriding **only** non-default values. Defaults already
 enable pruning and the core eth APIs. This file turns on **state-sync** (fast
-tip bootstrap) and adds **`debug` / `debug-tracer`** for
+tip bootstrap) and adds `debug` **/** `debug-tracer` for
 `mev-scout explorer show --trace`.
 
 Write it, then restart so the node picks it up **before** a long sync finishes
@@ -171,11 +189,13 @@ EOF
 sudo systemctl restart avalanchego
 ```
 
-| Setting | Value | Why |
-|---|---|---|
-| `state-sync-enabled` | `true` | Fast tip sync (default is `false`) |
-| `pruning-enabled` | *(default `true`)* | Leave unset — saves disk |
-| `eth-apis` | defaults + `debug` + `debug-tracer` | tip scan + `debug_traceTransaction` |
+
+| Setting              | Value                               | Why                                 |
+| -------------------- | ----------------------------------- | ----------------------------------- |
+| `state-sync-enabled` | `true`                              | Fast tip sync (default is `false`)  |
+| `pruning-enabled`    | *(default* `true`*)*                | Leave unset — saves disk            |
+| `eth-apis`           | defaults + `debug` + `debug-tracer` | tip scan + `debug_traceTransaction` |
+
 
 Do not flip to archival (`state-sync` off / pruning off) on this host unless you
 accept a multi-day sync and 1 TB+ disk — that is a different node role.
@@ -205,18 +225,24 @@ sudo systemctl status avalanchego
 sudo journalctl -u avalanchego -f
 ```
 
-## 4. Point mev-scout at localhost
+
+
+## 4. Point mev-scout at [localhost](http://localhost)
 
 Two config profiles ship with the repo:
 
-| Profile | Config | RPC | Throughput |
-|---|---|---|---|
-| Free / public | `mev-scout.toml` (`cp mev-scout.example.toml mev-scout.toml`) | chainlist free endpoints | RPS-capped (1–5), works anywhere |
-| **Full speed** | `mev-scout.local.toml` | local node first + public archive fallback | unlimited RPS + max concurrency |
+
+| Profile        | Config                                                        | RPC                                        | Throughput                       |
+| -------------- | ------------------------------------------------------------- | ------------------------------------------ | -------------------------------- |
+| Free / public  | `mev-scout.toml` (`cp mev-scout.example.toml mev-scout.toml`) | chainlist free endpoints                   | RPS-capped (1–5), works anywhere |
+| **Full speed** | `mev-scout.local.toml`                                        | local node first + public archive fallback | unlimited RPS + max concurrency  |
+
 
 ```bash
 cargo run -p mev-scout-cli -- --config mev-scout.local.toml config
 ```
+
+
 
 ### What makes `mev-scout.local.toml` full speed
 
@@ -238,20 +264,24 @@ rpc_concurrency = 32    # default 8 — on-chain factory scans / multicall
 poll_interval_ms = 500  # default 2000; C-Chain blocks are ~2 s
 ```
 
-| Knob | Why |
-|---|---|
+
+| Knob                                   | Why                                                                                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `rps_limit = 0` / `rpc_rps = [0.0, …]` | A 0-RPS provider gets **no token bucket** — throughput is bounded by concurrency and node hardware, not an RPS counter |
-| `block_concurrency = 32` | Parallel blocks per provider shard; the auto calculation returns 10 when RPS is unlimited |
-| `batch_rpc = true` | Cuts HTTP round-trips ~3× for `backtest` / `explorer index` fetches (the `live` job does not read this flag) |
-| `[discover] rpc_concurrency = 32` | Concurrency for pure on-chain factory scans and multicall metadata resolution |
-| `[live] poll_interval_ms = 500` | Polls well inside the ~2 s block time |
-| Public archive as `rpc_urls[1]` | Deep-history reads the pruned local node cannot serve are routed to it automatically; tip work stays on the local node |
+| `block_concurrency = 32`               | Parallel blocks per provider shard; the auto calculation returns 10 when RPS is unlimited                              |
+| `batch_rpc = true`                     | Cuts HTTP round-trips ~3× for `backtest` / `explorer index` fetches (the `live` job does not read this flag)           |
+| `[discover] rpc_concurrency = 32`      | Concurrency for pure on-chain factory scans and multicall metadata resolution                                          |
+| `[live] poll_interval_ms = 500`        | Polls well inside the ~2 s block time                                                                                  |
+| Public archive as `rpc_urls[1]`        | Deep-history reads the pruned local node cannot serve are routed to it automatically; tip work stays on the local node |
+
 
 Both profiles take every command from §5 — just pass the config you want:
 
 ```bash
 cargo run -p mev-scout-cli -- --config mev-scout.local.toml live --loop
 ```
+
+
 
 ## 5. Run mev-scout
 
@@ -273,13 +303,17 @@ sudo journalctl -u avalanchego -f   cd mev-scout
                                       --config mev-scout.toml live --loop
 ```
 
-| Path | Contents |
-|---|---|
-| `~/.avalanchego/` | DB + configs |
-| `~/avalanche-node/` | Binaries |
-| `mev-scout/cache/` | Scanner / explorer DBs (gitignored) |
-| `mev-scout/mev-scout.toml` | Local config (do not commit secrets) |
+
+| Path                             | Contents                              |
+| -------------------------------- | ------------------------------------- |
+| `~/.avalanchego/`                | DB + configs                          |
+| `~/avalanche-node/`              | Binaries                              |
+| `mev-scout/cache/`               | Scanner / explorer DBs (gitignored)   |
+| `mev-scout/mev-scout.toml`       | Local config (do not commit secrets)  |
 | `mev-scout/mev-scout.local.toml` | Full-speed local profile (no secrets) |
+
+
+
 
 ## 6. Remote access with username/password
 
@@ -291,6 +325,8 @@ with Basic Auth + TLS in front of it:
 Internet ──HTTPS + user/pass──▶ Caddy :443 ──▶ 127.0.0.1:9650 (localhost only)
 ```
 
+
+
 ### Install Caddy
 
 ```bash
@@ -301,6 +337,8 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
   | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update && sudo apt install -y caddy
 ```
+
+
 
 ### `/etc/caddy/Caddyfile`
 
@@ -339,6 +377,8 @@ sudo ufw allow 9651/tcp   # node P2P — keep the node reachable for the network
 sudo ufw enable
 #9650 is intentionally NOT opened: JSON-RPC stays behind Caddy on localhost.
 ```
+
+
 
 ### Connect from another machine
 
@@ -390,16 +430,20 @@ The endpoint is not mev-scout-specific — any EVM tool can use it. Two facts
 shape what works out of the box: the RPC is `private` (localhost only), and
 the node is pruned + state-synced (§2).
 
-| The bot needs | On this node |
-|---|---|
-| `eth_sendRawTransaction` / `eth_fillTransaction` / `eth_pendingTransactions` | yes — `internal-transaction` |
-| `eth_call` / `eth_estimateGas` / `eth_feeHistory` at tip | yes — `internal-blockchain` / `internal-eth` |
-| `debug_traceCall` / `debug_traceBlockByNumber` (bundle simulation) | yes — `debug-tracer` |
-| `eth_subscribe("newHeads")` / pending-tx filters over WS (`ws://127.0.0.1:9650/ext/bc/C/ws`) | yes — WS shares port 9650, no extra flag |
-| `txpool_content` / `txpool_status` (mempool scanning) | **not enabled — add `internal-tx-pool`** (below) |
-| `trace_*` (`trace_filter`, `trace_call`, …) | **no — coreth does not implement the trace namespace**; use `debug_trace*` instead |
-| Deep historical `eth_call` / `eth_getProof` / state older than ~32 blocks | no — same archive fallback as §4 |
-| Preferred (not yet accepted) tip | no — `allow-unfinalized-queries` defaults to `false`; flip only if you accept the finality tradeoff |
+
+| The bot needs                                                                                | On this node                                                                                        |
+| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `eth_sendRawTransaction` / `eth_fillTransaction` / `eth_pendingTransactions`                 | yes — `internal-transaction`                                                                        |
+| `eth_call` / `eth_estimateGas` / `eth_feeHistory` at tip                                     | yes — `internal-blockchain` / `internal-eth`                                                        |
+| `debug_traceCall` / `debug_traceBlockByNumber` (bundle simulation)                           | yes — `debug-tracer`                                                                                |
+| `eth_subscribe("newHeads")` / pending-tx filters over WS (`ws://127.0.0.1:9650/ext/bc/C/ws`) | yes — WS shares port 9650, no extra flag                                                            |
+| `txpool_content` / `txpool_status` (mempool scanning)                                        | **not enabled — add** `internal-tx-pool` (below)                                                    |
+| `trace_*` (`trace_filter`, `trace_call`, …)                                                  | **no — coreth does not implement the trace namespace**; use `debug_trace`* instead                  |
+| Deep historical `eth_call` / `eth_getProof` / state older than ~32 blocks                    | no — same archive fallback as §4                                                                    |
+| Preferred (not yet accepted) tip                                                             | no — `allow-unfinalized-queries` defaults to `false`; flip only if you accept the finality tradeoff |
+
+
+
 
 ### The one config change worth making
 
@@ -417,20 +461,22 @@ auth).
 ### Rate limits and C-Chain specifics
 
 - Node-side limits are off by default (`api-max-duration = 0`,
-  `batch-request-limit = 1000`). The `rps_limit` / `block_concurrency` knobs
-  in §4 are mev-scout config, not node config — a bot gets full speed with
-  zero extra setup.
+`batch-request-limit = 1000`). The `rps_limit` / `block_concurrency` knobs
+in §4 are mev-scout config, not node config — a bot gets full speed with
+zero extra setup.
 - C-Chain blocks are built by validators: your transactions enter through
-  normal mempool gossip — there is no builder/auction relay to integrate
-  with (see §8).
+normal mempool gossip — there is no builder/auction relay to integrate
+with (see §8).
 - `local-txs-enabled` (default `false`) only grants local treatment to
-  accounts in the node's keystore; externally signed raw transactions are
-  gossiped like everyone else's.
+accounts in the node's keystore; externally signed raw transactions are
+gossiped like everyone else's.
+
+
 
 ## 8. MEV on Avalanche: keeping the bot's opportunities yours
 
 Ethereum-style protection does not exist here: **no Flashbots Protect, no
-MEV Blocker, no bloXroute, no `eth_sendPrivateTransaction`, no bundle
+MEV Blocker, no bloXroute, no** `eth_sendPrivateTransaction`**, no bundle
 relay.** Anyone claiming a "MEV-protected RPC" on C-Chain is selling a
 faster submission path, not a private mempool contract. Protection is
 something you build from three ingredients: **speed, visibility,
@@ -438,13 +484,15 @@ atomicity**.
 
 ### How C-Chain ordering actually works (the threat model)
 
-| Fact | Consequence for a bot |
-|---|---|
+
+| Fact                                                                             | Consequence for a bot                                                                                                                  |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | No public mempool — a received tx is randomly gossiped to **10 validator peers** | Pending txs are visible only to validators (and their stream partners); "watch the mempool" means running/renting validator visibility |
-| Ordering is **first-come-first-served** at the block builder | A **latency race**, not a gas auction — `maxPriorityFeePerGas` does **not** buy position |
-| Each block has a **single proposer** with full control of intra-block order | The realistic attacker is the proposer or a searcher with a direct line to it — not a general frontrunning bot |
-| Fast finality (~1 s), ~2 s blocks | The reaction window is milliseconds; detection→submit latency *is* the moat |
-| No tx replacement/cancel in the gossip model | Get nonce management right the first time; a stuck tx just disappears silently |
+| Ordering is **first-come-first-served** at the block builder                     | A **latency race**, not a gas auction — `maxPriorityFeePerGas` does **not** buy position                                               |
+| Each block has a **single proposer** with full control of intra-block order      | The realistic attacker is the proposer or a searcher with a direct line to it — not a general frontrunning bot                         |
+| Fast finality (~1 s), ~2 s blocks                                                | The reaction window is milliseconds; detection→submit latency *is* the moat                                                            |
+| No tx replacement/cancel in the gossip model                                     | Get nonce management right the first time; a stuck tx just disappears silently                                                         |
+
 
 Implication: a tx you broadcast **will** be seen by validators (and by any
 mempool stream subscriber) before inclusion. You cannot be invisible — you
@@ -452,25 +500,31 @@ can only be **faster to the proposer**, and make copying you unprofitable.
 
 ### Protection layers (in order of value)
 
-| Layer | What | How |
-|---|---|---|
-| **1. Speed** | Win the FCFS race | **Fan-out the same signed tx** (same nonce → same hash, only one lands, so this is safe) to several paths at once: local node (§1) + remote RPCs (§6) + optional paid propagator. Measure submit→inclusion per path and keep a latency heatmap |
-| **2. Atomicity** | Make copying worthless | Whole strategy in **one tx** with `require(profit > 0)`; a copycat who loses the race executes nothing. Strict slippage bounds block sandwiching of your own swaps |
-| **3. Visibility** | See competitors before they land | `internal-tx-pool` (§7) for your node's view; a validator node sees the wider gossip; or subscribe to a mempool stream service |
-| **4. Colocation** | Shrink the network leg | Run the bot box in a region close to major validators; geo-distribute submit paths |
-| **5. Run a validator** | The only structural edge | 2000 AVAX stake → full mempool gossip view + participation in block proposal. Heavy; only worth it at real P&L |
+
+| Layer                  | What                             | How                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1. Speed**           | Win the FCFS race                | **Fan-out the same signed tx** (same nonce → same hash, only one lands, so this is safe) to several paths at once: local node (§1) + remote RPCs (§6) + optional paid propagator. Measure submit→inclusion per path and keep a latency heatmap |
+| **2. Atomicity**       | Make copying worthless           | Whole strategy in **one tx** with `require(profit > 0)`; a copycat who loses the race executes nothing. Strict slippage bounds block sandwiching of your own swaps                                                                             |
+| **3. Visibility**      | See competitors before they land | `internal-tx-pool` (§7) for your node's view; a validator node sees the wider gossip; or subscribe to a mempool stream service                                                                                                                 |
+| **4. Colocation**      | Shrink the network leg           | Run the bot box in a region close to major validators; geo-distribute submit paths                                                                                                                                                             |
+| **5. Run a validator** | The only structural edge         | 2000 AVAX stake → full mempool gossip view + participation in block proposal. Heavy; only worth it at real P&L                                                                                                                                 |
+
+
+
 
 ### Public services (verify before relying on them)
 
 - **Snowsight** (Chainsight Labs) — the best-known C-Chain MEV plumbing:
   - *Mempool Stream*: websocket stream of pending txs aggregated from their
-    validator network (signed-key auth) — the "see it before it lands" layer.
+  validator network (signed-key auth) — the "see it before it lands" layer.
   - *Transaction Propagator*: HTTP endpoint that relays your tx through
-    their validator network faster than a public RPC — the "land it first"
-    layer.
+  their validator network faster than a public RPC — the "land it first"
+  layer.
 - No bundle/relay standard exists, so there is nothing to "integrate" the
-  way Ethereum bots integrate Flashbots — submission stays plain
-  `eth_sendRawTransaction`, just to faster endpoints.
+way Ethereum bots integrate Flashbots — submission stays plain
+`eth_sendRawTransaction`, just to faster endpoints.
+
+
 
 ### What mev-scout sees vs. what the bot needs
 
@@ -481,16 +535,20 @@ and the scanner in §5 share this box with no extra setup.
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| Connection refused on `:9650` | `sudo systemctl status avalanchego` — installer used `private` RPC |
-| `isBootstrapped: false` a long time | Wait; watch `journalctl` and disk I/O |
-| `eth_getLogs` range errors | Shrink lookback / `--blocks` (state-synced history window) |
-| `debug_traceTransaction` missing | Confirm `debug-tracer` in `C/config.json`, then `sudo systemctl restart avalanchego` |
-| `txpool_*` returns "method not found" | Add `internal-tx-pool` to `eth-apis` (§7), then `sudo systemctl restart avalanchego` |
-| Deep historical `eth_call` / proof fails | Expected with state-sync + pruning — the archive fallback in `rpc_urls` handles it (see **Disk** above) |
-| `401 Unauthorized` from the proxy | Wrong/missing `user:pass` — regenerate the hash with `caddy hash-password`, check `${RPC_PASS}` is exported |
-| RPC is fast but scanning is still slow | Missing full-speed knobs — see §4 (`block_concurrency`, `batch_rpc`, `discover.rpc_concurrency`) |
+
+| Symptom                                  | Fix                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Connection refused on `:9650`            | `sudo systemctl status avalanchego` — installer used `private` RPC                                          |
+| `isBootstrapped: false` a long time      | Wait; watch `journalctl` and disk I/O                                                                       |
+| `eth_getLogs` range errors               | Shrink lookback / `--blocks` (state-synced history window)                                                  |
+| `debug_traceTransaction` missing         | Confirm `debug-tracer` in `C/config.json`, then `sudo systemctl restart avalanchego`                        |
+| `txpool_*` returns "method not found"    | Add `internal-tx-pool` to `eth-apis` (§7), then `sudo systemctl restart avalanchego`                        |
+| Deep historical `eth_call` / proof fails | Expected with state-sync + pruning — the archive fallback in `rpc_urls` handles it (see **Disk** above)     |
+| `401 Unauthorized` from the proxy        | Wrong/missing `user:pass` — regenerate the hash with `caddy hash-password`, check `${RPC_PASS}` is exported |
+| RPC is fast but scanning is still slow   | Missing full-speed knobs — see §4 (`block_concurrency`, `batch_rpc`, `discover.rpc_concurrency`)            |
+
+
+
 
 ## Upgrade
 
@@ -503,7 +561,8 @@ The script detects the existing service and upgrades in place. Data in
 
 ## Related
 
-- Main quick start: [`README.md`](../README.md)
-- CLI surface: [`CLI.md`](./CLI.md)
-- Example public RPCs (fallback only): [`mev-scout.example.toml`](../mev-scout.example.toml)
-- Full-speed local profile: [`mev-scout.local.toml`](../mev-scout.local.toml)
+- Main quick start: `[README.md](../README.md)`
+- CLI surface: `[CLI.md](./CLI.md)`
+- Example public RPCs (fallback only): `[mev-scout.example.toml](../mev-scout.example.toml)`
+- Full-speed local profile: `[mev-scout.local.toml](../mev-scout.local.toml)`
+
