@@ -927,6 +927,12 @@ fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                     "pool": format!("{:#x}", pool),
                     "recipients": recipients,
                     "amounts": amounts,
+                    "pnl_basis": PnlBasis::R.as_str(),
+                    "pnl": {
+                        "basis": PnlBasis::R.as_str(),
+                        "profit_amount": profit_amount.to_string(),
+                        "profit_token": format!("{:#x}", profit_token),
+                    },
                 }),
             });
         }
@@ -1133,6 +1139,12 @@ fn fold_sandwich(
         victim_swap_size: walk.victims.last().map(|v| v.amount_in),
         details: serde_json::json!({
             "mode": "realized",
+            "pnl_basis": PnlBasis::R.as_str(),
+            "pnl": {
+                "basis": PnlBasis::R.as_str(),
+                "profit_amount": profit.to_string(),
+                "profit_token": format!("{:#x}", front.token_in),
+            },
             "pool": format!("{pool:#x}"),
             "front_run": {
                 "tx_index": front.tx_index,
@@ -1382,6 +1394,12 @@ fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEven
                 details: serde_json::json!({
                     "mode": "realized",
                     "tier": "inferred",
+                    "pnl_basis": PnlBasis::R.as_str(),
+                    "pnl": {
+                        "basis": PnlBasis::R.as_str(),
+                        "profit_amount": bamount.to_string(),
+                        "profit_token": format!("{btoken:#x}"),
+                    },
                     "pool": format!("{pool:#x}"),
                     "source_tx_index": atx,
                     "source_sender": format!("{afrom:#x}"),
@@ -1505,6 +1523,12 @@ fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEve
                 details: serde_json::json!({
                     "mode": "realized",
                     "tier": "inferred",
+                    "pnl_basis": PnlBasis::R.as_str(),
+                    "pnl": {
+                        "basis": PnlBasis::R.as_str(),
+                        "profit_amount": profit.to_string(),
+                        "profit_token": format!("{:#x}", fleg.token_in),
+                    },
                     "pool": format!("{pool:#x}"),
                     "victim_tx_index": vtx,
                     "front_run": {
@@ -3471,7 +3495,7 @@ mod tests {
     /// P3.15: NotifyReward co-block + venue AMM → `epoch_transition`.
     #[test]
     fn epoch_transition_tagged_with_notify_reward() {
-        let swaps = vec![
+        let swaps = [
             swap(POOL_A, USDC, TOKA, 100, 200),
             swap(POOL_B, TOKA, USDC, 200, 110),
         ];

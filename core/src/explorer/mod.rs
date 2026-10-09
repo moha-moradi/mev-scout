@@ -37,6 +37,8 @@ pub mod pricing;
 pub mod profit;
 pub(crate) mod reject;
 pub(crate) mod results;
+#[cfg(test)]
+mod scenarios;
 pub mod store;
 pub mod types;
 pub mod validate;

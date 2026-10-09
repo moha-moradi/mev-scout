@@ -101,6 +101,7 @@ fn tx_input(
         buy_collaterals: vec![],
         jit,
         v2_pair_ops: vec![],
+        ..Default::default()
     }
 }
 
@@ -194,6 +195,10 @@ fn golden_input() -> BlockInput {
         arb_likely_parity: true,
         open_positions: vec![],
         v2_like_pools: std::collections::HashSet::new(),
+        chainlink_feeds: HashMap::new(),
+        savax: None,
+        epoch_venue_pools: std::collections::HashSet::new(),
+        gmx_event_emitters: std::collections::HashSet::new(),
         txs: vec![arb_tx, front, victim, back, mint_tx, burn_tx],
     }
 }
