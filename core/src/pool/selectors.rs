@@ -49,6 +49,11 @@ selector!(GET_AMPLIFICATION_PARAMETER, "getAmplificationParameter()"); // 0x6dac
 selector!(GET_SCALING_FACTORS, "getScalingFactors()"); // 0x1dd746ea
 selector!(GET_RATE_PROVIDER, "getRateProvider(uint256)"); // 0x48ade7b0
 
+// ── Benqi sAVAX (plan P3.16) ──────────────────────────────────────────────
+
+/// `getPooledAvaxByShares(uint256)` — AVAX redeemable for `shareAmount` sAVAX.
+selector!(SAVAX_GET_POOLED_AVAX_BY_SHARES, "getPooledAvaxByShares(uint256)");
+
 // ── Curve ────────────────────────────────────────────────────────────────
 
 selector!(CURVE_COINS_I128, "coins(int128)"); // 0x23746eb8 — classic Vyper pools

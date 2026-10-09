@@ -54,6 +54,14 @@ pub fn resolve_dex_name(factory: Option<Address>, dex_type_label: &str) -> Strin
         .unwrap_or_else(|| dex_type_label.to_string())
 }
 
+/// Pharaoh / Blackhole factories for plan P3.15 epoch-transition venue pools.
+pub fn is_epoch_venue_factory(factory: Address) -> bool {
+    matches!(
+        protocol_name_for_factory(factory),
+        Some("Pharaoh V3" | "Pharaoh DLMM" | "Blackhole AMM" | "Blackhole CLMM")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +104,18 @@ mod tests {
             ),
             "LFJ V1"
         );
+    }
+
+    #[test]
+    fn epoch_venue_factories() {
+        assert!(is_epoch_venue_factory(address!(
+            "0xAE6E5c62328ade73ceefD42228528b70c8157D0d"
+        ))); // Pharaoh V3
+        assert!(is_epoch_venue_factory(address!(
+            "0xfe926062fb99ca5653080d6c14fe945ad68c265c"
+        ))); // Blackhole AMM
+        assert!(!is_epoch_venue_factory(address!(
+            "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10"
+        ))); // LFJ V1
     }
 }

@@ -22,20 +22,22 @@ use alloy::primitives::{Address, B256, U256};
 use crate::data::LogData;
 use crate::explorer::types::{
     Amm, BuyCollateralFact, EpochRewardFact, FlashLoanFact, GmxEventFact, JitFact, KeeperFact,
-    LegSource, LiquidationFact, OracleUpdateFact, ReserveDataFact, SwapFact, TransferFact,
-    UserOpFact, V2PairOpFact, V2PairOpKind,
+    LegSource, LiquidationFact, OracleUpdateFact, RateCacheFact, ReserveDataFact, SwapFact,
+    TransferFact, UserOpFact, V2PairOpFact, V2PairOpKind,
 };
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
-    AAVE_V3_LIQUIDATION_CALL_TOPIC, AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
+    AAVE_V3_LIQUIDATION_CALL_TOPIC, AAVE_V3_RESERVE_DATA_UPDATED_TOPIC,
+    BALANCER_FLASH_LOAN_TOPIC, BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
     CHAINLINK_ANSWER_UPDATED_TOPIC, CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
     COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC, COMPOUND_V3_BUY_COLLATERAL_TOPIC,
     EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC, GMX_ADL_STATE_UPDATED_HASH,
     GMX_LIQUIDATE_POSITION_HASH, GMX_POSITION_IMPACT_POOL_DISTRIBUTED_HASH, INF_CL_SWAP_TOPIC,
     MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC, NOTIFY_REWARD_TOPIC,
-    SILO_V2_LIQUIDATION_CALL_TOPIC, TRANSFER_TOPIC, USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC,
-    V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    SILO_V2_LIQUIDATION_CALL_TOPIC, TRANSFER_TOPIC, UNI_V3_FLASH_TOPIC,
+    USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SWAP_TOPIC, V2_SYNC_TOPIC,
+    V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::pool::decoders::{
     BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
@@ -777,10 +779,10 @@ pub fn decode_buy_collateral(log: &LogData) -> Option<BuyCollateralFact> {
     })
 }
 
-/// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / §17.8.4 mode A).
+/// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / §17.8.4 mode A/B).
 ///
-/// Fingerprint is the feed emitter address; answer value is unused for the
-/// co-block oracle-poke label.
+/// Mode A uses the feed emitter for co-block poke; mode B compares `answer`
+/// against the prior stored answer for pre-poke divergence.
 pub fn decode_oracle_update(log: &LogData) -> Option<OracleUpdateFact> {
     let topic0 = *log.topics.first()?;
     if topic0 != *CHAINLINK_ANSWER_UPDATED_TOPIC || log.topics.len() < 3 {
@@ -790,6 +792,39 @@ pub fn decode_oracle_update(log: &LogData) -> Option<OracleUpdateFact> {
         tx_index: 0,
         log_index: 0,
         feed: log.address,
+        answer: signed_answer_from_topic(&log.topics[1]),
+    })
+}
+
+/// Interpret a 32-byte indexed int256 topic as i128 (Chainlink answers fit).
+fn signed_answer_from_topic(topic: &B256) -> i128 {
+    let bytes = topic.as_slice();
+    let mut lo = [0u8; 16];
+    lo.copy_from_slice(&bytes[16..32]);
+    // ABI-indexed int256 sign-extends into the high 16 bytes (0x00.. or 0xff..).
+    i128::from_be_bytes(lo)
+}
+
+/// Decode Balancer ComposableStablePool `TokenRateCacheUpdated` (plan P3.2).
+///
+/// Mode A: a same-block rate refresh clears the staleness label on Balancer
+/// arbs; absence of this event while a Balancer leg closes a cross-venue cycle
+/// is the inferred staleness cause.
+pub fn decode_rate_cache_update(log: &LogData) -> Option<RateCacheFact> {
+    let topic0 = *log.topics.first()?;
+    if topic0 != *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC || log.topics.len() < 2 {
+        return None;
+    }
+    if log.data.len() < 32 {
+        return None;
+    }
+    Some(RateCacheFact {
+        tx_index: 0,
+        log_index: 0,
+        pool: log.address,
+        token_index: u64::try_from(U256::from_be_slice(log.topics[1].as_slice()))
+            .unwrap_or(u64::MAX),
+        rate: U256::from_be_slice(&log.data[0..32]),
     })
 }
 
@@ -937,12 +972,41 @@ pub fn decode_user_op(log: &LogData) -> Option<UserOpFact> {
 
 /// Decode a flash-loan fact from a receipt log (Phase 2.2).
 ///
-/// Covers Aave V2/V3 (native ABI layouts) and Balancer V2 (via the scanner's
-/// canonical decoder so topic + layout stay in sync). Uni V3 `Flash` is
-/// intentionally deferred: callback-repay semantics differ from a classic
-/// loan+fee provider event.
+/// Covers Aave V2/V3, Balancer V2, Morpho Blue, and Uniswap V3 `Flash`.
+/// Uni V4 has no discrete Flash event (unlock/callback flash accounting only),
+/// so the Avalanche Uni flash path for plan P2.3 is V3.
 pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
     let topic0 = *log.topics.first()?;
+
+    // Uniswap V3: Flash(address indexed sender, address indexed recipient,
+    //   uint256 amount0, uint256 amount1, uint256 paid0, uint256 paid1).
+    // Token identity needs the pool registry; store amount/fee on the
+    // non-zero leg and leave `token = 0` for netting to fill via transfers.
+    if topic0 == *UNI_V3_FLASH_TOPIC {
+        if log.topics.len() < 3 || log.data.len() < 128 {
+            return None;
+        }
+        let amount0 = U256::from_be_slice(&log.data[0..32]);
+        let amount1 = U256::from_be_slice(&log.data[32..64]);
+        let paid0 = U256::from_be_slice(&log.data[64..96]);
+        let paid1 = U256::from_be_slice(&log.data[96..128]);
+        let (amount, fee) = if !amount0.is_zero() || paid0 > paid1 {
+            (amount0, paid0)
+        } else {
+            (amount1, paid1)
+        };
+        return Some(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "uniswap_v3",
+            initiator: Address::from_slice(&log.topics[1][12..]),
+            recipient: Address::from_slice(&log.topics[2][12..]),
+            token: Address::ZERO,
+            amount,
+            fee: Some(fee),
+            provider: log.address,
+        });
+    }
 
     // Aave V3: FlashLoan(address indexed target, address initiator,
     //   address indexed asset, uint256 amount, uint8 mode, uint256 premium,

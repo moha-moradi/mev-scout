@@ -29,8 +29,8 @@ use crate::explorer::store::OpenPosition;
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
     BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevEvent,
-    MevKind, OracleUpdateFact, PnlBasis, ReserveDataFact, SwapFact, TransferFact, UserOpFact,
-    V2PairOpFact,
+    MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
+    UserOpFact, V2PairOpFact,
 };
 
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
@@ -57,6 +57,8 @@ pub struct TxInput {
     pub oracle_updates: Vec<OracleUpdateFact>,
     /// Aave `ReserveDataUpdated` facts (plan P1.1).
     pub reserve_updates: Vec<ReserveDataFact>,
+    /// Balancer `TokenRateCacheUpdated` facts (plan P3.2).
+    pub rate_cache_updates: Vec<RateCacheFact>,
     /// Gelato / Chainlink Automation executions (plan P1.5).
     pub keepers: Vec<KeeperFact>,
     /// ve(3,3) NotifyReward facts (plan P3.15).
@@ -90,6 +92,12 @@ pub struct BlockInput {
     pub epoch_venue_pools: HashSet<Address>,
     /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
     pub gmx_event_emitters: HashSet<Address>,
+    /// Mode-B interest lookback (plan P1.1); empty = same-block heuristic only.
+    pub interest_lookback: interest_attr::InterestLookback,
+    /// Prior Chainlink answers keyed by feed (plan P1.4 mode B).
+    pub prior_oracle_answers: HashMap<Address, i128>,
+    /// Benqi sAVAX `getPooledAvaxByShares(1e18)` at this block (plan P3.16).
+    pub savax_exchange_rate_wad: Option<U256>,
     pub txs: Vec<TxInput>,
 }
 
@@ -124,12 +132,19 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
         })
     });
     let epoch_venue_list: Vec<Address> = input.epoch_venue_pools.iter().copied().collect();
+    let block_rate_cache: Vec<RateCacheFact> = input
+        .txs
+        .iter()
+        .flat_map(|t| t.rate_cache_updates.iter().cloned())
+        .collect();
     let arb_tag_opts = ArbTagOpts {
         wrapped_native: input.wrapped_native,
         savax: input.savax,
+        savax_exchange_rate_wad: input.savax_exchange_rate_wad,
         epoch_signal,
         epoch_venue_pools: &epoch_venue_list,
         gmx_adl_signal,
+        rate_cache_updates: &block_rate_cache,
     };
 
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
@@ -164,10 +179,13 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 tags.push("flash_loan_liq");
             }
             // P3.14 — bad-debt / near-insolvent attribution (Morpho badDebtAssets).
+            // Mode-B proxy: nonzero badDebtAssets ⇒ post-liq position is insolvent
+            // (HF collapsed); declared correlational in fixtures.
             let bad_debt = !liq.bad_debt_assets.is_zero();
             if bad_debt {
                 tags.push("bad_debt_liq");
             }
+            let post_liq_insolvent = bad_debt;
             let (flashloan_fee_wei, flashloan_fee_token) = if flash_funded {
                 primary_flash
                     .map(|fl| (fl.fee.filter(|f| !f.is_zero()), Some(fl.token)))
@@ -182,12 +200,29 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 &oracle_feeds_in_block,
                 &input.chainlink_feeds,
             );
+            // P1.4 mode B: pre-poke divergence vs last stored answer (secondary).
+            let oracle_pre_poke_divergence_bps = if oracle_poke_block {
+                block_oracle_owned.iter().find_map(|o| {
+                    let asset = input.chainlink_feeds.get(&o.feed).copied();
+                    let relevant = asset == Some(liq.debt_asset)
+                        || asset == Some(liq.collateral_asset)
+                        || input.chainlink_feeds.is_empty();
+                    if !relevant {
+                        return None;
+                    }
+                    let prior = input.prior_oracle_answers.get(&o.feed).copied()?;
+                    interest_attr::oracle_pre_poke_divergence_bps(prior, o.answer)
+                })
+            } else {
+                None
+            };
             // P1.1: interest-accrual cause label (inferred; P&L stays O).
             let interest_accrued = interest_attr::interest_accrued(
                 liq,
                 &block_reserve_owned,
                 &block_oracle_owned,
                 &input.chainlink_feeds,
+                Some(&input.interest_lookback),
             );
             // P&L basis O: seized − repaid components (USD at persist); flash
             // premium recorded as F component when present (§0.1).
@@ -206,12 +241,16 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                 "interest_accrued": interest_accrued,
                 "bad_debt": bad_debt,
                 "bad_debt_assets": liq.bad_debt_assets.to_string(),
+                "post_liq_insolvent": post_liq_insolvent,
                 "pnl": {
                     "basis": PnlBasis::O.as_str(),
                     "collateral_amount": liq.collateral_amount.to_string(),
                     "debt_to_cover": liq.debt_to_cover.to_string(),
                 },
             });
+            if let Some(bps) = oracle_pre_poke_divergence_bps {
+                details["oracle_pre_poke_divergence_bps"] = serde_json::json!(bps);
+            }
             if let Some(fl) = primary_flash {
                 details["flash_provider"] = serde_json::json!(fl.protocol);
                 details["flash_provider_address"] =
@@ -1879,6 +1918,7 @@ pub type TxFacts = (
     Vec<V2PairOpFact>,
     Vec<OracleUpdateFact>,
     Vec<ReserveDataFact>,
+    Vec<RateCacheFact>,
     Vec<KeeperFact>,
     Vec<EpochRewardFact>,
     Vec<GmxEventFact>,
@@ -1914,6 +1954,7 @@ pub fn decode_tx_logs_with_aliases(
     let mut v2_pair_ops = Vec::new();
     let mut oracle_updates = Vec::new();
     let mut reserve_updates = Vec::new();
+    let mut rate_cache_updates = Vec::new();
     let mut keepers = Vec::new();
     let mut epoch_rewards = Vec::new();
     let mut gmx_events = Vec::new();
@@ -1971,6 +2012,11 @@ pub fn decode_tx_logs_with_aliases(
             r.log_index = log_idx;
             reserve_updates.push(r);
         }
+        if let Some(mut rc) = decode::decode_rate_cache_update(log) {
+            rc.tx_index = tx_index;
+            rc.log_index = log_idx;
+            rate_cache_updates.push(rc);
+        }
         if let Some(mut k) = decode::decode_keeper(log) {
             k.tx_index = tx_index;
             k.log_index = log_idx;
@@ -2005,6 +2051,7 @@ pub fn decode_tx_logs_with_aliases(
         v2_pair_ops,
         oracle_updates,
         reserve_updates,
+        rate_cache_updates,
         keepers,
         epoch_rewards,
         gmx_events,
@@ -2281,6 +2328,7 @@ mod tests {
             v2_pair_ops: vec![],
             oracle_updates: vec![],
             reserve_updates: vec![],
+            rate_cache_updates: vec![],
             keepers: vec![],
             epoch_rewards: vec![],
             gmx_events: vec![],
@@ -2305,6 +2353,9 @@ mod tests {
             savax: None,
             epoch_venue_pools: HashSet::new(),
             gmx_event_emitters: HashSet::new(),
+            interest_lookback: interest_attr::InterestLookback::default(),
+            prior_oracle_answers: HashMap::new(),
+            savax_exchange_rate_wad: None,
             txs,
         }
     }

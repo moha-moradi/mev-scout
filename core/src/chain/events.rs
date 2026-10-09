@@ -43,6 +43,13 @@ pub static V2_BURN_TOPIC: LazyLock<B256> =
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
 
+/// Uniswap V3 Pool `Flash(address sender, address recipient, uint256 amount0,
+/// uint256 amount1, uint256 paid0, uint256 paid1)` — Avalanche flash path for
+/// plan P2.3 (Uni V4 has no discrete Flash event; flash accounting is unlock-
+/// callback only).
+pub static UNI_V3_FLASH_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Flash(address,address,uint256,uint256,uint256,uint256)"));
+
 // ── Uniswap V4 ──────────────────────────────────────────────────────
 
 /// Uniswap V4 PoolManager Swap event (verified against v4-core PoolManager):
@@ -202,6 +209,11 @@ pub static EULER_V2_LIQUIDATE_TOPIC: LazyLock<B256> =
 /// uint256 updatedAt)` — `current`/`roundId` indexed (P1.4 / §17.8.4).
 pub static CHAINLINK_ANSWER_UPDATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("AnswerUpdated(int256,uint256,uint256)"));
+
+/// Balancer ComposableStablePool `TokenRateCacheUpdated(uint256 tokenIndex,
+/// uint256 rate)` — mode-A rate-refresh signal for plan P3.2 staleness.
+pub static BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("TokenRateCacheUpdated(uint256,uint256)"));
 
 /// Aave V3 `ReserveDataUpdated(address reserve, uint256 liquidityRate,
 /// uint256 stableBorrowRate, uint256 variableBorrowRate, uint256

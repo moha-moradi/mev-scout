@@ -332,6 +332,20 @@ pub struct OracleUpdateFact {
     pub log_index: u64,
     /// Aggregator proxy / feed contract that emitted the update.
     pub feed: Address,
+    /// Indexed `current` answer (raw aggregator units) for mode-B pre-poke
+    /// divergence vs the prior stored answer.
+    pub answer: i128,
+}
+
+/// Balancer ComposableStablePool `TokenRateCacheUpdated` (plan P3.2).
+#[derive(Debug, Clone)]
+pub struct RateCacheFact {
+    pub tx_index: u64,
+    pub log_index: u64,
+    /// ComposableStablePool that refreshed its cached rate.
+    pub pool: Address,
+    pub token_index: u64,
+    pub rate: U256,
 }
 
 /// Aave-family `ReserveDataUpdated` (explorer plan P1.1 interest attribution).
