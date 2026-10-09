@@ -136,13 +136,12 @@ pub fn oracle_pre_poke_divergence_bps(prior: i128, current: i128) -> Option<u64>
         return None;
     }
     let prior_abs = prior.unsigned_abs();
-    let delta = (current as i128 - prior as i128).unsigned_abs();
-    Some(
-        delta
-            .saturating_mul(10_000)
-            .checked_div(prior_abs)
-            .unwrap_or(0),
-    )
+    let delta = current.abs_diff(prior);
+    let bps = delta
+        .saturating_mul(10_000)
+        .checked_div(prior_abs)
+        .unwrap_or(0);
+    u64::try_from(bps).ok()
 }
 
 #[cfg(test)]

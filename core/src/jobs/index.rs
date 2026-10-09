@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::dex_type::DexType;
 use crate::explorer::ingest::{run_live, IngestConfig, PoolViews};
 use crate::explorer::store::ExplorerStore;
-use crate::pool::discovery::protocol_names::is_epoch_venue_factory;
+use crate::pool::discovery::is_epoch_venue_factory;
 use crate::progress::JobProgress;
 use crate::types::ChainName;
 

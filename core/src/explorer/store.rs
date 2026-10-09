@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::str::FromStr;
 
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 type PoolSwapRow = (String, Option<String>, String, String);

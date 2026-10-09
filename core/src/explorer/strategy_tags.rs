@@ -242,18 +242,17 @@ mod tests {
         let o = opts();
         let tags = arb_strategy_tags(&[swap(Amm::Curve, USDC, WAVAX)], &o);
         assert!(!tags.contains(&"curve_imbalance"));
-        let mut s0 = swap(Amm::Curve, USDC, WAVAX);
+        let s0 = swap(Amm::Curve, USDC, WAVAX);
         let mut s1 = swap(Amm::V2, WAVAX, USDC);
         s1.pool = POOL_B;
         let tags = arb_strategy_tags(&[s0, s1], &o);
         assert!(tags.contains(&"curve_imbalance"));
-        let _ = s0;
     }
 
     #[test]
     fn balancer_staleness_cleared_by_rate_cache() {
         let mut o = opts();
-        let mut s0 = swap(Amm::Balancer, USDC, WAVAX);
+        let s0 = swap(Amm::Balancer, USDC, WAVAX);
         let mut s1 = swap(Amm::V2, WAVAX, USDC);
         s1.pool = POOL_B;
         let tags = arb_strategy_tags(&[s0.clone(), s1.clone()], &o);
