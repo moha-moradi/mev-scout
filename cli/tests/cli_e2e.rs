@@ -6,6 +6,7 @@
 //! Skipped unless `MEV_SCOUT_E2E=1` is set. The RPC URL comes from the
 //! `RPC_URL` env var only.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
 use common::{rpc_url, run_timed, temp_config, temp_ws, HEAVY_TIMEOUT};

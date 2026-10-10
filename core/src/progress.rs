@@ -1,7 +1,6 @@
 //! Typed job-progress plumbing for the CLI host of the engine.
 //! Commands emit stage events through a [`JobProgress`] sink and honor
 //! cooperative cancellation via [`JobProgress::cancelled`].
-
 use serde::{Deserialize, Serialize};
 
 /// One stage-progress event emitted by the engine's long-running paths.

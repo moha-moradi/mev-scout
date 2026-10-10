@@ -3,7 +3,6 @@
 //! On-chain discovery classifies pools by AMM family (`UniswapV2`, `UniswapV3`,
 //! `TraderJoeLB`, …). Forks share the same event ABI, so without a factory map
 //! every Avalanche Joe / Pangolin / Pharaoh pool is labeled "UniswapV2/V3".
-
 use alloy::primitives::{address, Address};
 
 /// Resolve a known factory to its protocol brand name.

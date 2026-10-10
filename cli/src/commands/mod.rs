@@ -19,7 +19,7 @@ pub use report::cmd_report;
 
 /// Shared interface for all CLI commands.
 /// Uses `?Send` because some commands (e.g. discover) hold non-Send types
-/// like `Option<&dyn Fn() -> bool>` across await points; embedding hosts run
+/// like `Option<&dyn Fn -> bool>` across await points; embedding hosts run
 /// the returned future via their own `Runtime::block_on`.
 #[async_trait(?Send)]
 pub trait CliCommand {
@@ -28,8 +28,7 @@ pub trait CliCommand {
 
 #[async_trait(?Send)]
 impl CliCommand for ReportArgs {
-    async fn execute(&self, config: &Config, progress: &dyn JobProgress) -> anyhow::Result<()> {
-        let _ = progress;
+    async fn execute(&self, config: &Config, _progress: &dyn JobProgress) -> anyhow::Result<()> {
         cmd_report(config, self).await
     }
 }

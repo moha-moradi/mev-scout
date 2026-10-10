@@ -1,6 +1,5 @@
 //! Multi-provider RPC client with per-endpoint rate limiting, weighted selection,
 //! and block-range sharding for load distribution across public/private RPC endpoints.
-
 use crate::rpc::consts::{DEAD_PROVIDER_COOLDOWN_SECS, HTTP_TIMEOUT_SECS};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -302,7 +301,7 @@ impl RpcClient {
     /// weight descending.
     ///
     /// Used by replay state reads (`eth_getBalance`, `eth_getStorageAt`,
-    /// `eth_getCode`, ...). Providers that once returned "historical state is
+    /// `eth_getCode`,...). Providers that once returned "historical state is
     /// not available" are excluded so they don't waste a round-trip on every
     /// read; they remain available for block/log/fetch workloads via
     /// [`RpcClient::sorted_available`].
@@ -421,47 +420,50 @@ impl RpcClient {
         self.retry_call_impl(f, ProviderScope::StateCapable).await
     }
 
+    /// Providers for `scope`. When `fallback_when_empty` and the scoped set is
+    /// empty, fall back to every alive provider so the first probe can succeed.
+    async fn providers_for(
+        &self,
+        scope: ProviderScope,
+        fallback_when_empty: bool,
+    ) -> Vec<(usize, ProviderState)> {
+        match scope {
+            ProviderScope::StateCapable => {
+                let state = self.sorted_available_state().await;
+                if state.is_empty() && fallback_when_empty {
+                    self.sorted_available().await
+                } else {
+                    state
+                }
+            }
+            ProviderScope::Archive => {
+                let arch = self.sorted_available_archive().await;
+                if arch.is_empty() && fallback_when_empty {
+                    tracing::debug!(
+                        "no archive-capable provider available — falling back to full-node providers for this state call"
+                    );
+                    self.sorted_available().await
+                } else {
+                    arch
+                }
+            }
+            ProviderScope::Any => self.sorted_available().await,
+        }
+    }
+
     async fn retry_call_impl<F, Fut, T>(&self, f: F, scope: ProviderScope) -> anyhow::Result<T>
     where
         F: Fn(RootProvider) -> Fut,
         Fut: std::future::Future<Output = anyhow::Result<T>>,
     {
         let archive_only = matches!(scope, ProviderScope::Archive);
-        let state_req = matches!(scope, ProviderScope::StateCapable);
         // How many times to wait out a transient all-in-cooldown state before
         // giving up (each wait is capped at `MAX_COOLDOWN_WAIT`).
         const MAX_COOLDOWN_WAITS: u32 = 3;
         let mut last_err = None;
         let mut cooldown_waits = 0u32;
 
-        let mut sorted = if state_req {
-            let state = self.sorted_available_state().await;
-            if state.is_empty() {
-                // No provider has confirmed state capability yet this session —
-                // fall back to all alive providers so the first state call can
-                // still succeed and populate the capability flags.
-                self.sorted_available().await
-            } else {
-                state
-            }
-        } else if archive_only {
-            let arch = self.sorted_available_archive().await;
-            if arch.is_empty() {
-                // No archive-capable provider exists, but pruned full nodes can
-                // still serve state within their retention window (typically the
-                // most recent ~128 blocks). Fall back to any alive provider so
-                // recent historical-state calls succeed; genuinely ancient blocks
-                // will fail per-provider with a descriptive error instead.
-                tracing::debug!(
-                    "no archive-capable provider available — falling back to full-node providers for this state call"
-                );
-                self.sorted_available().await
-            } else {
-                arch
-            }
-        } else {
-            self.sorted_available().await
-        };
+        let mut sorted = self.providers_for(scope, true).await;
         let mut tried = std::collections::HashSet::new();
 
         loop {
@@ -598,18 +600,7 @@ impl RpcClient {
                 break;
             }
 
-            sorted = if state_req {
-                let state = self.sorted_available_state().await;
-                if state.is_empty() {
-                    self.sorted_available().await
-                } else {
-                    state
-                }
-            } else if archive_only {
-                self.sorted_available_archive().await
-            } else {
-                self.sorted_available().await
-            };
+            sorted = self.providers_for(scope, false).await;
         }
 
         match last_err {
@@ -650,7 +641,7 @@ impl RpcClient {
     ///
     /// Returns one [`ProviderShard`] per available provider. Each provider
     /// receives blocks proportional to its effective weight (RPS adjusted by
-    /// observed latency via `effective_weight()`).
+    /// observed latency via `effective_weight`).
     pub async fn distribute_blocks(&self, start: u64, end: u64) -> Vec<ProviderShard> {
         let total_blocks = end - start + 1;
         let provs = self.providers.lock().await;
@@ -836,7 +827,7 @@ impl RpcClient {
 
     /// Fetch logs pinned to a specific provider index, bypassing weighted random selection.
     ///
-    /// Falls back to `get_logs()` on provider failure. Used by discovery to distribute
+    /// Falls back to `get_logs` on provider failure. Used by discovery to distribute
     /// `getLogs` batches across providers (like `distribute_blocks` for fetch).
     pub async fn get_logs_for(
         &self,
@@ -1418,7 +1409,7 @@ impl RpcClient {
 
     /// Execute an `eth_call` at a historical block.
     ///
-    /// Used for pool state queries (`getReserves()`, `slot0()`, `liquidity()`)
+    /// Used for pool state queries (`getReserves`, `slot0`, `liquidity`)
     /// without modifying chain state. Requires archive-capable providers.
     pub async fn call(&self, to: Address, data: Bytes, block: u64) -> anyhow::Result<Bytes> {
         self.call_at(to, data, BlockId::number(block)).await
@@ -1426,8 +1417,8 @@ impl RpcClient {
 
     /// Execute an `eth_call` at the latest block.
     ///
-    /// Used for immutable metadata queries (`symbol()`, `token0()`, `token1()`,
-    /// `fee()`, `tickSpacing()`) where the result never changes and archive
+    /// Used for immutable metadata queries (`symbol`, `token0`, `token1`,
+    /// `fee`, `tickSpacing`) where the result never changes and archive
     /// state is not needed. Avoids `historical state not available` errors
     /// from providers without full archive support.
     pub async fn call_latest(&self, to: Address, data: Bytes) -> anyhow::Result<Bytes> {

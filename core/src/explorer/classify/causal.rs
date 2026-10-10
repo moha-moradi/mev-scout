@@ -11,12 +11,12 @@ use super::legs::{
 };
 use super::{BlockInput, TxInput};
 
-/// Phase 3.1: logs-only causal backrun. A market-moving tx `A` (large notional,
+/// logs-only causal backrun. A market-moving tx `A` (large notional,
 /// different sender) on pool `P` is followed, within the adjacency window, by a
 /// tx `B` whose sender profitably closes a directed cycle whose leg on `P`
 /// trades *opposite* A's direction at a better execution price than the pool
 /// offered pre-move. Requiring pool overlap + direction-of-benefit + closed
-/// cycle; nothing else qualifies (§24). Never Exact — this is a logs-only
+/// cycle; nothing else qualifies. Never Exact — this is a logs-only
 /// proxy, not REVM `profit(B|after)`.
 pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
@@ -76,9 +76,8 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
             let afrom = a.0 .1;
             let aleg = &a.0 .2;
             let a_hash = a.0 .2.tx_hash;
-            let (btoken, bamount) = {
-                let (_searcher, token, amount) = tx_cycle_profit(input, b_tx).unwrap();
-                (token, amount)
+            let Some((_searcher, btoken, bamount)) = tx_cycle_profit(input, b_tx) else {
+                continue;
             };
             out.push(MevEvent {
                 block: input.block,
@@ -139,17 +138,17 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
     out
 }
 
-/// Phase 3.2: logs-only causal frontrun. A searcher tx `F` moves pool `P`
+/// logs-only causal frontrun. A searcher tx `F` moves pool `P`
 /// (swap measurable from amounts); a third-party tx `V` immediately after
 /// swaps the same direction at a degraded execution price vs `F`; and `F`'s
 /// sender then closes the position with a profitable opposite leg on `P`
 /// (PROFIT_VERIFIED). Sandwich-consumed front/back txs are excluded by
-/// `consumed` (§13 / kind priority).
+/// `consumed` ( / kind priority).
 pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
     let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
     // Global, tx-ordered leg index so the searcher's profitable opposite close
-    // can land on a different pool than the victim's (§13: "subsequent
+    // can land on a different pool than the victim's (: "subsequent
     // profitable opposite leg" — no same-pool requirement). A same-pool close
     // after a third-party victim is, by construction, also a commodity
     // sandwich; the sandwich pass owns that case (front/back anchors land in

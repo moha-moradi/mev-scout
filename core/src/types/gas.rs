@@ -1,7 +1,6 @@
 //! Observed-gas calibration: rolling averages of actual transaction
 //! `gasUsed` bucketed by dominant DEX type and pool count, used to replace
 //! static per-pool gas constants in opportunity gas estimation.
-
 use std::collections::HashMap;
 
 use crate::dex_type::DexType;

@@ -1,4 +1,4 @@
-//! Canonical pool-fee units — kills the bps/ppm overload (W5.2).
+//! Canonical pool-fee units — kills the bps/ppm overload.
 //!
 //! `PoolInfo.fee` stores a raw `u32` whose unit is implied by DEX family:
 //! basis points (30) for constant-product pools, parts-per-million (3000) for
@@ -10,7 +10,6 @@
 //! `FeeTier` captures the interpretation once, next to the definition, and
 //! every quoting function takes it as a parameter — a bps value can no longer
 //! be passed where ppm is expected.
-
 use crate::dex_type::DexType;
 
 /// Fee denominator for basis-point fees (100% = 10_000 bps).

@@ -25,7 +25,7 @@ pub struct ChainConfig {
     /// SparkLend pool (Aave-V3 ABI alias — same `LiquidationCall` topic0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spark_pool: Option<Address>,
-    /// Liquidation-emitter → protocol label relabels (plan P0.2 / §24):
+    /// Liquidation-emitter → protocol label relabels (plan P0.2 /):
     /// markets whose event topic0 is shared with another protocol are
     /// distinguished only by the emitting address (Benqi qiTokens emit the
     /// Compound V2 `LiquidateBorrow` topic). Map the *emitting market*, not
@@ -157,7 +157,11 @@ impl ChainConfig {
 }
 
 pub fn default_chains() -> HashMap<String, ChainConfig> {
-    toml::from_str(include_str!("../../data/chains.toml")).expect("invalid chains.toml")
+    // Bundled asset: invalid TOML is a build-time content bug, not runtime fallibility.
+    #[allow(clippy::expect_used)]
+    {
+        toml::from_str(include_str!("../../data/chains.toml")).expect("invalid chains.toml")
+    }
 }
 
 /// Merge built-in chain defaults into `chains`: insert missing chains, and for

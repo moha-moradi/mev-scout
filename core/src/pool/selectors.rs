@@ -9,7 +9,6 @@
 //! the name suffix where ambiguity exists (e.g. Curve pools expose both
 //! `balances(int128)` on classic Vyper deployments and `balances(uint256)` on
 //! NG deployments — call sites try both, see `fetch_curve_state`).
-
 use std::sync::LazyLock;
 
 use alloy::primitives::{keccak256, Bytes};

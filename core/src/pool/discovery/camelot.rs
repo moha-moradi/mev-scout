@@ -1,8 +1,8 @@
 use super::scan_factory_creation_events_pinned;
+use crate::utils::{abi_word_address, topic_address};
 use super::CAMELOT_PAIR_CREATED_TOPIC;
 use super::{DiscoveredPool, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
-use alloy::primitives::Address;
 use alloy::primitives::U256;
 
 pub(crate) async fn scan_camelot_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
@@ -27,9 +27,9 @@ pub(crate) async fn scan_camelot_batch(ctx: &ScanContext<'_>) -> ScanBatchResult
                 if log_data.data.len() < 96 || topics.len() < 3 {
                     return None;
                 }
-                let pair_addr = Address::from_slice(&log_data.data[12..32]);
-                let token0 = Address::from_slice(&topics[1][12..]);
-                let token1 = Address::from_slice(&topics[2][12..]);
+                let pair_addr = abi_word_address(&log_data.data, 0);
+                let token0 = topic_address(topics[1]);
+                let token1 = topic_address(topics[2]);
                 let fee = U256::from_be_slice(&log_data.data[32..64]).to::<u64>() as u32;
                 let is_stable = log_data.data[95] != 0;
                 let creation_block = log.block_number.unwrap_or(0);

@@ -1,5 +1,4 @@
 //! Balancer V2 AMM math: weighted product, StableSwap, and variant dispatch.
-
 use super::consts::{PPM_DENOMINATOR, WEI_PER_ETHER};
 use crate::pool::state::{BalancerPoolState, BalancerPoolVariant};
 use alloy::primitives::{Address, U256};
@@ -63,7 +62,7 @@ pub fn balancer_output_amount(
         return None;
     }
 
-    // U256 → f64 across all four 64-bit limbs: reading only `as_limbs()[0]`
+    // U256 → f64 across all four 64-bit limbs: reading only `as_limbs[0]`
     // truncates any reserve > 2^64 and silently misquotes the ratio.
     let ratio_f64 = u256_as_f64(&numerator) / u256_as_f64(&denominator);
     let exp = u256_as_f64(&w_in) / u256_as_f64(&w_out);
@@ -90,7 +89,7 @@ fn u256_as_f64(v: &U256) -> f64 {
 /// Balancer Stable pool output amount using the StableSwap invariant.
 ///
 /// Uses the same Newton's method as Curve's StableSwap, but with the Balancer
-/// amplification parameter from `getAmplificationParameter()`.
+/// amplification parameter from `getAmplificationParameter`.
 /// For ComposableStable pools, scaling factors are applied to balances before
 /// the invariant computation, and the BPT token is excluded from the math.
 pub fn balancer_stable_output_amount(

@@ -5,7 +5,6 @@
 //! AND factory creation events (PairCreated, PoolCreated, PoolRegistered,
 //! PoolAdded) for pools created in the range. This ensures comprehensive
 //! coverage for backtesting recent periods.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -83,9 +82,10 @@ pub(crate) static SOLIDLY_PAIR_CREATED_TOPIC: LazyLock<B256> =
 pub(crate) static CAMELOT_PAIR_CREATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"PairCreated(address,address,address,uint256,bool)"));
 
-// Uniswap V4 Initialize event from singleton PoolManager
+// Uniswap V4 Initialize from the singleton PoolManager. Non-indexed data is
+// five ABI words: fee, tickSpacing, hooks, sqrtPriceX96, tick.
 pub(crate) static V4_INITIALIZE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Initialize(bytes32 indexed id,Address indexed currency0,Address indexed currency1,uint24 fee,int24 tickSpacing,Address hooks)")
+    keccak256(b"Initialize(bytes32,address,address,uint24,int24,address,uint160,int24)")
 });
 
 // Pancake Infinity CL Initialize event from singleton CLPoolManager:
@@ -122,7 +122,7 @@ pub(crate) static METRIC_POOL_CREATED_TOPIC: LazyLock<B256> =
 
 // Fluid DEX pool deployment — `LogDexDeployed(address indexed dex, uint256
 // indexed dexId)` (verified against Instadapp/fluid-contracts-public
-// factory/main.sol). Token metadata is fetched later via token0()/token1().
+// factory/main.sol). Token metadata is fetched later via token0/token1.
 pub(crate) static FLUID_DEX_DEPLOYED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"LogDexDeployed(address,uint256)"));
 
@@ -139,7 +139,7 @@ pub struct DiscoveredPool {
     /// Balancer V2 pool ID (bytes32), used to query vault for token balances.
     #[serde(default)]
     pub pool_id: Option<[u8; 32]>,
-    /// Factory address that created this pool (L6: fork-aware V2 storage slots).
+    /// Factory address that created this pool (fork-aware V2 storage slots).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factory: Option<Address>,
     /// Whether the pool is a stable-swap pool (Solidly/Camelot).
@@ -436,7 +436,7 @@ pub struct DiscoveryConfig<'a> {
     pub pendle_factory: Option<Address>,
     /// Max concurrent RPC calls for metadata fetch (default: 64).
     pub rpc_concurrency: usize,
-    /// Token symbol cache — avoids redundant `symbol()` eth_call RPC calls.
+    /// Token symbol cache — avoids redundant `symbol` eth_call RPC calls.
     pub token_cache: Option<&'a crate::cache::TokenCache>,
     /// Pool metadata cache — skips token0/token1/fee eth_call for already-known pools.
     pub pool_cache: Option<&'a crate::cache::SqliteStore>,
@@ -812,8 +812,8 @@ pub use protocol_names::{is_epoch_venue_factory, protocol_name_for_factory, reso
 ///
 /// | DEX | RPC calls needed per pool | Notes |
 /// |-----|--------------------------|-------|
-/// | V2  | `token0()`, `token1()`   | Fee defaults to 30 bps or `v2_fee_override` |
-/// | V3  | `token0()`, `token1()`, `fee()`, `tickSpacing()` | Full metadata on-chain |
+/// | V2 | `token0`, `token1` | Fee defaults to 30 bps or `v2_fee_override` |
+/// | V3 | `token0`, `token1`, `fee`, `tickSpacing` | Full metadata on-chain |
 /// | Curve | (none — populated by `init_from_rpc`) | Requires `fetch_curve_state` during pool init |
 /// | Balancer | (none for tokens — from event topics) | Requires vault from config for full state |
 ///
@@ -932,6 +932,375 @@ pub async fn discover_pools(
     Ok((pools, active_blocks))
 }
 
+/// Resolve missing Balancer `pool_id` for event-discovered pools via the vault.
+async fn resolve_balancer_pool_ids(
+    rpc: &RpcClient,
+    config: &DiscoveryConfig<'_>,
+    pool_hits: &mut PoolHits,
+    factory_pools: &mut HashMap<Address, DiscoveredPool>,
+) {
+    let Some(vault) = config.balancer_vault else {
+        return;
+    };
+    let balancer_to_resolve: Vec<Address> = pool_hits
+        .iter()
+        .filter(|(_, hit)| hit.dex_type == DexType::Balancer && hit.pool_id.is_none())
+        .map(|(addr, _)| *addr)
+        .collect();
+
+    if balancer_to_resolve.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "Resolving pool_id for {} Balancer pools discovered via events...",
+        balancer_to_resolve.len()
+    );
+    let resolved =
+        balancer::resolve_pool_ids(rpc, vault, balancer_to_resolve, config.rpc_concurrency).await;
+
+    let mut resolved_count = 0u32;
+    for (addr, pool_id, tokens) in resolved {
+        if let Some(entry) = pool_hits.get_mut(&addr) {
+            entry.pool_id = Some(pool_id);
+            resolved_count += 1;
+        }
+        if let Some(fp) = factory_pools.get_mut(&addr) {
+            fp.pool_id = Some(pool_id);
+            if tokens.is_some() {
+                fp.underlying_tokens = tokens;
+            }
+        }
+    }
+    if resolved_count > 0 {
+        tracing::info!("Resolved pool_id for {} Balancer pools", resolved_count);
+    }
+}
+
+/// Fetch full Curve token lists for registry-discovered pools via `coins(i)`.
+async fn resolve_curve_underlying(
+    rpc: &RpcClient,
+    config: &DiscoveryConfig<'_>,
+    factory_pools: &mut HashMap<Address, DiscoveredPool>,
+) {
+    let curve_pools: Vec<Address> = factory_pools
+        .iter()
+        .filter(|(_, fp)| fp.dex_type == DexType::Curve && fp.underlying_tokens.is_none())
+        .map(|(addr, _)| *addr)
+        .collect();
+
+    if curve_pools.is_empty() {
+        return;
+    }
+
+    tracing::info!(
+        "Resolving underlying tokens for {} Curve pools...",
+        curve_pools.len()
+    );
+    let resolved =
+        curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
+
+    let mut resolved_count = 0u32;
+    for (addr, tokens) in resolved {
+        if let Some(fp) = factory_pools.get_mut(&addr) {
+            fp.underlying_tokens = Some(tokens);
+            resolved_count += 1;
+        }
+    }
+    if resolved_count > 0 {
+        tracing::info!(
+            "Resolved underlying tokens for {} Curve pools",
+            resolved_count
+        );
+    }
+}
+
+/// Build metadata fetch tasks for event-discovered pools and run them with bounded concurrency.
+async fn fetch_dex_metadata(
+    rpc: &RpcClient,
+    config: &DiscoveryConfig<'_>,
+    pool_hits: &PoolHits,
+    factory_pools: &mut HashMap<Address, DiscoveredPool>,
+) -> Vec<metadata::PoolMetadataFetch> {
+    let mut fetch_tasks: Vec<metadata::FetchTask> = Vec::new();
+    let mut cache_hits: usize = 0;
+    let mut unmatched_v4_hits: usize = 0;
+
+    let pool_hits_vec: Vec<(Address, PoolHit)> =
+        pool_hits.iter().map(|(addr, hit)| (*addr, *hit)).collect();
+
+    for (addr, hit) in &pool_hits_vec {
+        if let Some(fp) = factory_pools.get(addr) {
+            match fp.dex_type {
+                DexType::UniswapV2
+                | DexType::UniswapV3
+                | DexType::UniswapV4
+                | DexType::PancakeInfinity
+                | DexType::TraderJoeLB
+                | DexType::Pendle
+                | DexType::Metric => continue,
+                _ => {}
+            }
+        }
+        if let Some(cached) = config
+            .pool_cache
+            .and_then(|c| c.get_discovered_pool(addr).ok().flatten())
+        {
+            if cached.token0 != Address::ZERO && cached.token1 != Address::ZERO {
+                let dp = DiscoveredPool::new(
+                    cached.address,
+                    cached.token0,
+                    cached.token1,
+                    cached.fee,
+                    cached.dex_type,
+                    cached.creation_block,
+                )
+                .with_tick_spacing(cached.tick_spacing.map(|ts| ts as i32))
+                .with_pool_id(cached.pool_id)
+                .with_factory(cached.factory)
+                .with_is_stable(cached.is_stable)
+                .with_balancer_pool_type(cached.balancer_pool_type)
+                .with_hook_address(cached.hook_address)
+                .with_bin_step(cached.bin_step)
+                .with_maturity_timestamp(cached.maturity_timestamp)
+                .with_underlying_tokens(cached.underlying_tokens)
+                .with_dex_name(cached.dex_name.as_deref().map(String::from))
+                .with_token0_symbol(cached.token0_symbol.as_deref().map(String::from))
+                .with_token1_symbol(cached.token1_symbol.as_deref().map(String::from));
+                factory_pools.entry(*addr).or_insert(dp);
+                cache_hits += 1;
+                continue;
+            }
+        }
+        let factory_tokens = factory_pools.get(addr).map(|fp| (fp.token0, fp.token1));
+        match metadata::fetch_pool_metadata(
+            rpc,
+            *addr,
+            hit.dex_type,
+            hit.tokens,
+            hit.first_seen_block,
+            factory_tokens,
+        ) {
+            Some(task) => fetch_tasks.push(task),
+            None => unmatched_v4_hits += 1,
+        }
+    }
+
+    let rpc_tasks = fetch_tasks.len();
+    if cache_hits > 0 {
+        tracing::info!(
+            "Pool cache: {} of {} pools served from cache ({} RPC tasks remaining)",
+            cache_hits,
+            pool_hits_vec.len(),
+            rpc_tasks,
+        );
+    }
+    if unmatched_v4_hits > 0 {
+        tracing::info!(
+            "V4 activity: {unmatched_v4_hits} poolId hit(s) without Initialize/cache match — skipped (no RPC spent)"
+        );
+    }
+
+    let rpc_concurrency = config.rpc_concurrency;
+    use futures::stream::{self, StreamExt};
+
+    stream::iter(fetch_tasks)
+        .buffer_unordered(rpc_concurrency)
+        .collect::<Vec<_>>()
+        .await
+}
+
+/// Resolve ERC-20 symbols for all tokens referenced by factory pools and metadata results.
+async fn resolve_token_symbols(
+    rpc: &RpcClient,
+    config: &DiscoveryConfig<'_>,
+    factory_pools: &HashMap<Address, DiscoveredPool>,
+    results: &[metadata::PoolMetadataFetch],
+) -> HashMap<Address, String> {
+    let symbol_selector = SYMBOL.clone();
+    let mut token_addrs: HashSet<Address> = HashSet::new();
+    for fp in factory_pools.values() {
+        token_addrs.insert(fp.token0);
+        token_addrs.insert(fp.token1);
+    }
+    for r in results {
+        if let Some(t) = r.token0 {
+            token_addrs.insert(t);
+        }
+        if let Some(t) = r.token1 {
+            token_addrs.insert(t);
+        }
+    }
+    token_addrs.remove(&Address::ZERO);
+
+    let token_vec: Vec<Address> = token_addrs.into_iter().collect();
+
+    let (cached_symbols, uncached_tokens) = if let Some(cache) = config.token_cache {
+        let mut cached = HashMap::new();
+        let mut uncached = Vec::new();
+        for &addr in &token_vec {
+            if let Some(sym) = cache.get(&addr) {
+                cached.insert(addr, sym.to_string());
+            } else {
+                uncached.push(addr);
+            }
+        }
+        tracing::info!(
+            "Token cache: {}/{} tokens cached, {} need RPC resolution",
+            cached.len(),
+            token_vec.len(),
+            uncached.len()
+        );
+        (cached, uncached)
+    } else {
+        (HashMap::new(), token_vec.clone())
+    };
+
+    let symbol_tasks: Vec<_> = uncached_tokens
+        .iter()
+        .map(|addr| {
+            let rpc = rpc.clone();
+            let addr = *addr;
+            let sel = symbol_selector.clone();
+            async move {
+                let sym = rpc
+                    .call_latest(addr, sel)
+                    .await
+                    .ok()
+                    .and_then(|b| decode_abi_string(&b));
+                (addr, sym)
+            }
+        })
+        .collect();
+
+    let rpc_concurrency = config.rpc_concurrency;
+    use futures::stream::{self, StreamExt};
+
+    let rpc_resolved: HashMap<Address, String> = if symbol_tasks.is_empty() {
+        HashMap::new()
+    } else {
+        stream::iter(symbol_tasks)
+            .buffer_unordered(rpc_concurrency)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|(addr, sym)| sym.map(|s| (addr, s)))
+            .collect()
+    };
+
+    let mut symbol_results: HashMap<Address, String> = cached_symbols;
+    let rpc_resolved_count = rpc_resolved.len();
+    for (addr, sym) in rpc_resolved {
+        symbol_results.insert(addr, sym);
+    }
+
+    let cached_count = symbol_results.len() - rpc_resolved_count;
+    tracing::info!(
+        "Resolved symbols for {}/{} tokens ({} cached, {} from RPC)",
+        symbol_results.len(),
+        token_vec.len(),
+        cached_count,
+        rpc_resolved_count
+    );
+
+    symbol_results
+}
+
+/// Merge factory-discovered pools and metadata fetch results into the final output list.
+fn build_discovery_output(
+    config: &DiscoveryConfig<'_>,
+    pool_hits: &PoolHits,
+    mut factory_pools: HashMap<Address, DiscoveredPool>,
+    results: Vec<metadata::PoolMetadataFetch>,
+    symbol_results: HashMap<Address, String>,
+) -> Vec<DiscoveredPool> {
+    let mut resolved_addrs: HashSet<Address> = HashSet::new();
+    let mut discovered_pools = Vec::new();
+
+    for r in &results {
+        if r.dex_type != DexType::Fluid {
+            continue;
+        }
+        if let Some(fp) = factory_pools.get_mut(&r.addr) {
+            if let (Some(t0), Some(t1)) = (r.token0, r.token1) {
+                if fp.token0.is_zero() && fp.token1.is_zero() {
+                    fp.token0 = t0;
+                    fp.token1 = t1;
+                }
+            }
+        }
+    }
+
+    for (_, mut dp) in factory_pools.drain() {
+        if dp.dex_name.is_none() {
+            dp.dex_name = Some(resolve_dex_name(dp.factory, &dp.dex_type.to_string()));
+        }
+        dp.token0_symbol = symbol_results.get(&dp.token0).cloned();
+        dp.token1_symbol = symbol_results.get(&dp.token1).cloned();
+        resolved_addrs.insert(dp.address);
+        discovered_pools.push(dp);
+    }
+
+    let mut degraded_count = 0u32;
+    for r in results {
+        if !resolved_addrs.insert(r.addr) {
+            continue;
+        }
+        let addr = r.addr;
+        let dex_type = r.dex_type;
+        let fee_opt = r.fee;
+        let tick_spacing = r.tick_spacing;
+        let first_seen_block = r.first_seen_block;
+        let requires_tokens = matches!(
+            dex_type,
+            DexType::UniswapV2
+                | DexType::Solidly
+                | DexType::Camelot
+                | DexType::Fluid
+                | DexType::TraderJoeLB
+                | DexType::UniswapV3
+                | DexType::UniswapV4
+                | DexType::PancakeInfinity
+        );
+        if requires_tokens && (r.token0.is_none() || r.token1.is_none()) {
+            degraded_count += 1;
+        }
+        let token0 = r.token0.unwrap_or(Address::ZERO);
+        let token1 = r.token1.unwrap_or(Address::ZERO);
+        let fee = metadata::default_fee(dex_type, fee_opt, config.v2_fee_override);
+        let pool_id = pool_hits.get(&addr).and_then(|hit| hit.pool_id);
+        let creation_block = pool_hits
+            .get(&addr)
+            .map(|hit| hit.first_seen_block)
+            .unwrap_or(first_seen_block);
+        let underlying_tokens = factory_pools
+            .get(&addr)
+            .and_then(|fp| fp.underlying_tokens.clone());
+
+        discovered_pools.push(
+            DiscoveredPool::new(addr, token0, token1, fee, dex_type, creation_block)
+                .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
+                .with_pool_id(pool_id)
+                .with_underlying_tokens(underlying_tokens)
+                .with_dex_name(Some(resolve_dex_name(None, &dex_type.to_string())))
+                .with_token0_symbol(symbol_results.get(&token0).cloned())
+                .with_token1_symbol(symbol_results.get(&token1).cloned()),
+        );
+    }
+
+    tracing::info!(
+        "Discovery complete: resolved {} pools",
+        discovered_pools.len(),
+    );
+    if degraded_count > 0 {
+        tracing::warn!(
+            "Discovery: {degraded_count} pool(s) had RPC metadata failures — token/fee fields fall back to defaults"
+        );
+    }
+
+    discovered_pools
+}
+
 /// Discovery logic for a single block-range shard (pinned to one provider).
 async fn discover_pools_shard(
     rpc: &RpcClient,
@@ -948,6 +1317,7 @@ async fn discover_pools_shard(
 
     // Pre-build the DEX activity topic list.
     //
+
     // Single unified filter across all pool-level event types. Previously this
     // was split into a "fast" V2/V3-only path with Curve/Balancer topics only
     // queried on failure — which meant Curve/Balancer/LB/Pendle *activity*
@@ -1085,355 +1455,14 @@ async fn discover_pools_shard(
         active_blocks.len(),
     );
 
-    // ── Phase 1.5: Resolve Balancer pool_id for event-discovered pools ──
-    // Balancer pools found via Swap events may have pool_id: None if the event
-    // topics were truncated. Call Vault.getPool(address) to resolve missing pool_ids.
-    if let Some(vault) = config.balancer_vault {
-        let balancer_to_resolve: Vec<Address> = pool_hits
-            .iter()
-            .filter(|(_, hit)| hit.dex_type == DexType::Balancer && hit.pool_id.is_none())
-            .map(|(addr, _)| *addr)
-            .collect();
+    resolve_balancer_pool_ids(rpc, config, &mut pool_hits, &mut factory_pools).await;
+    resolve_curve_underlying(rpc, config, &mut factory_pools).await;
 
-        if !balancer_to_resolve.is_empty() {
-            tracing::info!(
-                "Resolving pool_id for {} Balancer pools discovered via events...",
-                balancer_to_resolve.len()
-            );
-            let resolved =
-                balancer::resolve_pool_ids(rpc, vault, balancer_to_resolve, config.rpc_concurrency)
-                    .await;
-
-            let mut resolved_count = 0u32;
-            for (addr, pool_id, tokens) in resolved {
-                if let Some(entry) = pool_hits.get_mut(&addr) {
-                    entry.pool_id = Some(pool_id);
-                    resolved_count += 1;
-                }
-                if let Some(fp) = factory_pools.get_mut(&addr) {
-                    fp.pool_id = Some(pool_id);
-                    if tokens.is_some() {
-                        fp.underlying_tokens = tokens;
-                    }
-                }
-            }
-            if resolved_count > 0 {
-                tracing::info!("Resolved pool_id for {} Balancer pools", resolved_count);
-            }
-        }
-    }
-
-    // ── Phase 1.6: Resolve Curve underlying tokens ──
-    // For Curve pools discovered via registry, fetch the full token list via coins(i).
-    let curve_pools: Vec<Address> = factory_pools
-        .iter()
-        .filter(|(_, fp)| fp.dex_type == DexType::Curve && fp.underlying_tokens.is_none())
-        .map(|(addr, _)| *addr)
-        .collect();
-
-    if !curve_pools.is_empty() {
-        tracing::info!(
-            "Resolving underlying tokens for {} Curve pools...",
-            curve_pools.len()
-        );
-        let resolved =
-            curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
-
-        let mut resolved_count = 0u32;
-        for (addr, tokens) in resolved {
-            if let Some(fp) = factory_pools.get_mut(&addr) {
-                fp.underlying_tokens = Some(tokens);
-                resolved_count += 1;
-            }
-        }
-        if resolved_count > 0 {
-            tracing::info!(
-                "Resolved underlying tokens for {} Curve pools",
-                resolved_count
-            );
-        }
-    }
-
-    // ── Phase 2: Fetch pool metadata for DEX-discovered pools ──
-    // All metadata (token0, token1, fee, tickSpacing) is immutable, so we use
-    // call_latest() to avoid "historical state not available" errors from
-    // providers without full archive support. The per-DEX call layout lives in
-    // discovery/metadata.rs.
-    let mut fetch_tasks: Vec<metadata::FetchTask> = Vec::new();
-    let mut cache_hits: usize = 0;
-    let mut unmatched_v4_hits: usize = 0;
-
-    // Collect pool_hits data to avoid borrowing pool_hits across async boundaries
-    let pool_hits_vec: Vec<(Address, PoolHit)> =
-        pool_hits.iter().map(|(addr, hit)| (*addr, *hit)).collect();
-
-    for (addr, hit) in &pool_hits_vec {
-        // Skip pools already fully resolved via factory events
-        if let Some(fp) = factory_pools.get(addr) {
-            match fp.dex_type {
-                DexType::UniswapV2
-                | DexType::UniswapV3
-                | DexType::UniswapV4
-                | DexType::PancakeInfinity
-                | DexType::TraderJoeLB
-                | DexType::Pendle
-                | DexType::Metric => continue,
-                _ => {}
-            }
-        }
-        // Skip pools already known from a previous discovery run (SQLite cache)
-        if let Some(cached) = config
-            .pool_cache
-            .and_then(|c| c.get_discovered_pool(addr).ok().flatten())
-        {
-            if cached.token0 != Address::ZERO && cached.token1 != Address::ZERO {
-                let dp = DiscoveredPool::new(
-                    cached.address,
-                    cached.token0,
-                    cached.token1,
-                    cached.fee,
-                    cached.dex_type,
-                    cached.creation_block,
-                )
-                .with_tick_spacing(cached.tick_spacing.map(|ts| ts as i32))
-                .with_pool_id(cached.pool_id)
-                .with_factory(cached.factory)
-                .with_is_stable(cached.is_stable)
-                .with_balancer_pool_type(cached.balancer_pool_type)
-                .with_hook_address(cached.hook_address)
-                .with_bin_step(cached.bin_step)
-                .with_maturity_timestamp(cached.maturity_timestamp)
-                .with_underlying_tokens(cached.underlying_tokens)
-                .with_dex_name(cached.dex_name.as_deref().map(String::from))
-                .with_token0_symbol(cached.token0_symbol.as_deref().map(String::from))
-                .with_token1_symbol(cached.token1_symbol.as_deref().map(String::from));
-                factory_pools.entry(*addr).or_insert(dp);
-                cache_hits += 1;
-                continue;
-            }
-        }
-        let factory_tokens = factory_pools.get(addr).map(|fp| (fp.token0, fp.token1));
-        match metadata::fetch_pool_metadata(
-            rpc,
-            *addr,
-            hit.dex_type,
-            hit.tokens,
-            hit.first_seen_block,
-            factory_tokens,
-        ) {
-            Some(task) => fetch_tasks.push(task),
-            None => unmatched_v4_hits += 1,
-        }
-    }
-
-    let rpc_tasks = fetch_tasks.len();
-    if cache_hits > 0 {
-        tracing::info!(
-            "Pool cache: {} of {} pools served from cache ({} RPC tasks remaining)",
-            cache_hits,
-            pool_hits_vec.len(),
-            rpc_tasks,
-        );
-    }
-    if unmatched_v4_hits > 0 {
-        // V4 activity whose Initialize event predates the scan window and that
-        // is absent from the SQLite cache — no metadata source, skipped.
-        tracing::info!(
-            "V4 activity: {unmatched_v4_hits} poolId hit(s) without Initialize/cache match — skipped (no RPC spent)"
-        );
-    }
-
-    // Bounded concurrency: limit parallel RPC calls to avoid overwhelming public RPCs
-    let rpc_concurrency = config.rpc_concurrency;
-
-    use futures::stream::{self, StreamExt};
-
-    let results: Vec<_> = stream::iter(fetch_tasks)
-        .buffer_unordered(rpc_concurrency)
-        .collect::<Vec<_>>()
-        .await;
-
-    // ── Phase 2.5: Resolve token symbols via ERC-20 symbol() ──
-    // Collect all unique token addresses from factory_pools and results
-    let symbol_selector = SYMBOL.clone(); // ERC-20 symbol()
-    let mut token_addrs: HashSet<Address> = HashSet::new();
-    for fp in factory_pools.values() {
-        token_addrs.insert(fp.token0);
-        token_addrs.insert(fp.token1);
-    }
-    for r in &results {
-        if let Some(t) = r.token0 {
-            token_addrs.insert(t);
-        }
-        if let Some(t) = r.token1 {
-            token_addrs.insert(t);
-        }
-    }
-    token_addrs.remove(&Address::ZERO);
-
-    let token_vec: Vec<Address> = token_addrs.into_iter().collect();
-
-    // Split into cached vs uncached tokens
-    let (cached_symbols, uncached_tokens) = if let Some(cache) = config.token_cache {
-        let mut cached = HashMap::new();
-        let mut uncached = Vec::new();
-        for &addr in &token_vec {
-            if let Some(sym) = cache.get(&addr) {
-                cached.insert(addr, sym.to_string());
-            } else {
-                uncached.push(addr);
-            }
-        }
-        tracing::info!(
-            "Token cache: {}/{} tokens cached, {} need RPC resolution",
-            cached.len(),
-            token_vec.len(),
-            uncached.len()
-        );
-        (cached, uncached)
-    } else {
-        (HashMap::new(), token_vec.clone())
-    };
-
-    // Only call symbol() for uncached tokens
-    let symbol_tasks: Vec<_> = uncached_tokens
-        .iter()
-        .map(|addr| {
-            let rpc = rpc.clone();
-            let addr = *addr;
-            let sel = symbol_selector.clone();
-            async move {
-                let sym = rpc
-                    .call_latest(addr, sel)
-                    .await
-                    .ok()
-                    .and_then(|b| decode_abi_string(&b));
-                (addr, sym)
-            }
-        })
-        .collect();
-
-    let rpc_resolved: HashMap<Address, String> = if symbol_tasks.is_empty() {
-        HashMap::new()
-    } else {
-        stream::iter(symbol_tasks)
-            .buffer_unordered(rpc_concurrency)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(|(addr, sym)| sym.map(|s| (addr, s)))
-            .collect()
-    };
-
-    // Merge cached + RPC-resolved into final symbol_results
-    let mut symbol_results: HashMap<Address, String> = cached_symbols;
-    let rpc_resolved_count = rpc_resolved.len();
-    for (addr, sym) in rpc_resolved {
-        symbol_results.insert(addr, sym);
-    }
-
-    let cached_count = symbol_results.len() - rpc_resolved_count;
-    tracing::info!(
-        "Resolved symbols for {}/{} tokens ({} cached, {} from RPC)",
-        symbol_results.len(),
-        token_vec.len(),
-        cached_count,
-        rpc_resolved_count
-    );
-
-    // ── Phase 3: Build output ──
-    // Use a HashSet for O(1) dedup instead of O(n²) linear scan
-    let mut resolved_addrs: HashSet<Address> = HashSet::new();
-    let mut discovered_pools = Vec::new();
-
-    // Fluid DEX factory entries carry no tokens (LogDexDeployed exposes only
-    // the pool address) — patch them from the token0()/token1() fetch results
-    // before the factory drain below.
-    for r in &results {
-        if r.dex_type != DexType::Fluid {
-            continue;
-        }
-        if let Some(fp) = factory_pools.get_mut(&r.addr) {
-            if let (Some(t0), Some(t1)) = (r.token0, r.token1) {
-                if fp.token0.is_zero() && fp.token1.is_zero() {
-                    fp.token0 = t0;
-                    fp.token1 = t1;
-                }
-            }
-        }
-    }
-
-    // First, add all factory-discovered pools (they have creation_block, factory, etc.)
-    for (_, mut dp) in factory_pools.drain() {
-        if dp.dex_name.is_none() {
-            dp.dex_name = Some(resolve_dex_name(dp.factory, &dp.dex_type.to_string()));
-        }
-        dp.token0_symbol = symbol_results.get(&dp.token0).cloned();
-        dp.token1_symbol = symbol_results.get(&dp.token1).cloned();
-        resolved_addrs.insert(dp.address);
-        discovered_pools.push(dp);
-    }
-
-    // Then, add metadata-fetched pools not already resolved
-    let mut degraded_count = 0u32;
-    for r in results {
-        if !resolved_addrs.insert(r.addr) {
-            continue;
-        }
-        let addr = r.addr;
-        let dex_type = r.dex_type;
-        let fee_opt = r.fee;
-        let tick_spacing = r.tick_spacing;
-        let first_seen_block = r.first_seen_block;
-        // Count DEXes that require token metadata but failed to resolve.
-        // V2/Solidly/Camelot/Fluid/TraderJoeLB/V3/V4 always expect two tokens;
-        // a zero/None pair means the RPC call failed or returned a short response.
-        let requires_tokens = matches!(
-            dex_type,
-            DexType::UniswapV2
-                | DexType::Solidly
-                | DexType::Camelot
-                | DexType::Fluid
-                | DexType::TraderJoeLB
-                | DexType::UniswapV3
-                | DexType::UniswapV4
-                | DexType::PancakeInfinity
-        );
-        if requires_tokens && (r.token0.is_none() || r.token1.is_none()) {
-            degraded_count += 1;
-        }
-        let token0 = r.token0.unwrap_or(Address::ZERO);
-        let token1 = r.token1.unwrap_or(Address::ZERO);
-        let fee = metadata::default_fee(dex_type, fee_opt, config.v2_fee_override);
-        let pool_id = pool_hits.get(&addr).and_then(|hit| hit.pool_id);
-        let creation_block = pool_hits
-            .get(&addr)
-            .map(|hit| hit.first_seen_block)
-            .unwrap_or(first_seen_block);
-        let underlying_tokens = factory_pools
-            .get(&addr)
-            .and_then(|fp| fp.underlying_tokens.clone());
-
-        discovered_pools.push(
-            DiscoveredPool::new(addr, token0, token1, fee, dex_type, creation_block)
-                .with_tick_spacing(tick_spacing.map(|ts| ts as i32))
-                .with_pool_id(pool_id)
-                .with_underlying_tokens(underlying_tokens)
-                .with_dex_name(Some(resolve_dex_name(None, &dex_type.to_string())))
-                .with_token0_symbol(symbol_results.get(&token0).cloned())
-                .with_token1_symbol(symbol_results.get(&token1).cloned()),
-        );
-    }
-
-    tracing::info!(
-        "Discovery complete: resolved {} pools",
-        discovered_pools.len(),
-    );
-    if degraded_count > 0 {
-        tracing::warn!(
-            "Discovery: {degraded_count} pool(s) had RPC metadata failures — token/fee fields fall back to defaults"
-        );
-    }
+    let results = fetch_dex_metadata(rpc, config, &pool_hits, &mut factory_pools).await;
+    let symbol_results =
+        resolve_token_symbols(rpc, config, &factory_pools, &results).await;
+    let discovered_pools =
+        build_discovery_output(config, &pool_hits, factory_pools, results, symbol_results);
 
     Ok((discovered_pools, active_blocks))
 }
@@ -1681,7 +1710,7 @@ mod tests {
         // Synthetic key = last 20 bytes of poolId (consistent with v4.rs)
         assert_eq!(
             hit.addr_override,
-            Some(Address::from_slice(&pool_id[12..32]))
+            crate::utils::abi_decode_address(pool_id.as_slice(), 0)
         );
     }
 
@@ -1722,12 +1751,12 @@ mod tests {
         assert!(hit.tokens.is_none());
         assert_eq!(
             hit.addr_override,
-            Some(Address::from_slice(&pool_id[12..32]))
+            crate::utils::abi_decode_address(pool_id.as_slice(), 0)
         );
     }
 
-    /// Trader Joe LBPair metadata getters are `tokenX()`/`tokenY()`; calling
-    /// the standard `token0()`/`token1()` selectors on an LBPair reverts and
+    /// Trader Joe LBPair metadata getters are `tokenX`/`tokenY`; calling
+    /// the standard `token0`/`token1` selectors on an LBPair reverts and
     /// would leave every activity-discovered LB pool without tokens.
     #[test]
     fn trader_joe_metadata_selectors_match_lbpair_abi() {

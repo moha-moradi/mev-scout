@@ -1,5 +1,4 @@
 //! Shared RPC client setup for job orchestration.
-
 use crate::config::{Config, ProviderConfig};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;

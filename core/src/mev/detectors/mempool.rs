@@ -23,7 +23,7 @@ pub struct PendingBlockCapture {
 /// the pending block is unavailable (some nodes disable this).
 ///
 /// The returned txs can be used for informational display or merged with
-/// settled transactions for extended MEV detection (Phase 2+).
+/// settled transactions for extended MEV detection.
 pub async fn capture_pending_block(rpc: &RpcClient) -> Option<PendingBlockCapture> {
     let (block_data, txs) = match rpc.get_pending_block().await {
         Ok(v) => v,

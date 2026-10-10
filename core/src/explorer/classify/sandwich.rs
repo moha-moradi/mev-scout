@@ -95,7 +95,7 @@ pub(super) fn fold_sandwich(
     // Profit = back-run output − front-run input, netted in the profit token
     // (the token both legs trade against).
     let profit = back.amount_out.saturating_sub(front.amount_in);
-    // Sum gas across the front-run and back-run txs (Phase 1.4).
+    // Sum gas across the front-run and back-run txs.
     let mut gas_cost_wei = U256::ZERO;
     let mut seen = std::collections::HashSet::new();
     let mut front_to: Option<Address> = None;

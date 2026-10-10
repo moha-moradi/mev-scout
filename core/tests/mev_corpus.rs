@@ -141,6 +141,7 @@
 //!
 //! The RPC must serve *state* at the window (drpc / mevblocker do; plain
 //! publicnode does not), or pool hydration fails and the window records zeros.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 use common::rpc_url;
 

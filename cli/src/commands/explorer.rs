@@ -1,5 +1,4 @@
 //! `mev-scout explorer` subcommands: index, show, report, backfill.
-
 use comfy_table::Table;
 
 use mev_scout_core::config::validation;

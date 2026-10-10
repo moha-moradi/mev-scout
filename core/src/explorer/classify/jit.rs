@@ -7,9 +7,24 @@ use crate::explorer::types::{Confidence, JitFact, MevEvent, MevKind, PnlBasis, S
 
 use super::BlockInput;
 
+/// Position fields for [`build_jit_event`].
+pub(super) struct JitEventPosition {
+    pool: Address,
+    owner: Address,
+    tick_lower: i32,
+    tick_upper: i32,
+    mint_tx: u64,
+    liquidity: u128,
+    amount0: U256,
+    amount1: U256,
+    burn_tx: u64,
+    opened_block: u64,
+    bin_amm: bool,
+}
+
 /// JIT pairing: same pool, same owner, same tick range, Mint before Burn.
 ///
-/// Phase 1.5: pairs an in-block Mint+Burn *or* a prior-block open position
+/// pairs an in-block Mint+Burn *or* a prior-block open position
 /// (loaded from `jit_open_positions`) with an in-block exact-liquidity Burn.
 /// A candidate is only emitted when the block contains an in-window swap in
 /// that pool whose tick lies inside the range (tick-overlap validation).
@@ -47,17 +62,19 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
         if let Some((burn_tx, _)) = burn {
             if let Some(ev) = build_jit_event(
                 input,
-                mint.pool,
-                mint.owner,
-                mint.tick_lower,
-                mint.tick_upper,
-                mint.tx_index,
-                mint.liquidity,
-                mint.amount0,
-                mint.amount1,
-                *burn_tx,
-                input.block,
-                mint.bin_amm,
+                JitEventPosition {
+                    pool: mint.pool,
+                    owner: mint.owner,
+                    tick_lower: mint.tick_lower,
+                    tick_upper: mint.tick_upper,
+                    mint_tx: mint.tx_index,
+                    liquidity: mint.liquidity,
+                    amount0: mint.amount0,
+                    amount1: mint.amount1,
+                    burn_tx: *burn_tx,
+                    opened_block: input.block,
+                    bin_amm: mint.bin_amm,
+                },
             ) {
                 out.push(ev);
             }
@@ -77,17 +94,19 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
             // Anchor to the burn tx when the opening tx is not in this block.
             if let Some(ev) = build_jit_event(
                 input,
-                pos.pool,
-                pos.owner,
-                pos.tick_lower,
-                pos.tick_upper,
-                *burn_tx,
-                pos.liquidity,
-                U256::ZERO,
-                U256::ZERO,
-                *burn_tx,
-                pos.opened_block,
-                b.bin_amm,
+                JitEventPosition {
+                    pool: pos.pool,
+                    owner: pos.owner,
+                    tick_lower: pos.tick_lower,
+                    tick_upper: pos.tick_upper,
+                    mint_tx: *burn_tx,
+                    liquidity: pos.liquidity,
+                    amount0: U256::ZERO,
+                    amount1: U256::ZERO,
+                    burn_tx: *burn_tx,
+                    opened_block: pos.opened_block,
+                    bin_amm: b.bin_amm,
+                },
             ) {
                 out.push(ev);
             }
@@ -98,21 +117,20 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
 }
 
 /// Build one JIT event, or `None` when no in-window swap validates the range.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_jit_event(
-    input: &BlockInput,
-    pool: Address,
-    owner: Address,
-    tick_lower: i32,
-    tick_upper: i32,
-    mint_tx: u64,
-    liquidity: u128,
-    amount0: U256,
-    amount1: U256,
-    burn_tx: u64,
-    opened_block: u64,
-    bin_amm: bool,
-) -> Option<MevEvent> {
+pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Option<MevEvent> {
+    let JitEventPosition {
+        pool,
+        owner,
+        tick_lower,
+        tick_upper,
+        mint_tx,
+        liquidity,
+        amount0,
+        amount1,
+        burn_tx,
+        opened_block,
+        bin_amm,
+    } = pos;
     // V3: require an in-range tick. LB: any same-pool swap (Swap has no tick).
     let in_range = |s: &SwapFact| {
         if s.pool != pool {

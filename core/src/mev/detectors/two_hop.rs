@@ -1,5 +1,4 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
-
 use super::arb_common;
 use super::DetectCtx;
 use alloy::primitives::Address;
@@ -30,7 +29,7 @@ const MAX_INVERTED_BREAKPOINTS: usize = 12;
 /// engine for V3 pools. Maintains a per-block dedup set so the same persistent
 /// arb gap is not re-reported across multiple transactions in the same block.
 /// If pool reserves change by >0.1% within the same block, the dedup is cleared
-/// for that pair so the changed opportunity can be re-detected (H2).
+/// for that pair so the changed opportunity can be re-detected.
 #[derive(Debug)]
 pub struct TwoHopArbDetector {
     block_number: u64,
@@ -51,7 +50,7 @@ impl TwoHopArbDetector {
     /// Check all arbitrage pool-pair directions and emit profitable two-hop opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once per block *unless* pool reserves change by >0.1%, in which case the
-    /// dedup is cleared and the opportunity is re-evaluated (H2).
+    /// dedup is cleared and the opportunity is re-evaluated.
     ///
     /// `scope` restricts the scan: pass [`ScanScope::Full`] for the first detection
     /// pass of a block, then [`ScanScope::Dirty`] with the set of pools touched by
@@ -238,7 +237,7 @@ pub fn quote_path(
 }
 
 /// Compute profit at ±1%/±2% slippage levels around the optimal input,
-/// normalized to native with the same C5 datapoint semantics as the profit
+/// normalized to native with the same datapoint semantics as the profit
 /// itself (a slippage probe that cannot be priced is an absent datapoint).
 fn compute_slippage_profits(
     pm: &PoolManager,
@@ -280,7 +279,7 @@ fn two_hop_profit_at(
 /// For multi-token pools (Curve 3pool, Balancer weighted pools with 3+ tokens),
 /// evaluates all candidate non-shared token pairs and picks the most profitable
 /// one using a quick test estimate. Falls back to deterministic address-order
-/// selection if all candidates are unprofitable (C3 fix).
+/// selection if all candidates are unprofitable ( fix).
 fn arb_tokens(
     pool_a: &PoolState,
     pool_b: &PoolState,
@@ -347,7 +346,7 @@ fn arb_tokens(
         return None;
     }
 
-    // Evaluate each candidate pair and pick the most profitable (C3)
+    // Evaluate each candidate pair and pick the most profitable
     let mut best: Option<(Address, Address)> = None;
     let mut best_profit: u128 = 0;
 
@@ -372,7 +371,7 @@ fn arb_tokens(
 
 /// Quick profit estimate for a candidate (token_in, token_out) pair, using a
 /// small test input (0.1% of pool A's reserve for token_in). Used by `arb_tokens`
-/// to select the most profitable pair in multi-token pools (C3).
+/// to select the most profitable pair in multi-token pools.
 fn estimate_arb_pair_profit(
     pool_a: &PoolState,
     pool_b: &PoolState,
@@ -436,7 +435,7 @@ fn compose_path_breakpoints(
 }
 
 /// Estimate the gas limit for a two-hop arbitrage opportunity based on the
-/// actual pool types involved and the swap direction (H7).
+/// actual pool types involved and the swap direction.
 ///
 /// For V3 pools, uses direction-aware tick crossing estimation. For V2/Curve/Balancer,
 /// uses per-type empirical benchmarks. Includes base overhead and calldata cost.
@@ -462,7 +461,7 @@ fn estimate_gas_for_two_hop(
 
     let analytic = base_overhead + calldata + a_gas + b_gas + flash_loan_gas;
 
-    // #7: dominant DEX type buckets the observation; hop count is always 2 here.
+    // dominant DEX type buckets the observation; hop count is always 2 here.
     let mut dex_counts: std::collections::HashMap<crate::dex_type::DexType, usize> =
         std::collections::HashMap::new();
     *dex_counts.entry(pool_a.info().dex_type).or_default() += 1;
@@ -573,7 +572,7 @@ mod tests {
             );
         }
 
-        // Move pool A reserves by >0.1% so H2 clears the dedup gate.
+        // Move pool A reserves by >0.1% so clears the dedup gate.
         if let Some(PoolState::UniswapV2(s)) = pm.get_mut(&pa) {
             s.reserve0 = 1_500_000;
             s.reserve1 = 1_500_000;

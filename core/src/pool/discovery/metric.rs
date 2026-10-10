@@ -1,9 +1,9 @@
 use super::scan_factory_creation_events_pinned;
+use crate::utils::{abi_word_address, topic_address};
 use super::METRIC_POOL_CREATED_TOPIC;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use alloy::primitives::Address;
 
 /// Metric V2 activity: per-pool contracts emit Swap from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
@@ -42,9 +42,9 @@ pub(crate) async fn scan_metric_batch(ctx: &ScanContext<'_>) -> ScanBatchResult 
                 if log_data.data.len() < 64 || topics.len() < 4 {
                     return None;
                 }
-                let pool_addr = Address::from_slice(&log_data.data[12..32]);
-                let token0 = Address::from_slice(&topics[1][12..]);
-                let token1 = Address::from_slice(&topics[2][12..]);
+                let pool_addr = abi_word_address(&log_data.data, 0);
+                let token0 = topic_address(topics[1]);
+                let token1 = topic_address(topics[2]);
                 let creation_block = log.block_number.unwrap_or(0);
                 Some((
                     pool_addr,

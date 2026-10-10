@@ -7,6 +7,7 @@
 //! Gated like the CLI E2E suite: requires `MEV_SCOUT_E2E=1` and `RPC_URL`
 //! (a Polygon endpoint). The suite skips gracefully when the gate is off.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use alloy::primitives::{Address, U256};
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::chain::timing::chain_timing;

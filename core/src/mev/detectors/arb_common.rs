@@ -2,11 +2,10 @@
 //! [`super::two_hop`] detector and the numeric [`super::multi_hop`] detector.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //!
-//! Unifies the duplicated opportunity builder, profit normalization (C5),
-//! slippage evaluation, dominant-DEX gas blend (H7), per-block dedup gate and
+//! Unifies the duplicated opportunity builder, profit normalization,
+//! slippage evaluation, dominant-DEX gas blend, per-block dedup gate and
 //! monotone-quote inversion — so a profit-normalization bug stays in one place
 //! instead of two.
-
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256, U512};
@@ -54,7 +53,7 @@ pub(super) fn slippage_profits(
 
 /// Normalize an arbitrage profit to wrapped native when `token_in != token_out`,
 /// falling back to `output_native - input_native` when direct normalization is
-/// unavailable (C5). A same-token cycle's profit is denominated in `token_in`,
+/// unavailable. A same-token cycle's profit is denominated in `token_in`,
 /// so it is converted to native too — identity for the native token itself,
 /// with an as-is fallback when no pricing path exists.
 pub(super) fn normalize_profit(
@@ -75,7 +74,7 @@ pub(super) fn normalize_profit(
     }
 }
 
-/// The same C5 normalization, but `None` instead of a raw-amount fallback when
+/// The same normalization, but `None` instead of a raw-amount fallback when
 /// neither direct nor double-hop native pricing is available. Slippage probes
 /// use this so an unpriceable point becomes an absent datapoint rather than a
 /// phantom same-token number — `ref_input` is the optimal input whose native
@@ -110,7 +109,7 @@ pub(super) fn is_fot_pair(pm: &PoolManager, token_in: Address, token_out: Addres
 
 /// Per-block dedup gate: returns `true` when the opportunity should be emitted.
 /// The same `(pool_a, pool_b, token_in, token_out)` key is emitted at most once
-/// per block unless pool reserves shift by >0.1% (H2), which clears the gate.
+/// per block unless pool reserves shift by >0.1%, which clears the gate.
 pub(super) fn dedup_arb(
     seen: &mut HashMap<(Address, Address, Address, Address), (u128, u128)>,
     pm: &PoolManager,
@@ -130,7 +129,7 @@ pub(super) fn dominant_dex_type(counts: &HashMap<DexType, usize>) -> DexType {
 }
 
 /// Blend a structural gas estimate with the calibrated observation for the
-/// dominant DEX shape when enough samples are available (H7).
+/// dominant DEX shape when enough samples are available.
 pub(super) fn blend_gas_limit(
     calibration: &GasCalibrationSnapshot,
     dex_counts: &HashMap<DexType, usize>,

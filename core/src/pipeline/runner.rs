@@ -1,10 +1,9 @@
 //! Backtest orchestration — replays blocks through revm and runs all MEV detection strategies.
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::cache::SqliteStore;
-use crate::data::ExecutedLog;
+use crate::data::{ExecutedLog, ExecutedTx, TxData};
 use crate::dex_type::DexType;
 use crate::error;
 use crate::mev::detectors::BackrunDetector;
@@ -12,7 +11,7 @@ use crate::mev::detectors::DetectCtx;
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
-use crate::mev::detectors::{detect_pending_opportunities, mempool};
+use crate::mev::detectors::{detect_pending_opportunities, mempool, DetectionPath};
 use crate::pipeline::{BlockMode, BlockReplayStats, GasPriceDistribution};
 use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2PoolState};
 use crate::replay::BlockReplayer;
@@ -46,6 +45,193 @@ struct PersistenceKey {
 struct PersistInfo {
     last_block: u64,
     blocks_seen: u32,
+}
+
+struct DetectTxArgs<'a> {
+    block_num: u64,
+    tx_index: usize,
+    tx: &'a ExecutedTx,
+    all_txs: &'a [TxData],
+    pm: &'a mut PoolManager,
+    dirty_pools: &'a RefCell<Option<std::collections::HashSet<Address>>>,
+    pool_addrs: &'a std::collections::HashSet<Address>,
+    timestamp: u64,
+    base_fee_per_gas: u128,
+    gas_config: GasConfig,
+    current_tx_from: Option<Address>,
+    gas_prices: &'a RefCell<Vec<u128>>,
+    gas_calibration: &'a RefCell<GasCalibration>,
+    all_opportunities: &'a mut Vec<MevOpportunity>,
+}
+
+/// Per-block MEV detectors (dedup state spans transactions in one block).
+struct BlockDetectors {
+    two_hop: TwoHopArbDetector,
+    multi_hop: MultiHopArbDetector,
+    jit: JitDetector,
+    backrun: BackrunDetector,
+}
+
+impl BlockDetectors {
+    fn new(block_num: u64, pool_manager: &PoolManager) -> Self {
+        let mut jit = JitDetector::new(block_num);
+        jit.seed_pool_tick_cache(pool_manager);
+        Self {
+            two_hop: TwoHopArbDetector::new(block_num),
+            multi_hop: MultiHopArbDetector::new(block_num),
+            jit,
+            backrun: BackrunDetector::new(block_num),
+        }
+    }
+
+    fn detect_tx(&mut self, args: DetectTxArgs<'_>) {
+        let DetectTxArgs {
+            block_num,
+            tx_index,
+            tx,
+            all_txs,
+            pm,
+            dirty_pools,
+            pool_addrs,
+            timestamp,
+            base_fee_per_gas,
+            gas_config,
+            current_tx_from,
+            gas_prices,
+            gas_calibration,
+            all_opportunities,
+        } = args;
+        // Snapshot dirty set (not a held `Ref`): `ScanScope::Dirty` borrows it for
+        // the whole detect block; folding newly-dirty pools below uses `borrow_mut`.
+        let dirty_snapshot = dirty_pools.borrow().clone();
+        let scope = match dirty_snapshot.as_ref() {
+            Some(set) => ScanScope::Dirty(set),
+            None => ScanScope::Full,
+        };
+        let ctx = DetectCtx::new(
+            pm,
+            tx_index,
+            timestamp,
+            base_fee_per_gas,
+            gas_config,
+            &scope,
+        );
+        let opps = self.two_hop.detect(ctx);
+        if !opps.is_empty() {
+            tracing::info!(
+                "Block {} tx {}: {} arb opportunities",
+                block_num,
+                tx_index,
+                opps.len()
+            );
+        }
+        all_opportunities.extend(opps);
+
+        let multi_opps = self.multi_hop.detect(ctx);
+        if !multi_opps.is_empty() {
+            tracing::info!(
+                "Block {} tx {}: {} multi-hop arb opportunities",
+                block_num,
+                tx_index,
+                multi_opps.len()
+            );
+        }
+        all_opportunities.extend(multi_opps);
+
+        self.jit.process_tx(tx_index, &tx.logs, current_tx_from, pm);
+        let jit_opps = self.jit.detect(ctx);
+        if !jit_opps.is_empty() {
+            tracing::info!(
+                "Block {} tx {}: {} JIT opportunities",
+                block_num,
+                tx_index,
+                jit_opps.len()
+            );
+        }
+        all_opportunities.extend(jit_opps);
+
+        gas_prices.borrow_mut().push(tx.gas_effective);
+
+        if tx.status {
+            record_gas_observation(
+                pm,
+                pool_addrs,
+                &tx.logs,
+                tx.gas_used,
+                &mut gas_calibration.borrow_mut(),
+            );
+        }
+
+        let will_touch: std::collections::HashSet<_> = tx
+            .logs
+            .iter()
+            .map(|l| l.address)
+            .filter(|a| pool_addrs.contains(a))
+            .collect();
+        if !will_touch.is_empty() {
+            let scope_pre = ScanScope::Dirty(&will_touch);
+            let ctx_pre = DetectCtx::new(
+                pm,
+                tx_index,
+                timestamp,
+                base_fee_per_gas,
+                gas_config,
+                &scope_pre,
+            );
+            self.backrun.pre_detect(ctx_pre);
+        }
+
+        pm.learn_taxes_from_tx(&tx.logs);
+        pm.update_from_logs(&tx.logs);
+
+        let newly_dirty = pm.take_dirty_pools();
+        if !newly_dirty.is_empty() {
+            let scope_post = ScanScope::Dirty(&newly_dirty);
+            let ctx_post = DetectCtx::new(
+                pm,
+                tx_index,
+                timestamp,
+                base_fee_per_gas,
+                gas_config,
+                &scope_post,
+            );
+            let backrun_opps = self.backrun.post_detect(ctx_post, &tx.logs, all_txs);
+            if !backrun_opps.is_empty() {
+                all_opportunities.extend(backrun_opps);
+            }
+        }
+
+        if !newly_dirty.is_empty() {
+            dirty_pools
+                .borrow_mut()
+                .get_or_insert_with(Default::default)
+                .extend(newly_dirty);
+        }
+    }
+}
+
+/// Record observed gasUsed into calibration buckets by dex type and pools touched.
+fn record_gas_observation(
+    pm: &PoolManager,
+    pool_addrs: &std::collections::HashSet<Address>,
+    logs: &[ExecutedLog],
+    gas_used: u64,
+    calibration: &mut GasCalibration,
+) {
+    let mut per_dex: HashMap<DexType, std::collections::HashSet<Address>> = HashMap::new();
+    for log in logs {
+        if pool_addrs.contains(&log.address) {
+            if let Some(p) = pm.get(&log.address) {
+                per_dex
+                    .entry(p.info().dex_type)
+                    .or_default()
+                    .insert(log.address);
+            }
+        }
+    }
+    for (dex, pools) in per_dex {
+        calibration.record(dex, pools.len(), gas_used);
+    }
 }
 
 /// Orchestrates MEV backtest execution by replaying blocks through revm and
@@ -167,8 +353,8 @@ impl BacktestRunner {
 
     /// Gas/min-profit filters with optional rejection recording.
     /// Replaces bare `retain` calls so the scanner's negative space is
-    /// observable — a true coverage gap (M7) stays distinguishable from a
-    /// filtered candidate (M3/M4/M5).
+    /// observable — a true coverage gap stays distinguishable from a
+    /// filtered candidate.
     fn retain_with_rejections(&mut self, opps: &mut Vec<MevOpportunity>, block_num: u64) {
         let mut kept = Vec::with_capacity(opps.len());
         for opp in opps.drain(..) {
@@ -258,6 +444,180 @@ impl BacktestRunner {
             });
     }
 
+    fn finalize_block_opportunities(
+        &mut self,
+        opps: &mut Vec<MevOpportunity>,
+        txs: &[TxData],
+        block_num: u64,
+        path: DetectionPath,
+    ) {
+        crate::mev::detectors::backrun::suppress_superseded_arbs(opps);
+        self.retain_with_rejections(opps, block_num);
+
+        if self.max_candidates_per_tx > 0 && opps.len() > self.max_candidates_per_tx {
+            opps.sort_by_key(|o| std::cmp::Reverse(o.expected_profit));
+            let dropped = opps.split_off(self.max_candidates_per_tx);
+            self.record_rejections_batch(
+                &dropped,
+                block_num,
+                crate::explorer::RejectReason::MaxCandidates,
+                "per-tx top-N cap",
+            );
+        }
+
+        for opp in opps.iter_mut() {
+            if opp.strategy != Strategy::Backrun {
+                opp.canonical_id = Some(crate::types::compute_canonical_id(
+                    crate::types::CanonicalIdParts {
+                        strategy: opp.strategy,
+                        pool_a: opp.pool_a,
+                        pool_b: opp.pool_b,
+                        token_in: opp.token_in,
+                        token_out: opp.token_out,
+                    },
+                ));
+            }
+            opp.detection_path = Some(path);
+            if opp.sender.is_none() {
+                opp.sender = txs.get(opp.tx_index).map(|t| t.from);
+            }
+            if opp.tx_hash.is_none() {
+                opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
+            }
+        }
+
+        if self.persistence_scoring {
+            Self::update_persistence(&mut self.opp_persistence, opps, block_num);
+        }
+    }
+
+    fn gas_model_target_percentile(&self) -> Option<u8> {
+        match self.gas_config.gas_model.target_percentile() {
+            Some(p) => Some(p),
+            None if self.gas_config.gas_model == GasModel::HistoricalExact => Some(90),
+            None => None,
+        }
+    }
+
+    fn apply_percentile_gas_price(&mut self, gas_dist: &GasPriceDistribution) {
+        if let Some(p) = self.gas_model_target_percentile() {
+            self.gas_config.percentile_gas_price = gas_dist.percentile(p);
+        }
+    }
+
+    fn feed_gas_distribution(
+        &self,
+        gas_dist: &mut GasPriceDistribution,
+        block_num: u64,
+        block_prices: &[u128],
+    ) {
+        for price in block_prices {
+            gas_dist.add_tx_gas_price(*price);
+        }
+        match self.replayer.load_block_data(block_num) {
+            Ok((block, _)) => {
+                let base_fee = block.base_fee_per_gas.unwrap_or(0);
+                gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
+            }
+            Err(_) => {
+                gas_dist.record_block(0, 0, 30_000_000);
+            }
+        }
+        gas_dist.finalize_block();
+    }
+
+    fn hybrid_skip_uncached_block(&self, block_num: u64) -> bool {
+        match self.replayer.has_cached_block(block_num) {
+            Ok(false) => true,
+            Ok(true) => false,
+            Err(e) => {
+                tracing::warn!("cache probe failed for block {block_num}: {e}");
+                true
+            }
+        }
+    }
+
+    fn hybrid_commit_success(
+        opps: &mut Vec<MevOpportunity>,
+        stats: &mut Vec<BlockReplayStats>,
+        modes: &mut Vec<BlockMode>,
+        block_opps: Vec<MevOpportunity>,
+        block_stats: BlockReplayStats,
+        mode: BlockMode,
+    ) {
+        opps.extend(block_opps);
+        stats.push(block_stats);
+        modes.push(mode);
+    }
+
+    fn hybrid_try_full_replay_block(
+        &mut self,
+        block_num: u64,
+        gas_dist: &mut GasPriceDistribution,
+        full_replay_mode: BlockMode,
+    ) -> Option<(Vec<MevOpportunity>, BlockReplayStats, BlockMode)> {
+        match self.run_block(block_num) {
+            Ok((opps, stats, block_prices)) => {
+                self.pool_manager.end_undo();
+                tracing::info!(
+                    "Block {} done (full-replay): {} opportunities ({} txs)",
+                    block_num,
+                    opps.len(),
+                    block_prices.len(),
+                );
+                self.feed_gas_distribution(gas_dist, block_num, &block_prices);
+                Some((opps, stats, full_replay_mode))
+            }
+            Err(e) => {
+                self.pool_manager.undo();
+                tracing::warn!(
+                    "Block {} full-replay failed ({}), falling back to log-only: {:?}",
+                    block_num,
+                    block_num,
+                    e,
+                );
+                match self.sync_block_from_logs(block_num) {
+                    Ok((opps, stats, _)) => {
+                        self.pool_manager.end_undo();
+                        tracing::info!(
+                            "Block {} done (log-only fallback): {} opportunities",
+                            block_num,
+                            opps.len(),
+                        );
+                        Some((opps, stats, BlockMode::LogOnly))
+                    }
+                    Err(e2) => {
+                        self.pool_manager.undo();
+                        tracing::error!("Block {} log-only also failed: {:?}", block_num, e2);
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    fn hybrid_try_log_only_block(
+        &mut self,
+        block_num: u64,
+    ) -> Option<(Vec<MevOpportunity>, BlockReplayStats)> {
+        match self.sync_block_from_logs(block_num) {
+            Ok((opps, stats, _)) => {
+                self.pool_manager.end_undo();
+                tracing::info!(
+                    "Block {} done (log-only): {} opportunities",
+                    block_num,
+                    opps.len(),
+                );
+                Some((opps, stats))
+            }
+            Err(e) => {
+                self.pool_manager.undo();
+                tracing::error!("Block {} log-only failed: {:?}", block_num, e);
+                None
+            }
+        }
+    }
+
     /// Initialize the pool manager by loading pool definitions and fetching
     /// on-chain reserve state at a reference block.
     ///
@@ -266,7 +626,7 @@ impl BacktestRunner {
     /// skipped without an RPC call. Remaining pools are verified via
     /// concurrent `eth_getCode` checks to filter any that don't exist at the
     /// target block. Then fetches current reserves for each pool via
-    /// `eth_call getReserves()` (V2) or `slot0()/liquidity()` (V3).
+    /// `eth_call getReserves` (V2) or `slot0/liquidity` (V3).
     ///
     /// Pools that fail to initialize (e.g., the contract no longer exists at
     /// that block) are logged as warnings but do not halt execution.
@@ -345,7 +705,7 @@ impl BacktestRunner {
     ///
     /// # Pool state management
     /// After each transaction, Swap/Sync events are decoded and applied to
-    /// `PoolManager` via `update_from_logs()`. All detectors operate on the
+    /// `PoolManager` via `update_from_logs`. All detectors operate on the
     /// updated pool state, so opportunities are detected against the
     /// post-transaction reserves (not the pre-transaction state).
     ///
@@ -388,31 +748,25 @@ impl BacktestRunner {
             self.pool_manager.token_addresses().into_iter().collect();
 
         let mut all_opportunities = Vec::new();
-        // Create stateful detectors (H2: persistent per-block dedup across transactions)
-        let mut two_hop_detector = TwoHopArbDetector::new(block_num);
-        let mut multi_hop_detector = MultiHopArbDetector::new(block_num);
-        let mut backrun_detector = BackrunDetector::new(block_num);
-        // Seed JIT detector tick cache BEFORE taking pool_manager
-        let mut jit_detector = JitDetector::new(block_num);
-        jit_detector.seed_pool_tick_cache(&self.pool_manager);
+        let mut block_detectors = BlockDetectors::new(block_num, &self.pool_manager);
 
         // Take ownership of pool_manager so the closure can mutate it via RefCell
         let mut pool_manager = std::mem::take(&mut self.pool_manager);
-        // W4.8: record the pre-state of pools this block touches so a failure
-        // can be rolled back with `undo()` — replaces the per-block full clone.
+        // record the pre-state of pools this block touches so a failure
+        // can be rolled back with `undo` — replaces the per-block full clone.
         pool_manager.begin_undo();
         let pool_manager = RefCell::new(pool_manager);
 
         // Shared cell bridging TxData.from from filter closure to on_tx closure
         let current_tx_from: RefCell<Option<Address>> = RefCell::new(None);
         let dex_tx_count: RefCell<usize> = RefCell::new(0);
-        // Collect effective gas prices for gas price distribution (H10)
+        // Collect effective gas prices for gas price distribution
         let gas_prices: RefCell<Vec<u128>> = RefCell::new(Vec::new());
         // Dirty pools updated by earlier transactions of this block. The first
         // detection pass scans everything; subsequent passes only re-check
         // pairs containing a dirty pool (untouched states yield no new ops).
         let dirty_pools: RefCell<Option<std::collections::HashSet<Address>>> = RefCell::new(None);
-        // #7: refresh the detector-visible calibration snapshot and collect this
+        // refresh the detector-visible calibration snapshot and collect this
         // block's observations through a cell (the on_tx closure needs access).
         self.gas_config.calibration = self.gas_calibration.snapshot();
         let gas_calibration = RefCell::new(std::mem::take(&mut self.gas_calibration));
@@ -434,199 +788,41 @@ impl BacktestRunner {
             },
             |i, tx, _db| {
                 let mut pm = pool_manager.borrow_mut();
-
-                // Detect FIRST against pre-tx pool state, THEN apply log updates.
-                // C6: Running detection before update_from_logs means we see the
-                // opportunity that existed *before* the current tx consumed it,
-                // rather than only the residual post-tx leftovers.
-                // H2: Detectors maintain a per-block seen set so the same persistent
-                // arb gap is not re-reported across multiple transactions.
-                // Snapshot the dirty set instead of holding a `Ref` guard:
-                // `ScanScope::Dirty` borrows the set for the whole detection
-                // block, and the `borrow_mut` that folds this tx's newly-dirty
-                // pools in below would then panic ("RefCell already borrowed")
-                // on every tx after the first dirty one. The snapshot is a
-                // cheap `Option<HashSet>` clone, usually `None`.
-                let dirty_snapshot = dirty_pools.borrow().clone();
-                let scope = match dirty_snapshot.as_ref() {
-                    Some(set) => ScanScope::Dirty(set),
-                    None => ScanScope::Full,
-                };
-                let ctx =
-                    DetectCtx::new(&pm, i, timestamp, base_fee_per_gas, self.gas_config, &scope);
-                let opps = two_hop_detector.detect(ctx);
-                if !opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} arb opportunities",
-                        block_num,
-                        i,
-                        opps.len()
-                    );
-                }
-                all_opportunities.extend(opps);
-
-                let multi_opps = multi_hop_detector.detect(ctx);
-                if !multi_opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} multi-hop arb opportunities",
-                        block_num,
-                        i,
-                        multi_opps.len()
-                    );
-                }
-                all_opportunities.extend(multi_opps);
-
-                // JIT detector
                 let sender = *current_tx_from.borrow();
-                jit_detector.process_tx(i, &tx.logs, sender, &pm);
-                let jit_opps = jit_detector.detect(ctx);
-                if !jit_opps.is_empty() {
-                    tracing::info!(
-                        "Block {} tx {}: {} JIT opportunities",
-                        block_num,
-                        i,
-                        jit_opps.len()
-                    );
-                }
-                all_opportunities.extend(jit_opps);
-
-                // Collect effective gas price for H10 distribution modeling
-                gas_prices.borrow_mut().push(tx.gas_effective);
-
-                // #7: observe actual tx gas per (dex type, pools touched) bucket
-                if tx.status {
-                    let mut per_dex: HashMap<DexType, std::collections::HashSet<Address>> =
-                        HashMap::new();
-                    for log in &tx.logs {
-                        if pool_addrs.contains(&log.address) {
-                            if let Some(p) = pm.get(&log.address) {
-                                per_dex
-                                    .entry(p.info().dex_type)
-                                    .or_default()
-                                    .insert(log.address);
-                            }
-                        }
-                    }
-                    for (dex, pools) in per_dex {
-                        gas_calibration
-                            .borrow_mut()
-                            .record(dex, pools.len(), tx.gas_used);
-                    }
-                }
-
-                // Learn taxed tokens from this tx, then apply its log
-                // updates to pool state — both AFTER detection.
-                // Backrun pre-image: capture opportunities on S_{i-1} BEFORE the
-                // state update; `post_detect` consumes this after update_from_logs.
-                let will_touch: std::collections::HashSet<_> = tx
-                    .logs
-                    .iter()
-                    .map(|l| l.address)
-                    .filter(|a| pool_addrs.contains(a))
-                    .collect();
-                if !will_touch.is_empty() {
-                    let scope_pre = ScanScope::Dirty(&will_touch);
-                    let ctx_pre = DetectCtx::new(
-                        &pm,
-                        i,
-                        timestamp,
-                        base_fee_per_gas,
-                        self.gas_config,
-                        &scope_pre,
-                    );
-                    backrun_detector.pre_detect(ctx_pre);
-                }
-
-                pm.learn_taxes_from_tx(&tx.logs);
-                pm.update_from_logs(&tx.logs);
-
-                // Accumulate dirtied pools for the next incremental scan
-                let newly_dirty = pm.take_dirty_pools();
-                // Backrun detection: post-image
-                if !newly_dirty.is_empty() {
-                    let scope_post = ScanScope::Dirty(&newly_dirty);
-                    let ctx_post = DetectCtx::new(
-                        &pm,
-                        i,
-                        timestamp,
-                        base_fee_per_gas,
-                        self.gas_config,
-                        &scope_post,
-                    );
-                    let backrun_opps = backrun_detector.post_detect(ctx_post, &tx.logs, &txs);
-                    if !backrun_opps.is_empty() {
-                        all_opportunities.extend(backrun_opps);
-                    }
-                }
-
-                if !newly_dirty.is_empty() {
-                    dirty_pools
-                        .borrow_mut()
-                        .get_or_insert_with(Default::default)
-                        .extend(newly_dirty);
-                }
-
+                block_detectors.detect_tx(DetectTxArgs {
+                    block_num,
+                    tx_index: i,
+                    tx,
+                    all_txs: &txs,
+                    pm: &mut pm,
+                    dirty_pools: &dirty_pools,
+                    pool_addrs: &pool_addrs,
+                    timestamp,
+                    base_fee_per_gas,
+                    gas_config: self.gas_config,
+                    current_tx_from: sender,
+                    gas_prices: &gas_prices,
+                    gas_calibration: &gas_calibration,
+                    all_opportunities: &mut all_opportunities,
+                });
                 Ok(())
             },
         );
 
-        // W4.8: always hand the taken pool_manager and gas_calibration back to
+        // always hand the taken pool_manager and gas_calibration back to
         // self (even on error) so the caller can roll the block back with
-        // PoolManager::undo(); recording started in run_block stays active.
+        // PoolManager::undo; recording started in run_block stays active.
         self.pool_manager = pool_manager.into_inner();
         self.gas_calibration = gas_calibration.into_inner();
         replay_result?;
 
-        // D2: a backrun claim supersedes the plain arb claim for the same key,
-        // so P&L is never double-counted. Before `retain_with_rejections` so
-        // superseded rows are not mis-recorded as gas/min-profit rejections.
-        crate::mev::detectors::backrun::suppress_superseded_arbs(&mut all_opportunities);
-
-        // Filter: drop opportunities where expected profit doesn't cover gas
-        self.retain_with_rejections(&mut all_opportunities, block_num);
-
-        // Filter: cap candidates per transaction, keeping only top-profit ones
-        if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
-            all_opportunities.sort_by_key(|o| std::cmp::Reverse(o.expected_profit));
-            let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
-            self.record_rejections_batch(
-                &dropped,
-                block_num,
-                crate::explorer::RejectReason::MaxCandidates,
-                "per-tx top-N cap",
-            );
-        }
-
-        // Assign canonical dedup IDs (L9) to all opportunities
-        for opp in &mut all_opportunities {
-            // Backrun ids carry the victim index (docs/plan_backrun.md §2.5) and
-            // were stamped at emission — the generic id would collapse two
-            // victims in one block under aggregate's canonical-id dedup.
-            if opp.strategy != crate::types::Strategy::Backrun {
-                opp.canonical_id = Some(crate::types::compute_canonical_id(
-                    crate::types::CanonicalIdParts {
-                        strategy: opp.strategy,
-                        pool_a: opp.pool_a,
-                        pool_b: opp.pool_b,
-                        token_in: opp.token_in,
-                        token_out: opp.token_out,
-                    },
-                ));
-            }
-            opp.detection_path = Some(crate::mev::detectors::DetectionPath::Replay);
-            if opp.sender.is_none() {
-                opp.sender = txs.get(opp.tx_index).map(|t| t.from);
-            }
-            if opp.tx_hash.is_none() {
-                opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
-            }
-        }
+        self.finalize_block_opportunities(
+            &mut all_opportunities,
+            &txs,
+            block_num,
+            DetectionPath::Replay,
+        );
         self.last_processed_block = block_num;
-
-        // #10: persistence-based confidence scoring across blocks
-        if self.persistence_scoring {
-            Self::update_persistence(&mut self.opp_persistence, &mut all_opportunities, block_num);
-        }
 
         Ok((
             all_opportunities,
@@ -643,10 +839,10 @@ impl BacktestRunner {
 
     /// Lightweight, archive-free pool-state sync used by live mode.
     ///
-    /// Unlike `run_block()`, this does NOT execute transactions through revm.
+    /// Unlike `run_block`, this does NOT execute transactions through revm.
     /// It reads the cached block header + receipts, synthesizes the log stream,
     /// and applies Swap/Sync/Mint/Burn events directly to `pool_manager` via
-    /// `update_from_logs()`. This keeps pool state authoritative near the tip
+    /// `update_from_logs`. This keeps pool state authoritative near the tip
     /// using only regular full-node RPC calls — no `eth_getProof`, so no archive
     /// node is required.
     ///
@@ -689,10 +885,10 @@ impl BacktestRunner {
         let mut dex_tx_count = 0usize;
         // Dirty pools touched by earlier transactions (incremental scanning)
         let mut dirty_pools: Option<std::collections::HashSet<Address>> = None;
-        // W4.8: record pre-state of pools this sync mutates so a failure can
-        // be rolled back by the caller with `PoolManager::undo()`.
+        // record pre-state of pools this sync mutates so a failure can
+        // be rolled back by the caller with `PoolManager::undo`.
         self.pool_manager.begin_undo();
-        // #7: refresh detector-visible calibration before scanning the block
+        // refresh detector-visible calibration before scanning the block
         self.gas_config.calibration = self.gas_calibration.snapshot();
 
         for (i, tx) in txs.iter().enumerate() {
@@ -746,7 +942,7 @@ impl BacktestRunner {
             all_opportunities.extend(multi_opps);
 
             // Backrun pre-image: opportunities on the pre-tx state, captured
-            // before the log updates below (mirrors run_block §3.5 A).
+            // before the log updates below (mirrors run_block A).
             let will_touch: std::collections::HashSet<_> = logs
                 .iter()
                 .map(|l| l.address)
@@ -765,12 +961,12 @@ impl BacktestRunner {
                 backrun_detector.pre_detect(ctx_pre);
             }
 
-            // #9: learn taxed tokens, then apply state updates
+            // learn taxed tokens, then apply state updates
             self.pool_manager.learn_taxes_from_tx(&logs);
             self.pool_manager.update_from_logs(&logs);
             let newly_dirty = self.pool_manager.take_dirty_pools();
 
-            // Backrun post-image + differential (mirrors run_block §3.5 D).
+            // Backrun post-image + differential (mirrors run_block D).
             // Before the `dirty_pools` extend below, which consumes the set.
             if !newly_dirty.is_empty() {
                 let scope_post = ScanScope::Dirty(&newly_dirty);
@@ -794,72 +990,23 @@ impl BacktestRunner {
                     .extend(newly_dirty);
             }
 
-            // #7: observe actual tx gas per (dex type, pools touched) bucket
             if tx_status && tx_gas_used > 0 {
-                let mut per_dex: HashMap<DexType, std::collections::HashSet<Address>> =
-                    HashMap::new();
-                for log in &logs {
-                    if pool_addrs.contains(&log.address) {
-                        if let Some(p) = self.pool_manager.get(&log.address) {
-                            per_dex
-                                .entry(p.info().dex_type)
-                                .or_default()
-                                .insert(log.address);
-                        }
-                    }
-                }
-                for (dex, pools) in per_dex {
-                    self.gas_calibration.record(dex, pools.len(), tx_gas_used);
-                }
+                record_gas_observation(
+                    &self.pool_manager,
+                    &pool_addrs,
+                    &logs,
+                    tx_gas_used,
+                    &mut self.gas_calibration,
+                );
             }
         }
 
-        // D2: supersede plain arb claims already emitted as backruns (§2.4).
-        crate::mev::detectors::backrun::suppress_superseded_arbs(&mut all_opportunities);
-
-        // Filter: drop opportunities where expected profit doesn't cover gas
-        self.retain_with_rejections(&mut all_opportunities, block_num);
-
-        // Filter: cap candidates per transaction, keeping only top-profit ones
-        if self.max_candidates_per_tx > 0 && all_opportunities.len() > self.max_candidates_per_tx {
-            all_opportunities.sort_by_key(|o| std::cmp::Reverse(o.expected_profit));
-            let dropped = all_opportunities.split_off(self.max_candidates_per_tx);
-            self.record_rejections_batch(
-                &dropped,
-                block_num,
-                crate::explorer::RejectReason::MaxCandidates,
-                "per-tx top-N cap",
-            );
-        }
-
-        for opp in &mut all_opportunities {
-            // Backrun ids carry the victim index (§2.5) and were stamped at
-            // emission — do not collapse them onto the generic form.
-            if opp.strategy != crate::types::Strategy::Backrun {
-                opp.canonical_id = Some(crate::types::compute_canonical_id(
-                    crate::types::CanonicalIdParts {
-                        strategy: opp.strategy,
-                        pool_a: opp.pool_a,
-                        pool_b: opp.pool_b,
-                        token_in: opp.token_in,
-                        token_out: opp.token_out,
-                    },
-                ));
-            }
-            opp.detection_path = Some(crate::mev::detectors::DetectionPath::LogOnly);
-            if opp.sender.is_none() {
-                opp.sender = txs.get(opp.tx_index).map(|t| t.from);
-            }
-            if opp.tx_hash.is_none() {
-                opp.tx_hash = txs.get(opp.tx_index).map(|t| t.hash);
-            }
-        }
-
-        // #10: persistence-based confidence scoring across blocks
-        if self.persistence_scoring {
-            Self::update_persistence(&mut self.opp_persistence, &mut all_opportunities, block_num);
-        }
-
+        self.finalize_block_opportunities(
+            &mut all_opportunities,
+            &txs,
+            block_num,
+            DetectionPath::LogOnly,
+        );
         self.last_processed_block = block_num;
 
         Ok((
@@ -927,15 +1074,15 @@ impl BacktestRunner {
     /// Run backtest over a resolved block range, collecting all detected
     /// opportunities across every block.
     ///
-    /// Each block is processed sequentially via `run_block()`. Failed blocks
+    /// Each block is processed sequentially via `run_block`. Failed blocks
     /// are logged as errors but do not halt the scan — the runner continues
     /// to the next block in the range.
     ///
     /// The returned vector contains opportunities from all successful blocks,
     /// sorted by block number and transaction index (as produced by
-    /// `run_block()`).
+    /// `run_block`).
     ///
-    /// H10: Maintains a `GasPriceDistribution` across blocks, feeding it
+    /// Maintains a `GasPriceDistribution` across blocks, feeding it
     /// per-tx effective gas prices and using the N-th percentile as the
     /// effective gas price for P90 / Distribution gas models.
     pub fn run_range(
@@ -946,24 +1093,17 @@ impl BacktestRunner {
         let mut all = Vec::new();
         let mut all_stats = Vec::new();
         let mut processed: u64 = 0;
-        // H10: Gas price distribution across recent blocks (sliding window of 50)
+        // Gas price distribution across recent blocks (sliding window of 50)
         let mut gas_dist = GasPriceDistribution::new(50);
         for block_num in resolved.start_block..=resolved.end_block {
-            // H10: Set the percentile gas price from historical distribution
+            // Set the percentile gas price from historical distribution
             // before each block so detectors use it for gas cost computation.
             // `HistoricalExact` also gets a P90 fallback so blocks with a
             // missing base fee (pre-EIP-1559 chains, failed fetches) still
             // pay a realistic gas estimate instead of zero.
-            let percentile = match self.gas_config.gas_model.target_percentile() {
-                Some(p) => Some(p),
-                None if self.gas_config.gas_model == GasModel::HistoricalExact => Some(90),
-                None => None,
-            };
-            if let Some(p) = percentile {
-                self.gas_config.percentile_gas_price = gas_dist.percentile(p);
-            }
+            self.apply_percentile_gas_price(&gas_dist);
 
-            // H5: W4.8 — `run_block` begins an undo log on the pool manager;
+            // `run_block` begins an undo log on the pool manager;
             // success ends it, failure rolls the block back in place (no
             // full-manager checkpoint clone per block anymore).
             match self.run_block(block_num) {
@@ -975,21 +1115,7 @@ impl BacktestRunner {
                         opps.len(),
                         block_prices.len(),
                     );
-                    // Feed gas prices into the distribution (H10)
-                    for price in &block_prices {
-                        gas_dist.add_tx_gas_price(*price);
-                    }
-                    // Record block-level data for EIP-1559 forecasting
-                    match self.replayer.load_block_data(block_num) {
-                        Ok((block, _)) => {
-                            let base_fee = block.base_fee_per_gas.unwrap_or(0);
-                            gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
-                        }
-                        Err(_) => {
-                            gas_dist.record_block(0, 0, 30_000_000);
-                        }
-                    }
-                    gas_dist.finalize_block();
+                    self.feed_gas_distribution(&mut gas_dist, block_num, &block_prices);
 
                     all.extend(opps);
                     all_stats.push(stats);
@@ -1099,24 +1225,9 @@ impl BacktestRunner {
         );
 
         for block_num in resolved.start_block..=resolved.end_block {
-            // `fetch_relevant` deliberately skips blocks with no tracked-pool
-            // activity, so the resolved range can be wider than what was
-            // fetched. That is an expected condition, not a replay failure:
-            // without cached block data there is nothing to replay, and the
-            // correct result is zero opportunities. Attempting it anyway makes
-            // both the full-replay and log-only paths fail with "block not
-            // found in cache" and logs an ERROR for a quiet block.
-            match self.replayer.has_cached_block(block_num) {
-                Ok(false) => {
-                    not_fetched += 1;
-                    continue;
-                }
-                Ok(true) => {}
-                Err(e) => {
-                    tracing::warn!("cache probe failed for block {block_num}: {e}");
-                    not_fetched += 1;
-                    continue;
-                }
+            if self.hybrid_skip_uncached_block(block_num) {
+                not_fetched += 1;
+                continue;
             }
 
             let use_full = block_num >= state_horizon;
@@ -1126,94 +1237,30 @@ impl BacktestRunner {
                 BlockMode::LogOnly
             };
 
-            let percentile = match self.gas_config.gas_model.target_percentile() {
-                Some(p) => Some(p),
-                None if self.gas_config.gas_model == GasModel::HistoricalExact => Some(90),
-                None => None,
-            };
-            if let Some(p) = percentile {
-                self.gas_config.percentile_gas_price = gas_dist.percentile(p);
-            }
+            self.apply_percentile_gas_price(&gas_dist);
 
-            // H5 (W4.8): `run_block`/`sync_block_from_logs` begin an undo log;
-            // success ends it, failure rolls the block back in place instead
-            // of deep-cloning the whole manager every block.
             if use_full {
-                match self.run_block(block_num) {
-                    Ok((opps, stats, block_prices)) => {
-                        self.pool_manager.end_undo();
-                        tracing::info!(
-                            "Block {} done (full-replay): {} opportunities ({} txs)",
-                            block_num,
-                            opps.len(),
-                            block_prices.len(),
-                        );
-                        for price in &block_prices {
-                            gas_dist.add_tx_gas_price(*price);
-                        }
-                        match self.replayer.load_block_data(block_num) {
-                            Ok((block, _)) => {
-                                let base_fee = block.base_fee_per_gas.unwrap_or(0);
-                                gas_dist.record_block(base_fee, block.gas_used, block.gas_limit);
-                            }
-                            Err(_) => {
-                                gas_dist.record_block(0, 0, 30_000_000);
-                            }
-                        }
-                        gas_dist.finalize_block();
-                        all.extend(opps);
-                        all_stats.push(stats);
-                        all_modes.push(mode);
-                    }
-                    Err(e) => {
-                        self.pool_manager.undo();
-                        tracing::warn!(
-                            "Block {} full-replay failed ({}), falling back to log-only: {:?}",
-                            block_num,
-                            block_num,
-                            e,
-                        );
-                        match self.sync_block_from_logs(block_num) {
-                            Ok((opps, stats, _)) => {
-                                self.pool_manager.end_undo();
-                                tracing::info!(
-                                    "Block {} done (log-only fallback): {} opportunities",
-                                    block_num,
-                                    opps.len(),
-                                );
-                                all.extend(opps);
-                                all_stats.push(stats);
-                                all_modes.push(BlockMode::LogOnly);
-                            }
-                            Err(e2) => {
-                                self.pool_manager.undo();
-                                tracing::error!(
-                                    "Block {} log-only also failed: {:?}",
-                                    block_num,
-                                    e2
-                                );
-                            }
-                        }
-                    }
+                if let Some((opps, stats, committed_mode)) =
+                    self.hybrid_try_full_replay_block(block_num, &mut gas_dist, mode)
+                {
+                    Self::hybrid_commit_success(
+                        &mut all,
+                        &mut all_stats,
+                        &mut all_modes,
+                        opps,
+                        stats,
+                        committed_mode,
+                    );
                 }
-            } else {
-                match self.sync_block_from_logs(block_num) {
-                    Ok((opps, stats, _)) => {
-                        self.pool_manager.end_undo();
-                        tracing::info!(
-                            "Block {} done (log-only): {} opportunities",
-                            block_num,
-                            opps.len(),
-                        );
-                        all.extend(opps);
-                        all_stats.push(stats);
-                        all_modes.push(mode);
-                    }
-                    Err(e) => {
-                        self.pool_manager.undo();
-                        tracing::error!("Block {} log-only failed: {:?}", block_num, e);
-                    }
-                }
+            } else if let Some((opps, stats)) = self.hybrid_try_log_only_block(block_num) {
+                Self::hybrid_commit_success(
+                    &mut all,
+                    &mut all_stats,
+                    &mut all_modes,
+                    opps,
+                    stats,
+                    mode,
+                );
             }
             // Progress callback (block done, regardless of outcome).
             processed += 1;
@@ -1277,11 +1324,11 @@ impl BacktestRunner {
 /// arbitrage pair enumeration.
 ///
 /// The token index maps each token address to all pools that trade it,
-/// enabling `arbitrage_pairs()` to find shared-token pairs in O(n²) over
+/// enabling `arbitrage_pairs` to find shared-token pairs in O(n²) over
 /// tokens rather than pools.
 ///
 /// Adding a pool invalidates the cached arbitrage pairs (regenerated on
-/// next call to `arbitrage_pairs()`).
+/// next call to `arbitrage_pairs`).
 pub fn add_pool_to_manager(pool_manager: &mut PoolManager, info: PoolInfo) {
     match info.dex_type {
         crate::dex_type::DexType::UniswapV2 => {

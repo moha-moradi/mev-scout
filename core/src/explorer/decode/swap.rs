@@ -1,5 +1,6 @@
 //! DEX pool swap decoding (V2/V3/V4/Curve/Balancer/LB/…).
 use alloy::primitives::{Address, U256};
+use crate::utils::topic_address;
 
 use crate::chain::events::{INF_CL_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC};
 use crate::data::LogData;
@@ -12,7 +13,7 @@ use crate::pool::decoders::{
 
 /// Bind V2/Solidly amounts from a single direction. `amount0In` wins ties
 /// (`a0i >= a1i`), matching the historical direction rule, and `amount_out`
-/// is the opposite token's output — never an independent `max()` of both outs.
+/// is the opposite token's output — never an independent `max` of both outs.
 fn apply_v2_sides(fact: &mut SwapFact, a0i: U256, a1i: U256, a0o: U256, a1o: U256) {
     if !a0i.is_zero() && a0i >= a1i {
         fact.amount_in = a0i;
@@ -69,7 +70,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(Amm::V2, log.address);
-        // One direction decision drives both sides. Independent `max()` calls
+        // One direction decision drives both sides. Independent `max` calls
         // pair token0's input with token1's output when a flash swap (or a
         // router hopping twice through one pool) sets both inputs.
         apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
@@ -109,11 +110,11 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     }
 
     if topic0 == *V4_SWAP_TOPIC {
-        // topics: [sig, poolId]; data: int128 amount0, int128 amount1, ...
+        // topics: [sig, poolId]; data: int128 amount0, int128 amount1,...
         if log.topics.len() < 2 || log.data.len() < 64 {
             return None;
         }
-        let pool = Address::from_slice(&log.topics[1].as_slice()[12..]);
+        let pool = topic_address(log.topics[1].as_slice());
         let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
         let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
         if a0.is_zero() && a1.is_zero() {
@@ -146,7 +147,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         if log.topics.len() < 2 || log.data.len() < 64 {
             return None;
         }
-        let pool = Address::from_slice(&log.topics[1].as_slice()[12..]);
+        let pool = topic_address(log.topics[1].as_slice());
         let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
         let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
         if a0.is_zero() && a1.is_zero() {
@@ -190,10 +191,10 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         if log.topics.len() < 4 || log.data.len() < 64 {
             return None;
         }
-        let pool = Address::from_slice(&log.topics[1].as_slice()[12..]);
+        let pool = topic_address(log.topics[1].as_slice());
         let mut fact = base(Amm::Balancer, pool);
-        fact.token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
-        fact.token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
+        fact.token_in = topic_address(log.topics[2].as_slice());
+        fact.token_out = topic_address(log.topics[3].as_slice());
         fact.amount_in = U256::from_be_slice(&log.data[0..32]);
         fact.amount_out = U256::from_be_slice(&log.data[32..64]);
         return Some((Amm::Balancer, fact));
@@ -224,7 +225,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     }
 
     if topic0 == *PENDLE_SWAP_TOPIC {
-        // topics: [sig, caller, receiver]; data: int256 netPt, int256 netSy, ...
+        // topics: [sig, caller, receiver]; data: int256 netPt, int256 netSy,...
         if log.topics.len() < 3 || log.data.len() < 64 {
             return None;
         }

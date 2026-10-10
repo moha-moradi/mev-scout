@@ -6,7 +6,6 @@
 //! loading — the name is retired and dropped by
 //! [`crate::types::Strategy::from_comma_list`]. The explorer independently
 //! classifies realized liquidations as `MevKind::Liquidation`.
-
 pub mod detectors;
 pub(crate) mod verdict;
 pub use detectors::{

@@ -1,4 +1,5 @@
 use super::scan_factory_creation_events_pinned;
+use crate::utils::topic_address;
 use super::FLUID_DEX_DEPLOYED_TOPIC;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
@@ -6,7 +7,7 @@ use crate::pipeline::topics;
 use alloy::primitives::Address;
 
 /// Fluid DEX activity: per-pool contracts emit Swap from the pool address;
-/// tokens come from token0()/token1() metadata fetch or the SQLite cache.
+/// tokens come from token0/token1 metadata fetch or the SQLite cache.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
     if log.topics()[0] == *topics::FLUID_SWAP {
         Some(PoolHitCandidate::simple(DexType::Fluid))
@@ -18,7 +19,7 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
 /// Fluid DEX factory scan — `LogDexDeployed(address indexed dex, uint256
 /// indexed dexId)` (verified against Instadapp/fluid-contracts-public
 /// factory/main.sol). The event carries only the pool address; token metadata
-/// is fetched later via the pool's `token0()`/`token1()` getters (Phase 2).
+/// is fetched later via the pool's `token0`/`token1` getters.
 pub(crate) async fn scan_fluid_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {
         rpc,
@@ -41,7 +42,7 @@ pub(crate) async fn scan_fluid_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                 if topics.len() < 2 {
                     return None;
                 }
-                let pool_addr = Address::from_slice(&topics[1][12..]);
+                let pool_addr = topic_address(topics[1]);
                 let creation_block = log.block_number.unwrap_or(0);
                 Some((
                     pool_addr,

@@ -3,7 +3,7 @@
 //! Implements the state-differential approach: compare opportunities on state S_{i-1} (pre-victim)
 //! versus S_i (post-victim) using the net-flip condition: net(pre) <= 0 and net(post) > 0.
 //!
-//! Key design (per docs/plan_backrun.md):
+//! Key design
 //! - The pre-image is captured on S_{i-1} by `pre_detect` and consumed by
 //!   `post_detect` — never recomputed after the state update
 //! - Fresh detector instances per transaction to avoid dedup contamination
@@ -11,7 +11,6 @@
 //! - Normalized keys across two-hop and multi-hop families
 //! - Precedence: backrun claims supersede plain arb claims for same path
 //!   (`suppress_superseded_arbs`)
-
 use crate::mev::detectors::{
     multi_hop::MultiHopArbDetector, two_hop::TwoHopArbDetector, DetectCtx,
 };
@@ -49,7 +48,7 @@ impl BackrunKey {
     }
 }
 
-/// D2 precedence: a backrun claim supersedes the plain arb claim for the same
+///  precedence: a backrun claim supersedes the plain arb claim for the same
 /// key in the same block, so P&L is never double-counted.
 ///
 /// Mirrors `explorer::classify`'s superseder (`core/src/explorer/classify.rs`,
@@ -110,8 +109,8 @@ impl BackrunDetector {
     /// retained as the pre-image for the matching `post_detect` call; the
     /// returned copy is informational (tests / logging).
     ///
-    /// Detector instances are recreated on every call (fresh per tx, §2.2 of
-    /// `docs/plan_backrun.md`): a cross-tx `seen` set would make a pre-existing
+    /// Detector instances are recreated on every call (fresh per tx): a cross-tx
+    /// `seen` set would make a pre-existing
     /// gap read as *absent before*, producing false backruns. The only
     /// persistent state is `seen` (emission dedup) and `pre_image`.
     pub fn pre_detect(&mut self, ctx: DetectCtx<'_>) -> Vec<MevOpportunity> {
@@ -190,7 +189,7 @@ impl BackrunDetector {
                 .unwrap_or(U256::ZERO)
                 .saturating_sub(U256::from(o.gas_cost_wei));
 
-            // D3: net flip — the opportunity exists primarily because of the
+            // net flip — the opportunity exists primarily because of the
             // victim. net(pre) > 0 means the gap was already executable before
             // it, i.e. a plain arb, not a backrun.
             if net1 > U256::ZERO && net0 <= U256::ZERO {
@@ -204,7 +203,7 @@ impl BackrunDetector {
                         o.tx_hash = Some(v.hash);
                     }
                     // Canonical id: anchor pool + victim index, matching the
-                    // explorer's realized form so T1 matching can land.
+                    // explorer's realized form so exact matching can land.
                     o.canonical_id = Some(crate::types::opportunity::compute_backrun_canonical_id(
                         anchor_pool(&o, dirty),
                         tx_index,
@@ -218,7 +217,7 @@ impl BackrunDetector {
 }
 
 /// First path pool present in the dirty set — the pool whose state change the
-/// claim is anchored to (`docs/plan_backrun.md` §2.5).
+/// claim is anchored to (5).
 fn anchor_pool(opp: &MevOpportunity, dirty: Option<&HashSet<Address>>) -> Address {
     let in_scope = |a: &Address| dirty.is_none_or(|d| d.contains(a));
     let candidates: &[Address] = match opp.path.as_deref() {

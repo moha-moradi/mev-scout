@@ -7,7 +7,6 @@
 //! against the same trace evidence. A detector can be honestly estimated but
 //! the classifier's price attribution wrong, and vice-versa — the two gates
 //! are independent.
-
 use serde::Serialize;
 
 /// Outcome of comparing a detector-expected net profit against realized.

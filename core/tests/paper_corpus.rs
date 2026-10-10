@@ -44,6 +44,7 @@
 //! facts (pass/fail/unverifiable counts + fail-reason histogram) without
 //! asserting — use it to sanity-check the window before relaxing/raising the
 //! floor.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 use common::rpc_url;
 

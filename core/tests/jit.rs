@@ -6,6 +6,7 @@
 //! `test_real_v3_mint_swap_burn_detection` hits a live RPC endpoint and is
 //! gated like the CLI E2E suite: it needs `MEV_SCOUT_E2E=1` and `RPC_URL`,
 //! otherwise it skips gracefully (no fallback to the repo `mev-scout.toml`).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use alloy::primitives::{address, Address, Bytes, B256};
 use mev_scout_core::data::ExecutedLog;
 use mev_scout_core::dex_type::DexType;

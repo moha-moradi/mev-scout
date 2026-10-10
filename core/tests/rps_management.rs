@@ -5,6 +5,7 @@
 //!   - Test 2: client throttled to 15 RPS -> 40 calls must take >= ~1.4s, no errors.
 //!   - Test 3: client with NO rate limiter -> raw endpoint burst tolerance (may error).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::time::{Duration, Instant};
 
 use mev_scout_core::rpc::{RateLimiter, RpcClient};

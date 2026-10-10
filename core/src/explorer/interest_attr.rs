@@ -1,4 +1,4 @@
-//! Interest-accrual liquidation attribution (explorer plan P1.1 / §4.13).
+//! Interest-accrual liquidation attribution (explorer plan P1.1 /).
 //!
 //! Mode A: same-block `ReserveDataUpdated` for the debt reserve with no
 //! relevant Chainlink poke (`details.interest_accrued = true`).
@@ -7,7 +7,6 @@
 //! the last [`LOOKBACK_BLOCKS`] while mapped feeds stayed flat. The liquidation
 //! P&L itself stays the standard `O` formula; this module only partitions an
 //! already-computed number. Cause label is `Inferred`.
-
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};

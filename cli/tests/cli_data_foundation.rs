@@ -2,6 +2,7 @@
 //! events. All tests are gated behind `MEV_SCOUT_E2E=1` + RPC reachability and
 //! serialized via `rpc_lock()`, tolerating provider stalls with SKIP.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
 use common::{

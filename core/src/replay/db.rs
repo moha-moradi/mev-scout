@@ -5,7 +5,6 @@
 //! results are cached back to SQLite for subsequent lookups, making large
 //! backtests feasible by only fetching state for addresses touched during
 //! execution.
-
 use std::collections::HashMap;
 use std::fmt;
 

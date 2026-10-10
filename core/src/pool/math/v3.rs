@@ -1,5 +1,4 @@
 //! Uniswap V3 exact-input quoting using the geometric tick-to-sqrt-price formula.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 
@@ -139,14 +138,21 @@ fn compute_sqrt_ratio_at_tick(tick: i32) -> U256 {
     ];
     for (bit, constant) in &TICK_MATH_CONSTANTS {
         if (abs_tick & bit) != 0 {
-            ratio = mul_div(ratio, U256::from(*constant), one_128)
-                .expect("V3 tick math constant invariant");
+            // Constant-product of fixed Uniswap V3 tick-table factors cannot overflow U256.
+            #[allow(clippy::expect_used)]
+            {
+                ratio = mul_div(ratio, U256::from(*constant), one_128)
+                    .expect("V3 tick math constant invariant");
+            }
         }
     }
     // 0x80000 is the last multiplier (too large for 128-bit but fits in U256)
     if (abs_tick & 0x80000) != 0 {
-        ratio = mul_div(ratio, U256::from(0x48a170391f7dc42444e8fa2u128), one_128)
-            .expect("V3 tick math constant invariant");
+        #[allow(clippy::expect_used)]
+        {
+            ratio = mul_div(ratio, U256::from(0x48a170391f7dc42444e8fa2u128), one_128)
+                .expect("V3 tick math constant invariant");
+        }
     }
     if tick > 0 {
         ratio = U256::MAX / ratio;
@@ -384,7 +390,7 @@ fn get_swap_target(pool: &UniswapV3PoolState, direction: V3Direction) -> (U256, 
             // No real initialized ticks found. Go to the full range instead of
             // capping at the nearest tick_spacing boundary. This is more accurate
             // for the first-block case where tick data hasn't been bootstrapped yet
-            // (C2 / M2 fixes). Without tick knowledge, using the full pool.liquidity
+            // ( / fixes). Without tick knowledge, using the full pool.liquidity
             // is a better estimate than truncating at one spacing interval.
             if zero_for_one {
                 (*MIN_SQRT_RATIO, false)
@@ -399,7 +405,7 @@ fn get_swap_target(pool: &UniswapV3PoolState, direction: V3Direction) -> (U256, 
 /// initialized tick crossings. Each tick crossing costs ~25k gas on top of
 /// the base swap cost (~80k). Capped at 20 crossings to avoid runaway estimates.
 ///
-/// H7: V3 gas varies from ~80k (no tick crossing) to ~500k+ (many crossings),
+/// V3 gas varies from ~80k (no tick crossing) to ~500k+ (many crossings),
 /// so direction-aware estimation is essential for accurate per-opportunity gas.
 pub fn estimate_v3_swap_gas(pool: &UniswapV3PoolState, direction: V3Direction) -> u64 {
     const BASE_SWAP_GAS: u64 = 80_000;
@@ -550,7 +556,7 @@ pub fn v3_breakpoints(
 /// reachable ticks. Returns the total amount of `token_out` the swap would receive.
 ///
 /// When no initialized ticks are known, the swap uses the full pool liquidity
-/// (M2 fix) instead of being capped at the nearest tick_spacing boundary.
+/// ( fix) instead of being capped at the nearest tick_spacing boundary.
 ///
 /// Returns `None` for zero input, zero liquidity, or zero sqrt-price.
 /// Update tick and liquidity when crossing an initialized tick boundary.
@@ -666,7 +672,7 @@ pub fn quote_v3_exact_in(
 ///
 /// When no initialized ticks are known, goes to the full range
 /// (MIN_SQRT_RATIO / MAX_SQRT_RATIO) instead of capping at a synthetic
-/// tick_spacing boundary (M2 fix). Without tick knowledge, using the full
+/// tick_spacing boundary ( fix). Without tick knowledge, using the full
 /// pool.liquidity is a better estimate than truncating at one spacing interval.
 fn get_swap_target_for_tick(
     ticks: &BTreeMap<i32, i128>,

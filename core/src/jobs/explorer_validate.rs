@@ -1,5 +1,4 @@
 //! Cross-validation job: realized explorer ops vs scanner opportunities.
-
 use serde::Serialize;
 
 use crate::config::validation;

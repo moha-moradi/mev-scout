@@ -1,5 +1,6 @@
 //! Oracle, reserve, keeper, epoch, GMX, and ERC-4337 signal decoders.
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{B256, U256};
+use crate::utils::{abi_word_address, topic_address};
 
 use crate::chain::events::{
     AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
@@ -13,7 +14,7 @@ use crate::explorer::types::{
     UserOpFact,
 };
 
-/// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / §17.8.4 mode A/B).
+/// Decode Chainlink AggregatorV3 `AnswerUpdated` (plan P1.4 / mode A/B).
 ///
 /// Mode A uses the feed emitter for co-block poke; mode B compares `answer`
 /// against the prior stored answer for pre-poke divergence.
@@ -62,7 +63,7 @@ pub fn decode_rate_cache_update(log: &LogData) -> Option<RateCacheFact> {
     })
 }
 
-/// Decode Aave V3 `ReserveDataUpdated` (plan P1.1 / §17.8.4).
+/// Decode Aave V3 `ReserveDataUpdated` (plan P1.1 /).
 ///
 /// Mode A in-block signal that the debt reserve's borrow index moved; paired
 /// with a price-flat check in [`crate::explorer::interest_attr`].
@@ -77,14 +78,14 @@ pub fn decode_reserve_data(log: &LogData) -> Option<ReserveDataFact> {
     Some(ReserveDataFact {
         tx_index: 0,
         log_index: 0,
-        reserve: Address::from_slice(&log.topics[1][12..]),
+        reserve: topic_address(log.topics[1]),
         // data: liquidityRate, stableBorrowRate, variableBorrowRate, …
         variable_borrow_rate: U256::from_be_slice(&log.data[64..96]),
     })
 }
 
 /// Decode Gelato Automate / Chainlink Automation keeper executions
-/// (plan P1.5 / §17.8.9 mode A).
+/// (plan P1.5 / mode A).
 ///
 /// P&L basis `F` comes from the explicit fee field when present
 /// (`ExecSuccess.txFee`, `UpkeepPerformed.totalPayment`); `LogTriggered`
@@ -98,7 +99,7 @@ pub fn decode_keeper(log: &LogData) -> Option<KeeperFact> {
             return None;
         }
         let fee = U256::from_be_slice(&log.data[0..32]);
-        let fee_token = Address::from_slice(&log.data[44..64]);
+        let fee_token = abi_word_address(&log.data, 1);
         return Some(KeeperFact {
             tx_index: 0,
             log_index: 0,
@@ -141,7 +142,7 @@ pub fn decode_keeper(log: &LogData) -> Option<KeeperFact> {
     None
 }
 
-/// Decode Solidly/Pharaoh/Blackhole `NotifyReward` (plan P3.15 / §7.5).
+/// Decode Solidly/Pharaoh/Blackhole `NotifyReward` (plan P3.15 /).
 ///
 /// Mode A epoch fingerprint: gauge emission/bribe notification co-occurring
 /// with realized arbs on venue pools.
@@ -154,7 +155,7 @@ pub fn decode_epoch_reward(log: &LogData) -> Option<EpochRewardFact> {
         tx_index: 0,
         log_index: 0,
         emitter: log.address,
-        reward_token: Address::from_slice(&log.topics[2][12..]),
+        reward_token: topic_address(log.topics[2]),
         amount: U256::from_be_slice(&log.data[0..32]),
     })
 }
@@ -185,7 +186,7 @@ pub fn decode_gmx_event(log: &LogData) -> Option<GmxEventFact> {
     })
 }
 
-/// Decode ERC-4337 EntryPoint `UserOperationEvent` (plan P3.11 / §7.4).
+/// Decode ERC-4337 EntryPoint `UserOperationEvent` (plan P3.11 /).
 pub fn decode_user_op(log: &LogData) -> Option<UserOpFact> {
     let topic0 = *log.topics.first()?;
     if topic0 != *USER_OPERATION_EVENT_TOPIC || log.topics.len() < 4 || log.data.len() < 128 {
@@ -197,8 +198,8 @@ pub fn decode_user_op(log: &LogData) -> Option<UserOpFact> {
         tx_index: 0,
         log_index: 0,
         entry_point: log.address,
-        sender: Address::from_slice(&log.topics[2][12..]),
-        paymaster: Address::from_slice(&log.topics[3][12..]),
+        sender: topic_address(log.topics[2]),
+        paymaster: topic_address(log.topics[3]),
         actual_gas_cost: U256::from_be_slice(&log.data[64..96]),
         success: !success_word.is_zero(),
     })

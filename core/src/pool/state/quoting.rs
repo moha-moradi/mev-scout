@@ -6,7 +6,6 @@
 //! input bounds, tick-band breakpoints and direction-aware gas routing all
 //! dispatch per variant here and delegate to the per-DEX math modules.
 //! Adding a DEX touches one math file plus one arm in each method below.
-
 use super::pool_types::PoolState;
 use crate::pool::math::quote_exact_in;
 use crate::pool::math::v3::{max_v3_tradeable_amount, v3_breakpoints, V3Direction};

@@ -5,7 +5,6 @@
 //! depth 4: work is bounded by O(V·E · rounds) rather than branching-factor^depth.
 //! Each discovered cycle is then priced through the standard V2/V3 AMM quote engine
 //! with a deterministic segment-wise optimizer (no stochastic restarts).
-
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
@@ -65,7 +64,7 @@ impl MultiHopArbDetector {
     /// Scan all pool paths and emit profitable multi-hop arbitrage opportunities.
     /// Deduplicates per block: each unique (pool_a, pool_b, token_in, token_out) is emitted
     /// at most once per block *unless* pool reserves change by >0.1%, in which case the
-    /// dedup is cleared and the opportunity is re-evaluated (H2).
+    /// dedup is cleared and the opportunity is re-evaluated.
     ///
     /// `scope` restricts emitted cycles: pass [`ScanScope::Full`] for the first
     /// detection pass of a block, then [`ScanScope::Dirty`] with the set of pools
@@ -96,7 +95,7 @@ impl MultiHopArbDetector {
     }
 
     // ------------------------------------------------------------------
-    // #5: Negative-cycle discovery on a -log(exchange_rate) token graph
+    // Negative-cycle discovery on a -log(exchange_rate) token graph
     // ------------------------------------------------------------------
 
     /// Find profitable candidate cycles via Bellman–Ford.
@@ -164,7 +163,7 @@ impl MultiHopArbDetector {
     }
 
     /// BFS-limited enumeration of pool paths through the token graph.
-    /// Each path is [buy_pool, ..., sell_pool] where adjacent pools share a token.
+    /// Each path is [buy_pool,..., sell_pool] where adjacent pools share a token.
     ///
     /// Retained for compatibility and testing; production detection uses
     /// [`Self::find_negative_cycle_paths`].
@@ -337,7 +336,7 @@ impl MultiHopArbDetector {
 
             let quote_fn = |x: u128| Self::walk_quote(pm, &walk, token_in, x);
 
-            // Deterministic segment-wise optimization (#6 generalization): brackets
+            // Deterministic segment-wise optimization: brackets
             // the input domain at V3 tick-band crossings inverted into input space
             // through the prefix quotes, golden-section-searching each concave
             // bracket. Replaces grid + random restarts with a deterministic pass.
@@ -365,12 +364,12 @@ impl MultiHopArbDetector {
             let flash_fee = gas_config.flash_loan_fee(input_amount);
             let net_profit = gross_profit.saturating_sub(flash_fee);
 
-            // Normalize profit to native when token_in != token_out (H6).
+            // Normalize profit to native when token_in != token_out.
             let (expected_profit, raw_profit) =
                 arb_common::normalize_profit(pm, token_in, token_out, net_profit, input_amount);
 
             // Compute slippage-adjusted profits: evaluate the same path walk at
-            // ±1%/±2% of the optimum, normalized to native with the shared C5
+            // ±1%/±2% of the optimum, normalized to native with the shared
             // datapoint semantics (an unpriceable probe is an absent datapoint).
             let slippage = arb_common::slippage_profits(input_amount, |x| {
                 Self::walk_quote(pm, &walk, token_in, x)
@@ -876,7 +875,7 @@ fn estimate_gas_for_multi_hop(
         }
     }
 
-    // #7: when enough same-shape transactions have been observed, replace the
+    // when enough same-shape transactions have been observed, replace the
     // structural estimate with the calibrated observation clamped to ±100% of
     // the structural estimate (rejects outlier transactions).
     arb_common::blend_gas_limit(calibration, &dex_counts, path.len(), total)

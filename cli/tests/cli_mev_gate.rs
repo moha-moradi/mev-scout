@@ -17,6 +17,7 @@
 //! `--trace` is deliberately not used: it needs a `debug_traceTransaction`
 //! provider, and the realized side is already in the seeded `details_json`,
 //! which is exactly the field `job_trace_op` would have written.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
 use std::collections::HashMap;

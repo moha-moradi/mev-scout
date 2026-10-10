@@ -1,5 +1,4 @@
 //! Crate root: re-exports all public modules for the `mev-scout` core library.
-
 pub mod cache;
 pub mod chain;
 pub mod config;

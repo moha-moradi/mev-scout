@@ -5,7 +5,6 @@
 //! the explorer store. Idempotent per block (checkpoints in
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
 //! lag applied before indexing.
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -29,7 +28,24 @@ use crate::types::ChainName;
 /// Block header + txs + receipts from a single batched RPC fetch.
 pub type BlockBundle = (BlockData, Vec<TxData>, Vec<ReceiptData>);
 
-/// JIT open-position window (Phase 1.5): positions opened more than this many
+/// Per-block fetch payload for [`index_block_fetched`] (not classify [`BlockInput`]).
+#[derive(Debug)]
+pub struct FetchedBlockInput {
+    pub block_number: u64,
+    pub native_price: Option<f64>,
+    pub token_prices: Option<HashMap<Address, TokenUsd>>,
+    pub bundle: BlockBundle,
+}
+
+/// Block range and concurrency for [`run_range`].
+#[derive(Debug, Clone, Copy)]
+pub struct RangeRequest {
+    pub from_block: u64,
+    pub to_block: u64,
+    pub block_concurrency: usize,
+}
+
+/// JIT open-position window: positions opened more than this many
 /// blocks before the indexed block are pruned.
 pub const JIT_WINDOW_BLOCKS: u64 = 1_000;
 
@@ -44,12 +60,12 @@ pub struct IngestConfig {
     pub wrapped_native: Address,
     /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
-    /// Mevlive-parity fallback for `arb_atomic` (Phase 1.2). Default false —
-    /// only closed multi-pool cycles are labeled arb (spec §7.1 / §8.1).
+    /// Mevlive-parity fallback for `arb_atomic`. Default false —
+    /// only closed multi-pool cycles are labeled arb (spec /).
     pub arb_likely_parity: bool,
     /// Emitter-address → protocol label relabels for liquidation events whose
     /// topic0 is shared with another protocol (Aave-V3 ABI: Spark; Compound V2
-    /// ABI: Benqi qiTokens — plan P0.2 / §24).
+    /// ABI: Benqi qiTokens — plan P0.2 /).
     pub liquidation_protocol_aliases: HashMap<Address, &'static str>,
     /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
     pub chainlink_feeds: HashMap<Address, Address>,
@@ -200,51 +216,47 @@ pub async fn index_block(
         store,
         cfg,
         pools,
-        block_number,
-        native_price,
-        token_prices,
-        bundle,
+        FetchedBlockInput {
+            block_number,
+            native_price,
+            token_prices,
+            bundle,
+        },
     )
     .await
 }
 
-/// Decode, classify, and persist a pre-fetched block bundle. Callers that
-/// overlap RPC fetches must still invoke this in ascending block order so
-/// JIT / oracle / interest lookbacks stay coherent.
-#[allow(clippy::too_many_arguments)]
-pub async fn index_block_fetched(
-    rpc: &RpcClient,
-    store: &ExplorerStore,
-    cfg: &IngestConfig,
-    pools: PoolViews<'_>,
-    block_number: u64,
-    native_price: Option<f64>,
-    token_prices: Option<HashMap<Address, TokenUsd>>,
-    bundle: BlockBundle,
-) -> anyhow::Result<IndexedBlock> {
-    let (block_data, txs, receipts) = bundle;
+struct DecodedTxs {
+    tx_inputs: Vec<TxInput>,
+    tx_rows: Vec<TxRow>,
+    swap_rows: Vec<SwapRow>,
+    transfer_rows: Vec<TransferRow>,
+    jit_hashes: HashMap<u64, B256>,
+}
 
-    // Build per-tx decoded input.
+fn decode_successful_txs(
+    txs: &[TxData],
+    receipts: &[ReceiptData],
+    pools: PoolViews<'_>,
+    cfg: &IngestConfig,
+    base_fee_gwei: Option<f64>,
+) -> DecodedTxs {
     let receipt_by_index: HashMap<u64, &ReceiptData> =
         receipts.iter().map(|r| (r.tx_index, r)).collect();
-
-    let mut tx_inputs: Vec<TxInput> = Vec::with_capacity(txs.len());
-    let mut tx_rows: Vec<TxRow> = Vec::with_capacity(txs.len());
-    let mut swap_rows: Vec<SwapRow> = Vec::new();
-    let mut transfer_rows: Vec<TransferRow> = Vec::new();
-    let mut jit_hashes: HashMap<u64, B256> = HashMap::new();
-
-    let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
-
-    for tx in &txs {
-        let receipt = match receipt_by_index.get(&tx.index) {
-            Some(r) => *r,
-            None => continue,
+    let mut out = DecodedTxs {
+        tx_inputs: Vec::with_capacity(txs.len()),
+        tx_rows: Vec::with_capacity(txs.len()),
+        swap_rows: Vec::new(),
+        transfer_rows: Vec::new(),
+        jit_hashes: HashMap::new(),
+    };
+    for tx in txs {
+        let Some(receipt) = receipt_by_index.get(&tx.index).copied() else {
+            continue;
         };
         if !receipt.status {
-            continue; // failed txs carry no realized MEV
+            continue;
         }
-
         let (
             transfers,
             swaps,
@@ -266,27 +278,17 @@ pub async fn index_block_fetched(
             pools.tokens,
             &cfg.liquidation_protocol_aliases,
         );
-        let jit_count = jit.len();
-
-        // Real gas (Phase 2.1): prefer the receipt's `effectiveGasPrice`, then
-        // the tx's legacy `gasPrice`, and only fall back to
-        // `base_fee + max_priority_fee` when the node omitted both.
         let max_priority_gwei = tx
             .max_priority_fee_per_gas
             .map(|p| p as f64 / 1e9)
             .unwrap_or(0.0);
-        let effective_gwei = receipt
-            .effective_gas_price
-            .or(tx.gas_price)
-            .map(|p| p as f64 / 1e9)
-            .unwrap_or_else(|| base_fee_gwei.unwrap_or(0.0).max(0.0) + max_priority_gwei);
+        let effective_gwei = effective_gas_gwei(tx, receipt, base_fee_gwei, max_priority_gwei);
         let priority_gwei = if tx.max_priority_fee_per_gas.is_some() {
             max_priority_gwei.min(effective_gwei)
         } else {
             (effective_gwei - base_fee_gwei.unwrap_or(0.0)).max(0.0)
         };
-
-        tx_rows.push(TxRow {
+        out.tx_rows.push(TxRow {
             hash: tx.hash,
             tx_index: tx.index,
             from: tx.from,
@@ -297,9 +299,8 @@ pub async fn index_block_fetched(
             priority_fee_gwei: priority_gwei,
             value: tx.value,
         });
-
         for s in &swaps {
-            swap_rows.push(SwapRow {
+            out.swap_rows.push(SwapRow {
                 tx_index: s.tx_index,
                 log_index: s.log_index,
                 pool: s.pool,
@@ -311,7 +312,7 @@ pub async fn index_block_fetched(
             });
         }
         for t in &transfers {
-            transfer_rows.push(TransferRow {
+            out.transfer_rows.push(TransferRow {
                 tx_index: t.tx_index,
                 log_index: t.log_index,
                 token: t.token,
@@ -320,11 +321,10 @@ pub async fn index_block_fetched(
                 amount: t.amount,
             });
         }
-        if jit_count > 0 {
-            jit_hashes.insert(tx.index, tx.hash);
+        if !jit.is_empty() {
+            out.jit_hashes.insert(tx.index, tx.hash);
         }
-
-        tx_inputs.push(TxInput {
+        out.tx_inputs.push(TxInput {
             tx_index: tx.index,
             tx_hash: tx.hash,
             from: tx.from,
@@ -349,6 +349,76 @@ pub async fn index_block_fetched(
             user_ops,
         });
     }
+    out
+}
+
+/// Prefer the receipt's `effectiveGasPrice`, then the tx's legacy `gasPrice`,
+/// and only fall back to `base_fee + max_priority_fee` when the node omitted both.
+fn effective_gas_gwei(
+    tx: &TxData,
+    receipt: &ReceiptData,
+    base_fee_gwei: Option<f64>,
+    max_priority_gwei: f64,
+) -> f64 {
+    receipt
+        .effective_gas_price
+        .or(tx.gas_price)
+        .map(|p| p as f64 / 1e9)
+        .unwrap_or_else(|| base_fee_gwei.unwrap_or(0.0).max(0.0) + max_priority_gwei)
+}
+
+fn persist_mode_b_lookback(store: &ExplorerStore, block_number: u64, txs: &[TxInput]) {
+    let mut oracle_rows: Vec<(Address, i128)> = Vec::new();
+    let mut reserve_rows: Vec<(Address, U256)> = Vec::new();
+    for t in txs {
+        for o in &t.oracle_updates {
+            oracle_rows.push((o.feed, o.answer));
+        }
+        for r in &t.reserve_updates {
+            reserve_rows.push((r.reserve, r.variable_borrow_rate));
+        }
+    }
+    if let Err(e) = store.record_oracle_answers(block_number, &oracle_rows) {
+        tracing::warn!(
+            block = block_number,
+            error = %e,
+            "failed to persist oracle answers for mode-B lookback"
+        );
+    }
+    if let Err(e) = store.record_reserve_rates(block_number, &reserve_rows) {
+        tracing::warn!(
+            block = block_number,
+            error = %e,
+            "failed to persist reserve rates for mode-B lookback"
+        );
+    }
+}
+
+/// Decode, classify, and persist a pre-fetched block bundle. Callers that
+/// overlap RPC fetches must still invoke this in ascending block order so
+/// JIT / oracle / interest lookbacks stay coherent.
+pub async fn index_block_fetched(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    cfg: &IngestConfig,
+    pools: PoolViews<'_>,
+    input: FetchedBlockInput,
+) -> anyhow::Result<IndexedBlock> {
+    let FetchedBlockInput {
+        block_number,
+        native_price,
+        token_prices,
+        bundle,
+    } = input;
+    let (block_data, txs, receipts) = bundle;
+    let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
+    let DecodedTxs {
+        tx_inputs,
+        tx_rows,
+        swap_rows,
+        transfer_rows,
+        jit_hashes,
+    } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
 
     let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
     let interest_lookback = store
@@ -388,33 +458,7 @@ pub async fn index_block_fetched(
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 
-    // Persist oracle/reserve rows for subsequent blocks' mode-B lookback.
-    {
-        let mut oracle_rows: Vec<(Address, i128)> = Vec::new();
-        let mut reserve_rows: Vec<(Address, U256)> = Vec::new();
-        for t in &input.txs {
-            for o in &t.oracle_updates {
-                oracle_rows.push((o.feed, o.answer));
-            }
-            for r in &t.reserve_updates {
-                reserve_rows.push((r.reserve, r.variable_borrow_rate));
-            }
-        }
-        if let Err(e) = store.record_oracle_answers(block_number, &oracle_rows) {
-            tracing::warn!(
-                block = block_number,
-                error = %e,
-                "failed to persist oracle answers for mode-B lookback"
-            );
-        }
-        if let Err(e) = store.record_reserve_rates(block_number, &reserve_rows) {
-            tracing::warn!(
-                block = block_number,
-                error = %e,
-                "failed to persist reserve rates for mode-B lookback"
-            );
-        }
-    }
+    persist_mode_b_lookback(store, block_number, &input.txs);
 
     let mut token_prices = match token_prices {
         Some(p) => p,
@@ -456,7 +500,7 @@ pub async fn index_block_fetched(
     })
 }
 
-/// Persist JIT open positions (Phase 1.5): record Mints not closed in the same
+/// Persist JIT open positions: record Mints not closed in the same
 /// block, delete rows for Burns, and prune positions outside the window.
 fn persist_jit_positions(
     store: &ExplorerStore,
@@ -521,7 +565,7 @@ pub async fn check_reorg(
     }
 }
 
-/// Cheap per-poll reorg re-verify (Phase 4): a single header-only hash compare
+/// Cheap per-poll reorg re-verify: a single header-only hash compare
 /// on the highest already-indexed block. Runs on every live poll, so a reorg of
 /// the indexed tip is caught before the indexer extends onto it; the heavier
 /// 32-block `check_reorg` sweep (block + receipts) stays to catch deeper forks.
@@ -620,7 +664,7 @@ pub async fn warm_prices_for_tokens(
     }
 
     // Resolve decimals: bundled cache → llama-reported decimals → on-chain
-    // ERC-20 decimals() via Multicall3 (Phase 2.4 long-tail fallback).
+    // ERC-20 decimals via Multicall3 (long-tail fallback).
     let mut need_onchain: Vec<Address> = Vec::new();
     for (addr, usd) in &priced {
         let dec = decimals_of(addr).or_else(|| llama_decimals.get(addr).copied());
@@ -669,7 +713,7 @@ pub fn event_tokens(events: &[MevEvent]) -> Vec<Address> {
             v.push(*tok);
         }
     }
-    // Liquidation P&L needs the repaid debt asset priced too (Phase 1.3).
+    // Liquidation P&L needs the repaid debt asset priced too.
     for e in events.iter().filter(|e| e.kind == MevKind::Liquidation) {
         if let Some(a) = e
             .details
@@ -726,7 +770,7 @@ pub async fn native_price_cached(
 /// Live streaming mode: on start, jump to the current confirmed tip and only
 /// follow new blocks forward. Never resumes a historical `indexed_to` gap and
 /// never walks earlier blocks. Runs until `stop` is set; the indexed tip is
-/// hash-verified on every poll (Phase 4) and a heavier reorg sweep runs every
+/// hash-verified on every poll and a heavier reorg sweep runs every
 /// 32 blocks.
 pub async fn run_live(
     rpc: &RpcClient,
@@ -772,7 +816,7 @@ pub async fn run_live(
         };
 
         if safe >= cursor {
-            // Phase 4: cheap per-poll reorg re-verify on the last indexed block.
+            // cheap per-poll reorg re-verify on the last indexed block.
             // Only meaningful for blocks we indexed this session (checkpoint is
             // tip-anchored on start).
             let indexed_to = store.get_indexed_to(cfg.chain_id)?;
@@ -827,17 +871,19 @@ pub async fn run_live(
 /// the live indexer. Token profit USD is priced historically (Llama keyed by
 /// the block's timestamp inside `index_block`); native/gas USD uses the current
 /// native price (a close approximation for ≤30d windows).
-#[allow(clippy::too_many_arguments)]
 pub async fn run_range(
     rpc: &RpcClient,
     store: &ExplorerStore,
     cfg: &IngestConfig,
     pools: PoolViews<'_>,
-    from_block: u64,
-    to_block: u64,
+    range: RangeRequest,
     progress: &dyn JobProgress,
-    block_concurrency: usize,
 ) -> anyhow::Result<RangeOutcome> {
+    let RangeRequest {
+        from_block,
+        to_block,
+        block_concurrency,
+    } = range;
     if to_block < from_block {
         anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
     }
@@ -927,9 +973,19 @@ pub async fn run_range(
                     native_price =
                         native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
                 }
-                let indexed =
-                    index_block_fetched(rpc, store, cfg, pools, need, native_price, None, bundle)
-                        .await?;
+                let indexed = index_block_fetched(
+                    rpc,
+                    store,
+                    cfg,
+                    pools,
+                    FetchedBlockInput {
+                        block_number: need,
+                        native_price,
+                        token_prices: None,
+                        bundle,
+                    },
+                )
+                .await?;
                 outcome.blocks_processed += 1;
                 outcome.ops += indexed.ops as u64;
                 next_persist += 1;

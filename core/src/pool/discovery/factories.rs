@@ -1,7 +1,6 @@
 //! Resolve DEX factory / vault addresses from [`ChainConfig`] overlays and
 //! per-chain defaults into a single owned struct that can build a
 //! [`DiscoveryConfig`](super::DiscoveryConfig).
-
 use alloy::primitives::Address;
 
 use super::{pick_factories, DiscoveryConfig};

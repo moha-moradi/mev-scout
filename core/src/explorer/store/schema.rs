@@ -141,8 +141,8 @@ impl ExplorerStore {
               event_count INTEGER NOT NULL
             );
 
-            -- Phase 5a-0: JIT open Mint positions, persisted so cross-block JIT
-            -- detection survives restarts. Feeder table for Phase 1.5; pruned by
+            -- JIT open Mint positions, persisted so cross-block JIT detection
+            -- survives restarts. Pruned by
             -- opened_block block-window cap.
             CREATE TABLE IF NOT EXISTS jit_open_positions(
               pool TEXT NOT NULL,
@@ -156,7 +156,7 @@ impl ExplorerStore {
             CREATE INDEX IF NOT EXISTS jit_open_positions_prune
               ON jit_open_positions(opened_block);
 
-            -- Plan P1.1 / P1.4 mode-B lookback: prior oracle answers + reserve
+            -- prior oracle answers + reserve
             -- borrow-rate series (single-chain, logs-only).
             CREATE TABLE IF NOT EXISTS oracle_answers(
               block_number INTEGER NOT NULL,
@@ -266,7 +266,7 @@ impl ExplorerStore {
               ON paper_fills(session_id, block_number);
             ",
         )?;
-        // Phase 2.2 runtime migration for databases created before the
+        // runtime migration for databases created before the
         // flash-loan fee column existed. `volume_usd` likewise for pre-report DBs.
         Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
         Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;

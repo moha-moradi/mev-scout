@@ -80,7 +80,7 @@ pub struct PoolManager {
     /// Cached arbitrage pairs (invalidated on add_pool). Shared via `Arc` so
     /// per-block detection can clone the handle instead of the whole Vec.
     pub(crate) pairs_cache: Mutex<Option<Arc<Vec<ArbPair>>>>,
-    /// Pools whose state changed since the last `take_dirty_pools()` call.
+    /// Pools whose state changed since the last `take_dirty_pools` call.
     /// Used to restrict per-transaction detection to affected pairs only.
     pub(crate) dirty_pools: HashSet<Address>,
     /// Tokens learned to be transfer-taxed at runtime: declared swap
@@ -94,7 +94,7 @@ pub struct PoolManager {
     pub(crate) known_set: HashSet<Address>,
     /// Maximum number of pools per token when computing arbitrage pairs.
     pub(crate) max_pairs_per_token: usize,
-    /// Per-token overrides for max_pairs_per_token (H3).
+    /// Per-token overrides for max_pairs_per_token.
     /// Allows configuring different caps for high/medium/low-connectivity tokens.
     /// Key = token address, value = per-token max pairs limit.
     pub(crate) token_max_pairs: HashMap<Address, usize>,
@@ -104,7 +104,7 @@ pub struct PoolManager {
     /// a numeric block. Served by any full node (no archive requirement) — used
     /// by live mode. Backtest/replay keep numeric blocks for historical state.
     pub(crate) use_latest: bool,
-    /// Active block-level undo log (W4.8). `Some` while a mutating block is
+    /// Active block-level undo log. `Some` while a mutating block is
     /// being processed; replaces the old "deep-clone the whole manager per
     /// block" checkpoint with pre-state captures of only the touched pools.
     undo: Option<UndoLog>,
@@ -135,7 +135,7 @@ struct UndoLog {
 impl PoolManager {
     /// Create an empty pool manager with no pools loaded.
     ///
-    /// Pools must be added via `add_pool()` and initialized via `init_from_rpc()`
+    /// Pools must be added via `add_pool` and initialized via `init_from_rpc`
     /// before use in detection.
     pub fn new() -> Self {
         PoolManager {
@@ -155,7 +155,7 @@ impl PoolManager {
         }
     }
 
-    /// Start recording an undo log for the current block (W4.8).
+    /// Start recording an undo log for the current block.
     ///
     /// While recording is active, every pool mutation funneled through
     /// [`PoolManager::pool_mut`] or [`PoolManager::add_pool`] captures the
@@ -260,7 +260,7 @@ impl PoolManager {
 
     /// Add a pool and update the token index.
     ///
-    /// Invalidates the cached arbitrage pairs (recomputed on next `arbitrage_pairs()` call).
+    /// Invalidates the cached arbitrage pairs (recomputed on next `arbitrage_pairs` call).
     /// Skips ZERO addresses in token index to avoid polluting pair computation.
     pub fn add_pool(&mut self, state: PoolState) {
         let addr = state.address();
@@ -397,7 +397,7 @@ impl PoolManager {
                 let lb = self.pool_liquidity_estimate(b);
                 lb.cmp(&la)
             });
-            // Use per-token-tier max_pairs if configured, else global default (H3)
+            // Use per-token-tier max_pairs if configured, else global default
             let token_limit = self.effective_max_pairs(token);
             let limit = if token_limit == 0 {
                 sorted.len()
@@ -442,7 +442,7 @@ impl PoolManager {
     }
 
     // ------------------------------------------------------------------
-    // #9: runtime transfer-tax learning
+    // runtime transfer-tax learning
     // ------------------------------------------------------------------
 
     /// Whether `token` is known to be transfer-taxed: listed in the static FOT
@@ -715,7 +715,7 @@ impl PoolManager {
             }
         }
 
-        // 2. C5 fallback: try a 2-hop path through an intermediate token
+        // 2. fallback: try a 2-hop path through an intermediate token
         //    token -> intermediate -> native
         self.normalize_to_native_multi_hop(token, amount, native)
     }

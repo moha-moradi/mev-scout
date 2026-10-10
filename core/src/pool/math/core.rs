@@ -1,6 +1,5 @@
 //! Uniswap V2/V3 AMM math: constant-product formulas, optimal arbitrage amounts, multi-hop routing,
 //! and unified `quote_exact_in` dispatcher for all pool types.
-
 use super::consts::GOLDEN_SECTION_REFINE_ITERATIONS;
 use super::fee::FeeTier;
 use crate::pool::state::PoolState;
@@ -119,7 +118,7 @@ pub fn quote_exact_in(
     }
 }
 
-/// One constant-product leg, oriented in swap direction (W5.1/W5.2).
+/// One constant-product leg, oriented in swap direction.
 ///
 /// Bundles reserves with the unit-explicit fee so a bps fee can never be
 /// read where ppm is expected.

@@ -3,6 +3,7 @@
 //! The activity-scanner tests hit a live RPC endpoint and are gated like the
 //! CLI E2E suite: they need `MEV_SCOUT_E2E=1` and `RPC_URL`, otherwise they
 //! skip gracefully (no fallback to the repo `mev-scout.toml`).
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use alloy::primitives::{address, U256};
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
 use mev_scout_core::pipeline::scanner::ActivityScanner;

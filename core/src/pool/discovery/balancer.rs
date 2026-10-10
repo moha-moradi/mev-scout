@@ -1,4 +1,5 @@
 use super::BALANCER_POOL_REGISTERED_TOPIC;
+use crate::utils::topic_address;
 use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
@@ -19,8 +20,8 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
         let mut pool_id = [0u8; 32];
         pool_id.copy_from_slice(t[1].as_slice());
         let pool_addr = Address::from_slice(&pool_id[..20]);
-        let token_in = Address::from_slice(&t[2][12..]);
-        let token_out = Address::from_slice(&t[3][12..]);
+        let token_in = topic_address(t[2]);
+        let token_out = topic_address(t[3]);
         Some(PoolHitCandidate {
             pool_id: Some(pool_id),
             tokens: Some((token_in, token_out)),
@@ -63,7 +64,7 @@ pub(crate) async fn scan_balancer_batch(ctx: &ScanContext<'_>) -> ScanBatchResul
                     }
                     let mut pool_id = [0u8; 32];
                     pool_id.copy_from_slice(topics[1].as_slice());
-                    let pool_addr = Address::from_slice(&topics[2][12..32]);
+                    let pool_addr = topic_address(topics[2]);
                     let creation_block = log.block_number.unwrap_or(0);
                     out.pool_hits.entry(pool_addr).or_insert(PoolHit {
                         dex_type: DexType::Balancer,

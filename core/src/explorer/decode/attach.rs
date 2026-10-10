@@ -24,7 +24,7 @@ fn combine_leg_source(token_in: Option<SideHow>, token_out: Option<SideHow>) -> 
 
 /// Resolve swap token directions from the tx's transfer stream.
 ///
-/// Resolution order (Phase 1.1):
+/// Resolution order:
 ///
 /// 1. Pool registry (`pool_tokens`) maps token0/token1 sentinels. Provenance
 ///    is [`LegSource::Registry`].
@@ -95,7 +95,7 @@ pub fn attach_swap_tokens(
         let mut token_out = Address::ZERO;
         let mut best_in: Option<i64> = None;
         let mut best_out: Option<i64> = None;
-        // Flow-ownership (§7.1): the funder of the input leg is the address
+        // Flow-ownership: the funder of the input leg is the address
         // that transferred the input token into the pool right before the swap.
         let mut owner: Option<Address> = None;
         for t in transfers {

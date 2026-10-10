@@ -2,7 +2,6 @@
 //! using eth_getLogs. Enables log-first fetch optimization: instead of
 //! fetching every block in a range, scan for DEX events first and only
 //! fetch blocks that have relevant activity.
-
 use std::collections::HashSet;
 
 use alloy::primitives::Address;
@@ -138,7 +137,7 @@ pub(crate) mod topics {
 /// Scans block ranges for DEX pool activity using eth_getLogs.
 ///
 /// Construct an `ActivityScanner`, configure the batch size, then call
-/// `find_active_blocks()` to discover which blocks in a range contain
+/// `find_active_blocks` to discover which blocks in a range contain
 /// DEX events. Only those blocks need full block data fetching.
 pub struct ActivityScanner {
     rpc: RpcClient,
@@ -241,7 +240,7 @@ mod tests {
     fn v4_swap_topic_differs_from_v3() {
         assert_ne!(*topics::V4_SWAP, *topics::V3_SWAP);
         // Verified against v4-core PoolManager._swap:
-        // emit Swap(id, msg.sender, delta.amount0(), delta.amount1(),
+        // emit Swap(id, msg.sender, delta.amount0, delta.amount1,
         //           result.sqrtPriceX96, result.liquidity, result.tick, swapFee)
         assert_eq!(
             *topics::V4_SWAP,

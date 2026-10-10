@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use alloy::primitives::U256;
 use mev_scout_core::cache::SqliteStore;
 use mev_scout_core::config::Config;

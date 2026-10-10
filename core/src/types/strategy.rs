@@ -42,7 +42,7 @@ impl FlashLoanProvider {
     }
 
     /// Gas overhead for executing the flash loan wrapper call.
-    /// This covers `flashLoanSimple()` dispatch, provider accounting,
+    /// This covers `flashLoanSimple` dispatch, provider accounting,
     /// token transfers, callback execution, and repayment.
     /// Measured from on-chain flash loan arb transactions.
     pub fn gas_overhead(self) -> u64 {
@@ -89,7 +89,7 @@ const RETIRED_STRATEGY_NAMES: &[&str] = &["liquidation"];
 
 impl Strategy {
     /// The strategies the execution path actually runs. This is the single
-    /// source of truth: `all()` is both the `"all"` config expansion and the
+    /// source of truth: `all` is both the `"all"` config expansion and the
     /// default (`config::settings::default_strategies`).
     pub fn all() -> &'static [Strategy] {
         &[
@@ -122,7 +122,7 @@ impl Strategy {
             out.push(part.parse::<Strategy>().map_err(|e| e.to_string())?);
         }
         // An empty list is load-bearing: `job_live` / `job_run` gate
-        // `init_pools` on `!strategies.is_empty()`, so a config that named only
+        // `init_pools` on `!strategies.is_empty`, so a config that named only
         // retired strategies would skip pool sync and silently report zero
         // opportunities. Fail loudly instead.
         if out.is_empty() && saw_retired {
@@ -163,7 +163,7 @@ pub enum GasModel {
     #[serde(rename = "fixed")]
     Fixed,
     /// Use the N-th percentile effective gas price from the historical
-    /// distribution tracked by `GasPriceDistribution` (H10).
+    /// distribution tracked by `GasPriceDistribution`.
     /// Storage value N (1–99) is the percentile. Example: `Distribution(90)`
     /// uses the 90th percentile from recent blocks' effective gas prices.
     #[serde(rename = "distribution")]
@@ -240,7 +240,7 @@ pub struct GasConfig {
     pub flash_loan_provider: FlashLoanProvider,
     pub winning_bid_premium: f64,
     /// Pre-computed N-th percentile effective gas price from the historical
-    /// gas price distribution (H10). When set, `GasModel::Distribution(p)`
+    /// gas price distribution. When set, `GasModel::Distribution(p)`
     /// uses this value instead of the crude
     /// `base_fee * 150%` multiplier. Set by `BacktestRunner` before each
     /// block based on recent blocks' effective gas prices.
@@ -268,7 +268,7 @@ impl GasConfig {
     /// For `GasModel::Distribution(p)`, uses the
     /// pre-computed `percentile_gas_price` from the historical distribution
     /// when available, falling back to the crude `base_fee * 150%` multiplier
-    /// when distribution data has not been collected yet (H10).
+    /// when distribution data has not been collected yet.
     ///
     /// For `GasModel::HistoricalExact`, when a block's base fee is missing
     /// (`0`), the same percentile fallback is applied so gas is never
@@ -290,7 +290,7 @@ impl GasConfig {
             GasModel::HistoricalExact => exact_gas(base_fee_per_gas).saturating_add(pf_wei),
             GasModel::Fixed => pf_wei,
             GasModel::Distribution(_) => {
-                // Use histogram-derived percentile when available (H10),
+                // Use histogram-derived percentile when available,
                 // fall back to the crude 150% multiplier while collecting data.
                 self.percentile_gas_price
                     .unwrap_or_else(|| base_fee_per_gas.saturating_mul(150).saturating_div(100))

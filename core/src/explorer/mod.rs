@@ -20,8 +20,8 @@
 //! `Backrun` > `ArbAtomic` > `JitArb` > `Jit` > `Liquidation` > `Skim`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
-//! is non-positive is dropped at persist time (Phase 1.4 profitability gate).
-//! The atomic-arb pass (Phase 1.2) requires the closed-cycle swaps to belong to
+//! is non-positive is dropped at persist time (profitability gate).
+//! The atomic-arb pass requires the closed-cycle swaps to belong to
 //! a single funder-owner that is a searcher candidate of that transaction
 //! (`exact`) unless the cycle is unowned (`estimated`); it is otherwise skipped
 //! to control false positives.

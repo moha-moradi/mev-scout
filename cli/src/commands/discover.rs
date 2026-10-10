@@ -1,5 +1,4 @@
 //! Pool discovery command (orchestration lives in `mev_scout_core::jobs`).
-
 use crate::cli::DiscoverArgs;
 use crate::job_progress::JobProgress;
 use mev_scout_core::config::Config;

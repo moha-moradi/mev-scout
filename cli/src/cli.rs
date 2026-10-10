@@ -1,5 +1,4 @@
 //! CLI argument parsing via clap, defining the command-line interface for mev-scout.
-
 use clap::{Args, Parser, Subcommand};
 
 /// MEV Scout — MEV opportunity scanner & backtester for EVM-compatible chains.
@@ -99,7 +98,7 @@ pub enum ExplorerCommand {
     Show(ShowArgs),
 
     /// Cross-validation report: realized explorer ops vs scanner
-    /// opportunities (T1/T2/T3 matching). Read-only; does no RPC.
+    /// opportunities (exact, overlap, and block-level matching). Read-only; does no RPC.
     ///
     /// Research tooling, hidden from the default surface. Enable with
     /// `cargo build -p mev-scout-cli --features validate`.
@@ -231,7 +230,7 @@ pub struct ExplorerValidateArgs {
     #[arg(long = "review-csv", value_name = "FILE")]
     pub review_csv: Option<String>,
 
-    /// Embed the Phase 0.5 labeled causal-set score in the report
+    /// Embed the labeled causal-set score in the report
     #[arg(long = "golden-causal")]
     pub golden_causal: bool,
 

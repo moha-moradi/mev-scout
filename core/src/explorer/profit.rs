@@ -12,7 +12,6 @@
 //!   native token are excluded from deltas when the paired native flow exists
 //! - flash-loan borrow/repay is netted before residual computation when the
 //!   same (token, counterparty=pools) pair loops
-
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};
@@ -32,8 +31,8 @@ pub struct ProfitTokenPolicy {
 }
 
 /// Wrap-pair noise: a transfer from/to the wrapped-native contract in the
-/// same tx as native-value movement. WETH `deposit()` emits
-/// `Transfer(0x0, me, wad)` + `Withdrawal(me, wad)`; `withdraw()` emits
+/// same tx as native-value movement. WETH `deposit` emits
+/// `Transfer(0x0, me, wad)` + `Withdrawal(me, wad)`; `withdraw` emits
 /// `Transfer(me, 0x0, wad)`. Mints/burns on the wrapper are delta noise for
 /// searchers that wrap mid-tx.
 fn is_wrap_noise(t: &TransferFact, wrapped_native: Address) -> bool {
@@ -149,7 +148,7 @@ pub fn select_profit_token(
     best.map(|(_, t)| t)
 }
 
-/// Atomic-arb cycle check (§8.1): walk the directed graph formed by resolved
+/// Atomic-arb cycle check: walk the directed graph formed by resolved
 /// swap edges (`token_in → token_out`) and report whether any closed walk
 /// returns to its start using ≥2 edges over ≥2 distinct pools.
 ///

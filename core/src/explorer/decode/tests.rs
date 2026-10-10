@@ -357,7 +357,7 @@ fn liquidation_compound_v2_decodes() {
     assert_eq!(liq.collateral_amount, U256::from(500));
 }
 
-/// P0.2 positive (آ§17.8.4 mode A / آ§24): Compound V2 `LiquidateBorrow`
+/// P0.2 positive (آ mode A / آ): Compound V2 `LiquidateBorrow`
 /// emitted by a Benqi qiToken market shares topic0 with Compound, so only
 /// the emitter address identifies the protocol â€” the alias registry
 /// relabels it to `benqi`. Amounts (the `O` P&L inputs) are untouched.
@@ -493,7 +493,7 @@ fn attach_tokens_pairs_transfers() {
     assert_eq!(s.token_in, tin);
     assert_eq!(s.token_out, tout);
     assert_eq!(s.token_source, LegSource::Transfer);
-    // Flow ownership (آ§7.1): the funder of the input leg is the `from` of
+    // Flow ownership (آ): the funder of the input leg is the `from` of
     // the nearest inbound transfer to the pool before the swap log.
     assert_eq!(
         s.owner,

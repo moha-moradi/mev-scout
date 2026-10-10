@@ -2,7 +2,6 @@
 //!
 //! These types are the serialization boundary between the core backtest engine,
 //! the CLI output layer, and the API serialization layer.
-
 use crate::types::strategy::Strategy;
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
@@ -59,7 +58,7 @@ impl std::str::FromStr for DetectionPath {
 /// `victim_tx_index` carries the same index semantically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MevOpportunity {
-    /// Canonical dedup ID (L9): derived from strategy + key fields to uniquely
+    /// Canonical dedup ID: derived from strategy + key fields to uniquely
     /// identify this opportunity across detectors and aggregation passes.
     /// Example: "TwoHopArb|0xaaa|0xbbb|0xccc|0xddd".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,7 +100,7 @@ pub struct MevOpportunity {
     pub gas_cost_wei: u128,
     /// Timestamp of the block
     pub timestamp: u64,
-    /// Full pool path for multi-hop opportunities (e.g., [buy, intermediate, ..., sell])
+    /// Full pool path for multi-hop opportunities (e.g., [buy, intermediate,..., sell])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<Vec<Address>>,
     /// Tick range lower bound (JIT liquidity positions)
@@ -154,7 +153,7 @@ pub struct CanonicalIdParts {
     pub token_out: Address,
 }
 
-/// Build a canonical dedup string from the opportunity's key fields (L9).
+/// Build a canonical dedup string from the opportunity's key fields.
 pub fn compute_canonical_id(parts: CanonicalIdParts) -> String {
     format!(
         "{:?}|{:#x}|{:#x}|{:#x}|{:#x}",

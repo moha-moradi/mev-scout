@@ -8,7 +8,7 @@
 //!   Fluid, Metric
 //! - liquidation registry: Aave V3 `LiquidationCall` (+ Spark address alias),
 //!   Compound V3 `Absorb`/`BuyCollateral`, Compound V2 `LiquidateBorrow`,
-//!   Morpho Blue / Silo V2 / Euler V2 liquidations (§17.8.4 / §24 / §26)
+//!   Morpho Blue / Silo V2 / Euler V2 liquidations ( / /)
 //! - V3 `Mint`/`Burn` (JIT positions)
 //! - UniV2 `Sync`/`Mint`/`Burn` (skim exclusion)
 //!
@@ -16,7 +16,6 @@
 //! Transfer legs that move tokens into/out of the pool in the same tx
 //! (registry-free, chain-generic). Pool-registry lookups can enrich later but
 //! are not required for classification.
-
 mod aggregator;
 mod attach;
 mod flash_loan;

@@ -5,25 +5,24 @@
 //! the runner buffers every candidate dropped by its filters with a reason;
 //! `run`/`live` drain the buffer into the explorer store's
 //! `rejected_candidates` table.
-
 use serde::{Deserialize, Serialize};
 
 /// Why a candidate was rejected (reason enum).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
-    /// Pool for an edge is absent from `PoolManager` (M1).
+    /// Pool for an edge is absent from `PoolManager`.
     NoPool,
-    /// Venue class not supported / wrong fee tier (M2).
+    /// Venue class not supported / wrong fee tier.
     NoPath,
-    /// Quote returned zero/negative expected profit (M5).
+    /// Quote returned zero/negative expected profit.
     QuoteNonpositive,
-    /// Profit below `min_profit_wei` threshold (M3).
+    /// Profit below `min_profit_wei` threshold.
     BelowMinProfit,
-    /// Expected profit does not cover gas cost (M4).
+    /// Expected profit does not cover gas cost.
     GasDominates,
     /// Dropped by the per-tx top-N cap (normal competition pressure).
     MaxCandidates,
-    /// Scanner never ran over the block (M7) — recorded by `validate`, not
+    /// Scanner never ran over the block — recorded by `validate`, not
     /// by the runner; listed here so the enum is exhaustive.
     StateStale,
     /// Anything else (M-detail in `detail`).

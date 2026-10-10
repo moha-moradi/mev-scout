@@ -7,7 +7,7 @@ use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
 use super::BlockInput;
 
-/// Realized UniV2 `skim()` capture: registry V2-like pair outbound Transfers
+/// Realized UniV2 `skim` capture: registry V2-like pair outbound Transfers
 /// that are not accompanied by a same-tx Swap, Sync, Mint, or Burn on that pair.
 pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
     if input.v2_like_pools.is_empty() {

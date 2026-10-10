@@ -540,7 +540,7 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// Blocks with realized ops of a kind (block-level recall, T3).
+    /// Blocks with realized ops of a kind (block-level recall, block-level recall).
     pub fn blocks_with_kind(
         &self,
         from_block: u64,
@@ -561,7 +561,7 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// Blocks where the scanner recorded opportunities (M7 coverage check).
+    /// Blocks where the scanner recorded opportunities ( coverage check).
     pub fn opportunity_blocks(
         &self,
         chain: &str,

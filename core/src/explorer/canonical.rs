@@ -7,14 +7,13 @@
 //! - arb: kind + sorted pool set + endpoint tokens (route direction varies
 //!   between searchers and simulation, so the pool *set* is canonical, not order)
 //! - sandwich: kind + pool + victim/backrun tx indices (matches the
-//!   opportunity-side `Sandwich|pool|victim:N|backrun:M` form)
+//!   opportunity-side `Sandwich|pool|victim::N|backrun::M` form)
 //! - liquidation: borrower+liquidator pair rather than asset pair
 //! - jit: pool + tick range
 //!
-//! Note: T1 exact matching via these strings is *aspirational* —
+//! Note: exact canonical-id matching via these strings is *aspirational* —
 //! opportunity canonical IDs come from simulation, realized IDs from flows,
-//! and they rarely coincide. `validate` must still report at T2/T3 tiers.
-
+//! and they rarely coincide. `validate` must still report at overlap and block-level tiers.
 use alloy::primitives::Address;
 
 use crate::explorer::types::MevEvent;

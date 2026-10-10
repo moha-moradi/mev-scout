@@ -1,10 +1,10 @@
 use super::LB_PAIR_CREATED_TOPIC;
+use crate::utils::topic_address;
 use super::{
     resolve_dex_name, DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext,
 };
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
 /// Trader Joe / LFJ V2 activity: LBPair contracts are per-pool and emit their
@@ -45,9 +45,9 @@ pub(crate) async fn scan_trader_joe_batch(ctx: &ScanContext<'_>) -> ScanBatchRes
                         if topics.len() < 4 || log_data.data.len() < 64 {
                             continue;
                         }
-                        let lb_pair = Address::from_slice(&topics[1][12..32]);
-                        let token0 = Address::from_slice(&topics[2][12..32]);
-                        let token1 = Address::from_slice(&topics[3][12..32]);
+                        let lb_pair = topic_address(topics[1]);
+                        let token0 = topic_address(topics[2]);
+                        let token1 = topic_address(topics[3]);
                         let creation_block = log.block_number.unwrap_or(0);
                         out.pool_hits.entry(lb_pair).or_insert(PoolHit {
                             dex_type: DexType::TraderJoeLB,

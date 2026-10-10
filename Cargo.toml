@@ -6,8 +6,8 @@ members = ["core", "cli"]
 warnings = "deny"
 
 [workspace.lints.clippy]
-unwrap_used = "allow"  # ratchet: ~100 prod sites; CI still denies other warnings
-expect_used = "allow"  # ratchet: scoped #[allow] preferred when flipping to deny
+unwrap_used = "deny"
+expect_used = "deny"
 
 [workspace.dependencies]
 anyhow = "1"

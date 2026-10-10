@@ -22,7 +22,6 @@
 //! `transact_commit` hot path: the un-committed `CacheDB` still holds the
 //! pre-tx balances while the returned `EvmState` carries the post-tx ones, so
 //! deltas are read before the caller's journal is dropped.
-
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};

@@ -1,6 +1,6 @@
 //! Event log decoders for Uniswap V2/V3, Curve, and Balancer pool interactions.
-
 use std::sync::LazyLock;
+use crate::utils::topic_address;
 
 use alloy::primitives::{b256, keccak256, Address, B256, I256, U256};
 
@@ -32,7 +32,7 @@ pub const BALANCER_SWAP_TOPIC: B256 =
 
 /// Trader Joe LB 2.0/2.2: Swap(address indexed sender, address indexed to,
 /// bool swapForY, uint256 amountIn, uint256 amountOutX, uint256 amountOutY,
-/// uint256 totalFee, uint256 flashParameter).  Hash verified against the
+/// uint256 totalFee, uint256 flashParameter). Hash verified against the
 /// canonical LB 2.0 signature `Swap(address,address,uint256,bool,uint256,
 /// uint256,uint256,uint256)`.
 pub static LB_SWAP_TOPIC: LazyLock<B256> =
@@ -271,8 +271,8 @@ pub fn decode_balancer_swap(log: &ExecutedLog) -> Option<BalancerSwapDecoded> {
     }
 
     let pool_id: [u8; 32] = log.topics[1].into();
-    let token_in = Address::from_slice(&log.topics[2].as_slice()[12..]);
-    let token_out = Address::from_slice(&log.topics[3].as_slice()[12..]);
+    let token_in = topic_address(log.topics[2].as_slice());
+    let token_out = topic_address(log.topics[3].as_slice());
     let amount_in = u128_from_be_bytes(&log.data[..32]);
     let amount_out = u128_from_be_bytes(&log.data[32..64]);
 

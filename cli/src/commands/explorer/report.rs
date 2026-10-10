@@ -2,7 +2,6 @@
 //! window (1d/7d/30d default), broken out per MEV kind, with a daily trend,
 //! competitors / top searchers/pools, and a top-op detail list. Pure SQL over
 //! the store — requires history (see ``explorer index``).
-
 use super::*;
 
 use serde::Serialize;

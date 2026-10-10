@@ -55,6 +55,7 @@
 //! `profit_usd` is only populated when a pool/price cache is available
 //! (`MEV_SCOUT_POOL_CACHE`, else `cache/{chain}-mev-scout.sqlite`); without one
 //! every USD field reads `$0.00` and `profit_usd_min` should stay `None`.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 use common::rpc_url;
 
@@ -64,7 +65,7 @@ use alloy::primitives::{address, Address};
 
 use mev_scout_core::config::validation::resolve_chain;
 use mev_scout_core::config::Config;
-use mev_scout_core::explorer::ingest::{run_range, IngestConfig, PoolViews};
+use mev_scout_core::explorer::ingest::{run_range, IngestConfig, PoolViews, RangeRequest};
 use mev_scout_core::explorer::scenario_targets::{
     hunt_targets, seeded_targets, RealSeedStatus, STRATEGY_SCENARIO_TARGETS,
 };
@@ -553,10 +554,12 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
                 v2_like: &registry.v2_like,
                 epoch_venue: &registry.epoch_venue,
             },
-            *from,
-            *to,
+            RangeRequest {
+                from_block: *from,
+                to_block: *to,
+                block_concurrency: 1,
+            },
             &NoopProgress,
-            1,
         )
         .await
         {

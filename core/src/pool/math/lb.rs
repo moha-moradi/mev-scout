@@ -4,7 +4,6 @@
 //! Within the active bin, swaps follow constant-product x * y = k.
 //! Cross-bin swaps aggregate liquidity across multiple bins, each at a
 //! different price. This module quotes a swap within the active bin.
-
 use super::fee::FeeTier;
 
 /// Quote an output amount for a swap within the active bin.

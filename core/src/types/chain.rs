@@ -1,5 +1,4 @@
 //! Core type definitions: chain names, strategies, gas config, output formats, and flash loan providers.
-
 use alloy::primitives::Address;
 
 /// A known public RPC endpoint with metadata for rate-limit-aware load distribution.
@@ -143,7 +142,7 @@ impl ChainName {
         }
     }
 
-    /// Primary public (free-tier) RPC endpoint — shortcut for `public_rpc_endpoints()[0].url`.
+    /// Primary public (free-tier) RPC endpoint — shortcut for `public_rpc_endpoints[0].url`.
     pub fn public_rpc_url(&self) -> &'static str {
         self.public_rpc_endpoints()[0].url
     }

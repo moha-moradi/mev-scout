@@ -1,6 +1,5 @@
-//! Phase-2 pool metadata fetch — per-DEX `token0()`/`token1()`/`fee()`
+//! Phase-2 pool metadata fetch — per-DEX `token0`/`token1`/`fee`
 //! resolution for pools discovered only through DEX activity events.
-
 use std::future::Future;
 use std::pin::Pin;
 
@@ -10,6 +9,7 @@ use super::{DexType, RpcClient};
 use crate::pool::selectors::{
     FEE, PENDLE_SY, TICK_SPACING, TOKEN0, TOKEN1, TRADER_JOE_TOKEN_X, TRADER_JOE_TOKEN_Y,
 };
+use crate::utils::abi_decode_address;
 
 /// Per-DEX fallback swap fee (ppm) applied when metadata fetch returns none or
 /// the pool type has no on-chain fee. V2/Solidly default to 30 bps unless the
@@ -82,14 +82,16 @@ pub(super) fn fetch_pool_metadata(
                 let (r0, r1) =
                     futures::future::join(
                         async {
-                            rpc.call_latest(addr, sel0).await.ok().and_then(|b| {
-                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
-                            })
+                            rpc.call_latest(addr, sel0)
+                                .await
+                                .ok()
+                                .and_then(|b| abi_decode_address(&b, 0))
                         },
                         async {
-                            rpc.call_latest(addr, sel1).await.ok().and_then(|b| {
-                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
-                            })
+                            rpc.call_latest(addr, sel1)
+                                .await
+                                .ok()
+                                .and_then(|b| abi_decode_address(&b, 0))
                         },
                     )
                     .await;
@@ -106,7 +108,7 @@ pub(super) fn fetch_pool_metadata(
         }
         DexType::TraderJoeLB => {
             // Per-pair contracts work with direct calls, but an LBPair exposes
-            // `tokenX()`/`tokenY()`, NOT `token0()`/`token1()`; the standard
+            // `tokenX`/`tokenY`, NOT `token0`/`token1`; the standard
             // selectors revert and would leave tokens unresolved.
             let sel_x = TRADER_JOE_TOKEN_X.clone();
             let sel_y = TRADER_JOE_TOKEN_Y.clone();
@@ -114,14 +116,16 @@ pub(super) fn fetch_pool_metadata(
                 let (r0, r1) =
                     futures::future::join(
                         async {
-                            rpc.call_latest(addr, sel_x).await.ok().and_then(|b| {
-                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
-                            })
+                            rpc.call_latest(addr, sel_x)
+                                .await
+                                .ok()
+                                .and_then(|b| abi_decode_address(&b, 0))
                         },
                         async {
-                            rpc.call_latest(addr, sel_y).await.ok().and_then(|b| {
-                                (b.len() >= 32).then(|| Address::from_slice(&b[12..32]))
-                            })
+                            rpc.call_latest(addr, sel_y)
+                                .await
+                                .ok()
+                                .and_then(|b| abi_decode_address(&b, 0))
                         },
                     )
                     .await;
@@ -142,13 +146,13 @@ pub(super) fn fetch_pool_metadata(
                     rpc.call_latest(addr, sel0)
                         .await
                         .ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        .and_then(|b| abi_decode_address(&b, 0))
                 },
                 async {
                     rpc.call_latest(addr, sel1)
                         .await
                         .ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])))
+                        .and_then(|b| abi_decode_address(&b, 0))
                 },
                 async {
                     rpc.call_latest(addr, sel_fee).await.ok().and_then(|b| {
@@ -214,12 +218,12 @@ pub(super) fn fetch_pool_metadata(
         }
         DexType::Pendle => {
             // Pendle markets from activity events: token0 is PT (known), token1
-            // is its SY yield source, resolved via PT.SY().
+            // is its SY yield source, resolved via PT.SY.
             let (t0, _) = event_tokens.unwrap_or((Address::ZERO, Address::ZERO));
             Some(Box::pin(async move {
                 let token1 = if !t0.is_zero() {
                     match rpc.call_latest(t0, PENDLE_SY.clone()).await {
-                        Ok(b) if b.len() >= 32 => Some(Address::from_slice(&b[12..32])),
+                        Ok(b) => abi_decode_address(&b, 0),
                         _ => None,
                     }
                 } else {

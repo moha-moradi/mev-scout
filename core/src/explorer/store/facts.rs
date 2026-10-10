@@ -216,7 +216,7 @@ impl ExplorerStore {
             let mut inserted = 0usize;
             let mut pending_labels: Vec<(Address, Option<Address>, u64)> = Vec::new();
             for ev in events {
-                // Liquidation P&L (Phase 1.3): profit ≈ collateral_usd −
+                // Liquidation P&L: profit ≈ collateral_usd −
                 // debt_usd, valued at persist with hourly prices. Never
                 // subtract raw amounts when tokens differ.
                 let mut confidence = ev.confidence.as_str();
@@ -230,9 +230,9 @@ impl ExplorerStore {
                     details_json = details;
                     usd
                 } else if !ev.profit_tokens.is_empty() {
-                    // Phase 2.3: USD-sum across every positive residual
+                    // USD-sum across every positive residual
                     // (flash-netting already cleaned the ledger in 2.2) with
-                    // Phase 2.4 realized-rate fallback for unpriced tokens.
+                    // realized-rate fallback for unpriced tokens.
                     // A missing quote is not zero: the sum is partial and marked
                     // approximate instead of being stored as a complete figure.
                     let mut total = 0.0f64;
@@ -308,7 +308,7 @@ impl ExplorerStore {
                 if pricing_clamped {
                     note_pricing_issue(&mut details_json, "pricing_clamped");
                 }
-                // Phase 2.4: FOT / rebase profit tokens are flagged approximate
+                // FOT / rebase profit tokens are flagged approximate
                 // (recorded amounts are distorted by the token mechanics).
                 if let Some(reason) = ev
                     .profit_tokens
@@ -339,7 +339,7 @@ impl ExplorerStore {
                     (Some(g), Some(gg)) => Some(g - gg - flashloan_fee_usd.unwrap_or(0.0)),
                     _ => None,
                 };
-                // Sandwich profitability gate (Phase 1.4): a sandwich whose
+                // Sandwich profitability gate: a sandwich whose
                 // extractable profit does not cover combined front+back gas
                 // (plus any flash-loan fee) is not a realized-MEV op. Drop it
                 // rather than persist a provably lossy record. Unowned-net

@@ -6,6 +6,7 @@
 //! profit token/amount, gas, and the persisted `mev_ops` rows with their
 //! canonical IDs. No external RPC required.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::collections::HashMap;
 
 use alloy::primitives::{address, Address, B256, U256};

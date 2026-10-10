@@ -15,10 +15,9 @@
 //! [`spec_id_for_block`] for details.
 //!
 //! ## Receipt verification
-//! After each transaction, `verify_receipt()` compares the revm execution
+//! After each transaction, `verify_receipt` compares the revm execution
 //! result against cached receipts (status, gas used, logs). Polygon system
 //! logs from `0x1001` and `0x1010` are filtered during comparison.
-
 /// Build a `MainnetEvm` for the given block, handling DB creation and Polygon setup.
 macro_rules! build_mainnet_evm {
     ($self:expr, $block_num:expr, $block:expr) => {{
@@ -192,8 +191,8 @@ pub fn register_polygon_precompiles(
 /// replays them through revm with `CachedRpcDb` for lazy state fetching.
 ///
 /// ## Replay modes
-/// - `replay_to()` — replay up to a specific tx index (used by CLI `replay`)
-/// - `replay_each_filtered()` — replay with a filter to skip non-pool txs
+/// - `replay_to` — replay up to a specific tx index (used by CLI `replay`)
+/// - `replay_each_filtered` — replay with a filter to skip non-pool txs
 ///
 /// The filtered mode is the critical performance optimization: most
 /// transactions in a block do not interact with tracked DEX pools, and

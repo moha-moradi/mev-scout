@@ -166,7 +166,7 @@ pub fn aggregate_with_prices(
     let mut total = 0_usize;
 
     // Deduplicate by canonical_id when available, falling back to
-    // (block, pool pair, token pair) for backward compatibility (L9).
+    // (block, pool pair, token pair) for backward compatibility.
     let mut dedup_seen = std::collections::HashSet::<String>::new();
     for opp in opportunities.iter().filter(|opp| {
         let key = if let Some(ref cid) = opp.canonical_id {
@@ -195,7 +195,7 @@ pub fn aggregate_with_prices(
         if profit_eth > best_single_opp {
             best_single_opp = profit_eth;
         }
-        // Per-token USD: use token_out price if available, else native fallback (L3)
+        // Per-token USD: use token_out price if available, else native fallback
         let token_price = token_prices
             .get(&opp.token_out)
             .or_else(|| token_prices.get(&Address::ZERO))
@@ -251,7 +251,7 @@ pub fn aggregate_with_prices(
             if pe > best_opp {
                 best_opp = pe;
             }
-            // Per-token USD: use token_out price if available, else native fallback (L3)
+            // Per-token USD: use token_out price if available, else native fallback
             let token_price = token_prices
                 .get(&opp.token_out)
                 .or_else(|| token_prices.get(&Address::ZERO))
@@ -370,7 +370,7 @@ pub fn aggregate_with_prices(
 /// `StrategyMetrics` shapes as [`aggregate`].
 ///
 /// A paper session persists [`PaperFill`] rows (gross/gas/net in wei, strategy
-/// as `Strategy::to_string()`), not `MevOpportunity`, so the opportunity-shaped
+/// as `Strategy::to_string`), not `MevOpportunity`, so the opportunity-shaped
 /// entry point cannot consume them directly. This adapter projects fills back
 /// onto the shared rollup so callers can surface per-strategy net and ROI
 /// instead of only a flat per-fill table (MEV-VERIFICATION §C.3).
@@ -439,8 +439,7 @@ mod tests {
 
     const ETH: u64 = 1_000_000_000_000_000_000;
 
-    #[allow(clippy::too_many_arguments)]
-    fn opp(
+    struct TestOppParams<'a> {
         block: u64,
         tx: usize,
         strategy: Strategy,
@@ -448,15 +447,17 @@ mod tests {
         pool_b: Address,
         profit_wei: u64,
         gas_wei: u64,
-        cid: Option<&str>,
-    ) -> MevOpportunity {
-        let mut o = MevOpportunity::new(block, tx, strategy, pool_a, 1_700_000_000);
-        o.pool_b = pool_b;
+        cid: Option<&'a str>,
+    }
+
+    fn opp(p: TestOppParams<'_>) -> MevOpportunity {
+        let mut o = MevOpportunity::new(p.block, p.tx, p.strategy, p.pool_a, 1_700_000_000);
+        o.pool_b = p.pool_b;
         o.token_in = address!("1111000000000000000000000000000000000001");
         o.token_out = address!("2222000000000000000000000000000000000002");
-        o.expected_profit = U256::from(profit_wei);
-        o.gas_cost_wei = gas_wei as u128;
-        o.canonical_id = cid.map(|s| s.to_string());
+        o.expected_profit = U256::from(p.profit_wei);
+        o.gas_cost_wei = p.gas_wei as u128;
+        o.canonical_id = p.cid.map(|s| s.to_string());
         o
     }
 
@@ -465,38 +466,38 @@ mod tests {
         let pool_a = address!("aaaa000000000000000000000000000000000001");
         let pool_b = address!("bbbb000000000000000000000000000000000002");
         // Two rows with the SAME canonical id (cross-run duplicates)…
-        let dup1 = opp(
-            10,
-            0,
-            Strategy::TwoHopArb,
+        let dup1 = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
             pool_a,
             pool_b,
-            ETH,
-            ETH / 4,
-            Some("c1"),
-        );
-        let dup2 = opp(
-            10,
-            0,
-            Strategy::TwoHopArb,
+            profit_wei: ETH,
+            gas_wei: ETH / 4,
+            cid: Some("c1"),
+        });
+        let dup2 = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
             pool_a,
             pool_b,
-            ETH,
-            ETH / 4,
-            Some("c1"),
-        );
+            profit_wei: ETH,
+            gas_wei: ETH / 4,
+            cid: Some("c1"),
+        });
         // …and one without a canonical id: its fallback key (strategy, block,
         // pools, tokens) is a DIFFERENT key than the shared cid, so it survives.
-        let noref = opp(
-            10,
-            0,
-            Strategy::TwoHopArb,
+        let noref = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
             pool_a,
             pool_b,
-            ETH,
-            ETH / 4,
-            None,
-        );
+            profit_wei: ETH,
+            gas_wei: ETH / 4,
+            cid: None,
+        });
 
         let agg = aggregate(&[dup1, dup2, noref], &[], 1.0);
         assert_eq!(
@@ -518,16 +519,16 @@ mod tests {
     fn aggregate_roi_formula_and_net_gas() {
         let pool_a = address!("aaaa000000000000000000000000000000000001");
         let pool_b = address!("bbbb000000000000000000000000000000000002");
-        let o = opp(
-            10,
-            0,
-            Strategy::TwoHopArb,
+        let o = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
             pool_a,
             pool_b,
-            ETH + ETH / 2,
-            ETH / 2,
-            Some("c2"),
-        );
+            profit_wei: ETH + ETH / 2,
+            gas_wei: ETH / 2,
+            cid: Some("c2"),
+        });
         // gross 1.5 ETH, gas 0.5 ETH → net 1.0 ETH, ROI = (1.0/0.5)*100 = 200%.
         let agg = aggregate(&[o], &[], 0.0);
         let arb = &agg.by_strategy["arb"];
@@ -540,7 +541,16 @@ mod tests {
             arb.roi
         );
         // Zero gas must not divide-by-zero.
-        let o0 = opp(11, 0, Strategy::Jit, pool_a, pool_b, ETH, 0, Some("c3"));
+        let o0 = opp(TestOppParams {
+            block: 11,
+            tx: 0,
+            strategy: Strategy::Jit,
+            pool_a,
+            pool_b,
+            profit_wei: ETH,
+            gas_wei: 0,
+            cid: Some("c3"),
+        });
         let agg0 = aggregate(&[o0], &[], 0.0);
         assert_eq!(agg0.by_strategy["jit"].roi, 0.0);
     }
@@ -550,37 +560,37 @@ mod tests {
         let pool_a = address!("aaaa000000000000000000000000000000000001");
         let pool_b = address!("bbbb000000000000000000000000000000000002");
         let ops = vec![
-            opp(
-                10,
-                0,
-                Strategy::TwoHopArb,
-                pool_a,
-                pool_b,
-                ETH,
-                ETH / 2,
-                Some("x1"),
-            ),
-            opp(
-                10,
-                1,
-                Strategy::Jit,
-                pool_b,
-                pool_a,
-                2 * ETH,
-                ETH,
-                Some("x2"),
-            ),
+            opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
+            pool_a,
+            pool_b,
+            profit_wei: ETH,
+            gas_wei: ETH / 2,
+            cid: Some("x1"),
+            }),
+            opp(TestOppParams {
+            block: 10,
+            tx: 1,
+            strategy: Strategy::Jit,
+            pool_a: pool_b,
+            pool_b: pool_a,
+            profit_wei: 2 * ETH,
+            gas_wei: ETH,
+            cid: Some("x2"),
+            }),
             // second jit, dedup-free canonical: adds to jit count
-            opp(
-                11,
-                0,
-                Strategy::Jit,
-                pool_b,
-                pool_a,
-                3 * ETH,
-                ETH,
-                Some("x3"),
-            ),
+            opp(TestOppParams {
+            block: 11,
+            tx: 0,
+            strategy: Strategy::Jit,
+            pool_a: pool_b,
+            pool_b: pool_a,
+            profit_wei: 3 * ETH,
+            gas_wei: ETH,
+            cid: Some("x3"),
+            }),
         ];
         let agg = aggregate(&ops, &[], 1.0);
         assert_eq!(agg.summary.total, 3);
@@ -614,16 +624,16 @@ mod tests {
             tx_count: 1,
             pool_addresses: vec![pool_b],
         };
-        let o = opp(
-            10,
-            0,
-            Strategy::TwoHopArb,
+        let o = opp(TestOppParams {
+            block: 10,
+            tx: 0,
+            strategy: Strategy::TwoHopArb,
             pool_a,
             pool_b,
-            ETH,
-            ETH / 2,
-            Some("y1"),
-        );
+            profit_wei: ETH,
+            gas_wei: ETH / 2,
+            cid: Some("y1"),
+        });
         let agg = aggregate(&[o], &[dex_a, dex_b], 1.0);
         let dexes = &agg.by_dex;
         assert_eq!(dexes.len(), 2, "both pools' dexes get an entry");

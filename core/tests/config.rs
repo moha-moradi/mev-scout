@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use alloy::primitives::address;
 use mev_scout_core::config::{
     BacktestOverrides, CliOverrides, Config, ConfigBuilder, GasOverrides, OutputConfig,

@@ -1,5 +1,6 @@
 //! ERC-20 Transfer and UniV2 Sync/Mint/Burn exclusion facts.
-use alloy::primitives::{Address, U256};
+use alloy::primitives::U256;
+use crate::utils::topic_address;
 
 use crate::chain::events::{TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SYNC_TOPIC};
 use crate::data::LogData;
@@ -17,8 +18,8 @@ pub fn decode_transfer(log: &LogData) -> Option<TransferFact> {
         tx_index: 0,  // stamped by caller
         log_index: 0, // stamped by caller
         token: log.address,
-        from: Address::from_slice(&log.topics[1][12..]),
-        to: Address::from_slice(&log.topics[2][12..]),
+        from: topic_address(log.topics[1]),
+        to: topic_address(log.topics[2]),
         amount: U256::from_be_slice(&log.data[0..32]),
     })
 }

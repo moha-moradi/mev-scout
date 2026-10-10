@@ -1,4 +1,5 @@
 use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
+use crate::utils::{abi_word_address, topic_address};
 use super::{CURVE_POOL_ADDED_TOPIC, CURVE_POOL_DEPLOYED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
@@ -64,13 +65,13 @@ pub(crate) async fn scan_curve_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         if topics.len() < 2 {
                             continue;
                         }
-                        Address::from_slice(&topics[1][12..32])
+                        topic_address(topics[1])
                     } else {
                         let data = log.data();
                         if data.data.len() < 32 {
                             continue;
                         }
-                        Address::from_slice(&data.data[12..32])
+                        abi_word_address(&data.data, 0)
                     };
                     let creation_block = log.block_number.unwrap_or(0);
                     out.pool_hits.entry(pool_addr).or_insert(PoolHit {
@@ -135,7 +136,7 @@ pub(super) async fn resolve_underlying_tokens(
                     };
                     match call {
                         Some(result) if result.0.len() >= 32 => {
-                            let token = Address::from_slice(&result.0[12..32]);
+                            let token = abi_word_address(&result.0, 0);
                             if token.is_zero() {
                                 break;
                             }

@@ -8,7 +8,6 @@
 //!
 //! Fee/tick-spacing metadata is not exposed (`fee = 0`); the pool-init
 //! metadata-repair phase resolves those from chain before quoting.
-
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 

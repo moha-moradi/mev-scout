@@ -1,5 +1,6 @@
 //! Scratch: reproduce the corpus's RPC transport against a given endpoint.
 #![allow(dead_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::net::{IpAddr, Ipv4Addr};
 #[tokio::main]
 async fn main() {

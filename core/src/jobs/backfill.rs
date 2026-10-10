@@ -1,7 +1,6 @@
 //! Historical explorer backfill: index a closed block range (clock or exact)
 //! into the explorer store so the revenue report's 1d/7d/30d windows have
 //! realized data. Idempotent and gap-resumable via `blocks_classified`.
-
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
@@ -9,7 +8,7 @@ use anyhow::{bail, Context};
 use crate::chain::timing::blocks_per_day;
 use crate::config::validation;
 use crate::config::Config;
-use crate::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews};
+use crate::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews, RangeRequest};
 use crate::explorer::store::ExplorerStore;
 use crate::progress::JobProgress;
 use crate::types::ChainName;
@@ -76,10 +75,12 @@ pub async fn job_backfill(
             v2_like: &registry.v2_like,
             epoch_venue: &registry.epoch_venue,
         },
-        from,
-        to,
+        RangeRequest {
+            from_block: from,
+            to_block: to,
+            block_concurrency: bc,
+        },
         progress,
-        bc,
     )
     .await?;
     let elapsed = t0.elapsed();

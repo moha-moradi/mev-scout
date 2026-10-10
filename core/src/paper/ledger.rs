@@ -2,7 +2,6 @@
 //!
 //! No I/O. Wallet delta per fill is a **single** subtraction:
 //! `wallet += expected_profit - gas_cost_wei` (never debit gas then credit net).
-
 use std::collections::{BTreeMap, HashSet};
 
 use alloy::primitives::{Address, U256};

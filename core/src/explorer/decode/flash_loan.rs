@@ -1,5 +1,6 @@
 //! Flash-loan event decoders.
 use alloy::primitives::{Address, U256};
+use crate::utils::{abi_word_address, topic_address};
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
@@ -8,7 +9,7 @@ use crate::chain::events::{
 use crate::data::LogData;
 use crate::explorer::types::FlashLoanFact;
 
-/// Decode a flash-loan fact from a receipt log (Phase 2.2).
+/// Decode a flash-loan fact from a receipt log.
 ///
 /// Covers Aave V2/V3, Balancer V2, Morpho Blue, and Uniswap V3 `Flash`.
 /// Uni V4 has no discrete Flash event (unlock/callback flash accounting only),
@@ -37,8 +38,8 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
             tx_index: 0,
             log_index: 0,
             protocol: "uniswap_v3",
-            initiator: Address::from_slice(&log.topics[1][12..]),
-            recipient: Address::from_slice(&log.topics[2][12..]),
+            initiator: topic_address(log.topics[1]),
+            recipient: topic_address(log.topics[2]),
             token: Address::ZERO,
             amount,
             fee: Some(fee),
@@ -57,9 +58,9 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
             tx_index: 0,
             log_index: 0,
             protocol: "aave_v3",
-            initiator: Address::from_slice(&log.data[12..32]),
-            recipient: Address::from_slice(&log.topics[1][12..]),
-            token: Address::from_slice(&log.topics[2][12..]),
+            initiator: abi_word_address(&log.data, 0),
+            recipient: topic_address(log.topics[1]),
+            token: topic_address(log.topics[2]),
             amount: U256::from_be_slice(&log.data[32..64]),
             fee: Some(U256::from_be_slice(&log.data[96..128])),
             provider: log.address,
@@ -77,9 +78,9 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
             tx_index: 0,
             log_index: 0,
             protocol: "aave_v2",
-            initiator: Address::from_slice(&log.topics[2][12..]),
-            recipient: Address::from_slice(&log.topics[1][12..]),
-            token: Address::from_slice(&log.topics[3][12..]),
+            initiator: topic_address(log.topics[2]),
+            recipient: topic_address(log.topics[1]),
+            token: topic_address(log.topics[3]),
             amount: U256::from_be_slice(&log.data[0..32]),
             fee: Some(U256::from_be_slice(&log.data[32..64])),
             provider: log.address,
@@ -104,19 +105,19 @@ pub fn decode_flash_loan(log: &LogData) -> Option<FlashLoanFact> {
     }
 
     // Morpho Blue: FlashLoan(address indexed caller, address indexed token,
-    //   uint256 assets) — 0% premium (§11 / P2.3 routing).
+    //   uint256 assets) — 0% premium ( / P2.3 routing).
     if topic0 == *MORPHO_BLUE_FLASH_LOAN_TOPIC {
         if log.topics.len() < 3 || log.data.len() < 32 {
             return None;
         }
-        let caller = Address::from_slice(&log.topics[1][12..]);
+        let caller = topic_address(log.topics[1]);
         return Some(FlashLoanFact {
             tx_index: 0,
             log_index: 0,
             protocol: "morpho_blue",
             initiator: caller,
             recipient: caller,
-            token: Address::from_slice(&log.topics[2][12..]),
+            token: topic_address(log.topics[2]),
             amount: U256::from_be_slice(&log.data[0..32]),
             fee: Some(U256::ZERO),
             provider: log.address,

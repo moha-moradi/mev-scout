@@ -1,5 +1,4 @@
 //! Configuration file parsing, types, and defaults for chains, strategies, and runtime parameters.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -213,10 +212,10 @@ pub struct ExplorerConfig {
     /// Live-mode polling interval in milliseconds.
     #[serde(default = "default_explorer_poll_ms")]
     pub poll_interval_ms: u64,
-    /// Mevlive-parity `arb_atomic` fallback (Phase 1.2). When true, a profitable
+    /// Mevlive-parity `arb_atomic` fallback. When true, a profitable
     /// non-cycle residual is still labeled arb (can FP simple swaps as arb).
     /// Default **false** so classification matches the closed-cycle + flow-
-    /// ownership rules in `docs/mev_strategies.md` §37.1 (Part V).
+    /// ownership rules in `docs/mev_strategies.md` (Part V).
     #[serde(default = "default_false")]
     pub arb_likely_parity: bool,
     /// Classifier-vs-trace profit tolerance for `explorer show --trace`
@@ -945,7 +944,7 @@ macro_rules! merge_sub {
 
 /// Builder for programmatic `Config` construction without TOML files.
 ///
-/// Starts from `Config::default()` and overrides only the fields explicitly
+/// Starts from `Config::default` and overrides only the fields explicitly
 /// set via chaining methods. Replaces ad-hoc struct construction in tests
 /// and CLI command adapters.
 ///

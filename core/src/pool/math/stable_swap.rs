@@ -1,5 +1,4 @@
 //! Shared StableSwap Newton's method math used by both Curve and Balancer.
-
 use super::consts::{NEWTON_CONVERGENCE_EPSILON, NEWTON_INVARIANT_ITERATIONS};
 
 /// Newton's method to find the StableSwap invariant D from N balances.

@@ -5,7 +5,6 @@
 //! Metric / Fluid have no verified on-chain health probe (Metric's pool ABI is
 //! unpublished; Fluid reserves live in the Liquidity layer) — they probe as
 //! `None` and are kept without a liveness verdict.
-
 use alloy::primitives::{Address, Bytes, U256};
 
 use super::{DexType, DiscoveredPool};
@@ -28,14 +27,14 @@ pub(super) fn health_probe(
 ) -> Option<HealthProbe> {
     match pool.dex_type {
         DexType::UniswapV2 | DexType::Solidly | DexType::Camelot => {
-            // getReserves() — probe reserves for non-zero r0/r1
+            // getReserves — probe reserves for non-zero r0/r1
             Some(HealthProbe {
                 to: pool.address,
                 data: GET_RESERVES.clone(),
             })
         }
         DexType::UniswapV3 | DexType::UniswapV4 => {
-            // slot0() — check sqrtPriceX96 != 0
+            // slot0 — check sqrtPriceX96 != 0
             Some(HealthProbe {
                 to: pool.address,
                 data: V3_SLOT0.clone(),
@@ -54,7 +53,7 @@ pub(super) fn health_probe(
             })
         }
         DexType::TraderJoeLB => {
-            // getActiveId() — non-zero active bin means the pool is live
+            // getActiveId — non-zero active bin means the pool is live
             Some(HealthProbe {
                 to: pool.address,
                 data: LB_GET_ACTIVE_ID.clone(),

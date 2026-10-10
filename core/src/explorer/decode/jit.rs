@@ -1,5 +1,6 @@
 //! V3 Mint/Burn and LB bin deposit/withdraw JIT facts.
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{B256, U256};
+use crate::utils::topic_address;
 
 use crate::data::LogData;
 use crate::explorer::types::JitFact;
@@ -44,7 +45,7 @@ pub fn decode_v3_mint_burn(log: &LogData) -> Option<JitFact> {
     if log.topics.len() < 4 {
         return None;
     }
-    let owner = Address::from_slice(&log.topics[1][12..]);
+    let owner = topic_address(log.topics[1]);
     let tick_lower = i24_from_topic(&log.topics[2]);
     let tick_upper = i24_from_topic(&log.topics[3]);
 
@@ -91,7 +92,7 @@ pub fn decode_lb_bins_liquidity(log: &LogData) -> Option<JitFact> {
     if log.topics.len() < 3 || log.data.len() < 64 {
         return None;
     }
-    let owner = Address::from_slice(&log.topics[2][12..]);
+    let owner = topic_address(log.topics[2]);
     let ids = decode_abi_u256_array(&log.data, 0)?;
     if ids.is_empty() {
         return None;

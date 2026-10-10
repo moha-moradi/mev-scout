@@ -10,6 +10,7 @@ use crate::dex_type::DexType;
 use crate::pool::math::consts::{
     BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO,
 };
+use crate::utils::{abi_decode_address, u128_from_be_bytes};
 use crate::pool::selectors::{
     CURVE_A, CURVE_BALANCES_I128, CURVE_BALANCES_U256, CURVE_BASE_POOL, CURVE_COINS_I128,
     CURVE_COINS_U256, CURVE_FEE, CURVE_GAMMA, CURVE_GET_A, CURVE_PRICE_SCALE, FEE,
@@ -37,6 +38,14 @@ struct PoolMeta {
     balancer_pool_type: Option<u8>,
 }
 
+struct FetchCtx<'a> {
+    rpc: &'a RpcClient,
+    vault: Option<Address>,
+    br: BlockRef,
+    cache: Option<&'a SqliteStore>,
+    pre_fetched_tokens: Option<Vec<Address>>,
+}
+
 impl PoolMeta {
     /// Default snapshot with the common `needs_init` case and empty metadata;
     /// construction sites override the fields they carry.
@@ -51,7 +60,114 @@ impl PoolMeta {
             balancer_pool_type: None,
         }
     }
+
+    fn from_state(addr: Address, ps: Option<&PoolState>) -> Self {
+        let Some(ps) = ps else {
+            return PoolMeta {
+                address: addr,
+                ..PoolMeta::defaults()
+            };
+        };
+        match ps {
+            PoolState::UniswapV2(s) => PoolMeta {
+                address: addr,
+                dex_type: DexType::UniswapV2,
+                factory: s.info.factory,
+                ..PoolMeta::defaults()
+            },
+            PoolState::UniswapV3(state) => PoolMeta {
+                address: addr,
+                dex_type: DexType::UniswapV3,
+                tick_spacing: state.info.tick_spacing_or_default(),
+                ..PoolMeta::defaults()
+            },
+            PoolState::UniswapV4(state) => PoolMeta {
+                address: addr,
+                dex_type: DexType::UniswapV4,
+                tick_spacing: state.info.tick_spacing_or_default(),
+                ..PoolMeta::defaults()
+            },
+            PoolState::PancakeInfinity(state) => PoolMeta {
+                address: addr,
+                dex_type: DexType::PancakeInfinity,
+                pool_id: state.info.pool_id,
+                tick_spacing: state.info.tick_spacing_or_default(),
+                factory: state.info.factory,
+                ..PoolMeta::defaults()
+            },
+            PoolState::Curve(s)
+                if s.info.dex_type == DexType::Solidly || s.info.dex_type == DexType::Camelot =>
+            {
+                PoolMeta {
+                    address: addr,
+                    dex_type: s.info.dex_type,
+                    factory: s.info.factory,
+                    ..PoolMeta::defaults()
+                }
+            }
+            PoolState::Curve(_) => PoolMeta {
+                address: addr,
+                dex_type: DexType::Curve,
+                ..PoolMeta::defaults()
+            },
+            PoolState::Balancer(b) => PoolMeta {
+                address: addr,
+                dex_type: DexType::Balancer,
+                balancer_pool_type: b.info.balancer_pool_type,
+                ..PoolMeta::defaults()
+            },
+            PoolState::TraderJoeLB(s) => PoolMeta {
+                address: addr,
+                dex_type: DexType::TraderJoeLB,
+                factory: s.info.factory,
+                ..PoolMeta::defaults()
+            },
+            PoolState::Pendle(s) => PoolMeta {
+                address: addr,
+                dex_type: DexType::Pendle,
+                factory: s.info.factory,
+                ..PoolMeta::defaults()
+            },
+            PoolState::Metric(s) => PoolMeta {
+                address: addr,
+                dex_type: DexType::Metric,
+                factory: s.info.factory,
+                needs_init: false,
+                ..PoolMeta::defaults()
+            },
+            PoolState::Fluid(s) => PoolMeta {
+                address: addr,
+                dex_type: DexType::Fluid,
+                factory: s.info.factory,
+                needs_init: false,
+                ..PoolMeta::defaults()
+            },
+        }
+    }
 }
+pub struct BalancerInit {
+    pub tokens: Vec<Address>,
+    pub balances: Vec<u128>,
+    pub weights: Vec<u128>,
+    pub fee_bps: u32,
+    pub variant: BalancerPoolVariant,
+    pub amplification: Option<u128>,
+    pub scaling_factors: Vec<u128>,
+    pub bpt_index: Option<usize>,
+    pub rate_providers: Vec<Option<Address>>,
+}
+
+pub struct CurveInit {
+    pub tokens: Vec<Address>,
+    pub balances: Vec<u128>,
+    pub a_coeff: u128,
+    pub fee_bps: u32,
+    pub variant: CurvePoolVariant,
+    pub gamma: Option<u128>,
+    pub price_scale: Vec<u128>,
+    pub base_pool: Option<Address>,
+}
+
 pub enum PoolInitResult {
     V2Reserves {
         reserve0: u128,
@@ -63,34 +179,15 @@ pub enum PoolInitResult {
         liquidity: u128,
         initialized_ticks: std::collections::BTreeMap<i32, i128>,
     },
-    /// V4 uses same state structure as V3
+    /// V4 uses the same state structure as V3.
     V4State {
         sqrt_price_x96: U256,
         tick: i32,
         liquidity: u128,
         initialized_ticks: std::collections::BTreeMap<i32, i128>,
     },
-    BalancerState {
-        tokens: Vec<Address>,
-        balances: Vec<u128>,
-        weights: Vec<u128>,
-        fee_bps: u32,
-        variant: BalancerPoolVariant,
-        amplification: Option<u128>,
-        scaling_factors: Vec<u128>,
-        bpt_index: Option<usize>,
-        rate_providers: Vec<Option<Address>>,
-    },
-    CurveState {
-        tokens: Vec<Address>,
-        balances: Vec<u128>,
-        a_coeff: u128,
-        fee_bps: u32,
-        variant: CurvePoolVariant,
-        gamma: Option<u128>,
-        price_scale: Vec<u128>,
-        base_pool: Option<Address>,
-    },
+    BalancerState(BalancerInit),
+    CurveState(CurveInit),
     LBState {
         active_id: u32,
         bin_step: u32,
@@ -102,36 +199,6 @@ pub enum PoolInitResult {
         total_sy: u128,
         sy_address: Address,
     },
-}
-
-fn pool_info_ref(ps: &PoolState) -> &PoolInfo {
-    match ps {
-        PoolState::UniswapV2(s) => &s.info,
-        PoolState::UniswapV3(s) => &s.info,
-        PoolState::UniswapV4(s) => &s.info,
-        PoolState::PancakeInfinity(s) => &s.info,
-        PoolState::Curve(s) => &s.info,
-        PoolState::Balancer(s) => &s.info,
-        PoolState::TraderJoeLB(s) => &s.info,
-        PoolState::Pendle(s) => &s.info,
-        PoolState::Metric(s) => &s.info,
-        PoolState::Fluid(s) => &s.info,
-    }
-}
-
-fn pool_info_mut(ps: &mut PoolState) -> &mut PoolInfo {
-    match ps {
-        PoolState::UniswapV2(s) => &mut s.info,
-        PoolState::UniswapV3(s) => &mut s.info,
-        PoolState::UniswapV4(s) => &mut s.info,
-        PoolState::PancakeInfinity(s) => &mut s.info,
-        PoolState::Curve(s) => &mut s.info,
-        PoolState::Balancer(s) => &mut s.info,
-        PoolState::TraderJoeLB(s) => &mut s.info,
-        PoolState::Pendle(s) => &mut s.info,
-        PoolState::Metric(s) => &mut s.info,
-        PoolState::Fluid(s) => &mut s.info,
-    }
 }
 
 trait ConcentratedPoolState {
@@ -172,7 +239,7 @@ impl PoolManager {
             BlockRef::Number(block_num)
         };
 
-        // ── Phase 0: Metadata repair ──
+        // ── Metadata repair ──
         // Remote-sourced pools (GeckoTerminal / DexScreener) carry fee=0,
         // tick_spacing=None and sometimes zero token addresses. Quoting with
         // such metadata silently produces wrong prices, so repair from chain
@@ -188,91 +255,7 @@ impl PoolManager {
         let vault = self.balancer_vault;
         let pool_meta: Vec<PoolMeta> = pool_addrs
             .iter()
-            .map(|addr| {
-                let m = match self.pools.get(addr) {
-                    Some(PoolState::UniswapV2(s)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::UniswapV2,
-                        factory: s.info.factory,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::UniswapV3(state)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::UniswapV3,
-                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::UniswapV4(state)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::UniswapV4,
-                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::PancakeInfinity(state)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::PancakeInfinity,
-                        pool_id: state.info.pool_id,
-                        tick_spacing: state.info.tick_spacing.unwrap_or(60) as i32,
-                        factory: state.info.factory,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::Curve(s))
-                        if s.info.dex_type == DexType::Solidly
-                            || s.info.dex_type == DexType::Camelot =>
-                    {
-                        PoolMeta {
-                            address: *addr,
-                            dex_type: s.info.dex_type,
-                            factory: s.info.factory,
-                            ..PoolMeta::defaults()
-                        }
-                    }
-                    Some(PoolState::Curve(_)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::Curve,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::Balancer(b)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::Balancer,
-                        balancer_pool_type: b.info.balancer_pool_type,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::TraderJoeLB(s)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::TraderJoeLB,
-                        factory: s.info.factory,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::Pendle(s)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::Pendle,
-                        factory: s.info.factory,
-                        ..PoolMeta::defaults()
-                    },
-                    // Metric/Fluid are log-only flow-tracking pools; fetch_pool_state
-                    // returns None for them, so skip init RPC tasks entirely.
-                    Some(PoolState::Metric(s)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::Metric,
-                        factory: s.info.factory,
-                        needs_init: false,
-                        ..PoolMeta::defaults()
-                    },
-                    Some(PoolState::Fluid(s)) => PoolMeta {
-                        address: *addr,
-                        dex_type: DexType::Fluid,
-                        factory: s.info.factory,
-                        needs_init: false,
-                        ..PoolMeta::defaults()
-                    },
-                    None => PoolMeta {
-                        address: *addr,
-                        ..PoolMeta::defaults()
-                    },
-                };
-                m
-            })
+            .map(|addr| PoolMeta::from_state(*addr, self.pools.get(addr)))
             .collect();
 
         let tasks: Vec<_> = pool_meta
@@ -281,13 +264,8 @@ impl PoolManager {
             .map(|meta| {
                 let rpc = rpc.clone();
                 let sem = Arc::clone(&semaphore);
-                let addr = meta.address;
-                let dt = meta.dex_type;
-                let pool_id = meta.pool_id;
-                let tick_spacing = meta.tick_spacing;
-                let factory = meta.factory;
-                let balancer_pool_type = meta.balancer_pool_type;
-                let pre_fetched = self.pools.get(&addr).and_then(|ps| match ps {
+                let meta = *meta;
+                let pre_fetched = self.pools.get(&meta.address).and_then(|ps| match ps {
                     PoolState::Curve(s) => s.info.underlying_tokens.clone(),
                     PoolState::Balancer(s) => s.info.underlying_tokens.clone(),
                     _ => None,
@@ -299,22 +277,16 @@ impl PoolManager {
                             tracing::warn!("pool-state semaphore closed; running unbounded: {e}");
                         }
                     }
+                    let ctx = FetchCtx {
+                        rpc: &rpc,
+                        vault,
+                        br,
+                        cache,
+                        pre_fetched_tokens: pre_fetched,
+                    };
                     (
-                        addr,
-                        Self::fetch_pool_state(
-                            &rpc,
-                            addr,
-                            dt,
-                            pool_id,
-                            tick_spacing,
-                            vault,
-                            factory,
-                            br,
-                            balancer_pool_type,
-                            pre_fetched,
-                            cache,
-                        )
-                        .await,
+                        meta.address,
+                        Self::fetch_pool_state(&meta, &ctx).await,
                     )
                 }
             })
@@ -323,289 +295,14 @@ impl PoolManager {
         let results = join_all(tasks).await;
 
         for (addr, result) in results {
-            match result {
-                Some(PoolInitResult::V2Reserves {
-                    reserve0: r0,
-                    reserve1: r1,
-                }) => {
-                    if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(&addr) {
-                        state.reserve0 = r0;
-                        state.reserve1 = r1;
-                    }
-                    // Solidly/Camelot stable pools stored as CurvePoolState
-                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
-                        if (state.info.dex_type == DexType::Solidly
-                            || state.info.dex_type == DexType::Camelot)
-                            && state.balances.len() >= 2
-                        {
-                            state.balances[0] = r0;
-                            state.balances[1] = r1;
-                        }
-                    }
-                }
-                Some(PoolInitResult::V3State {
-                    sqrt_price_x96: sqrt,
-                    tick,
-                    liquidity: liq,
-                    initialized_ticks,
-                }) => {
-                    if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(&addr) {
-                        Self::process_concentrated_result(
-                            state,
-                            sqrt,
-                            tick,
-                            liq,
-                            initialized_ticks,
-                            "V3",
-                            addr,
-                        );
-                    }
-                }
-                Some(PoolInitResult::V4State {
-                    sqrt_price_x96: sqrt,
-                    tick,
-                    liquidity: liq,
-                    initialized_ticks,
-                }) => {
-                    if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(&addr) {
-                        Self::process_concentrated_result(
-                            state,
-                            sqrt,
-                            tick,
-                            liq,
-                            initialized_ticks,
-                            "V4",
-                            addr,
-                        );
-                    } else if let Some(PoolState::PancakeInfinity(state)) =
-                        self.pools.get_mut(&addr)
-                    {
-                        Self::process_concentrated_result(
-                            state,
-                            sqrt,
-                            tick,
-                            liq,
-                            initialized_ticks,
-                            "Infinity CL",
-                            addr,
-                        );
-                    }
-                }
-                Some(PoolInitResult::BalancerState {
-                    tokens,
-                    balances,
-                    weights,
-                    fee_bps,
-                    variant,
-                    amplification,
-                    scaling_factors,
-                    bpt_index,
-                    rate_providers,
-                }) => {
-                    if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&addr) {
-                        state.balances = balances;
-                        state.weights = weights;
-                        state.info.fee = fee_bps;
-                        state.pool_variant = variant;
-                        state.amplification = amplification;
-                        state.scaling_factors = scaling_factors;
-                        state.bpt_index = bpt_index;
-                        state.rate_providers = rate_providers;
-                        if tokens.len() >= 2 {
-                            state.info.token0 = tokens[0];
-                            state.info.token1 = tokens[1];
-                        }
-                        state.info.underlying_tokens = Some(tokens.clone());
-                        state.token_index.clear();
-                        for (i, token) in tokens.iter().enumerate() {
-                            state.token_index.insert(*token, i);
-                        }
-                        for token in &tokens {
-                            if !token.is_zero() {
-                                self.token_index.entry(*token).or_default().push(addr);
-                            }
-                        }
-                    }
-                }
-                Some(PoolInitResult::CurveState {
-                    tokens,
-                    balances,
-                    a_coeff,
-                    fee_bps,
-                    variant,
-                    gamma,
-                    price_scale,
-                    base_pool,
-                }) => {
-                    if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
-                        state.balances = balances;
-                        state.a_coeff = a_coeff;
-                        state.info.fee = fee_bps;
-                        state.pool_variant = variant;
-                        state.gamma = gamma;
-                        state.price_scale = price_scale;
-                        state.base_pool = base_pool;
-                        state.info.underlying_tokens = Some(tokens.clone());
-                        state.token_index.clear();
-                        for (i, token) in tokens.iter().enumerate() {
-                            state.token_index.insert(*token, i);
-                            if i == 0 {
-                                state.info.token0 = *token;
-                            } else if i == 1 {
-                                state.info.token1 = *token;
-                            }
-                        }
-                        for token in &tokens {
-                            if !token.is_zero() {
-                                self.token_index.entry(*token).or_default().push(addr);
-                            }
-                        }
-                    }
-                }
-                Some(PoolInitResult::LBState {
-                    active_id,
-                    bin_step,
-                    reserve_x,
-                    reserve_y,
-                }) => {
-                    if let Some(PoolState::TraderJoeLB(state)) = self.pools.get_mut(&addr) {
-                        state.active_id = active_id;
-                        state.bin_step = bin_step;
-                        state.reserve_x = reserve_x;
-                        state.reserve_y = reserve_y;
-                        state.info.bin_step = Some(bin_step);
-                        if reserve_x > 0 || reserve_y > 0 {
-                            tracing::debug!(
-                                "LB pool {} initialized: active_id={}, reserves=({},{})",
-                                addr,
-                                active_id,
-                                reserve_x,
-                                reserve_y
-                            );
-                        }
-                        // Index both tokens
-                        if !state.info.token0.is_zero() {
-                            self.token_index
-                                .entry(state.info.token0)
-                                .or_default()
-                                .push(addr);
-                        }
-                        if !state.info.token1.is_zero() {
-                            self.token_index
-                                .entry(state.info.token1)
-                                .or_default()
-                                .push(addr);
-                        }
-                    }
-                }
-                Some(PoolInitResult::PendleState {
-                    total_pt,
-                    total_sy,
-                    sy_address: sy_addr,
-                }) => {
-                    if let Some(PoolState::Pendle(state)) = self.pools.get_mut(&addr) {
-                        state.total_pt = total_pt;
-                        state.total_sy = total_sy;
-                        // token0 is the PT address from discovery
-                        state.pt_address = state.info.token0;
-                        // Resolve SY token if token1 is still ZERO
-                        if state.info.token1.is_zero() && !state.info.token0.is_zero() {
-                            let mut sy_calldata = Vec::with_capacity(4);
-                            sy_calldata.extend_from_slice(&PENDLE_SY);
-                            if let Ok(result) =
-                                Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await
-                            {
-                                if result.len() >= 32 {
-                                    let resolved_sy = Address::from_slice(&result[12..32]);
-                                    if !resolved_sy.is_zero() {
-                                        state.info.token1 = resolved_sy;
-                                        state.sy_address = resolved_sy;
-                                        self.token_index.entry(resolved_sy).or_default().push(addr);
-                                    }
-                                }
-                            }
-                        } else if !sy_addr.is_zero() {
-                            state.sy_address = sy_addr;
-                        } else {
-                            state.sy_address = state.info.token1;
-                        }
-                        if total_pt > 0 || total_sy > 0 {
-                            tracing::debug!(
-                                "Pendle pool {} initialized: pt={}, sy={}",
-                                addr,
-                                total_pt,
-                                total_sy
-                            );
-                        }
-                        // Index both tokens
-                        if !state.info.token0.is_zero() {
-                            self.token_index
-                                .entry(state.info.token0)
-                                .or_default()
-                                .push(addr);
-                        }
-                        if !state.info.token1.is_zero() {
-                            self.token_index
-                                .entry(state.info.token1)
-                                .or_default()
-                                .push(addr);
-                        }
-                    }
-                }
-                None => {
-                    tracing::warn!("Failed to fetch state for pool {}", addr);
-                }
-            }
+            self.apply_init_result(addr, result, rpc, br).await;
         }
 
-        // Phase 2.7: Remove unhealthy pools (zero reserves / zero sqrtPrice / empty ticks).
+        // Remove unhealthy pools (zero reserves / zero sqrtPrice / empty ticks).
         // This replaces the separate `health_check_pools` call for pools already in state,
         // avoiding duplicate RPC calls at different blocks.
-        let unhealthy: Vec<Address> = self
-            .pools
-            .iter()
-            .filter_map(|(addr, ps)| {
-                let is_unhealthy = match ps {
-                    PoolState::UniswapV2(s) => s.reserve0 == 0 && s.reserve1 == 0,
-                    PoolState::UniswapV3(s) => s.sqrt_price_x96.is_zero(),
-                    PoolState::UniswapV4(s) => s.sqrt_price_x96.is_zero(),
-                    PoolState::PancakeInfinity(s) => s.sqrt_price_x96.is_zero(),
-                    PoolState::Balancer(s) => s.balances.iter().all(|&b| b == 0),
-                    PoolState::Curve(s) => s.balances.iter().all(|&b| b == 0),
-                    PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
-                    PoolState::Pendle(s) => s.total_pt == 0 && s.total_sy == 0,
-                    PoolState::Metric(_) | PoolState::Fluid(_) => false,
-                };
-                is_unhealthy.then_some(*addr)
-            })
-            .collect();
-
-        let removed_count = unhealthy.len();
-        for addr in &unhealthy {
-            self.pools.remove(addr);
-        }
-
-        // Rebuild token_index from remaining pools
-        self.token_index.clear();
-        for (addr, ps) in &self.pools {
-            let tokens: Vec<Address> = match ps {
-                PoolState::UniswapV2(s) => vec![s.info.token0, s.info.token1],
-                PoolState::UniswapV3(s) => vec![s.info.token0, s.info.token1],
-                PoolState::UniswapV4(s) => vec![s.info.token0, s.info.token1],
-                PoolState::PancakeInfinity(s) => vec![s.info.token0, s.info.token1],
-                PoolState::Balancer(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
-                PoolState::Curve(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
-                PoolState::TraderJoeLB(s) => vec![s.info.token0, s.info.token1],
-                PoolState::Pendle(s) => vec![s.info.token0, s.info.token1],
-                PoolState::Metric(s) => vec![s.info.token0, s.info.token1],
-                PoolState::Fluid(s) => vec![s.info.token0, s.info.token1],
-            };
-            for token in &tokens {
-                if !token.is_zero() {
-                    self.token_index.entry(*token).or_default().push(*addr);
-                }
-            }
-        }
+        let removed_count = self.remove_unhealthy_pools();
+        self.rebuild_token_index();
 
         if removed_count > 0 {
             tracing::info!(
@@ -637,7 +334,7 @@ impl PoolManager {
 
         let mut jobs: Vec<RepairJob> = Vec::new();
         for (addr, ps) in &self.pools {
-            let info = pool_info_ref(ps);
+            let info = ps.info();
             let dt = info.dex_type;
             // Curve/Balancer resolve their own tokens + fees during init.
             if matches!(ps, PoolState::Balancer(_))
@@ -689,24 +386,24 @@ impl PoolManager {
                 let mut ts = None;
                 let mut bin_step = None;
                 if job.pendle_tokens {
-                    // readTokens() returns (SY, PT, YT); convention here: token0=PT, token1=SY
+                    // readTokens returns (SY, PT, YT); convention here: token0=PT, token1=SY
                     if let Ok(res) =
                         Self::call_once(&rpc, job.addr, PENDLE_READ_TOKENS.clone(), br).await
                     {
                         if res.len() >= 96 {
-                            t1 = Some(Address::from_slice(&res[12..32]));
-                            t0 = Some(Address::from_slice(&res[44..64]));
+                            t1 = abi_decode_address(&res, 0);
+                            t0 = abi_decode_address(&res, 32);
                         }
                     }
                 } else if job.tokens {
                     t0 = Self::call_once(&rpc, job.addr, TOKEN0.clone(), br)
                         .await
                         .ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                        .and_then(|b| abi_decode_address(&b, 0));
                     t1 = Self::call_once(&rpc, job.addr, TOKEN1.clone(), br)
                         .await
                         .ok()
-                        .and_then(|b| (b.len() >= 32).then(|| Address::from_slice(&b[12..32])));
+                        .and_then(|b| abi_decode_address(&b, 0));
                 }
                 if job.fee {
                     fee = Self::call_once(&rpc, job.addr, FEE.clone(), br)
@@ -747,7 +444,7 @@ impl PoolManager {
             let Some(ps) = self.pools.get_mut(&addr) else {
                 continue;
             };
-            let info = pool_info_mut(ps);
+            let info = ps.info_mut();
             let mut changed = false;
             if let Some(v) = t0 {
                 if info.token0.is_zero() {
@@ -827,6 +524,262 @@ impl PoolManager {
         }
         if sqrt.is_zero() {
             tracing::warn!("{} pool {} initialized with zero sqrt price", label, addr);
+        }
+    }
+
+    async fn apply_init_result(
+        &mut self,
+        addr: Address,
+        result: Option<PoolInitResult>,
+        rpc: &RpcClient,
+        br: BlockRef,
+    ) {
+        match result {
+            Some(PoolInitResult::V2Reserves {
+                reserve0: r0,
+                reserve1: r1,
+            }) => self.apply_v2_reserves(addr, r0, r1),
+            Some(PoolInitResult::V3State {
+                sqrt_price_x96: sqrt,
+                tick,
+                liquidity: liq,
+                initialized_ticks,
+            }) => {
+                if let Some(PoolState::UniswapV3(state)) = self.pools.get_mut(&addr) {
+                    Self::process_concentrated_result(
+                        state,
+                        sqrt,
+                        tick,
+                        liq,
+                        initialized_ticks,
+                        "V3",
+                        addr,
+                    );
+                }
+            }
+            Some(PoolInitResult::V4State {
+                sqrt_price_x96: sqrt,
+                tick,
+                liquidity: liq,
+                initialized_ticks,
+            }) => {
+                if let Some(PoolState::UniswapV4(state)) = self.pools.get_mut(&addr) {
+                    Self::process_concentrated_result(
+                        state,
+                        sqrt,
+                        tick,
+                        liq,
+                        initialized_ticks,
+                        "V4",
+                        addr,
+                    );
+                } else if let Some(PoolState::PancakeInfinity(state)) =
+                    self.pools.get_mut(&addr)
+                {
+                    Self::process_concentrated_result(
+                        state,
+                        sqrt,
+                        tick,
+                        liq,
+                        initialized_ticks,
+                        "Infinity CL",
+                        addr,
+                    );
+                }
+            }
+            Some(PoolInitResult::BalancerState(init)) => self.apply_balancer_state(addr, init),
+            Some(PoolInitResult::CurveState(init)) => self.apply_curve_state(addr, init),
+            Some(PoolInitResult::LBState {
+                active_id,
+                bin_step,
+                reserve_x,
+                reserve_y,
+            }) => self.apply_lb_state(addr, active_id, bin_step, reserve_x, reserve_y),
+            Some(PoolInitResult::PendleState {
+                total_pt,
+                total_sy,
+                sy_address,
+            }) => {
+                self.apply_pendle_state(addr, total_pt, total_sy, sy_address, rpc, br)
+                    .await;
+            }
+            None => {
+                tracing::warn!("Failed to fetch state for pool {}", addr);
+            }
+        }
+    }
+
+    fn apply_v2_reserves(&mut self, addr: Address, r0: u128, r1: u128) {
+        if let Some(PoolState::UniswapV2(state)) = self.pools.get_mut(&addr) {
+            state.reserve0 = r0;
+            state.reserve1 = r1;
+        }
+        // Solidly/Camelot stable pools stored as CurvePoolState
+        if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
+            if (state.info.dex_type == DexType::Solidly || state.info.dex_type == DexType::Camelot)
+                && state.balances.len() >= 2
+            {
+                state.balances[0] = r0;
+                state.balances[1] = r1;
+            }
+        }
+    }
+
+    fn apply_balancer_state(&mut self, addr: Address, init: BalancerInit) {
+        let BalancerInit {
+            tokens,
+            balances,
+            weights,
+            fee_bps,
+            variant,
+            amplification,
+            scaling_factors,
+            bpt_index,
+            rate_providers,
+        } = init;
+        if let Some(PoolState::Balancer(state)) = self.pools.get_mut(&addr) {
+            state.balances = balances;
+            state.weights = weights;
+            state.info.fee = fee_bps;
+            state.pool_variant = variant;
+            state.amplification = amplification;
+            state.scaling_factors = scaling_factors;
+            state.bpt_index = bpt_index;
+            state.rate_providers = rate_providers;
+            if tokens.len() >= 2 {
+                state.info.token0 = tokens[0];
+                state.info.token1 = tokens[1];
+            }
+            state.info.underlying_tokens = Some(tokens.clone());
+            state.token_index.clear();
+            for (i, token) in tokens.iter().enumerate() {
+                state.token_index.insert(*token, i);
+            }
+        }
+    }
+
+    fn apply_curve_state(&mut self, addr: Address, init: CurveInit) {
+        let CurveInit {
+            tokens,
+            balances,
+            a_coeff,
+            fee_bps,
+            variant,
+            gamma,
+            price_scale,
+            base_pool,
+        } = init;
+        if let Some(PoolState::Curve(state)) = self.pools.get_mut(&addr) {
+            state.balances = balances;
+            state.a_coeff = a_coeff;
+            state.info.fee = fee_bps;
+            state.pool_variant = variant;
+            state.gamma = gamma;
+            state.price_scale = price_scale;
+            state.base_pool = base_pool;
+            state.info.underlying_tokens = Some(tokens.clone());
+            state.token_index.clear();
+            for (i, token) in tokens.iter().enumerate() {
+                state.token_index.insert(*token, i);
+                if i == 0 {
+                    state.info.token0 = *token;
+                } else if i == 1 {
+                    state.info.token1 = *token;
+                }
+            }
+        }
+    }
+
+    fn apply_lb_state(
+        &mut self,
+        addr: Address,
+        active_id: u32,
+        bin_step: u32,
+        reserve_x: u128,
+        reserve_y: u128,
+    ) {
+        if let Some(PoolState::TraderJoeLB(state)) = self.pools.get_mut(&addr) {
+            state.active_id = active_id;
+            state.bin_step = bin_step;
+            state.reserve_x = reserve_x;
+            state.reserve_y = reserve_y;
+            state.info.bin_step = Some(bin_step);
+            if reserve_x > 0 || reserve_y > 0 {
+                tracing::debug!(
+                    "LB pool {} initialized: active_id={}, reserves=({},{})",
+                    addr,
+                    active_id,
+                    reserve_x,
+                    reserve_y
+                );
+            }
+        }
+    }
+
+    async fn apply_pendle_state(
+        &mut self,
+        addr: Address,
+        total_pt: u128,
+        total_sy: u128,
+        sy_addr: Address,
+        rpc: &RpcClient,
+        br: BlockRef,
+    ) {
+        if let Some(PoolState::Pendle(state)) = self.pools.get_mut(&addr) {
+            state.total_pt = total_pt;
+            state.total_sy = total_sy;
+            // token0 is the PT address from discovery
+            state.pt_address = state.info.token0;
+            // Resolve SY token if token1 is still ZERO
+            if state.info.token1.is_zero() && !state.info.token0.is_zero() {
+                let mut sy_calldata = Vec::with_capacity(4);
+                sy_calldata.extend_from_slice(&PENDLE_SY);
+                if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await
+                {
+                    if let Some(resolved_sy) = abi_decode_address(&result, 0) {
+                        if !resolved_sy.is_zero() {
+                            state.info.token1 = resolved_sy;
+                            state.sy_address = resolved_sy;
+                        }
+                    }
+                }
+            } else if !sy_addr.is_zero() {
+                state.sy_address = sy_addr;
+            } else {
+                state.sy_address = state.info.token1;
+            }
+            if total_pt > 0 || total_sy > 0 {
+                tracing::debug!(
+                    "Pendle pool {} initialized: pt={}, sy={}",
+                    addr,
+                    total_pt,
+                    total_sy
+                );
+            }
+        }
+    }
+
+    fn remove_unhealthy_pools(&mut self) -> usize {
+        let unhealthy: Vec<Address> = self
+            .pools
+            .iter()
+            .filter_map(|(addr, ps)| ps.is_unhealthy().then_some(*addr))
+            .collect();
+        let removed_count = unhealthy.len();
+        for addr in &unhealthy {
+            self.pools.remove(addr);
+        }
+        removed_count
+    }
+
+    fn rebuild_token_index(&mut self) {
+        self.token_index.clear();
+        for (addr, ps) in &self.pools {
+            for token in ps.tokens() {
+                if !token.is_zero() {
+                    self.token_index.entry(token).or_default().push(*addr);
+                }
+            }
         }
     }
 
@@ -995,47 +948,70 @@ impl PoolManager {
     }
 
     /// Dispatch to the per-DEX init function based on pool type.
-    #[allow(clippy::too_many_arguments)] // state fetch plumbing — slimmed in W4
-    async fn fetch_pool_state(
-        rpc: &RpcClient,
-        pool: Address,
-        dt: DexType,
-        pool_id: Option<[u8; 32]>,
-        tick_spacing: i32,
-        vault: Option<Address>,
-        factory: Option<Address>,
-        br: BlockRef,
-        balancer_pool_type: Option<u8>,
-        pre_fetched_tokens: Option<Vec<Address>>,
-        cache: Option<&SqliteStore>,
-    ) -> Option<PoolInitResult> {
-        match dt {
-            DexType::UniswapV2 => Self::init_v2_pool(rpc, pool, br, factory).await,
-            DexType::UniswapV3 => Self::init_v3_pool(rpc, pool, br, tick_spacing, cache).await,
-            DexType::UniswapV4 => Self::init_v4_pool(rpc, pool, br, tick_spacing, cache).await,
-            DexType::PancakeInfinity => {
-                Self::init_infinity_cl_pool(rpc, pool, pool_id, factory, br).await
+    async fn fetch_pool_state(meta: &PoolMeta, ctx: &FetchCtx<'_>) -> Option<PoolInitResult> {
+        let pool = meta.address;
+        match meta.dex_type {
+            DexType::UniswapV2 => {
+                Self::init_v2_pool(ctx.rpc, pool, ctx.br, meta.factory).await
             }
-            DexType::Balancer => {
-                let vault = vault?;
-                let pool_id = pool_id?;
-                Self::init_balancer_pool(
-                    rpc,
-                    vault,
+            DexType::UniswapV3 => {
+                Self::init_v3_pool(
+                    ctx.rpc,
                     pool,
-                    &pool_id,
-                    br,
-                    balancer_pool_type,
-                    pre_fetched_tokens,
+                    ctx.br,
+                    meta.tick_spacing,
+                    ctx.cache,
                 )
                 .await
             }
-            DexType::Curve => Self::init_curve_pool(rpc, pool, br, pre_fetched_tokens).await,
-            DexType::Solidly | DexType::Camelot => {
-                Self::init_solidly_camelot_pool(rpc, pool, br, factory).await
+            DexType::UniswapV4 => {
+                Self::init_v4_pool(
+                    ctx.rpc,
+                    pool,
+                    ctx.br,
+                    meta.tick_spacing,
+                    ctx.cache,
+                )
+                .await
             }
-            DexType::TraderJoeLB => Self::init_lb_pool(rpc, pool, br).await,
-            DexType::Pendle => Self::init_pendle_pool(rpc, pool, br).await,
+            DexType::PancakeInfinity => {
+                Self::init_infinity_cl_pool(
+                    ctx.rpc,
+                    pool,
+                    meta.pool_id,
+                    meta.factory,
+                    ctx.br,
+                )
+                .await
+            }
+            DexType::Balancer => {
+                let vault = ctx.vault?;
+                let pool_id = meta.pool_id?;
+                Self::init_balancer_pool(
+                    ctx.rpc,
+                    vault,
+                    pool,
+                    &pool_id,
+                    ctx.br,
+                    meta.balancer_pool_type,
+                    ctx.pre_fetched_tokens.clone(),
+                )
+                .await
+            }
+            DexType::Curve => {
+                Self::init_curve_pool(
+                    ctx.rpc,
+                    pool,
+                    ctx.br,
+                    ctx.pre_fetched_tokens.clone(),
+                )
+                .await
+            }
+            DexType::Solidly | DexType::Camelot => {
+                Self::init_solidly_camelot_pool(ctx.rpc, pool, ctx.br, meta.factory).await
+            }
+            DexType::TraderJoeLB => Self::init_lb_pool(ctx.rpc, pool, ctx.br).await,
+            DexType::Pendle => Self::init_pendle_pool(ctx.rpc, pool, ctx.br).await,
             DexType::Metric | DexType::Fluid => None,
         }
     }
@@ -1071,8 +1047,8 @@ impl PoolManager {
             .map(|&s| U256::from(s))
             .collect();
 
-        // M9: eth_getStorageAt is primary path (cheaper, works on more nodes).
-        // eth_call getReserves() is the fallback.
+        // eth_getStorageAt is primary path (cheaper, works on more nodes).
+        // eth_call getReserves is the fallback.
         if let Some(reserves) = Self::fetch_v2_reserves_storage(rpc, pool, br, &slots).await {
             if Self::validate_v2_reserves(reserves) {
                 return Some(reserves);
@@ -1084,12 +1060,12 @@ impl PoolManager {
             );
         }
 
-        // Fallback: eth_call getReserves()
+        // Fallback: eth_call getReserves
         let data = Bytes::copy_from_slice(&GET_RESERVES);
         if let Ok(result) = Self::call_once(rpc, pool, data, br).await {
             if result.len() >= 64 {
-                let r0 = Self::decode_u128_from_abi_word(&result[..32]);
-                let r1 = Self::decode_u128_from_abi_word(&result[32..64]);
+                let r0 = u128_from_be_bytes(&result[..32]);
+                let r1 = u128_from_be_bytes(&result[32..64]);
                 let reserves = (r0, r1);
                 if Self::validate_v2_reserves(reserves) {
                     return Some(reserves);
@@ -1106,7 +1082,7 @@ impl PoolManager {
         None
     }
 
-    /// Validate V2 reserves: both > 0 and ratio is within 100x (M9).
+    /// Validate V2 reserves: both > 0 and ratio is within 100x.
     fn validate_v2_reserves(reserves: (u128, u128)) -> bool {
         let (r0, r1) = reserves;
         if r0 == 0 || r1 == 0 {
@@ -1134,14 +1110,6 @@ impl PoolManager {
         (r0, r1)
     }
 
-    /// Decode a u128 from a 32-byte ABI-encoded word (right-aligned uint128/uint112).
-    /// Handles values up to 2^128-1 without truncation.
-    fn decode_u128_from_abi_word(word: &[u8]) -> u128 {
-        let mut buf = [0u8; 16];
-        buf.copy_from_slice(&word[16..32]);
-        u128::from_be_bytes(buf)
-    }
-
     /// Fallback: fetch V2 reserves via eth_getStorageAt.
     /// Tries the given storage slots and returns the first that decodes to non-zero.
     /// If all slots return zero, falls back to the first slot as last resort.
@@ -1165,9 +1133,9 @@ impl PoolManager {
         Some(Self::decode_v2_reserves_from_storage(raw))
     }
 
-    /// Fetch V3 pool slot0() + liquidity() + tick data at a historical block.
+    /// Fetch V3 pool slot0 + liquidity + tick data at a historical block.
     /// Also bootstraps the tick map from on-chain via `tickBitmap` and `ticks` calls,
-    /// fixing C2: pre-existing LP positions are now visible from the first block.
+    /// fixing pre-existing LP positions are now visible from the first block.
     async fn fetch_v3_state(
         rpc: &RpcClient,
         pool: Address,
@@ -1185,7 +1153,7 @@ impl PoolManager {
                 let mut tick_bytes = [0u8; 4];
                 tick_bytes.copy_from_slice(&slot0[60..64]);
                 let tick = i32::from_be_bytes(tick_bytes);
-                let liquidity = Self::decode_u128_from_abi_word(&liq[..32]);
+                let liquidity = u128_from_be_bytes(&liq[..32]);
 
                 // Bootstrap tick data from on-chain tick bitmap + per-tick queries
                 // This makes pre-existing LP positions visible from the first block.
@@ -1262,7 +1230,7 @@ impl PoolManager {
     /// Queries the tick bitmap for 5 word positions centered around the current
     /// tick (~1280 tick range), then fetches `liquidityNet` for each initialized
     /// tick found (up to 200 ticks). This bootstraps pre-existing LP positions
-    /// so that V3 quoting in the first block is accurate (fixes C2).
+    /// so that V3 quoting in the first block is accurate (fix).
     async fn fetch_v3_initialized_ticks(
         rpc: &RpcClient,
         pool: Address,
@@ -1398,8 +1366,8 @@ impl PoolManager {
             .await
             .ok()?;
 
-        // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
-        // ABI decode: (uint128 liquidityGross, int128 liquidityNet, ...)
+        // ABI decode: (uint128 liquidityGross, int128 liquidityNet,...)
+        // ABI decode: (uint128 liquidityGross, int128 liquidityNet,...)
         // Tuple with ABIEncoderV2: 8 fields × 32 bytes = 256 bytes
         if result.len() < 64 {
             return None;
@@ -1496,8 +1464,9 @@ impl PoolManager {
         let mut tokens = Vec::with_capacity(token_count);
         for i in 0..token_count {
             let off = tokens_start + i * 32;
-            let addr = Address::from_slice(&return_data[off + 12..off + 32]);
-            tokens.push(addr);
+            if let Some(addr) = abi_decode_address(return_data.as_ref(), off) {
+                tokens.push(addr);
+            }
         }
 
         let balances_start = 64 + balances_offset.as_limbs()[0] as usize + 32;
@@ -1591,8 +1560,8 @@ impl PoolManager {
                 calldata.extend_from_slice(&GET_RATE_PROVIDER);
                 calldata.extend_from_slice(&U256::from(i).to_be_bytes::<32>());
                 match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
-                    Ok(result) if result.0.len() >= 32 => {
-                        let addr = Address::from_slice(&result.0[12..32]);
+                    Ok(result) => {
+                        let addr = abi_decode_address(&result.0, 0).unwrap_or(Address::ZERO);
                         rp.push((!addr.is_zero()).then_some(addr));
                     }
                     _ => rp.push(None),
@@ -1644,7 +1613,7 @@ impl PoolManager {
             }
         };
 
-        Ok(PoolInitResult::BalancerState {
+        Ok(PoolInitResult::BalancerState(BalancerInit {
             tokens,
             balances,
             weights,
@@ -1654,10 +1623,10 @@ impl PoolManager {
             scaling_factors,
             bpt_index,
             rate_providers,
-        })
+        }))
     }
 
-    /// Re-fetch a pool's on-chain state at a given block number (M3 fact-check support).
+    /// Re-fetch a pool's on-chain state at a given block number for fact-check support.
     ///
     /// Returns a fresh `PoolState` with data read directly from the chain via `eth_call`,
     /// bypassing the in-memory state. This is used by the EVM-based fact-check to verify
@@ -1682,7 +1651,7 @@ impl PoolManager {
                 }))
             }
             PoolState::UniswapV3(v3) => {
-                let spacing = v3.info.tick_spacing.unwrap_or(60) as i32;
+                let spacing = v3.info.tick_spacing_or_default();
                 let (sqrt, tick, liq, ticks) =
                     Self::fetch_v3_state(rpc, *addr, BlockRef::Number(block), spacing, None)
                         .await?;
@@ -1697,7 +1666,7 @@ impl PoolManager {
                 }))
             }
             PoolState::UniswapV4(v4) => {
-                let spacing = v4.info.tick_spacing.unwrap_or(60) as i32;
+                let spacing = v4.info.tick_spacing_or_default();
                 let (sqrt, tick, liq, ticks) =
                     Self::fetch_v3_state(rpc, *addr, BlockRef::Number(block), spacing, None)
                         .await?;
@@ -1760,7 +1729,7 @@ impl PoolManager {
                 let result =
                     Self::fetch_curve_state(rpc, *addr, BlockRef::Number(block), None).await?;
                 match result {
-                    PoolInitResult::CurveState {
+                    PoolInitResult::CurveState(CurveInit {
                         tokens,
                         balances,
                         a_coeff,
@@ -1769,7 +1738,7 @@ impl PoolManager {
                         gamma,
                         price_scale,
                         base_pool,
-                    } => {
+                    }) => {
                         let token_index: HashMap<Address, usize> =
                             tokens.iter().enumerate().map(|(i, t)| (*t, i)).collect();
                         let mut info = curve.info.clone();
@@ -1804,7 +1773,7 @@ impl PoolManager {
                 .await
                 .ok()?;
                 match result {
-                    PoolInitResult::BalancerState {
+                    PoolInitResult::BalancerState(BalancerInit {
                         tokens,
                         balances,
                         weights,
@@ -1814,7 +1783,7 @@ impl PoolManager {
                         scaling_factors,
                         bpt_index,
                         rate_providers,
-                    } => {
+                    }) => {
                         let token_index: HashMap<Address, usize> =
                             tokens.iter().enumerate().map(|(i, t)| (*t, i)).collect();
                         let mut info = bal.info.clone();
@@ -1874,13 +1843,13 @@ impl PoolManager {
         }
     }
 
-    /// Fetch Trader Joe LB pool state via `getActiveId()`, `getBinStep()`, and `getBin(activeId)`.
+    /// Fetch Trader Joe LB pool state via `getActiveId`, `getBinStep`, and `getBin(activeId)`.
     async fn fetch_lb_state(
         rpc: &RpcClient,
         pool: Address,
         br: BlockRef,
     ) -> Option<PoolInitResult> {
-        // Step 1: getActiveId()
+        // Step 1: getActiveId
         let active_id = {
             let result = Self::call_once(rpc, pool, LB_GET_ACTIVE_ID.clone(), br)
                 .await
@@ -1891,7 +1860,7 @@ impl PoolManager {
             U256::from_be_slice(&result[..32]).to::<u64>() as u32
         };
 
-        // Step 2: getBinStep() — immutable (set at pool creation), so it is
+        // Step 2: getBinStep — immutable (set at pool creation), so it is
         // fetched at the `latest` tag, which any full node serves, instead of
         // requiring historical archive state.
         let bin_step = {
@@ -1933,14 +1902,14 @@ impl PoolManager {
         })
     }
 
-    /// Fetch Pendle Finance market state via `readState(address(0))` and PT.SY().
+    /// Fetch Pendle Finance market state via `readState(address(0))` and PT.SY.
     /// readState returns: totalPt, totalSy, totalLp, reserve, effectiveFeeRate.
     async fn fetch_pendle_state(
         rpc: &RpcClient,
         pool: Address,
         br: BlockRef,
     ) -> Option<PoolInitResult> {
-        // Step 1: Get SY address from PT.SY() — PT address is stored as token0
+        // Step 1: Get SY address from PT.SY — PT address is stored as token0
         // We need to know which token is PT; from discovery, token0 = PT.
         // However, at this point we don't have the PT address in the function params.
         // The PT is the token0 of the pool (the market). We'll resolve SY later via
@@ -1964,7 +1933,7 @@ impl PoolManager {
             tracing::warn!("Pendle pool {} readState returned zero reserves", pool);
         }
 
-        // SY address is unknown from readState; we resolve it via PT.SY()
+        // SY address is unknown from readState; we resolve it via PT.SY
         // PT address is token0 of the market (set during discovery)
         // Note: we can't access the pool state here, so we return zero address for sy_address
         // The init_from_rpc handler will try to resolve it separately.
@@ -1992,7 +1961,7 @@ impl PoolManager {
         let max_tokens = 16u8;
 
         if let Some(ref cached_tokens) = pre_fetched_tokens {
-            // Skip coins() RPC calls — use token list from discovery cache
+            // Skip coins RPC calls — use token list from discovery cache
             for (i, &token_addr) in cached_tokens.iter().enumerate() {
                 if token_addr.is_zero() || i >= max_tokens as usize {
                     break;
@@ -2034,29 +2003,26 @@ impl PoolManager {
                     let mut arg = [0u8; 32];
                     arg[31] = i;
                     calldata.extend_from_slice(&arg);
-                    match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
-                        Ok(result) if result.0.len() >= 32 => {
-                            let addr = Address::from_slice(&result.0[12..32]);
-                            if addr.is_zero() {
-                                break;
-                            }
-                            addr
-                        }
-                        _ => {
+                    match Self::call_once(rpc, pool, Bytes::from(calldata), br)
+                        .await
+                        .ok()
+                        .and_then(|r| abi_decode_address(&r.0, 0))
+                    {
+                        Some(addr) if !addr.is_zero() => addr,
+                        Some(_) => break,
+                        None => {
                             // Fallback: coins(int128) — classic Vyper pools.
                             let mut calldata2 = Vec::with_capacity(36);
                             calldata2.extend_from_slice(&CURVE_COINS_I128);
                             let mut arg2 = [0u8; 32];
                             arg2[31] = i;
                             calldata2.extend_from_slice(&arg2);
-                            match Self::call_once(rpc, pool, Bytes::from(calldata2), br).await {
-                                Ok(result) if result.0.len() >= 32 => {
-                                    let addr = Address::from_slice(&result.0[12..32]);
-                                    if addr.is_zero() {
-                                        break;
-                                    }
-                                    addr
-                                }
+                            match Self::call_once(rpc, pool, Bytes::from(calldata2), br)
+                                .await
+                                .ok()
+                                .and_then(|r| abi_decode_address(&r.0, 0))
+                            {
+                                Some(addr) if !addr.is_zero() => addr,
                                 _ => break,
                             }
                         }
@@ -2099,9 +2065,9 @@ impl PoolManager {
             return None;
         }
 
-        // Fetch amplification coefficient A() / get_A()
+        // Fetch amplification coefficient A / get_A
         let a_coeff = {
-            // Try get_A() first (CryptoSwap V2), fallback to A() (StableSwap V1)
+            // Try get_A first (CryptoSwap V2), fallback to A (StableSwap V1)
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_GET_A);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
@@ -2109,7 +2075,7 @@ impl PoolManager {
                     U256::from_be_slice(&result.0[..32]).as_limbs()[0] as u128
                 }
                 _ => {
-                    // Fallback to A()
+                    // Fallback to A
                     let mut calldata2 = Vec::with_capacity(4);
                     calldata2.extend_from_slice(&CURVE_A);
                     match Self::call_once(rpc, pool, Bytes::from(calldata2), br).await {
@@ -2122,7 +2088,7 @@ impl PoolManager {
             }
         };
 
-        // Fetch swap fee fee()
+        // Fetch swap fee fee
         let fee_bps = {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_FEE);
@@ -2135,7 +2101,7 @@ impl PoolManager {
             }
         };
 
-        // --- Variant detection: single gamma() call serves both detection and value ---
+        // --- Variant detection: single gamma call serves both detection and value ---
         let gamma_result = {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_GAMMA);
@@ -2148,15 +2114,12 @@ impl PoolManager {
         };
         let is_crypto = gamma_result.is_some();
 
-        // Try base_pool() — only Metapools have this
+        // Try base_pool — only Metapools have this
         let base_pool = if !is_crypto {
             let mut calldata = Vec::with_capacity(4);
             calldata.extend_from_slice(&CURVE_BASE_POOL);
             match Self::call_once(rpc, pool, Bytes::from(calldata), br).await {
-                Ok(result) if result.0.len() >= 32 => {
-                    let addr = Address::from_slice(&result.0[12..32]);
-                    (!addr.is_zero()).then_some(addr)
-                }
+                Ok(result) => abi_decode_address(&result.0, 0).filter(|a| !a.is_zero()),
                 _ => None,
             }
         } else {
@@ -2201,7 +2164,7 @@ impl PoolManager {
             (CurvePoolVariant::Plain, None, vec![])
         };
 
-        Some(PoolInitResult::CurveState {
+        Some(PoolInitResult::CurveState(CurveInit {
             tokens,
             balances,
             a_coeff,
@@ -2210,6 +2173,6 @@ impl PoolManager {
             gamma,
             price_scale,
             base_pool,
-        })
+        }))
     }
 }

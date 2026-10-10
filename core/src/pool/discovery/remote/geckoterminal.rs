@@ -8,7 +8,6 @@
 //! (the old `h_tvl` option was removed and now returns HTTP 400 — probed
 //! 2026-08-23). We paginate by 24h volume and re-sort by TVL client-side to
 //! approximate the explorer "top pools by TVL" ordering.
-
 use std::collections::HashSet;
 use std::time::Duration;
 

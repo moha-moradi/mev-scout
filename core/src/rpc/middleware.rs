@@ -1,5 +1,4 @@
 //! Rate-limiting and provider health tracking for the RPC layer.
-
 use std::sync::Arc;
 
 use crate::rpc::consts::MAX_BACKOFF_SECS;
@@ -8,7 +7,7 @@ use alloy::providers::RootProvider;
 /// Token-bucket rate limiter for throttling RPC requests.
 ///
 /// Maintains a token bucket that refills at `rate` tokens per second.
-/// Each `acquire()` call consumes one token, blocking until one is available.
+/// Each `acquire` call consumes one token, blocking until one is available.
 /// Up to `burst` tokens can accumulate for short bursts.
 ///
 /// Thread-safe and designed for shared use across concurrent tasks.
@@ -187,7 +186,7 @@ impl ProviderState {
     /// Mark provider as completely dead with an explicit cooldown. Used when
     /// validation fails (e.g. wrong chain ID, unreachable endpoint). The
     /// provider is excluded from distribution until the cooldown expires
-    /// or a successful RPC call resets it via `record_success()`.
+    /// or a successful RPC call resets it via `record_success`.
     pub fn mark_dead(&mut self, cooldown: tokio::time::Duration) {
         self.is_alive = false;
         self.consecutive_failures += 1;
@@ -239,7 +238,7 @@ impl ProviderState {
 
     /// Sync the rate limiter's token-bucket rate to match the current adaptive weight.
     ///
-    /// Must be called after `record_failure()` or `record_success()` to propagate
+    /// Must be called after `record_failure` or `record_success` to propagate
     /// weight changes to the actual token-bucket throughput.
     pub async fn sync_rate_limiter(&self) {
         if let Some(rl) = &self.rate_limiter {

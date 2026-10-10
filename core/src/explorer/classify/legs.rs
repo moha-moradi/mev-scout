@@ -26,7 +26,7 @@ pub(super) struct SandwichWalk {
 }
 
 /// Max tx-index distance that still counts as "adjacent" for causal
-/// backrun/frontrun passes (§24 / §13). Blocks are sorted; a window of 8
+/// backrun/frontrun passes ( /). Blocks are sorted; a window of 8
 /// keeps the pair causal without spanning unrelated traffic.
 pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 

@@ -1,5 +1,4 @@
 //! JIT (just-in-time) liquidity detection — identifies liquidity added before a swap and removed after.
-
 use super::DetectCtx;
 use crate::data::ExecutedLog;
 use crate::pool::decoders::{
@@ -37,7 +36,7 @@ struct ActiveMint {
 /// Detects Just-In-Time (JIT) liquidity provision on Uniswap V3.
 ///
 /// Stateful per block: accumulates V3 events across sequential txs.
-/// After each tx in block order, call `process_tx()` then `detect()`.
+/// After each tx in block order, call `process_tx` then `detect`.
 ///
 /// Patterns detected:
 /// - **Full JIT:** Mint → Swap → Burn (complete cycle in one block)
@@ -75,7 +74,7 @@ impl JitDetector {
     }
 
     /// Process a single transaction's logs and optional sender address.
-    /// Call BEFORE `detect()` for each tx in block order.
+    /// Call BEFORE `detect` for each tx in block order.
     /// `pm` is used to snapshot fee growth from V3 pool state at mint time.
     pub fn process_tx(
         &mut self,
@@ -189,7 +188,7 @@ impl JitDetector {
     }
 
     /// Returns new JIT opportunities detected since the last call.
-    /// Call AFTER `process_tx()` for each tx.
+    /// Call AFTER `process_tx` for each tx.
     pub fn detect(&mut self, ctx: DetectCtx<'_>) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
 
@@ -295,7 +294,7 @@ impl JitDetector {
             (0u128, 0u128)
         };
         // Per-opportunity gas: JIT involves Mint + Swap (+ optionally Burn).
-        // H7: Use direction-aware V3 estimate since JIT pool is always V3.
+        // Use direction-aware V3 estimate since JIT pool is always V3.
         let pool_gas = pm
             .get(&pool)
             .map(|p| match p {
@@ -318,7 +317,7 @@ impl JitDetector {
             .compute_gas_cost_with_limit(gas_limit, ctx.base_fee_per_gas);
         // raw_profit = Some(raw) when normalization actually converted the value
         let raw_profit = (normalized_fees != raw_fees).then(|| U256::from(raw_fees));
-        // H9: JIT fee scales linearly with position size — compute ±1%/±2% slippage
+        // JIT fee scales linearly with position size — compute ±1%/±2% slippage
         let jit_slippage = |pct: u128| -> Option<U256> {
             if normalized_fees == 0 {
                 return None;

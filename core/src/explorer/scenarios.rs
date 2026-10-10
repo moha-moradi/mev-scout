@@ -1,17 +1,16 @@
 //! Synthetic per-strategy scenario catalogue for the explorer strategy
 //! tracking plan (`docs/explorer_strategy_tracking_plan.md`).
 //!
-//! One `#[test]` per scheduled item (P0.1–P3.16) plus the §1 baseline kinds.
+//! One `#[test]` per scheduled item (P0.1–P3.16) plus the baseline kinds.
 //! Each test builds a deterministic [`BlockInput`] — a positive fingerprint and,
 //! where the fingerprint has a plausible near-miss, a negative case — runs
 //! [`classify_block`], and asserts the emitted label/tag **and** the exact `pnl`
-//! plus `pnl_basis` from §0.1. No RPC and no on-disk fixtures: every scenario is
+//! plus `pnl_basis` from No RPC and no on-disk fixtures: every scenario is
 //! self-contained, reproducible, and CI-safe (this is the deterministic
 //! alternative to the RPC-gated replay in `tests/explorer_corpus.rs`).
 //!
 //! The module is only compiled under `cfg(test)` (see `explorer/mod.rs`).
 //! Shared builders live in [`super::test_fixtures`].
-
 use std::collections::HashMap;
 
 use alloy::primitives::{address, b256, Address, U256};
@@ -27,7 +26,7 @@ use crate::explorer::types::{
     ReserveDataFact, UserOpFact,
 };
 
-// ── §1 Baseline kinds ──────────────────────────────────────────────────────
+// ── Baseline kinds ──────────────────────────────────────────────────────
 
 /// Baseline `ArbAtomic`: two-pool closed cycle → R, exact pnl. Negative:
 /// single-hop residual with the mevlive-parity fallback off emits nothing.

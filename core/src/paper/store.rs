@@ -1,5 +1,4 @@
 //! Paper session / fill persistence on the explorer SQLite database.
-
 use crate::explorer::store::ExplorerStore;
 use crate::paper::types::{LedgerResult, PaperFill, PaperMode, PaperSession};
 use crate::utils::epoch_secs;

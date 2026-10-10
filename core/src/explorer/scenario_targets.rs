@@ -7,7 +7,6 @@
 //!
 //! Used by `tests/explorer_corpus.rs` (documentation + future tag assertions)
 //! and by operators seeding new cases via `MEV_SCOUT_RECORD=*`.
-
 use alloy::primitives::{address, Address};
 
 /// How far a strategy scenario has been grounded on Avalanche.
@@ -43,7 +42,7 @@ pub struct StrategyScenarioTarget {
 /// Full scheduled catalogue (baseline + P0–P3). Keep in sync with
 /// `docs/explorer_strategy_scenarios.md`.
 pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
-    // ── §1 baseline ────────────────────────────────────────────────────
+    // ── baseline ────────────────────────────────────────────────────
     StrategyScenarioTarget {
         id: "baseline.arb",
         label: "arb_atomic",

@@ -2,6 +2,7 @@ use super::V4_INITIALIZE_TOPIC;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::abi_decode_address;
 use alloy::primitives::Address;
 use alloy::rpc::types::Filter;
 
@@ -15,7 +16,7 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     if t.len() >= 2 {
         let mut pool_id = [0u8; 32];
         pool_id.copy_from_slice(t[1].as_slice());
-        let pool_key = Address::from_slice(&pool_id[12..32]);
+        let pool_key = abi_decode_address(&pool_id, 0).unwrap_or(Address::ZERO);
         Some(PoolHitCandidate {
             pool_id: Some(pool_id),
             addr_override: Some(pool_key),
@@ -52,8 +53,12 @@ pub(crate) async fn scan_v4_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                     if topics.len() < 4 || log_data.data.len() < 160 {
                         continue;
                     }
-                    let token0 = Address::from_slice(&topics[2][12..32]);
-                    let token1 = Address::from_slice(&topics[3][12..32]);
+                    let Some(token0) = abi_decode_address(topics[2].as_slice(), 0) else {
+                        continue;
+                    };
+                    let Some(token1) = abi_decode_address(topics[3].as_slice(), 0) else {
+                        continue;
+                    };
                     let fee = {
                         let mut fb = [0u8; 4];
                         fb[1] = log_data.data[29];
@@ -66,10 +71,13 @@ pub(crate) async fn scan_v4_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         ts.copy_from_slice(&log_data.data[60..64]);
                         i32::from_be_bytes(ts)
                     };
-                    let hook_address = Address::from_slice(&log_data.data[84..104]);
-                    let hook_address = (!hook_address.is_zero()).then_some(hook_address);
+                    // `hooks` is the third non-indexed ABI word (offset 64).
+                    let hook_address =
+                        abi_decode_address(&log_data.data, 64).filter(|a| !a.is_zero());
                     let creation_block = log.block_number.unwrap_or(0);
-                    let pool_addr = Address::from_slice(&topics[1][12..32]);
+                    let Some(pool_addr) = abi_decode_address(topics[1].as_slice(), 0) else {
+                        continue;
+                    };
                     out.factory_pools.entry(pool_addr).or_insert(
                         DiscoveredPool::new(
                             pool_addr,
@@ -91,4 +99,19 @@ pub(crate) async fn scan_v4_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initialize_hook_is_the_third_abi_word() {
+        let mut data = vec![0u8; 160];
+        data[95] = 0xab;
+        let hook = abi_decode_address(&data, 64).filter(|a| !a.is_zero());
+        let mut expected = [0u8; 20];
+        expected[19] = 0xab;
+        assert_eq!(hook, Some(Address::from(expected)));
+    }
 }

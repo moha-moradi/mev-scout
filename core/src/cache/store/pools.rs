@@ -77,8 +77,8 @@ impl super::SqliteStore {
     }
 
     /// Earliest `creation_block` seen per pool factory — the "first-observed-block
-    /// cache" used by the panel-discovery start-block guard (DEX_COVERAGE_PLAN
-    /// Phase 2.5). Remote-sourced pools carry `creation_block == 0`, so those are
+    /// cache" used by the panel-discovery start-block guard. Remote-sourced pools
+    /// carry `creation_block == 0`, so those are
     /// ignored; a factory with only remote rows never appears.
     pub fn earliest_creation_block_by_factory(&self) -> anyhow::Result<Vec<(Address, u64)>> {
         let conn = self.conn();

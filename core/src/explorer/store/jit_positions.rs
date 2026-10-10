@@ -62,7 +62,7 @@ impl ExplorerStore {
             None => None,
         })
     }
-    /// Persist (or refresh) open JIT Mint positions (Phase 1.5).
+    /// Persist (or refresh) open JIT Mint positions.
     pub fn record_jit_open(&self, positions: &[OpenPosition]) -> anyhow::Result<()> {
         for p in positions {
             self.conn.execute(

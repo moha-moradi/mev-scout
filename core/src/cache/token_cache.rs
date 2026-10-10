@@ -1,4 +1,4 @@
-//! Token metadata cache — avoids redundant `symbol()` eth_call RPC calls
+//! Token metadata cache — avoids redundant `symbol` eth_call RPC calls
 //! and stores optional name / icon URL from remote enrichers.
 //!
 //! Tokens are cached in SQLite (persistent) and loaded into a HashMap for
@@ -7,7 +7,6 @@
 //!
 //! Pre-populated with well-known tokens per chain to minimize cold-start
 //! RPC calls.
-
 use std::collections::HashMap;
 
 use alloy::primitives::Address;
@@ -122,6 +121,8 @@ impl TokenCache {
 
     /// Create a new empty cache and pre-populate with well-known tokens.
     pub fn warm(chain_id: u64) -> Self {
+        // Bundled asset: invalid JSON is a build-time content bug, not runtime fallibility.
+        #[allow(clippy::expect_used)]
         let data: KnownTokens = serde_json::from_str(include_str!("../../data/known_tokens.json"))
             .expect("invalid known_tokens.json");
 

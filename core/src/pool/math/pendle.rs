@@ -12,7 +12,6 @@
 //! it overestimates output for large swaps (the real curve penalizes
 //! large swaps more), so we catch opportunities that may have smaller
 //! actual profit. This is safer than underestimating.
-
 use super::consts::{MIN_DAMPING_PERMILLE, PERMILLE_DENOMINATOR};
 
 /// Quote an output amount for a Pendle AMM swap using the logistic UAMM model.
@@ -37,6 +36,7 @@ pub fn pendle_output_amount(amount_in: u128, total_in: u128, total_out: u128) ->
     // This is embedded in the AMM invariant, not charged separately.
     // For MEV detection, we approximate with 0 fee (the invariant encodes it).
     //
+
     // Constant product: out = amountIn * totalOut / (totalIn + amountIn)
     let numerator = amount_in.checked_mul(total_out)?;
     let denominator = total_in.checked_add(amount_in)?;

@@ -15,7 +15,6 @@
 //! 6. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
 //!    same tx also closed an arb cycle. Leftover profitable patterns →
 //!    `unknown` (inferred).
-
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, B256, U256};
@@ -91,14 +90,14 @@ pub struct BlockInput {
     pub ts: u64,
     pub wrapped_native: Address,
     pub profit_policy: ProfitTokenPolicy,
-    /// Mevlive-parity fallback (Phase 1.2): when true, a profitable residual
+    /// Mevlive-parity fallback: when true, a profitable residual
     /// that is not a closed cycle is still labeled `arb_atomic`/`inferred`.
     /// Default true until the Phase-0 window gate passes.
     pub arb_likely_parity: bool,
-    /// Cross-block JIT open Mint positions (Phase 1.5), loaded from the store
+    /// Cross-block JIT open Mint positions, loaded from the store
     /// window for the current block.
     pub open_positions: Vec<OpenPosition>,
-    /// Registry addresses that expose UniV2-style `skim()` (V2/Solidly/Camelot).
+    /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
     pub v2_like_pools: HashSet<Address>,
     /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
     pub chainlink_feeds: HashMap<Address, Address>,
@@ -187,10 +186,11 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     // jit_arb when a JIT tx also produced an arb in this block. The standalone
     // ArbAtomic is suppressed so USD/P&L never double-counts the same flow.
     //
+
     // ⚠️ LOAD-BEARING: this is a kind *upgrade*, not a standalone pass, and it is
     // independent of the live detectors. The `Strategy::JitArb` variant and the
     // `JitArbDetector` were removed from the execution path
-    // (`docs/plan_prune_strategies.md` §5) because that detector had no honest
+    // (`docs/plan_prune_strategies.md`) because that detector had no honest
     // P&L model — but this branch must survive. Dropping either half corrupts
     // every USD/P&L figure the explorer emits: keeping `JitArb` without the
     // `retain` below double-counts the flow as `Jit` *and* `ArbAtomic`.
@@ -215,7 +215,7 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     // ── 4b. Sandwich classification: front-run → victim → back-run ─────
     let mut sandwiches = classify_sandwiches(input);
 
-    // ── 3c. Causal backrun / frontrun (Phase 3) ─────────────────────────
+    // ── 3c. Causal backrun / frontrun ─────────────────────────
     // Sandwich-consumed fronts/backs are excluded (kind priority): a sandwich
     // anchors on its front-run tx and closes on the back-run tx; neither may
     // be re-claimed as a standalone frontrun/backrun.
@@ -401,7 +401,7 @@ pub(crate) fn decode_tx_logs_with_aliases(
         }
     }
     decode::attach_swap_tokens(&mut swaps, &transfers, pool_tokens);
-    // Phase 1.6: drop aggregator edges already covered by DEX swap edges.
+    // drop aggregator edges already covered by DEX swap edges.
     decode::dedup_aggregator_facts(&mut swaps);
     (
         transfers,
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn arb_cycle_single_flow_owner_is_exact() {
         // Both legs funded by the searcher itself → attributable to its route
-        // (§7.1): cycle stays Exact.
+        //: cycle stays Exact.
         let swaps = vec![
             swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
             swap_owned(ATK, POOL_B, TOKA, USDC, 200, 110),
@@ -494,7 +494,7 @@ mod tests {
     fn arb_cycle_mixed_flow_owner_is_not_exact() {
         // The second leg of the closed cycle is funded by an unrelated actor
         // inside the same tx — the cycle mixes routes and must NOT be Exact
-        // (§7.1/§8.1). The parity fallback still labels it arb/Inferred.
+        // . The parity fallback still labels it arb/Inferred.
         const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
         let swaps = vec![
             swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn non_cycle_with_parity_off_emits_nothing() {
-        // Spec §7.1: a single-hop profitable residual is not MEV. With parity
+        // Spec: a single-hop profitable residual is not MEV. With parity
         // off we must not emit Unknown (that used to flood the live feed).
         let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
         let transfers = vec![
@@ -651,8 +651,8 @@ mod tests {
 
     #[test]
     fn interleaved_cycle_is_exact_arb() {
-        // Three-hop cycle emitted out of chain order: A:USDC->TOKA,
-        // A:WNATIVE->USDC, B:TOKA->WNATIVE. The graph walk still closes it.
+        // Three-hop cycle emitted out of chain order: A::USDC->TOKA,
+        // A::WNATIVE->USDC, B::TOKA->WNATIVE. The graph walk still closes it.
         let swaps = vec![
             swap(POOL_A, USDC, TOKA, 100, 200),
             swap(POOL_A, WNATIVE, USDC, 50, 110),

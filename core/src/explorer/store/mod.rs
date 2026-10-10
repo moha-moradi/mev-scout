@@ -9,7 +9,6 @@
 //! - results layer: `opportunities` fed from `ResultsFile`
 //! - rejection capture: `rejected_candidates`
 //! - checkpointing: `sync_state` + `blocks_classified` (gap-safe resume)
-
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 pub(super) type PoolSwapRow = (String, Option<String>, String, String);
 /// Persist-block return: `(ops_written, open_jit_positions)`.
@@ -31,7 +30,7 @@ use crate::explorer::types::{MevEvent, MevKind};
 
 /// Trace-based reconciliation record for one tx (`explorer show --trace`).
 ///
-/// Measurement-only (Phase 0): compares the classifier's expected USD profit
+/// Measurement-only: compares the classifier's expected USD profit
 /// with the trace-observed native balance delta. Never feeds `classify_block`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TraceVerification {
@@ -52,7 +51,7 @@ pub struct TraceVerification {
 
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
 ///
-/// Phase 5a-0/1.5: lets cross-block JIT detection survive live restarts. A row
+/// Persists open JIT Mint positions so cross-block JIT detection survives live restarts. A row
 /// is inserted on a Mint and deleted when the matching Burn arrives (or pruned
 /// once `opened_block` falls outside the block-window cap).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,32 +458,32 @@ mod tests {
         crate::explorer::pricing::TokenUsd { usd, decimals }
     }
 
-    /// Insert one block with the fixture defaults shared by these tests
-    /// (25 gwei base fee, $0.75 native, no txs/transfers).
-    #[allow(clippy::too_many_arguments)]
-    fn seed_block(
-        store: &ExplorerStore,
+    struct SeedBlockParams<'a> {
         block_number: u64,
-        block_hash: &B256,
+        block_hash: &'a B256,
         ts: u64,
         tx_count: usize,
-        swaps: &[SwapRow],
-        events: &[MevEvent],
-        token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
-    ) -> usize {
+        swaps: &'a [SwapRow],
+        events: &'a [MevEvent],
+        token_prices: &'a std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
+    }
+
+    /// Insert one block with the fixture defaults shared by these tests
+    /// (25 gwei base fee, $0.75 native, no txs/transfers).
+    fn seed_block(store: &ExplorerStore, p: SeedBlockParams<'_>) -> usize {
         store
             .insert_block_facts(BlockFactsInput {
-                block_number,
-                block_hash,
-                ts,
+                block_number: p.block_number,
+                block_hash: p.block_hash,
+                ts: p.ts,
                 base_fee_gwei: Some(25.0),
-                tx_count,
+                tx_count: p.tx_count,
                 txs: &[],
-                swaps,
+                swaps: p.swaps,
                 transfers: &[],
-                events,
+                events: p.events,
                 native_price_usd: Some(0.75),
-                token_prices,
+                token_prices: p.token_prices,
             })
             .unwrap()
     }
@@ -525,13 +524,15 @@ mod tests {
         );
         let n = seed_block(
             &store,
-            100,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            1_700_000_000,
-            5,
-            &[],
-            &[sample_event(100)],
-            &prices,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: &[sample_event(100)],
+                token_prices: &prices,
+            },
         );
         assert_eq!(n, 1);
         assert!(store.block_classified(100).unwrap());
@@ -576,13 +577,15 @@ mod tests {
         prices.insert(tok_b, token_usd(2.0, 18));
         seed_block(
             &store,
-            200,
-            &b256!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-            1_700_000_000,
-            1,
-            &[],
-            &[ev],
-            &prices,
+            SeedBlockParams {
+                block_number: 200,
+                block_hash: &b256!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[],
+                events: &[ev],
+                token_prices: &prices,
+            },
         );
         let ops = store.ops_in_range(200, 200, &[]).unwrap();
         assert_eq!(ops.len(), 1);
@@ -630,7 +633,7 @@ mod tests {
         let mut fot = sample_event(301);
         fot.profit_token = Some(usdt);
         fot.profit_amount = Some(U256::from(1_000_000u64));
-        // Unpriced profit token priced at the realized route rate (Phase 2.4):
+        // Unpriced profit token priced at the realized route rate :
         // 1 longtail token sold for 2 USDC ⇒ each is worth 2 USD.
         let mut realized = sample_event(302);
         realized.profit_token = Some(longtail);
@@ -650,13 +653,15 @@ mod tests {
         for (block, ev) in [(301u64, fot), (302, realized)] {
             seed_block(
                 &store,
-                block,
-                &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
-                1_700_000_000,
-                1,
-                &[],
-                &[ev],
-                &prices,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[ev],
+                    token_prices: &prices,
+                },
             );
         }
 
@@ -728,13 +733,15 @@ mod tests {
         for (block, ev) in [(303u64, cross), (304, guessed)] {
             seed_block(
                 &store,
-                block,
-                &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
-                1_700_000_000,
-                1,
-                &[],
-                &[ev],
-                &prices,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[ev],
+                    token_prices: &prices,
+                },
             );
         }
         let more = store.ops_in_range(303, 304, &[]).unwrap();
@@ -790,13 +797,15 @@ mod tests {
         for (block, ev) in [(410u64, clamped), (411, native), (412, partial)] {
             seed_block(
                 &store,
-                block,
-                &b256!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
-                1_700_000_000,
-                1,
-                &[],
-                &[ev],
-                &prices,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &b256!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[ev],
+                    token_prices: &prices,
+                },
             );
         }
         let ops = store.ops_in_range(410, 412, &[]).unwrap();
@@ -929,13 +938,15 @@ mod tests {
         loss.details = serde_json::json!({ "reason": "test" });
         let n = seed_block(
             &store,
-            130,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"),
-            1_700_000_300,
-            5,
-            &[],
-            &[loss],
-            &prices,
+            SeedBlockParams {
+                block_number: 130,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"),
+                ts: 1_700_000_300,
+                tx_count: 5,
+                swaps: &[],
+                events: &[loss],
+                token_prices: &prices,
+            },
         );
         assert_eq!(n, 0);
         assert!(store.ops_in_range(130, 130, &[]).unwrap().is_empty());
@@ -947,13 +958,15 @@ mod tests {
         win.kind = MevKind::Sandwich;
         let n = seed_block(
             &store,
-            131,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"),
-            1_700_000_400,
-            5,
-            &[],
-            &[win],
-            &prices,
+            SeedBlockParams {
+                block_number: 131,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"),
+                ts: 1_700_000_400,
+                tx_count: 5,
+                swaps: &[],
+                events: &[win],
+                token_prices: &prices,
+            },
         );
         assert_eq!(n, 1);
         assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
@@ -975,24 +988,28 @@ mod tests {
         arb_evt.kind = MevKind::ArbAtomic;
         let n = seed_block(
             &store,
-            120,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
-            1_700_000_100,
-            5,
-            &[],
-            &[sand_evt],
-            &prices,
+            SeedBlockParams {
+                block_number: 120,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
+                ts: 1_700_000_100,
+                tx_count: 5,
+                swaps: &[],
+                events: &[sand_evt],
+                token_prices: &prices,
+            },
         );
         assert_eq!(n, 1);
         let n = seed_block(
             &store,
-            121,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
-            1_700_000_200,
-            5,
-            &[],
-            &[arb_evt],
-            &prices,
+            SeedBlockParams {
+                block_number: 121,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
+                ts: 1_700_000_200,
+                tx_count: 5,
+                swaps: &[],
+                events: &[arb_evt],
+                token_prices: &prices,
+            },
         );
         assert_eq!(n, 1);
 
@@ -1073,13 +1090,15 @@ mod tests {
         ];
         seed_block(
             &store,
-            400,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
-            1_700_000_000,
-            10,
-            &swap_legs,
-            &[ev],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 400,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+                ts: 1_700_000_000,
+                tx_count: 10,
+                swaps: &swap_legs,
+                events: &[ev],
+                token_prices: &usdc_price(),
+            },
         );
         let ops = store.ops_in_range(400, 400, &[]).unwrap();
         assert_eq!(ops.len(), 1);
@@ -1091,18 +1110,20 @@ mod tests {
         // token not in prices map
         seed_block(
             &store,
-            401,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"),
-            1_700_000_000,
-            1,
-            &[swap_leg(
-                11,
-                0,
-                address!("9999000000000000000000000000000000000009"),
-                123,
-            )],
-            &[unpr],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 401,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[swap_leg(
+                    11,
+                    0,
+                    address!("9999000000000000000000000000000000000009"),
+                    123,
+                )],
+                events: &[unpr],
+                token_prices: &usdc_price(),
+            },
         );
         let ops = store.ops_in_range(401, 401, &[]).unwrap();
         assert!(ops[0].volume_usd.is_none());
@@ -1131,13 +1152,15 @@ mod tests {
         ] {
             seed_block(
                 &store,
-                block,
-                &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
-                ts,
-                1,
-                swaps,
-                std::slice::from_ref(ev),
-                &usdc_price(),
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+                    ts,
+                    tx_count: 1,
+                    swaps,
+                    events: std::slice::from_ref(ev),
+                    token_prices: &usdc_price(),
+                },
             );
         }
 
@@ -1180,13 +1203,15 @@ mod tests {
         let store = ExplorerStore::open_in_memory().unwrap();
         seed_block(
             &store,
-            600,
-            &b256!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
-            1_700_000_000,
-            1,
-            &[],
-            &[sample_event(600)],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 600,
+                block_hash: &b256!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[],
+                events: &[sample_event(600)],
+                token_prices: &usdc_price(),
+            },
         );
         let tx_hash = store.ops_in_range(600, 600, &[]).unwrap()[0]
             .tx_hash
@@ -1281,23 +1306,27 @@ mod tests {
         ev_b.tx_hash = b256!("2222222222222222222222222222222222222222222222222222222222222222");
         seed_block(
             &store,
-            700,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70"),
-            1_700_000_000,
-            2,
-            &[],
-            &[ev_a],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 700,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70"),
+                ts: 1_700_000_000,
+                tx_count: 2,
+                swaps: &[],
+                events: &[ev_a],
+                token_prices: &usdc_price(),
+            },
         );
         seed_block(
             &store,
-            701,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa71"),
-            1_700_000_100,
-            2,
-            &[],
-            &[ev_b],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 701,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa71"),
+                ts: 1_700_000_100,
+                tx_count: 2,
+                swaps: &[],
+                events: &[ev_b],
+                token_prices: &usdc_price(),
+            },
         );
 
         let ov = store.report_window_overview(0, None).unwrap();
@@ -1328,13 +1357,15 @@ mod tests {
         // Seed then wipe labels to simulate a pre-wiring DB.
         seed_block(
             &store,
-            800,
-            &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa80"),
-            1_700_000_000,
-            1,
-            &[],
-            &[sample_event(800)],
-            &usdc_price(),
+            SeedBlockParams {
+                block_number: 800,
+                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa80"),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[],
+                events: &[sample_event(800)],
+                token_prices: &usdc_price(),
+            },
         );
         store.clear_labels().unwrap();
         let searcher = address!("2222000000000000000000000000000000000002");

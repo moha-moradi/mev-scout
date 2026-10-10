@@ -3,7 +3,7 @@ use alloy::primitives::{Address, U256};
 
 use crate::explorer::types::MevEvent;
 
-/// Liquidation P&L (Phase 1.3): gross seized collateral value minus repaid
+/// Liquidation P&L: gross seized collateral value minus repaid
 /// debt value, both priced at persist time. Cross-asset liquidations are an
 /// approximation (liquidation bonus / market-sale slippage) and are marked
 /// `inferred` with `LIQ_BONUS_APPROX`; missing prices fall back to the

@@ -25,7 +25,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
     let block_oracle_owned = ctx.block_oracle_owned;
     let block_reserve_owned = ctx.block_reserve_owned;
     // ── 1. Liquidation pass (exact, zero-heuristic) ─────────────────────
-    // Mode A (§17.8.4): flash-loan atomic liq when same tx has FlashLoanFact
+    // Mode A: flash-loan atomic liq when same tx has FlashLoanFact
     // + LiquidationFact → tag `flash_loan_liq` (plan P0.1 / P2.3 routing).
     for tx in &input.txs {
         if tx.liquidations.is_empty() {
@@ -41,7 +41,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
             } else {
                 liq.liquidator
             };
-            // Transfer reconciliation (Phase 1.3): the liquidator's net positive
+            // Transfer reconciliation: the liquidator's net positive
             // delta of the seized collateral must cover the event amount.
             // Compound V3 `Absorb` carries no per-asset seizure (collateral=0),
             // so it stays Exact with a TRANSFER_MISMATCH reason.
@@ -102,7 +102,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
                 Some(&input.interest_lookback),
             );
             // P&L basis O: seized − repaid components (USD at persist); flash
-            // premium recorded as F component when present (§0.1).
+            // premium recorded as F component when present.
             let mut details = serde_json::json!({
                 "protocol": liq.protocol,
                 "user": format!("{:#x}", liq.user),
@@ -181,7 +181,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
         }
     }
 
-    // ── 1a. BuyCollateral discount capture (Compound V3, §26 / P0.3) ────
+    // ── 1a. BuyCollateral discount capture (Compound V3, / P0.3) ────
     // Mode A: BuyCollateral in a block that also has (or just had) Absorb.
     // Same-tx or prior-tx Absorb in this block pairs the discount capture.
     {

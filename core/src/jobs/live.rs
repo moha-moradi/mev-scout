@@ -358,8 +358,13 @@ impl<'a> LiveContext<'a> {
     }
 
     fn scanned_bounds(&self) -> (u64, u64) {
-        self.scanned_span
-            .expect("persist called before any block was scanned")
+        // Invariant: persist_results / persist_ledger_session only run after at
+        // least one successful pass has set `scanned_span`.
+        #[allow(clippy::expect_used)]
+        {
+            self.scanned_span
+                .expect("persist called before any block was scanned")
+        }
     }
 
     /// Persist one pass's opportunities plus the session manifest.
@@ -646,7 +651,7 @@ async fn run_once(
         }
     };
 
-    // `0` means "unspecified" for `LiveOpts::default()`, so clamp to the tip
+    // `0` means "unspecified" for `LiveOpts::default`, so clamp to the tip
     // block rather than emitting a zero-width range.
     let width = single_pass_blocks.max(1);
     let start_block = tip.saturating_sub(width.saturating_sub(1));
@@ -736,6 +741,196 @@ async fn run_once(
     })
 }
 
+struct LoopStats {
+    blocks_processed: u64,
+    total_txs_scanned: usize,
+    total_dex_txs: usize,
+    total_pending_txs: usize,
+    total_opportunities: usize,
+    block_stats: Vec<BlockReplayStats>,
+    consecutive_failures: u32,
+}
+
+fn should_stop(
+    progress: &dyn JobProgress,
+    deadline: Option<Instant>,
+    max_blocks: Option<u64>,
+    stats: &LoopStats,
+) -> bool {
+    if progress.cancelled() {
+        return true;
+    }
+    if let Some(dl) = deadline {
+        if Instant::now() >= dl {
+            return true;
+        }
+    }
+    if let Some(mb) = max_blocks {
+        if stats.blocks_processed >= mb {
+            return true;
+        }
+    }
+    false
+}
+
+async fn poll_tip_with_retry(
+    ctx: &LiveContext<'_>,
+    consecutive_failures: &mut u32,
+    max_consecutive_failures: u32,
+) -> anyhow::Result<Option<u64>> {
+    match ctx.rpc.get_block_number().await {
+        Ok(n) => Ok(Some(n)),
+        Err(e) => {
+            *consecutive_failures += 1;
+            tracing::warn!(
+                "Failed to get block number ({}/{}): {}",
+                *consecutive_failures,
+                max_consecutive_failures,
+                e
+            );
+            if *consecutive_failures >= max_consecutive_failures {
+                anyhow::bail!(
+                    "giving up after {max_consecutive_failures} consecutive RPC failures"
+                );
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Fetch and backtest one tip range. Returns `Ok(true)` when the pass completed;
+/// `Ok(false)` when fetch/backtest failed under the failure limit (caller should retry).
+async fn process_pass(
+    ctx: &mut LiveContext<'_>,
+    last_block: &mut u64,
+    stats: &mut LoopStats,
+    current_tip: u64,
+    run_id: &str,
+    max_consecutive_failures: u32,
+) -> anyhow::Result<bool> {
+    let progress = ctx.progress;
+    let from_block = *last_block + 1;
+    let block_count = current_tip - from_block + 1;
+    let resolved = ResolvedRange {
+        start_block: from_block,
+        end_block: current_tip,
+        block_count,
+        mode: RangeMode::Range(from_block, current_tip),
+    };
+
+    let pass_start = Instant::now();
+
+    let fetch_done = Arc::new(AtomicU64::new(0));
+    let tick = move || {
+        if progress.cancelled() {
+            return false;
+        }
+        let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
+        progress.emit(ProgressEvent {
+            stage: "fetch".to_string(),
+            done: Some(d),
+            total: Some(block_count),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
+    };
+    if let Err(e) = ctx.fetch_blocks(&resolved, Some(&tick)).await {
+        stats.consecutive_failures += 1;
+        tracing::warn!(
+            "Fetch failed for blocks {}–{} ({}/{}): {} — will retry same range",
+            from_block,
+            current_tip,
+            stats.consecutive_failures,
+            max_consecutive_failures,
+            e
+        );
+        if stats.consecutive_failures >= max_consecutive_failures {
+            anyhow::bail!(
+                "giving up after {max_consecutive_failures} consecutive fetch/backtest failures"
+            );
+        }
+        return Ok(false);
+    }
+
+    let detect_progress = move |done: u64, total: u64| {
+        if progress.cancelled() {
+            return false;
+        }
+        progress.emit(ProgressEvent {
+            stage: "detect".to_string(),
+            done: Some(done),
+            total: Some(total),
+            run_id: None,
+            ops: None,
+            elapsed_ms: None,
+        });
+        true
+    };
+    let (opps, pass_stats) = match ctx.run_blocks(&resolved, Some(&detect_progress)).await {
+        Ok(o) => o,
+        Err(e) => {
+            stats.consecutive_failures += 1;
+            tracing::warn!(
+                "Backtest failed for blocks {}–{} ({}/{}): {} — will retry same range",
+                from_block,
+                current_tip,
+                stats.consecutive_failures,
+                max_consecutive_failures,
+                e
+            );
+            if stats.consecutive_failures >= max_consecutive_failures {
+                anyhow::bail!(
+                    "giving up after {max_consecutive_failures} consecutive fetch/backtest failures"
+                );
+            }
+            return Ok(false);
+        }
+    };
+    let pass_elapsed = pass_start.elapsed();
+
+    for s in &pass_stats {
+        stats.block_stats.push(s.clone());
+        stats.total_txs_scanned += s.total_tx_count;
+        stats.total_dex_txs += s.dex_tx_count;
+        stats.total_pending_txs += s.pending_tx_count;
+    }
+
+    if opps.is_empty() {
+        progress.log(&format!(
+            "Block {}–{}: no opportunities",
+            from_block, current_tip
+        ));
+    } else {
+        progress.log(&format!(
+            "Block {}–{}: {} opportunity(ies)",
+            from_block,
+            current_tip,
+            opps.len(),
+        ));
+    }
+
+    ctx.extend_session(&resolved);
+    ctx.persist_results(&opps);
+    let ledger = ctx.update_ledger(&opps);
+    progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
+    progress.emit(ProgressEvent {
+        stage: "complete".to_string(),
+        done: None,
+        total: None,
+        run_id: Some(run_id.to_string()),
+        ops: Some(opps.len() as u64),
+        elapsed_ms: Some(pass_elapsed.as_millis() as u64),
+    });
+    ctx.runner.advance_to(current_tip);
+    *last_block = current_tip;
+    stats.blocks_processed += resolved.block_count;
+    stats.total_opportunities += opps.len();
+    stats.consecutive_failures = 0;
+    Ok(true)
+}
+
 async fn run_loop(
     ctx: &mut LiveContext<'_>,
     deadline: Option<Instant>,
@@ -751,184 +946,54 @@ async fn run_loop(
     ));
 
     const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-    let mut consecutive_failures: u32 = 0;
-    let mut blocks_processed: u64 = 0;
-    let mut total_txs_scanned: usize = 0;
-    let mut total_dex_txs: usize = 0;
-    let mut total_pending_txs: usize = 0;
-    let mut total_opportunities: usize = 0;
-    let mut block_stats: Vec<BlockReplayStats> = Vec::new();
+    let mut stats = LoopStats {
+        blocks_processed: 0,
+        total_txs_scanned: 0,
+        total_dex_txs: 0,
+        total_pending_txs: 0,
+        total_opportunities: 0,
+        block_stats: Vec::new(),
+        consecutive_failures: 0,
+    };
 
     loop {
         tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
 
-        if progress.cancelled() {
+        if should_stop(progress, deadline, max_blocks, &stats) {
             break;
         }
-        if let Some(dl) = deadline {
-            if Instant::now() >= dl {
-                break;
-            }
-        }
-        if let Some(mb) = max_blocks {
-            if blocks_processed >= mb {
-                break;
-            }
-        }
 
-        let current_tip = match ctx.rpc.get_block_number().await {
-            Ok(n) => n,
-            Err(e) => {
-                consecutive_failures += 1;
-                tracing::warn!(
-                    "Failed to get block number ({}/{}): {}",
-                    consecutive_failures,
-                    MAX_CONSECUTIVE_FAILURES,
-                    e
-                );
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    anyhow::bail!(
-                        "giving up after {MAX_CONSECUTIVE_FAILURES} consecutive RPC failures"
-                    );
-                }
-                continue;
-            }
+        let Some(current_tip) =
+            poll_tip_with_retry(ctx, &mut stats.consecutive_failures, MAX_CONSECUTIVE_FAILURES)
+                .await?
+        else {
+            continue;
         };
 
         if current_tip <= last_block {
             continue;
         }
 
-        let from_block = last_block + 1;
-        let block_count = current_tip - from_block + 1;
-        let resolved = ResolvedRange {
-            start_block: from_block,
-            end_block: current_tip,
-            block_count,
-            mode: RangeMode::Range(from_block, current_tip),
-        };
-
-        let pass_start = Instant::now();
-
-        let fetch_done = Arc::new(AtomicU64::new(0));
-        let tick = move || {
-            if progress.cancelled() {
-                return false;
-            }
-            let d = fetch_done.fetch_add(1, Ordering::Relaxed) + 1;
-            progress.emit(ProgressEvent {
-                stage: "fetch".to_string(),
-                done: Some(d),
-                total: Some(block_count),
-                run_id: None,
-                ops: None,
-                elapsed_ms: None,
-            });
-            true
-        };
-        if let Err(e) = ctx.fetch_blocks(&resolved, Some(&tick)).await {
-            consecutive_failures += 1;
-            tracing::warn!(
-                "Fetch failed for blocks {}–{} ({}/{}): {} — will retry same range",
-                from_block,
-                current_tip,
-                consecutive_failures,
-                MAX_CONSECUTIVE_FAILURES,
-                e
-            );
-            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                anyhow::bail!(
-                    "giving up after {MAX_CONSECUTIVE_FAILURES} consecutive fetch/backtest failures"
-                );
-            }
-            continue;
-        }
-
-        let detect_progress = move |done: u64, total: u64| {
-            if progress.cancelled() {
-                return false;
-            }
-            progress.emit(ProgressEvent {
-                stage: "detect".to_string(),
-                done: Some(done),
-                total: Some(total),
-                run_id: None,
-                ops: None,
-                elapsed_ms: None,
-            });
-            true
-        };
-        let (opps, pass_stats) = match ctx.run_blocks(&resolved, Some(&detect_progress)).await {
-            Ok(o) => o,
-            Err(e) => {
-                consecutive_failures += 1;
-                tracing::warn!(
-                    "Backtest failed for blocks {}–{} ({}/{}): {} — will retry same range",
-                    from_block,
-                    current_tip,
-                    consecutive_failures,
-                    MAX_CONSECUTIVE_FAILURES,
-                    e
-                );
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    anyhow::bail!(
-                        "giving up after {MAX_CONSECUTIVE_FAILURES} consecutive fetch/backtest failures"
-                    );
-                }
-                continue;
-            }
-        };
-        let pass_elapsed = pass_start.elapsed();
-
-        for s in &pass_stats {
-            block_stats.push(s.clone());
-            total_txs_scanned += s.total_tx_count;
-            total_dex_txs += s.dex_tx_count;
-            total_pending_txs += s.pending_tx_count;
-        }
-
-        if opps.is_empty() {
-            progress.log(&format!(
-                "Block {}–{}: no opportunities",
-                from_block, current_tip
-            ));
-        } else {
-            progress.log(&format!(
-                "Block {}–{}: {} opportunity(ies)",
-                from_block,
-                current_tip,
-                opps.len(),
-            ));
-        }
-
-        ctx.extend_session(&resolved);
-        ctx.persist_results(&opps);
-        let ledger = ctx.update_ledger(&opps);
-        progress.log(&render_ledger_summary(&ledger, ctx.native_usd));
-        progress.emit(ProgressEvent {
-            stage: "complete".to_string(),
-            done: None,
-            total: None,
-            run_id: Some(run_id.clone()),
-            ops: Some(opps.len() as u64),
-            elapsed_ms: Some(pass_elapsed.as_millis() as u64),
-        });
-        ctx.runner.advance_to(current_tip);
-        last_block = current_tip;
-        blocks_processed += resolved.block_count;
-        total_opportunities += opps.len();
-        consecutive_failures = 0;
+        process_pass(
+            ctx,
+            &mut last_block,
+            &mut stats,
+            current_tip,
+            &run_id,
+            MAX_CONSECUTIVE_FAILURES,
+        )
+        .await?;
     }
 
     progress.log("");
     progress.log("Session summary:");
-    progress.log(&format!("  Blocks processed: {blocks_processed}"));
-    progress.log(&format!("  Txs scanned:      {total_txs_scanned}"));
-    progress.log(&format!("    DEX txs:        {total_dex_txs}"));
-    if total_pending_txs > 0 {
-        progress.log(&format!("    Pending txs:    {total_pending_txs}"));
+    progress.log(&format!("  Blocks processed: {}", stats.blocks_processed));
+    progress.log(&format!("  Txs scanned:      {}", stats.total_txs_scanned));
+    progress.log(&format!("    DEX txs:        {}", stats.total_dex_txs));
+    if stats.total_pending_txs > 0 {
+        progress.log(&format!("    Pending txs:    {}", stats.total_pending_txs));
     }
-    progress.log(&format!("  Opportunities:    {total_opportunities}"));
+    progress.log(&format!("  Opportunities:    {}", stats.total_opportunities));
 
     // Recomputed over the full accumulated list. `update_ledger` already ran
     // after every pass, including passes that found nothing; this last apply
@@ -945,7 +1010,7 @@ async fn run_loop(
     progress.log("");
 
     Ok(LiveLoopOutcome {
-        block_stats,
+        block_stats: stats.block_stats,
         session_id,
     })
 }

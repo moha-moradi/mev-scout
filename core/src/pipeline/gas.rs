@@ -1,13 +1,12 @@
-//! Gas price distribution modeling for realistic gas cost estimation (H10).
+//! Gas price distribution modeling for realistic gas cost estimation.
 //!
 //! Tracks effective gas prices from recent blocks to model the gas price
 //! distribution needed to win inclusion in competitive blocks. Replaces
 //! the crude P90 multiplier (`base_fee * 150%`) with actual percentile
 //! estimates from recent transaction gas prices. Also provides EIP-1559
 //! base fee forecasting based on block gas usage ratios.
-
 /// Tracks effective gas prices from recent blocks and provides percentile
-/// estimates for gas cost modeling (H10).
+/// estimates for gas cost modeling.
 ///
 /// Maintains a sliding window of recent effective gas prices from block
 /// transactions. Supports EIP-1559 base fee forecasting by tracking

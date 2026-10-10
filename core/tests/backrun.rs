@@ -4,6 +4,7 @@
 //! gates (`will_touch` / `newly_dirty`), cross-family dedup, D2 precedence
 //! (`suppress_superseded_arbs`) and the backrun canonical-id form.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::collections::HashSet;
 
 use alloy::primitives::{keccak256, Address, Bytes, B256, U256};

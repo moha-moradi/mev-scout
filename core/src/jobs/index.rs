@@ -60,7 +60,7 @@ pub async fn job_index(
     cfg.confirmations = config.explorer.confirmations;
     cfg.arb_likely_parity = config.explorer.arb_likely_parity;
 
-    // Phase 1.1: pool registry (pool → token0/token1) for swap-direction
+    // pool registry (pool → token0/token1) for swap-direction
     // resolution. Missing/empty registry degrades to transfer pairing.
     let registry = load_pool_registry(config, &chain);
 
@@ -125,7 +125,7 @@ pub async fn job_index(
 }
 
 /// Load the pool → (token0, token1) registry and V2-like skim set from the
-/// scanner cache (Phase 1.1). Best-effort: an absent/locked cache yields empty
+/// scanner cache. Best-effort: an absent/locked cache yields empty
 /// maps and ingest degrades to transfer-pairing resolution (no skim).
 pub fn load_pool_registry(config: &Config, chain: &ChainName) -> PoolRegistry {
     let mut tokens = HashMap::new();

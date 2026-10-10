@@ -279,7 +279,7 @@ pub async fn job_discover(
         Err(e) => tracing::warn!("Failed to load token cache from SQLite: {e:#}"),
     }
 
-    // Phase 2.5 start-block guard.
+    // start-block guard.
     if !is_remote_only {
         if let Ok(by_factory) = cache.earliest_creation_block_by_factory() {
             for (factory, first_block) in by_factory {
@@ -295,7 +295,7 @@ pub async fn job_discover(
         }
     }
 
-    // Phase 5.1: incremental mode.
+    // incremental mode.
     // When the on-chain window is already covered, pure onchain exits early.
     // Hybrid/remote still continue so aggregator TVL ranking can refresh.
     let mut skip_onchain_scan = false;
@@ -348,7 +348,7 @@ pub async fn job_discover(
         "Pool discovery — chain {chain_name}, sources: {source}, blocks {from}-{to} (json={json})"
     ));
 
-    // Phase 1: factory/event scan.
+    // factory/event scan.
     let (all_pools, all_active_blocks) = if is_remote_only || skip_onchain_scan {
         (Vec::new(), std::collections::HashSet::new())
     } else {
@@ -401,7 +401,7 @@ pub async fn job_discover(
         }
     }
 
-    // Phase 3.5: resolve missing CL metadata (opt-in).
+    // resolve missing CL metadata (opt-in).
     if opts.resolve_remote_metadata && !pools.is_empty() {
         let targets: Vec<Address> = pools
             .iter()
@@ -448,7 +448,7 @@ pub async fn job_discover(
         }
     }
 
-    // Phase 5.2: health check.
+    // health check.
     if health_check && !pools.is_empty() {
         let before = pools.len();
         let (checked, removed) = crate::pool::discovery::health_check_pools(
@@ -467,7 +467,7 @@ pub async fn job_discover(
         pools = checked;
     }
 
-    // Phase 5.3: persist merged universe.
+    // persist merged universe.
     let persisted = persist_universe(&cache, &pools);
     if persisted > 0 {
         progress.log(&format!("Cached {persisted} pool(s) to {cache_path}"));

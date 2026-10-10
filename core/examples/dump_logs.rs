@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use mev_scout_core::data::LogData;
 use rusqlite::Connection;
 use std::env;

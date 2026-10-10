@@ -2,16 +2,16 @@
 //! opportunity detections (`run`/`live`).
 //!
 //! Matching tiers (never merged):
-//! - **T1 exact** — same `canonical_id` (+ block within match window).
-//! - **T2 overlap** — ≥1 pool in common + same profit/token direction + block
+//! - **Exact match** — same `canonical_id` (+ block within match window).
+//! - **Overlap match** — ≥1 pool in common + same profit/token direction + block
 //!   within window.
-//! - **T3 block-level** — any op of the same kind in the same block (ceiling).
+//! - **Block-level match** — any op of the same kind in the same block (ceiling).
 //!
-//! Headline recall = T1 ∪ T2. USD-weighted recall is the primary metric.
-//! Misses are attributed to the disjoint M1–M8 taxonomy using
-//! using `rejected_candidates` + pool-coverage facts; windows without
-//! rejection capture degrade to `unknown-coverage`, never silently M3/M5.
-
+//! Headline recall = exact ∪ overlap matches. USD-weighted recall is the primary metric.
+//! Misses are attributed to the disjoint miss-cause taxonomy using
+//! `rejected_candidates` + pool-coverage facts; windows without rejection
+//! capture degrade to `unknown-coverage`, never silently conflated with
+//! filter rejects.
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
@@ -23,27 +23,27 @@ use crate::types::ChainName;
 ///
 /// Note: `backrun` **is** mapped — it is the first scanner strategy joinable
 /// to the realized `MevKind::Backrun`, scored via the state-differential
-/// detector (`core/src/mev/detectors/backrun.rs`, `docs/plan_backrun.md`).
+/// detector (`core/src/mev/detectors/backrun.rs`).
 /// `frontrun` remains unmapped (no scanner strategy emits it); realized
-/// frontrun is still measured via the Phase 0.5 labeled golden set
+/// frontrun is still measured via the labeled golden set
 /// (`explorer::golden` / `explorer validate --golden-causal`). Unmapped
 /// scanner strategies contribute only to `precision_signal_count`.
 ///
 /// Strategy strings are matched in their **snake_case** form because that is
-/// what production persists: the results layer writes `Strategy::to_string()`
+/// what production persists: the results layer writes `Strategy::to_string`
 /// (strum `Display` → `"two_hop_arb"`), so the arms are snake_case and the
-/// lookup lower-cases before matching. Normalizing here is what keeps T2
+/// lookup lower-cases before matching. Normalizing here is what keeps overlap
 /// matching alive for every persisted production row.
 ///
 /// The lower-casing does **not** rescue the `Debug` form (`"TwoHopArb"` →
 /// `"twohoparb"`, which no arm matches). That form appears only in
 /// hand-written fixtures, and adding arms for it is a separate decision with a
 /// real blast radius, not a cosmetic fix: the `Debug`-form row in
-/// [`store_with_fixtures`] would start counting as T2, moving
+/// [`store_with_fixtures`] would start counting as overlap matches, moving
 /// `headline_usd_recall` in `t1_match_and_m1_miss` off 0.5. A fixture that
-/// needs a T2 match must use the production spelling — which is what
+/// needs an overlap match must use the production spelling — which is what
 /// `t2_matches_production_snake_case_strategy` pins, via the real
-/// `Strategy::to_string()` persistence path.
+/// `Strategy::to_string` persistence path.
 fn strategy_to_kind(strategy: &str) -> Option<&'static str> {
     match strategy.to_ascii_lowercase().as_str() {
         "two_hop_arb" | "multi_hop_arb" => Some("arb_atomic"),
@@ -60,7 +60,7 @@ fn norm_addr(s: &Option<String>) -> Option<String> {
     s.as_ref().map(|a| a.to_ascii_lowercase())
 }
 
-/// T2 token-overlap direction: opportunity token_in/out vs realized route
+/// Overlap token-overlap direction: opportunity token_in/out vs realized route
 /// endpoints. Returns true when at least one endpoint token matches the
 /// opportunity pair (both directions considered — searcher route order
 /// differs from simulation).
@@ -164,7 +164,7 @@ pub struct MatchRecord {
     pub one_to_many: bool,
 }
 
-/// Distribution of miss causes M1–M8 (+unknown-coverage) for one kind.
+/// Distribution of miss causes – (+unknown-coverage) for one kind.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct MissTaxonomy {
     pub m1_pool_gap: u64,
@@ -272,7 +272,7 @@ pub struct ValidationReport {
     pub match_window: u64,
     /// Sources of scanner-side data.
     pub opportunity_runs: Vec<String>,
-    /// Scanner-coverage gaps for the window (M7 context).
+    /// Scanner-coverage gaps for the window (context).
     pub scanner_blocks_covered: usize,
     pub realized_blocks: usize,
     pub per_kind: Vec<(String, TierRecall)>,
@@ -283,10 +283,10 @@ pub struct ValidationReport {
     pub precision_signal_count: u64,
     /// Blocks the scanner covered but the explorer saw nothing of the kind.
     pub threshold_sweep: Vec<SweepPoint>,
-    /// Realized-op pools absent from the opportunity pool set (M1 evidence).
+    /// Realized-op pools absent from the opportunity pool set (evidence).
     pub missing_pools: Vec<String>,
     /// Whether rejection capture was present for the window (drives
-    /// `unknown-coverage` vs M3/M5 disambiguation).
+    /// `unknown-coverage` vs disambiguation).
     pub rejections_recorded: bool,
     /// Realized inferred arb/unknown ops — the precision-review queue.
     pub review_candidate_count: u64,
@@ -295,7 +295,7 @@ pub struct ValidationReport {
     pub trace_verified_ops: u64,
     pub profit_error_mean: Option<f64>,
     pub profit_error_mad: Option<f64>,
-    /// Optional Phase 0.5 causal labeled-set score (when `--golden-causal`).
+    /// Optional causal labeled-set score (when `--golden-causal`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub causal_golden: Option<crate::explorer::golden::GoldenSetScore>,
 }
@@ -378,7 +378,7 @@ pub fn compute_validation(
         .collect();
     let realized_blocks: HashSet<u64> = ops.iter().map(|o| o.block_number).collect();
 
-    // Scanner pool coverage for the missing-pool report (M1).
+    // Scanner pool coverage for the missing-pool report.
     let scanner_pools: HashSet<String> = store
         .opportunity_pools(&chain_str, from_block, to_block)?
         .into_iter()
@@ -398,7 +398,7 @@ pub fn compute_validation(
         opps_by_block.entry(op.block_number).or_default().push(i);
     }
 
-    // canonical_id → op indices (T1).
+    // canonical_id → op indices (exact tier).
     let mut opps_by_canonical: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, op) in opportunities.iter().enumerate() {
         if let Some(c) = &op.canonical_id {
@@ -426,7 +426,7 @@ pub fn compute_validation(
             .map(|o| o.net_profit_usd.or(o.profit_usd).unwrap_or(0.0))
             .sum();
 
-        // Realized-side precision + trace reconciliation (Phase 0).
+        // Realized-side precision + trace reconciliation.
         let mut errors: Vec<f64> = Vec::new();
         for ev in &kind_ops {
             if ev.confidence == "inferred" {
@@ -453,7 +453,7 @@ pub fn compute_validation(
             let ev_pools = route_pools(ev);
             let mut tier: Option<(&'static str, usize, i64)> = None;
 
-            // T1: exact canonical_id + block window.
+            // Exact tier: canonical_id + block window.
             if let Some(cid) = &ev.canonical_id {
                 if let Some(idxs) = opps_by_canonical.get(cid) {
                     if let Some(&i) = idxs.iter().find(|&&i| {
@@ -469,7 +469,7 @@ pub fn compute_validation(
                 }
             }
 
-            // T2: pool overlap ≥1 + token overlap + block window.
+            // Overlap tier: pool overlap ≥1 + token overlap + block window.
             if tier.is_none() {
                 let mut best: Option<(usize, i64)> = None;
                 for b in ev.block_number.saturating_sub(match_window)
@@ -531,7 +531,7 @@ pub fn compute_validation(
                     });
                 }
                 None => {
-                    // Miss — attribute M1–M8 (first match wins).
+                    // Miss — attribute – (first match wins).
                     let cause = attribute_miss(
                         ev,
                         &rejections,
@@ -555,7 +555,7 @@ pub fn compute_validation(
             }
         }
 
-        // T3 ceiling: any same-kind realized op in the same block where the
+        // Block-level ceiling: any same-kind realized op in the same block where the
         // scanner flagged an opportunity (of the matching strategy family).
         for ev in &kind_ops {
             if scanner_blocks.contains(&ev.block_number) {
@@ -580,7 +580,7 @@ pub fn compute_validation(
     // (candidate false positives or outcompeted; reported, not judged).
     let precision_signal_count = opportunities.len() as u64 - matched_opp.len() as u64;
 
-    // Missing pools: realized-op pools absent from the scanner's pool set (M1).
+    // Missing pools: realized-op pools absent from the scanner's pool set.
     let missing_pools: Vec<String> = {
         let mut v: Vec<String> = ops
             .iter()
@@ -682,7 +682,7 @@ pub fn compute_validation(
     })
 }
 
-/// M1–M8 attribution: first match wins, disjoint.
+/// – attribution: first match wins, disjoint.
 enum MissCause {
     M1,
     M2,
@@ -705,12 +705,12 @@ fn attribute_miss(
 ) -> MissCause {
     let ev_pools = route_pools(ev);
 
-    // M1 pool-gap: a route pool the scanner has never seen.
+    //  pool-gap: a route pool the scanner has never seen.
     if ev_pools.iter().any(|p| !scanner_pools.contains(p)) {
         return MissCause::M1;
     }
 
-    // M7 scanner coverage: the scanner never ran over this block at all.
+    //  scanner coverage: the scanner never ran over this block at all.
     if !scanner_blocks.contains(&ev.block_number) {
         return MissCause::M7;
     }
@@ -751,7 +751,7 @@ fn attribute_miss(
         return MissCause::M3;
     }
 
-    // M6 competition: the scanner flagged this block (an opportunity of the
+    //  competition: the scanner flagged this block (an opportunity of the
     // family exists in-window) yet a different realization was extracted —
     // detection succeeded; the extractor raced faster. Approximated as:
     // scanner covered the block + matching-strategy opportunity nearby.
@@ -763,7 +763,7 @@ fn attribute_miss(
         return MissCause::UnknownCoverage;
     }
 
-    // Rejections exist but nothing matches — default to other-flavored M8
+    // Rejections exist but nothing matches — default to other-flavored
     // review candidates (mis-attribution suspect for `unknown` kinds).
     if kind == "unknown" {
         MissCause::M8
@@ -990,7 +990,7 @@ mod tests {
                 token_prices: &prices,
             })
             .unwrap();
-        // Block 102: realized op on an unknown pool (M1) + scanner never there
+        // Block 102: realized op on an unknown pool + scanner never there
         let e2 = realized_ev_at(102, vec![pool_b]);
         store
             .insert_block_facts(BlockFactsInput {
@@ -1029,7 +1029,7 @@ mod tests {
                 sender: None,
                 tx_hash: Some(hash1),
                 detection_path: Some("replay"),
-                // T1 join key: must equal the explorer-side canonical form the
+                // Exact-match join key: must equal the explorer-side canonical form the
                 // store computed for the block-100 event (ArbAtomic|sorted pools).
                 canonical_id: Some(&format!("ArbAtomic|{pool_a:#x}")),
             })
@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     /// Realized ArbAtomic event on `pools` for a test block (route on the
-    /// fixture token pair so T2 token-overlap can hit).
+    /// fixture token pair so Overlap token-overlap can hit).
     fn realized_ev_at(
         block: u64,
         pools: Vec<alloy::primitives::Address>,
@@ -1078,9 +1078,9 @@ mod tests {
     #[allow(clippy::field_reassign_with_default)]
     #[test]
     fn t2_matches_production_snake_case_strategy() {
-        // The production results layer persists `Strategy::to_string()` —
+        // The production results layer persists `Strategy::to_string` —
         // strum `Display` emits snake_case (`two_hop_arb`), not the PascalCase
-        // `Debug` form fixtures use. Seed through that path and assert T2
+        // `Debug` form fixtures use. Seed through that path and assert overlap match
         // still matches after the `strategy_to_kind` case normalization.
         use crate::explorer::results::persist_opportunities_to_explorer;
         use crate::types::{MevOpportunity, ResultsFile, Strategy};
@@ -1133,7 +1133,7 @@ mod tests {
         opp.tx_hash = Some(b256f!(
             "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         ));
-        // Deliberately NOT the explorer canonical form, so only T2 can hit.
+        // Deliberately NOT the explorer canonical form, so only overlap match can hit.
         opp.canonical_id = Some("TwoHopArb-unmatched".into());
         let results = ResultsFile {
             run_id: "run_snake".into(),
@@ -1207,9 +1207,9 @@ mod tests {
             .unwrap();
         assert_eq!(*kind, "arb_atomic");
         assert_eq!(t.ops, 2);
-        // block 100 matched T1 via canonical_id
+        // block 100 matched exactly via canonical_id
         assert_eq!(t.matched_t1, 1);
-        // block 102 missed on unknown pool → M1
+        // block 102 missed on unknown pool →
         assert_eq!(t.misses.m1_pool_gap, 1);
         // headline USD recall = 50% (matched pool_a op carries same USD weight)
         assert!((report.headline_usd_recall() - 0.5).abs() < 1e-9);
@@ -1239,7 +1239,7 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "arb_atomic")
             .unwrap();
-        // block 100 has a scanner opportunity → T3 includes it
+        // block 100 has a scanner opportunity → block-level recall includes it
         assert_eq!(t.matched_t3, 1);
     }
 

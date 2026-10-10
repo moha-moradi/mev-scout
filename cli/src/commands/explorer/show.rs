@@ -1,5 +1,4 @@
 //! ``explorer show`` - per-transaction detail view.
-
 use super::*;
 use mev_scout_core::explorer::store::OpportunityRow;
 use mev_scout_core::mev::{mev_verdict, MevVerdict};

@@ -1,5 +1,4 @@
 //! Paper-session data contracts (virtual-fund bot P&L).
-
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 

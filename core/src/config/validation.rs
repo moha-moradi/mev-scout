@@ -1,5 +1,4 @@
 //! Configuration validation — parses and normalizes runtime parameters, returning a `ValidationResult`.
-
 use crate::config::defaults::ChainConfig;
 use crate::config::settings::Config;
 use crate::error::ConfigError;

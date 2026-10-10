@@ -1,12 +1,13 @@
 //! Aggregator/router swap edges and DEX-edge dedup.
 use alloy::primitives::{Address, B256, U256};
+use crate::utils::{abi_word_address, topic_address};
 
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact};
 
 use super::sentinels::is_unresolved_token;
 
-/// Decode an aggregator/DEX-router edge (Phase 1.6). Returns fully-directional
+/// Decode an aggregator/DEX-router edge. Returns fully-directional
 /// facts for 1inch `Swapped`, Paraswap `Swapped`/`SwappedV3`, and 0x `Fill`.
 /// 0x tokens are not in the event payload (asset encodings live in dynamic
 /// data), so token slots stay unresolved for the transfer-pairing fallback.
@@ -33,8 +34,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(log.address);
-        fact.token_in = Address::from_slice(&log.data[44..64]);
-        fact.token_out = Address::from_slice(&log.data[76..96]);
+        fact.token_in = abi_word_address(&log.data, 1);
+        fact.token_out = abi_word_address(&log.data, 2);
         fact.amount_in = U256::from_be_slice(&log.data[128..160]);
         fact.amount_out = U256::from_be_slice(&log.data[160..192]);
         return Some((Amm::Aggregator, fact));
@@ -48,8 +49,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(log.address);
-        fact.token_in = Address::from_slice(&log.topics[2][12..]);
-        fact.token_out = Address::from_slice(&log.topics[3][12..]);
+        fact.token_in = topic_address(log.topics[2]);
+        fact.token_out = topic_address(log.topics[3]);
         fact.amount_in = U256::from_be_slice(&log.data[32..64]);
         fact.amount_out = U256::from_be_slice(&log.data[64..96]);
         return Some((Amm::Aggregator, fact));
@@ -63,8 +64,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
             return None;
         }
         let mut fact = base(log.address);
-        fact.token_in = Address::from_slice(&log.topics[2][12..]);
-        fact.token_out = Address::from_slice(&log.topics[3][12..]);
+        fact.token_in = topic_address(log.topics[2]);
+        fact.token_out = topic_address(log.topics[3]);
         fact.amount_in = U256::from_be_slice(&log.data[128..160]);
         fact.amount_out = U256::from_be_slice(&log.data[160..192]);
         return Some((Amm::Aggregator, fact));
@@ -90,7 +91,7 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
 }
 
 /// Drop aggregator edges that duplicate registry/DEX swap edges in the same tx
-/// (Phase 1.6 dedup). Aggregator events often coexist with the underlying pool
+/// (dedup). Aggregator events often coexist with the underlying pool
 /// `Swap` logs; keeping both would double-count edges in the cycle walk and
 /// inflate Exact arb. An aggregator edge `A→B` is redundant when a DEX chain
 /// `A→…→B` (≤3 hops) already carries the same flow with matching amounts.

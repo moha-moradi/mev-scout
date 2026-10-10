@@ -2,7 +2,6 @@
 //! opportunities). Pure SQL over the store; does no RPC.
 //!
 //! Research tooling gated behind the non-default `validate` cargo feature.
-
 use super::*;
 
 use crate::job_progress::JobProgress;

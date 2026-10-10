@@ -1,4 +1,5 @@
 use super::PENDLE_NEW_MARKET_TOPIC;
+use crate::utils::topic_address;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
@@ -20,7 +21,7 @@ pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitC
     {
         let t = log.topics();
         if t.len() >= 3 {
-            let market = Address::from_slice(&t[2].as_slice()[12..32]);
+            let market = topic_address(t[2].as_slice());
             return Some(PoolHitCandidate {
                 addr_override: Some(market),
                 ..PoolHitCandidate::simple(DexType::Pendle)
@@ -57,8 +58,8 @@ pub(crate) async fn scan_pendle_batch(ctx: &ScanContext<'_>) -> ScanBatchResult 
                     if topics.len() < 3 || log_data.data.len() < 32 {
                         continue;
                     }
-                    let market_addr = Address::from_slice(&topics[1][12..32]);
-                    let pt_addr = Address::from_slice(&topics[2][12..32]);
+                    let market_addr = topic_address(topics[1]);
+                    let pt_addr = topic_address(topics[2]);
                     let expiry = U256::from_be_slice(&log_data.data[..32]).to::<u64>();
                     let creation_block = log.block_number.unwrap_or(0);
                     out.factory_pools.entry(market_addr).or_insert(

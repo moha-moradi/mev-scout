@@ -35,7 +35,7 @@ pub(super) fn classify_arbs(
         let mut ledger =
             DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
 
-        // Phase 2.2: net flash-loan borrow/repay before computing residuals so
+        // net flash-loan borrow/repay before computing residuals so
         // borrowed principal never counts as profit. Only net when the repay
         // leg is *absent* from the Transfer stream (provider callback internal
         // repayments); when the repay Transfer to the provider is present the
@@ -109,8 +109,8 @@ pub(super) fn classify_arbs(
             })
             .map(|s| (s.token_in, s.token_out, s.pool))
             .collect();
-        // Exact only on a closed directed cycle spanning ≥2 pools (§8.1)
-        // attributable to a single flow owner among the searcher's route (§7.1).
+        // Exact only on a closed directed cycle spanning ≥2 pools
+        // attributable to a single flow owner among the searcher's route.
         let arb_confirmed = resolved_edges.len() >= 2
             && has_closed_cycle(&resolved_edges)
             && flow_attributable(&tx.swaps, &candidates);
@@ -123,7 +123,7 @@ pub(super) fn classify_arbs(
                 let amount = ledger.net(searcher, token);
                 let is_dust_or_wrap = amount.is_zero();
                 if !is_dust_or_wrap {
-                    // Spec §7.1 / §8.1: only emit when we have a confirmed cycle
+                    // Spec /: only emit when we have a confirmed cycle
                     // (or mevlive parity catch-all), or a ≥3-entity transfer
                     // cycle that Stage 3b may upgrade. Plain single-hop swaps
                     // with a positive residual are NOT MEV — do not emit them
@@ -132,7 +132,7 @@ pub(super) fn classify_arbs(
                     if !arb_likely && !transfer_cycle {
                         continue;
                     }
-                    // Phase 2.3: emit every positive residual so persist can
+                    // emit every positive residual so persist can
                     // USD-sum across them; the selected pair stays display-primary.
                     let profit_tokens: Vec<(Address, U256)> = ledger
                         .positive_tokens(searcher)
@@ -216,9 +216,9 @@ pub(super) fn classify_arbs(
         // mark minted positions.
     }
 
-    // ── 4b. Keeper / automation execution (plan P1.5 / §21) ─────────────
+    // ── 4b. Keeper / automation execution (plan P1.5 /) ─────────────
     // Mode A: Gelato ExecSuccess / Chainlink UpkeepPerformed|LogTriggered.
-    // Emitted as Unknown + tags so MevKind stays stable (§8.1); P&L basis F.
+    // Emitted as Unknown + tags so MevKind stays stable; P&L basis F.
     for tx in &input.txs {
         for keeper in &tx.keepers {
             let fee = keeper.fee.filter(|f| !f.is_zero());
@@ -264,7 +264,7 @@ pub(super) fn classify_arbs(
         }
     }
 
-    // ── 4c. Airdrop claim-and-sell (plan P3.13 / §7.3) ──────────────────
+    // ── 4c. Airdrop claim-and-sell (plan P3.13 /) ──────────────────
     // Mode A: Transfer from zero + same-tx sell swap; held claims are ignored.
     // When the tx already produced ArbAtomic, just attach the tag (no double count).
     for tx in &input.txs {
@@ -326,7 +326,7 @@ pub(super) fn classify_arbs(
         });
     }
 
-    // ── 4d. ERC-4337 bundler executions (plan P3.11 / §7.4) ─────────────
+    // ── 4d. ERC-4337 bundler executions (plan P3.11 /) ─────────────
     for tx in &input.txs {
         for uo in &tx.user_ops {
             if !uo.success {
@@ -367,12 +367,12 @@ pub(super) fn classify_arbs(
         }
     }
 
-    // ── 3b. Transfer-graph cycle upgrade (Phase 1.6) ────────────────────
+    // ── 3b. Transfer-graph cycle upgrade ────────────────────
     // Unknown events whose tx shows a closed ≥3-entity transfer cycle rooted
     // at the searcher (searcher → X → … → searcher) upgrade to ArbAtomic.
     // This recovers aggregator/routing flows whose swap logs are not
     // decodable; it is independent of the `arb_likely_parity` heuristic and
-    // stays Inferred — the upgrade never inflates Exact arb (§1.6).
+    // stays Inferred — the upgrade never inflates Exact arb.
     {
         let txs_by_index: HashMap<u64, &TxInput> =
             input.txs.iter().map(|t| (t.tx_index, t)).collect();
@@ -418,7 +418,7 @@ pub(super) fn classify_arbs(
     events
 }
 
-/// Derive route geometry metadata for an atomic arb (spec §10 / §11.4).
+/// Derive route geometry metadata for an atomic arb (spec /).
 /// Does not invent new `MevKind`s — annotation only.
 fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Value {
     let hop_count = swaps.len();
@@ -458,7 +458,7 @@ fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Val
     })
 }
 
-/// Multi-hop arb whose route includes a non-blue-chip token (plan P1.3 / §2.2).
+/// Multi-hop arb whose route includes a non-blue-chip token (plan P1.3 /).
 ///
 /// Blue-chip allowlist = profit-token priority (stables + wrapped native).
 /// Requires ≥2 swap legs so single-hop dust is never labeled long-tail.
@@ -473,7 +473,7 @@ fn is_long_tail_arb(swaps: &[SwapFact], blue_chips: &[Address]) -> bool {
     })
 }
 
-/// Phase 1.2 flow ownership (§7.1/§8.1): a closed cycle must be attributable
+/// flow ownership: a closed cycle must be attributable
 /// to one searcher's route. Among direction-resolved swap legs, the distinct
 /// funder-owners must collapse to a single actor, and that actor must be one
 /// of the tx's searcher candidates. Fully-unattributed legs (no inbound
@@ -503,7 +503,7 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
 /// True when the tx's ERC-20 transfer graph contains a closed ≥3-entity cycle
 /// rooted at `searcher` (searcher → X → … → searcher with ≥2 distinct
 /// intermediate addresses). Zero-address nodes (wrapped-native mint/burn) are
-/// excluded. Evidence for the Phase 1.6 Unknown→ArbAtomic upgrade.
+/// excluded. Evidence for the Unknown→ArbAtomic upgrade.
 fn has_transfer_cycle(searcher: Address, transfers: &[TransferFact]) -> bool {
     let mut adj: HashMap<Address, Vec<Address>> = HashMap::new();
     for t in transfers {

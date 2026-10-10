@@ -1,6 +1,5 @@
 //! DEX type enum (UniswapV2, UniswapV3, UniswapV4, Solidly, Camelot, Curve, Balancer,
 //! TraderJoeLB, Pendle, PancakeInfinity, Metric, Fluid) and associated metadata.
-
 use serde::{Deserialize, Serialize};
 
 #[repr(i64)]

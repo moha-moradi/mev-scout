@@ -3,15 +3,15 @@
 //! Multicall3 is deployed at the same deterministic address on every supported
 //! chain (`0xcA11bde05977b3631167028862bE2a173976CA11`), so no per-chain
 //! configuration is needed. One `eth_call` to `aggregate3((address,bool,bytes)[])`
-//! resolves `token0()/token1()/fee()/tickSpacing()` for ~25 pools (100 subcalls),
+//! resolves `token0/token1/fee/tickSpacing` for ~25 pools (100 subcalls),
 //! turning "N×4 calls" into "⌈N/25⌉×1 calls" for remote-sourced
 //! concentrated-liquidity pools whose fee/tickSpacing the aggregators omit.
 //!
 //! Sub-calls use `allowFailure = true`: a reverted member (e.g. an address that
 //! is not actually a CL pool) returns empty data for its slot instead of failing
 //! the whole batch.
-
 use std::collections::HashMap;
+use crate::utils::topic_address;
 
 use alloy::primitives::{address, Address, Bytes};
 
@@ -24,7 +24,7 @@ const TOKEN0_SELECTOR: [u8; 4] = [0x0d, 0xfe, 0x16, 0x81];
 const TOKEN1_SELECTOR: [u8; 4] = [0xd2, 0x12, 0x20, 0xa7];
 const FEE_SELECTOR: [u8; 4] = [0xdd, 0xca, 0x3f, 0x43];
 const TICK_SPACING_SELECTOR: [u8; 4] = [0x37, 0xcf, 0xda, 0xca];
-/// `decimals()` selector (ERC-20 metadata).
+/// `decimals` selector (ERC-20 metadata).
 const DECIMALS_SELECTOR: [u8; 4] = [0x31, 0x3c, 0xe5, 0x67];
 
 /// `aggregate3((address,bool,bytes)[])` selector (verified keccak256 prefix).
@@ -34,7 +34,7 @@ const AGGREGATE3_SELECTOR: [u8; 4] = [0x82, 0xad, 0x56, 0xcb];
 /// comfortably within public-RPC gas and response-size limits.
 const POOLS_PER_BATCH: usize = 25;
 
-/// Tokens per decimals batch: one `decimals()` subcall per token.
+/// Tokens per decimals batch: one `decimals` subcall per token.
 const TOKENS_PER_BATCH: usize = 100;
 
 /// Resolved on-chain metadata for one concentrated-liquidity pool.
@@ -60,11 +60,11 @@ fn push_word_u64(buf: &mut Vec<u8>, v: u64) {
 ///
 /// Layout after the 4-byte selector:
 /// ```text
-/// word  0      : 0x20                      (array param offset)
-/// word  1      : N                         (array length)
-/// words 2..2+N : per-element heads
+/// word 0: 0x20 (array param offset)
+/// word 1: N (array length)
+/// words 2..2+N: per-element heads
 ///                { target | allowFailure=1 | tailOffset }
-/// tails        : { len | data padded to 32 }
+/// tails: { len | data padded to 32 }
 /// ```
 /// Tail offsets are relative to the start of the array-data area (right after
 /// the length word), per ABI v2 dynamic-in-dynamic encoding.
@@ -237,7 +237,7 @@ pub async fn resolve_pool_metadata(
             let b = slots.get(i)?.as_ref()?;
             (b.len() >= 32).then(|| b[..32].try_into().ok())?
         };
-        let addr_at = |w: Option<[u8; 32]>| w.map(|b| Address::from_slice(&b[12..]));
+        let addr_at = |w: Option<[u8; 32]>| w.map(topic_address);
         let uint_at = |w: Option<[u8; 32]>| {
             w.filter(|b| b[..28].iter().all(|&x| x == 0))
                 .map(|b| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
@@ -274,7 +274,7 @@ pub async fn resolve_pool_metadata(
     Ok(out)
 }
 
-/// Decode a `decimals()` return word (`uint8` in the low byte) from a
+/// Decode a `decimals` return word (`uint8` in the low byte) from a
 /// Multicall3 slot. Pure helper so the layout is unit-testable.
 fn decode_decimals_word(b: &[u8]) -> Option<u32> {
     let w: [u8; 32] = b.get(..32)?.try_into().ok()?;
@@ -286,10 +286,10 @@ fn decode_decimals_word(b: &[u8]) -> Option<u32> {
     }
 }
 
-/// Resolve ERC-20 `decimals()` for a batch of token addresses using Multicall3.
+/// Resolve ERC-20 `decimals` for a batch of token addresses using Multicall3.
 /// One `eth_call` per ~100 tokens (100 subcalls); reverted/non-token addresses
 /// yield no entry. Callers should only pass tokens whose decimals are genuinely
-/// unknown (Phase 2.4 long-tail price fallback).
+/// unknown (long-tail price fallback).
 pub async fn resolve_token_decimals(
     rpc: &RpcClient,
     tokens: &[Address],

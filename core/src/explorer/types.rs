@@ -3,7 +3,6 @@
 //! `MevEvent` is one classified operation anchored to a single transaction
 //! (arb, liquidation, JIT, unknown); `MevBundle` groups multi-transaction
 //! operations (sandwich front-run + victim(s) + back-run).
-
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +24,7 @@ pub enum MevKind {
     Jit,
     /// JIT combined with a same-tx/block arb.
     JitArb,
-    /// UniV2-style `skim()`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
+    /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
     /// Profitable pattern not matching any rule (incl. probable CEX-DEX bots).
     Unknown,
@@ -125,7 +124,7 @@ pub struct MevEvent {
     pub profit_token: Option<Address>,
     /// Net profit amount of `profit_token` (pre-gas), raw integer units.
     pub profit_amount: Option<U256>,
-    /// All positive post-netting residuals (Phase 2.3), `(token, net)` in
+    /// All positive post-netting residuals, `(token, net)` in
     /// deterministic order. Persist USD-sums across these while
     /// `profit_token`/`profit_amount` remain the display-primary pair.
     pub profit_tokens: Vec<(Address, U256)>,
@@ -133,7 +132,7 @@ pub struct MevEvent {
     pub profit_usd: Option<f64>,
     /// Gas cost in wei (gasUsed × effectiveGasPrice from the receipt).
     pub gas_cost_wei: U256,
-    /// Flash-loan fee in wei when the tx used a flash loan (Phase 2.2).
+    /// Flash-loan fee in wei when the tx used a flash loan.
     pub flashloan_fee_wei: Option<U256>,
     /// Token the flash-loan fee is denominated in (units of `flashloan_fee_wei`).
     pub flashloan_fee_token: Option<Address>,
@@ -331,7 +330,7 @@ pub struct SwapFact {
     /// Post-swap pool tick for concentrated-liquidity AMMs (V3/V4/Infinity),
     /// used to validate JIT tick-range overlap. `None` for V2/Curve/Balancer.
     pub tick: Option<i32>,
-    /// Flow-ownership attribution (§7.1/§8.1): the address that funded the
+    /// Flow-ownership attribution: the address that funded the
     /// swap's input leg (the `from` of the nearest inbound transfer to the
     /// pool before the swap log), when observable from the transfer stream.
     /// `None` when no inbound leg is attributable. Transient — not persisted.
@@ -378,7 +377,7 @@ pub struct LiquidationFact {
     pub bad_debt_assets: U256,
 }
 
-/// Compound V3 Comet `BuyCollateral` — discount capture after Absorb (§26).
+/// Compound V3 Comet `BuyCollateral` — discount capture after Absorb.
 #[derive(Debug, Clone)]
 pub struct BuyCollateralFact {
     pub tx_index: u64,
@@ -393,7 +392,7 @@ pub struct BuyCollateralFact {
     pub collateral_amount: U256,
 }
 
-/// Realized P&L valuation basis (§0.1 of explorer_strategy_tracking_plan).
+/// Realized P&L valuation basis ( of explorer_strategy_tracking_plan).
 /// Stored on every classified instance as `details.pnl_basis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PnlBasis {
@@ -448,7 +447,7 @@ pub struct ReserveDataFact {
 }
 
 /// Keeper / automation execution (Gelato Automate, Chainlink Automation —
-/// explorer plan P1.5 / §21).
+/// explorer plan P1.5 /).
 #[derive(Debug, Clone)]
 pub struct KeeperFact {
     pub tx_index: u64,

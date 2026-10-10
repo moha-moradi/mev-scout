@@ -1,5 +1,4 @@
 //! Curve AMM math: StableSwap (V1) and CryptoSwap (V2) quoting functions.
-
 use super::consts::{
     NEWTON_CONVERGENCE_EPSILON, NEWTON_INVARIANT_ITERATIONS, NEWTON_OUTPUT_ITERATIONS,
     WEI_PER_ETHER,
@@ -136,7 +135,7 @@ pub fn curve_cryptoswap_output_amount(
 
     // Phase 1: Compute invariant D using CryptoSwap Newton
     // K₀ = Πxᵢ · N^N / D^N
-    // K = K₀ · gamma² / (gamma + 1 - K₀)²  (adjusted with gamma convergence)
+    // K = K₀ · gamma² / (gamma + 1 - K₀)² (adjusted with gamma convergence)
     // The invariant: K · D² + (A·nⁿ·gamma) · D - A·nⁿ·gamma · sum = 0
     let sum: f64 = balances.iter().sum();
     let prod: f64 = balances.iter().product();
@@ -147,9 +146,9 @@ pub fn curve_cryptoswap_output_amount(
     let ann = a * nn;
     let d = newton_cryptoswap_invariant(n, ann, gamma, sum, prod, sum)?;
 
-    // Phase 2: Static fee (Tier 1 approximation — see T2.1 for dynamic fee)
+    // Phase 2: Apply fee to input (static fee — dynamic fee not modeled here)
     // For CryptoSwap V2, the dynamic fee = fee + (price_deviation * fee_gamma),
-    // but for now we use the static fee() value as a conservative approximation.
+    // but for now we use the static fee value as a conservative approximation.
     let fee_factor = pool.info.fee_tier().kept_factor_f64();
 
     // Phase 3: Solve for x_out' (Newton over y)

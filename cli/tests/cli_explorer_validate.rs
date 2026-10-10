@@ -6,6 +6,7 @@
 
 #![cfg(feature = "validate")]
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 
 use common::{expect_ok, make_cfg, run_timed, scout, temp_ws, TimedOutput, TEST_TIMEOUT};

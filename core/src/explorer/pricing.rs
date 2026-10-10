@@ -8,7 +8,6 @@
 //!
 //! Conversion helpers are decimals-aware; the store persists raw amounts and
 //! applies USD at insert time via `TokenUsd` records.
-
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};
@@ -46,7 +45,7 @@ pub fn token_amount_to_usd(amount: U256, price: &TokenUsd) -> f64 {
     units * price.usd
 }
 
-/// Why a token's USD is only approximate (Phase 2.4): fee-on-transfer or
+/// Why a token's USD is only approximate: fee-on-transfer or
 /// rebase tokens distort recorded amounts, so their deltas are flagged.
 pub fn approximate_token(token: &Address) -> Option<&'static str> {
     if crate::pool::state::pool_types::is_fee_on_transfer_token(token) {
@@ -71,7 +70,7 @@ pub struct RealizedUsd {
 
 /// USD value of `amount` of `token`, preferring the external price and
 /// falling back to the on-chain realized rate implied by the event's route
-/// legs (Phase 2.4): a leg trading `token` against a priced counterpart
+/// legs: a leg trading `token` against a priced counterpart
 /// prices `token` at the rate the searcher actually realized.
 ///
 /// Only legs whose `token_source` is `registry` or `transfer` are trusted.

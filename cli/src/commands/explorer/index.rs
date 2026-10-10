@@ -1,5 +1,4 @@
 //! ``explorer index --loop`` - live indexing loop.
-
 use super::*;
 use crate::job_progress::JobProgress;
 use mev_scout_core::jobs::{job_index, IndexOpts};

@@ -3,7 +3,6 @@
 //! DefiLlama `coins.llama.fi` supplies symbol / decimals / price but **not**
 //! ERC-20 name or icon. CoinGecko's contract endpoint fills name + image URL.
 //! Both paths are best-effort and never fail the tokens job.
-
 use std::collections::HashMap;
 use std::time::Duration;
 

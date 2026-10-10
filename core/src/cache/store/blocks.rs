@@ -42,7 +42,7 @@ impl super::SqliteStore {
         )
     }
 
-    #[allow(clippy::type_complexity)] // signature batch type — named in W5.1
+    #[allow(clippy::type_complexity)] // signature batch type alias
     pub fn put_block_data_batch(
         &self,
         batch: &[(u64, BlockData, Vec<TxData>, Vec<ReceiptData>)],

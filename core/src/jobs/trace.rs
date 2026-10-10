@@ -1,12 +1,11 @@
 //! On-demand debug_traceTransaction verification for an explorer op.
 //!
-//! Phase 0 (measurement-only): reconcile the classifier's expected USD profit
+//! (measurement-only): reconcile the classifier's expected USD profit
 //! against the trace-observed native balance delta (`summarize_prestatediff` +
 //! [`parse_prestatediff_deltas`]). Results land on the op's `details_json`
 //! (`trace_verified`, `trace_profit_usd`, `expected_profit_usd`,
 //! `profit_error_pct`, `trace_native_delta_wei`). This never feeds
 //! `classify_block`.
-
 use alloy::primitives::{Address, B256, I256, U256};
 use anyhow::Context;
 use serde::Serialize;

@@ -3,7 +3,6 @@
 //! indicatif bar for `live`, noop otherwise.
 //!
 //! [`StdoutJsonProgress`] remains available for embedding hosts that want NDJSON.
-
 pub use mev_scout_core::progress::{JobProgress, ProgressEvent};
 
 /// Sink for the CLI's plain mode: a fetch-stage indicatif bar, other stages ignored.
@@ -22,15 +21,18 @@ impl JobProgress for BarProgress {
     fn emit(&self, evt: ProgressEvent) {
         match evt.stage.as_str() {
             "fetch" => {
+                // Mutex poison only happens if another thread already panicked holding the bar.
+                #[allow(clippy::unwrap_used)]
                 let mut guard = self.bar.lock().unwrap();
                 if guard.is_none() {
                     let pb = indicatif::ProgressBar::new(evt.total.unwrap_or(0));
-                    pb.set_style(
-                        indicatif::ProgressStyle::default_bar()
-                            .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")
-                            .expect("valid template")
-                            .progress_chars("=> "),
-                    );
+                    // Template string is a compile-time constant; failure is a programmer error.
+                    #[allow(clippy::expect_used)]
+                    let style = indicatif::ProgressStyle::default_bar()
+                        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")
+                        .expect("valid template")
+                        .progress_chars("=> ");
+                    pb.set_style(style);
                     *guard = Some(pb);
                 }
                 if let Some(pb) = guard.as_ref() {
@@ -40,6 +42,7 @@ impl JobProgress for BarProgress {
                 }
             }
             "complete" => {
+                #[allow(clippy::unwrap_used)]
                 if let Some(pb) = self.bar.lock().unwrap().take() {
                     pb.finish_and_clear();
                 }

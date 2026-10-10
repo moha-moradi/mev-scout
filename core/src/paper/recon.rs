@@ -14,7 +14,6 @@
 //! index outside the replayed window. An executed revert is decisive `Fail`
 //! evidence, not `Unverifiable`: paper booked a profit that execution would
 //! not have produced.
-
 use serde::Serialize;
 use std::collections::BTreeMap;
 

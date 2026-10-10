@@ -1,4 +1,4 @@
-//! Phase 0.5 labeled golden set for Backrun / Frontrun ship-gate scoring.
+//! labeled golden set for Backrun / Frontrun ship-gate scoring.
 //!
 //! Opportunity-side strategies do not map to these kinds, so
 //! `explorer validate` cannot measure their precision via scanner matching.
@@ -7,7 +7,6 @@
 //!
 //! Chain-curated labels (hand-reviewed blocks) can be layered on later; until
 //! then this set is the CI ship gate for causal kinds.
-
 use alloy::primitives::{address, Address, B256, U256};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -182,7 +181,7 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
     }
 }
 
-/// Embedded Phase 0.5 labeled set (synthetic positives + §13/§24 negatives).
+/// Embedded labeled set (synthetic positives + negatives).
 pub fn causal_labeled_set() -> Vec<LabeledCase> {
     vec![
         // ── Backrun positive ───────────────────────────────────────────

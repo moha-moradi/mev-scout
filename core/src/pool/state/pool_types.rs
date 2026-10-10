@@ -29,8 +29,12 @@ struct TokenLists {
 }
 
 static TOKEN_LISTS: LazyLock<TokenLists> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../data/fot_tokens.json"))
-        .expect("invalid fot_tokens.json")
+    // Bundled asset: invalid JSON is a build-time content bug, not runtime fallibility.
+    #[allow(clippy::expect_used)]
+    {
+        serde_json::from_str(include_str!("../../../data/fot_tokens.json"))
+            .expect("invalid fot_tokens.json")
+    }
 });
 
 static FOT_TOKENS: LazyLock<HashSet<Address>> = LazyLock::new(|| {
@@ -89,7 +93,7 @@ pub struct PoolInfo {
     /// Balancer V2 pool ID (bytes32), used to query vault for token balances.
     #[serde(default)]
     pub pool_id: Option<[u8; 32]>,
-    /// Factory address that created this pool (L6: fork-aware V2 storage slots).
+    /// Factory address that created this pool (fork-aware V2 storage slots).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub factory: Option<Address>,
     /// Whether the pool is a stable-swap pool (Solidly/Camelot).
@@ -135,6 +139,14 @@ pub struct PoolInfo {
     /// Rolling 30d USD volume from remote sources.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume_usd_30d: Option<f64>,
+}
+
+impl PoolInfo {
+    /// Tick spacing for concentrated-liquidity pools, or the V3 default when unset.
+    pub fn tick_spacing_or_default(&self) -> i32 {
+        self.tick_spacing
+            .unwrap_or(crate::pool::math::consts::DEFAULT_V3_TICK_SPACING as u32) as i32
+    }
 }
 
 impl Default for PoolInfo {
@@ -232,7 +244,7 @@ pub type PancakeInfinityPoolState = UniswapV3PoolState;
 ///
 /// LB pools use discrete bins with a configurable bin step.
 /// Each bin holds a single asset (tokenX or tokenY), and the active bin
-/// holds both. State is initialized via `getActiveId()` and `getBin(activeId)`.
+/// holds both. State is initialized via `getActiveId` and `getBin(activeId)`.
 #[derive(Debug, Clone)]
 pub struct TraderJoeLBPoolState {
     pub info: PoolInfo,
@@ -484,7 +496,7 @@ impl PoolState {
     }
 
     /// Estimated gas cost for a single swap on this pool type.
-    /// Empirical benchmarks (H7):
+    /// Empirical benchmarks:
     /// - V2 swap: ~80k (Uniswap V2 swap)
     /// - V3 swap (base, few tick crossings): ~120k average (use `estimate_v3_swap_gas` for per-direction estimate)
     /// - Curve swap: ~100k
@@ -504,11 +516,40 @@ impl PoolState {
             PoolState::Fluid(_) => DEFAULT_POOL_GAS,
         }
     }
+
+    pub fn is_unhealthy(&self) -> bool {
+        match self {
+            PoolState::UniswapV2(s) => s.reserve0 == 0 && s.reserve1 == 0,
+            PoolState::UniswapV3(s) => s.sqrt_price_x96.is_zero(),
+            PoolState::UniswapV4(s) => s.sqrt_price_x96.is_zero(),
+            PoolState::PancakeInfinity(s) => s.sqrt_price_x96.is_zero(),
+            PoolState::Balancer(s) => s.balances.iter().all(|&b| b == 0),
+            PoolState::Curve(s) => s.balances.iter().all(|&b| b == 0),
+            PoolState::TraderJoeLB(s) => s.reserve_x == 0 && s.reserve_y == 0,
+            PoolState::Pendle(s) => s.total_pt == 0 && s.total_sy == 0,
+            PoolState::Metric(_) | PoolState::Fluid(_) => false,
+        }
+    }
+
+    pub fn tokens(&self) -> Vec<Address> {
+        match self {
+            PoolState::UniswapV2(s) => vec![s.info.token0, s.info.token1],
+            PoolState::UniswapV3(s) => vec![s.info.token0, s.info.token1],
+            PoolState::UniswapV4(s) => vec![s.info.token0, s.info.token1],
+            PoolState::PancakeInfinity(s) => vec![s.info.token0, s.info.token1],
+            PoolState::Balancer(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
+            PoolState::Curve(s) => s.info.underlying_tokens.clone().unwrap_or_default(),
+            PoolState::TraderJoeLB(s) => vec![s.info.token0, s.info.token1],
+            PoolState::Pendle(s) => vec![s.info.token0, s.info.token1],
+            PoolState::Metric(s) => vec![s.info.token0, s.info.token1],
+            PoolState::Fluid(s) => vec![s.info.token0, s.info.token1],
+        }
+    }
 }
 
 /// Estimate calldata gas cost for a transaction involving `pool_count` pool addresses.
 /// Base tx cost: 21,000 gas. Each warm address read in calldata: ~2,800 gas.
-/// (H7: Include calldata cost in per-opportunity gas estimation.)
+/// (Include calldata cost in per-opportunity gas estimation.)
 pub fn calldata_gas_estimate(pool_count: usize) -> u64 {
     21_000 + (pool_count as u64) * 2_800
 }

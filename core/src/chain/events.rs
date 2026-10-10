@@ -6,10 +6,9 @@
 //! Swap/transfer/liquidation decoding lives in `pool::decoders` (the live
 //! `ExecutedLog` path) and `explorer::decode` (the realized-MEV path). The
 //! decoder set that used to sit here was reachable only from the removed
-//! `chain::{trades,liquidations,transfers,flashloans}` log-range scanners and
+//! `chain:{trades,liquidations,transfers,flashloans}` log-range scanners and
 //! duplicated those two, so only `decode_balancer_flash` — still called by
 //! `explorer::decode` — was kept.
-
 use alloy::primitives::{b256, keccak256, Address, B256, U256};
 use alloy::rpc::types::Log;
 use serde::{Deserialize, Serialize};
@@ -26,7 +25,7 @@ pub const V2_SWAP_TOPIC: B256 =
     b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
 
 /// `Sync(uint112 reserve0, uint112 reserve1)` — emitted by swap/mint/burn/sync;
-/// not emitted by `skim()`.
+/// not emitted by `skim`.
 pub const V2_SYNC_TOPIC: B256 =
     b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
 
@@ -53,7 +52,7 @@ pub static UNI_V3_FLASH_TOPIC: LazyLock<B256> =
 // ── Uniswap V4 ──────────────────────────────────────────────────────
 
 /// Uniswap V4 PoolManager Swap event (verified against v4-core PoolManager):
-/// `emit Swap(id, msg.sender, delta.amount0(), delta.amount1(), sqrtPriceX96,
+/// `emit Swap(id, msg.sender, delta.amount0, delta.amount1, sqrtPriceX96,
 ///             liquidity, tick, swapFee)` with `id: PoolId (bytes32)` in
 /// topics[1]. NOTE: this is NOT the same signature as the V3 Swap event —
 /// the previous string here was identical to V3's, hashing to the V3 topic
@@ -65,7 +64,7 @@ pub static V4_SWAP_TOPIC: LazyLock<B256> =
 
 /// Pancake Infinity CLPoolManager Swap event (verified against
 /// pancakeswap/infinity-core CLPoolManager.sol + ICLPoolManager.sol):
-/// `emit Swap(id, msg.sender, delta.amount0(), delta.amount1(), sqrtPriceX96,
+/// `emit Swap(id, msg.sender, delta.amount0, delta.amount1, sqrtPriceX96,
 ///             liquidity, tick, fee, protocolFee)` with `id: PoolId (bytes32)`
 /// in topics[1]. The singleton CLPoolManager emits for every pool; the pool
 /// key is the bytes32 PoolId (synthetic pool address = its first 20 bytes,
@@ -104,16 +103,14 @@ pub fn decode_balancer_flash(log: &Log) -> Option<FlashLoanEvent> {
     if topics.is_empty() || topics[0] != *BALANCER_FLASH_LOAN_TOPIC {
         return None;
     }
-    let caller = if topics.len() > 1 {
-        Address::from_slice(&topics[1][12..])
-    } else {
-        Address::ZERO
-    };
-    let recipient = if topics.len() > 2 {
-        Address::from_slice(&topics[2][12..])
-    } else {
-        Address::ZERO
-    };
+    let caller = topics
+        .get(1)
+        .and_then(|t| crate::utils::abi_decode_address(t.as_slice(), 0))
+        .unwrap_or(Address::ZERO);
+    let recipient = topics
+        .get(2)
+        .and_then(|t| crate::utils::abi_decode_address(t.as_slice(), 0))
+        .unwrap_or(Address::ZERO);
     let data = &log.data().data;
     let token = if data.len() >= 20 {
         Address::from_slice(&data[0..20])
@@ -160,7 +157,7 @@ pub static COMPOUND_V3_ABSORB_TOPIC: LazyLock<B256> =
 
 /// Compound V3 Comet `BuyCollateral(address indexed buyer, address indexed asset,
 /// uint256 baseAmount, uint256 collateralAmount)` — discount capture after Absorb
-/// (§26 / explorer plan P0.3).
+/// ( / explorer plan P0.3).
 pub static COMPOUND_V3_BUY_COLLATERAL_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("BuyCollateral(address,address,uint256,uint256)"));
 
@@ -177,13 +174,13 @@ pub static COMPOUND_V2_LIQUIDATE_BORROW_TOPIC: LazyLock<B256> =
 /// Morpho Blue `Liquidate(bytes32 id, address caller, address borrower,
 /// uint256 repaidAssets, uint256 repaidShares, uint256 seizedAssets,
 /// uint256 badDebtAssets, uint256 badDebtShares)` — all three of id/caller/
-/// borrower indexed (§24 / explorer plan P0.2).
+/// borrower indexed ( / explorer plan P0.2).
 pub static MORPHO_BLUE_LIQUIDATE_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Liquidate(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)")
 });
 
 /// Morpho Blue `FlashLoan(address caller, address token, uint256 assets)` —
-/// 0% fee provider (§11 hierarchy / plan P2.3 routing).
+/// 0% fee provider ( hierarchy / plan P2.3 routing).
 pub static MORPHO_BLUE_FLASH_LOAN_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("FlashLoan(address,address,uint256)"));
 
@@ -191,7 +188,7 @@ pub static MORPHO_BLUE_FLASH_LOAN_TOPIC: LazyLock<B256> =
 
 /// Silo V2 PartialLiquidation `LiquidationCall(address liquidator, address silo,
 /// address borrower, uint256 repayDebtAssets, uint256 withdrawCollateral,
-/// bool receiveSToken)` — liquidator/silo/borrower indexed (§24).
+/// bool receiveSToken)` — liquidator/silo/borrower indexed.
 pub static SILO_V2_LIQUIDATION_CALL_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("LiquidationCall(address,address,address,uint256,uint256,bool)"));
 
@@ -199,14 +196,14 @@ pub static SILO_V2_LIQUIDATION_CALL_TOPIC: LazyLock<B256> =
 
 /// Euler V2 EVault `Liquidate(address liquidator, address violator,
 /// address collateral, uint256 repayAssets, uint256 yieldBalance)` —
-/// liquidator/violator indexed (§24).
+/// liquidator/violator indexed.
 pub static EULER_V2_LIQUIDATE_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Liquidate(address,address,address,uint256,uint256)"));
 
 // ── Oracles / keepers (explorer plan P1.1 / P1.4 / P1.5) ─────────────
 
 /// Chainlink AggregatorV3 `AnswerUpdated(int256 current, uint256 roundId,
-/// uint256 updatedAt)` — `current`/`roundId` indexed (P1.4 / §17.8.4).
+/// uint256 updatedAt)` — `current`/`roundId` indexed (P1.4 /).
 pub static CHAINLINK_ANSWER_UPDATED_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("AnswerUpdated(int256,uint256,uint256)"));
 
@@ -225,7 +222,7 @@ pub static AAVE_V3_RESERVE_DATA_UPDATED_TOPIC: LazyLock<B256> = LazyLock::new(||
 
 /// Gelato Automate `ExecSuccess(uint256 txFee, address feeToken, address
 /// execAddress, bytes execData, bytes32 taskId, bool callSuccess)` — the
-/// catalogue's "TaskExecuted" fee fingerprint (P1.5 / §17.8.9 / §21).
+/// catalogue's "TaskExecuted" fee fingerprint (P1.5 / /).
 pub static GELATO_EXEC_SUCCESS_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("ExecSuccess(uint256,address,address,bytes,bytes32,bool)"));
 

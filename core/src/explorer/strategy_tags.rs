@@ -1,9 +1,8 @@
-//! Catalogue strategy sub-labels for the explorer (plan §5 / P3.*).
+//! Catalogue strategy sub-labels for the explorer (plan / P3.*).
 //!
-//! Prefer `details.tags` over new [`MevKind`] variants (§8.1). Every tag is a
+//! Prefer `details.tags` over new [`MevKind`] variants. Every tag is a
 //! Mode-A (or declared-inferred) fingerprint over already-decoded facts;
 //! P&L stays on the family basis (`R`/`O`/`F`) of the parent event.
-
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::types::{Amm, RateCacheFact, SwapFact, TransferFact};

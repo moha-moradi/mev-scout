@@ -1,9 +1,9 @@
 use super::scan_factory_creation_events_pinned;
+use crate::utils::{abi_word_address, topic_address};
 use super::{resolve_dex_name, DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use super::{ALGEBRA_POOL_CREATED_TOPIC, SLIPSTREAM_POOL_CREATED_TOPIC, V3_POOL_CREATED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
-use alloy::primitives::Address;
 
 /// V3 activity: per-pool contracts emit Swap/Mint/Burn from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
@@ -39,9 +39,9 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                     if log_data.data.len() < 64 || topics.len() < 4 {
                         return None;
                     }
-                    let pool_addr = Address::from_slice(&log_data.data[44..64]);
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let pool_addr = abi_word_address(&log_data.data, 1);
+                    let token0 = topic_address(topics[1]);
+                    let token1 = topic_address(topics[2]);
                     let fee = u32::from_be_bytes([
                         topics[3][28],
                         topics[3][29],
@@ -90,16 +90,16 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                     if log_data.data.len() < 32 {
                         return None;
                     }
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let token0 = topic_address(topics[1]);
+                    let token1 = topic_address(topics[2]);
                     // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
-                    let pool_addr = Address::from_slice(&log_data.data[12..32]);
+                    let pool_addr = abi_word_address(&log_data.data, 0);
                     if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
                         return None;
                     }
                     let creation_block = log.block_number.unwrap_or(0);
                     let factory = log.address();
-                    // fee / tickSpacing not in event; will be fetched via eth_call in Phase 2.
+                    // fee / tickSpacing not in event; fetched via eth_call during metadata pass.
                     Some((
                         pool_addr,
                         DiscoveredPool::new(
@@ -131,8 +131,8 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                     if log_data.data.len() < 32 || topics.len() < 4 {
                         return None;
                     }
-                    let token0 = Address::from_slice(&topics[1][12..]);
-                    let token1 = Address::from_slice(&topics[2][12..]);
+                    let token0 = topic_address(topics[1]);
+                    let token1 = topic_address(topics[2]);
                     // int24 tickSpacing is right-aligned in the third topic's 32-byte word.
                     let tick_spacing = {
                         let ts_bytes = [topics[3][29], topics[3][30], topics[3][31]];
@@ -140,14 +140,14 @@ pub(crate) async fn scan_v3_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
                         i32::from_be_bytes([sign, ts_bytes[0], ts_bytes[1], ts_bytes[2]])
                     };
                     // pool address is ABI-encoded address in log data (32 bytes, last 20 bytes)
-                    let pool_addr = Address::from_slice(&log_data.data[12..32]);
+                    let pool_addr = abi_word_address(&log_data.data, 0);
                     if token0.is_zero() || token1.is_zero() || pool_addr.is_zero() {
                         return None;
                     }
                     let creation_block = log.block_number.unwrap_or(0);
                     let factory = log.address();
                     // fee / liquidity not in event; CL pools expose slot0/liquidity so
-                    // V3 state init applies, fee defaults to 0 (repaired via eth_call in Phase 2).
+                    // V3 state init applies, fee defaults to 0 (repaired via eth_call during metadata pass).
                     Some((
                         pool_addr,
                         DiscoveredPool::new(

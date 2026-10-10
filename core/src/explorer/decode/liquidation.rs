@@ -1,5 +1,6 @@
 //! Lending-protocol liquidation and BuyCollateral decoders.
 use alloy::primitives::{Address, U256};
+use crate::utils::{abi_word_address, topic_address};
 
 use crate::chain::events::{
     AAVE_V3_LIQUIDATION_CALL_TOPIC, COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
@@ -11,7 +12,7 @@ use crate::explorer::types::{BuyCollateralFact, LiquidationFact};
 
 /// Decode a liquidation fact via the per-protocol event registry.
 ///
-/// Mode A fingerprints (§17.8.4 / §24): Aave-family `LiquidationCall` (Spark
+/// Mode A fingerprints ( /): Aave-family `LiquidationCall` (Spark
 /// remapped by emitter address via [`remap_liquidation_protocol`]), Compound V3
 /// `Absorb`, Compound V2 `LiquidateBorrow` (Benqi remapped by emitter address),
 /// Morpho Blue `Liquidate`, Silo V2 `LiquidationCall`, Euler V2 `Liquidate`.
@@ -29,12 +30,12 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             // Spark and other Aave-V3 ABI aliases remap via emitter address.
             protocol: "aave_v3",
             emitter: log.address,
-            user: Address::from_slice(&log.topics[3][12..]),
+            user: topic_address(log.topics[3]),
             // `LiquidationCall` does not carry the liquidator (msg.sender);
             // attribution falls back to the tx sender at classify time.
             liquidator: Address::ZERO,
-            collateral_asset: Address::from_slice(&log.topics[1][12..]),
-            debt_asset: Address::from_slice(&log.topics[2][12..]),
+            collateral_asset: topic_address(log.topics[1]),
+            debt_asset: topic_address(log.topics[2]),
             collateral_amount: U256::from_be_slice(&log.data[32..64]),
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
             bad_debt_assets: U256::ZERO,
@@ -50,8 +51,8 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "compound_v3",
             emitter: log.address,
-            user: Address::from_slice(&log.data[12..32]),
-            liquidator: Address::from_slice(&log.topics[1][12..]),
+            user: abi_word_address(&log.data, 0),
+            liquidator: topic_address(log.topics[1]),
             collateral_asset: Address::ZERO,
             debt_asset: Address::ZERO,
             collateral_amount: U256::ZERO,
@@ -70,13 +71,13 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "compound_v2",
             emitter: log.address,
-            user: Address::from_slice(&log.topics[2][12..]),
-            liquidator: Address::from_slice(&log.topics[1][12..]),
+            user: topic_address(log.topics[2]),
+            liquidator: topic_address(log.topics[1]),
             // Repaid market is the emitting cToken; seized collateral is a
             // different cToken address encoded in the data.
             debt_asset: log.address,
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
-            collateral_asset: Address::from_slice(&log.data[44..64]),
+            collateral_asset: abi_word_address(&log.data, 1),
             collateral_amount: U256::from_be_slice(&log.data[64..96]),
             bad_debt_assets: U256::ZERO,
         });
@@ -97,8 +98,8 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "morpho_blue",
             emitter: log.address,
-            user: Address::from_slice(&log.topics[3][12..]),
-            liquidator: Address::from_slice(&log.topics[2][12..]),
+            user: topic_address(log.topics[3]),
+            liquidator: topic_address(log.topics[2]),
             // Market loan/collateral tokens live off-event (market id); transfer
             // reconciliation fills them when present.
             collateral_asset: Address::ZERO,
@@ -119,8 +120,8 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "silo_v2",
             emitter: log.address,
-            user: Address::from_slice(&log.topics[3][12..]),
-            liquidator: Address::from_slice(&log.topics[1][12..]),
+            user: topic_address(log.topics[3]),
+            liquidator: topic_address(log.topics[1]),
             collateral_asset: Address::ZERO,
             debt_asset: Address::ZERO,
             debt_to_cover: U256::from_be_slice(&log.data[0..32]),
@@ -139,9 +140,9 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
             log_index: 0,
             protocol: "euler_v2",
             emitter: log.address,
-            user: Address::from_slice(&log.topics[2][12..]),
-            liquidator: Address::from_slice(&log.topics[1][12..]),
-            collateral_asset: Address::from_slice(&log.data[12..32]),
+            user: topic_address(log.topics[2]),
+            liquidator: topic_address(log.topics[1]),
+            collateral_asset: abi_word_address(&log.data, 0),
             // Debt asset is the emitting vault's underlying — unknown from the
             // event alone; leave zero for transfer reconciliation.
             debt_asset: Address::ZERO,
@@ -155,7 +156,7 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
 
 /// Remap a decoded liquidation's protocol label by emitting-contract address.
 ///
-/// Mode A (§24 / plan P0.2): protocols whose event topic0 is shared with
+/// Mode A ( / plan P0.2): protocols whose event topic0 is shared with
 /// another deployment are distinguished only by the emitter — Spark reuses
 /// the Aave V3 `LiquidationCall` topic, Benqi qiTokens reuse the Compound V2
 /// `LiquidateBorrow` topic. `aliases` maps emitter → protocol label; the
@@ -170,7 +171,7 @@ pub fn remap_liquidation_protocol(
     }
 }
 
-/// Decode Compound V3 `BuyCollateral` (§26 / plan P0.3).
+/// Decode Compound V3 `BuyCollateral` ( / plan P0.3).
 ///
 /// Mode A: `BuyCollateral(address buyer, address asset, uint256 baseAmount,
 /// uint256 collateralAmount)` with buyer/asset indexed.
@@ -187,8 +188,8 @@ pub fn decode_buy_collateral(log: &LogData) -> Option<BuyCollateralFact> {
         log_index: 0,
         protocol: "compound_v3",
         emitter: log.address,
-        buyer: Address::from_slice(&log.topics[1][12..]),
-        collateral_asset: Address::from_slice(&log.topics[2][12..]),
+        buyer: topic_address(log.topics[1]),
+        collateral_asset: topic_address(log.topics[2]),
         base_amount: U256::from_be_slice(&log.data[0..32]),
         collateral_amount: U256::from_be_slice(&log.data[32..64]),
     })

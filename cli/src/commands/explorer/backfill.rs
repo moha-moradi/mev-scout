@@ -2,13 +2,12 @@
 //! (clock or exact) into the explorer store so the revenue-report windows
 //! (1d/7d/30d) have realized data. Idempotent and gap-resumable via
 //! `blocks_classified`.
-
 use super::*;
 
 use crate::job_progress::BarProgress;
 
 use mev_scout_core::chain::timing::blocks_per_day;
-use mev_scout_core::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews};
+use mev_scout_core::explorer::ingest::{run_range, safe_head, IngestConfig, PoolViews, RangeRequest};
 use mev_scout_core::jobs::{init_rpc, load_pool_registry, BackfillOutcome};
 
 pub async fn cmd_backfill(
@@ -78,10 +77,12 @@ pub async fn cmd_backfill(
             v2_like: &registry.v2_like,
             epoch_venue: &registry.epoch_venue,
         },
-        from,
-        to,
+        RangeRequest {
+            from_block: from,
+            to_block: to,
+            block_concurrency: bc,
+        },
         &BarProgress::new(),
-        bc,
     )
     .await?;
     let elapsed = t0.elapsed();

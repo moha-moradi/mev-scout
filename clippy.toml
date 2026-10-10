@@ -1,0 +1,4 @@
+# Allow unwrap/expect in #[cfg(test)] modules and #[test] functions.
+# Production code must use ? / ok_or_else / explicit allows with an invariant note.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -3,6 +3,7 @@
 //! All tests here hit a real RPC endpoint, so they are gated like the CLI
 //! E2E suite: set `MEV_SCOUT_E2E=1` (plus `RPC_URL`, or fall back to the
 //! public Polygon endpoint) to enable them; otherwise every test skips.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use std::collections::HashMap;
 use std::path::Path;
 
