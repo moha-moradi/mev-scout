@@ -466,3 +466,119 @@ fn estimate_gas_for_two_hop(
 
     arb_common::blend_gas_limit(calibration, &dex_counts, 2, analytic)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dex_type::DexType;
+    use crate::mev::detectors::DetectionPath;
+    use crate::pool::state::{PoolManager, ScanScope, UniswapV2PoolState};
+    use crate::types::GasConfig;
+    use alloy::primitives::address;
+
+    fn tok(b: u8) -> Address {
+        Address::repeat_byte(b)
+    }
+
+    fn v2_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128) -> PoolState {
+        PoolState::UniswapV2(UniswapV2PoolState {
+            info: crate::pool::state::PoolInfo {
+                address: addr,
+                token0,
+                token1,
+                fee: 30,
+                dex_type: DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: r0,
+            reserve1: r1,
+        })
+    }
+
+    fn detect(pm: &PoolManager, block: u64) -> Vec<MevOpportunity> {
+        let scope = ScanScope::Full;
+        let ctx = DetectCtx::new(pm, 0, 100, 50_000_000_000, GasConfig::default(), &scope);
+        TwoHopArbDetector::new(block).detect(ctx)
+    }
+
+    #[test]
+    fn finds_arb_across_mispriced_shared_token() {
+        // Buy WMATIC cheap on A (USDC/WMATIC), sell dear on B (USDT/WMATIC).
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2_pool(
+            address!("aa00000000000000000000000000000000000001"),
+            tok(1),
+            tok(2),
+            1_000_000,
+            2_000_000,
+        ));
+        pm.add_pool(v2_pool(
+            address!("aa00000000000000000000000000000000000002"),
+            tok(3),
+            tok(2),
+            2_000_000,
+            1_000_000,
+        ));
+
+        let opps = detect(&pm, 1);
+        assert!(!opps.is_empty(), "mispriced shared-token pair should arb");
+        assert!(opps.iter().all(|o| o.strategy == Strategy::TwoHopArb));
+        assert!(opps
+            .iter()
+            .all(|o| o.detection_path == Some(DetectionPath::Replay)));
+    }
+
+    #[test]
+    fn aligned_prices_prefilter_to_empty() {
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2_pool(
+            address!("bb00000000000000000000000000000000000001"),
+            tok(1),
+            tok(2),
+            1_000_000,
+            1_000_000,
+        ));
+        pm.add_pool(v2_pool(
+            address!("bb00000000000000000000000000000000000002"),
+            tok(3),
+            tok(2),
+            1_000_000,
+            1_000_000,
+        ));
+
+        assert!(detect(&pm, 1).is_empty());
+    }
+
+    #[test]
+    fn per_block_dedup_suppresses_until_liquidity_moves() {
+        let pa = address!("cc00000000000000000000000000000000000001");
+        let pb = address!("cc00000000000000000000000000000000000002");
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2_pool(pa, tok(1), tok(2), 1_000_000, 2_000_000));
+        pm.add_pool(v2_pool(pb, tok(3), tok(2), 2_000_000, 1_000_000));
+
+        let scope = ScanScope::Full;
+        let mut detector = TwoHopArbDetector::new(7);
+        {
+            let ctx = DetectCtx::new(&pm, 0, 100, 50_000_000_000, GasConfig::default(), &scope);
+            let first = detector.detect(ctx);
+            assert!(!first.is_empty());
+            assert!(
+                detector.detect(ctx).is_empty(),
+                "same reserves must not re-emit within the block"
+            );
+        }
+
+        // Move pool A reserves by >0.1% so H2 clears the dedup gate.
+        if let Some(PoolState::UniswapV2(s)) = pm.get_mut(&pa) {
+            s.reserve0 = 1_500_000;
+            s.reserve1 = 1_500_000;
+        }
+        let ctx = DetectCtx::new(&pm, 0, 100, 50_000_000_000, GasConfig::default(), &scope);
+        let after = detector.detect(ctx);
+        assert!(
+            !after.is_empty(),
+            "liquidity shift >0.1% should re-open emission"
+        );
+    }
+}

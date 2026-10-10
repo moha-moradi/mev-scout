@@ -10,8 +10,9 @@ use alloy::primitives::{address, Address, Bytes, B256};
 use mev_scout_core::data::ExecutedLog;
 use mev_scout_core::dex_type::DexType;
 use mev_scout_core::mev::detectors::jit::JitDetector;
+use mev_scout_core::mev::detectors::DetectCtx;
 use mev_scout_core::pool::decoders::{V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, UniswapV3PoolState};
+use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV3PoolState};
 use mev_scout_core::types::Strategy;
 
 mod common;
@@ -51,6 +52,8 @@ fn test_jit_detection_synthetic() {
     let gas_cfg = default_gas_config();
     let mut detector = JitDetector::new(42);
     let timestamp = 12345u64;
+    let scope = ScanScope::Full;
+    let ctx = || DetectCtx::new(&pm, 0, timestamp, 0, gas_cfg, &scope);
 
     /// A 32-byte topic holding an int24 tick: left-padded, sign-extended when
     /// negative, exactly as a canonical Uniswap V3 pool emits it.
@@ -113,11 +116,11 @@ fn test_jit_detection_synthetic() {
 
     // Tx 0: deploy liquidity
     detector.process_tx(0, &[v3_mint_log(pool, -1000, 1000, 1_000_000)], None, &pm);
-    assert!(detector.detect(timestamp, 0, &gas_cfg, &pm).is_empty());
+    assert!(detector.detect(ctx()).is_empty());
 
     // Tx 1: swap against it
     detector.process_tx(1, &[v3_swap_log(pool)], None, &pm);
-    let mut opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
+    let mut opps = detector.detect(ctx());
     assert!(!opps.is_empty(), "Mint+Swap should trigger JIT detection");
     assert_eq!(opps[0].strategy, Strategy::Jit);
     assert_eq!(opps[0].pool_a, pool);
@@ -127,11 +130,11 @@ fn test_jit_detection_synthetic() {
 
     // Tx 2: burn position
     detector.process_tx(2, &[v3_burn_log(pool, -1000, 1000, 1_000_000)], None, &pm);
-    opps = detector.detect(timestamp, 0, &gas_cfg, &pm);
+    opps = detector.detect(ctx());
     assert_eq!(opps.len(), 1, "Burn should trigger full JIT emission");
 
     // No duplicate
-    assert!(detector.detect(timestamp, 0, &gas_cfg, &pm).is_empty());
+    assert!(detector.detect(ctx()).is_empty());
 }
 
 #[tokio::test]
@@ -208,7 +211,15 @@ async fn test_real_v3_mint_swap_burn_detection() {
     let mut detector = JitDetector::new(block_num);
     // Process empty data (no logs from this pool in this test block)
     detector.process_tx(0, &[], None, &pm);
-    let opps = detector.detect(block_num, 0, &gas_cfg, &pm);
+    let scope = ScanScope::Full;
+    let opps = detector.detect(DetectCtx::new(
+        &pm,
+        0,
+        block_num,
+        0,
+        gas_cfg,
+        &scope,
+    ));
     eprintln!(
         "JIT detection on real V3 pool: {} opportunities (expected 0 without events)",
         opps.len()

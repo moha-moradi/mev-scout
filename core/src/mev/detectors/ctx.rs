@@ -4,7 +4,7 @@
 use crate::pool::state::{PoolManager, ScanScope};
 use crate::types::GasConfig;
 
-/// Block/tx plumbing shared by two-hop, multi-hop, and backrun detectors.
+/// Block/tx plumbing shared by two-hop, multi-hop, backrun, and JIT detectors.
 #[derive(Clone, Copy)]
 pub struct DetectCtx<'a> {
     pub pool_manager: &'a PoolManager,

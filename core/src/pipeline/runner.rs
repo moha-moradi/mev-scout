@@ -485,8 +485,7 @@ impl BacktestRunner {
                 // JIT detector
                 let sender = *current_tx_from.borrow();
                 jit_detector.process_tx(i, &tx.logs, sender, &pm);
-                let jit_opps =
-                    jit_detector.detect(timestamp, base_fee_per_gas, &self.gas_config, &pm);
+                let jit_opps = jit_detector.detect(ctx);
                 if !jit_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} JIT opportunities",
