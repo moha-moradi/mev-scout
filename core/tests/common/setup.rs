@@ -147,9 +147,17 @@ pub fn two_hop_detect(
     block: u64,
     ts: u64,
 ) -> Vec<mev_scout_core::types::MevOpportunity> {
+    use mev_scout_core::mev::detectors::DetectCtx;
     let mut d = TwoHopArbDetector::new(block);
     let full = ScanScope::Full;
-    d.detect(pm, 0, ts, 50_000_000_000, default_gas_config(), &full)
+    d.detect(DetectCtx::new(
+        pm,
+        0,
+        ts,
+        50_000_000_000,
+        default_gas_config(),
+        &full,
+    ))
 }
 
 pub fn multi_hop_detect(
@@ -157,9 +165,17 @@ pub fn multi_hop_detect(
     block: u64,
     ts: u64,
 ) -> Vec<mev_scout_core::types::MevOpportunity> {
+    use mev_scout_core::mev::detectors::DetectCtx;
     let mut d = MultiHopArbDetector::new(block);
     let full = ScanScope::Full;
-    d.detect(pm, 0, ts, 50_000_000_000, GasConfig::default(), &full)
+    d.detect(DetectCtx::new(
+        pm,
+        0,
+        ts,
+        50_000_000_000,
+        GasConfig::default(),
+        &full,
+    ))
 }
 
 pub fn make_pool(addr: Address, token0: Address, token1: Address, r0: u128, r1: u128) -> PoolState {

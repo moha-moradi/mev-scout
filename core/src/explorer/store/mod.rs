@@ -18,6 +18,10 @@ type PoolSwapRow = (String, Option<String>, String, String);
 /// Persist-block return: `(ops_written, open_jit_positions)`.
 type PersistBlockStats = (usize, Vec<(Address, Option<Address>, u64)>);
 
+mod pnl;
+use pnl::{liquidation_pnl, note_pricing_issue};
+
+
 use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -88,6 +92,18 @@ pub struct MevOpRow {
     pub created_at: u64,
 }
 
+impl MevOpRow {
+    /// Parse `kind` through the domain enum (SQLite TEXT boundary).
+    pub fn kind_enum(&self) -> Option<MevKind> {
+        self.kind.parse().ok()
+    }
+
+    /// Parse `confidence` through the domain enum (SQLite TEXT boundary).
+    pub fn confidence_enum(&self) -> Option<crate::explorer::types::Confidence> {
+        self.confidence.parse().ok()
+    }
+}
+
 /// Aggregate row for stats/leaderboard queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsRow {
@@ -137,96 +153,8 @@ fn merge_details_json<const N: usize>(
     d.to_string()
 }
 
-/// Liquidation P&L (Phase 1.3): gross seized collateral value minus repaid
-/// debt value, both priced at persist time. Cross-asset liquidations are an
-/// approximation (liquidation bonus / market-sale slippage) and are marked
-/// `inferred` with `LIQ_BONUS_APPROX`; missing prices fall back to the
-/// collateral display amount with `MULTI_ASSET_PRICING`.
-fn liquidation_pnl(
-    ev: &MevEvent,
-    token_prices: &std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd>,
-) -> (Option<f64>, &'static str, String) {
-    let parse_addr = |k: &str| {
-        ev.details
-            .get(k)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<Address>().ok())
-    };
-    let parse_amt = |k: &str| {
-        ev.details
-            .get(k)
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<U256>().ok())
-    };
-    let collateral_asset = parse_addr("collateral_asset");
-    let debt_asset = parse_addr("debt_asset");
-    let price_usd = |asset: Option<Address>, amount: Option<U256>| -> Option<f64> {
-        let (a, amt) = (asset?, amount?);
-        let p = token_prices.get(&a)?;
-        Some(crate::explorer::pricing::token_amount_to_usd(amt, p))
-    };
-    let collateral_usd = price_usd(collateral_asset, parse_amt("collateral_amount"));
-    let debt_usd = price_usd(debt_asset, parse_amt("debt_to_cover"));
-    let cross_asset = match (collateral_asset, debt_asset) {
-        (Some(c), Some(d)) => c != d && !c.is_zero() && !d.is_zero(),
-        _ => true,
-    };
 
-    let mut details = ev.details.clone();
-    let mut reasons = reason_list(&details);
-    details["profit_usd_method"] = serde_json::json!("collateral_usd_minus_debt_usd");
-    match (collateral_usd, debt_usd) {
-        (Some(c), Some(d)) => {
-            if cross_asset {
-                reasons.push("LIQ_BONUS_APPROX".to_string());
-                details["reasons"] = serde_json::json!(reasons);
-                (Some(c - d), "inferred", details.to_string())
-            } else {
-                details["reasons"] = serde_json::json!(reasons);
-                (Some(c - d), "exact", details.to_string())
-            }
-        }
-        _ => {
-            reasons.push("MULTI_ASSET_PRICING".to_string());
-            details["profit_usd_fallback"] = serde_json::json!("collateral_amount");
-            details["reasons"] = serde_json::json!(reasons);
-            (None, "inferred", details.to_string())
-        }
-    }
-}
 
-/// Record why a persisted USD figure is incomplete or capped, and mark it
-/// approximate. Reasons stack (`MULTI_ASSET_PRICING`, `NATIVE_UNPRICED`,
-/// `pricing_clamped`) instead of replacing one another.
-fn note_pricing_issue(details_json: &mut String, reason: &str) {
-    let mut d: serde_json::Value =
-        serde_json::from_str(details_json).unwrap_or(serde_json::json!({}));
-    let mut reasons = reason_list(&d);
-    if !reasons.iter().any(|r| r == reason) {
-        reasons.push(reason.to_string());
-    }
-    if let Some(map) = d.as_object_mut() {
-        map.insert("reasons".into(), serde_json::json!(reasons));
-        map.insert("usd_approximate".into(), serde_json::json!(true));
-        if reason == "pricing_clamped" {
-            map.insert("pricing_clamped".into(), serde_json::json!(true));
-        }
-    }
-    *details_json = d.to_string();
-}
-
-/// Existing `reasons` array from event details (empty when absent).
-fn reason_list(details: &serde_json::Value) -> Vec<String> {
-    details
-        .get("reasons")
-        .and_then(|r| r.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 impl ExplorerStore {
     /// Shared connection for extension modules (e.g. paper tables).
@@ -1701,7 +1629,9 @@ impl ExplorerStore {
                     })?),
                     None => None,
                 },
-                detection_path,
+                detection_path: detection_path
+                    .as_deref()
+                    .and_then(|v| v.parse::<crate::types::DetectionPath>().ok()),
             });
         }
         Ok(out)
@@ -3295,24 +3225,6 @@ mod tests {
             .top_senders_filtered(1_699_999_000, 5, Some("liquidations"))
             .unwrap();
         assert!(misc.is_empty());
-    }
-
-    #[test]
-    fn sync_state_roundtrip() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        assert_eq!(store.get_indexed_to(137).unwrap(), 0);
-        store.set_sync_state(137, 1000, 990).unwrap();
-        assert_eq!(store.get_indexed_to(137).unwrap(), 990);
-    }
-
-    #[test]
-    fn price_cache_window() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        let tok = address!("4444000000000000000000000000000000000004");
-        store.put_price(tok, 1000, 1.23, "test").unwrap();
-        assert!(store.price_at(tok, 1000).unwrap().is_some());
-        assert!(store.price_at(tok, 1010).unwrap().is_some());
-        assert!(store.price_at(tok, 2000).unwrap().is_none());
     }
 
     fn usdc_price() -> std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd> {

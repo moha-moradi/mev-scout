@@ -8,6 +8,7 @@ use crate::data::ExecutedLog;
 use crate::dex_type::DexType;
 use crate::error;
 use crate::mev::detectors::BackrunDetector;
+use crate::mev::detectors::DetectCtx;
 use crate::mev::detectors::JitDetector;
 use crate::mev::detectors::MultiHopArbDetector;
 use crate::mev::detectors::TwoHopArbDetector;
@@ -451,7 +452,7 @@ impl BacktestRunner {
                     Some(set) => ScanScope::Dirty(set),
                     None => ScanScope::Full,
                 };
-                let opps = two_hop_detector.detect(
+                let ctx = DetectCtx::new(
                     &pm,
                     i,
                     timestamp,
@@ -459,6 +460,7 @@ impl BacktestRunner {
                     self.gas_config,
                     &scope,
                 );
+                let opps = two_hop_detector.detect(ctx);
                 if !opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} arb opportunities",
@@ -469,14 +471,7 @@ impl BacktestRunner {
                 }
                 all_opportunities.extend(opps);
 
-                let multi_opps = multi_hop_detector.detect(
-                    &pm,
-                    i,
-                    timestamp,
-                    base_fee_per_gas,
-                    self.gas_config,
-                    &scope,
-                );
+                let multi_opps = multi_hop_detector.detect(ctx);
                 if !multi_opps.is_empty() {
                     tracing::info!(
                         "Block {} tx {}: {} multi-hop arb opportunities",
@@ -538,7 +533,7 @@ impl BacktestRunner {
                     .collect();
                 if !will_touch.is_empty() {
                     let scope_pre = ScanScope::Dirty(&will_touch);
-                    backrun_detector.pre_detect(
+                    let ctx_pre = DetectCtx::new(
                         &pm,
                         i,
                         timestamp,
@@ -546,6 +541,7 @@ impl BacktestRunner {
                         self.gas_config,
                         &scope_pre,
                     );
+                    backrun_detector.pre_detect(ctx_pre);
                 }
 
                 pm.learn_taxes_from_tx(&tx.logs);
@@ -556,16 +552,16 @@ impl BacktestRunner {
                 // Backrun detection: post-image
                 if !newly_dirty.is_empty() {
                     let scope_post = ScanScope::Dirty(&newly_dirty);
-                    let backrun_opps = backrun_detector.post_detect(
+                    let ctx_post = DetectCtx::new(
                         &pm,
                         i,
                         timestamp,
                         base_fee_per_gas,
                         self.gas_config,
                         &scope_post,
-                        &tx.logs,
-                        &txs,
                     );
+                    let backrun_opps =
+                        backrun_detector.post_detect(ctx_post, &tx.logs, &txs);
                     if !backrun_opps.is_empty() {
                         all_opportunities.extend(backrun_opps);
                     }
@@ -625,7 +621,7 @@ impl BacktestRunner {
                     },
                 ));
             }
-            opp.detection_path = Some(crate::mev::detectors::REPLAY_PATH.to_string());
+            opp.detection_path = Some(crate::mev::detectors::DetectionPath::Replay);
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }
@@ -743,7 +739,7 @@ impl BacktestRunner {
 
             // Detect against pre-tx pool state, THEN apply log updates
             // (mirrors run_block's detect-before-apply ordering).
-            let opps = two_hop_detector.detect(
+            let ctx = DetectCtx::new(
                 &self.pool_manager,
                 i,
                 timestamp,
@@ -751,16 +747,10 @@ impl BacktestRunner {
                 self.gas_config,
                 &scope,
             );
+            let opps = two_hop_detector.detect(ctx);
             all_opportunities.extend(opps);
 
-            let multi_opps = multi_hop_detector.detect(
-                &self.pool_manager,
-                i,
-                timestamp,
-                base_fee_per_gas,
-                self.gas_config,
-                &scope,
-            );
+            let multi_opps = multi_hop_detector.detect(ctx);
             all_opportunities.extend(multi_opps);
 
             // Backrun pre-image: opportunities on the pre-tx state, captured
@@ -772,7 +762,7 @@ impl BacktestRunner {
                 .collect();
             if !will_touch.is_empty() {
                 let scope_pre = ScanScope::Dirty(&will_touch);
-                backrun_detector.pre_detect(
+                let ctx_pre = DetectCtx::new(
                     &self.pool_manager,
                     i,
                     timestamp,
@@ -780,6 +770,7 @@ impl BacktestRunner {
                     self.gas_config,
                     &scope_pre,
                 );
+                backrun_detector.pre_detect(ctx_pre);
             }
 
             // #9: learn taxed tokens, then apply state updates
@@ -791,16 +782,15 @@ impl BacktestRunner {
             // Before the `dirty_pools` extend below, which consumes the set.
             if !newly_dirty.is_empty() {
                 let scope_post = ScanScope::Dirty(&newly_dirty);
-                let backrun_opps = backrun_detector.post_detect(
+                let ctx_post = DetectCtx::new(
                     &self.pool_manager,
                     i,
                     timestamp,
                     base_fee_per_gas,
                     self.gas_config,
                     &scope_post,
-                    &logs,
-                    &txs,
                 );
+                let backrun_opps = backrun_detector.post_detect(ctx_post, &logs, &txs);
                 if !backrun_opps.is_empty() {
                     all_opportunities.extend(backrun_opps);
                 }
@@ -864,7 +854,7 @@ impl BacktestRunner {
                     },
                 ));
             }
-            opp.detection_path = Some(crate::mev::detectors::LOG_ONLY_PATH.to_string());
+            opp.detection_path = Some(crate::mev::detectors::DetectionPath::LogOnly);
             if opp.sender.is_none() {
                 opp.sender = txs.get(opp.tx_index).map(|t| t.from);
             }

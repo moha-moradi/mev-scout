@@ -68,6 +68,14 @@ impl std::fmt::Display for MevKind {
     }
 }
 
+impl std::str::FromStr for MevKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| format!("unknown MevKind '{s}'"))
+    }
+}
+
 /// Attribution confidence: `exact` = deterministic event/flow match;
 /// `inferred` = heuristic attribution (score 0..1 carried in details).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +89,18 @@ impl Confidence {
         match self {
             Confidence::Exact => "exact",
             Confidence::Inferred => "inferred",
+        }
+    }
+}
+
+impl std::str::FromStr for Confidence {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "exact" => Ok(Self::Exact),
+            "inferred" => Ok(Self::Inferred),
+            other => Err(format!("unknown Confidence '{other}'")),
         }
     }
 }
@@ -135,13 +155,83 @@ pub struct MevBundle {
     pub legs: Vec<BundleLeg>,
 }
 
+/// Role of a leg inside a sandwich / causal bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BundleLegRole {
+    FrontRun,
+    Victim,
+    BackRun,
+}
+
+impl BundleLegRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FrontRun => "front_run",
+            Self::Victim => "victim",
+            Self::BackRun => "back_run",
+        }
+    }
+}
+
+impl std::fmt::Display for BundleLegRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for BundleLegRole {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "front_run" => Ok(Self::FrontRun),
+            "victim" => Ok(Self::Victim),
+            "back_run" => Ok(Self::BackRun),
+            other => Err(format!("unknown bundle leg role '{other}'")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleLeg {
     pub tx_index: u64,
     pub tx_hash: B256,
-    /// front_run | victim | back_run
-    pub role: String,
+    pub role: BundleLegRole,
     pub pool: Address,
+}
+
+/// Typed liquidation economics used at persist time (avoids stringly JSON digs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiquidationDetails {
+    pub collateral_asset: Address,
+    pub debt_asset: Address,
+    pub collateral_amount: U256,
+    pub debt_to_cover: U256,
+}
+
+impl LiquidationDetails {
+    /// Read liquidation economics from classifier `details` JSON when present.
+    pub fn from_details(details: &serde_json::Value) -> Option<Self> {
+        let parse_addr = |k: &str| {
+            details
+                .get(k)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<Address>().ok())
+        };
+        let parse_amt = |k: &str| {
+            details
+                .get(k)
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<U256>().ok())
+        };
+        Some(Self {
+            collateral_asset: parse_addr("collateral_asset")?,
+            debt_asset: parse_addr("debt_asset")?,
+            collateral_amount: parse_amt("collateral_amount")?,
+            debt_to_cover: parse_amt("debt_to_cover")?,
+        })
+    }
 }
 
 /// A decoded ERC-20 Transfer fact from a receipt log.

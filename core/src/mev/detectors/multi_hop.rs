@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 
 use super::arb_common;
+use super::DetectCtx;
 use crate::dex_type::DexType;
 use crate::pool::math::optimal_on_segments;
 use crate::pool::math::v3::{v3_breakpoints, V3Direction};
@@ -69,31 +70,23 @@ impl MultiHopArbDetector {
     /// `scope` restricts emitted cycles: pass [`ScanScope::Full`] for the first
     /// detection pass of a block, then [`ScanScope::Dirty`] with the set of pools
     /// touched by earlier transactions — a cycle must contain at least one dirty pool.
-    pub fn detect(
-        &mut self,
-        pool_manager: &PoolManager,
-        tx_index: usize,
-        timestamp: u64,
-        base_fee_per_gas: u128,
-        gas_config: GasConfig,
-        scope: &ScanScope,
-    ) -> Vec<MevOpportunity> {
+    pub fn detect(&mut self, ctx: DetectCtx<'_>) -> Vec<MevOpportunity> {
         let max_depth = 4usize;
         let mut opportunities = Vec::new();
 
-        let paths = Self::find_negative_cycle_paths(pool_manager, max_depth, scope);
+        let paths = Self::find_negative_cycle_paths(ctx.pool_manager, max_depth, ctx.scope);
 
         for path in &paths {
             if let Some(opp) = Self::check_path(
-                pool_manager,
+                ctx.pool_manager,
                 path,
                 self.block_number,
-                tx_index,
-                timestamp,
-                base_fee_per_gas,
-                gas_config,
+                ctx.tx_index,
+                ctx.timestamp,
+                ctx.base_fee_per_gas,
+                ctx.gas_config,
             ) {
-                if arb_common::dedup_arb(&mut self.seen, pool_manager, &opp) {
+                if arb_common::dedup_arb(&mut self.seen, ctx.pool_manager, &opp) {
                     opportunities.push(opp);
                 }
             }

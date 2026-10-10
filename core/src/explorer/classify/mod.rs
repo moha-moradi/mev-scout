@@ -33,6 +33,9 @@ use crate::explorer::types::{
     UserOpFact, V2PairOpFact,
 };
 
+mod skim;
+use skim::classify_skims;
+
 /// Raw per-tx input the classifier consumes (decoded by `ingest`).
 #[derive(Debug, Clone, Default)]
 pub struct TxInput {
@@ -869,115 +872,6 @@ fn kind_order(k: MevKind) -> u8 {
     }
 }
 
-/// Realized UniV2 `skim()` capture: registry V2-like pair outbound Transfers
-/// that are not accompanied by a same-tx Swap, Sync, Mint, or Burn on that pair.
-fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
-    if input.v2_like_pools.is_empty() {
-        return Vec::new();
-    }
-    let mut events = Vec::new();
-    for tx in &input.txs {
-        if !tx.success {
-            continue;
-        }
-        let mut excluded: HashSet<Address> = HashSet::new();
-        for s in &tx.swaps {
-            excluded.insert(s.pool);
-        }
-        for op in &tx.v2_pair_ops {
-            excluded.insert(op.pool);
-        }
-
-        // pool → (token → amount, recipients)
-        let mut by_pool: HashMap<Address, HashMap<Address, (U256, HashSet<Address>)>> =
-            HashMap::new();
-        for t in &tx.transfers {
-            if t.amount.is_zero() || t.from.is_zero() {
-                continue;
-            }
-            if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
-                continue;
-            }
-            let entry = by_pool.entry(t.from).or_default();
-            let slot = entry.entry(t.token).or_insert((U256::ZERO, HashSet::new()));
-            slot.0 = slot.0.saturating_add(t.amount);
-            if !t.to.is_zero() {
-                slot.1.insert(t.to);
-            }
-        }
-
-        for (pool, tokens) in by_pool {
-            let mut profit_tokens: Vec<(Address, U256)> = tokens
-                .iter()
-                .filter(|(_, (amt, _))| !amt.is_zero())
-                .map(|(tok, (amt, _))| (*tok, *amt))
-                .collect();
-            if profit_tokens.is_empty() {
-                continue;
-            }
-            profit_tokens.sort_by_key(|a| a.0);
-            // Primary display token: prefer profit-policy priority, else largest amount.
-            let (profit_token, profit_amount) = profit_tokens
-                .iter()
-                .find(|(tok, _)| input.profit_policy.priority.contains(tok))
-                .copied()
-                .or_else(|| profit_tokens.iter().max_by(|a, b| a.1.cmp(&b.1)).copied())
-                .unwrap_or((Address::ZERO, U256::ZERO));
-
-            let recipients: Vec<String> = tokens
-                .values()
-                .flat_map(|(_, recips)| recips.iter())
-                .copied()
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .map(|a| format!("{:#x}", a))
-                .collect();
-            let amounts: Vec<serde_json::Value> = profit_tokens
-                .iter()
-                .map(|(tok, amt)| {
-                    serde_json::json!({
-                        "token": format!("{:#x}", tok),
-                        "amount": amt.to_string(),
-                    })
-                })
-                .collect();
-
-            events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Skim,
-                searcher: tx.from,
-                contract: tx.to,
-                pools: vec![pool],
-                profit_token: Some(profit_token),
-                profit_amount: Some(profit_amount),
-                profit_tokens: profit_tokens.clone(),
-                profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
-                details: serde_json::json!({
-                    "pool": format!("{:#x}", pool),
-                    "recipients": recipients,
-                    "amounts": amounts,
-                    "pnl_basis": PnlBasis::R.as_str(),
-                    "pnl": {
-                        "basis": PnlBasis::R.as_str(),
-                        "profit_amount": profit_amount.to_string(),
-                        "profit_token": format!("{:#x}", profit_token),
-                    },
-                }),
-            });
-        }
-    }
-    events
-}
 
 #[derive(Debug, Clone, Default)]
 struct SwapLeg {
@@ -1851,7 +1745,7 @@ fn build_jit_event(
 
 /// Stamp tx hashes onto JIT events (mint tx lookup happens at ingest where
 /// hashes are available in the same loop as decoding).
-pub fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B256>) {
+pub(crate) fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u64, B256>) {
     for ev in events.iter_mut() {
         if ev.kind == MevKind::Jit && ev.tx_hash == B256::ZERO {
             if let Some(h) = tx_hashes.get(&ev.tx_index) {
@@ -1925,21 +1819,10 @@ pub type TxFacts = (
     Vec<UserOpFact>,
 );
 
-/// Convenience: decode a tx's receipt logs into facts (used by ingest).
+/// Decode a tx's receipt logs into facts (used by ingest / scenarios).
 /// `pool_tokens` = pool → (token0, token1) registry for swap direction (1.1).
-/// `liquidation_protocol_aliases` remaps shared-topic0 emitters (Spark, Benqi)
-/// to their protocol label.
-pub fn decode_tx_logs(
-    tx_index: u64,
-    logs: &[crate::data::LogData],
-    pool_tokens: &HashMap<Address, (Address, Address)>,
-) -> TxFacts {
-    decode_tx_logs_with_aliases(tx_index, logs, pool_tokens, &HashMap::new())
-}
-
-/// Like [`decode_tx_logs`] but applies liquidation-emitter protocol aliases
-/// (Spark, Benqi — plan P0.2 / §24).
-pub fn decode_tx_logs_with_aliases(
+/// `liquidation_protocol_aliases` remaps shared-topic0 emitters (Spark, Benqi).
+pub(crate) fn decode_tx_logs_with_aliases(
     tx_index: u64,
     logs: &[crate::data::LogData],
     pool_tokens: &HashMap<Address, (Address, Address)>,
@@ -2060,7 +1943,7 @@ pub fn decode_tx_logs_with_aliases(
 }
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
-pub fn has_unresolved_tokens(s: &SwapFact) -> bool {
+pub(crate) fn has_unresolved_tokens(s: &SwapFact) -> bool {
     s.token_in == decode::TOKEN0_SENTINEL
         || s.token_in == decode::TOKEN1_SENTINEL
         || s.token_in == Address::ZERO
@@ -2097,7 +1980,7 @@ fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> bool {
 /// Suppress `unknown` events whose swaps are entirely unresolved-direction
 /// or whose searcher candidate netted zero after netting — dedup guard for
 /// noisy blocks.
-pub fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
+pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
     events
         .into_iter()
         .filter(|e| {
@@ -2123,11 +2006,6 @@ pub fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
             e.profit_amount.map(|a| !a.is_zero()).unwrap_or(false)
         })
         .collect()
-}
-
-/// Mark whether any swap in the event had V3 sentinel direction (audit info).
-pub fn route_uses_sentinel(swaps: &[SwapFact]) -> bool {
-    swaps.iter().any(has_unresolved_tokens)
 }
 
 /// True when the tx's ERC-20 transfer graph contains a closed ≥3-entity cycle
@@ -2175,239 +2053,13 @@ fn has_transfer_cycle(searcher: Address, transfers: &[TransferFact]) -> bool {
 mod tests {
     use super::*;
     use crate::explorer::store::OpenPosition;
-    use crate::explorer::types::{
-        Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, MevKind, V2PairOpFact,
-        V2PairOpKind,
+    use crate::explorer::test_fixtures::{
+        block, block_with_v2, classify_kind, event_of, flash_loan, jit, kinds, liquidation, swap,
+        swap_at_tick, swap_owned, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM, WNATIVE,
     };
+    use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
     use alloy::primitives::{address, b256, U256};
 
-    const ATK: Address = address!("1000000000000000000000000000000000000001");
-    const VICTIM: Address = address!("2000000000000000000000000000000000000002");
-    const POOL_A: Address = address!("3000000000000000000000000000000000000003");
-    const POOL_B: Address = address!("3000000000000000000000000000000000000004");
-    const USDC: Address = address!("4000000000000000000000000000000000000005");
-    const TOKA: Address = address!("5000000000000000000000000000000000000006");
-    const WNATIVE: Address = address!("6000000000000000000000000000000000000007");
-
-    fn flash_loan(provider: Address) -> FlashLoanFact {
-        FlashLoanFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "aave_v3",
-            initiator: ATK,
-            token: USDC,
-            amount: U256::from(1000),
-            fee: Some(U256::from(5)),
-            recipient: ATK,
-            provider,
-        }
-    }
-
-    fn liquidation(
-        protocol: &'static str,
-        liquidator: Address,
-        collateral: Address,
-        debt: Address,
-        collateral_amount: u64,
-        debt_to_cover: u64,
-    ) -> LiquidationFact {
-        LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol,
-            emitter: Address::ZERO,
-            user: VICTIM,
-            liquidator,
-            collateral_asset: collateral,
-            debt_asset: debt,
-            collateral_amount: U256::from(collateral_amount),
-            debt_to_cover: U256::from(debt_to_cover),
-            bad_debt_assets: U256::ZERO,
-        }
-    }
-
-    fn jit(tx_index: u64, is_mint: bool) -> JitFact {
-        JitFact {
-            tx_index,
-            log_index: 0,
-            pool: POOL_A,
-            owner: ATK,
-            tick_lower: -100,
-            tick_upper: 100,
-            is_mint,
-            liquidity: 1000,
-            amount0: U256::from(5),
-            amount1: U256::from(5),
-            bin_amm: false,
-        }
-    }
-
-    fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> SwapFact {
-        SwapFact {
-            tx_index: 0,
-            log_index: 0,
-            pool,
-            amm: Amm::V2,
-            token_in: tin,
-            token_out: tout,
-            token_source: LegSource::Registry,
-            amount_in: U256::from(ain),
-            amount_out: U256::from(aout),
-            tick: None,
-            owner: None,
-        }
-    }
-
-    fn swap_owned(
-        owner: Address,
-        pool: Address,
-        tin: Address,
-        tout: Address,
-        ain: u64,
-        aout: u64,
-    ) -> SwapFact {
-        SwapFact {
-            owner: Some(owner),
-            ..swap(pool, tin, tout, ain, aout)
-        }
-    }
-
-    fn swap_at_tick(
-        pool: Address,
-        tin: Address,
-        tout: Address,
-        ain: u64,
-        aout: u64,
-        tick: i32,
-    ) -> SwapFact {
-        let mut s = swap(pool, tin, tout, ain, aout);
-        s.amm = Amm::V3;
-        s.tick = Some(tick);
-        s
-    }
-
-    fn transfer(
-        log_idx: u64,
-        token: Address,
-        from: Address,
-        to: Address,
-        amt: u64,
-    ) -> TransferFact {
-        TransferFact {
-            tx_index: 0,
-            log_index: log_idx,
-            token,
-            from,
-            to,
-            amount: U256::from(amt),
-        }
-    }
-
-    fn tx(
-        idx: u64,
-        from: Address,
-        success: bool,
-        swaps: Vec<SwapFact>,
-        transfers: Vec<TransferFact>,
-    ) -> TxInput {
-        TxInput {
-            tx_index: idx,
-            tx_hash: B256::repeat_byte(idx as u8),
-            from,
-            to: None,
-            success,
-            gas_used: 100_000,
-            effective_gas_price_gwei: 30.0,
-            value: U256::ZERO,
-            transfers,
-            swaps,
-            liquidations: vec![],
-            flashloans: vec![],
-            buy_collaterals: vec![],
-            jit: vec![],
-            v2_pair_ops: vec![],
-            oracle_updates: vec![],
-            reserve_updates: vec![],
-            rate_cache_updates: vec![],
-            keepers: vec![],
-            epoch_rewards: vec![],
-            gmx_events: vec![],
-            user_ops: vec![],
-        }
-    }
-
-    fn block(txs: Vec<TxInput>) -> BlockInput {
-        BlockInput {
-            block: 12345,
-            ts: 1_700_000_000,
-            wrapped_native: WNATIVE,
-            profit_policy: ProfitTokenPolicy {
-                priority: vec![USDC],
-                wrapped_native: WNATIVE,
-                weth: WNATIVE,
-            },
-            arb_likely_parity: true,
-            open_positions: vec![],
-            v2_like_pools: HashSet::new(),
-            chainlink_feeds: HashMap::new(),
-            savax: None,
-            epoch_venue_pools: HashSet::new(),
-            gmx_event_emitters: HashSet::new(),
-            interest_lookback: interest_attr::InterestLookback::default(),
-            prior_oracle_answers: HashMap::new(),
-            savax_exchange_rate_wad: None,
-            txs,
-        }
-    }
-
-    fn block_with_v2(txs: Vec<TxInput>, v2_like: &[Address]) -> BlockInput {
-        let mut input = block(txs);
-        input.v2_like_pools = v2_like.iter().copied().collect();
-        input
-    }
-
-    fn event_of(events: &[MevEvent], kind: MevKind) -> &MevEvent {
-        events.iter().find(|e| e.kind == kind).unwrap_or_else(|| {
-            panic!(
-                "expected a {:?} event; got {:?}",
-                kind,
-                events.iter().map(|e| e.kind).collect::<Vec<_>>()
-            )
-        })
-    }
-
-    fn kinds(events: &[MevEvent]) -> Vec<MevKind> {
-        let mut v: Vec<MevKind> = events.iter().map(|e| e.kind).collect();
-        v.sort_by_key(|k| k.as_str());
-        v
-    }
-
-    fn classify_kind(input: &BlockInput, kind: MevKind) -> MevEvent {
-        event_of(&classify_block(input), kind).clone()
-    }
-
-    #[test]
-    fn atomic_arb_two_pool_closed_cycle() {
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 100, 200),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        // attacker pays 100 USDC on pool A, sells the 200 TOKA on pool B for 110 USDC.
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.profit_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(10)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-        assert_eq!(ev.pools, vec![POOL_A, POOL_B]);
-        assert_eq!(ev.tx_index, 0);
-    }
 
     #[test]
     fn arb_cycle_single_flow_owner_is_exact() {
@@ -2987,60 +2639,8 @@ mod tests {
     }
 
     /// P0.1 positive: same tx has FlashLoanFact + LiquidationFact → tag
-    /// `flash_loan_liq` with provider/premium and pnl_basis O (+ F premium).
-    #[test]
-    fn flash_loan_liq_tagged_when_flash_and_liq_same_tx() {
-        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
-        t.flashloans = vec![flash_loan(provider)];
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        let tags: Vec<&str> = ev.details["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap())
-            .collect();
-        assert!(tags.contains(&"flash_loan_liq"));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
-        assert_eq!(ev.details["flash_provider"], serde_json::json!("aave_v3"));
-        assert_eq!(ev.details["flash_premium"], serde_json::json!("5"));
-        assert_eq!(
-            ev.details["pnl"]["flash_premium_basis"],
-            serde_json::json!("F")
-        );
-        assert_eq!(ev.flashloan_fee_wei, Some(U256::from(5)));
-        assert_eq!(ev.flashloan_fee_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(500)));
-        assert_eq!(
-            ev.details["pnl"]["collateral_amount"],
-            serde_json::json!("500")
-        );
-        assert_eq!(ev.details["pnl"]["debt_to_cover"], serde_json::json!("300"));
-    }
 
     /// P0.1 negative: flash loan without liquidation must not emit liquidation
-    /// or a `flash_loan_liq` tag.
-    #[test]
-    fn flash_without_liquidation_is_not_flash_loan_liq() {
-        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.flashloans = vec![flash_loan(provider)];
-        let events = classify_block(&block(vec![t]));
-        assert!(!events.iter().any(|e| e.kind == MevKind::Liquidation));
-        assert!(!events.iter().any(|e| {
-            e.details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|arr| arr.iter().any(|x| x.as_str() == Some("flash_loan_liq")))
-        }));
-    }
 
     /// P0.3 positive: Absorb then BuyCollateral in the same block →
     /// `buycollateral` tag, pnl_basis O, Exact confidence.
@@ -3111,522 +2711,28 @@ mod tests {
     /// pnl_basis R net of the in-tx premium (borrow +1000, arb +10 gross,
     /// repay −1005 → realized 5). Fixture models the full loop: borrow
     /// inflow, swap legs, repay leg (same convention as
-    /// `flash_loan_netting_depends_on_repay_leg`).
-    #[test]
-    fn flash_arb_tagged_on_flash_funded_atomic_arb() {
-        let provider = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 1000, 1200),
-            swap(POOL_B, TOKA, USDC, 1200, 1010),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, provider, ATK, 1000), // flash borrow
-            transfer(1, USDC, ATK, POOL_A, 1000),
-            transfer(2, TOKA, POOL_A, ATK, 1200),
-            transfer(3, TOKA, ATK, POOL_B, 1200),
-            transfer(4, USDC, POOL_B, ATK, 1010),
-            transfer(5, USDC, ATK, provider, 1005), // repay + premium
-        ];
-        let mut t = tx(0, ATK, true, swaps, transfers);
-        t.flashloans = vec![flash_loan(provider)];
-        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
-        let tags: Vec<&str> = ev.details["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap())
-            .collect();
-        assert!(tags.contains(&"flash_arb"));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
-        assert_eq!(ev.details["pnl"]["profit_amount"], serde_json::json!("5"));
-        assert_eq!(
-            ev.details["arb_meta"]["flashloan_funded"],
-            serde_json::json!(true)
-        );
-        assert_eq!(ev.profit_amount, Some(U256::from(5)));
-        assert_eq!(ev.flashloan_fee_wei, Some(U256::from(5)));
-        assert_eq!(ev.flashloan_fee_token, Some(USDC));
-        assert_eq!(ev.confidence, Confidence::Exact);
-    }
 
-    /// P0.4 negative: closed-cycle arb without flash must not carry `flash_arb`.
-    #[test]
-    fn atomic_arb_without_flash_has_no_flash_arb_tag() {
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 100, 200),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let ev = classify_kind(
-            &block(vec![tx(0, ATK, true, swaps, transfers)]),
-            MevKind::ArbAtomic,
-        );
-        let tags = ev
-            .details
-            .get("tags")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default();
-        assert!(!tags.iter().any(|x| x.as_str() == Some("flash_arb")));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
-    }
 
     /// P0.2 end-to-end: a Benqi qiToken `LiquidateBorrow` receipt log decodes
     /// through the emitter alias registry to `details.protocol = "benqi"` and
     /// classifies with the Compound-family P&L basis `O` (§0.1) carrying the
     /// exact event amounts. Negative: the identical log without aliases stays
-    /// `compound_v2`.
-    #[test]
-    fn benqi_liquidation_relabels_and_keeps_pnl_basis_o() {
-        use crate::chain::events::COMPOUND_V2_LIQUIDATE_BORROW_TOPIC;
-        // qiAVAX (Benqi debt market, emits) / qiETH (seized collateral).
-        let qi_avax = address!("5c0401e81bc07ca70fad469b451682c0d747ef1c");
-        let qi_eth = address!("334ad834cd4481bb02d09615e7c11a00579a7909");
-        let liquidator_topic =
-            b256!("0000000000000000000000001000000000000000000000000000000000000001"); // ATK
-        let borrower_topic =
-            b256!("0000000000000000000000002000000000000000000000000000000000000002"); // VICTIM
-        let mut data = vec![0u8; 96];
-        data[24..32].copy_from_slice(&300u64.to_be_bytes()); // repayAmount
-        data[44..64].copy_from_slice(qi_eth.as_slice()); // cTokenCollateral
-        data[88..96].copy_from_slice(&500u64.to_be_bytes()); // seizeTokens
-        let liq_log = crate::data::LogData {
-            address: qi_avax,
-            topics: vec![
-                *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
-                liquidator_topic,
-                borrower_topic,
-            ],
-            data: alloy::primitives::Bytes::from(data),
-        };
 
-        let aliases: HashMap<Address, &'static str> = HashMap::from([(qi_avax, "benqi")]);
-        let (_, _, liquidations, ..) = decode_tx_logs_with_aliases(
-            0,
-            std::slice::from_ref(&liq_log),
-            &HashMap::new(),
-            &aliases,
-        );
-        assert_eq!(liquidations.len(), 1);
-        assert_eq!(liquidations[0].protocol, "benqi");
 
-        // Near-miss: no alias configured → generic label, nothing relabeled.
-        let (_, _, unaliased, ..) =
-            decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
-        assert_eq!(unaliased[0].protocol, "compound_v2");
 
-        // P&L fixture: exact `O`-basis event amounts survive classification.
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, qi_eth, POOL_A, ATK, 500)],
-        );
-        t.liquidations = liquidations;
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        assert_eq!(ev.details["protocol"], serde_json::json!("benqi"));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
-        assert_eq!(
-            ev.details["pnl"]["collateral_amount"],
-            serde_json::json!("500")
-        );
-        assert_eq!(ev.details["pnl"]["debt_to_cover"], serde_json::json!("300"));
-        assert_eq!(ev.profit_amount, Some(U256::from(500)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-    }
 
-    /// P1.3 positive: multi-hop arb through a non-blue-chip token → `long_tail`.
-    #[test]
-    fn long_tail_tagged_on_non_bluechip_arb() {
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 100, 200),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let ev = classify_kind(
-            &block(vec![tx(0, ATK, true, swaps, transfers)]),
-            MevKind::ArbAtomic,
-        );
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("long_tail")));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
-        assert_eq!(ev.profit_amount, Some(U256::from(10)));
-    }
 
-    /// P1.3 negative: blue-chip-only path (USDC↔WNATIVE) is not long-tail.
-    #[test]
-    fn bluechip_only_arb_has_no_long_tail_tag() {
-        let swaps = vec![
-            swap(POOL_A, USDC, WNATIVE, 100, 200),
-            swap(POOL_B, WNATIVE, USDC, 200, 110),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, WNATIVE, POOL_A, ATK, 200),
-            transfer(2, WNATIVE, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        // Treat both USDC and WNATIVE as blue chips for this fixture.
-        input.profit_policy.priority = vec![USDC, WNATIVE];
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        let tags = ev
-            .details
-            .get("tags")
-            .and_then(|t| t.as_array())
-            .cloned()
-            .unwrap_or_default();
-        assert!(!tags.iter().any(|x| x.as_str() == Some("long_tail")));
-    }
 
-    /// P1.4 positive: liquidation co-block with a relevant Chainlink poke.
-    #[test]
-    fn oracle_poke_block_when_feed_updates_same_block() {
-        let feed = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
-        t.oracle_updates = vec![OracleUpdateFact {
-            tx_index: 0,
-            log_index: 1,
-            feed,
-            answer: 100,
-        }];
-        let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, USDC)]);
-        let ev = classify_kind(&input, MevKind::Liquidation);
-        assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(true));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
-        assert_eq!(ev.profit_amount, Some(U256::from(500)));
-    }
 
-    /// P1.4 negative: liquidation without any AnswerUpdated in the block.
-    #[test]
-    fn oracle_poke_block_false_without_feed_update() {
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(false));
-        assert_eq!(ev.details["interest_accrued"], serde_json::json!(false));
-    }
 
-    /// P1.1 positive: ReserveDataUpdated for debt + no price poke → interest.
-    #[test]
-    fn interest_accrued_when_reserve_updates_price_flat() {
-        let feed = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
-        t.reserve_updates = vec![ReserveDataFact {
-            tx_index: 0,
-            log_index: 1,
-            reserve: WNATIVE,
-            variable_borrow_rate: U256::from(1),
-        }];
-        let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, WNATIVE)]);
-        let ev = classify_kind(&input, MevKind::Liquidation);
-        assert_eq!(ev.details["interest_accrued"], serde_json::json!(true));
-        assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(false));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
-    }
 
-    /// P1.1 negative: same reserve update but debt feed pokes → not interest.
-    #[test]
-    fn interest_not_flagged_when_debt_feed_pokes() {
-        let feed = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
-        t.reserve_updates = vec![ReserveDataFact {
-            tx_index: 0,
-            log_index: 1,
-            reserve: WNATIVE,
-            variable_borrow_rate: U256::from(1),
-        }];
-        t.oracle_updates = vec![OracleUpdateFact {
-            tx_index: 0,
-            log_index: 2,
-            feed,
-            answer: 100,
-        }];
-        let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, WNATIVE)]);
-        let ev = classify_kind(&input, MevKind::Liquidation);
-        assert_eq!(ev.details["interest_accrued"], serde_json::json!(false));
-        assert_eq!(ev.details["oracle_poke_block"], serde_json::json!(true));
-    }
 
-    /// P1.5 positive: Gelato ExecSuccess → keeper tag, pnl_basis F, fee amount.
-    #[test]
-    fn gelato_keeper_execution_emits_f_basis() {
-        let fee_token = USDC;
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.keepers = vec![KeeperFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "gelato",
-            emitter: address!("cccccccccccccccccccccccccccccccccccccccc"),
-            fee: Some(U256::from(42)),
-            fee_token: Some(fee_token),
-        }];
-        let events = classify_block(&block(vec![t]));
-        let ev = events
-            .iter()
-            .find(|e| {
-                e.details
-                    .get("tags")
-                    .and_then(|t| t.as_array())
-                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("keeper")))
-            })
-            .expect("keeper event");
-        assert_eq!(ev.kind, MevKind::Unknown);
-        assert_eq!(ev.details["protocol"], serde_json::json!("gelato"));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("F"));
-        assert_eq!(ev.details["pnl"]["fee"], serde_json::json!("42"));
-        assert_eq!(ev.profit_amount, Some(U256::from(42)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-    }
 
-    /// P1.5 negative: tx without keeper events must not emit a keeper tag.
-    #[test]
-    fn no_keeper_tag_without_keeper_facts() {
-        let events = classify_block(&block(vec![tx(0, ATK, true, vec![], vec![])]));
-        assert!(!events.iter().any(|e| {
-            e.details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("keeper")))
-        }));
-    }
 
-    /// P3.5: Curve + other venue on a closed arb → `curve_imbalance`.
-    #[test]
-    fn curve_imbalance_tagged_on_curve_arb() {
-        let mut s0 = swap(POOL_A, USDC, TOKA, 100, 200);
-        s0.amm = Amm::Curve;
-        let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
-        s1.amm = Amm::V2;
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let ev = classify_kind(
-            &block(vec![tx(0, ATK, true, vec![s0, s1], transfers)]),
-            MevKind::ArbAtomic,
-        );
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("curve_imbalance")));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
-    }
 
-    /// P3.14: Morpho badDebtAssets > 0 → `bad_debt_liq` + post_liq_insolvent.
-    #[test]
-    fn bad_debt_liq_tagged_when_bad_debt_assets_nonzero() {
-        let mut t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 500)],
-        );
-        let mut liq = liquidation("morpho_blue", ATK, USDC, WNATIVE, 500, 300);
-        liq.bad_debt_assets = U256::from(10);
-        t.liquidations = vec![liq];
-        let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("bad_debt_liq")));
-        assert_eq!(ev.details["bad_debt"], serde_json::json!(true));
-        assert_eq!(ev.details["post_liq_insolvent"], serde_json::json!(true));
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("O"));
-    }
 
-    /// P3.13: mint-from-zero + sell → claim_and_sell tag on arb.
-    #[test]
-    fn claim_and_sell_tags_atomic_arb() {
-        let swaps = vec![
-            swap(POOL_A, TOKA, USDC, 100, 110),
-            swap(POOL_B, USDC, TOKA, 50, 40),
-        ];
-        // Closed cycle is awkward; simpler: Unknown claim-and-sell with residual.
-        let transfers = vec![
-            transfer(0, TOKA, Address::ZERO, ATK, 1000), // claim mint
-            transfer(1, TOKA, ATK, POOL_A, 100),
-            transfer(2, USDC, POOL_A, ATK, 110),
-        ];
-        let events = classify_block(&block(vec![tx(0, ATK, true, swaps, transfers)]));
-        assert!(events.iter().any(|e| {
-            e.details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("claim_and_sell")))
-        }));
-    }
 
-    /// P3.11: UserOperationEvent → bundler tag, pnl_basis R.
-    #[test]
-    fn erc4337_bundler_execution_emits_r_basis() {
-        let mut t = tx(0, ATK, true, vec![], vec![]);
-        t.user_ops = vec![UserOpFact {
-            tx_index: 0,
-            log_index: 0,
-            entry_point: address!("5ff137d4b0fdcd49dca30c7cf57e578a026d2789"),
-            sender: VICTIM,
-            paymaster: Address::ZERO,
-            actual_gas_cost: U256::from(12_000),
-            success: true,
-        }];
-        let events = classify_block(&block(vec![t]));
-        let ev = events
-            .iter()
-            .find(|e| {
-                e.details
-                    .get("tags")
-                    .and_then(|t| t.as_array())
-                    .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("bundler")))
-            })
-            .expect("bundler event");
-        assert_eq!(ev.details["pnl_basis"], serde_json::json!("R"));
-        assert_eq!(ev.profit_amount, Some(U256::from(12_000)));
-    }
 
-    /// P3.16: sAVAX ↔ WAVAX arb tagged.
-    #[test]
-    fn savax_rate_arb_tagged() {
-        let savax = address!("2b2c81e08f1af8835a78bb2a90ae924ace0ea4be");
-        let swaps = vec![
-            swap(POOL_A, savax, WNATIVE, 100, 110),
-            swap(POOL_B, WNATIVE, savax, 110, 105),
-        ];
-        let transfers = vec![
-            transfer(0, savax, ATK, POOL_A, 100),
-            transfer(1, WNATIVE, POOL_A, ATK, 110),
-            transfer(2, WNATIVE, ATK, POOL_B, 110),
-            transfer(3, savax, POOL_B, ATK, 105),
-        ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.savax = Some(savax);
-        input.profit_policy.priority = vec![savax, WNATIVE, USDC];
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("savax_rate_arb")));
-    }
-
-    /// P3.15: NotifyReward co-block + venue AMM → `epoch_transition`.
-    #[test]
-    fn epoch_transition_tagged_with_notify_reward() {
-        let swaps = [
-            swap(POOL_A, USDC, TOKA, 100, 200),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        let mut s0 = swaps[0].clone();
-        s0.amm = Amm::Solidly;
-        let mut s1 = swaps[1].clone();
-        s1.amm = Amm::Solidly;
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let mut t = tx(0, ATK, true, vec![s0, s1], transfers);
-        t.epoch_rewards = vec![EpochRewardFact {
-            tx_index: 0,
-            log_index: 9,
-            emitter: address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            reward_token: USDC,
-            amount: U256::from(1),
-        }];
-        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("epoch_transition")));
-    }
-
-    /// P3.7: co-block GMX ADL signal tags arbs.
-    #[test]
-    fn gmx_adl_arb_tagged_with_co_block_signal() {
-        let swaps = vec![
-            swap(POOL_A, USDC, TOKA, 100, 200),
-            swap(POOL_B, TOKA, USDC, 200, 110),
-        ];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-            transfer(2, TOKA, ATK, POOL_B, 200),
-            transfer(3, USDC, POOL_B, ATK, 110),
-        ];
-        let mut t = tx(0, ATK, true, swaps, transfers);
-        t.gmx_events = vec![GmxEventFact {
-            tx_index: 0,
-            log_index: 5,
-            emitter: address!("db17b233827785b5ea1ad91c9bd7d4dc478b9389"),
-            kind: "adl",
-        }];
-        let ev = classify_kind(&block(vec![t]), MevKind::ArbAtomic);
-        let tags = ev.details["tags"].as_array().unwrap();
-        assert!(tags.iter().any(|x| x.as_str() == Some("gmx_adl_arb")));
-    }
-
-    #[test]
-    fn jit_mint_burn_paired_same_block() {
-        let mint = jit(0, true);
-        let burn = jit(1, false);
-        let mut t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 0)],
-            vec![],
-        );
-        t0.jit = vec![mint];
-        let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
-        t1.jit = vec![burn];
-        let input = block(vec![t0, t1]);
-        let ev = classify_kind(&input, MevKind::Jit);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.tx_index, 0); // anchored to the mint tx
-                                    // burn tx index embedded in details
-        assert_eq!(ev.details["burn_tx_index"], serde_json::json!(1));
-        assert_eq!(ev.confidence, Confidence::Exact);
-        assert_eq!(
-            ev.details["fees_estimated"]["confidence"],
-            serde_json::json!("inferred")
-        );
-    }
 
     #[test]
     fn jit_cross_block_open_position_closed_by_burn() {
@@ -3679,84 +2785,6 @@ mod tests {
         assert!(!kinds(&classify_block(&block(vec![t0, t1]))).contains(&MevKind::Jit));
     }
 
-    #[test]
-    fn classic_three_eoa_sandwich_detected() {
-        // The canonical realized sandwich: a separate victim EOA buys between
-        // the attacker's front-run buy and back-run sell on the same pool.
-        // front: USDC->TOKA buy by ATK (tx0), victim: USDC->TOKA buy by VICTIM
-        // (tx1), back: TOKA->USDC sell by ATK (tx2).
-        let front = swap(POOL_A, USDC, TOKA, 100, 200);
-        let victim = swap(POOL_A, USDC, TOKA, 200, 350);
-        let back = swap(POOL_A, TOKA, USDC, 350, 195);
-        let t0 = tx(
-            0,
-            ATK,
-            true,
-            vec![front],
-            vec![
-                transfer(0, USDC, ATK, POOL_A, 100),
-                transfer(1, TOKA, POOL_A, ATK, 200),
-            ],
-        );
-        let t1 = tx(
-            1,
-            VICTIM,
-            true,
-            vec![victim],
-            vec![
-                transfer(0, USDC, VICTIM, POOL_A, 200),
-                transfer(1, TOKA, POOL_A, VICTIM, 350),
-            ],
-        );
-        let t2 = tx(
-            2,
-            ATK,
-            true,
-            vec![back],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 350),
-                transfer(1, USDC, POOL_A, ATK, 195),
-            ],
-        );
-        let input = block(vec![t0, t1, t2]);
-        let ev = classify_kind(&input, MevKind::Sandwich);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.pools, vec![POOL_A]);
-        assert_eq!(ev.tx_index, 0); // anchored to front-run
-        assert_eq!(ev.profit_token, Some(USDC));
-        // profit = back-run amount_out (195) - front-run amount_in (100)
-        assert_eq!(ev.profit_amount, Some(U256::from(95)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-        // victim attached: separate EOA tx (tx1), size = victim's amount_in
-        assert_eq!(ev.victim_swap_size, Some(U256::from(200)));
-        // Phase 1.4 evidence: both victim legs recorded with sizes, and the
-        // front+back gas is summed (2 txs × 100_000 × 30 gwei).
-        assert_eq!(ev.victim_hashes, vec![B256::repeat_byte(1)]);
-        assert_eq!(ev.details["victims_seen"], serde_json::json!(1));
-        assert_eq!(ev.details["victim_swap_sizes"], serde_json::json!(["200"]));
-        assert_eq!(
-            ev.details["evidence"]["reverse_backrun"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            ev.details["reasons"],
-            serde_json::json!([
-                "REVERSE_DIRECTION",
-                "SAME_SEARCHER",
-                "VICTIM_EXECUTION_DEGRADED"
-            ])
-        );
-        // front price 200/100 = 2.0, victim price 350/200 = 1.75 → 12.5%
-        assert_eq!(
-            ev.details["victim_execution"]["degradation_pct"],
-            serde_json::json!(12.5)
-        );
-        assert_eq!(ev.gas_cost_wei, U256::from(6_000_000_000_000_000u64));
-        assert_eq!(
-            ev.details["evidence"]["contract_mediated"],
-            serde_json::json!(false)
-        );
-    }
 
     #[test]
     fn sandwich_contract_mediated_legs_tagged() {
@@ -3981,68 +3009,7 @@ mod tests {
         assert_eq!(arb.tx_hash, h0);
     }
 
-    #[test]
-    fn lb_bin_jit_pairs_without_tick_on_swap() {
-        // LB swaps carry no tick; bin_amm JIT must still fire when a same-pool
-        // swap sits between deposit and withdraw.
-        let mint = JitFact {
-            tick_lower: 8000,
-            tick_upper: 8010,
-            liquidity: 2,
-            amount0: U256::from(10),
-            amount1: U256::from(5),
-            bin_amm: true,
-            ..jit(0, true)
-        };
-        let burn = JitFact {
-            tick_lower: 8000,
-            tick_upper: 8010,
-            liquidity: 2,
-            amount0: U256::from(10),
-            amount1: U256::from(5),
-            bin_amm: true,
-            ..jit(2, false)
-        };
-        let mut t0 = tx(0, ATK, true, vec![], vec![]);
-        t0.jit = vec![mint];
-        // Same-pool swap with tick=None (LB).
-        let t1 = tx(
-            1,
-            MARKET,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
-            vec![],
-        );
-        let mut t2 = tx(2, ATK, true, vec![], vec![]);
-        t2.jit = vec![burn];
-        let events = classify_block(&block(vec![t0, t1, t2]));
-        assert!(
-            kinds(&events).contains(&MevKind::Jit),
-            "expected LB JIT; got {:?}",
-            kinds(&events)
-        );
-        let ev = event_of(&events, MevKind::Jit);
-        assert_eq!(ev.details["bin_amm"], serde_json::json!(true));
-        assert_eq!(ev.details["mode"], serde_json::json!("realized"));
-    }
 
-    #[test]
-    fn skim_happy_path_single_token() {
-        let t = tx(
-            0,
-            ATK,
-            true,
-            vec![],
-            vec![transfer(0, USDC, POOL_A, ATK, 42)],
-        );
-        let input = block_with_v2(vec![t], &[POOL_A]);
-        let ev = classify_kind(&input, MevKind::Skim);
-        assert_eq!(ev.searcher, ATK);
-        assert_eq!(ev.pools, vec![POOL_A]);
-        assert_eq!(ev.profit_token, Some(USDC));
-        assert_eq!(ev.profit_amount, Some(U256::from(42)));
-        assert_eq!(ev.confidence, Confidence::Exact);
-    }
 
     #[test]
     fn skim_dual_token_profit_tokens() {

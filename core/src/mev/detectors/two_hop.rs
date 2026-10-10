@@ -1,6 +1,7 @@
 //! Two-hop arbitrage detection — finds cyclic arbitrage across two connected pools (V2↔V2, V2↔V3, V3↔V3).
 
 use super::arb_common;
+use super::DetectCtx;
 use alloy::primitives::Address;
 use std::cmp;
 
@@ -12,10 +13,9 @@ use crate::pool::math::{
 };
 use crate::pool::state::{
     calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, QuoteKind,
-    ScanScope,
 };
 use crate::types::MevOpportunity;
-use crate::types::{GasConfig, Strategy};
+use crate::types::Strategy;
 
 /// Maximum tick-band breakpoints enumerated per V3 pool when segmenting the
 /// profit landscape for deterministic optimization.
@@ -56,35 +56,19 @@ impl TwoHopArbDetector {
     /// `scope` restricts the scan: pass [`ScanScope::Full`] for the first detection
     /// pass of a block, then [`ScanScope::Dirty`] with the set of pools touched by
     /// earlier transactions — untouched pairs cannot produce new opportunities.
-    pub fn detect(
-        &mut self,
-        pool_manager: &PoolManager,
-        tx_index: usize,
-        timestamp: u64,
-        base_fee_per_gas: u128,
-        gas_config: GasConfig,
-        scope: &ScanScope,
-    ) -> Vec<MevOpportunity> {
+    pub fn detect(&mut self, ctx: DetectCtx<'_>) -> Vec<MevOpportunity> {
         let mut opportunities = Vec::new();
-        let pairs = pool_manager.arbitrage_pairs();
+        let pairs = ctx.pool_manager.arbitrage_pairs();
 
         for pair in pairs.iter() {
-            if !scope.contains_pair(&pair.pool_a, &pair.pool_b) {
+            if !ctx.scope.contains_pair(&pair.pool_a, &pair.pool_b) {
                 continue;
             }
             for (buy_pool, sell_pool) in [(pair.pool_a, pair.pool_b), (pair.pool_b, pair.pool_a)] {
-                if let Some(opp) = Self::check_direction(
-                    pool_manager,
-                    buy_pool,
-                    sell_pool,
-                    pair.shared_token,
-                    self.block_number,
-                    tx_index,
-                    timestamp,
-                    base_fee_per_gas,
-                    gas_config,
-                ) {
-                    if arb_common::dedup_arb(&mut self.seen, pool_manager, &opp) {
+                if let Some(opp) =
+                    Self::check_direction(ctx, buy_pool, sell_pool, pair.shared_token, self.block_number)
+                {
+                    if arb_common::dedup_arb(&mut self.seen, ctx.pool_manager, &opp) {
                         opportunities.push(opp);
                     }
                 }
@@ -94,18 +78,14 @@ impl TwoHopArbDetector {
         opportunities
     }
 
-    #[expect(clippy::too_many_arguments)]
     fn check_direction(
-        pm: &PoolManager,
+        ctx: DetectCtx<'_>,
         buy_pool: Address,
         sell_pool: Address,
         shared_token: Address,
         block_number: u64,
-        tx_index: usize,
-        timestamp: u64,
-        base_fee_per_gas: u128,
-        gas_config: GasConfig,
     ) -> Option<MevOpportunity> {
+        let pm = ctx.pool_manager;
         let pool_a = pm.get(&buy_pool)?;
         let pool_b = pm.get(&sell_pool)?;
 
@@ -136,13 +116,15 @@ impl TwoHopArbDetector {
             pool_a,
             pool_b,
             shared_token,
-            gas_config.flash_loan_provider.gas_overhead(),
-            &gas_config.calibration,
+            ctx.gas_config.flash_loan_provider.gas_overhead(),
+            &ctx.gas_config.calibration,
         );
-        let gas_cost_wei = gas_config.compute_gas_cost_with_limit(gas_limit, base_fee_per_gas);
+        let gas_cost_wei = ctx
+            .gas_config
+            .compute_gas_cost_with_limit(gas_limit, ctx.base_fee_per_gas);
 
         // Subtract flash loan fee from gross profit
-        let flash_fee = gas_config.flash_loan_fee(result.input_amount);
+        let flash_fee = ctx.gas_config.flash_loan_fee(result.input_amount);
         let profit_after_fl = result.profit.saturating_sub(flash_fee);
 
         // Normalize profit to wrapped native token when token_in != token_out
@@ -168,8 +150,8 @@ impl TwoHopArbDetector {
             arb_common::ArbOpportunityInput {
                 strategy: Strategy::TwoHopArb,
                 block_number,
-                tx_index,
-                timestamp,
+                tx_index: ctx.tx_index,
+                timestamp: ctx.timestamp,
                 pool_a: buy_pool,
                 pool_b: sell_pool,
                 token_in,

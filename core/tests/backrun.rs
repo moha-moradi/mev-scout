@@ -13,6 +13,7 @@ use mev_scout_core::mev::detectors::backrun::{
 };
 use mev_scout_core::mev::detectors::multi_hop::MultiHopArbDetector;
 use mev_scout_core::mev::detectors::two_hop::TwoHopArbDetector;
+use mev_scout_core::mev::detectors::DetectCtx;
 use mev_scout_core::pool::state::{PoolManager, ScanScope};
 use mev_scout_core::types::{GasConfig, GasModel, MevOpportunity, Strategy};
 
@@ -113,13 +114,17 @@ fn victim_skew() -> ExecutedLog {
     )
 }
 
+fn ctx<'a>(pm: &'a PoolManager, tx: usize, scope: &'a ScanScope<'_>) -> DetectCtx<'a> {
+    DetectCtx::new(pm, tx, TS, BASE_FEE, GasConfig::default(), scope)
+}
+
 fn pre(
     d: &mut BackrunDetector,
     pm: &PoolManager,
     tx: usize,
     scope: &ScanScope,
 ) -> Vec<MevOpportunity> {
-    d.pre_detect(pm, tx, TS, BASE_FEE, GasConfig::default(), scope)
+    d.pre_detect(ctx(pm, tx, scope))
 }
 
 fn post(
@@ -129,17 +134,17 @@ fn post(
     scope: &ScanScope,
     txs: &[TxData],
 ) -> Vec<MevOpportunity> {
-    d.post_detect(pm, tx, TS, BASE_FEE, GasConfig::default(), scope, &[], txs)
+    d.post_detect(ctx(pm, tx, scope), &[], txs)
 }
 
 fn probe_two(pm: &PoolManager, scope: &ScanScope) -> Vec<MevOpportunity> {
     let mut d = TwoHopArbDetector::new(BLOCK);
-    d.detect(pm, VICTIM, TS, BASE_FEE, GasConfig::default(), scope)
+    d.detect(ctx(pm, VICTIM, scope))
 }
 
 fn probe_multi(pm: &PoolManager, scope: &ScanScope) -> Vec<MevOpportunity> {
     let mut d = MultiHopArbDetector::new(BLOCK);
-    d.detect(pm, VICTIM, TS, BASE_FEE, GasConfig::default(), scope)
+    d.detect(ctx(pm, VICTIM, scope))
 }
 
 /// Victim flips an unexecutable gap into an executable one.

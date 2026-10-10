@@ -5,6 +5,20 @@ tokens, report, args) run on every `cargo test`; the network-facing tests are
 gated behind `MEV_SCOUT_E2E=1` plus an RPC reachability probe and SKIP silently
 otherwise.
 
+## Live smoke contract (tip / RPC)
+
+Always-on CI must not multiply tip smokes. The agreed surfaces are:
+
+| Layer | Binary / test | Role |
+|---|---|---|
+| Core pipeline smoke | `core/tests/e2e.rs` (gated) | One end-to-end core path against RPC |
+| CLI smoke | `cli_e2e` (gated) | One binary-level tip path |
+
+Other gated CLI binaries (`cli_live_*`, `cli_data_foundation`, `cli_network_coverage`)
+are specialized or demoted — do not add another tip smoke without replacing one
+of the two above. Corpus floors (`explorer_corpus`, `mev_corpus`, `paper_corpus`)
+stay opt-in and are not tip smokes.
+
 ## RPC rate-limit serialization (RPC_MUTEX)
 
 `common::RPC_MUTEX` serializes the RPC-heavy tests **within one test binary

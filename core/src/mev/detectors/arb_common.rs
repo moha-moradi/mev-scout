@@ -1,5 +1,6 @@
 //! Shared arbitrage-detection helpers used by both front-ends: the analytical
 //! [`super::two_hop`] detector and the numeric [`super::multi_hop`] detector.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 //!
 //! Unifies the duplicated opportunity builder, profit normalization (C5),
 //! slippage evaluation, dominant-DEX gas blend (H7), per-block dedup gate and
@@ -188,7 +189,7 @@ pub(super) fn build_arb_opportunity(input: ArbOpportunityInput) -> MevOpportunit
         confidence: None,
         sender: None,
         tx_hash: None,
-        detection_path: Some(super::REPLAY_PATH.to_string()),
+        detection_path: Some(super::DetectionPath::Replay),
     }
 }
 
@@ -369,5 +370,44 @@ fn fee_fraction(pool: &PoolState) -> Option<(u64, u64)> {
             Some((num as u64, den as u64))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mev::detectors::DetectionPath;
+
+    #[test]
+    fn build_arb_opportunity_stamps_replay_path() {
+        let opp = build_arb_opportunity(ArbOpportunityInput {
+            strategy: Strategy::TwoHopArb,
+            block_number: 1,
+            tx_index: 0,
+            timestamp: 100,
+            pool_a: Address::repeat_byte(1),
+            pool_b: Address::repeat_byte(2),
+            token_in: Address::repeat_byte(3),
+            token_out: Address::repeat_byte(4),
+            input_amount: 1_000,
+            expected_profit: U256::from(10u64),
+            raw_profit: None,
+            slippage: SlippageProfits {
+                p1: None,
+                m1: None,
+                p2: None,
+                m2: None,
+            },
+            gas_cost_wei: 21_000,
+            path: None,
+        });
+        assert_eq!(opp.detection_path, Some(DetectionPath::Replay));
+        assert_eq!(opp.strategy, Strategy::TwoHopArb);
+    }
+
+    #[test]
+    fn slippage_profits_zero_input_is_all_none() {
+        let s = slippage_profits(0, |_| Some(U256::from(1u64)));
+        assert!(s.p1.is_none() && s.m1.is_none() && s.p2.is_none() && s.m2.is_none());
     }
 }

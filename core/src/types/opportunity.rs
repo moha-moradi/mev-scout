@@ -7,6 +7,47 @@ use crate::types::strategy::Strategy;
 use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
+/// How an opportunity was detected — stable string at the DB/JSON boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectionPath {
+    /// Full EVM replay / backtest (`run`).
+    Replay,
+    /// Pending-mempool capture.
+    Pending,
+    /// Log-only synthesis (`live` without full replay).
+    LogOnly,
+}
+
+impl DetectionPath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Replay => "replay",
+            Self::Pending => "pending",
+            Self::LogOnly => "log_only",
+        }
+    }
+}
+
+impl std::fmt::Display for DetectionPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for DetectionPath {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "replay" => Ok(Self::Replay),
+            "pending" => Ok(Self::Pending),
+            "log_only" => Ok(Self::LogOnly),
+            other => Err(format!("unknown detection_path '{other}'")),
+        }
+    }
+}
+
 /// A detected MEV opportunity from backtesting.
 ///
 /// Different strategies populate different optional fields:
@@ -97,11 +138,10 @@ pub struct MevOpportunity {
     /// against realized explorer ops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<B256>,
-    /// How this opportunity was detected: "replay" (full EVM replay in `run`),
-    /// "log_only" (log-based synthesis in `live`), or "pending" (mempool).
+    /// How this opportunity was detected (`replay` / `log_only` / `pending`).
     /// Makes run-vs-live coverage gaps attributable to detection path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detection_path: Option<String>,
+    pub detection_path: Option<DetectionPath>,
 }
 
 /// Key fields used to build a canonical opportunity dedup id.

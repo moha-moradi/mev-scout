@@ -67,32 +67,16 @@ pub fn detect_pending_opportunities(
 
     let mut results = Vec::new();
 
-    // Run two-hop detection on current pool state (full scan — single pass)
-    let two_hop_opps = two_hop.detect(
-        pool_manager,
-        0,
-        timestamp,
-        base_fee_per_gas,
-        gas_config,
-        &ScanScope::Full,
-    );
-    results.extend(two_hop_opps);
-
-    // Run multi-hop detection on current pool state (full scan — single pass)
-    let multi_hop_opps = multi_hop.detect(
-        pool_manager,
-        0,
-        timestamp,
-        base_fee_per_gas,
-        gas_config,
-        &ScanScope::Full,
-    );
-    results.extend(multi_hop_opps);
+    let scope = ScanScope::Full;
+    let ctx = super::DetectCtx::new(pool_manager, 0, timestamp, base_fee_per_gas, gas_config, &scope);
+    // Run two-hop / multi-hop detection on current pool state (full scan — single pass)
+    results.extend(two_hop.detect(ctx));
+    results.extend(multi_hop.detect(ctx));
 
     // Label all as mempool-only
     for opp in &mut results {
         opp.mempool_only = true;
-        opp.detection_path = Some(crate::mev::detectors::PENDING_PATH.to_string());
+        opp.detection_path = Some(crate::mev::detectors::DetectionPath::Pending);
     }
 
     results

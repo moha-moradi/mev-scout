@@ -9,10 +9,17 @@
 > detection or execution — that is `ROADMAP_LIVE_BOT.md` territory.
 >
 > **Scenarios:** synthetic CI fixtures + Avalanche real-block hunt recipes are
-> catalogued in [`explorer_strategy_scenarios.md`](./explorer_strategy_scenarios.md)
-> (`core/src/explorer/scenario_targets.rs`).
+> catalogued in `core/src/explorer/scenarios.rs` /
+> `core/src/explorer/scenario_targets.rs`.
 > Fingerprints are the §17.8 on-chain algorithms (mode A = realized event
 > count, mode B = latent/storage reconstructable, mode C = needs simulation).
+>
+> **Test-layer roles (CI):**
+> - `scenarios` = strategy catalogue (baseline + P0–P3 fingerprints / pnl_basis)
+> - `classify` unit tests = unique edge / negative cases not in the catalogue
+> - `golden` = causal Backrun/Frontrun ship gate
+> - `explorer_golden` = one synthetic classify→store persist path
+> - `explorer_corpus` / `mev_corpus` = opt-in real-chain floors (`MEV_SCOUT_E2E`)
 >
 > **Scope: Avalanche C-Chain (43114).** Strategies whose protocol is not
 > deployed on Avalanche were removed from §2–§5 and archived in §6.1

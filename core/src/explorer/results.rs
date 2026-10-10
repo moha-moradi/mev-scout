@@ -51,7 +51,7 @@ pub fn persist_opportunities_to_explorer(
             confidence: confidence_str.as_deref(),
             sender: opp.sender,
             tx_hash: opp.tx_hash,
-            detection_path: opp.detection_path.as_deref(),
+            detection_path: opp.detection_path.map(|p| p.as_str()),
             canonical_id: opp.canonical_id.as_deref(),
         }) {
             tracing::warn!("opportunities-table insert failed: {e}");

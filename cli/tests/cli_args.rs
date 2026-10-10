@@ -124,37 +124,35 @@ fn live_help_lists_ledger_flags() {
     }
 }
 
+/// Removed / unknown CLI surface — one table-driven gate instead of N clones.
 #[test]
-fn removed_tokens_subcommand_fails() {
-    let ws = temp_ws("args_tokens_removed");
-    let out = run(&ws, &["tokens"]);
-    expect_fail(&out, "removed tokens subcommand");
-    assert!(
-        out.combined().contains("unrecognized subcommand 'tokens'"),
-        "expected clap to reject 'tokens', got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn explorer_removed_stats_subcommand_fails() {
-    let ws = temp_ws("args_explorer_stats_removed");
-    let out = run(&ws, &["explorer", "stats"]);
-    expect_fail(&out, "removed explorer stats subcommand");
-}
-
-#[test]
-fn explorer_removed_report_subcommand_fails() {
-    let ws = temp_ws("args_explorer_report_removed");
-    let out = run(&ws, &["explorer", "report"]);
-    expect_fail(&out, "removed explorer report subcommand");
-}
-
-#[test]
-fn explorer_removed_backfill_subcommand_fails() {
-    let ws = temp_ws("args_explorer_backfill_removed");
-    let out = run(&ws, &["explorer", "backfill"]);
-    expect_fail(&out, "removed explorer backfill subcommand");
+fn removed_and_unknown_surface_fails() {
+    let cases: &[(&str, &[&str], Option<&str>)] = &[
+        ("tokens", &["tokens"], Some("unrecognized subcommand 'tokens'")),
+        ("explorer stats", &["explorer", "stats"], None),
+        ("explorer report", &["explorer", "report"], None),
+        ("explorer backfill", &["explorer", "backfill"], None),
+        ("explorer top", &["explorer", "top", "--by", "sender"], None),
+        ("explorer unknown", &["explorer", "frobnicate"], None),
+        ("paper", &["paper"], Some("unrecognized subcommand 'paper'")),
+        ("run", &["run"], Some("unrecognized subcommand 'run'")),
+        ("fetch", &["fetch"], None),
+        ("scan", &["scan"], None),
+        ("replay", &["replay"], None),
+        ("unknown root", &["frobnicate"], None),
+    ];
+    for (label, args, needle) in cases {
+        let ws = temp_ws(&format!("args_removed_{}", label.replace(' ', "_")));
+        let out = run(&ws, args);
+        expect_fail(&out, &format!("removed/unknown surface '{label}'"));
+        if let Some(n) = needle {
+            assert!(
+                out.combined().contains(n),
+                "expected clap message containing {n:?} for '{label}', got:\n{}",
+                out.combined()
+            );
+        }
+    }
 }
 
 /// `--tolerance-pct` moved to `[explorer]` config, so the flag must be gone.
@@ -163,72 +161,6 @@ fn explorer_show_rejects_tolerance_pct() {
     let ws = temp_ws("args_show_tolerance_removed");
     let out = run(&ws, &["explorer", "show", "0xabc", "--tolerance-pct", "10"]);
     expect_fail(&out, "explorer show --tolerance-pct");
-}
-
-#[test]
-fn removed_paper_subcommand_fails() {
-    let ws = temp_ws("args_paper_removed");
-    let out = run(&ws, &["paper"]);
-    expect_fail(&out, "removed paper subcommand");
-    assert!(
-        out.combined().contains("unrecognized subcommand 'paper'"),
-        "expected clap to reject 'paper', got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn explorer_unknown_subcommand_fails() {
-    let ws = temp_ws("args_explorer_unknown_sub");
-    let out = run(&ws, &["explorer", "frobnicate"]);
-    expect_fail(&out, "unknown explorer subcommand");
-}
-
-#[test]
-fn explorer_removed_top_subcommand_fails() {
-    let ws = temp_ws("args_explorer_top_removed");
-    let out = run(&ws, &["explorer", "top", "--by", "sender"]);
-    expect_fail(&out, "removed explorer top subcommand");
-}
-
-#[test]
-fn removed_run_subcommand_fails() {
-    let ws = temp_ws("args_run_removed");
-    let out = run(&ws, &["run"]);
-    expect_fail(&out, "removed run subcommand");
-    assert!(
-        out.combined().contains("unrecognized subcommand 'run'"),
-        "expected clap to reject 'run', got:\n{}",
-        out.combined()
-    );
-}
-
-#[test]
-fn removed_fetch_subcommand_fails() {
-    let ws = temp_ws("args_fetch_removed");
-    let out = run(&ws, &["fetch"]);
-    expect_fail(&out, "removed fetch subcommand");
-}
-
-#[test]
-fn removed_scan_subcommand_fails() {
-    let ws = temp_ws("args_scan_removed");
-    let out = run(&ws, &["scan"]);
-    expect_fail(&out, "removed scan subcommand");
-}
-
-#[test]
-fn removed_replay_subcommand_fails() {
-    let ws = temp_ws("args_replay_removed");
-    let out = run(&ws, &["replay"]);
-    expect_fail(&out, "removed replay subcommand");
-}
-
-#[test]
-fn unknown_subcommand_rejected() {
-    let ws = temp_ws("args_unknown_cmd");
-    let out = run(&ws, &["frobnicate"]);
-    expect_fail(&out, "unknown subcommand");
 }
 
 #[test]

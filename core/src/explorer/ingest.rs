@@ -214,6 +214,7 @@ pub async fn index_block(
 /// Decode, classify, and persist a pre-fetched block bundle. Callers that
 /// overlap RPC fetches must still invoke this in ascending block order so
 /// JIT / oracle / interest lookbacks stay coherent.
+#[allow(clippy::too_many_arguments)]
 pub async fn index_block_fetched(
     rpc: &RpcClient,
     store: &ExplorerStore,
@@ -402,8 +403,20 @@ pub async fn index_block_fetched(
                 reserve_rows.push((r.reserve, r.variable_borrow_rate));
             }
         }
-        let _ = store.record_oracle_answers(block_number, &oracle_rows);
-        let _ = store.record_reserve_rates(block_number, &reserve_rows);
+        if let Err(e) = store.record_oracle_answers(block_number, &oracle_rows) {
+            tracing::warn!(
+                block = block_number,
+                error = %e,
+                "failed to persist oracle answers for mode-B lookback"
+            );
+        }
+        if let Err(e) = store.record_reserve_rates(block_number, &reserve_rows) {
+            tracing::warn!(
+                block = block_number,
+                error = %e,
+                "failed to persist reserve rates for mode-B lookback"
+            );
+        }
     }
 
     let mut token_prices = match token_prices {
@@ -817,6 +830,7 @@ pub async fn run_live(
 /// the live indexer. Token profit USD is priced historically (Llama keyed by
 /// the block's timestamp inside `index_block`); native/gas USD uses the current
 /// native price (a close approximation for ≤30d windows).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_range(
     rpc: &RpcClient,
     store: &ExplorerStore,

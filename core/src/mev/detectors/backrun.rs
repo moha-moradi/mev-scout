@@ -12,9 +12,11 @@
 //! - Precedence: backrun claims supersede plain arb claims for same path
 //!   (`suppress_superseded_arbs`)
 
-use crate::mev::detectors::{multi_hop::MultiHopArbDetector, two_hop::TwoHopArbDetector};
-use crate::pool::state::{check_dedup_key, PoolManager, ScanScope};
-use crate::types::{GasConfig, MevOpportunity, Strategy};
+use crate::mev::detectors::{
+    multi_hop::MultiHopArbDetector, two_hop::TwoHopArbDetector, DetectCtx,
+};
+use crate::pool::state::{check_dedup_key, ScanScope};
+use crate::types::{MevOpportunity, Strategy};
 use alloy::primitives::{Address, U256};
 use std::collections::{HashMap, HashSet};
 
@@ -112,38 +114,16 @@ impl BackrunDetector {
     /// `docs/plan_backrun.md`): a cross-tx `seen` set would make a pre-existing
     /// gap read as *absent before*, producing false backruns. The only
     /// persistent state is `seen` (emission dedup) and `pre_image`.
-    pub fn pre_detect(
-        &mut self,
-        pool_manager: &PoolManager,
-        tx_index: usize,
-        timestamp: u64,
-        base_fee_per_gas: u128,
-        gas_config: GasConfig,
-        scope: &ScanScope,
-    ) -> Vec<MevOpportunity> {
+    pub fn pre_detect(&mut self, ctx: DetectCtx<'_>) -> Vec<MevOpportunity> {
         self.pre_two = TwoHopArbDetector::new(self.block_number);
         self.pre_multi = MultiHopArbDetector::new(self.block_number);
 
         let mut opps = Vec::new();
-        opps.extend(self.pre_two.detect(
-            pool_manager,
-            tx_index,
-            timestamp,
-            base_fee_per_gas,
-            gas_config,
-            scope,
-        ));
-        opps.extend(self.pre_multi.detect(
-            pool_manager,
-            tx_index,
-            timestamp,
-            base_fee_per_gas,
-            gas_config,
-            scope,
-        ));
+        opps.extend(self.pre_two.detect(ctx));
+        opps.extend(self.pre_multi.detect(ctx));
 
         self.pre_image = opps.clone();
-        self.pre_image_tx = Some(tx_index);
+        self.pre_image_tx = Some(ctx.tx_index);
         opps
     }
 
@@ -157,15 +137,9 @@ impl BackrunDetector {
     /// Uses the pre-image retained by `pre_detect` for the same `tx_index`
     /// (S_{i-1}); it is never recomputed here — this call happens after the
     /// victim's logs have already been applied.
-    #[allow(clippy::too_many_arguments)]
     pub fn post_detect(
         &mut self,
-        pool_manager: &PoolManager,
-        tx_index: usize,
-        timestamp: u64,
-        base_fee_per_gas: u128,
-        gas_config: GasConfig,
-        scope: &ScanScope,
+        ctx: DetectCtx<'_>,
         _tx_logs: &[crate::data::ExecutedLog],
         txs: &[crate::data::TxData],
     ) -> Vec<MevOpportunity> {
@@ -173,26 +147,14 @@ impl BackrunDetector {
         self.post_multi = MultiHopArbDetector::new(self.block_number);
 
         let mut post_opps = Vec::new();
-        post_opps.extend(self.post_two.detect(
-            pool_manager,
-            tx_index,
-            timestamp,
-            base_fee_per_gas,
-            gas_config,
-            scope,
-        ));
-        post_opps.extend(self.post_multi.detect(
-            pool_manager,
-            tx_index,
-            timestamp,
-            base_fee_per_gas,
-            gas_config,
-            scope,
-        ));
+        post_opps.extend(self.post_two.detect(ctx));
+        post_opps.extend(self.post_multi.detect(ctx));
 
         if post_opps.is_empty() {
             return Vec::new();
         }
+
+        let tx_index = ctx.tx_index;
 
         // Pre-image from S_{i-1}, captured before the state update. A mismatch
         // is unreachable: a non-empty post scope (newly_dirty ⊆ will_touch)
@@ -211,7 +173,7 @@ impl BackrunDetector {
             pre_index.insert(k, o.expected_profit);
         }
 
-        let dirty: Option<&HashSet<Address>> = match scope {
+        let dirty: Option<&HashSet<Address>> = match ctx.scope {
             ScanScope::Dirty(set) => Some(set),
             ScanScope::Full => None,
         };
@@ -233,7 +195,7 @@ impl BackrunDetector {
             // it, i.e. a plain arb, not a backrun.
             if net1 > U256::ZERO && net0 <= U256::ZERO {
                 let ck = k.to_check_key();
-                if check_dedup_key(&mut self.seen, &ck, pool_manager, ck.0, ck.1) {
+                if check_dedup_key(&mut self.seen, &ck, ctx.pool_manager, ck.0, ck.1) {
                     o.strategy = Strategy::Backrun;
                     o.victim_tx_index = Some(tx_index);
                     o.backrun_tx_index = None;

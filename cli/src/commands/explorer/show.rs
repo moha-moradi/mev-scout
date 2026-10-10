@@ -202,9 +202,3 @@ fn mev_verdict_for(config: &Config, opp: &OpportunityRow, ops: &[MevOpRow]) -> M
     mev_verdict(expected, realized, err_pct, tol, abs_wei)
 }
 
-/// Summarize a prestateDiff response: native balance deltas of accounts that
-/// appear in the post-state with a balance (exact verification primitive).
-#[allow(dead_code)]
-fn summarize_prestatediff(raw: &serde_json::Value) -> String {
-    mev_scout_core::jobs::summarize_prestatediff(raw)
-}

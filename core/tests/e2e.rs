@@ -518,7 +518,15 @@ async fn test_e2e_two_hop_arbitrage() {
 
     let mut detector = TwoHopArbDetector::new(block_num);
     let gas_cfg = default_gas_config();
-    let opps = detector.detect(&pm, 0, block_num, 50_000_000_000, gas_cfg, &ScanScope::Full);
+    let scope = ScanScope::Full;
+    let opps = detector.detect(mev_scout_core::mev::detectors::DetectCtx::new(
+        &pm,
+        0,
+        block_num,
+        50_000_000_000,
+        gas_cfg,
+        &scope,
+    ));
 
     eprintln!(
         "  TwoHopArb detection at block {block_num}: {} opportunities",
@@ -576,14 +584,15 @@ async fn test_e2e_cross_dex_arbitrage() {
     }
 
     let mut detector = TwoHopArbDetector::new(block_num);
-    let opps = detector.detect(
+    let scope = ScanScope::Full;
+    let opps = detector.detect(mev_scout_core::mev::detectors::DetectCtx::new(
         &pm,
         0,
         block_num,
         50_000_000_000,
         default_gas_config(),
-        &ScanScope::Full,
-    );
+        &scope,
+    ));
     eprintln!("  Cross-DEX arb opportunities: {}", opps.len());
     print_opportunities(&opps);
 

@@ -612,14 +612,15 @@ fn test_dirty_scope_restricts_detection() {
     // Empty dirty set → nothing scanned
     let empty: HashSet<_> = HashSet::new();
     let mut d = TwoHopArbDetectorForTest::new(1);
-    let opps = d.detect(
+    let scope = ScanScope::Dirty(&empty);
+    let opps = d.detect(mev_scout_core::mev::detectors::DetectCtx::new(
         &pm,
         0,
         100,
         50_000_000_000,
         default_gas_config(),
-        &ScanScope::Dirty(&empty),
-    );
+        &scope,
+    ));
     assert!(
         opps.is_empty(),
         "dirty scope with no dirty pools must scan nothing"
@@ -629,14 +630,15 @@ fn test_dirty_scope_restricts_detection() {
     let mut only_b: HashSet<_> = HashSet::new();
     only_b.insert(matic_usdt_pool());
     let mut d = TwoHopArbDetectorForTest::new(2);
-    let opps = d.detect(
+    let scope = ScanScope::Dirty(&only_b);
+    let opps = d.detect(mev_scout_core::mev::detectors::DetectCtx::new(
         &pm,
         0,
         100,
         50_000_000_000,
         default_gas_config(),
-        &ScanScope::Dirty(&only_b),
-    );
+        &scope,
+    ));
     assert!(
         !opps.is_empty(),
         "pair containing a dirty pool must be scanned"

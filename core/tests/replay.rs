@@ -171,13 +171,16 @@ async fn test_runner_run_block_synthetic() {
     );
 
     // Direct detection should find arb
+    let scope = ScanScope::Full;
     let opps_direct = TwoHopArbDetector::new(1).detect(
-        &pm,
-        0,
-        12345678,
-        50_000_000_000,
-        GasConfig::default(),
-        &ScanScope::Full,
+        mev_scout_core::mev::detectors::DetectCtx::new(
+            &pm,
+            0,
+            12345678,
+            50_000_000_000,
+            GasConfig::default(),
+            &scope,
+        ),
     );
     eprintln!("Direct detection: {} opps", opps_direct.len());
     assert!(!opps_direct.is_empty(), "Direct detection should find arb");

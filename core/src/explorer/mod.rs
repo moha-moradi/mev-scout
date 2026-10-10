@@ -27,18 +27,20 @@
 //! to control false positives.
 
 pub(crate) mod canonical;
-pub mod classify;
+pub(crate) mod classify;
 pub(crate) mod decode;
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
-pub mod pricing;
+pub(crate) mod pricing;
 pub mod profit;
 pub(crate) mod reject;
 pub(crate) mod results;
 pub mod scenario_targets;
 #[cfg(test)]
 mod scenarios;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod store;
 pub(crate) mod strategy_tags;
 pub mod types;
@@ -49,4 +51,6 @@ pub use classify::classify_block;
 pub use golden::{score_embedded_causal_set, GoldenSetScore};
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
-pub use types::{Confidence, MevBundle, MevEvent, MevKind};
+pub use types::{
+    BundleLegRole, Confidence, LiquidationDetails, MevBundle, MevEvent, MevKind,
+};

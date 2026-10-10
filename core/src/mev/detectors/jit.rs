@@ -248,7 +248,7 @@ impl JitDetector {
         opportunities
     }
 
-    #[allow(clippy::too_many_arguments)] // opportunity assembly — thinned in W4
+    #[allow(clippy::too_many_arguments)] // mint/pool/fee are call-specific; shared gas via DetectCtx later
     fn build_opp(
         block_number: u64,
         pool: Address,
@@ -373,7 +373,7 @@ impl JitDetector {
             confidence: None,
             sender: None,
             tx_hash: None,
-            detection_path: Some(crate::mev::detectors::REPLAY_PATH.to_string()),
+            detection_path: Some(crate::mev::detectors::DetectionPath::Replay),
         }
     }
 }

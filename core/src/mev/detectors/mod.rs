@@ -1,35 +1,13 @@
 mod arb_common;
 pub mod backrun;
+pub(crate) mod ctx;
 pub mod jit;
 pub(crate) mod mempool;
 pub mod multi_hop;
 pub mod two_hop;
 
-/// How an opportunity was detected — keeps the DB/`Option<String>` boundary
-/// as a stable string while call sites use a typed tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetectionPath {
-    /// Full EVM replay / backtest (`run`).
-    Replay,
-    /// Pending-mempool capture.
-    Pending,
-    /// Log-only synthesis (`live` without full replay).
-    LogOnly,
-}
-
-impl DetectionPath {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Replay => "replay",
-            Self::Pending => "pending",
-            Self::LogOnly => "log_only",
-        }
-    }
-
-    pub fn to_owned_string(self) -> String {
-        self.as_str().to_string()
-    }
-}
+pub use crate::types::DetectionPath;
+pub use ctx::DetectCtx;
 
 /// Detection-path tag for opportunities found by replay/backtest.
 pub const REPLAY_PATH: &str = DetectionPath::Replay.as_str();
