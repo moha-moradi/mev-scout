@@ -128,7 +128,13 @@ pub fn swap_at_tick(
     s
 }
 
-pub fn transfer(log_idx: u64, token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
+pub fn transfer(
+    log_idx: u64,
+    token: Address,
+    from: Address,
+    to: Address,
+    amt: u64,
+) -> TransferFact {
     TransferFact {
         tx_index: 0,
         log_index: log_idx,

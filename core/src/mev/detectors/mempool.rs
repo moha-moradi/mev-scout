@@ -68,7 +68,14 @@ pub fn detect_pending_opportunities(
     let mut results = Vec::new();
 
     let scope = ScanScope::Full;
-    let ctx = super::DetectCtx::new(pool_manager, 0, timestamp, base_fee_per_gas, gas_config, &scope);
+    let ctx = super::DetectCtx::new(
+        pool_manager,
+        0,
+        timestamp,
+        base_fee_per_gas,
+        gas_config,
+        &scope,
+    );
     // Run two-hop / multi-hop detection on current pool state (full scan — single pass)
     results.extend(two_hop.detect(ctx));
     results.extend(multi_hop.detect(ctx));

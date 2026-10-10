@@ -3,9 +3,9 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
 
+use super::{flow_attributable, has_unresolved_tokens, BlockInput, TxInput};
 use crate::explorer::decode;
 use crate::explorer::profit::{has_closed_cycle, select_profit_token, DeltaLedger};
-use super::{flow_attributable, has_unresolved_tokens, BlockInput, TxInput};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SwapLeg {
@@ -110,7 +110,10 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
 
 /// Logs-only closed-cycle profit of a tx, mirroring the arb pass: the sender
 /// (or a qualified participant) nets a positive delta in a priority token.
-pub(super) fn tx_cycle_profit(input: &BlockInput, tx: &TxInput) -> Option<(Address, Address, U256)> {
+pub(super) fn tx_cycle_profit(
+    input: &BlockInput,
+    tx: &TxInput,
+) -> Option<(Address, Address, U256)> {
     let ledger =
         DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
     let mut candidates: Vec<Address> = vec![tx.from];

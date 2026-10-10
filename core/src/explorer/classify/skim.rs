@@ -116,4 +116,3 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
     }
     events
 }
-

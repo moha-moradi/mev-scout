@@ -65,9 +65,13 @@ impl TwoHopArbDetector {
                 continue;
             }
             for (buy_pool, sell_pool) in [(pair.pool_a, pair.pool_b), (pair.pool_b, pair.pool_a)] {
-                if let Some(opp) =
-                    Self::check_direction(ctx, buy_pool, sell_pool, pair.shared_token, self.block_number)
-                {
+                if let Some(opp) = Self::check_direction(
+                    ctx,
+                    buy_pool,
+                    sell_pool,
+                    pair.shared_token,
+                    self.block_number,
+                ) {
                     if arb_common::dedup_arb(&mut self.seen, ctx.pool_manager, &opp) {
                         opportunities.push(opp);
                     }

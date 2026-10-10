@@ -12,7 +12,9 @@ use mev_scout_core::dex_type::DexType;
 use mev_scout_core::mev::detectors::jit::JitDetector;
 use mev_scout_core::mev::detectors::DetectCtx;
 use mev_scout_core::pool::decoders::{V3_BURN_TOPIC, V3_MINT_TOPIC, V3_SWAP_TOPIC};
-use mev_scout_core::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV3PoolState};
+use mev_scout_core::pool::state::{
+    PoolInfo, PoolManager, PoolState, ScanScope, UniswapV3PoolState,
+};
 use mev_scout_core::types::Strategy;
 
 mod common;
@@ -212,14 +214,7 @@ async fn test_real_v3_mint_swap_burn_detection() {
     // Process empty data (no logs from this pool in this test block)
     detector.process_tx(0, &[], None, &pm);
     let scope = ScanScope::Full;
-    let opps = detector.detect(DetectCtx::new(
-        &pm,
-        0,
-        block_num,
-        0,
-        gas_cfg,
-        &scope,
-    ));
+    let opps = detector.detect(DetectCtx::new(&pm, 0, block_num, 0, gas_cfg, &scope));
     eprintln!(
         "JIT detection on real V3 pool: {} opportunities (expected 0 without events)",
         opps.len()

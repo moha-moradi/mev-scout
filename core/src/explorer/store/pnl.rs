@@ -85,4 +85,3 @@ pub(super) fn reason_list(details: &serde_json::Value) -> Vec<String> {
         })
         .unwrap_or_default()
 }
-

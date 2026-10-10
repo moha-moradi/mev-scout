@@ -6,8 +6,8 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
 use super::legs::{
-    opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit,
-    CAUSAL_WINDOW_TXS, SwapLeg,
+    opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit, SwapLeg,
+    CAUSAL_WINDOW_TXS,
 };
 use super::{BlockInput, TxInput};
 

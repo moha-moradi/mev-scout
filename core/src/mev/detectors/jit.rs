@@ -212,7 +212,14 @@ impl JitDetector {
                 // Full JIT: Mint → Swap → Burn
                 if mint.swapped && mint.burned {
                     self.emitted.insert(dedup_key);
-                    opportunities.push(Self::build_opp(ctx, self.block_number, *pool, mint, true, pool_fee));
+                    opportunities.push(Self::build_opp(
+                        ctx,
+                        self.block_number,
+                        *pool,
+                        mint,
+                        true,
+                        pool_fee,
+                    ));
                 // Partial JIT: Mint → Swap (no burn yet, or no burn in this block)
                 } else if mint.swapped && !mint.burned {
                     self.emitted.insert(dedup_key);
@@ -379,7 +386,12 @@ mod tests {
         data.extend_from_slice(&[0u8; 32]);
         ExecutedLog {
             address: pool,
-            topics: vec![V3_MINT_TOPIC, B256::ZERO, tick_topic(lower), tick_topic(upper)],
+            topics: vec![
+                V3_MINT_TOPIC,
+                B256::ZERO,
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }
@@ -393,7 +405,12 @@ mod tests {
         data.extend_from_slice(&[0u8; 32]);
         ExecutedLog {
             address: pool,
-            topics: vec![V3_BURN_TOPIC, B256::ZERO, tick_topic(lower), tick_topic(upper)],
+            topics: vec![
+                V3_BURN_TOPIC,
+                B256::ZERO,
+                tick_topic(lower),
+                tick_topic(upper),
+            ],
             data: data.into(),
         }
     }

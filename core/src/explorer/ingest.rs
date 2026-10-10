@@ -169,10 +169,7 @@ pub struct RangeOutcome {
 }
 
 /// Fetch block + receipts (batched JSON-RPC POST).
-pub async fn fetch_block_bundle(
-    rpc: &RpcClient,
-    block_number: u64,
-) -> anyhow::Result<BlockBundle> {
+pub async fn fetch_block_bundle(rpc: &RpcClient, block_number: u64) -> anyhow::Result<BlockBundle> {
     rpc.get_block_and_receipts_batch(block_number).await
 }
 
@@ -882,11 +879,9 @@ pub async fn run_range(
     if cap <= 1 {
         for &block in &missing {
             if block.saturating_sub(from_block) % 256 == 0 {
-                native_price =
-                    native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+                native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             }
-            let indexed =
-                index_block(rpc, store, cfg, pools, block, native_price, None).await?;
+            let indexed = index_block(rpc, store, cfg, pools, block, native_price, None).await?;
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;
             let done = block - from_block + 1;
@@ -901,26 +896,25 @@ pub async fn run_range(
         let mut next_spawn = 0usize;
         let mut next_persist = 0usize;
 
-        let spawn_one = |next_spawn: &mut usize,
-                         inflight: &mut FuturesUnordered<_>|
-         -> anyhow::Result<()> {
-            if *next_spawn >= missing.len() {
-                return Ok(());
-            }
-            let block = missing[*next_spawn];
-            *next_spawn += 1;
-            let sem = sem.clone();
-            let rpc = rpc.clone();
-            inflight.push(async move {
-                let _permit = sem
-                    .acquire_owned()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
-                let bundle = fetch_block_bundle(&rpc, block).await?;
-                Ok::<_, anyhow::Error>((block, bundle))
-            });
-            Ok(())
-        };
+        let spawn_one =
+            |next_spawn: &mut usize, inflight: &mut FuturesUnordered<_>| -> anyhow::Result<()> {
+                if *next_spawn >= missing.len() {
+                    return Ok(());
+                }
+                let block = missing[*next_spawn];
+                *next_spawn += 1;
+                let sem = sem.clone();
+                let rpc = rpc.clone();
+                inflight.push(async move {
+                    let _permit = sem
+                        .acquire_owned()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
+                    let bundle = fetch_block_bundle(&rpc, block).await?;
+                    Ok::<_, anyhow::Error>((block, bundle))
+                });
+                Ok(())
+            };
 
         while next_spawn < missing.len() && inflight.len() < cap {
             spawn_one(&mut next_spawn, &mut inflight)?;
@@ -933,17 +927,9 @@ pub async fn run_range(
                     native_price =
                         native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
                 }
-                let indexed = index_block_fetched(
-                    rpc,
-                    store,
-                    cfg,
-                    pools,
-                    need,
-                    native_price,
-                    None,
-                    bundle,
-                )
-                .await?;
+                let indexed =
+                    index_block_fetched(rpc, store, cfg, pools, need, native_price, None, bundle)
+                        .await?;
                 outcome.blocks_processed += 1;
                 outcome.ops += indexed.ops as u64;
                 next_persist += 1;

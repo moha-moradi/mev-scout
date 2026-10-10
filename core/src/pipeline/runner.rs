@@ -452,14 +452,8 @@ impl BacktestRunner {
                     Some(set) => ScanScope::Dirty(set),
                     None => ScanScope::Full,
                 };
-                let ctx = DetectCtx::new(
-                    &pm,
-                    i,
-                    timestamp,
-                    base_fee_per_gas,
-                    self.gas_config,
-                    &scope,
-                );
+                let ctx =
+                    DetectCtx::new(&pm, i, timestamp, base_fee_per_gas, self.gas_config, &scope);
                 let opps = two_hop_detector.detect(ctx);
                 if !opps.is_empty() {
                     tracing::info!(
@@ -559,8 +553,7 @@ impl BacktestRunner {
                         self.gas_config,
                         &scope_post,
                     );
-                    let backrun_opps =
-                        backrun_detector.post_detect(ctx_post, &tx.logs, &txs);
+                    let backrun_opps = backrun_detector.post_detect(ctx_post, &tx.logs, &txs);
                     if !backrun_opps.is_empty() {
                         all_opportunities.extend(backrun_opps);
                     }

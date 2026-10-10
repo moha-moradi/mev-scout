@@ -39,10 +39,10 @@ pub(crate) mod results;
 pub mod scenario_targets;
 #[cfg(test)]
 mod scenarios;
-#[cfg(test)]
-pub(crate) mod test_fixtures;
 pub mod store;
 pub(crate) mod strategy_tags;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod types;
 pub mod validate;
 
@@ -52,6 +52,4 @@ pub use golden::{score_embedded_causal_set, GoldenSetScore};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
-pub use types::{
-    BundleLegRole, Confidence, LiquidationDetails, MevBundle, MevEvent, MevKind,
-};
+pub use types::{BundleLegRole, Confidence, LiquidationDetails, MevBundle, MevEvent, MevKind};

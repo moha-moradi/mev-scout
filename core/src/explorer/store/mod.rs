@@ -153,16 +153,12 @@ pub(super) fn merge_details_json<const N: usize>(
     d.to_string()
 }
 
-
-
-
 impl ExplorerStore {
     /// Shared connection for extension modules (e.g. paper tables).
     pub(crate) fn connection(&self) -> &Connection {
         &self.conn
     }
 }
-
 
 /// A transaction row to persist alongside block facts.
 pub struct TxRow {
