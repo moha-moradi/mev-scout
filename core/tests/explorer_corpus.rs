@@ -556,6 +556,7 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
             *from,
             *to,
             &NoopProgress,
+            1,
         )
         .await
         {

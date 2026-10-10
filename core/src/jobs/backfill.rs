@@ -60,8 +60,9 @@ pub async fn job_backfill(
              confirmation lag or past the chain tip"
         );
     }
+    let bc = config.effective_block_concurrency(chain, &setup.provider_configs);
     progress.log(&format!(
-        "Historical backfill — {chain} indexing {from}..={to} (~{} blocks, resumable)",
+        "Historical backfill — {chain} indexing {from}..={to} (~{} blocks, resumable, concurrency={bc})",
         to - from + 1
     ));
 
@@ -78,6 +79,7 @@ pub async fn job_backfill(
         from,
         to,
         progress,
+        bc,
     )
     .await?;
     let elapsed = t0.elapsed();

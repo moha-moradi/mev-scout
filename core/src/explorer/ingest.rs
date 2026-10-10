@@ -6,11 +6,16 @@
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
 //! lag applied before indexing.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use alloy::primitives::{Address, Bytes, B256, U256};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
+use crate::data::{BlockData, ReceiptData, TxData};
 use crate::explorer::classify::{self, BlockInput, TxInput};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
@@ -20,6 +25,9 @@ use crate::explorer::types::{MevEvent, MevKind};
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::rpc::RpcClient;
 use crate::types::ChainName;
+
+/// Block header + txs + receipts from a single batched RPC fetch.
+pub type BlockBundle = (BlockData, Vec<TxData>, Vec<ReceiptData>);
 
 /// JIT open-position window (Phase 1.5): positions opened more than this many
 /// blocks before the indexed block are pruned.
@@ -160,6 +168,14 @@ pub struct RangeOutcome {
     pub ops: u64,
 }
 
+/// Fetch block + receipts (batched JSON-RPC POST).
+pub async fn fetch_block_bundle(
+    rpc: &RpcClient,
+    block_number: u64,
+) -> anyhow::Result<BlockBundle> {
+    rpc.get_block_and_receipts_batch(block_number).await
+}
+
 /// Fetch one block + receipts, decode, classify, persist. Idempotent: an
 /// already-classified block is skipped. When `token_prices` is `None`, USD
 /// prices for the block's profit tokens are warmed on demand.
@@ -181,10 +197,37 @@ pub async fn index_block(
         });
     }
 
-    let (block_data, txs, receipts) = rpc.get_block_and_receipts_batch(block_number).await?;
+    let bundle = fetch_block_bundle(rpc, block_number).await?;
+    index_block_fetched(
+        rpc,
+        store,
+        cfg,
+        pools,
+        block_number,
+        native_price,
+        token_prices,
+        bundle,
+    )
+    .await
+}
+
+/// Decode, classify, and persist a pre-fetched block bundle. Callers that
+/// overlap RPC fetches must still invoke this in ascending block order so
+/// JIT / oracle / interest lookbacks stay coherent.
+pub async fn index_block_fetched(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    cfg: &IngestConfig,
+    pools: PoolViews<'_>,
+    block_number: u64,
+    native_price: Option<f64>,
+    token_prices: Option<HashMap<Address, TokenUsd>>,
+    bundle: BlockBundle,
+) -> anyhow::Result<IndexedBlock> {
+    let (block_data, txs, receipts) = bundle;
 
     // Build per-tx decoded input.
-    let receipt_by_index: HashMap<u64, &crate::data::ReceiptData> =
+    let receipt_by_index: HashMap<u64, &ReceiptData> =
         receipts.iter().map(|r| (r.tx_index, r)).collect();
 
     let mut tx_inputs: Vec<TxInput> = Vec::with_capacity(txs.len());
@@ -762,6 +805,10 @@ pub async fn run_live(
 /// `blocks_classified` and gap-resumable — an interrupted backfill can be
 /// re-run over the same range and it will pick up where it left off.
 ///
+/// When `block_concurrency > 1`, overlaps up to that many batched
+/// block+receipts RPC fetches while classify/persist stays in ascending
+/// block order (JIT / oracle / interest lookbacks require it).
+///
 /// Feeds the revenue report's 1d/7d/30d windows: without history in the store
 /// the report can never show more than the live indexer has been running.
 ///
@@ -778,6 +825,7 @@ pub async fn run_range(
     from_block: u64,
     to_block: u64,
     progress: &dyn JobProgress,
+    block_concurrency: usize,
 ) -> anyhow::Result<RangeOutcome> {
     if to_block < from_block {
         anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
@@ -797,7 +845,7 @@ pub async fn run_range(
     }
 
     let total = end - from_block + 1;
-    let mut done: u64 = 0;
+    let missing = store.unclassified_blocks(from_block, end)?;
     let mut outcome = RangeOutcome::default();
     let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
     let emit = |done: u64| {
@@ -807,23 +855,114 @@ pub async fn run_range(
         progress.emit(evt);
     };
     emit(0);
-    for block in from_block..=end {
-        done += 1;
-        if block.saturating_sub(from_block) % 256 == 0 {
-            native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+
+    if missing.is_empty() {
+        store.set_sync_state(cfg.chain_id, tip, end)?;
+        if total > 0 {
+            emit(total);
         }
-        if store.block_classified(block)? {
-            continue;
+        return Ok(outcome);
+    }
+
+    let cap = block_concurrency.max(1).min(missing.len());
+    if cap <= 1 {
+        for &block in &missing {
+            if block.saturating_sub(from_block) % 256 == 0 {
+                native_price =
+                    native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+            }
+            let indexed =
+                index_block(rpc, store, cfg, pools, block, native_price, None).await?;
+            outcome.blocks_processed += 1;
+            outcome.ops += indexed.ops as u64;
+            let done = block - from_block + 1;
+            if done.is_multiple_of(500) || done == total {
+                emit(done);
+            }
         }
-        let indexed = index_block(rpc, store, cfg, pools, block, native_price, None).await?;
-        outcome.blocks_processed += 1;
-        outcome.ops += indexed.ops as u64;
-        if done.is_multiple_of(500) || done == total {
-            emit(done);
+    } else {
+        let sem = Arc::new(Semaphore::new(cap));
+        let mut inflight = FuturesUnordered::new();
+        let mut ready: BTreeMap<u64, BlockBundle> = BTreeMap::new();
+        let mut next_spawn = 0usize;
+        let mut next_persist = 0usize;
+
+        let spawn_one = |next_spawn: &mut usize,
+                         inflight: &mut FuturesUnordered<_>|
+         -> anyhow::Result<()> {
+            if *next_spawn >= missing.len() {
+                return Ok(());
+            }
+            let block = missing[*next_spawn];
+            *next_spawn += 1;
+            let sem = sem.clone();
+            let rpc = rpc.clone();
+            inflight.push(async move {
+                let _permit = sem
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
+                let bundle = fetch_block_bundle(&rpc, block).await?;
+                Ok::<_, anyhow::Error>((block, bundle))
+            });
+            Ok(())
+        };
+
+        while next_spawn < missing.len() && inflight.len() < cap {
+            spawn_one(&mut next_spawn, &mut inflight)?;
+        }
+
+        while next_persist < missing.len() {
+            let need = missing[next_persist];
+            if let Some(bundle) = ready.remove(&need) {
+                if need.saturating_sub(from_block) % 256 == 0 {
+                    native_price =
+                        native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+                }
+                let indexed = index_block_fetched(
+                    rpc,
+                    store,
+                    cfg,
+                    pools,
+                    need,
+                    native_price,
+                    None,
+                    bundle,
+                )
+                .await?;
+                outcome.blocks_processed += 1;
+                outcome.ops += indexed.ops as u64;
+                next_persist += 1;
+                let done = need - from_block + 1;
+                if done.is_multiple_of(500) || done == total {
+                    emit(done);
+                }
+                while next_spawn < missing.len() && inflight.len() < cap {
+                    spawn_one(&mut next_spawn, &mut inflight)?;
+                }
+                continue;
+            }
+
+            match inflight.next().await {
+                Some(Ok((block, bundle))) => {
+                    ready.insert(block, bundle);
+                    while next_spawn < missing.len() && inflight.len() < cap {
+                        spawn_one(&mut next_spawn, &mut inflight)?;
+                    }
+                }
+                Some(Err(e)) => return Err(e),
+                None => anyhow::bail!(
+                    "backfill fetch pipeline stalled waiting for block {need} \
+                     (spawned {next_spawn}/{}, ready {})",
+                    missing.len(),
+                    ready.len()
+                ),
+            }
         }
     }
+
     store.set_sync_state(cfg.chain_id, tip, end)?;
-    if total > 0 && !done.is_multiple_of(500) {
+    if total > 0 {
         emit(total);
     }
     Ok(outcome)

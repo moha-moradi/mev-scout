@@ -54,6 +54,7 @@ disk, and mev-scout does not need it.
 | Workload                                                                  | On this pruned, state-synced node                        |
 | ------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `live`, `explorer index` (tip + recent blocks)                            | yes                                                      |
+| `explorer backfill` (historical range; overlaps up to `block_concurrency` batched fetches; classify stays ordered) | yes for recent windows; deep history uses archive `rpc_rps` |
 | `eth_getLogs` within the pruning window (discover lookback = 1000 blocks) | yes                                                      |
 | `debug_traceTransaction` on recent blocks (`explorer show --trace`)       | yes                                                      |
 | Deep historical `eth_call` / `eth_getProof` / long `eth_getLogs` ranges   | no — served by the public archive fallback in `rpc_urls` |
@@ -268,8 +269,8 @@ poll_interval_ms = 500  # default 2000; C-Chain blocks are ~2 s
 | Knob                                   | Why                                                                                                                    |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `rps_limit = 0` / `rpc_rps = [0.0, …]` | A 0-RPS provider gets **no token bucket** — throughput is bounded by concurrency and node hardware, not an RPS counter |
-| `block_concurrency = 32`               | Parallel blocks per provider shard; the auto calculation returns 10 when RPS is unlimited                              |
-| `batch_rpc = true`                     | Cuts HTTP round-trips ~3× for `backtest` / `explorer index` fetches (the `live` job does not read this flag)           |
+| `block_concurrency = 32`               | Parallel in-flight block fetches for scanner shards **and** `explorer backfill` (classify/persist stays ordered); auto mode falls back to 10 when RPS is unlimited |
+| `batch_rpc = true`                     | Cuts HTTP round-trips ~3× for `backtest` / explorer block+receipts fetches (the `live` job does not read this flag)   |
 | `[discover] rpc_concurrency = 32`      | Concurrency for pure on-chain factory scans and multicall metadata resolution                                          |
 | `[live] poll_interval_ms = 500`        | Polls well inside the ~2 s block time                                                                                  |
 | Public archive as `rpc_urls[1]`        | Deep-history reads the pruned local node cannot serve are routed to it automatically; tip work stays on the local node |

@@ -63,8 +63,11 @@ pub async fn cmd_backfill(
     let setup = init_rpc(config, chain, true).await?;
     let store = explorer_store(config, chain)?;
     let registry = load_pool_registry(config, &chain);
+    let bc = config.effective_block_concurrency(chain, &setup.provider_configs);
 
-    println!("Historical backfill — {chain} indexing {from}..={to} (~{span} blocks, resumable)");
+    println!(
+        "Historical backfill — {chain} indexing {from}..={to} (~{span} blocks, resumable, concurrency={bc})"
+    );
     let t0 = std::time::Instant::now();
     let out = run_range(
         &setup.rpc,
@@ -78,6 +81,7 @@ pub async fn cmd_backfill(
         from,
         to,
         &BarProgress::new(),
+        bc,
     )
     .await?;
     let elapsed = t0.elapsed();
