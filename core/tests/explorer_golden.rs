@@ -10,7 +10,6 @@ use std::collections::HashMap;
 
 use alloy::primitives::{address, Address, B256, U256};
 
-use mev_scout_core::explorer::classify::{classify_block, BlockInput, TxInput};
 use mev_scout_core::explorer::profit::ProfitTokenPolicy;
 use mev_scout_core::explorer::store::{
     BlockFactsInput, ExplorerStore, SwapRow, TransferRow, TxRow,
@@ -18,6 +17,7 @@ use mev_scout_core::explorer::store::{
 use mev_scout_core::explorer::types::{
     Amm, Confidence, JitFact, LegSource, MevKind, SwapFact, TransferFact,
 };
+use mev_scout_core::explorer::{classify_block, BlockInput, TokenUsd, TxInput};
 
 const BLOCK: u64 = 10_000;
 const USDC: Address = address!("4000000000000000000000000000000000000005");
@@ -205,8 +205,6 @@ fn golden_input() -> BlockInput {
         txs: vec![arb_tx, front, victim, back, mint_tx, burn_tx],
     }
 }
-
-use mev_scout_core::explorer::pricing::TokenUsd;
 
 #[test]
 fn golden_block_classifies_arb_sandwich_jit() {

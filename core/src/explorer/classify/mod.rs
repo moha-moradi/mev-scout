@@ -1823,10 +1823,6 @@ mod tests {
         }
     }
 
-    /// P0.1 positive: same tx has FlashLoanFact + LiquidationFact → tag
-
-    /// P0.1 negative: flash loan without liquidation must not emit liquidation
-
     /// P0.3 positive: Absorb then BuyCollateral in the same block →
     /// `buycollateral` tag, pnl_basis O, Exact confidence.
     #[test]
@@ -1891,33 +1887,6 @@ mod tests {
             serde_json::json!(["ABSORB_UNPAIRED"])
         );
     }
-
-    /// P0.4 positive: ArbAtomic funded by a flash loan → `flash_arb` tag,
-    /// pnl_basis R net of the in-tx premium (borrow +1000, arb +10 gross,
-    /// repay −1005 → realized 5). Fixture models the full loop: borrow
-    /// inflow, swap legs, repay leg (same convention as
-
-
-    /// P0.2 end-to-end: a Benqi qiToken `LiquidateBorrow` receipt log decodes
-    /// through the emitter alias registry to `details.protocol = "benqi"` and
-    /// classifies with the Compound-family P&L basis `O` (§0.1) carrying the
-    /// exact event amounts. Negative: the identical log without aliases stays
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     #[test]
     fn jit_cross_block_open_position_closed_by_burn() {
