@@ -226,16 +226,14 @@ pub static AAVE_V3_RESERVE_DATA_UPDATED_TOPIC: LazyLock<B256> = LazyLock::new(||
 /// Gelato Automate `ExecSuccess(uint256 txFee, address feeToken, address
 /// execAddress, bytes execData, bytes32 taskId, bool callSuccess)` — the
 /// catalogue's "TaskExecuted" fee fingerprint (P1.5 / §17.8.9 / §21).
-pub static GELATO_EXEC_SUCCESS_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("ExecSuccess(uint256,address,address,bytes,bytes32,bool)")
-});
+pub static GELATO_EXEC_SUCCESS_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("ExecSuccess(uint256,address,address,bytes,bytes32,bool)"));
 
 /// Chainlink Automation Registry `UpkeepPerformed(uint256 id, bool success,
 /// uint96 totalPayment, uint256 gasUsed, uint256 gasOverhead, bytes trigger)`
 /// — `id`/`success` indexed (P1.5; DefiLlama fee decoder layout).
-pub static CHAINLINK_UPKEEP_PERFORMED_TOPIC: LazyLock<B256> = LazyLock::new(|| {
-    keccak256("UpkeepPerformed(uint256,bool,uint96,uint256,uint256,bytes)")
-});
+pub static CHAINLINK_UPKEEP_PERFORMED_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("UpkeepPerformed(uint256,bool,uint96,uint256,uint256,bytes)"));
 
 /// Chainlink Automation log-trigger `LogTriggered(uint256 upkeepId,
 /// bytes32 triggerConfigId, bytes32 logBlockHash)` — `upkeepId`/

@@ -787,9 +787,7 @@ mod v3;
 mod v4;
 
 pub use factories::{DiscoveryRuntimeOpts, ResolvedFactories};
-pub use protocol_names::{
-    is_epoch_venue_factory, protocol_name_for_factory, resolve_dex_name,
-};
+pub use protocol_names::{is_epoch_venue_factory, protocol_name_for_factory, resolve_dex_name};
 
 /// Unified pool discovery — scans both DEX activity events and factory
 /// creation events (if factory addresses provided).

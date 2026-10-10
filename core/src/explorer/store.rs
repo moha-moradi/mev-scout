@@ -750,11 +750,7 @@ impl ExplorerStore {
     }
 
     /// Persist Aave ReserveDataUpdated rates for mode-B interest (plan P1.1).
-    pub fn record_reserve_rates(
-        &self,
-        block: u64,
-        rows: &[(Address, U256)],
-    ) -> anyhow::Result<()> {
+    pub fn record_reserve_rates(&self, block: u64, rows: &[(Address, U256)]) -> anyhow::Result<()> {
         let mut stmt = self.conn.prepare_cached(
             "INSERT OR REPLACE INTO reserve_rates(block_number, reserve, variable_borrow_rate)
              VALUES (?1, ?2, ?3)",

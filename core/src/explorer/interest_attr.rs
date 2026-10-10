@@ -147,8 +147,8 @@ pub fn oracle_pre_poke_divergence_bps(prior: i128, current: i128) -> Option<u64>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, U256};
     use crate::explorer::types::LiquidationFact;
+    use alloy::primitives::{address, U256};
 
     const DEBT: Address = address!("4000000000000000000000000000000000000005");
     const COLL: Address = address!("5000000000000000000000000000000000000006");

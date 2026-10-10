@@ -514,8 +514,8 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
                     // P0.4: flash-swap / flash-loan flag when principal was borrowed.
                     let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
                     // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-                    let long_tail = arb_likely
-                        && is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
+                    let long_tail =
+                        arb_likely && is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
                     let mut tags: Vec<&str> = Vec::new();
                     if flash_arb && arb_likely {
                         tags.push("flash_arb");

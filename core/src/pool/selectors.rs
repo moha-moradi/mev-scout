@@ -51,7 +51,10 @@ selector!(GET_RATE_PROVIDER, "getRateProvider(uint256)"); // 0x48ade7b0
 
 // ── Benqi sAVAX (plan P3.16): getPooledAvaxByShares(uint256) ──────────────
 
-selector!(SAVAX_GET_POOLED_AVAX_BY_SHARES, "getPooledAvaxByShares(uint256)");
+selector!(
+    SAVAX_GET_POOLED_AVAX_BY_SHARES,
+    "getPooledAvaxByShares(uint256)"
+);
 
 // ── Curve ────────────────────────────────────────────────────────────────
 

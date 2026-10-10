@@ -32,15 +32,15 @@ pub(crate) mod decode;
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
-pub(crate) mod strategy_tags;
 pub mod pricing;
 pub mod profit;
 pub(crate) mod reject;
 pub(crate) mod results;
+pub mod scenario_targets;
 #[cfg(test)]
 mod scenarios;
-pub mod scenario_targets;
 pub mod store;
+pub(crate) mod strategy_tags;
 pub mod types;
 pub mod validate;
 

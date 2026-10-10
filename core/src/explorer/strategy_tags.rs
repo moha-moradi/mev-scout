@@ -26,10 +26,7 @@ pub fn near_epoch_boundary(ts: u64) -> bool {
 }
 
 /// Collect P3 strategy tags for a realized atomic arb route.
-pub fn arb_strategy_tags(
-    swaps: &[SwapFact],
-    opts: &ArbTagOpts<'_>,
-) -> Vec<&'static str> {
+pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'static str> {
     let mut tags: Vec<&'static str> = Vec::new();
     if swaps.is_empty() {
         return tags;
@@ -86,9 +83,9 @@ pub fn arb_strategy_tags(
         let has_savax = swaps
             .iter()
             .any(|s| s.token_in == savax || s.token_out == savax);
-        let has_native = swaps.iter().any(|s| {
-            s.token_in == opts.wrapped_native || s.token_out == opts.wrapped_native
-        });
+        let has_native = swaps
+            .iter()
+            .any(|s| s.token_in == opts.wrapped_native || s.token_out == opts.wrapped_native);
         if has_savax && has_native {
             let tag = match opts.savax_exchange_rate_wad {
                 Some(rate) if !rate.is_zero() => {
@@ -154,9 +151,7 @@ fn savax_pool_diverges(
         } else {
             (exchange_rate_wad, implied)
         };
-        let bps = (hi - lo)
-            .saturating_mul(U256::from(10_000u64))
-            / exchange_rate_wad;
+        let bps = (hi - lo).saturating_mul(U256::from(10_000u64)) / exchange_rate_wad;
         if bps >= U256::from(SAVAX_RATE_DIVERGENCE_BPS) {
             return true;
         }
@@ -181,15 +176,14 @@ pub struct ArbTagOpts<'a> {
 ///
 /// Returns the claimed token when a zero-from Transfer of `token` is followed
 /// by a swap that sells it in the same transaction.
-pub fn claim_and_sell_token(
-    transfers: &[TransferFact],
-    swaps: &[SwapFact],
-) -> Option<Address> {
+pub fn claim_and_sell_token(transfers: &[TransferFact], swaps: &[SwapFact]) -> Option<Address> {
     for t in transfers {
         if !t.from.is_zero() || t.amount.is_zero() || t.token.is_zero() {
             continue;
         }
-        let sold = swaps.iter().any(|s| s.token_in == t.token && !s.amount_in.is_zero());
+        let sold = swaps
+            .iter()
+            .any(|s| s.token_in == t.token && !s.amount_in.is_zero());
         if sold {
             return Some(t.token);
         }
@@ -200,8 +194,8 @@ pub fn claim_and_sell_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::{address, U256};
     use crate::explorer::types::LegSource;
+    use alloy::primitives::{address, U256};
 
     const USDC: Address = address!("4000000000000000000000000000000000000005");
     const WAVAX: Address = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");

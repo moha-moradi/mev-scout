@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use tracing::{debug, warn};
 
 use crate::explorer::classify::{self, BlockInput, TxInput};
@@ -63,10 +63,7 @@ impl IngestConfig {
         if let Some(aliases) = &chain_config.liquidation_protocol_aliases {
             liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
         }
-        let chainlink_feeds = chain_config
-            .chainlink_feeds
-            .clone()
-            .unwrap_or_default();
+        let chainlink_feeds = chain_config.chainlink_feeds.clone().unwrap_or_default();
         let gmx_event_emitters = chain_config
             .gmx_event_emitters
             .clone()
@@ -314,7 +311,10 @@ pub async fn index_block(
 
     let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
     let interest_lookback = store
-        .interest_lookback(block_number, crate::explorer::interest_attr::LOOKBACK_BLOCKS)
+        .interest_lookback(
+            block_number,
+            crate::explorer::interest_attr::LOOKBACK_BLOCKS,
+        )
         .unwrap_or_default();
     let feeds: Vec<Address> = cfg.chainlink_feeds.keys().copied().collect();
     let prior_oracle_answers = store
