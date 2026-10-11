@@ -54,8 +54,8 @@ disk, and mev-scout does not need it.
 | Workload                                                                  | On this pruned, state-synced node                        |
 | ------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `live`, `explorer index` (tip + recent blocks)                            | yes                                                      |
-| `explorer backfill` (historical range; overlaps up to `block_concurrency` batched fetches; classify stays ordered) | yes for recent windows; deep history uses archive `rpc_rps` |
-| `eth_getLogs` within the pruning window (discover lookback = 1000 blocks) | yes                                                      |
+| `explorer index` (historical range; overlaps up to `block_concurrency` blocks, packed `rpc_batch_blocks` per POST; classify stays ordered) | yes for blocks and receipts the node has stored since it synced; historical `eth_call` (sAVAX rate, one successful read per hour) uses the archive peer |
+| `eth_getLogs` for discovery (`lookback_days`, activity `batch_size`, coarser `factory_batch_size`) | yes, for logs the node has stored since it synced       |
 | `debug_traceTransaction` on recent blocks (`explorer show --trace`)       | yes                                                      |
 | Deep historical `eth_call` / `eth_getProof` / long `eth_getLogs` ranges   | no — served by the public archive fallback in `rpc_urls` |
 
@@ -63,9 +63,11 @@ disk, and mev-scout does not need it.
 Keeping the tool healthy while staying minimal:
 
 - **Keep a second (archive-capable) provider in** `rpc_urls` — as in
-`mev-scout.local.toml`. mev-scout probes each provider's capability and
-routes deep-history reads away from the pruned local node automatically;
-all tip work still runs against the local node at full speed.
+`mev-scout.local.toml`. An `rpc_rps = 0` provider owns block, receipt, and
+`eth_getLogs` reads. The public peer is the archive `eth_call` / proof
+fallback and is tried for block/log reads only after the local node fails
+or is in cooldown. Public profiles (every `rpc_rps` positive) still
+round-robin across all endpoints.
 - Cap journal logs so they cannot eat the disk:
   ```bash
   echo 'SystemMaxUse=500M' | sudo tee /etc/systemd/journald.conf.d/size.conf
@@ -248,18 +250,21 @@ cargo run -p mev-scout-cli -- --config mev-scout.local.toml config
 ### What makes `mev-scout.local.toml` full speed
 
 ```toml
-rps_limit = 0           # 0 = unlimited: no rate limiter is created at all
-block_concurrency = 32  # auto mode falls back to a conservative 10
-batch_rpc = true        # block+txs+receipts in ONE JSON-RPC batch POST
-                        # (AvalancheGo batch-request-limit default = 1000)
+rps_limit = 0           # 0 = unlimited: no token bucket, dominant shard weight
+block_concurrency = 32  # in-flight blocks (not multiplied by rpc_batch_blocks)
+rpc_batch_blocks = 32   # blocks per JSON-RPC POST; public default is 1
+batch_rpc = true        # backtest fetcher uses the batched block+receipts POST
 
 [chains.avalanche.rpc]
 rpc_urls = ["http://127.0.0.1:9650/ext/bc/C/rpc",
             "https://avalanche-c-chain.publicnode.com"]
-rpc_rps  = [0.0, 1.0]   # 0.0 = unlimited for the local node
+rpc_rps  = [0.0, 1.0]   # 0.0 = unlimited local node; 1.0 = archive eth_call fallback
 
 [discover]
-rpc_concurrency = 32    # default 8 — on-chain factory scans / multicall
+batch_size = 2000           # activity eth_getLogs window
+factory_batch_size = 10000  # factory-creation logs
+lookback_days = 30          # default window; public profile keeps 1000 blocks
+rpc_concurrency = 32        # parallel activity windows on the unlimited node
 
 [live]
 poll_interval_ms = 500  # default 2000; C-Chain blocks are ~2 s
@@ -268,12 +273,15 @@ poll_interval_ms = 500  # default 2000; C-Chain blocks are ~2 s
 
 | Knob                                   | Why                                                                                                                    |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `rps_limit = 0` / `rpc_rps = [0.0, …]` | A 0-RPS provider gets **no token bucket** — throughput is bounded by concurrency and node hardware, not an RPS counter |
-| `block_concurrency = 32`               | Parallel in-flight block fetches for scanner shards **and** `explorer backfill` (classify/persist stays ordered); auto mode falls back to 10 when RPS is unlimited |
-| `batch_rpc = true`                     | Cuts HTTP round-trips ~3× for `backtest` / explorer block+receipts fetches (the `live` job does not read this flag)   |
-| `[discover] rpc_concurrency = 32`      | Concurrency for pure on-chain factory scans and multicall metadata resolution                                          |
-| `[live] poll_interval_ms = 500`        | Polls well inside the ~2 s block time                                                                                  |
-| Public archive as `rpc_urls[1]`        | Deep-history reads the pruned local node cannot serve are routed to it automatically; tip work stays on the local node |
+| `rps_limit = 0` / `rpc_rps = [0.0, …]` | No token bucket, and block/log/receipt first-tries stay on this provider. Positive-only RPS lists still round-robin. |
+| `block_concurrency = 32`               | Cap on in-flight blocks for `explorer index` and backtest fetch. Classify/persist stays ordered.                      |
+| `rpc_batch_blocks = 32`                | One POST carries 32 block+receipt pairs. With concurrency 32 that is one POST in flight, not 32×32. Public default is 1. |
+| `batch_rpc = true`                     | Backtest fetcher uses that multi-block POST. `live` does not read this flag.                                          |
+| `[discover] lookback_days = 30`        | A discover run with no explicit range covers ~30 days. A watermark skips ranges already scanned.                      |
+| `[discover] batch_size` / `factory_batch_size` | Activity logs stay in smaller windows; factory creation logs use a coarser window.                            |
+| `[discover] rpc_concurrency = 32`      | Parallel activity windows on the unlimited node only. A rate-limited shard stays serial.                              |
+| `[live] poll_interval_ms = 500`        | Polls well inside the ~2 s block time. Tip indexing stays one block at a time.                                        |
+| Public archive as `rpc_urls[1]`        | Historical `eth_call` (sAVAX rate, cached per hour on success). Not the first try for blocks or logs.                 |
 
 
 Both profiles take every command from §5 — just pass the config you want:

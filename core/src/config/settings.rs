@@ -29,6 +29,10 @@ pub struct RpcConfig {
     /// Block-level concurrency within each provider shard
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_concurrency: Option<usize>,
+    /// Blocks packed into one JSON-RPC batch POST for explorer backfill and
+    /// backtest fetch. `1` keeps one block per POST (public default).
+    #[serde(default = "default_rpc_batch_blocks")]
+    pub rpc_batch_blocks: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,9 +107,16 @@ pub struct DiscoverConfig {
     /// remote-only addresses. Ignored when `source` is `hybrid` or `remote`.
     #[serde(default = "default_false")]
     pub enrich: bool,
-    /// Batch size for each getLogs request (default: 500).
+    /// Batch size for each activity `eth_getLogs` request (default: 500).
     #[serde(default = "default_discover_batch_size")]
     pub batch_size: u64,
+    /// Coarse window for factory-creation logs. Unset uses `batch_size`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factory_batch_size: Option<u64>,
+    /// When set, a discover run with no explicit range covers this many
+    /// trailing days instead of the chain's `pool_discovery_lookback_blocks`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback_days: Option<u64>,
     /// Max concurrent RPC calls during pool metadata fetch (default: 8).
     #[serde(default = "default_discover_rpc_concurrency")]
     pub rpc_concurrency: usize,
@@ -247,6 +258,9 @@ fn default_discover_source() -> String {
 fn default_discover_batch_size() -> u64 {
     500
 }
+fn default_rpc_batch_blocks() -> usize {
+    1
+}
 fn default_discover_rpc_concurrency() -> usize {
     8
 }
@@ -380,6 +394,7 @@ impl Default for RpcConfig {
             rpc_rps: Vec::new(),
             rps_limit: default_rps_limit(),
             block_concurrency: None,
+            rpc_batch_blocks: default_rpc_batch_blocks(),
         }
     }
 }
@@ -417,6 +432,8 @@ impl Default for DiscoverConfig {
             source: default_discover_source(),
             enrich: false,
             batch_size: default_discover_batch_size(),
+            factory_batch_size: None,
+            lookback_days: None,
             rpc_concurrency: default_discover_rpc_concurrency(),
             health_check: true,
             min_tvl: default_discover_min_tvl(),

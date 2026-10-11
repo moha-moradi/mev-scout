@@ -345,6 +345,7 @@ async fn test_e2e_pool_discovery() {
     eprintln!("  Discovering pools on QuickSwap factory [{start}..{end}]");
     let disc_config = DiscoveryConfig {
         batch_size: 2000,
+        factory_batch_size: 2000,
         v2_fee_override: None,
         balancer_vault: None,
         v2_factories: Some(&v2_factories),

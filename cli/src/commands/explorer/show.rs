@@ -200,4 +200,3 @@ fn mev_verdict_for(config: &Config, opp: &OpportunityRow, ops: &[MevOpRow]) -> M
     };
     mev_verdict(expected, realized, err_pct, tol, abs_wei)
 }
-

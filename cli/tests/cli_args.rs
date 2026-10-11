@@ -129,7 +129,11 @@ fn live_help_lists_ledger_flags() {
 #[test]
 fn removed_and_unknown_surface_fails() {
     let cases: &[(&str, &[&str], Option<&str>)] = &[
-        ("tokens", &["tokens"], Some("unrecognized subcommand 'tokens'")),
+        (
+            "tokens",
+            &["tokens"],
+            Some("unrecognized subcommand 'tokens'"),
+        ),
         ("explorer stats", &["explorer", "stats"], None),
         ("explorer report", &["explorer", "report"], None),
         ("explorer backfill", &["explorer", "backfill"], None),

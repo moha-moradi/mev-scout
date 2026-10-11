@@ -116,3 +116,77 @@ async fn client_unlimited_endpoint_burst_tolerance() {
     // Informational: raw endpoint burst tolerance. No assertion on errors —
     // the endpoint may legitimately cap concurrent/rapid requests.
 }
+
+fn offline_client(urls: &[&str]) -> RpcClient {
+    RpcClient::from_urls(urls, 43_114).unwrap()
+}
+
+#[tokio::test]
+async fn unlimited_provider_takes_almost_all_blocks() {
+    let rpc = offline_client(&["http://127.0.0.1:9", "http://127.0.0.1:10"]);
+    rpc.with_provider_rps(&[0.0, 1.0]).await;
+    let shards = rpc.distribute_blocks(0, 9_999).await;
+    assert_eq!(shards.len(), 2);
+    let local = shards.iter().find(|s| s.provider_idx == 0).unwrap();
+    let public = shards.iter().find(|s| s.provider_idx == 1).unwrap();
+    let local_n = local.to - local.from + 1;
+    let public_n = public.to - public.from + 1;
+    assert!(local_n > 9_000, "local shard {local_n}");
+    assert!(public_n < 500, "public shard {public_n}");
+    assert!(rpc.provider_is_unlimited(0).await);
+    assert!(!rpc.provider_is_unlimited(1).await);
+}
+
+#[tokio::test]
+async fn positive_rps_splits_blocks_proportionally() {
+    let rpc = offline_client(&[
+        "http://127.0.0.1:9",
+        "http://127.0.0.1:10",
+        "http://127.0.0.1:11",
+        "http://127.0.0.1:12",
+    ]);
+    rpc.with_provider_rps(&[20.0, 20.0, 1.0, 1.0]).await;
+    let shards = rpc.distribute_blocks(0, 4_199).await;
+    assert_eq!(shards.len(), 4);
+    let n = |idx: usize| {
+        let s = shards.iter().find(|s| s.provider_idx == idx).unwrap();
+        s.to - s.from + 1
+    };
+    assert_eq!(n(0), 2_000);
+    assert_eq!(n(1), 2_000);
+    assert_eq!(n(2), 100);
+    assert_eq!(n(3), 100);
+}
+
+#[tokio::test]
+async fn mixed_positive_rps_round_robins_first_try() {
+    let rpc = offline_client(&[
+        "http://127.0.0.1:9",
+        "http://127.0.0.1:10",
+        "http://127.0.0.1:11",
+        "http://127.0.0.1:12",
+    ]);
+    rpc.with_provider_rps(&[20.0, 20.0, 1.0, 1.0]).await;
+    let mut firsts = std::collections::HashSet::new();
+    for _ in 0..16 {
+        let order = rpc.any_scope_try_order().await;
+        assert_eq!(order.len(), 4);
+        firsts.insert(order[0]);
+    }
+    assert_eq!(
+        firsts.len(),
+        4,
+        "every positive-RPS provider must lead a first try, got {firsts:?}"
+    );
+}
+
+#[tokio::test]
+async fn unlimited_peer_is_always_the_first_try() {
+    let rpc = offline_client(&["http://127.0.0.1:9", "http://127.0.0.1:10"]);
+    rpc.with_provider_rps(&[0.0, 1.0]).await;
+    for _ in 0..8 {
+        let order = rpc.any_scope_try_order().await;
+        assert_eq!(order.first().copied(), Some(0));
+        assert!(order.contains(&1), "rate-limited peer stays as failover");
+    }
+}

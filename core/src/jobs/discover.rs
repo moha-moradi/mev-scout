@@ -27,6 +27,8 @@ pub struct DiscoverOpts {
     pub min_tvl: Option<f64>,
     pub max_pools: usize,
     pub batch_size: u64,
+    pub factory_batch_size: Option<u64>,
+    pub lookback_days: Option<u64>,
     pub rpc_concurrency: usize,
     pub incremental: bool,
     pub health_check: bool,
@@ -43,6 +45,8 @@ impl Default for DiscoverOpts {
             min_tvl: Some(25_000.0),
             max_pools: 1000,
             batch_size: 500,
+            factory_batch_size: None,
+            lookback_days: None,
             rpc_concurrency: 8,
             incremental: false,
             health_check: true,
@@ -67,6 +71,8 @@ impl DiscoverOpts {
             },
             max_pools: d.max_pools,
             batch_size: d.batch_size,
+            factory_batch_size: d.factory_batch_size,
+            lookback_days: d.lookback_days,
             rpc_concurrency: d.rpc_concurrency,
             incremental: false,
             health_check: d.health_check,
@@ -299,7 +305,33 @@ pub async fn job_discover(
     // When the on-chain window is already covered, pure onchain exits early.
     // Hybrid/remote still continue so aggregator TVL ranking can refresh.
     let mut skip_onchain_scan = false;
-    let (from, to) = if incremental && !is_remote_only {
+    let scan_ranges: Vec<(u64, u64)> = if is_remote_only {
+        Vec::new()
+    } else if incremental && opts.lookback_days.is_some() {
+        let watermark = cache.discovery_watermark().ok().flatten();
+        let ranges = lookback_scan_ranges(from, to, watermark);
+        if ranges.is_empty() {
+            if should_fetch_remote {
+                progress.log(
+                    "Incremental mode: lookback window already scanned; refreshing remote ranking.",
+                );
+                skip_onchain_scan = true;
+            } else {
+                progress.log("Incremental mode: lookback window already scanned. No scan needed.");
+                return Ok(DiscoverOutcome {
+                    pools_found: 0,
+                    active_blocks: 0,
+                    remote_count: 0,
+                    pools: Vec::new(),
+                });
+            }
+        } else {
+            progress.log(&format!(
+                "Incremental mode: lookback gaps {ranges:?} (watermark {watermark:?})"
+            ));
+        }
+        ranges
+    } else if incremental {
         match cache.max_creation_block() {
             Ok(Some(max_block)) if max_block > 0 => {
                 let new_from = max_block + 1;
@@ -310,7 +342,7 @@ pub async fn job_discover(
                              refreshing remote ranking."
                         ));
                         skip_onchain_scan = true;
-                        (from, to)
+                        vec![(from, to)]
                     } else {
                         progress.log(&format!(
                             "Incremental mode: cache is up-to-date (max block {max_block}). No scan needed."
@@ -326,26 +358,35 @@ pub async fn job_discover(
                     progress.log(&format!(
                         "Incremental mode: scanning from block {new_from} (cache max: {max_block})"
                     ));
-                    (new_from, to)
+                    vec![(new_from, to)]
                 }
             }
             Ok(_) => {
                 progress.log("Incremental mode: no cached pools found, running full scan.");
-                (from, to)
+                vec![(from, to)]
             }
             Err(e) => {
                 tracing::warn!(
                     "Incremental mode: failed to query cache: {e:#}. Running full scan."
                 );
-                (from, to)
+                vec![(from, to)]
             }
         }
     } else {
-        (from, to)
+        vec![(from, to)]
     };
 
+    let range_label = if scan_ranges.is_empty() {
+        format!("{from}-{to}")
+    } else {
+        scan_ranges
+            .iter()
+            .map(|(a, b)| format!("{a}-{b}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     progress.log(&format!(
-        "Pool discovery — chain {chain_name}, sources: {source}, blocks {from}-{to} (json={json})"
+        "Pool discovery — chain {chain_name}, sources: {source}, blocks {range_label} (json={json})"
     ));
 
     // factory/event scan.
@@ -353,17 +394,35 @@ pub async fn job_discover(
         (Vec::new(), std::collections::HashSet::new())
     } else {
         let factories = ResolvedFactories::from_chain_config(&chain_config, chain_name);
+        let activity_batch =
+            recommended_get_logs_batch(&config.effective_rpc(chain_name).rpc_urls, batch_size);
+        let factory_batch = opts
+            .factory_batch_size
+            .unwrap_or(batch_size)
+            .max(batch_size);
         let disc_config = factories.discovery_config(DiscoveryRuntimeOpts {
-            batch_size: recommended_get_logs_batch(
+            batch_size: activity_batch,
+            factory_batch_size: recommended_get_logs_batch(
                 &config.effective_rpc(chain_name).rpc_urls,
-                batch_size,
+                factory_batch,
             ),
             solidly_fee_bps: opts.solidly_fee_bps.map(|v| v as u32),
             rpc_concurrency,
             token_cache: Some(&token_cache),
             pool_cache: Some(&cache),
         });
-        scan_onchain(&rpc, &cache, from, to, &disc_config, progress).await?
+        let mut pools = Vec::new();
+        let mut active = std::collections::HashSet::new();
+        for (range_from, range_to) in &scan_ranges {
+            let (found, blocks) =
+                scan_onchain(&rpc, &cache, *range_from, *range_to, &disc_config, progress).await?;
+            pools.extend(found);
+            active.extend(blocks);
+            if let Err(e) = cache.note_discovery_scan(*range_from, *range_to) {
+                tracing::warn!("discovery watermark update failed: {e:#}");
+            }
+        }
+        (pools, active)
     };
 
     // Phases 2+3: remote sourcing + dedup/merge.
@@ -510,6 +569,20 @@ async fn resolve_scan_window(
                 Ok((0u64, rpc.get_block_number().await.unwrap_or(0)))
             } else {
                 let to = rpc.get_block_number().await?;
+                if let Some(days) = config.discover.lookback_days {
+                    if days == 0 {
+                        anyhow::bail!(
+                            "discover.lookback_days must be >= 1 for chain '{chain_name}'"
+                        );
+                    }
+                    let span =
+                        days.saturating_mul(crate::chain::timing::blocks_per_day(chain_name));
+                    let from = to.saturating_sub(span);
+                    tracing::info!(
+                        "No block range specified. Using last {days} day(s) ({from}-{to}) for chain '{chain_name}'."
+                    );
+                    return Ok((from, to));
+                }
                 // Prefer a lookback window (last N blocks) over an absolute
                 // historical start — keeps default hybrid/on-chain discovery fast.
                 if let Some(lookback) = chain_config.pool_discovery_lookback_blocks {
@@ -539,11 +612,58 @@ async fn resolve_scan_window(
     }
 }
 
+/// Block ranges still missing inside `[desired_from, desired_to]`.
+///
+/// No watermark means the whole window. A watermark that already covers it
+/// returns nothing. A watermark in the middle yields the gap below it and the
+/// tail above it, leaving the covered middle unscanned.
+pub(crate) fn lookback_scan_ranges(
+    desired_from: u64,
+    desired_to: u64,
+    watermark: Option<(u64, u64)>,
+) -> Vec<(u64, u64)> {
+    if desired_from > desired_to {
+        return Vec::new();
+    }
+    let Some((low, high)) = watermark else {
+        return vec![(desired_from, desired_to)];
+    };
+    let mut out = Vec::new();
+    if desired_from < low {
+        let gap_to = low.saturating_sub(1).min(desired_to);
+        if desired_from <= gap_to {
+            out.push((desired_from, gap_to));
+        }
+    }
+    let tail_from = high.saturating_add(1).max(desired_from);
+    if tail_from <= desired_to {
+        out.push((tail_from, desired_to));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dex_type::DexType;
     use alloy::primitives::address;
+
+    #[test]
+    fn lookback_ranges_cover_gaps_around_a_watermark() {
+        assert_eq!(
+            lookback_scan_ranges(1_000, 5_000, None),
+            vec![(1_000, 5_000)]
+        );
+        assert!(lookback_scan_ranges(1_000, 5_000, Some((1_000, 5_000))).is_empty());
+        assert_eq!(
+            lookback_scan_ranges(1_000, 5_000, Some((2_000, 4_000))),
+            vec![(1_000, 1_999), (4_001, 5_000)]
+        );
+        assert_eq!(
+            lookback_scan_ranges(1_000, 5_000, Some((100, 200))),
+            vec![(1_000, 5_000)]
+        );
+    }
 
     fn temp_store(tag: &str) -> (SqliteStore, std::path::PathBuf) {
         let dir =

@@ -85,6 +85,11 @@ pub struct Fetcher {
     timing: Arc<Mutex<FetchTiming>>,
     write_buf: Arc<Mutex<WriteBatch>>,
     batch_rpc: bool,
+    /// Blocks per JSON-RPC POST when `batch_rpc` is on. `1` keeps one block
+    /// per POST.
+    rpc_batch_blocks: usize,
+    activity_batch: u64,
+    activity_concurrency: usize,
 }
 
 impl Fetcher {
@@ -98,6 +103,9 @@ impl Fetcher {
             timing: Arc::new(Mutex::new(FetchTiming::default())),
             write_buf: Arc::new(Mutex::new(Vec::new())),
             batch_rpc: false,
+            rpc_batch_blocks: 1,
+            activity_batch: 500,
+            activity_concurrency: 1,
         }
     }
 
@@ -113,6 +121,17 @@ impl Fetcher {
 
     pub fn with_batch_rpc(mut self, enabled: bool) -> Self {
         self.batch_rpc = enabled;
+        self
+    }
+
+    pub fn with_rpc_batch_blocks(mut self, n: usize) -> Self {
+        self.rpc_batch_blocks = n.max(1);
+        self
+    }
+
+    pub fn with_activity_scan(mut self, batch: u64, concurrency: usize) -> Self {
+        self.activity_batch = batch.max(1);
+        self.activity_concurrency = concurrency.max(1);
         self
     }
 
@@ -282,6 +301,11 @@ impl Fetcher {
     ) -> anyhow::Result<u64> {
         let total_blocks = end.saturating_sub(start) + 1;
         let cap = self.block_concurrency.max(1).min(total_blocks as usize);
+        if self.batch_rpc && self.rpc_batch_blocks > 1 && cap > 1 {
+            return self
+                .fetch_contiguous_range_chunked(start, end, timing, progress, cap)
+                .await;
+        }
         if cap <= 1 {
             return self
                 .fetch_contiguous_range_sequential(start, end, timing, progress, provider_idx)
@@ -373,6 +397,87 @@ impl Fetcher {
         Ok(completed)
     }
 
+    /// Several blocks per HTTP POST. In-flight blocks stay at `cap`.
+    async fn fetch_contiguous_range_chunked<F: Fn() -> bool + Sync>(
+        &self,
+        start: u64,
+        end: u64,
+        timing: Arc<Mutex<FetchTiming>>,
+        progress: Option<&F>,
+        cap: usize,
+    ) -> anyhow::Result<u64> {
+        let chunk = self.rpc_batch_blocks.max(1).min(cap);
+        let posts = (cap / chunk).max(1);
+        let sem = Arc::new(Semaphore::new(posts));
+        let mut tasks: FuturesUnordered<_> = FuturesUnordered::new();
+        let mut completed = 0u64;
+        let mut cursor = start;
+
+        loop {
+            while cursor <= end && tasks.len() < posts {
+                let chunk_end = (cursor + chunk as u64 - 1).min(end);
+                let blocks: Vec<u64> = (cursor..=chunk_end).collect();
+                let n_blocks = blocks.len() as u64;
+                cursor = chunk_end.saturating_add(1);
+                let permit = sem.clone().acquire_owned().await?;
+                let rpc = self.rpc.clone();
+                let cache = self.cache.clone();
+                let write_buf = self.write_buf.clone();
+                let t = timing.clone();
+                let sig = self.sig_resolver.clone();
+                tasks.push(async move {
+                    let _permit = permit;
+                    let t0 = Instant::now();
+                    let rows = rpc.get_blocks_and_receipts_batch(&blocks).await?;
+                    if rows.len() != blocks.len() {
+                        anyhow::bail!(
+                            "batch returned {} blocks, expected {}",
+                            rows.len(),
+                            blocks.len()
+                        );
+                    }
+                    let t_rpc = t0.elapsed().as_secs_f64() * 1000.0;
+                    let t2 = Instant::now();
+                    for (block_num, (block, txs, receipts)) in blocks.into_iter().zip(rows) {
+                        write_block_data(
+                            &sig, &cache, &write_buf, block_num, block, txs, receipts,
+                        )?;
+                    }
+                    let t_write = t2.elapsed().as_secs_f64() * 1000.0;
+                    let total = t0.elapsed().as_secs_f64() * 1000.0;
+                    if let Ok(mut tm) = t.lock() {
+                        tm.record(0.0, t_rpc, t_write, total);
+                    }
+                    Ok::<_, anyhow::Error>(n_blocks)
+                });
+                if chunk_end == end {
+                    break;
+                }
+            }
+
+            if tasks.is_empty() {
+                break;
+            }
+            match tasks.next().await {
+                Some(Ok(n)) => {
+                    if let Some(tick) = progress {
+                        for _ in 0..n {
+                            if !tick() {
+                                return Err(anyhow::anyhow!("job cancelled"));
+                            }
+                        }
+                    }
+                    completed += n;
+                }
+                Some(Err(e)) => {
+                    tracing::warn!("Block batch fetch failed (will retry as gap): {e:#}");
+                }
+                None => break,
+            }
+        }
+        Ok(completed)
+    }
+
     async fn fetch_contiguous_range_sequential<F: Fn() -> bool + Sync>(
         &self,
         start: u64,
@@ -457,7 +562,11 @@ impl Fetcher {
             range.block_count,
             pool_addresses.len(),
         );
-        let scanner = ActivityScanner::new(self.rpc.clone());
+        let mut scanner =
+            ActivityScanner::new(self.rpc.clone()).with_batch_size(self.activity_batch);
+        if self.activity_concurrency > 1 {
+            scanner = scanner.with_window_concurrency(self.activity_concurrency);
+        }
         let active_blocks = scanner
             .find_active_blocks(pool_addresses, range.start_block, range.end_block)
             .await?;

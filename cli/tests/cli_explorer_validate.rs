@@ -5,7 +5,6 @@
 //! scanner workflow, so it is hidden from the default command surface.
 
 #![cfg(feature = "validate")]
-
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod common;
 

@@ -102,8 +102,17 @@ pub async fn job_run(
     // TOML flag the removed `run` command used to copy in, and an explicit
     // `RunOpts` value turns it on even when the config does not.
     fetcher = fetcher.with_batch_rpc(opts.batch_rpc || config.backtest.batch_rpc);
+    fetcher = fetcher.with_rpc_batch_blocks(
+        config
+            .effective_rpc(validation_result.chain_name)
+            .rpc_batch_blocks,
+    );
     let bc = config.effective_block_concurrency(validation_result.chain_name, &provider_configs);
     fetcher = fetcher.with_block_concurrency(bc);
+    if rpc.has_unlimited_provider().await {
+        fetcher =
+            fetcher.with_activity_scan(config.discover.batch_size, config.discover.rpc_concurrency);
+    }
 
     let fetch_total = resolved.block_count;
     let fetch_done = Arc::new(AtomicU64::new(0));

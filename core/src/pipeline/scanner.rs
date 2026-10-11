@@ -72,6 +72,9 @@ pub(crate) mod topics {
 pub struct ActivityScanner {
     rpc: RpcClient,
     batch_size: u64,
+    /// Parallel `eth_getLogs` windows. Values above 1 are used only when the
+    /// client has an unlimited provider; otherwise the scan stays serial.
+    window_concurrency: usize,
 }
 
 impl ActivityScanner {
@@ -79,11 +82,17 @@ impl ActivityScanner {
         ActivityScanner {
             rpc,
             batch_size: 500,
+            window_concurrency: 1,
         }
     }
 
     pub fn with_batch_size(mut self, n: u64) -> Self {
         self.batch_size = n.max(1);
+        self
+    }
+
+    pub fn with_window_concurrency(mut self, n: usize) -> Self {
+        self.window_concurrency = n.max(1);
         self
     }
 
@@ -95,7 +104,9 @@ impl ActivityScanner {
     /// Returns an empty set if no pool addresses are provided.
     ///
     /// On batch failure (e.g. range too large for provider), falls back
-    /// to individual block scanning for that batch.
+    /// to individual block scanning for that batch. An unlimited provider
+    /// instead splits the window; it does not walk every block in a healthy
+    /// wide range.
     pub async fn find_active_blocks(
         &self,
         pool_addresses: &[Address],
@@ -106,8 +117,15 @@ impl ActivityScanner {
             return Ok(HashSet::new());
         }
 
-        let mut active = HashSet::new();
         let dex_topics = topics::all_topics();
+        let parallel = self.window_concurrency > 1 && self.rpc.has_unlimited_provider().await;
+        if parallel {
+            return self
+                .find_active_blocks_parallel(pool_addresses, &dex_topics, start_block, end_block)
+                .await;
+        }
+
+        let mut active = HashSet::new();
         let mut current = start_block;
 
         while current <= end_block {
@@ -154,6 +172,79 @@ impl ActivityScanner {
         }
 
         Ok(active)
+    }
+
+    async fn find_active_blocks_parallel(
+        &self,
+        pool_addresses: &[Address],
+        dex_topics: &[alloy::primitives::B256],
+        start_block: u64,
+        end_block: u64,
+    ) -> error::Result<HashSet<u64>> {
+        use futures::stream::{self, StreamExt};
+
+        let mut windows = Vec::new();
+        let mut current = start_block;
+        while current <= end_block {
+            let batch_end = (current + self.batch_size - 1).min(end_block);
+            windows.push((current, batch_end));
+            if batch_end == end_block {
+                break;
+            }
+            current = batch_end + 1;
+        }
+
+        let parts: Vec<HashSet<u64>> = stream::iter(windows)
+            .map(|(from, to)| async move {
+                self.scan_window_splitting(pool_addresses, dex_topics, from, to)
+                    .await
+            })
+            .buffer_unordered(self.window_concurrency.max(1))
+            .collect()
+            .await;
+
+        let mut active = HashSet::new();
+        for part in parts {
+            active.extend(part);
+        }
+        Ok(active)
+    }
+
+    /// Halve a failed window. A single-block failure is skipped rather than
+    /// expanding into a per-block walk of the parent range.
+    async fn scan_window_splitting(
+        &self,
+        pool_addresses: &[Address],
+        dex_topics: &[alloy::primitives::B256],
+        from: u64,
+        to: u64,
+    ) -> HashSet<u64> {
+        let filter = Filter::new()
+            .address(pool_addresses.to_vec())
+            .event_signature(dex_topics.to_vec())
+            .from_block(from)
+            .to_block(to);
+        match self.rpc.get_logs(&filter).await {
+            Ok(logs) => logs.iter().filter_map(|log| log.block_number).collect(),
+            Err(e) if to > from => {
+                tracing::warn!(
+                    "Activity scan failed for blocks {from}..{to}: {e:#}. Splitting window..."
+                );
+                let mid = from + (to - from) / 2;
+                let mut left =
+                    Box::pin(self.scan_window_splitting(pool_addresses, dex_topics, from, mid))
+                        .await;
+                left.extend(
+                    Box::pin(self.scan_window_splitting(pool_addresses, dex_topics, mid + 1, to))
+                        .await,
+                );
+                left
+            }
+            Err(e) => {
+                tracing::warn!("Activity scan skipping block {from}: {e:#}");
+                HashSet::new()
+            }
+        }
     }
 }
 

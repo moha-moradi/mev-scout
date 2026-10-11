@@ -49,6 +49,7 @@ pub async fn job_backfill(
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
     cfg.arb_likely_parity = config.explorer.arb_likely_parity;
+    cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
 
     let registry = load_pool_registry(config, &chain);
 

@@ -81,6 +81,7 @@ async fn discover_polygon_pools(rpc: &RpcClient, from: u64, to: u64) -> Vec<Addr
 
     let disc_config = DiscoveryConfig {
         batch_size: 2000,
+        factory_batch_size: 2000,
         v2_fee_override: None,
         balancer_vault: None,
         v2_factories: Some(&[v2_factory]),

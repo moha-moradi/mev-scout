@@ -21,6 +21,11 @@ use url::Url;
 
 use super::middleware::{ProviderState, RateLimiter};
 
+/// Shard weight for an `rpc_rps = 0` provider. High enough that
+/// [`RpcClient::distribute_blocks`] assigns essentially the whole range to it
+/// while a 1 RPS peer still receives a remainder for failover.
+const UNLIMITED_PROVIDER_WEIGHT: f64 = 10_000.0;
+
 /// Block reference for pool-state queries: either an explicit block number
 /// (requires archive/recent-state-capable providers) or the `latest` tag
 /// (served by any full node).
@@ -233,6 +238,10 @@ impl RpcClient {
     }
 
     /// Set per-provider RPS limits. Index i maps to provider i.
+    ///
+    /// `rps > 0` installs a token bucket and uses that rate as the shard weight.
+    /// `rps <= 0` means unlimited: no token bucket, and a dominant weight so
+    /// block-range sharding stays on that provider.
     pub async fn with_provider_rps(&self, rps_list: &[f64]) {
         let mut provs = self.providers.lock().await;
         for (i, &rps) in rps_list.iter().enumerate() {
@@ -241,9 +250,51 @@ impl RpcClient {
                     p.set_rate_limiter(Some(Arc::new(RateLimiter::new(rps, rps))));
                     p.set_weight(rps);
                     p.set_original_weight(rps);
+                    p.set_unlimited(false);
+                } else {
+                    p.set_rate_limiter(None);
+                    p.set_weight(UNLIMITED_PROVIDER_WEIGHT);
+                    p.set_original_weight(UNLIMITED_PROVIDER_WEIGHT);
+                    p.set_unlimited(true);
                 }
             }
         }
+    }
+
+    /// True when provider `idx` was configured with `rpc_rps <= 0`.
+    pub async fn provider_is_unlimited(&self, idx: usize) -> bool {
+        let provs = self.providers.lock().await;
+        provs.get(idx).is_some_and(|p| p.is_unlimited())
+    }
+
+    /// True when any available provider has no token bucket.
+    pub async fn has_unlimited_provider(&self) -> bool {
+        let provs = self.providers.lock().await;
+        provs.iter().any(|p| p.is_unlimited() && p.is_available())
+    }
+
+    /// First available unlimited provider, for pinning probes that must not
+    /// inherit a public endpoint's `eth_getLogs` cap.
+    pub async fn unlimited_provider_index(&self) -> Option<usize> {
+        let provs = self.providers.lock().await;
+        provs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.is_unlimited() && p.is_available())
+            .map(|(i, _)| i)
+    }
+
+    /// Provider indices in the order [`ProviderScope::Any`] tries them.
+    ///
+    /// Positive-RPS sets round-robin the first try across every provider.
+    /// When an unlimited provider is present, first tries stay on the
+    /// unlimited set; slower peers remain later in the list for failover.
+    pub async fn any_scope_try_order(&self) -> Vec<usize> {
+        self.sorted_available()
+            .await
+            .into_iter()
+            .map(|(idx, _)| idx)
+            .collect()
     }
 
     /// Pre-seed archive capability from known endpoint metadata.
@@ -294,7 +345,33 @@ impl RpcClient {
         });
 
         drop(provs);
-        self.rotate_for_load(available)
+        self.order_any_scope(available)
+    }
+
+    /// First-try order for block/log/receipt reads.
+    ///
+    /// All-positive RPS lists keep full round-robin so a free-tier quota is
+    /// shared. An unlimited peer takes every first try; rate-limited peers
+    /// stay in the list and are used only after that peer fails or cools down.
+    fn order_any_scope(
+        &self,
+        available: Vec<(usize, ProviderState)>,
+    ) -> Vec<(usize, ProviderState)> {
+        if !available.iter().any(|(_, p)| p.is_unlimited()) {
+            return self.rotate_for_load(available);
+        }
+        let mut unlimited = Vec::new();
+        let mut limited = Vec::new();
+        for item in available {
+            if item.1.is_unlimited() {
+                unlimited.push(item);
+            } else {
+                limited.push(item);
+            }
+        }
+        let mut ordered = self.rotate_for_load(unlimited);
+        ordered.extend(limited);
+        ordered
     }
 
     /// Get alive providers that can serve historical state, sorted by effective
@@ -885,6 +962,40 @@ impl RpcClient {
         }
     }
 
+    /// `eth_getLogs` pinned to one provider, with no fallback.
+    ///
+    /// Used to probe an unlimited node's range limit. A range error must not
+    /// be retried on a public peer (that peer's success would be adopted as
+    /// the limit) and must not put the local node into failure cooldown.
+    pub async fn get_logs_pinned_strict(
+        &self,
+        provider_idx: usize,
+        filter: &Filter,
+    ) -> anyhow::Result<Vec<Log>> {
+        let prov_state = {
+            let provs = self.providers.lock().await;
+            provs.get(provider_idx).cloned()
+        };
+        let Some(provider) = prov_state.filter(|p| p.is_available()) else {
+            anyhow::bail!("provider {provider_idx} is not available for a pinned getLogs probe");
+        };
+        provider.acquire_permit().await;
+        let t0 = Instant::now();
+        let result = provider
+            .provider()
+            .get_logs(filter)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        if result.is_ok() {
+            let mut provs = self.providers.lock().await;
+            if let Some(p) = provs.get_mut(provider_idx) {
+                p.record_success(t0.elapsed());
+                p.sync_rate_limiter().await;
+            }
+        }
+        result
+    }
+
     /// Some chains (e.g. Polygon) include non-standard transaction types (e.g. `"0x7f"`)
     /// that alloy's `TxEnvelope` cannot deserialize. This helper removes them from the raw JSON.
     fn clean_block_transactions(raw: &mut Value) {
@@ -1109,6 +1220,52 @@ impl RpcClient {
         .await
     }
 
+    /// Fetch several blocks and their receipts in one JSON-RPC batch POST.
+    ///
+    /// Two calls per block (`eth_getBlockByNumber` + `eth_getBlockReceipts`).
+    /// A batch-level error splits the chunk and retries, so one missing block
+    /// does not discard the rest of the range. A one-block chunk uses
+    /// [`Self::get_block_and_receipts_batch`] and surfaces that block's error.
+    pub async fn get_blocks_and_receipts_batch(
+        &self,
+        block_numbers: &[u64],
+    ) -> anyhow::Result<Vec<(BlockData, Vec<TxData>, Vec<ReceiptData>)>> {
+        if block_numbers.is_empty() {
+            return Ok(Vec::new());
+        }
+        if block_numbers.len() == 1 {
+            return Ok(vec![
+                self.get_block_and_receipts_batch(block_numbers[0]).await?,
+            ]);
+        }
+        let blocks = block_numbers.to_vec();
+        match self
+            .retry_call(
+                |provider| {
+                    let blocks = blocks.clone();
+                    async move { Self::batch_rpc_call_many(provider, &blocks).await }
+                },
+                ProviderScope::Any,
+            )
+            .await
+        {
+            Ok(rows) => Ok(rows),
+            Err(e) => {
+                tracing::debug!(
+                    blocks = block_numbers.len(),
+                    "multi-block batch failed, splitting: {e:#}"
+                );
+                let mid = block_numbers.len() / 2;
+                let mut left =
+                    Box::pin(self.get_blocks_and_receipts_batch(&block_numbers[..mid])).await?;
+                let right =
+                    Box::pin(self.get_blocks_and_receipts_batch(&block_numbers[mid..])).await?;
+                left.extend(right);
+                Ok(left)
+            }
+        }
+    }
+
     /// Fetch block + receipts in a single JSON-RPC batch request, pinned to a specific provider.
     ///
     /// Same as `get_block_and_receipts_batch` but calls a specific provider directly,
@@ -1191,17 +1348,70 @@ impl RpcClient {
         batch.send().await.map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        let receipts_raw: Value = receipts_waiter
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Self::decode_block_and_receipts(block_number, raw, receipts_raw)
+    }
+
+    /// Several blocks in one HTTP POST. Caller splits on error.
+    async fn batch_rpc_call_many(
+        provider: RootProvider,
+        block_numbers: &[u64],
+    ) -> anyhow::Result<Vec<(BlockData, Vec<TxData>, Vec<ReceiptData>)>> {
+        let mut batch = BatchRequest::new(provider.client());
+        let mut block_waiters = Vec::with_capacity(block_numbers.len());
+        let mut receipt_waiters = Vec::with_capacity(block_numbers.len());
+        for &block_number in block_numbers {
+            let block_waiter: Waiter<Value> = batch
+                .add_call(
+                    "eth_getBlockByNumber",
+                    &(BlockNumberOrTag::Number(block_number), true),
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let receipts_waiter: Waiter<Value> = batch
+                .add_call(
+                    "eth_getBlockReceipts",
+                    &(alloy::eips::BlockId::number(block_number),),
+                )
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            block_waiters.push(block_waiter);
+            receipt_waiters.push(receipts_waiter);
+        }
+        batch.send().await.map_err(|e| anyhow::anyhow!("{}", e))?;
+
+        let mut out = Vec::with_capacity(block_numbers.len());
+        for ((block_number, block_waiter), receipt_waiter) in block_numbers
+            .iter()
+            .copied()
+            .zip(block_waiters)
+            .zip(receipt_waiters)
+        {
+            let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+            let receipts_raw: Value = receipt_waiter
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            out.push(Self::decode_block_and_receipts(
+                block_number,
+                raw,
+                receipts_raw,
+            )?);
+        }
+        Ok(out)
+    }
+
+    fn decode_block_and_receipts(
+        block_number: u64,
+        mut raw: Value,
+        mut receipts_raw: Value,
+    ) -> anyhow::Result<(BlockData, Vec<TxData>, Vec<ReceiptData>)> {
         if raw.is_null() {
             anyhow::bail!("block {} not found", block_number);
         }
-        let mut raw = raw;
         Self::clean_block_transactions(&mut raw);
         let block_json_size = raw.to_string().len();
         let block: Block = serde_json::from_value(raw).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        let mut receipts_raw: Value = receipts_waiter
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         if receipts_raw.is_null() {
             anyhow::bail!(
                 "block {block_number} receipts not found (eth_getBlockReceipts returned null — \

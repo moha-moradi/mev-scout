@@ -29,7 +29,9 @@ impl JobProgress for BarProgress {
                     // Template string is a compile-time constant; failure is a programmer error.
                     #[allow(clippy::expect_used)]
                     let style = indicatif::ProgressStyle::default_bar()
-                        .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})")
+                        .template(
+                            "[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} blocks ({eta})",
+                        )
                         .expect("valid template")
                         .progress_chars("=> ");
                     pb.set_style(style);
@@ -41,7 +43,8 @@ impl JobProgress for BarProgress {
                     }
                 }
             }
-            "complete" => {
+            "complete" =>
+            {
                 #[allow(clippy::unwrap_used)]
                 if let Some(pb) = self.bar.lock().unwrap().take() {
                     pb.finish_and_clear();

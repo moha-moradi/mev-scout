@@ -90,8 +90,8 @@ async fn bootstrap_pools(config: &Config, cache: &SqliteStore, progress: &dyn Jo
     // Same defaults as `discover` (hybrid + min_tvl) so a fresh `live` run
     // seeds an explorer-like liquid universe. Override via `[discover].source`.
     let mut opts = DiscoverOpts::from_config(config);
-    // A fresh cache has nothing to resume from; the window falls back to
-    // the chain's configured lookback.
+    // A fresh cache has nothing to resume from. The window is
+    // `[discover].lookback_days` when set, otherwise the chain lookback.
     opts.incremental = false;
 
     match job_discover(config, &opts, progress).await {

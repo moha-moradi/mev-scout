@@ -95,6 +95,9 @@ pub struct ProviderState {
     /// waste a round-trip on every read; they remain usable for block/log/fetch
     /// workloads that don't need historical state.
     state_capable: bool,
+    /// `rpc_rps = 0`: no token bucket. Block and log reads prefer these
+    /// providers over any positive-RPS peer.
+    unlimited: bool,
 }
 
 impl ProviderState {
@@ -113,6 +116,7 @@ impl ProviderState {
             label,
             archive: true,
             state_capable: true,
+            unlimited: false,
         }
     }
 
@@ -158,6 +162,10 @@ impl ProviderState {
         self.state_capable
     }
 
+    pub fn is_unlimited(&self) -> bool {
+        self.unlimited
+    }
+
     /// Record that this provider deterministically cannot serve historical
     /// state (pruned full node / retention window exhausted). The provider is
     /// still healthy for block/log/fetch workloads, so this is not a failure.
@@ -181,6 +189,10 @@ impl ProviderState {
 
     pub fn set_rate_limiter(&mut self, rl: Option<Arc<RateLimiter>>) {
         self.rate_limiter = rl;
+    }
+
+    pub fn set_unlimited(&mut self, unlimited: bool) {
+        self.unlimited = unlimited;
     }
 
     /// Mark provider as completely dead with an explicit cooldown. Used when
