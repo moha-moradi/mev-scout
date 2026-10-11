@@ -4,21 +4,14 @@ use super::DetectCtx;
 use alloy::primitives::Address;
 use std::cmp;
 
-use crate::pool::math::balancer as balancer_math;
-use crate::pool::math::curve as curve_math;
 use crate::pool::math::{
     optimal_two_hop_arb, optimal_two_hop_arb_generic, optimal_two_hop_arb_segmented,
-    quote_exact_in, PoolQuote, TwoHopArbResult,
+    quote_exact_in, PoolQuote, TwoHopArbResult, MAX_V3_BREAKPOINTS_PER_POOL,
 };
-use crate::pool::state::{
-    calldata_gas_estimate, BalancerPoolState, CurvePoolState, PoolManager, PoolState, QuoteKind,
-};
+use crate::pool::state::{calldata_gas_estimate, PoolManager, PoolState, QuoteKind};
 use crate::types::MevOpportunity;
 use crate::types::Strategy;
 
-/// Maximum tick-band breakpoints enumerated per V3 pool when segmenting the
-/// profit landscape for deterministic optimization.
-const MAX_V3_BREAKPOINTS_PER_POOL: usize = 24;
 /// Maximum inverted breakpoints taken from the second pool (inversion requires
 /// binary-search probes through the first pool's quote, so this is kept lower).
 const MAX_INVERTED_BREAKPOINTS: usize = 12;
@@ -386,26 +379,6 @@ fn estimate_arb_pair_profit(
     let output = quote_exact_in(pool_b, shared_token, token_out, intermediate)?;
 
     (output > test_input).then(|| output - test_input)
-}
-
-/// Curve output amount dispatcher — forwards to `curve_math::curve_output_amount`.
-pub fn curve_output_amount(
-    amount_in: u128,
-    pool: &CurvePoolState,
-    token_in: Address,
-    token_out: Address,
-) -> Option<u128> {
-    curve_math::curve_output_amount(amount_in, pool, token_in, token_out)
-}
-
-/// Balancer quote dispatcher — forwards to `balancer_math::balancer_quote_exact_in`.
-pub fn balancer_quote_exact_in(
-    amount_in: u128,
-    pool: &BalancerPoolState,
-    token_in: Address,
-    token_out: Address,
-) -> Option<u128> {
-    balancer_math::balancer_quote_exact_in(amount_in, pool, token_in, token_out)
 }
 
 /// Combine first-pool breakpoints (already in input-x space) with second-pool

@@ -1,9 +1,9 @@
 use super::scan_factory_creation_events_pinned;
-use crate::utils::{abi_word_address, topic_address};
 use super::METRIC_POOL_CREATED_TOPIC;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::{abi_word_address, topic_address};
 
 /// Metric V2 activity: per-pool contracts emit Swap from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {

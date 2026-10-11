@@ -1,6 +1,6 @@
 //! ERC-20 Transfer and UniV2 Sync/Mint/Burn exclusion facts.
-use alloy::primitives::U256;
 use crate::utils::topic_address;
+use alloy::primitives::U256;
 
 use crate::chain::events::{TRANSFER_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SYNC_TOPIC};
 use crate::data::LogData;
@@ -46,4 +46,3 @@ pub fn decode_v2_pair_op(log: &LogData) -> Option<V2PairOpFact> {
         kind,
     })
 }
-

@@ -265,10 +265,7 @@ struct CoingeckoSimplePrice {
 pub async fn fetch_native_price_coingecko(chain: crate::types::ChainName) -> anyhow::Result<f64> {
     let id = native_asset_id(chain);
     let url = format!("https://api.coingecko.com/api/v3/simple/price?ids={id}&vs_currencies=usd");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
-        .build()?;
+    let client = crate::utils::http_client(std::time::Duration::from_secs(10));
     let resp: HashMap<String, CoingeckoSimplePrice> = client.get(&url).send().await?.json().await?;
     resp.get(id)
         .and_then(|v| v.usd)
@@ -285,11 +282,11 @@ pub async fn fetch_native_price_llama(
     }
     let prefix = llama_chain_prefix(chain);
     let key = format!("{prefix}:{wrapped_native:#x}");
-    let url = format!("https://coins.llama.fi/prices/current/{}", urlencode(&key));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
-        .build()?;
+    let url = format!(
+        "https://coins.llama.fi/prices/current/{}",
+        crate::utils::urlencode(&key)
+    );
+    let client = crate::utils::http_client(std::time::Duration::from_secs(10));
     let resp: LlamaResponse = client.get(&url).send().await?.json().await?;
     resp.coins
         .values()
@@ -332,14 +329,11 @@ pub async fn fetch_prices_llama(
         timestamp,
         assets
             .iter()
-            .map(|a| format!("coins={}", urlencode(a)))
+            .map(|a| format!("coins={}", crate::utils::urlencode(a)))
             .collect::<Vec<_>>()
             .join("&")
     );
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
-        .build()?;
+    let client = crate::utils::http_client(std::time::Duration::from_secs(15));
     let resp: LlamaResponse = client.get(&url).send().await?.json().await?;
 
     let mut out = HashMap::new();
@@ -351,15 +345,6 @@ pub async fn fetch_prices_llama(
         }
     }
     Ok(out)
-}
-
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u32),
-        })
-        .collect()
 }
 
 #[cfg(test)]

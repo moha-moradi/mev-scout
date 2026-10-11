@@ -10,8 +10,8 @@
 //! Sub-calls use `allowFailure = true`: a reverted member (e.g. an address that
 //! is not actually a CL pool) returns empty data for its slot instead of failing
 //! the whole batch.
-use std::collections::HashMap;
 use crate::utils::topic_address;
+use std::collections::HashMap;
 
 use alloy::primitives::{address, Address, Bytes};
 

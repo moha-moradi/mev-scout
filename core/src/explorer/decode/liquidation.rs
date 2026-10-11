@@ -1,6 +1,6 @@
 //! Lending-protocol liquidation and BuyCollateral decoders.
-use alloy::primitives::{Address, U256};
 use crate::utils::{abi_word_address, topic_address};
+use alloy::primitives::{Address, U256};
 
 use crate::chain::events::{
     AAVE_V3_LIQUIDATION_CALL_TOPIC, COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
@@ -194,4 +194,3 @@ pub fn decode_buy_collateral(log: &LogData) -> Option<BuyCollateralFact> {
         collateral_amount: U256::from_be_slice(&log.data[32..64]),
     })
 }
-

@@ -39,22 +39,6 @@ pub fn coingecko_platform_id(chain: ChainName) -> &'static str {
     }
 }
 
-fn http_client(timeout_secs: u64) -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
-        .user_agent("mev-scout/0.1 (+https://github.com/local/mev-scout)")
-        .build()?)
-}
-
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u32),
-        })
-        .collect()
-}
-
 /// Parse a DefiLlama coins current/historical JSON body into address → partial metadata.
 pub fn parse_llama_coins_response(json: &Value, prefix: &str) -> HashMap<Address, CachedToken> {
     let mut out = HashMap::new();
@@ -108,10 +92,7 @@ pub async fn enrich_from_llama(
         return out;
     }
     let prefix = llama_chain_prefix(chain);
-    let Ok(client) = http_client(15) else {
-        tracing::warn!("token meta: failed to build HTTP client for DefiLlama");
-        return out;
-    };
+    let client = crate::utils::http_client(Duration::from_secs(15));
 
     const CHUNK: usize = 40;
     for chunk in addresses.chunks(CHUNK) {
@@ -119,7 +100,7 @@ pub async fn enrich_from_llama(
         let joined = keys.join(",");
         let url = format!(
             "https://coins.llama.fi/prices/current/{}",
-            urlencode(&joined)
+            crate::utils::urlencode(&joined)
         );
         match client.get(&url).send().await {
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
@@ -185,10 +166,7 @@ pub async fn enrich_from_coingecko(
         return out;
     }
     let platform = coingecko_platform_id(chain);
-    let Ok(client) = http_client(15) else {
-        tracing::warn!("token meta: failed to build HTTP client for CoinGecko");
-        return out;
-    };
+    let client = crate::utils::http_client(Duration::from_secs(15));
 
     for addr in addresses {
         let url = format!("https://api.coingecko.com/api/v3/coins/{platform}/contract/{addr:#x}");

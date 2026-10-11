@@ -41,11 +41,7 @@ impl DexScreenerClient {
     }
 
     pub fn with_base(base_url: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .user_agent("mev-scout/0.1")
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::utils::http_client(Duration::from_secs(15));
         Self { client, base_url }
     }
 
@@ -78,7 +74,7 @@ impl DexScreenerClient {
             let url = format!(
                 "{}/latest/dex/search?q={}",
                 self.base_url,
-                percent_encode(hub)
+                crate::utils::urlencode(hub)
             );
             match super::fetch_with_retry(&self.client, "DexScreener", &url).await {
                 Ok(resp) => {
@@ -231,19 +227,6 @@ fn merge_pairs(
             creation_block: 0,
         });
     }
-}
-
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 use super::scan_factory_creation_events_pinned;
-use crate::utils::{abi_word_address, topic_address};
 use super::SOLIDLY_PAIR_CREATED_TOPIC;
 use super::{DiscoveredPool, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
+use crate::utils::{abi_word_address, topic_address};
 
 pub(crate) async fn scan_solidly_batch(ctx: &ScanContext<'_>) -> ScanBatchResult {
     let ScanContext {

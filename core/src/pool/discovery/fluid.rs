@@ -1,9 +1,9 @@
 use super::scan_factory_creation_events_pinned;
-use crate::utils::topic_address;
 use super::FLUID_DEX_DEPLOYED_TOPIC;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::topic_address;
 use alloy::primitives::Address;
 
 /// Fluid DEX activity: per-pool contracts emit Swap from the pool address;

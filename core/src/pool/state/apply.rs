@@ -4,13 +4,12 @@ use crate::pool::math::consts::Q128_SHIFT;
 use crate::pool::state::manager::PoolManager;
 use crate::pool::state::pool_types::PoolState;
 use crate::utils::u128_from_be_bytes;
-use alloy::primitives::{b256, Address, B256, U256};
+use alloy::primitives::{Address, U256};
 
 /// Event signature for Uniswap V2 Swap event
 pub use crate::chain::events::V2_SWAP_TOPIC as SWAP_TOPIC;
 /// Event signature for Uniswap V2 Sync event
-pub(crate) const SYNC_TOPIC: B256 =
-    b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
+pub(crate) use crate::chain::events::V2_SYNC_TOPIC as SYNC_TOPIC;
 
 impl PoolManager {
     /// Update a V2 pool's reserves using amounts from a Swap event.

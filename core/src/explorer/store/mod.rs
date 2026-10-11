@@ -526,7 +526,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 100,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 5,
                 swaps: &[],
@@ -579,7 +581,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 200,
-                block_hash: &b256!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                block_hash: &b256!(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 1,
                 swaps: &[],
@@ -655,7 +659,9 @@ mod tests {
                 &store,
                 SeedBlockParams {
                     block_number: block,
-                    block_hash: &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                    block_hash: &b256!(
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    ),
                     ts: 1_700_000_000,
                     tx_count: 1,
                     swaps: &[],
@@ -735,7 +741,9 @@ mod tests {
                 &store,
                 SeedBlockParams {
                     block_number: block,
-                    block_hash: &b256!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+                    block_hash: &b256!(
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    ),
                     ts: 1_700_000_000,
                     tx_count: 1,
                     swaps: &[],
@@ -799,7 +807,9 @@ mod tests {
                 &store,
                 SeedBlockParams {
                     block_number: block,
-                    block_hash: &b256!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+                    block_hash: &b256!(
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    ),
                     ts: 1_700_000_000,
                     tx_count: 1,
                     swaps: &[],
@@ -940,7 +950,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 130,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaae"
+                ),
                 ts: 1_700_000_300,
                 tx_count: 5,
                 swaps: &[],
@@ -960,7 +972,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 131,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf"
+                ),
                 ts: 1_700_000_400,
                 tx_count: 5,
                 swaps: &[],
@@ -990,7 +1004,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 120,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+                ),
                 ts: 1_700_000_100,
                 tx_count: 5,
                 swaps: &[],
@@ -1003,7 +1019,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 121,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac"
+                ),
                 ts: 1_700_000_200,
                 tx_count: 5,
                 swaps: &[],
@@ -1092,7 +1110,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 400,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 10,
                 swaps: &swap_legs,
@@ -1112,7 +1132,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 401,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 1,
                 swaps: &[swap_leg(
@@ -1154,7 +1176,9 @@ mod tests {
                 &store,
                 SeedBlockParams {
                     block_number: block,
-                    block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"),
+                    block_hash: &b256!(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
+                    ),
                     ts,
                     tx_count: 1,
                     swaps,
@@ -1205,7 +1229,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 600,
-                block_hash: &b256!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+                block_hash: &b256!(
+                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 1,
                 swaps: &[],
@@ -1308,7 +1334,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 700,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa70"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 2,
                 swaps: &[],
@@ -1320,7 +1348,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 701,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa71"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa71"
+                ),
                 ts: 1_700_000_100,
                 tx_count: 2,
                 swaps: &[],
@@ -1359,7 +1389,9 @@ mod tests {
             &store,
             SeedBlockParams {
                 block_number: 800,
-                block_hash: &b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa80"),
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa80"
+                ),
                 ts: 1_700_000_000,
                 tx_count: 1,
                 swaps: &[],

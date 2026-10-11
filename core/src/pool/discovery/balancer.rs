@@ -1,10 +1,10 @@
 use super::BALANCER_POOL_REGISTERED_TOPIC;
-use crate::utils::topic_address;
 use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use crate::pool::selectors::BALANCER_GET_POOL;
 use crate::rpc::RpcClient;
+use crate::utils::topic_address;
 use alloy::primitives::{Address, Bytes, U256};
 use alloy::rpc::types::Filter;
 

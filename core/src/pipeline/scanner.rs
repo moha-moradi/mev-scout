@@ -11,99 +11,29 @@ use crate::error;
 use crate::rpc::RpcClient;
 
 /// DEX event topic signatures used for activity detection.
+///
+/// Every name is a re-export of [`crate::chain::events`]. Hashes are not
+/// computed here.
 pub(crate) mod topics {
-    use alloy::primitives::{b256, keccak256, B256};
-    use std::sync::LazyLock;
+    use alloy::primitives::B256;
 
-    pub const V2_SWAP: B256 =
-        b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
-    pub const V2_SYNC: B256 =
-        b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
-
-    pub const V3_SWAP: B256 =
-        b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
-    pub static V3_MINT: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)"));
-    pub const V3_BURN: B256 =
-        b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
-
-    pub static CURVE_TOKEN_EXCHANGE: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256)"));
-    pub static CURVE_V2_TOKEN_EXCHANGE: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
-    pub static BALANCER_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
-
-    /// Uniswap V4 Swap event from the singleton PoolManager
-    /// (`id` in topics[1]; NOT the same as the V3 Swap signature).
-    pub static V4_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-    });
-
-    /// Pancake Infinity CL Swap event from the singleton CLPoolManager
-    /// (`id` in topics[1]; superset of the V4 signature with a `protocolFee` word).
-    pub static INF_CL_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
-    });
-
-    /// Fluid DEX pool Swap event (`Swap(bool,uint256,uint256,address)` —
-    /// no indexed params; verified against fluid-contracts-public).
-    pub static FLUID_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
-
-    /// Metric V2 pool Swap event (swap-event signature; digest computed from
-    /// the signature string; verifying the produced topic on-chain is deferred).
-    pub static METRIC_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
-
-    /// Solidly/Velodrome/Aerodrome pool Swap event
-    /// (`Swap(address,address,uint256,uint256,uint256,uint256)` — verified
-    /// against velodrome-finance/contracts `IPool.sol`).
-    pub static SOLIDLY_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,uint256,uint256,uint256,uint256)"));
-
-    /// Trader Joe Liquidity Book 2.0 Pair Swap event
-    /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
-    /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
-    /// The same canonical signature is emitted by LB 2.2 pairs (per-side amounts).
-    pub static TRADER_JOE_LB_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)")
-    });
-
-    /// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event
-    /// (`sender, to, uint24 id, bytes32 amountsIn, bytes32 amountsOut,
-    /// uint24 volatilityAccumulator, bytes32 totalFees, bytes32 protocolFees`
-    /// — verified against lfj-gg/joe-v2 branches main/v2.1/v2.2).
-    pub static TRADER_JOE_LB_SWAP_LEGACY: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
-    });
-
-    /// Pendle V2 market Swap event (caller, receiver indexed).
-    pub static PENDLE_MARKET_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
-
-    /// Pendle V2 router PT/YT swap events — verified against pendle-core-v2
-    /// `IPActionSwapPTV3Events` / `IPActionSwapYTV3Events`. Emitted by the
-    /// singleton router with the MARKET address in topics[2], so discovery
-    /// must override the hit address instead of using the emitter.
-    pub static PENDLE_SWAP_PT_AND_SY: LazyLock<B256> =
-        LazyLock::new(|| keccak256("SwapPtAndSy(address,address,address,int256,int256)"));
-    pub static PENDLE_SWAP_YT_AND_SY: LazyLock<B256> =
-        LazyLock::new(|| keccak256("SwapYtAndSy(address,address,address,int256,int256)"));
-    pub static PENDLE_SWAP_PT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("SwapPtAndToken(address,address,address,address,int256,int256,uint256)")
-    });
-    pub static PENDLE_SWAP_YT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("SwapYtAndToken(address,address,address,address,int256,int256,uint256)")
-    });
-
-    // Curve TokenExchangeUnderlying events (exchange_underlying path)
-    pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
-    });
-    pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
-    });
+    pub use crate::chain::events::{
+        BALANCER_SWAP_TOPIC as BALANCER_SWAP, CURVE_TOKEN_EXCHANGE_TOPIC as CURVE_TOKEN_EXCHANGE,
+        CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC as CURVE_TOKEN_EXCHANGE_UNDERLYING,
+        CURVE_V2_TOKEN_EXCHANGE_TOPIC as CURVE_V2_TOKEN_EXCHANGE,
+        CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC as CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
+        FLUID_SWAP_TOPIC as FLUID_SWAP, INF_CL_SWAP_TOPIC as INF_CL_SWAP,
+        METRIC_SWAP_TOPIC as METRIC_SWAP, PENDLE_MARKET_SWAP_TOPIC as PENDLE_MARKET_SWAP,
+        PENDLE_SWAP_PT_AND_SY_TOPIC as PENDLE_SWAP_PT_AND_SY,
+        PENDLE_SWAP_PT_AND_TOKEN_TOPIC as PENDLE_SWAP_PT_AND_TOKEN,
+        PENDLE_SWAP_YT_AND_SY_TOPIC as PENDLE_SWAP_YT_AND_SY,
+        PENDLE_SWAP_YT_AND_TOKEN_TOPIC as PENDLE_SWAP_YT_AND_TOKEN,
+        SOLIDLY_SWAP_TOPIC as SOLIDLY_SWAP,
+        TRADER_JOE_LB_SWAP_LEGACY_TOPIC as TRADER_JOE_LB_SWAP_LEGACY,
+        TRADER_JOE_LB_SWAP_TOPIC as TRADER_JOE_LB_SWAP, V2_SWAP_TOPIC as V2_SWAP,
+        V2_SYNC_TOPIC as V2_SYNC, V3_BURN_TOPIC as V3_BURN, V3_MINT_TOPIC as V3_MINT,
+        V3_SWAP_TOPIC as V3_SWAP, V4_SWAP_TOPIC as V4_SWAP,
+    };
 
     /// All DEX event topic hashes for activity scanning.
     pub fn all_topics() -> Vec<B256> {
@@ -111,7 +41,7 @@ pub(crate) mod topics {
             V2_SWAP,
             V2_SYNC,
             V3_SWAP,
-            *V3_MINT,
+            V3_MINT,
             V3_BURN,
             *CURVE_TOKEN_EXCHANGE,
             *CURVE_V2_TOKEN_EXCHANGE,

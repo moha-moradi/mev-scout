@@ -1,14 +1,14 @@
 use super::scan_factory_creation_events_pinned;
-use crate::utils::{abi_word_address, topic_address};
 use super::{resolve_dex_name, DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use super::{ALGEBRA_POOL_CREATED_TOPIC, SLIPSTREAM_POOL_CREATED_TOPIC, V3_POOL_CREATED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::{abi_word_address, topic_address};
 
 /// V3 activity: per-pool contracts emit Swap/Mint/Burn from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
     let t0 = log.topics()[0];
-    if t0 == topics::V3_SWAP || t0 == *topics::V3_MINT || t0 == topics::V3_BURN {
+    if t0 == topics::V3_SWAP || t0 == topics::V3_MINT || t0 == topics::V3_BURN {
         Some(PoolHitCandidate::simple(DexType::UniswapV3))
     } else {
         None

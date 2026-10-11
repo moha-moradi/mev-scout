@@ -997,8 +997,7 @@ async fn resolve_curve_underlying(
         "Resolving underlying tokens for {} Curve pools...",
         curve_pools.len()
     );
-    let resolved =
-        curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
+    let resolved = curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
 
     let mut resolved_count = 0u32;
     for (addr, tokens) in resolved {
@@ -1329,7 +1328,7 @@ async fn discover_pools_shard(
         topics::V2_SWAP,
         topics::V2_SYNC,
         topics::V3_SWAP,
-        *topics::V3_MINT,
+        topics::V3_MINT,
         topics::V3_BURN,
         *topics::CURVE_TOKEN_EXCHANGE,
         *topics::CURVE_V2_TOKEN_EXCHANGE,
@@ -1459,8 +1458,7 @@ async fn discover_pools_shard(
     resolve_curve_underlying(rpc, config, &mut factory_pools).await;
 
     let results = fetch_dex_metadata(rpc, config, &pool_hits, &mut factory_pools).await;
-    let symbol_results =
-        resolve_token_symbols(rpc, config, &factory_pools, &results).await;
+    let symbol_results = resolve_token_symbols(rpc, config, &factory_pools, &results).await;
     let discovered_pools =
         build_discovery_output(config, &pool_hits, factory_pools, results, symbol_results);
 

@@ -963,9 +963,12 @@ async fn run_loop(
             break;
         }
 
-        let Some(current_tip) =
-            poll_tip_with_retry(ctx, &mut stats.consecutive_failures, MAX_CONSECUTIVE_FAILURES)
-                .await?
+        let Some(current_tip) = poll_tip_with_retry(
+            ctx,
+            &mut stats.consecutive_failures,
+            MAX_CONSECUTIVE_FAILURES,
+        )
+        .await?
         else {
             continue;
         };
@@ -993,7 +996,10 @@ async fn run_loop(
     if stats.total_pending_txs > 0 {
         progress.log(&format!("    Pending txs:    {}", stats.total_pending_txs));
     }
-    progress.log(&format!("  Opportunities:    {}", stats.total_opportunities));
+    progress.log(&format!(
+        "  Opportunities:    {}",
+        stats.total_opportunities
+    ));
 
     // Recomputed over the full accumulated list. `update_ledger` already ran
     // after every pass, including passes that found nothing; this last apply

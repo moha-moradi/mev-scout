@@ -1,6 +1,6 @@
 //! Flash-loan event decoders.
-use alloy::primitives::{Address, U256};
 use crate::utils::{abi_word_address, topic_address};
+use alloy::primitives::{Address, U256};
 
 use crate::chain::events::{
     decode_balancer_flash, AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC,
@@ -146,4 +146,3 @@ fn logdata_to_rpc_log(log: &LogData) -> alloy::rpc::types::Log {
         removed: false,
     }
 }
-

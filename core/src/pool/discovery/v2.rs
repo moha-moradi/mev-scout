@@ -1,9 +1,9 @@
 use super::scan_factory_creation_events_pinned;
-use crate::utils::{abi_word_address, topic_address};
 use super::V2_PAIR_CREATED_TOPIC;
 use super::{resolve_dex_name, DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::{abi_word_address, topic_address};
 /// V2 activity: per-pool Pair contracts emit Swap/Sync from the pool address.
 pub(super) fn classify_activity(log: &alloy::rpc::types::Log) -> Option<PoolHitCandidate> {
     if log.topics()[0] == topics::V2_SWAP || log.topics()[0] == topics::V2_SYNC {

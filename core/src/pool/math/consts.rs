@@ -12,6 +12,8 @@ pub const GWEI_TO_WEI: u128 = 1_000_000_000;
 pub const BASE_TX_GAS: u64 = 40_000;
 pub const DEFAULT_POOL_GAS: u64 = 80_000;
 pub const V3_POOL_GAS: u64 = 120_000;
+/// Tick-band breakpoints enumerated per V3 pool when segmenting a path.
+pub const MAX_V3_BREAKPOINTS_PER_POOL: usize = 24;
 pub const STABLE_POOL_GAS: u64 = 100_000;
 pub const JIT_OVERHEAD: u64 = 150_000;
 
