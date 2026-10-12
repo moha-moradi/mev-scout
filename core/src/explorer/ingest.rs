@@ -211,19 +211,32 @@ pub async fn fetch_block_bundle(rpc: &RpcClient, block_number: u64) -> anyhow::R
     rpc.get_block_and_receipts_batch(block_number).await
 }
 
+/// Per-block indexing request for [`index_block`].
+pub struct IndexBlockRequest<'a> {
+    pub rpc: &'a RpcClient,
+    pub store: &'a ExplorerStore,
+    pub cfg: &'a IngestConfig,
+    pub pools: PoolViews<'a>,
+    pub block_number: u64,
+    pub native_price: Option<f64>,
+    pub token_prices: Option<HashMap<Address, TokenUsd>>,
+    pub savax_rates: &'a mut SavaxRateCache,
+}
+
 /// Fetch one block + receipts, decode, classify, persist. Idempotent: an
 /// already-classified block is skipped. When `token_prices` is `None`, USD
 /// prices for the block's profit tokens are warmed on demand.
-pub async fn index_block(
-    rpc: &RpcClient,
-    store: &ExplorerStore,
-    cfg: &IngestConfig,
-    pools: PoolViews<'_>,
-    block_number: u64,
-    native_price: Option<f64>,
-    token_prices: Option<HashMap<Address, TokenUsd>>,
-    savax_rates: &mut SavaxRateCache,
-) -> anyhow::Result<IndexedBlock> {
+pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBlock> {
+    let IndexBlockRequest {
+        rpc,
+        store,
+        cfg,
+        pools,
+        block_number,
+        native_price,
+        token_prices,
+        savax_rates,
+    } = req;
     if store.block_classified(block_number)? {
         debug!(block = block_number, "already classified, skipping");
         return Ok(IndexedBlock {
@@ -881,16 +894,16 @@ pub async fn run_live(
 
             let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             for block in cursor..=safe {
-                let indexed = index_block(
+                let indexed = index_block(IndexBlockRequest {
                     rpc,
                     store,
                     cfg,
                     pools,
-                    block,
+                    block_number: block,
                     native_price,
-                    None,
-                    &mut savax_rates,
-                )
+                    token_prices: None,
+                    savax_rates: &mut savax_rates,
+                })
                 .await?;
                 indexed_total += indexed.ops as u64;
             }
@@ -983,16 +996,16 @@ pub async fn run_range(
             if block.saturating_sub(from_block) % 256 == 0 {
                 native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             }
-            let indexed = index_block(
+            let indexed = index_block(IndexBlockRequest {
                 rpc,
                 store,
                 cfg,
                 pools,
-                block,
+                block_number: block,
                 native_price,
-                None,
-                &mut savax_rates,
-            )
+                token_prices: None,
+                savax_rates: &mut savax_rates,
+            })
             .await?;
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;

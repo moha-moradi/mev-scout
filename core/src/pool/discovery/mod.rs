@@ -21,7 +21,6 @@ use crate::pool::selectors::SYMBOL;
 use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
 use crate::pool::state::PoolInfo;
 use crate::rpc::RpcClient;
-use crate::utils::{abi_word_address, topic_address};
 
 /// One DEX activity hit keyed by pool address — shared across per-DEX scanners.
 #[derive(Clone, Copy)]
@@ -726,37 +725,6 @@ pub(super) struct ScanContext<'a> {
     pub(super) provider_idx: Option<usize>,
 }
 
-/// Shared fields decoded from factory PairCreated / PoolCreated logs where
-/// `topics[1]`/`topics[2]` are the token pair and the pool address sits in a
-/// data word. Callers keep protocol-specific fee / tick / stable decoding.
-struct IndexedPair {
-    pool: Address,
-    token0: Address,
-    token1: Address,
-    factory: Address,
-    creation_block: u64,
-}
-
-fn decode_indexed_pair(
-    log: &alloy::rpc::types::Log,
-    pool_word: usize,
-    min_data: usize,
-    min_topics: usize,
-) -> Option<IndexedPair> {
-    let log_data = log.data();
-    let topics = log.topics();
-    if log_data.data.len() < min_data || topics.len() < min_topics {
-        return None;
-    }
-    Some(IndexedPair {
-        pool: abi_word_address(&log_data.data, pool_word),
-        token0: topic_address(topics[1]),
-        token1: topic_address(topics[2]),
-        factory: log.address(),
-        creation_block: log.block_number.unwrap_or(0),
-    })
-}
-
 /// Pins to a specific provider when `provider_idx` is `Some`.
 async fn scan_factory_creation_events_pinned(
     rpc: &RpcClient,
@@ -894,7 +862,7 @@ pub async fn discover_pools(
     if num_shards <= 1 {
         // Single provider — run sequentially (no parallelism overhead)
         tracing::info!("Discovery: using 1 provider shard");
-        return discover_pools_shard(
+        return discover_pools_shard(ShardRequest {
             rpc,
             from_block,
             to_block,
@@ -902,8 +870,8 @@ pub async fn discover_pools(
             factory_batch_size,
             config,
             on_batch,
-            None,
-        )
+            provider_idx: None,
+        })
         .await;
     }
 
@@ -925,16 +893,16 @@ pub async fn discover_pools(
             let batch_size = effective_batch_size;
             let factory_batch = factory_batch_size;
             async move {
-                discover_pools_shard(
-                    &rpc,
-                    shard.from,
-                    shard.to,
-                    batch_size,
-                    factory_batch,
-                    config_ref,
-                    None,
-                    Some(shard.provider_idx),
-                )
+                discover_pools_shard(ShardRequest {
+                    rpc: &rpc,
+                    from_block: shard.from,
+                    to_block: shard.to,
+                    effective_batch_size: batch_size,
+                    factory_batch_size: factory_batch,
+                    config: config_ref,
+                    on_batch: None,
+                    provider_idx: Some(shard.provider_idx),
+                })
                 .await
             }
         })
@@ -1442,16 +1410,32 @@ async fn scan_activity_windows(
     merged
 }
 
-async fn discover_pools_shard(
-    rpc: &RpcClient,
+/// One provider shard of a discovery sweep: block range plus resolved batch
+/// sizes, config and provider pin.
+struct ShardRequest<'a, 'c> {
+    rpc: &'a RpcClient,
     from_block: u64,
     to_block: u64,
     effective_batch_size: u64,
     factory_batch_size: u64,
-    config: &DiscoveryConfig<'_>,
-    on_batch: Option<&dyn Fn() -> bool>,
+    config: &'a DiscoveryConfig<'c>,
+    on_batch: Option<&'a dyn Fn() -> bool>,
     provider_idx: Option<usize>,
+}
+
+async fn discover_pools_shard(
+    req: ShardRequest<'_, '_>,
 ) -> anyhow::Result<(Vec<DiscoveredPool>, HashSet<u64>)> {
+    let ShardRequest {
+        rpc,
+        from_block,
+        to_block,
+        effective_batch_size,
+        factory_batch_size,
+        config,
+        on_batch,
+        provider_idx,
+    } = req;
     let mut active_blocks = HashSet::new();
     let mut pool_hits: PoolHits = HashMap::new();
     let mut factory_pools: HashMap<Address, DiscoveredPool> = HashMap::new();

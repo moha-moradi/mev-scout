@@ -25,7 +25,7 @@ use crate::pool::state::pool_types::{
     UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };
 use crate::rpc::{BlockRef, RpcClient};
-use crate::utils::{abi_decode_address, u128_from_be_bytes};
+use crate::utils::{abi_decode_address, abi_word_i32, abi_word_u32, u128_from_be_bytes};
 /// Snapshot of pool metadata captured before spawning refresh tasks.
 #[derive(Clone, Copy)]
 struct PoolMeta {

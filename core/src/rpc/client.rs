@@ -1357,9 +1357,7 @@ impl RpcClient {
             .zip(receipt_waiters)
         {
             let raw: Value = block_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
-            let receipts_raw: Value = receipt_waiter
-                .await
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let receipts_raw: Value = receipt_waiter.await.map_err(|e| anyhow::anyhow!("{}", e))?;
             out.push(Self::decode_block_and_receipts(
                 block_number,
                 raw,

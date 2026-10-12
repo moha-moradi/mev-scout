@@ -74,9 +74,7 @@ pub fn mev_verdict(
         );
     };
     let Some(realized) = realized_net_wei else {
-        return MevVerdict::Unverifiable(
-            "no realized native delta for this tx".to_string(),
-        );
+        return MevVerdict::Unverifiable("no realized native delta for this tx".to_string());
     };
     match err_pct {
         Some(pct) => {

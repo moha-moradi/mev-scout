@@ -520,60 +520,54 @@ mod tests {
         assert_eq!(topics::V3_BURN, V3_BURN_TOPIC);
         assert_eq!(decoders::V3_BURN_TOPIC, V3_BURN_TOPIC);
         let same = |alias: &B256, canon: &B256| assert!(std::ptr::eq(alias, canon));
-        same(&*topics::CURVE_TOKEN_EXCHANGE, &*CURVE_TOKEN_EXCHANGE_TOPIC);
+        same(&topics::CURVE_TOKEN_EXCHANGE, &CURVE_TOKEN_EXCHANGE_TOPIC);
         same(
-            &*decoders::CURVE_TOKEN_EXCHANGE_TOPIC,
-            &*CURVE_TOKEN_EXCHANGE_TOPIC,
+            &decoders::CURVE_TOKEN_EXCHANGE_TOPIC,
+            &CURVE_TOKEN_EXCHANGE_TOPIC,
         );
         same(
-            &*topics::CURVE_V2_TOKEN_EXCHANGE,
-            &*CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            &topics::CURVE_V2_TOKEN_EXCHANGE,
+            &CURVE_V2_TOKEN_EXCHANGE_TOPIC,
         );
         same(
-            &*decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC,
-            &*CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            &decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            &CURVE_V2_TOKEN_EXCHANGE_TOPIC,
         );
-        same(&*topics::BALANCER_SWAP, &*BALANCER_SWAP_TOPIC);
-        same(&*decoders::BALANCER_SWAP_TOPIC, &*BALANCER_SWAP_TOPIC);
-        same(&*topics::V4_SWAP, &*V4_SWAP_TOPIC);
-        same(&*topics::INF_CL_SWAP, &*INF_CL_SWAP_TOPIC);
-        same(&*topics::FLUID_SWAP, &*FLUID_SWAP_TOPIC);
-        same(&*decoders::FLUID_SWAP_TOPIC, &*FLUID_SWAP_TOPIC);
-        same(&*topics::METRIC_SWAP, &*METRIC_SWAP_TOPIC);
-        same(&*decoders::METRIC_SWAP_TOPIC, &*METRIC_SWAP_TOPIC);
-        same(&*topics::SOLIDLY_SWAP, &*SOLIDLY_SWAP_TOPIC);
-        same(&*decoders::SOLIDLY_SWAP_TOPIC, &*SOLIDLY_SWAP_TOPIC);
-        same(&*topics::TRADER_JOE_LB_SWAP, &*TRADER_JOE_LB_SWAP_TOPIC);
-        same(&*decoders::LB_SWAP_TOPIC, &*TRADER_JOE_LB_SWAP_TOPIC);
+        same(&topics::BALANCER_SWAP, &BALANCER_SWAP_TOPIC);
+        same(&decoders::BALANCER_SWAP_TOPIC, &BALANCER_SWAP_TOPIC);
+        same(&topics::V4_SWAP, &V4_SWAP_TOPIC);
+        same(&topics::INF_CL_SWAP, &INF_CL_SWAP_TOPIC);
+        same(&topics::FLUID_SWAP, &FLUID_SWAP_TOPIC);
+        same(&decoders::FLUID_SWAP_TOPIC, &FLUID_SWAP_TOPIC);
+        same(&topics::METRIC_SWAP, &METRIC_SWAP_TOPIC);
+        same(&decoders::METRIC_SWAP_TOPIC, &METRIC_SWAP_TOPIC);
+        same(&topics::SOLIDLY_SWAP, &SOLIDLY_SWAP_TOPIC);
+        same(&decoders::SOLIDLY_SWAP_TOPIC, &SOLIDLY_SWAP_TOPIC);
+        same(&topics::TRADER_JOE_LB_SWAP, &TRADER_JOE_LB_SWAP_TOPIC);
+        same(&decoders::LB_SWAP_TOPIC, &TRADER_JOE_LB_SWAP_TOPIC);
         same(
-            &*topics::TRADER_JOE_LB_SWAP_LEGACY,
-            &*TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+            &topics::TRADER_JOE_LB_SWAP_LEGACY,
+            &TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
         );
-        same(&*topics::PENDLE_MARKET_SWAP, &*PENDLE_MARKET_SWAP_TOPIC);
-        same(&*decoders::PENDLE_SWAP_TOPIC, &*PENDLE_MARKET_SWAP_TOPIC);
+        same(&topics::PENDLE_MARKET_SWAP, &PENDLE_MARKET_SWAP_TOPIC);
+        same(&decoders::PENDLE_SWAP_TOPIC, &PENDLE_MARKET_SWAP_TOPIC);
+        same(&topics::PENDLE_SWAP_PT_AND_SY, &PENDLE_SWAP_PT_AND_SY_TOPIC);
+        same(&topics::PENDLE_SWAP_YT_AND_SY, &PENDLE_SWAP_YT_AND_SY_TOPIC);
         same(
-            &*topics::PENDLE_SWAP_PT_AND_SY,
-            &*PENDLE_SWAP_PT_AND_SY_TOPIC,
-        );
-        same(
-            &*topics::PENDLE_SWAP_YT_AND_SY,
-            &*PENDLE_SWAP_YT_AND_SY_TOPIC,
+            &topics::PENDLE_SWAP_PT_AND_TOKEN,
+            &PENDLE_SWAP_PT_AND_TOKEN_TOPIC,
         );
         same(
-            &*topics::PENDLE_SWAP_PT_AND_TOKEN,
-            &*PENDLE_SWAP_PT_AND_TOKEN_TOPIC,
+            &topics::PENDLE_SWAP_YT_AND_TOKEN,
+            &PENDLE_SWAP_YT_AND_TOKEN_TOPIC,
         );
         same(
-            &*topics::PENDLE_SWAP_YT_AND_TOKEN,
-            &*PENDLE_SWAP_YT_AND_TOKEN_TOPIC,
+            &topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
+            &CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
         );
         same(
-            &*topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
-            &*CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
-        );
-        same(
-            &*topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
-            &*CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
+            &topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
+            &CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
         );
 
         let kinds = kinds.into_inner();

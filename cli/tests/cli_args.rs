@@ -472,7 +472,16 @@ fn explorer_index_rejects_report_flags() {
     let ws = temp_ws("args_explorer_index_windows");
     let out = run(
         &ws,
-        &["-f", &cfg(), "explorer", "--windows", "7d", "index", "--days", "1"],
+        &[
+            "-f",
+            &cfg(),
+            "explorer",
+            "--windows",
+            "7d",
+            "index",
+            "--days",
+            "1",
+        ],
     );
     expect_fail(&out, "explorer --windows index");
     assert!(

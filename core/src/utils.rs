@@ -68,22 +68,6 @@ pub fn abi_word_i32(data: impl AsRef<[u8]>, index: usize) -> Option<i32> {
     ]))
 }
 
-/// Right-aligned `uint32` in ABI word `index`. Returns `None` if the buffer
-/// is shorter than that word.
-pub fn abi_word_u32(data: impl AsRef<[u8]>, index: usize) -> Option<u32> {
-    let data = data.as_ref();
-    let off = index * 32;
-    if off + 32 > data.len() {
-        return None;
-    }
-    Some(u32::from_be_bytes([
-        data[off + 28],
-        data[off + 29],
-        data[off + 30],
-        data[off + 31],
-    ]))
-}
-
 /// Address in the last 20 bytes of a 32-byte topic or ABI word.
 pub fn topic_address(word: impl AsRef<[u8]>) -> Address {
     let word = word.as_ref();
