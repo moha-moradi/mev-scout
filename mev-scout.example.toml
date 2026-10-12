@@ -24,8 +24,8 @@ rpc_rps = [1.0, 1.0, 0.8]
 rps_limit = 1
 
 # Default strategy set (comma-separated or "all").
-# NOTE: currently inert — no detector tests this list (see
-# docs/plan_prune_strategies.md §10). "all" resolves to
+# NOTE: currently inert — the detectors all run unconditionally, nothing gates
+# on this list (it is carried into the run manifest only). "all" resolves to
 # two_hop_arb, multi_hop_arb, jit, backrun.
 strategies = "all"
 

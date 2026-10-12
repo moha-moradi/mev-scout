@@ -572,9 +572,8 @@ Capital requirements are high. The edge is in tick range optimization — bots u
 
 ### 3.3 JIT + arb combo
 
-**Status: catalogue only.** The `jit_arbitrage` engine detector was removed
-(§44, `docs/plan_prune_strategies.md` §5) — the pattern below remains the
-specification, not a description of shipped code.
+**Status: catalogue only.** The `jit_arbitrage` engine detector was removed (§44)
+— the pattern below remains the specification, not a description of shipped code.
 
 | Attribute | Value |
 |-----------|-------|
@@ -2701,7 +2700,7 @@ Strategies executable with **zero pre-positioned capital** through flash loans, 
 > **Current tree:** liquidation capture is observation-only. `Strategy::Liquidation`
 > still parses (so historical rows and DB `kind` values keep loading) but no
 > detector emits it — the live detector modelled front-run capture without
-> modelling the competition for it (`docs/plan_prune_strategies.md` §6). The
+> modelling the competition for it. The
 > explorer independently classifies realized on-chain liquidations as
 > `MevKind::Liquidation`; that evidence is unaffected. The rows below are
 > research inventory, not a statement about what the engine detects.
@@ -3724,7 +3723,7 @@ the left column is what the engine builds, the right column is where the economi
 | Detector ID | Part V section(s) | Catalogue sections (Part I–IV) | Status (§16) |
 |---|---|---|---|
 | `arbitrage` | §37 (detection), §38 (size optimization), §36 (routes), §46 (P&L) | §1.3, §1.4, §2.2, §2.3, §2.4, §5.1, §5.3, §5.4, §7.1, §7.7, §7.11, §7.13, §25 | Coded (`two_hop.rs`, `multi_hop.rs`) |
-| `liquidation` | §39 (detection), §46 (P&L) | §4.1–§4.15, §4.4 flash-loan atomic, §4.13 interest accrual, §20, §22, §23, §24, §25, §26 | **Unwired** — `Strategy::Liquidation` parses for historical rows, but no detector runs (see `docs/plan_prune_strategies.md` §6) |
+| `liquidation` | §39 (detection), §46 (P&L) | §4.1–§4.15, §4.4 flash-loan atomic, §4.13 interest accrual, §20, §22, §23, §24, §25, §26 | **Unwired** — `Strategy::Liquidation` parses for historical rows, but no detector runs (§6) |
 | `sandwich` | §40 (detection), §50 (counterfactual) | §3.1 | **Removed** — not flash-loan-aware, capital-intensive, needs builder access (§4 Phase 2) |
 | `backrun` | §41 (detection), §51 (workflows) | §2.1, §21 automation-trigger backrun | Implemented (scanner, historical) |
 | `frontrun` | §42 (detection) | §1.4, §3.4, §4.9, §7.3, §7.8, §7.9, §8.4 | Planned |
@@ -3919,9 +3918,9 @@ jit_arbitrage
 
 **Implemented subset.** Only `arbitrage` (`two_hop_arb`, `multi_hop_arb`), `jit` and
 `backrun` (scanner-side state-differential, historical only — §41.2 live pending-tx
-backrun remains out of scope, see `docs/plan_backrun.md`) are wired into the
+backrun remains out of scope) are wired into the
 live/execution path today. `sandwich` and `jit_arbitrage` were
-removed from it (`docs/plan_prune_strategies.md` §4–§5); `liquidation` is unwired
+removed from it (§4–§5); `liquidation` is unwired
 while its `Strategy` variant survives so historical rows keep parsing (§6). The
 explorer is a separate system with its own `MevKind` taxonomy and still observes
 realized sandwiches, JIT-arb and liquidations on chain — pruning the detectors
@@ -4970,8 +4969,8 @@ The detector must distinguish normal LP activity from JIT activity.
 
 ## 44. JIT + Arbitrage
 
-**Status: not implemented.** The live `jit_arbitrage` detector was removed
-(`docs/plan_prune_strategies.md` §5) — its P&L model double-counted the JIT fee
+**Status: not implemented.** The live `jit_arbitrage` detector was removed — its
+P&L model double-counted the JIT fee
 capture against the arb leg. The section below is retained as the specification
 for a rebuild. Note that the explorer's `MevKind::JitArb` is *unrelated* and
 still runs: it is a kind upgrade applied to realized flows, not a detector

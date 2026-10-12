@@ -1,4 +1,4 @@
-﻿//! Backrun detector unit + integration tests â€” `docs/plan_backrun.md` آ§6.1.
+﻿//! Backrun detector unit + integration tests — §6.1.
 //!
 //! Pins the D3 net-flip rule (`net(pre) <= 0 && net(post) > 0`), the scope
 //! gates (`will_touch` / `newly_dirty`), cross-family dedup, D2 precedence

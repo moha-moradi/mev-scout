@@ -90,7 +90,7 @@ the *Skip* list below is genuinely not worth doing.
 | Tweak                  | Effect                                                | How                                                  |
 | ---------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
 | `noatime` mount        | Fewer wasted writes during sync / indexing            | add `,noatime` to the data partition in `/etc/fstab` |
-| I/O scheduler `none`   | No unnecessary fsync reordering on an SSD             | `echo none                                           |
+| I/O scheduler `none`   | No unnecessary fsync reordering on an SSD             | script below (`echo none > .../scheduler`)           |
 | `vm.swappiness = 10`   | Keep AvalancheGo in RAM, not swap                     | sysctl (block below)                                 |
 | 32 GiB RAM             | Biggest single win — beats every tweak on this page   | upgrade the VM rather than the settings              |
 | High `LimitNOFILE`     | Handle many concurrent RPC connections from mev-scout | unit drop-in (block below)                           |

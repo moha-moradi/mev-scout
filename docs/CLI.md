@@ -487,8 +487,8 @@ Gates that depend on this table:
 - Logs-only backrun/frontrun are **not** REVM `profit(B|before)` vs `profit(B|after)` —
   they are inferred causal proxies with §23 evidence codes in `details`.
 - Contrast: the **scanner** now computes the tree's first `profit(B|before)` vs
-  `profit(B|after)` differential — `BackrunDetector`'s net-flip rule (D3,
-  `docs/plan_backrun.md`) over state `S_{i-1}` vs `S_i`. The realized explorer
+  `profit(B|after)` differential — `BackrunDetector`'s net-flip rule (D3) over
+  state `S_{i-1}` vs `S_i`. The realized explorer
   backrun classifier above stays logs-only; wiring the explorer to consume the
   scanner differential is a separate change.
 - JIT covers Uni V3 Mint/Burn **and** LFJ/Pharaoh LB DepositedToBins/WithdrawnFromBins

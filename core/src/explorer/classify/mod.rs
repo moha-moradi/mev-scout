@@ -189,9 +189,9 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
 
     // ⚠️ LOAD-BEARING: this is a kind *upgrade*, not a standalone pass, and it is
     // independent of the live detectors. The `Strategy::JitArb` variant and the
-    // `JitArbDetector` were removed from the execution path
-    // (`docs/plan_prune_strategies.md`) because that detector had no honest
-    // P&L model — but this branch must survive. Dropping either half corrupts
+    // `JitArbDetector` were removed from the execution path because that
+    // detector had no honest P&L model — but this branch must survive.
+    // Dropping either half corrupts
     // every USD/P&L figure the explorer emits: keeping `JitArb` without the
     // `retain` below double-counts the flow as `Jit` *and* `ArbAtomic`.
     let arb_txs: std::collections::HashSet<u64> = events
