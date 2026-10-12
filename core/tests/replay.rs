@@ -220,7 +220,7 @@ async fn test_runner_run_block_synthetic() {
 ///
 /// `GasModel::HistoricalExact` pins gas so a single `run_block` is
 /// fully deterministic given a warm cache. Asserts the derived facts that the
-/// pipeline cross-check (`explorer validate`) relies on: kind present,
+/// persisted opportunity shape relies on: kind present,
 /// every retained op is net-positive (`expected_profit > gas_cost_wei`), and
 /// canonical ids are well-formed + unique. Exact profit amounts are never
 /// asserted (classifier drift tolerance), matching the corpus convention.

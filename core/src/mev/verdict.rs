@@ -1,12 +1,8 @@
 //! Detector-vs-realized MEV profit verdict (MEV-VERIFICATION §A).
 //!
 //! Compares the *detector's* expected net profit (`expected_profit −
-//! gas_cost_wei`, native wei) against the realized on-chain result for the
-//! same `tx_hash` (trace-observed native balance delta). This is distinct from
-//! [`crate::jobs::trace_verdict`], which checks the *classifier's* USD call
-//! against the same trace evidence. A detector can be honestly estimated but
-//! the classifier's price attribution wrong, and vice-versa — the two gates
-//! are independent.
+//! gas_cost_wei`, native wei) against the realized on-chain native balance
+//! delta for the same `tx_hash`.
 use serde::Serialize;
 
 /// Outcome of comparing a detector-expected net profit against realized.
@@ -16,7 +12,7 @@ pub enum MevVerdict {
     Pass,
     /// Detector over/under-estimates the realized net profit beyond tolerance.
     Fail(String),
-    /// One side of the comparison is missing (no realized trace delta, no
+    /// One side of the comparison is missing (no realized native delta, no
     /// detector row) — degraded coverage, not a failure.
     Unverifiable(String),
 }
@@ -55,7 +51,7 @@ impl std::fmt::Display for MevVerdict {
 /// Both amounts are native wei: the detector's `expected_profit` is
 /// native-normalized for the ledger-eligible strategies (see
 /// [`crate::paper::ledger`]) and `gas_cost_wei` is native; realized is the
-/// trace-observed native balance delta. `err_pct` is caller-computed as
+/// observed native balance delta. `err_pct` is caller-computed as
 /// `(expected − realized)/|expected| × 100` — positive means the detector
 /// over-estimates the on-chain result.
 ///
@@ -79,7 +75,7 @@ pub fn mev_verdict(
     };
     let Some(realized) = realized_net_wei else {
         return MevVerdict::Unverifiable(
-            "no realized native delta for this tx — run `explorer show --trace` first".to_string(),
+            "no realized native delta for this tx".to_string(),
         );
     };
     match err_pct {
@@ -118,7 +114,6 @@ pub fn mev_verdict(
 mod tests {
     use super::*;
 
-    // Mirror of the trace gate's five-case matrix (`jobs::trace` tests).
     const TOL: f64 = 20.0;
     // 0.005 native — only exercised in the degenerate expected ≈ 0 branch.
     const ABS: i128 = 5_000_000_000_000_000;
@@ -182,10 +177,7 @@ mod tests {
     fn mev_verdict_unverifiable_without_realized() {
         assert_eq!(
             mev_verdict(Some(WEI), None, None, TOL, ABS),
-            MevVerdict::Unverifiable(
-                "no realized native delta for this tx — run `explorer show --trace` first"
-                    .to_string()
-            )
+            MevVerdict::Unverifiable("no realized native delta for this tx".to_string())
         );
     }
 

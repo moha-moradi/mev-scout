@@ -1,22 +1,12 @@
 //! V3 Mint/Burn and LB bin deposit/withdraw JIT facts.
-use alloy::primitives::{B256, U256};
-use crate::utils::topic_address;
+use crate::utils::{i24_from_topic, topic_address};
+use alloy::primitives::U256;
 
 use crate::data::LogData;
 use crate::explorer::types::JitFact;
 use crate::pool::decoders::{
     LB_DEPOSITED_TO_BINS_TOPIC, LB_WITHDRAWN_FROM_BINS_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
 };
-
-/// Sign-extend a left-padded 24-bit tick value (int24) from a 32-byte topic.
-fn i24_from_topic(word: &B256) -> i32 {
-    let raw = u32::from_be_bytes([word.0[28], word.0[29], word.0[30], word.0[31]]) & 0x00ff_ffff;
-    if raw & 0x0080_0000 != 0 {
-        (raw as i32) - 0x0100_0000
-    } else {
-        raw as i32
-    }
-}
 
 /// Decode a V3 Mint/Burn fact (JIT candidate).
 ///

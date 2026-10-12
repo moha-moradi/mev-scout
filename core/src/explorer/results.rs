@@ -1,6 +1,5 @@
 //! Persistence of scanner run results (opportunities + rejections) into the
-//! explorer store. Used by `live` and `job_run` so the results layer (which feeds
-//! `explorer validate`) lives in one place.
+//! explorer store. Used by `live` and `job_run`.
 use alloy::primitives::{Address, U256};
 
 use crate::config::Config;

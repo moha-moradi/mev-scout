@@ -83,6 +83,7 @@ impl ResolvedFactories {
         };
         DiscoveryConfig {
             batch_size: opts.batch_size,
+            factory_batch_size: opts.factory_batch_size.max(opts.batch_size),
             v2_fee_override: self.v2_fee_override,
             balancer_vault: self.vault,
             v2_factories: slices(&self.v2_factories),
@@ -133,6 +134,7 @@ impl ResolvedFactories {
 #[derive(Clone, Copy)]
 pub struct DiscoveryRuntimeOpts<'a> {
     pub batch_size: u64,
+    pub factory_batch_size: u64,
     pub solidly_fee_bps: Option<u32>,
     pub rpc_concurrency: usize,
     pub token_cache: Option<&'a TokenCache>,

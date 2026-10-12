@@ -212,7 +212,7 @@ const CORPUS: &[CorpusCase] = &[
     },
     // Ethereum seed, recorded with `MEV_SCOUT_RECORD=1` on the explorer's own
     // jit block (26059586, `eth-jit-v3-round-trip` in `explorer_corpus.rs`), so
-    // the T1 cross-check (`explorer validate`) is exercisable on the same block
+    // detector vs explorer overlap on the same block is exercisable when both
     // for both layers. Observed: 8 `arb_atomic` detector ops, 7 of them by
     // `0xae2fc483…` — the same searcher the realizer attributes the Ethereum
     // sandwiches to. No verdict band is asserted: the record run reports
@@ -230,8 +230,7 @@ const CORPUS: &[CorpusCase] = &[
     },
 ];
 
-/// Detector `Strategy` → realized `MevKind` taxonomy (mirrors
-/// `explorer::validate::strategy_to_kind`).
+/// Detector `Strategy` → realized `MevKind` taxonomy for corpus checks.
 fn strategy_kind(strategy: Strategy) -> Option<&'static str> {
     match strategy {
         Strategy::TwoHopArb | Strategy::MultiHopArb => Some("arb_atomic"),

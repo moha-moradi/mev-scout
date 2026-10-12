@@ -59,6 +59,7 @@ pub async fn job_index(
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
     cfg.arb_likely_parity = config.explorer.arb_likely_parity;
+    cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
 
     // pool registry (pool → token0/token1) for swap-direction
     // resolution. Missing/empty registry degrades to transfer pairing.

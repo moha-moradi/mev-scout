@@ -19,7 +19,7 @@ shorten to `mev-scout` and assume the same config file and repo-root CWD.
 | `discover` | Find pools (hybrid TVL ranking by default) | yes (RPC; aggregator HTTP unless `[discover].source = "onchain"`) | SQLite cache |
 | `report` | Re-render a recorded run from SQLite | no | — |
 | `config` | Print fully-resolved TOML | no | — |
-| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | yes (logs; optional traces); index yes | Explorer SQLite store |
+| `explorer` | Realized revenue report (bare); `index` for ingest | yes (logs); index yes | Explorer SQLite store |
 
 Product split: **`live`** = what *could* be made, plus the theoretical session
 P&L of taking those detections with a virtual gas wallet (no competition);
@@ -42,8 +42,6 @@ run's ledger session alongside its results.
 `explorer stats`, `explorer report`, and `explorer backfill` were removed —
 bare `explorer` is the revenue report, and `explorer index` covers both
 historical backfill (default trailing 7 days) and tip-follow (`--loop`).
-`explorer validate` is a research command hidden behind the non-default
-`validate` Cargo feature (`--features validate`).
 
 ---
 
@@ -383,8 +381,6 @@ flowchart TB
     C -- "index --loop" --> E["ingest: live stream<br/>(head − confirmations)<br/>idempotent · reorg-aware · classify-in-stream"]
     BF --> F["decode → classify → profit<br/>(balance-delta accounting + gas + USD)"]
     E --> F
-    C -- show --> I["op detail per tx hash<br/>(--trace: prestateTracer diffMode recompute)"]
-    C -- validate --> V["T1/T2/T3 cross-check vs opportunities<br/>(read-only, no RPC)"]
     F --> L["mev_ops + blocks/txs/transfers/swaps<br/>+ opportunities + rejected_candidates<br/>+ sync_state checkpoints"]
 ```
 
@@ -422,37 +418,7 @@ mev-scout explorer index --loop --duration 15m
 ```
 
 Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`,
-`arb_likely_parity`, `trace_tolerance_pct`.
-
-#### 3.6.3 `explorer show`
-
-Operation detail for a transaction hash. `--trace` recomputes exact profit via
-`debug_traceTransaction` (prestateTracer diffMode). The profit-mismatch gate
-that decides the `TraceVerdict` reads `[explorer] trace_tolerance_pct` and
-`trace_error_usd_tol` from TOML — there is no per-invocation override flag.
-
-```powershell
-mev-scout explorer show 0xabc…
-mev-scout explorer show 0xabc… --trace
-```
-
-#### 3.6.4 `explorer validate`
-
-Cross-validation report: realized-MEV ops in the store vs scanner `opportunities`
-(T1 exact canonical-id / T2 pool+token overlap / T3 block-level tiers). Read-only —
-pure SQL, no RPC. Supports windowing, per-run filtering, a profit-threshold sweep,
-and precision-review/pool-coverage exports.
-
-This is a research command, not part of the default surface: it is compiled only
-under the non-default `validate` Cargo feature.
-
-```powershell
-cargo build -p mev-scout-cli --features validate
-mev-scout explorer validate --since all --json
-mev-scout explorer validate --since 30d --match-window 2 --run-id run_1717…
-mev-scout explorer validate --since all --threshold-sweep --emit-missing-pools
-mev-scout explorer validate --since all --review-csv results/review.csv --golden-causal
-```
+`arb_likely_parity`.
 
 #### Classifier-change replay recipe (wipe + reindex)
 
@@ -479,7 +445,7 @@ mev-scout explorer index --loop --duration 1h
 #### Phase-0 baseline recipe and ship gates
 
 Live-window recipe (e.g. Avalanche / Polygon): run the indexer for a measurement
-window, then inspect with bare `explorer` / `show`:
+window, then inspect with bare `explorer`:
 
 ```bash
 mev-scout explorer index --loop --duration 1h
@@ -505,7 +471,7 @@ mev-scout explorer index --loop --duration 1h
 mev-scout explorer --windows 1d,7d,30d
 ```
 
-Paste report / sample `show` output into notes above. `arb_likely_parity` defaults to
+Paste report output into notes above. `arb_likely_parity` defaults to
 `false` (closed-cycle-only arb) to match the opportunity detection spec.
 
 Gates that depend on this table:

@@ -78,7 +78,7 @@ pub enum Command {
 
     /// Realized-MEV explorer: forensic reconstruction of extracted MEV from
     /// raw chain data. Bare `explorer` prints the revenue report; use
-    /// `index` to populate history and `show` for per-tx detail.
+    /// `index` to populate history.
     Explorer(ExplorerArgs),
 }
 
@@ -92,18 +92,6 @@ pub enum ExplorerCommand {
     /// 7 days) and exits. With `--loop` it streams tip blocks until Ctrl+C
     /// (or `--duration`). Idempotent, resumable, reorg-aware.
     Index(IndexArgs),
-
-    /// Operation detail for a tx hash; --trace recomputes exact profit via
-    /// debug_traceTransaction (prestateTracer diffMode).
-    Show(ShowArgs),
-
-    /// Cross-validation report: realized explorer ops vs scanner
-    /// opportunities (exact, overlap, and block-level matching). Read-only; does no RPC.
-    ///
-    /// Research tooling, hidden from the default surface. Enable with
-    /// `cargo build -p mev-scout-cli --features validate`.
-    #[cfg(feature = "validate")]
-    Validate(ExplorerValidateArgs),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -190,53 +178,6 @@ pub struct IndexArgs {
         help_heading = "Range"
     )]
     pub to_block: Option<u64>,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct ShowArgs {
-    /// Transaction hash
-    #[arg(value_name = "TX_HASH")]
-    pub tx_hash: String,
-
-    /// On-demand debug_traceTransaction (prestateTracer diffMode) verification
-    #[arg(long)]
-    pub trace: bool,
-}
-
-#[cfg(feature = "validate")]
-#[derive(Args, Debug, Clone)]
-pub struct ExplorerValidateArgs {
-    /// Window: 1d|7d|30d|all (default all; 'all' means every indexed op)
-    #[arg(long, value_name = "WINDOW")]
-    pub since: Option<String>,
-
-    /// Blocks of tolerance when matching ops to opportunities (default 0)
-    #[arg(long = "match-window", value_name = "N", default_value = "0")]
-    pub match_window: u64,
-
-    /// Restrict the scanner side to a recorded run id (repeatable)
-    #[arg(long = "run-id", value_name = "RUN_ID")]
-    pub run_ids: Vec<String>,
-
-    /// Sweep the profit threshold and report count/USD recall per point
-    #[arg(long = "threshold-sweep")]
-    pub threshold_sweep: bool,
-
-    /// Write pools absent from the scanner coverage to results/missing_pools.txt
-    #[arg(long = "emit-missing-pools")]
-    pub emit_missing_pools: bool,
-
-    /// Write precision-review candidates to a CSV at this path
-    #[arg(long = "review-csv", value_name = "FILE")]
-    pub review_csv: Option<String>,
-
-    /// Embed the labeled causal-set score in the report
-    #[arg(long = "golden-causal")]
-    pub golden_causal: bool,
-
-    /// Emit the report as pretty JSON instead of a terminal table
-    #[arg(long)]
-    pub json: bool,
 }
 
 #[derive(Args, Debug, Clone)]

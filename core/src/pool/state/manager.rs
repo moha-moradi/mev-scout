@@ -558,8 +558,8 @@ impl PoolManager {
                 });
                 continue;
             }
-            if topic0 == decoders::CURVE_TOKEN_EXCHANGE_TOPIC
-                || topic0 == decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC
+            if topic0 == *decoders::CURVE_TOKEN_EXCHANGE_TOPIC
+                || topic0 == *decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC
             {
                 let Some(d) = decoders::decode_curve_swap(log) else {
                     continue;
@@ -583,7 +583,7 @@ impl PoolManager {
                 });
                 continue;
             }
-            if topic0 == decoders::BALANCER_SWAP_TOPIC {
+            if topic0 == *decoders::BALANCER_SWAP_TOPIC {
                 let Some(d) = decoders::decode_balancer_swap(log) else {
                     continue;
                 };

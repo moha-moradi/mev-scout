@@ -1,6 +1,6 @@
 //! Aggregator/router swap edges and DEX-edge dedup.
-use alloy::primitives::{Address, B256, U256};
 use crate::utils::{abi_word_address, topic_address};
+use alloy::primitives::{Address, B256, U256};
 
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact};
@@ -215,4 +215,3 @@ pub const PARASWAP_SWAPPED_V3_TOPIC: B256 =
 // makerAddress/feeRecipientAddress/orderHash indexed.
 pub const ZRX_FILL_TOPIC: B256 =
     alloy::primitives::b256!("6869791f0a34781b29882982cc39e882768cf2c96995c2a110c577c53bc932d5");
-

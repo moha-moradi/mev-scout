@@ -27,7 +27,7 @@ flowchart TB
         direction TB
 
         subgraph ORCH["Orchestration"]
-            COREJOBS["jobs<br/>live · discover · tokens · report<br/>index · backfill · validate · run · trace"]
+            COREJOBS["jobs<br/>live · discover · tokens · report<br/>index · backfill · run"]
             PIPE["pipeline<br/>BacktestRunner · run_block / run_range(_hybrid)<br/>aggregate · gas model · activity scanner"]
         end
 
@@ -48,7 +48,7 @@ flowchart TB
         end
 
         subgraph EXPLORE["Realized-MEV explorer"]
-            EXPL["explorer<br/>ingest · decode · classify · profit<br/>store (own SQLite) · validate · reject"]
+            EXPL["explorer<br/>ingest · decode · classify · profit<br/>store (own SQLite) · reject"]
         end
 
         subgraph SUPPORT["Support"]

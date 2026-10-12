@@ -1,10 +1,10 @@
 use super::{DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext};
-use crate::utils::{abi_word_address, topic_address};
 use super::{CURVE_POOL_ADDED_TOPIC, CURVE_POOL_DEPLOYED_TOPIC};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
 use crate::pool::selectors::{CURVE_COINS_I128, CURVE_COINS_U256};
 use crate::rpc::RpcClient;
+use crate::utils::{abi_word_address, topic_address};
 use alloy::primitives::{Address, Bytes, B256};
 use alloy::rpc::types::Filter;
 use std::sync::LazyLock;

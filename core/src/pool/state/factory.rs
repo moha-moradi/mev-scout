@@ -10,7 +10,6 @@ use crate::dex_type::DexType;
 use crate::pool::math::consts::{
     BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO,
 };
-use crate::utils::{abi_decode_address, abi_word_i32, abi_word_u32, u128_from_be_bytes};
 use crate::pool::selectors::{
     CURVE_A, CURVE_BALANCES_I128, CURVE_BALANCES_U256, CURVE_BASE_POOL, CURVE_COINS_I128,
     CURVE_COINS_U256, CURVE_FEE, CURVE_GAMMA, CURVE_GET_A, CURVE_PRICE_SCALE, FEE,
@@ -26,6 +25,7 @@ use crate::pool::state::pool_types::{
     UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };
 use crate::rpc::{BlockRef, RpcClient};
+use crate::utils::{abi_decode_address, u128_from_be_bytes};
 /// Snapshot of pool metadata captured before spawning refresh tasks.
 #[derive(Clone, Copy)]
 struct PoolMeta {
@@ -284,10 +284,7 @@ impl PoolManager {
                         cache,
                         pre_fetched_tokens: pre_fetched,
                     };
-                    (
-                        meta.address,
-                        Self::fetch_pool_state(&meta, &ctx).await,
-                    )
+                    (meta.address, Self::fetch_pool_state(&meta, &ctx).await)
                 }
             })
             .collect();
@@ -564,9 +561,7 @@ impl PoolManager {
                         "V4",
                         addr,
                     );
-                } else if let Some(PoolState::PancakeInfinity(state)) =
-                    self.pools.get_mut(&addr)
-                {
+                } else if let Some(PoolState::PancakeInfinity(state)) = self.pools.get_mut(&addr) {
                     Self::process_concentrated_result(
                         state,
                         sqrt,
@@ -725,8 +720,7 @@ impl PoolManager {
             if state.info.token1.is_zero() && !state.info.token0.is_zero() {
                 let mut sy_calldata = Vec::with_capacity(4);
                 sy_calldata.extend_from_slice(&PENDLE_SY);
-                if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await
-                {
+                if let Ok(result) = Self::call_once(rpc, addr, Bytes::from(sy_calldata), br).await {
                     if let Some(resolved_sy) = abi_decode_address(&result, 0) {
                         if !resolved_sy.is_zero() {
                             state.info.token1 = resolved_sy;
@@ -942,38 +936,15 @@ impl PoolManager {
     async fn fetch_pool_state(meta: &PoolMeta, ctx: &FetchCtx<'_>) -> Option<PoolInitResult> {
         let pool = meta.address;
         match meta.dex_type {
-            DexType::UniswapV2 => {
-                Self::init_v2_pool(ctx.rpc, pool, ctx.br, meta.factory).await
-            }
+            DexType::UniswapV2 => Self::init_v2_pool(ctx.rpc, pool, ctx.br, meta.factory).await,
             DexType::UniswapV3 => {
-                Self::init_v3_pool(
-                    ctx.rpc,
-                    pool,
-                    ctx.br,
-                    meta.tick_spacing,
-                    ctx.cache,
-                )
-                .await
+                Self::init_v3_pool(ctx.rpc, pool, ctx.br, meta.tick_spacing, ctx.cache).await
             }
             DexType::UniswapV4 => {
-                Self::init_v4_pool(
-                    ctx.rpc,
-                    pool,
-                    ctx.br,
-                    meta.tick_spacing,
-                    ctx.cache,
-                )
-                .await
+                Self::init_v4_pool(ctx.rpc, pool, ctx.br, meta.tick_spacing, ctx.cache).await
             }
             DexType::PancakeInfinity => {
-                Self::init_infinity_cl_pool(
-                    ctx.rpc,
-                    pool,
-                    meta.pool_id,
-                    meta.factory,
-                    ctx.br,
-                )
-                .await
+                Self::init_infinity_cl_pool(ctx.rpc, pool, meta.pool_id, meta.factory, ctx.br).await
             }
             DexType::Balancer => {
                 let vault = ctx.vault?;
@@ -990,13 +961,7 @@ impl PoolManager {
                 .await
             }
             DexType::Curve => {
-                Self::init_curve_pool(
-                    ctx.rpc,
-                    pool,
-                    ctx.br,
-                    ctx.pre_fetched_tokens.clone(),
-                )
-                .await
+                Self::init_curve_pool(ctx.rpc, pool, ctx.br, ctx.pre_fetched_tokens.clone()).await
             }
             DexType::Solidly | DexType::Camelot => {
                 Self::init_solidly_camelot_pool(ctx.rpc, pool, ctx.br, meta.factory).await

@@ -57,14 +57,13 @@ fn explorer_help_lists_subcommands() {
     let ws = temp_ws("args_explorer_help");
     let out = run(&ws, &["explorer", "--help"]);
     expect_ok(&out, "explorer --help");
-    for sub in ["index", "show"] {
-        assert!(
-            help_lists_subcommand(&out.stdout, sub),
-            "explorer --help missing subcommand '{sub}'"
-        );
-    }
+    assert!(
+        help_lists_subcommand(&out.stdout, "index"),
+        "explorer --help missing subcommand 'index'"
+    );
     // Revenue report is bare `explorer`; `backfill` folded into `index`.
     for removed in [
+        "show",
         "report",
         "backfill",
         "stats",
@@ -73,6 +72,7 @@ fn explorer_help_lists_subcommands() {
         "top",
         "explain",
         "export",
+        "validate",
     ] {
         assert!(
             !help_lists_subcommand(&out.stdout, removed),
@@ -83,20 +83,6 @@ fn explorer_help_lists_subcommands() {
         assert!(
             out.stdout.contains(flag),
             "explorer --help missing report flag '{flag}'"
-        );
-    }
-
-    // `validate` is gated behind the non-default `validate` cargo feature: it
-    // must be absent by default and present once the feature is compiled in.
-    if cfg!(feature = "validate") {
-        assert!(
-            help_lists_subcommand(&out.stdout, "validate"),
-            "explorer --help must list 'validate' under --features validate"
-        );
-    } else {
-        assert!(
-            !help_lists_subcommand(&out.stdout, "validate"),
-            "explorer --help must hide 'validate' unless --features validate"
         );
     }
 }
@@ -129,7 +115,11 @@ fn live_help_lists_ledger_flags() {
 #[test]
 fn removed_and_unknown_surface_fails() {
     let cases: &[(&str, &[&str], Option<&str>)] = &[
-        ("tokens", &["tokens"], Some("unrecognized subcommand 'tokens'")),
+        (
+            "tokens",
+            &["tokens"],
+            Some("unrecognized subcommand 'tokens'"),
+        ),
         ("explorer stats", &["explorer", "stats"], None),
         ("explorer report", &["explorer", "report"], None),
         ("explorer backfill", &["explorer", "backfill"], None),
@@ -154,14 +144,6 @@ fn removed_and_unknown_surface_fails() {
             );
         }
     }
-}
-
-/// `--tolerance-pct` moved to `[explorer]` config, so the flag must be gone.
-#[test]
-fn explorer_show_rejects_tolerance_pct() {
-    let ws = temp_ws("args_show_tolerance_removed");
-    let out = run(&ws, &["explorer", "show", "0xabc", "--tolerance-pct", "10"]);
-    expect_fail(&out, "explorer show --tolerance-pct");
 }
 
 #[test]
@@ -486,13 +468,13 @@ fn explorer_index_rejects_loop_with_days() {
 
 /// Report flags on a subcommand are rejected.
 #[test]
-fn explorer_show_rejects_report_flags() {
-    let ws = temp_ws("args_explorer_show_windows");
+fn explorer_index_rejects_report_flags() {
+    let ws = temp_ws("args_explorer_index_windows");
     let out = run(
         &ws,
-        &["-f", &cfg(), "explorer", "--windows", "7d", "show", "0xabc"],
+        &["-f", &cfg(), "explorer", "--windows", "7d", "index", "--days", "1"],
     );
-    expect_fail(&out, "explorer --windows show");
+    expect_fail(&out, "explorer --windows index");
     assert!(
         out.combined().contains("belong on bare `explorer`")
             || out.combined().contains("unexpected argument")
@@ -644,30 +626,5 @@ fn report_selects_explicit_run_id_offline() {
         }),
         "csv header line missing:\n{}",
         out.stdout
-    );
-}
-
-// ── explorer validate is hidden behind a non-default cargo feature ───────────
-//
-// The positive coverage for `validate` lives in `cli_explorer_validate.rs`,
-// compiled only with `--features validate`.
-
-// `validate` must be invisible in a default build. Under `--features validate`
-// the subcommand legitimately exists, so the absence assertion does not apply;
-// the positive coverage lives in `cli_explorer_validate.rs`.
-#[cfg(not(feature = "validate"))]
-#[test]
-fn explorer_validate_is_hidden_by_default() {
-    let ws = temp_ws("args_validate_gated");
-    let out = run(
-        &ws,
-        &["-f", &make_cfg(&ws, &[]), "explorer", "validate", "--json"],
-    );
-    expect_fail(&out, "explorer validate without the `validate` feature");
-    assert!(
-        out.combined()
-            .contains("unrecognized subcommand 'validate'"),
-        "expected clap to reject 'validate' in the default build, got:\n{}",
-        out.combined()
     );
 }

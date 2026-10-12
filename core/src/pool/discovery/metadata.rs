@@ -79,22 +79,21 @@ pub(super) fn fetch_pool_metadata(
     match dex_type {
         DexType::UniswapV2 | DexType::Solidly | DexType::Camelot | DexType::Fluid => {
             Some(Box::pin(async move {
-                let (r0, r1) =
-                    futures::future::join(
-                        async {
-                            rpc.call_latest(addr, sel0)
-                                .await
-                                .ok()
-                                .and_then(|b| abi_decode_address(&b, 0))
-                        },
-                        async {
-                            rpc.call_latest(addr, sel1)
-                                .await
-                                .ok()
-                                .and_then(|b| abi_decode_address(&b, 0))
-                        },
-                    )
-                    .await;
+                let (r0, r1) = futures::future::join(
+                    async {
+                        rpc.call_latest(addr, sel0)
+                            .await
+                            .ok()
+                            .and_then(|b| abi_decode_address(&b, 0))
+                    },
+                    async {
+                        rpc.call_latest(addr, sel1)
+                            .await
+                            .ok()
+                            .and_then(|b| abi_decode_address(&b, 0))
+                    },
+                )
+                .await;
                 PoolMetadataFetch {
                     addr,
                     dex_type,
@@ -113,22 +112,21 @@ pub(super) fn fetch_pool_metadata(
             let sel_x = TRADER_JOE_TOKEN_X.clone();
             let sel_y = TRADER_JOE_TOKEN_Y.clone();
             Some(Box::pin(async move {
-                let (r0, r1) =
-                    futures::future::join(
-                        async {
-                            rpc.call_latest(addr, sel_x)
-                                .await
-                                .ok()
-                                .and_then(|b| abi_decode_address(&b, 0))
-                        },
-                        async {
-                            rpc.call_latest(addr, sel_y)
-                                .await
-                                .ok()
-                                .and_then(|b| abi_decode_address(&b, 0))
-                        },
-                    )
-                    .await;
+                let (r0, r1) = futures::future::join(
+                    async {
+                        rpc.call_latest(addr, sel_x)
+                            .await
+                            .ok()
+                            .and_then(|b| abi_decode_address(&b, 0))
+                    },
+                    async {
+                        rpc.call_latest(addr, sel_y)
+                            .await
+                            .ok()
+                            .and_then(|b| abi_decode_address(&b, 0))
+                    },
+                )
+                .await;
                 PoolMetadataFetch {
                     addr,
                     dex_type,

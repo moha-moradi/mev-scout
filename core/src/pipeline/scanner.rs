@@ -11,99 +11,29 @@ use crate::error;
 use crate::rpc::RpcClient;
 
 /// DEX event topic signatures used for activity detection.
+///
+/// Every name is a re-export of [`crate::chain::events`]. Hashes are not
+/// computed here.
 pub(crate) mod topics {
-    use alloy::primitives::{b256, keccak256, B256};
-    use std::sync::LazyLock;
+    use alloy::primitives::B256;
 
-    pub const V2_SWAP: B256 =
-        b256!("d78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822");
-    pub const V2_SYNC: B256 =
-        b256!("1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1");
-
-    pub const V3_SWAP: B256 =
-        b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
-    pub static V3_MINT: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Mint(address,address,int24,int24,uint128,uint256,uint256)"));
-    pub const V3_BURN: B256 =
-        b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
-
-    pub static CURVE_TOKEN_EXCHANGE: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256)"));
-    pub static CURVE_V2_TOKEN_EXCHANGE: LazyLock<B256> =
-        LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
-    pub static BALANCER_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
-
-    /// Uniswap V4 Swap event from the singleton PoolManager
-    /// (`id` in topics[1]; NOT the same as the V3 Swap signature).
-    pub static V4_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)")
-    });
-
-    /// Pancake Infinity CL Swap event from the singleton CLPoolManager
-    /// (`id` in topics[1]; superset of the V4 signature with a `protocolFee` word).
-    pub static INF_CL_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
-    });
-
-    /// Fluid DEX pool Swap event (`Swap(bool,uint256,uint256,address)` —
-    /// no indexed params; verified against fluid-contracts-public).
-    pub static FLUID_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
-
-    /// Metric V2 pool Swap event (swap-event signature; digest computed from
-    /// the signature string; verifying the produced topic on-chain is deferred).
-    pub static METRIC_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
-
-    /// Solidly/Velodrome/Aerodrome pool Swap event
-    /// (`Swap(address,address,uint256,uint256,uint256,uint256)` — verified
-    /// against velodrome-finance/contracts `IPool.sol`).
-    pub static SOLIDLY_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,uint256,uint256,uint256,uint256)"));
-
-    /// Trader Joe Liquidity Book 2.0 Pair Swap event
-    /// (`sender, recipient, uint256 id indexed, swapForY, amountIn, amountOut,
-    /// volatilityAccumulated, fees` — verified against lfj-gg/joe-v2 branch v2.0).
-    /// The same canonical signature is emitted by LB 2.2 pairs (per-side amounts).
-    pub static TRADER_JOE_LB_SWAP: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)")
-    });
-
-    /// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event
-    /// (`sender, to, uint24 id, bytes32 amountsIn, bytes32 amountsOut,
-    /// uint24 volatilityAccumulator, bytes32 totalFees, bytes32 protocolFees`
-    /// — verified against lfj-gg/joe-v2 branches main/v2.1/v2.2).
-    pub static TRADER_JOE_LB_SWAP_LEGACY: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
-    });
-
-    /// Pendle V2 market Swap event (caller, receiver indexed).
-    pub static PENDLE_MARKET_SWAP: LazyLock<B256> =
-        LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
-
-    /// Pendle V2 router PT/YT swap events — verified against pendle-core-v2
-    /// `IPActionSwapPTV3Events` / `IPActionSwapYTV3Events`. Emitted by the
-    /// singleton router with the MARKET address in topics[2], so discovery
-    /// must override the hit address instead of using the emitter.
-    pub static PENDLE_SWAP_PT_AND_SY: LazyLock<B256> =
-        LazyLock::new(|| keccak256("SwapPtAndSy(address,address,address,int256,int256)"));
-    pub static PENDLE_SWAP_YT_AND_SY: LazyLock<B256> =
-        LazyLock::new(|| keccak256("SwapYtAndSy(address,address,address,int256,int256)"));
-    pub static PENDLE_SWAP_PT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("SwapPtAndToken(address,address,address,address,int256,int256,uint256)")
-    });
-    pub static PENDLE_SWAP_YT_AND_TOKEN: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("SwapYtAndToken(address,address,address,address,int256,int256,uint256)")
-    });
-
-    // Curve TokenExchangeUnderlying events (exchange_underlying path)
-    pub static CURVE_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)")
-    });
-    pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING: LazyLock<B256> = LazyLock::new(|| {
-        keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
-    });
+    pub use crate::chain::events::{
+        BALANCER_SWAP_TOPIC as BALANCER_SWAP, CURVE_TOKEN_EXCHANGE_TOPIC as CURVE_TOKEN_EXCHANGE,
+        CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC as CURVE_TOKEN_EXCHANGE_UNDERLYING,
+        CURVE_V2_TOKEN_EXCHANGE_TOPIC as CURVE_V2_TOKEN_EXCHANGE,
+        CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC as CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
+        FLUID_SWAP_TOPIC as FLUID_SWAP, INF_CL_SWAP_TOPIC as INF_CL_SWAP,
+        METRIC_SWAP_TOPIC as METRIC_SWAP, PENDLE_MARKET_SWAP_TOPIC as PENDLE_MARKET_SWAP,
+        PENDLE_SWAP_PT_AND_SY_TOPIC as PENDLE_SWAP_PT_AND_SY,
+        PENDLE_SWAP_PT_AND_TOKEN_TOPIC as PENDLE_SWAP_PT_AND_TOKEN,
+        PENDLE_SWAP_YT_AND_SY_TOPIC as PENDLE_SWAP_YT_AND_SY,
+        PENDLE_SWAP_YT_AND_TOKEN_TOPIC as PENDLE_SWAP_YT_AND_TOKEN,
+        SOLIDLY_SWAP_TOPIC as SOLIDLY_SWAP,
+        TRADER_JOE_LB_SWAP_LEGACY_TOPIC as TRADER_JOE_LB_SWAP_LEGACY,
+        TRADER_JOE_LB_SWAP_TOPIC as TRADER_JOE_LB_SWAP, V2_SWAP_TOPIC as V2_SWAP,
+        V2_SYNC_TOPIC as V2_SYNC, V3_BURN_TOPIC as V3_BURN, V3_MINT_TOPIC as V3_MINT,
+        V3_SWAP_TOPIC as V3_SWAP, V4_SWAP_TOPIC as V4_SWAP,
+    };
 
     /// All DEX event topic hashes for activity scanning.
     pub fn all_topics() -> Vec<B256> {
@@ -111,7 +41,7 @@ pub(crate) mod topics {
             V2_SWAP,
             V2_SYNC,
             V3_SWAP,
-            *V3_MINT,
+            V3_MINT,
             V3_BURN,
             *CURVE_TOKEN_EXCHANGE,
             *CURVE_V2_TOKEN_EXCHANGE,
@@ -142,6 +72,9 @@ pub(crate) mod topics {
 pub struct ActivityScanner {
     rpc: RpcClient,
     batch_size: u64,
+    /// Parallel `eth_getLogs` windows. Values above 1 are used only when the
+    /// client has an unlimited provider; otherwise the scan stays serial.
+    window_concurrency: usize,
 }
 
 impl ActivityScanner {
@@ -149,11 +82,17 @@ impl ActivityScanner {
         ActivityScanner {
             rpc,
             batch_size: 500,
+            window_concurrency: 1,
         }
     }
 
     pub fn with_batch_size(mut self, n: u64) -> Self {
         self.batch_size = n.max(1);
+        self
+    }
+
+    pub fn with_window_concurrency(mut self, n: usize) -> Self {
+        self.window_concurrency = n.max(1);
         self
     }
 
@@ -165,7 +104,9 @@ impl ActivityScanner {
     /// Returns an empty set if no pool addresses are provided.
     ///
     /// On batch failure (e.g. range too large for provider), falls back
-    /// to individual block scanning for that batch.
+    /// to individual block scanning for that batch. An unlimited provider
+    /// instead splits the window; it does not walk every block in a healthy
+    /// wide range.
     pub async fn find_active_blocks(
         &self,
         pool_addresses: &[Address],
@@ -176,8 +117,15 @@ impl ActivityScanner {
             return Ok(HashSet::new());
         }
 
-        let mut active = HashSet::new();
         let dex_topics = topics::all_topics();
+        let parallel = self.window_concurrency > 1 && self.rpc.has_unlimited_provider().await;
+        if parallel {
+            return self
+                .find_active_blocks_parallel(pool_addresses, &dex_topics, start_block, end_block)
+                .await;
+        }
+
+        let mut active = HashSet::new();
         let mut current = start_block;
 
         while current <= end_block {
@@ -224,6 +172,79 @@ impl ActivityScanner {
         }
 
         Ok(active)
+    }
+
+    async fn find_active_blocks_parallel(
+        &self,
+        pool_addresses: &[Address],
+        dex_topics: &[alloy::primitives::B256],
+        start_block: u64,
+        end_block: u64,
+    ) -> error::Result<HashSet<u64>> {
+        use futures::stream::{self, StreamExt};
+
+        let mut windows = Vec::new();
+        let mut current = start_block;
+        while current <= end_block {
+            let batch_end = (current + self.batch_size - 1).min(end_block);
+            windows.push((current, batch_end));
+            if batch_end == end_block {
+                break;
+            }
+            current = batch_end + 1;
+        }
+
+        let parts: Vec<HashSet<u64>> = stream::iter(windows)
+            .map(|(from, to)| async move {
+                self.scan_window_splitting(pool_addresses, dex_topics, from, to)
+                    .await
+            })
+            .buffer_unordered(self.window_concurrency.max(1))
+            .collect()
+            .await;
+
+        let mut active = HashSet::new();
+        for part in parts {
+            active.extend(part);
+        }
+        Ok(active)
+    }
+
+    /// Halve a failed window. A single-block failure is skipped rather than
+    /// expanding into a per-block walk of the parent range.
+    async fn scan_window_splitting(
+        &self,
+        pool_addresses: &[Address],
+        dex_topics: &[alloy::primitives::B256],
+        from: u64,
+        to: u64,
+    ) -> HashSet<u64> {
+        let filter = Filter::new()
+            .address(pool_addresses.to_vec())
+            .event_signature(dex_topics.to_vec())
+            .from_block(from)
+            .to_block(to);
+        match self.rpc.get_logs(&filter).await {
+            Ok(logs) => logs.iter().filter_map(|log| log.block_number).collect(),
+            Err(e) if to > from => {
+                tracing::warn!(
+                    "Activity scan failed for blocks {from}..{to}: {e:#}. Splitting window..."
+                );
+                let mid = from + (to - from) / 2;
+                let mut left =
+                    Box::pin(self.scan_window_splitting(pool_addresses, dex_topics, from, mid))
+                        .await;
+                left.extend(
+                    Box::pin(self.scan_window_splitting(pool_addresses, dex_topics, mid + 1, to))
+                        .await,
+                );
+                left
+            }
+            Err(e) => {
+                tracing::warn!("Activity scan skipping block {from}: {e:#}");
+                HashSet::new()
+            }
+        }
     }
 }
 

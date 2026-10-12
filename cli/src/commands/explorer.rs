@@ -1,4 +1,4 @@
-//! `mev-scout explorer` subcommands: index, show, report, backfill.
+//! `mev-scout explorer` subcommands: index, report, backfill.
 use comfy_table::Table;
 
 use mev_scout_core::config::validation;
@@ -39,13 +39,7 @@ fn short_addr(s: &str) -> String {
 mod backfill;
 mod index;
 mod report;
-mod show;
-#[cfg(feature = "validate")]
-mod validate;
 
 pub use backfill::cmd_backfill;
 pub use index::cmd_index;
 pub use report::cmd_explorer_report;
-pub use show::cmd_show;
-#[cfg(feature = "validate")]
-pub use validate::cmd_explorer_validate;

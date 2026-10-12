@@ -1,8 +1,8 @@
 use super::PENDLE_NEW_MARKET_TOPIC;
-use crate::utils::topic_address;
 use super::{DiscoveredPool, PoolHitCandidate, ScanBatchResult, ScanContext};
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::topic_address;
 use alloy::primitives::Address;
 use alloy::primitives::U256;
 use alloy::rpc::types::Filter;

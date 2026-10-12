@@ -1,6 +1,6 @@
 //! DEX pool swap decoding (V2/V3/V4/Curve/Balancer/LB/…).
-use alloy::primitives::{Address, U256};
 use crate::utils::topic_address;
+use alloy::primitives::{Address, U256};
 
 use crate::chain::events::{INF_CL_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC};
 use crate::data::LogData;
@@ -10,6 +10,34 @@ use crate::pool::decoders::{
     FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_SWAP_TOPIC, SOLIDLY_SWAP_TOPIC,
 };
 
+/// Signed pool deltas: negative amount is token in, positive is token out.
+/// Tick sits in the word at bytes 128..160 when the log is long enough (V3/V4/Infinity).
+/// Returns false when the amounts are missing or both zero.
+fn apply_signed_deltas(fact: &mut SwapFact, data: &[u8]) -> bool {
+    if data.len() < 64 {
+        return false;
+    }
+    let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&data[0..32]));
+    let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&data[32..64]));
+    if a0.is_zero() && a1.is_zero() {
+        return false;
+    }
+    if a0 < alloy::primitives::I256::ZERO {
+        fact.amount_in = a0.wrapping_abs().into_raw();
+        fact.amount_out = a1.wrapping_abs().into_raw();
+        fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+    } else {
+        fact.amount_in = a1.wrapping_abs().into_raw();
+        fact.amount_out = a0.wrapping_abs().into_raw();
+        fact.token_in = super::sentinels::TOKEN1_SENTINEL;
+    }
+    if data.len() >= 160 {
+        fact.tick = Some(i32::from_be_bytes([
+            data[156], data[157], data[158], data[159],
+        ]));
+    }
+    true
+}
 
 /// Bind V2/Solidly amounts from a single direction. `amount0In` wins ties
 /// (`a0i >= a1i`), matching the historical direction rule, and `amount_out`
@@ -79,64 +107,22 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
 
     if topic0 == V3_SWAP_TOPIC {
         // data: int256 amount0, int256 amount1, sqrtPriceX96, liquidity, tick
-        if log.data.len() < 64 {
-            return None;
-        }
-        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
-        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
-        if a0.is_zero() && a1.is_zero() {
-            return None;
-        }
         let mut fact = base(Amm::V3, log.address);
-        // amount > 0 = pool paid out (token out); amount < 0 = pool received (token in)
-        if a0 < alloy::primitives::I256::ZERO {
-            fact.amount_in = a0.wrapping_abs().into_raw();
-            fact.amount_out = a1.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
-        } else {
-            fact.amount_in = a1.wrapping_abs().into_raw();
-            fact.amount_out = a0.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
-        }
-        if log.data.len() >= 160 {
-            fact.tick = Some(i32::from_be_bytes([
-                log.data[156],
-                log.data[157],
-                log.data[158],
-                log.data[159],
-            ]));
+        if !apply_signed_deltas(&mut fact, &log.data) {
+            return None;
         }
         return Some((Amm::V3, fact));
     }
 
     if topic0 == *V4_SWAP_TOPIC {
         // topics: [sig, poolId]; data: int128 amount0, int128 amount1,...
-        if log.topics.len() < 2 || log.data.len() < 64 {
+        if log.topics.len() < 2 {
             return None;
         }
         let pool = topic_address(log.topics[1].as_slice());
-        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
-        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
-        if a0.is_zero() && a1.is_zero() {
-            return None;
-        }
         let mut fact = base(Amm::V4, pool);
-        if a0 < alloy::primitives::I256::ZERO {
-            fact.amount_in = a0.wrapping_abs().into_raw();
-            fact.amount_out = a1.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
-        } else {
-            fact.amount_in = a1.wrapping_abs().into_raw();
-            fact.amount_out = a0.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
-        }
-        if log.data.len() >= 160 {
-            fact.tick = Some(i32::from_be_bytes([
-                log.data[156],
-                log.data[157],
-                log.data[158],
-                log.data[159],
-            ]));
+        if !apply_signed_deltas(&mut fact, &log.data) {
+            return None;
         }
         return Some((Amm::V4, fact));
     }
@@ -144,37 +130,18 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     if topic0 == *INF_CL_SWAP_TOPIC {
         // Pancake Infinity CL singleton manager: same layout as V4 but the
         // signature carries an extra uint16 protocolFee word (data >= 224).
-        if log.topics.len() < 2 || log.data.len() < 64 {
+        if log.topics.len() < 2 {
             return None;
         }
         let pool = topic_address(log.topics[1].as_slice());
-        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
-        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
-        if a0.is_zero() && a1.is_zero() {
-            return None;
-        }
         let mut fact = base(Amm::Infinity, pool);
-        if a0 < alloy::primitives::I256::ZERO {
-            fact.amount_in = a0.wrapping_abs().into_raw();
-            fact.amount_out = a1.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
-        } else {
-            fact.amount_in = a1.wrapping_abs().into_raw();
-            fact.amount_out = a0.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
-        }
-        if log.data.len() >= 160 {
-            fact.tick = Some(i32::from_be_bytes([
-                log.data[156],
-                log.data[157],
-                log.data[158],
-                log.data[159],
-            ]));
+        if !apply_signed_deltas(&mut fact, &log.data) {
+            return None;
         }
         return Some((Amm::Infinity, fact));
     }
 
-    if topic0 == CURVE_TOKEN_EXCHANGE_TOPIC || topic0 == CURVE_V2_TOKEN_EXCHANGE_TOPIC {
+    if topic0 == *CURVE_TOKEN_EXCHANGE_TOPIC || topic0 == *CURVE_V2_TOKEN_EXCHANGE_TOPIC {
         // data: int128 sold_id/coin_sold, uint256 amount_sold, int128 bought_id, uint256 amount_bought
         if log.data.len() < 128 {
             return None;
@@ -185,7 +152,7 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         return Some((Amm::Curve, fact));
     }
 
-    if topic0 == BALANCER_SWAP_TOPIC {
+    if topic0 == *BALANCER_SWAP_TOPIC {
         // topics: [sig, poolId, tokenIn, tokenOut]; data: amountIn, amountOut
         // Pool address is the first 20 bytes of the bytes32 poolId.
         if log.topics.len() < 4 || log.data.len() < 64 {
@@ -316,4 +283,3 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
 
     None
 }
-

@@ -45,11 +45,7 @@ impl GeckoTerminalClient {
     }
 
     pub fn with_base(base_url: String) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .user_agent("mev-scout/0.1")
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = crate::utils::http_client(Duration::from_secs(15));
         Self { client, base_url }
     }
 

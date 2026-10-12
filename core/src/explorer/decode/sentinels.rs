@@ -9,4 +9,3 @@ pub const TOKEN1_SENTINEL: Address = Address::new([0xE1u8; 20]);
 pub(super) fn is_unresolved_token(t: Address) -> bool {
     t.is_zero() || t == TOKEN0_SENTINEL || t == TOKEN1_SENTINEL
 }
-

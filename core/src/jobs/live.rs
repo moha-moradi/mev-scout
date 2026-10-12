@@ -120,8 +120,8 @@ fn resolve_ledger_policy(
 
 /// Resolve the native USD price once per session.
 ///
-/// Order mirrors `job_trace_op` (`jobs/trace.rs:374-388`): cached ZERO-keyed
-/// price, then the wrapped-native cache, then DefiLlama, then CoinGecko.
+/// Order: cached ZERO-keyed price, then the wrapped-native cache, then
+/// DefiLlama, then CoinGecko.
 /// Failure is not an error unless the caller needs the price, because a
 /// wei-only session is fully valid without it.
 async fn resolve_native_price(
@@ -199,8 +199,8 @@ struct LiveContext<'a> {
     /// Inclusive span of blocks actually fetched and scanned, widened by
     /// [`Self::extend_session`]. Unset until the first successful pass, so the
     /// tip observed during setup is not recorded as scanned. The manifest is
-    /// rewritten on each pass with these bounds so `report` and
-    /// `explorer validate --run-id` see the whole session as one run.
+    /// rewritten on each pass with these bounds so `report` sees the whole
+    /// session as one run.
     scanned_span: Option<(u64, u64)>,
     /// Ledger applied over every opportunity seen so far this session.
     /// Recomputed from scratch each pass — `LedgerPolicy::apply` is pure and
@@ -963,9 +963,12 @@ async fn run_loop(
             break;
         }
 
-        let Some(current_tip) =
-            poll_tip_with_retry(ctx, &mut stats.consecutive_failures, MAX_CONSECUTIVE_FAILURES)
-                .await?
+        let Some(current_tip) = poll_tip_with_retry(
+            ctx,
+            &mut stats.consecutive_failures,
+            MAX_CONSECUTIVE_FAILURES,
+        )
+        .await?
         else {
             continue;
         };
@@ -993,7 +996,10 @@ async fn run_loop(
     if stats.total_pending_txs > 0 {
         progress.log(&format!("    Pending txs:    {}", stats.total_pending_txs));
     }
-    progress.log(&format!("  Opportunities:    {}", stats.total_opportunities));
+    progress.log(&format!(
+        "  Opportunities:    {}",
+        stats.total_opportunities
+    ));
 
     // Recomputed over the full accumulated list. `update_ledger` already ran
     // after every pass, including passes that found nothing; this last apply

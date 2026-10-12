@@ -1,42 +1,18 @@
 //! Event log decoders for Uniswap V2/V3, Curve, and Balancer pool interactions.
-use std::sync::LazyLock;
 use crate::utils::topic_address;
+use std::sync::LazyLock;
 
-use alloy::primitives::{b256, keccak256, Address, B256, I256, U256};
+use alloy::primitives::{keccak256, Address, B256, I256, U256};
 
 use crate::data::ExecutedLog;
 use crate::utils::u128_from_be_bytes;
 
-/// Uniswap V3: Swap(address sender, address recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)
-pub const V3_SWAP_TOPIC: B256 =
-    b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
-/// Uniswap V3: Mint(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
-///
-/// Must stay equal to `keccak256` of that signature — a mistyped constant here
-/// silently disables every V3 Mint decode, which makes JIT detection
-/// structurally impossible without any other visible failure.
-pub const V3_MINT_TOPIC: B256 =
-    b256!("7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde");
-/// Uniswap V3: Burn(address sender, address owner, int24 tickLower, int24 tickUpper, uint128 amount, uint256 amount0, uint256 amount1)
-pub const V3_BURN_TOPIC: B256 =
-    b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
-/// Curve: TokenExchange(address buyer, int128 coin_sold, uint256 amount_sold, int128 coin_bought, uint256 amount_bought)
-pub const CURVE_TOKEN_EXCHANGE_TOPIC: B256 =
-    b256!("c55585ff3bfce0c9464a33a97ee0b031ca9555e103e1684770dca3311d769fe9");
-/// Curve v2: TokenExchange(address buyer, int128 sold_id, uint256 tokens_sold, int128 bought_id, uint256 tokens_bought)
-pub const CURVE_V2_TOKEN_EXCHANGE_TOPIC: B256 =
-    b256!("9f586ef8f430130fa2ce9c4aeb45fa4c37f2d0e79abe7f4f039ad7fceaaea7c4");
-/// Balancer V2: Swap(bytes32 indexed poolId, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut)
-pub const BALANCER_SWAP_TOPIC: B256 =
-    b256!("fb412c811a17d1a8ad0ecab229fb91d821f5bbe210a5a6feae3dc626faf608d1");
-
-/// Trader Joe LB 2.0/2.2: Swap(address indexed sender, address indexed to,
-/// bool swapForY, uint256 amountIn, uint256 amountOutX, uint256 amountOutY,
-/// uint256 totalFee, uint256 flashParameter). Hash verified against the
-/// canonical LB 2.0 signature `Swap(address,address,uint256,bool,uint256,
-/// uint256,uint256,uint256)`.
-pub static LB_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| *crate::chain::events::TRADER_JOE_LB_SWAP_TOPIC);
+pub use crate::chain::events::{
+    BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+    FLUID_SWAP_TOPIC, METRIC_SWAP_TOPIC, PENDLE_MARKET_SWAP_TOPIC as PENDLE_SWAP_TOPIC,
+    SOLIDLY_SWAP_TOPIC, TRADER_JOE_LB_SWAP_TOPIC as LB_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
+    V3_SWAP_TOPIC,
+};
 
 /// LFJ / Pharaoh LB: `DepositedToBins(address,address,uint256[],bytes32[])`.
 pub static LB_DEPOSITED_TO_BINS_TOPIC: LazyLock<B256> =
@@ -45,33 +21,6 @@ pub static LB_DEPOSITED_TO_BINS_TOPIC: LazyLock<B256> =
 /// LFJ / Pharaoh LB: `WithdrawnFromBins(address,address,uint256[],bytes32[])`.
 pub static LB_WITHDRAWN_FROM_BINS_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"WithdrawnFromBins(address,address,uint256[],bytes32[])"));
-
-/// Pendle V2 Market Swap topic. Matches the canonical Pendle V2 signature
-/// `Swap(address indexed caller, address indexed receiver, int256
-/// netPtToAccount, int256 netSyToAccount, uint256 netSyFee, uint256
-/// netSyToReserve)`.
-pub static PENDLE_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| *crate::chain::events::PENDLE_MARKET_SWAP_TOPIC);
-
-/// Velodrome V2/Aerodrome pool Swap topic (`Swap(address,address,uint256,
-/// uint256,uint256,uint256)` — verified against velodrome-finance/contracts
-/// `IPool.sol`). Data layout is the same four-amount word sequence as the
-/// Uniswap V2 Swap event.
-pub static SOLIDLY_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| *crate::chain::events::SOLIDLY_SWAP_TOPIC);
-
-/// Fluid DEX pool: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to)
-/// (verified against Instadapp/fluid-contracts-public poolT1/coreModule/events.sol).
-/// No indexed params — everything is in the data words.
-pub static FLUID_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256(b"Swap(bool,uint256,uint256,address)"));
-
-/// Metric V2 pool: Swap(address sender, address recipient, bool exactInput,
-/// int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104 newPositionInBin)
-/// (swap-event signature — topic digest computed from the signature string;
-/// verifying the produced topic on-chain is deferred).
-pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
-    LazyLock::new(|| keccak256(b"Swap(address,address,bool,int128,int128,int16,uint104)"));
 
 /// Result of decoding a V3 Swap event.
 #[derive(Debug, Clone)]
@@ -200,8 +149,8 @@ pub fn decode_v3_mint_burn(log: &ExecutedLog) -> Option<V3MintBurnDecoded> {
         return None;
     }
 
-    let tick_lower = i24_from_topic(&log.topics[2]);
-    let tick_upper = i24_from_topic(&log.topics[3]);
+    let tick_lower = crate::utils::i24_from_topic(&log.topics[2]);
+    let tick_upper = crate::utils::i24_from_topic(&log.topics[3]);
 
     // Mint carries a leading `sender` word, Burn does not.
     let (need, amount_off) = if is_burn { (96, 0) } else { (128, 32) };
@@ -216,16 +165,6 @@ pub fn decode_v3_mint_burn(log: &ExecutedLog) -> Option<V3MintBurnDecoded> {
         tick_upper,
         amount,
     })
-}
-
-/// Sign-extend a left-padded 24-bit tick (int24) from a 32-byte topic.
-fn i24_from_topic(word: &B256) -> i32 {
-    let raw = u32::from_be_bytes([word.0[28], word.0[29], word.0[30], word.0[31]]) & 0x00ff_ffff;
-    if raw & 0x0080_0000 != 0 {
-        (raw as i32) - 0x0100_0000
-    } else {
-        raw as i32
-    }
 }
 
 /// Attempt to decode a Curve TokenExchange event.

@@ -71,6 +71,9 @@ pub struct IngestConfig {
     pub chainlink_feeds: HashMap<Address, Address>,
     pub savax: Option<Address>,
     pub gmx_event_emitters: HashSet<Address>,
+    /// Blocks per JSON-RPC batch POST during [`run_range`]. `1` fetches one
+    /// block per POST.
+    pub rpc_batch_blocks: usize,
 }
 
 impl IngestConfig {
@@ -105,7 +108,26 @@ impl IngestConfig {
             chainlink_feeds,
             savax: chain_config.savax,
             gmx_event_emitters,
+            rpc_batch_blocks: 1,
         }
+    }
+}
+
+/// Successful sAVAX exchange-rate reads, keyed by [`pricing::hour_bucket`].
+/// Failures are not stored: a missing rate loosens `savax_rate_arb` tagging,
+/// so a single timeout must not stick for the rest of the hour.
+#[derive(Debug, Default)]
+pub struct SavaxRateCache {
+    by_hour: HashMap<u64, U256>,
+}
+
+impl SavaxRateCache {
+    fn get(&self, hour: u64) -> Option<U256> {
+        self.by_hour.get(&hour).copied()
+    }
+
+    fn insert(&mut self, hour: u64, rate: U256) {
+        self.by_hour.insert(hour, rate);
     }
 }
 
@@ -200,6 +222,7 @@ pub async fn index_block(
     block_number: u64,
     native_price: Option<f64>,
     token_prices: Option<HashMap<Address, TokenUsd>>,
+    savax_rates: &mut SavaxRateCache,
 ) -> anyhow::Result<IndexedBlock> {
     if store.block_classified(block_number)? {
         debug!(block = block_number, "already classified, skipping");
@@ -222,6 +245,7 @@ pub async fn index_block(
             token_prices,
             bundle,
         },
+        savax_rates,
     )
     .await
 }
@@ -403,6 +427,7 @@ pub async fn index_block_fetched(
     cfg: &IngestConfig,
     pools: PoolViews<'_>,
     input: FetchedBlockInput,
+    savax_rates: &mut SavaxRateCache,
 ) -> anyhow::Result<IndexedBlock> {
     let FetchedBlockInput {
         block_number,
@@ -431,7 +456,14 @@ pub async fn index_block_fetched(
     let prior_oracle_answers = store
         .prior_oracle_answers(block_number, &feeds)
         .unwrap_or_default();
-    let savax_exchange_rate_wad = fetch_savax_exchange_rate(rpc, cfg.savax, block_number).await;
+    let savax_exchange_rate_wad = fetch_savax_exchange_rate(
+        rpc,
+        cfg.savax,
+        block_number,
+        block_data.timestamp,
+        savax_rates,
+    )
+    .await;
     let input = BlockInput {
         block: block_number,
         ts: block_data.timestamp,
@@ -599,12 +631,22 @@ async fn fetch_savax_exchange_rate(
     rpc: &RpcClient,
     savax: Option<Address>,
     block: u64,
+    ts: u64,
+    cache: &mut SavaxRateCache,
 ) -> Option<U256> {
     let savax = savax.filter(|a| !a.is_zero())?;
+    let hour = pricing::hour_bucket(ts);
+    if let Some(rate) = cache.get(hour) {
+        return Some(rate);
+    }
     let mut data = crate::pool::selectors::SAVAX_GET_POOLED_AVAX_BY_SHARES.to_vec();
     data.extend_from_slice(&U256::from(10u64.pow(18)).to_be_bytes::<32>());
     match rpc.call(savax, Bytes::from(data), block).await {
-        Ok(ret) if ret.len() >= 32 => Some(U256::from_be_slice(&ret[..32])),
+        Ok(ret) if ret.len() >= 32 => {
+            let rate = U256::from_be_slice(&ret[..32]);
+            cache.insert(hour, rate);
+            Some(rate)
+        }
         Ok(_) => None,
         Err(e) => {
             debug!(block, "sAVAX exchangeRate eth_call failed: {e}");
@@ -784,6 +826,7 @@ pub async fn run_live(
 
     let mut indexed_total: u64 = 0;
     let mut since_reorg_check: u64 = 0;
+    let mut savax_rates = SavaxRateCache::default();
     // `None` until the first successful tip probe — then pinned to tip, not DB.
     let mut next_block: Option<u64> = None;
 
@@ -838,8 +881,17 @@ pub async fn run_live(
 
             let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             for block in cursor..=safe {
-                let indexed =
-                    index_block(rpc, store, cfg, pools, block, native_price, None).await?;
+                let indexed = index_block(
+                    rpc,
+                    store,
+                    cfg,
+                    pools,
+                    block,
+                    native_price,
+                    None,
+                    &mut savax_rates,
+                )
+                .await?;
                 indexed_total += indexed.ops as u64;
             }
             store.set_sync_state(cfg.chain_id, safe, safe)?;
@@ -921,13 +973,27 @@ pub async fn run_range(
         return Ok(outcome);
     }
 
+    let mut savax_rates = SavaxRateCache::default();
     let cap = block_concurrency.max(1).min(missing.len());
+    // One POST of `chunk` blocks. In-flight blocks stay at `cap`: a chunk of
+    // 32 with concurrency 32 is one POST, not 32×32.
+    let chunk = cfg.rpc_batch_blocks.max(1).min(cap);
     if cap <= 1 {
         for &block in &missing {
             if block.saturating_sub(from_block) % 256 == 0 {
                 native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             }
-            let indexed = index_block(rpc, store, cfg, pools, block, native_price, None).await?;
+            let indexed = index_block(
+                rpc,
+                store,
+                cfg,
+                pools,
+                block,
+                native_price,
+                None,
+                &mut savax_rates,
+            )
+            .await?;
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;
             let done = block - from_block + 1;
@@ -936,7 +1002,8 @@ pub async fn run_range(
             }
         }
     } else {
-        let sem = Arc::new(Semaphore::new(cap));
+        let posts = (cap / chunk).max(1);
+        let sem = Arc::new(Semaphore::new(posts));
         let mut inflight = FuturesUnordered::new();
         let mut ready: BTreeMap<u64, BlockBundle> = BTreeMap::new();
         let mut next_spawn = 0usize;
@@ -947,8 +1014,9 @@ pub async fn run_range(
                 if *next_spawn >= missing.len() {
                     return Ok(());
                 }
-                let block = missing[*next_spawn];
-                *next_spawn += 1;
+                let end = (*next_spawn + chunk).min(missing.len());
+                let blocks = missing[*next_spawn..end].to_vec();
+                *next_spawn = end;
                 let sem = sem.clone();
                 let rpc = rpc.clone();
                 inflight.push(async move {
@@ -956,13 +1024,25 @@ pub async fn run_range(
                         .acquire_owned()
                         .await
                         .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
-                    let bundle = fetch_block_bundle(&rpc, block).await?;
-                    Ok::<_, anyhow::Error>((block, bundle))
+                    let rows = if blocks.len() == 1 {
+                        vec![(blocks[0], fetch_block_bundle(&rpc, blocks[0]).await?)]
+                    } else {
+                        let fetched = rpc.get_blocks_and_receipts_batch(&blocks).await?;
+                        if fetched.len() != blocks.len() {
+                            anyhow::bail!(
+                                "batch returned {} blocks, expected {}",
+                                fetched.len(),
+                                blocks.len()
+                            );
+                        }
+                        blocks.into_iter().zip(fetched).collect()
+                    };
+                    Ok::<_, anyhow::Error>(rows)
                 });
                 Ok(())
             };
 
-        while next_spawn < missing.len() && inflight.len() < cap {
+        while next_spawn < missing.len() && inflight.len() < posts {
             spawn_one(&mut next_spawn, &mut inflight)?;
         }
 
@@ -984,6 +1064,7 @@ pub async fn run_range(
                         token_prices: None,
                         bundle,
                     },
+                    &mut savax_rates,
                 )
                 .await?;
                 outcome.blocks_processed += 1;
@@ -993,16 +1074,18 @@ pub async fn run_range(
                 if done.is_multiple_of(500) || done == total {
                     emit(done);
                 }
-                while next_spawn < missing.len() && inflight.len() < cap {
+                while next_spawn < missing.len() && inflight.len() < posts {
                     spawn_one(&mut next_spawn, &mut inflight)?;
                 }
                 continue;
             }
 
             match inflight.next().await {
-                Some(Ok((block, bundle))) => {
-                    ready.insert(block, bundle);
-                    while next_spawn < missing.len() && inflight.len() < cap {
+                Some(Ok(rows)) => {
+                    for (block, bundle) in rows {
+                        ready.insert(block, bundle);
+                    }
+                    while next_spawn < missing.len() && inflight.len() < posts {
                         spawn_one(&mut next_spawn, &mut inflight)?;
                     }
                 }
@@ -1029,6 +1112,18 @@ mod tests {
     use super::*;
     use crate::explorer::types::MevKind;
     use alloy::primitives::U256;
+
+    #[test]
+    fn savax_rate_cache_reuses_one_success_per_hour() {
+        let mut cache = SavaxRateCache::default();
+        let ts = 1_700_000_000u64;
+        let hour = pricing::hour_bucket(ts);
+        assert_eq!(hour, pricing::hour_bucket(ts + 1800));
+        assert!(cache.get(hour).is_none());
+        cache.insert(hour, U256::from(42u64));
+        assert_eq!(cache.get(hour), Some(U256::from(42u64)));
+        assert!(cache.get(pricing::hour_bucket(ts + 3600)).is_none());
+    }
 
     #[test]
     fn profit_priority_polygon() {

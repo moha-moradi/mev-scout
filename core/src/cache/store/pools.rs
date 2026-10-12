@@ -107,6 +107,40 @@ impl super::SqliteStore {
         Ok(count.max(0) as usize)
     }
 
+    /// Inclusive block span already covered by an on-chain discovery scan.
+    pub fn discovery_watermark(&self) -> anyhow::Result<Option<(u64, u64)>> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT low_block, high_block FROM discovery_scan_watermark WHERE id = 1")?;
+        let mut rows = stmt.query([])?;
+        match rows.next()? {
+            Some(row) => {
+                let low: i64 = row.get(0)?;
+                let high: i64 = row.get(1)?;
+                Ok(Some((low as u64, high as u64)))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Expand the stored discovery span to include `[from, to]`.
+    pub fn note_discovery_scan(&self, from: u64, to: u64) -> anyhow::Result<()> {
+        if from > to {
+            return Ok(());
+        }
+        let (low, high) = match self.discovery_watermark()? {
+            Some((low, high)) => (low.min(from), high.max(to)),
+            None => (from, to),
+        };
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO discovery_scan_watermark (id, low_block, high_block) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET low_block = ?1, high_block = ?2",
+            rusqlite::params![low as i64, high as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn max_creation_block(&self) -> anyhow::Result<Option<u64>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT MAX(creation_block) FROM pool_info")?;

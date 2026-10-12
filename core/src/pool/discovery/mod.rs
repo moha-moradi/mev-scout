@@ -412,6 +412,8 @@ fn process_discovery_log(
 /// Configuration for pool discovery parameters.
 pub struct DiscoveryConfig<'a> {
     pub batch_size: u64,
+    /// Factory-creation `eth_getLogs` window. At least `batch_size`.
+    pub factory_batch_size: u64,
     pub v2_fee_override: Option<u32>,
     pub balancer_vault: Option<Address>,
     pub v2_factories: Option<&'a [Address]>,
@@ -520,14 +522,23 @@ const MIN_SPLIT_BATCH: u64 = 10;
 async fn probe_get_logs_limit(rpc: &RpcClient, to_block: u64, requested: u64) -> u64 {
     let candidates: &[u64] = &[100, 250, 500, 1000, 2000, 5000, 10_000];
     let mut working = MIN_SPLIT_BATCH;
+    // An unlimited node is probed alone so a public peer's smaller cap is not
+    // adopted. All-positive RPS sets keep the multi-provider `get_logs` path.
+    let pin = rpc.unlimited_provider_index().await;
     for &candidate in candidates {
         if candidate > requested {
             break;
         }
         let from = to_block.saturating_sub(candidate);
         let filter = Filter::new().from_block(from).to_block(to_block);
+        let call = async {
+            match pin {
+                Some(idx) => rpc.get_logs_pinned_strict(idx, &filter).await,
+                None => rpc.get_logs(&filter).await,
+            }
+        };
 
-        match tokio::time::timeout(Duration::from_secs(15), rpc.get_logs(&filter)).await {
+        match tokio::time::timeout(Duration::from_secs(15), call).await {
             Ok(Ok(_)) => {
                 working = candidate;
             }
@@ -867,6 +878,14 @@ pub async fn discover_pools(
             effective_batch_size
         );
     }
+    let requested_factory = config.factory_batch_size.max(config.batch_size);
+    let factory_batch_size = if requested_factory == config.batch_size {
+        effective_batch_size
+    } else {
+        probe_get_logs_limit(rpc, to_block, requested_factory)
+            .await
+            .max(effective_batch_size)
+    };
 
     // ── Distribute block range across providers (like fetch) ──
     let shards = rpc.distribute_blocks(from_block, to_block).await;
@@ -880,6 +899,7 @@ pub async fn discover_pools(
             from_block,
             to_block,
             effective_batch_size,
+            factory_batch_size,
             config,
             on_batch,
             None,
@@ -903,12 +923,14 @@ pub async fn discover_pools(
             let rpc = rpc.clone();
             let config_ref = config;
             let batch_size = effective_batch_size;
+            let factory_batch = factory_batch_size;
             async move {
                 discover_pools_shard(
                     &rpc,
                     shard.from,
                     shard.to,
                     batch_size,
+                    factory_batch,
                     config_ref,
                     None,
                     Some(shard.provider_idx),
@@ -1029,8 +1051,7 @@ async fn resolve_curve_underlying(
         "Resolving underlying tokens for {} Curve pools...",
         curve_pools.len()
     );
-    let resolved =
-        curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
+    let resolved = curve::resolve_underlying_tokens(rpc, curve_pools, config.rpc_concurrency).await;
 
     let mut resolved_count = 0u32;
     for (addr, tokens) in resolved {
@@ -1334,11 +1355,99 @@ fn build_discovery_output(
 }
 
 /// Discovery logic for a single block-range shard (pinned to one provider).
+fn block_windows(from: u64, to: u64, batch: u64) -> Vec<(u64, u64)> {
+    let mut out = Vec::new();
+    if from > to {
+        return out;
+    }
+    let batch = batch.max(1);
+    let mut current = from;
+    while current <= to {
+        let end = (current + batch - 1).min(to);
+        out.push((current, end));
+        if end == to {
+            break;
+        }
+        current = end + 1;
+    }
+    out
+}
+
+fn absorb_activity_logs(logs: &[alloy::rpc::types::Log], into: &mut ScanBatchResult) {
+    for log in logs {
+        process_discovery_log(log, &mut into.active_blocks, &mut into.pool_hits);
+    }
+}
+
+async fn scan_activity_window(
+    rpc: &RpcClient,
+    topics: &[B256],
+    from: u64,
+    to: u64,
+    provider_idx: Option<usize>,
+) -> ScanBatchResult {
+    let mut result = ScanBatchResult::default();
+    let filter = Filter::new()
+        .event_signature(topics.to_vec())
+        .from_block(from)
+        .to_block(to);
+    match get_logs_pinned!(rpc, &filter, provider_idx) {
+        Ok(logs) => absorb_activity_logs(&logs, &mut result),
+        Err(e) => {
+            tracing::warn!(
+                "DEX activity scan failed for blocks {from}..{to}: {e:#}. Splitting batch..."
+            );
+            match get_logs_split_recursive(rpc, &filter, from, to).await {
+                Ok(logs) => absorb_activity_logs(&logs, &mut result),
+                Err(e2) => {
+                    tracing::warn!(
+                        "Activity scan split also failed for blocks {from}..{to}: {e2:#}. \
+                         Skipping batch."
+                    );
+                }
+            }
+        }
+    }
+    result
+}
+
+async fn scan_activity_windows(
+    rpc: &RpcClient,
+    topics: &[B256],
+    windows: Vec<(u64, u64)>,
+    provider_idx: Option<usize>,
+    concurrency: usize,
+) -> ScanBatchResult {
+    if concurrency <= 1 || windows.len() <= 1 {
+        let mut merged = ScanBatchResult::default();
+        for (from, to) in windows {
+            merged.merge(scan_activity_window(rpc, topics, from, to, provider_idx).await);
+        }
+        return merged;
+    }
+    use futures::stream::{self, StreamExt};
+    let parts: Vec<ScanBatchResult> = stream::iter(windows)
+        .map(|(from, to)| {
+            let topics = topics.to_vec();
+            let rpc = rpc.clone();
+            async move { scan_activity_window(&rpc, &topics, from, to, provider_idx).await }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    let mut merged = ScanBatchResult::default();
+    for part in parts {
+        merged.merge(part);
+    }
+    merged
+}
+
 async fn discover_pools_shard(
     rpc: &RpcClient,
     from_block: u64,
     to_block: u64,
     effective_batch_size: u64,
+    factory_batch_size: u64,
     config: &DiscoveryConfig<'_>,
     on_batch: Option<&dyn Fn() -> bool>,
     provider_idx: Option<usize>,
@@ -1361,7 +1470,7 @@ async fn discover_pools_shard(
         topics::V2_SWAP,
         topics::V2_SYNC,
         topics::V3_SWAP,
-        *topics::V3_MINT,
+        topics::V3_MINT,
         topics::V3_BURN,
         *topics::CURVE_TOKEN_EXCHANGE,
         *topics::CURVE_V2_TOKEN_EXCHANGE,
@@ -1381,10 +1490,22 @@ async fn discover_pools_shard(
         *topics::METRIC_SWAP,
     ];
 
+    let unlimited = match provider_idx {
+        Some(idx) => rpc.provider_is_unlimited(idx).await,
+        None => rpc.has_unlimited_provider().await,
+    };
+    // Rate-limited shards stay serial so a 1 RPS bucket is not fanned out.
+    let window_conc = if unlimited {
+        config.rpc_concurrency.max(1)
+    } else {
+        1
+    };
+    let factory_step = factory_batch_size.max(effective_batch_size).max(1);
+
     let mut current = from_block;
 
     while current <= to_block {
-        let batch_end = (current + effective_batch_size - 1).min(to_block);
+        let batch_end = (current + factory_step - 1).min(to_block);
 
         // ── Provider health check ──
         if !rpc.has_healthy_providers().await {
@@ -1394,40 +1515,21 @@ async fn discover_pools_shard(
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
 
-        // ── DEX activity scan ──
-        let activity_filter = Filter::new()
-            .event_signature(dex_activity_topics.clone())
-            .from_block(current)
-            .to_block(batch_end);
-
-        match get_logs_pinned!(rpc, &activity_filter, provider_idx) {
-            Ok(logs) => {
-                for log in &logs {
-                    process_discovery_log(log, &mut active_blocks, &mut pool_hits);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "DEX activity scan failed for blocks {current}..{batch_end}: {e:#}. \
-                     Splitting batch..."
-                );
-                match get_logs_split_recursive(rpc, &activity_filter, current, batch_end).await {
-                    Ok(logs) => {
-                        for log in &logs {
-                            process_discovery_log(log, &mut active_blocks, &mut pool_hits);
-                        }
-                    }
-                    Err(e2) => {
-                        tracing::warn!(
-                            "Activity scan split also failed for blocks {current}..{batch_end}: {e2:#}. \
-                             Skipping batch."
-                        );
-                    }
-                }
-            }
+        // ── DEX activity scan (parallel only on an unlimited provider) ──
+        let activity = scan_activity_windows(
+            rpc,
+            &dex_activity_topics,
+            block_windows(current, batch_end, effective_batch_size),
+            provider_idx,
+            window_conc,
+        )
+        .await;
+        active_blocks.extend(activity.active_blocks);
+        for (addr, hit) in activity.pool_hits {
+            pool_hits.entry(addr).or_insert(hit);
         }
 
-        // ── Per-DEX factory scans, run concurrently ──
+        // ── Per-DEX factory scans, run concurrently over the coarse window ──
         // Each scanner returns its additions and the results are merged
         // afterwards; previously they serialized the whole batch on the
         // slowest provider.
@@ -1491,8 +1593,7 @@ async fn discover_pools_shard(
     resolve_curve_underlying(rpc, config, &mut factory_pools).await;
 
     let results = fetch_dex_metadata(rpc, config, &pool_hits, &mut factory_pools).await;
-    let symbol_results =
-        resolve_token_symbols(rpc, config, &factory_pools, &results).await;
+    let symbol_results = resolve_token_symbols(rpc, config, &factory_pools, &results).await;
     let discovered_pools =
         build_discovery_output(config, &pool_hits, factory_pools, results, symbol_results);
 

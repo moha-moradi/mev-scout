@@ -13,7 +13,7 @@
 //!
 //! Note: exact canonical-id matching via these strings is *aspirational* —
 //! opportunity canonical IDs come from simulation, realized IDs from flows,
-//! and they rarely coincide. `validate` must still report at overlap and block-level tiers.
+//! and they rarely coincide.
 use alloy::primitives::Address;
 
 use crate::explorer::types::MevEvent;

@@ -1,10 +1,10 @@
 use super::LB_PAIR_CREATED_TOPIC;
-use crate::utils::topic_address;
 use super::{
     resolve_dex_name, DiscoveredPool, PoolHit, PoolHitCandidate, ScanBatchResult, ScanContext,
 };
 use crate::dex_type::DexType;
 use crate::pipeline::topics;
+use crate::utils::topic_address;
 use alloy::rpc::types::Filter;
 
 /// Trader Joe / LFJ V2 activity: LBPair contracts are per-pool and emit their

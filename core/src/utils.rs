@@ -1,7 +1,7 @@
 //! Small utility functions shared across the crate.
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256};
 
 /// Return the current Unix timestamp in whole seconds since the epoch.
 pub fn epoch_secs() -> u64 {
@@ -97,6 +97,39 @@ pub fn abi_decode_address(data: &[u8], offset: usize) -> Option<Address> {
         return None;
     }
     Some(Address::from_slice(&data[offset + 12..offset + 32]))
+}
+
+/// Sign-extend a left-padded 24-bit tick (`int24`) from a 32-byte topic.
+pub fn i24_from_topic(word: &B256) -> i32 {
+    let raw = u32::from_be_bytes([word.0[28], word.0[29], word.0[30], word.0[31]]) & 0x00ff_ffff;
+    if raw & 0x0080_0000 != 0 {
+        (raw as i32) - 0x0100_0000
+    } else {
+        raw as i32
+    }
+}
+
+/// Percent-encode `s` as UTF-8 bytes (RFC 3986 unreserved set left as-is).
+pub fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// HTTP client with a shared user-agent. Built per call; no process-wide pool.
+pub fn http_client(timeout: std::time::Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent("mev-scout/0.1")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Decode a U256 from a 32-byte ABI word.

@@ -14,6 +14,7 @@ use super::DetectCtx;
 use crate::dex_type::DexType;
 use crate::pool::math::optimal_on_segments;
 use crate::pool::math::v3::{v3_breakpoints, V3Direction};
+use crate::pool::math::MAX_V3_BREAKPOINTS_PER_POOL;
 use crate::pool::state::{
     calldata_gas_estimate, PoolManager, PoolState, ScanScope, UniswapV2PoolState,
 };
@@ -21,9 +22,6 @@ use crate::types::gas::GasCalibrationSnapshot;
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, Strategy};
 
-/// Maximum tick-band breakpoints enumerated per V3 pool when segmenting the
-/// profit landscape for deterministic optimization.
-const MAX_V3_BREAKPOINTS_PER_POOL: usize = 24;
 /// Total inverted breakpoints taken across all V3 pools of an N-hop path
 /// (inversion requires binary-search probes through the prefix quote, so the
 /// total count is capped independently of the per-pool cap).

@@ -1,9 +1,8 @@
-//! labeled golden set for Backrun / Frontrun ship-gate scoring.
+//! Labeled golden set for Backrun / Frontrun ship-gate scoring.
 //!
-//! Opportunity-side strategies do not map to these kinds, so
-//! `explorer validate` cannot measure their precision via scanner matching.
-//! This module holds a small synthetic labeled set (positives + explicit
-//! negatives) and scores `classify_block` against those labels.
+//! Opportunity-side strategies do not map to these kinds. This module holds a
+//! small synthetic labeled set (positives + explicit negatives) and scores
+//! `classify_block` against those labels (`cargo test -p mev-scout-core golden`).
 //!
 //! Chain-curated labels (hand-reviewed blocks) can be layered on later; until
 //! then this set is the CI ship gate for causal kinds.

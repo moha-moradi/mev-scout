@@ -42,6 +42,18 @@ pub static V2_BURN_TOPIC: LazyLock<B256> =
 pub const V3_SWAP_TOPIC: B256 =
     b256!("c42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67");
 
+/// Uniswap V3 `Mint(address,address,int24,int24,uint128,uint256,uint256)`.
+///
+/// Must stay equal to `keccak256` of that signature — a mistyped constant
+/// silently disables every V3 Mint decode, which makes JIT detection
+/// structurally impossible without any other visible failure.
+pub const V3_MINT_TOPIC: B256 =
+    b256!("7a53080ba414158be7ec69b987b5fb7d07dee101fe85488f0853ae16239d0bde");
+
+/// Uniswap V3 `Burn(address,int24,int24,uint128,uint256,uint256)`.
+pub const V3_BURN_TOPIC: B256 =
+    b256!("0c396cd989a39f4459b5fa1aed6a9a8dcdbc45908acfd67e028cd568da98982c");
+
 /// Uniswap V3 Pool `Flash(address sender, address recipient, uint256 amount0,
 /// uint256 amount1, uint256 paid0, uint256 paid1)` — Avalanche flash path for
 /// plan P2.3 (Uni V4 has no discrete Flash event; flash accounting is unlock-
@@ -73,7 +85,30 @@ pub static INF_CL_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24,uint16)")
 });
 
+// ── Curve ───────────────────────────────────────────────────────────
+
+/// Curve StableSwap `TokenExchange(address,int128,uint256,int128,uint256)`.
+pub static CURVE_TOKEN_EXCHANGE_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256)"));
+
+/// Curve CryptoSwap `TokenExchange(address,int128,uint256,int128,uint256,uint256)`.
+pub static CURVE_V2_TOKEN_EXCHANGE_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("TokenExchange(address,int128,uint256,int128,uint256,uint256)"));
+
+/// Curve `TokenExchangeUnderlying` (plain StableSwap exchange_underlying path).
+pub static CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256)"));
+
+/// Curve CryptoSwap `TokenExchangeUnderlying`.
+pub static CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)")
+});
+
 // ── Balancer V2 ─────────────────────────────────────────────────────
+
+/// Balancer V2 Vault `Swap(bytes32,address,address,uint256,uint256)`.
+pub static BALANCER_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(bytes32,address,address,uint256,uint256)"));
 
 pub static BALANCER_FLASH_LOAN_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("FlashLoan(address,address,address,uint256,bytes)"));
@@ -280,16 +315,46 @@ pub static TRADER_JOE_LB_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
     keccak256("Swap(address,address,uint256,bool,uint256,uint256,uint256,uint256)")
 });
 
-// Trader Joe Liquidity Book 2.1/2.2 per-side-amounts Swap event (packed
-// bytes32 amounts). Verified against lfj-gg/joe-v2 branches main/v2.1/v2.2.
-// It lives in `pipeline::scanner::topics::TRADER_JOE_LB_SWAP_LEGACY`, which is
-// what `pool/discovery/trader_joe.rs` matches on, so no alias is kept here.
+/// Trader Joe Liquidity Book 2.1/2.2 Pair Swap event
+/// (`sender, to, uint24 id, bytes32 amountsIn, bytes32 amountsOut,
+/// uint24 volatilityAccumulator, bytes32 totalFees, bytes32 protocolFees`
+/// — verified against lfj-gg/joe-v2 branches main/v2.1/v2.2).
+pub static TRADER_JOE_LB_SWAP_LEGACY_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Swap(address,address,uint24,bytes32,bytes32,uint24,bytes32,bytes32)")
+});
+
+// ── Fluid / Metric ──────────────────────────────────────────────────
+
+/// Fluid DEX pool `Swap(bool,uint256,uint256,address)` — no indexed params.
+/// Verified against fluid-contracts-public.
+pub static FLUID_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(bool,uint256,uint256,address)"));
+
+/// Metric V2 pool Swap. Digest is computed from the signature string;
+/// verifying the produced topic on-chain is deferred.
+pub static METRIC_SWAP_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("Swap(address,address,bool,int128,int128,int16,uint104)"));
 
 // ── Pendle Finance ──────────────────────────────────────────────────
 
 /// Pendle V2 market Swap event (caller, receiver indexed).
 pub static PENDLE_MARKET_SWAP_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Swap(address,address,int256,int256,uint256,uint256)"));
+
+/// Pendle V2 router PT/YT swap events — verified against pendle-core-v2
+/// `IPActionSwapPTV3Events` / `IPActionSwapYTV3Events`. Emitted by the
+/// singleton router with the MARKET address in topics[2], so discovery
+/// must override the hit address instead of using the emitter.
+pub static PENDLE_SWAP_PT_AND_SY_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("SwapPtAndSy(address,address,address,int256,int256)"));
+pub static PENDLE_SWAP_YT_AND_SY_TOPIC: LazyLock<B256> =
+    LazyLock::new(|| keccak256("SwapYtAndSy(address,address,address,int256,int256)"));
+pub static PENDLE_SWAP_PT_AND_TOKEN_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("SwapPtAndToken(address,address,address,address,int256,int256,uint256)")
+});
+pub static PENDLE_SWAP_YT_AND_TOKEN_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("SwapYtAndToken(address,address,address,address,int256,int256,uint256)")
+});
 
 #[cfg(test)]
 mod tests {
@@ -334,20 +399,14 @@ mod tests {
             V3_SWAP_TOPIC,
             "Swap(address,address,int256,int256,uint160,uint128,int24)",
         );
-        assert_eq!(
-            decoders::V3_SWAP_TOPIC,
-            V3_SWAP_TOPIC,
-            "decoder v3 swap alias"
-        );
-        assert_eq!(*topics::V3_SWAP, V3_SWAP_TOPIC, "scanner v3 swap alias");
         pin_sig(
             "v3 mint",
-            decoders::V3_MINT_TOPIC,
+            V3_MINT_TOPIC,
             "Mint(address,address,int24,int24,uint128,uint256,uint256)",
         );
         pin_sig(
             "v3 burn",
-            decoders::V3_BURN_TOPIC,
+            V3_BURN_TOPIC,
             "Burn(address,int24,int24,uint128,uint256,uint256)",
         );
         pin_lit(
@@ -355,37 +414,70 @@ mod tests {
             *TRADER_JOE_LB_SWAP_TOPIC,
             b256!("c528cda9e500228b16ce84fadae290d9a49aecb17483110004c5af0a07f6fd73"),
         );
-        assert_eq!(*topics::TRADER_JOE_LB_SWAP, *TRADER_JOE_LB_SWAP_TOPIC);
         pin_lit(
             "trader joe lb legacy",
-            *topics::TRADER_JOE_LB_SWAP_LEGACY,
+            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
             b256!("ad7d6f97abf51ce18e17a38f4d70e975be9c0708474987bb3e26ad21bd93ca70"),
         );
         pin_sig(
             "pendle market",
-            *topics::PENDLE_MARKET_SWAP,
+            *PENDLE_MARKET_SWAP_TOPIC,
             "Swap(address,address,int256,int256,uint256,uint256)",
         );
-        assert_eq!(*PENDLE_MARKET_SWAP_TOPIC, *topics::PENDLE_MARKET_SWAP);
         pin_lit(
             "pendle pt/sy",
-            *topics::PENDLE_SWAP_PT_AND_SY,
+            *PENDLE_SWAP_PT_AND_SY_TOPIC,
             b256!("3f5e2944826baeaed8eb77f0f74e6088a154a0fc1317f062fd984585607b4739"),
         );
         pin_lit(
             "pendle yt/sy",
-            *topics::PENDLE_SWAP_YT_AND_SY,
+            *PENDLE_SWAP_YT_AND_SY_TOPIC,
             b256!("05499aba408f669fb848399c146fad5bd604d50b15566bdc19e81c40922fab8d"),
         );
         pin_lit(
             "pendle pt/token",
-            *topics::PENDLE_SWAP_PT_AND_TOKEN,
+            *PENDLE_SWAP_PT_AND_TOKEN_TOPIC,
             b256!("d3c1d9b397236779b29ee5b5b150c1110fc8221b6b6ec0be49c9f4860ceb2036"),
         );
         pin_lit(
             "pendle yt/token",
-            *topics::PENDLE_SWAP_YT_AND_TOKEN,
+            *PENDLE_SWAP_YT_AND_TOKEN_TOPIC,
             b256!("a3a2846538c60e47775faa60c6ae79b67dee6d97bb70e386ebbaf4c3a38e8b81"),
+        );
+        pin_sig(
+            "curve exchange",
+            *CURVE_TOKEN_EXCHANGE_TOPIC,
+            "TokenExchange(address,int128,uint256,int128,uint256)",
+        );
+        pin_sig(
+            "curve v2 exchange",
+            *CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            "TokenExchange(address,int128,uint256,int128,uint256,uint256)",
+        );
+        pin_sig(
+            "curve underlying",
+            *CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
+            "TokenExchangeUnderlying(address,int128,uint256,int128,uint256)",
+        );
+        pin_sig(
+            "curve v2 underlying",
+            *CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
+            "TokenExchangeUnderlying(address,int128,uint256,int128,uint256,uint256)",
+        );
+        pin_sig(
+            "balancer swap",
+            *BALANCER_SWAP_TOPIC,
+            "Swap(bytes32,address,address,uint256,uint256)",
+        );
+        pin_sig(
+            "fluid swap",
+            *FLUID_SWAP_TOPIC,
+            "Swap(bool,uint256,uint256,address)",
+        );
+        pin_sig(
+            "metric swap",
+            *METRIC_SWAP_TOPIC,
+            "Swap(address,address,bool,int128,int128,int16,uint104)",
         );
         pin_sig(
             "1inch swapped",
@@ -416,6 +508,72 @@ mod tests {
             "lb withdraw",
             *LB_WITHDRAWN_FROM_BINS_TOPIC,
             "WithdrawnFromBins(address,address,uint256[],bytes32[])",
+        );
+
+        // Scanner and decoder names are re-exports, not a second hash.
+        assert_eq!(topics::V2_SWAP, V2_SWAP_TOPIC);
+        assert_eq!(topics::V2_SYNC, V2_SYNC_TOPIC);
+        assert_eq!(topics::V3_SWAP, V3_SWAP_TOPIC);
+        assert_eq!(decoders::V3_SWAP_TOPIC, V3_SWAP_TOPIC);
+        assert_eq!(topics::V3_MINT, V3_MINT_TOPIC);
+        assert_eq!(decoders::V3_MINT_TOPIC, V3_MINT_TOPIC);
+        assert_eq!(topics::V3_BURN, V3_BURN_TOPIC);
+        assert_eq!(decoders::V3_BURN_TOPIC, V3_BURN_TOPIC);
+        let same = |alias: &B256, canon: &B256| assert!(std::ptr::eq(alias, canon));
+        same(&*topics::CURVE_TOKEN_EXCHANGE, &*CURVE_TOKEN_EXCHANGE_TOPIC);
+        same(
+            &*decoders::CURVE_TOKEN_EXCHANGE_TOPIC,
+            &*CURVE_TOKEN_EXCHANGE_TOPIC,
+        );
+        same(
+            &*topics::CURVE_V2_TOKEN_EXCHANGE,
+            &*CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+        );
+        same(
+            &*decoders::CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+            &*CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+        );
+        same(&*topics::BALANCER_SWAP, &*BALANCER_SWAP_TOPIC);
+        same(&*decoders::BALANCER_SWAP_TOPIC, &*BALANCER_SWAP_TOPIC);
+        same(&*topics::V4_SWAP, &*V4_SWAP_TOPIC);
+        same(&*topics::INF_CL_SWAP, &*INF_CL_SWAP_TOPIC);
+        same(&*topics::FLUID_SWAP, &*FLUID_SWAP_TOPIC);
+        same(&*decoders::FLUID_SWAP_TOPIC, &*FLUID_SWAP_TOPIC);
+        same(&*topics::METRIC_SWAP, &*METRIC_SWAP_TOPIC);
+        same(&*decoders::METRIC_SWAP_TOPIC, &*METRIC_SWAP_TOPIC);
+        same(&*topics::SOLIDLY_SWAP, &*SOLIDLY_SWAP_TOPIC);
+        same(&*decoders::SOLIDLY_SWAP_TOPIC, &*SOLIDLY_SWAP_TOPIC);
+        same(&*topics::TRADER_JOE_LB_SWAP, &*TRADER_JOE_LB_SWAP_TOPIC);
+        same(&*decoders::LB_SWAP_TOPIC, &*TRADER_JOE_LB_SWAP_TOPIC);
+        same(
+            &*topics::TRADER_JOE_LB_SWAP_LEGACY,
+            &*TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+        );
+        same(&*topics::PENDLE_MARKET_SWAP, &*PENDLE_MARKET_SWAP_TOPIC);
+        same(&*decoders::PENDLE_SWAP_TOPIC, &*PENDLE_MARKET_SWAP_TOPIC);
+        same(
+            &*topics::PENDLE_SWAP_PT_AND_SY,
+            &*PENDLE_SWAP_PT_AND_SY_TOPIC,
+        );
+        same(
+            &*topics::PENDLE_SWAP_YT_AND_SY,
+            &*PENDLE_SWAP_YT_AND_SY_TOPIC,
+        );
+        same(
+            &*topics::PENDLE_SWAP_PT_AND_TOKEN,
+            &*PENDLE_SWAP_PT_AND_TOKEN_TOPIC,
+        );
+        same(
+            &*topics::PENDLE_SWAP_YT_AND_TOKEN,
+            &*PENDLE_SWAP_YT_AND_TOKEN_TOPIC,
+        );
+        same(
+            &*topics::CURVE_TOKEN_EXCHANGE_UNDERLYING,
+            &*CURVE_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
+        );
+        same(
+            &*topics::CURVE_V2_TOKEN_EXCHANGE_UNDERLYING,
+            &*CURVE_V2_TOKEN_EXCHANGE_UNDERLYING_TOPIC,
         );
 
         let kinds = kinds.into_inner();

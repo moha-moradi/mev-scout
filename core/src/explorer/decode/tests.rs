@@ -1,4 +1,4 @@
-﻿//! Decode unit tests (moved from monolithic decode.rs).
+//! Decode unit tests (moved from monolithic decode.rs).
 use super::*;
 use alloy::primitives::{address, b256, Address, B256, U256};
 
@@ -8,8 +8,9 @@ use crate::chain::events::{
 };
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
-use crate::pool::decoders::{LB_DEPOSITED_TO_BINS_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC};
-
+use crate::pool::decoders::{
+    LB_DEPOSITED_TO_BINS_TOPIC, SOLIDLY_SWAP_TOPIC, V3_BURN_TOPIC, V3_MINT_TOPIC,
+};
 
 fn log(address: Address, topics: Vec<B256>, data: Vec<u8>) -> LogData {
     LogData {
@@ -276,8 +277,7 @@ fn aave_flash_loans_decode() {
     assert_eq!(f.fee, Some(U256::from(5)));
     assert_eq!(f.initiator, initiator);
 
-    let initiator_topic =
-        b256!("0000000000000000000000003333333333333333333333333333333333333333");
+    let initiator_topic = b256!("0000000000000000000000003333333333333333333333333333333333333333");
     let asset = b256!("0000000000000000000000002222222222222222222222222222222222222222");
     let mut data = vec![0u8; 96];
     data[24..32].copy_from_slice(&3_000u64.to_be_bytes());
@@ -327,8 +327,7 @@ fn liquidation_compound_v2_decodes() {
     let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let mut data = vec![0u8; 96];
     data[24..32].copy_from_slice(&99u64.to_be_bytes()); // repayAmount
-    data[44..64]
-        .copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice()); // cTokenCollateral
+    data[44..64].copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice()); // cTokenCollateral
     data[88..96].copy_from_slice(&500u64.to_be_bytes()); // seizeTokens
     let l = log(
         address!("dddddddddddddddddddddddddddddddddddddddd"),
@@ -367,8 +366,7 @@ fn liquidation_benqi_market_relabels_to_benqi() {
     let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let mut data = vec![0u8; 96];
     data[24..32].copy_from_slice(&99u64.to_be_bytes()); // repayAmount
-    data[44..64]
-        .copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice()); // cTokenCollateral
+    data[44..64].copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice()); // cTokenCollateral
     data[88..96].copy_from_slice(&500u64.to_be_bytes()); // seizeTokens
                                                          // qiAVAX â€” Benqi core market on Avalanche (43114).
     let l = log(
@@ -393,8 +391,7 @@ fn liquidation_unaliased_emitter_keeps_compound_v2() {
     let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     let mut data = vec![0u8; 96];
     data[24..32].copy_from_slice(&99u64.to_be_bytes());
-    data[44..64]
-        .copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice());
+    data[44..64].copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice());
     data[88..96].copy_from_slice(&500u64.to_be_bytes());
     let l = log(
         address!("dddddddddddddddddddddddddddddddddddddddd"),
@@ -434,8 +431,7 @@ fn decode_gelato_exec_success_fee() {
     use crate::chain::events::GELATO_EXEC_SUCCESS_TOPIC;
     let mut data = vec![0u8; 192];
     data[24..32].copy_from_slice(&42u64.to_be_bytes()); // txFee
-    data[44..64]
-        .copy_from_slice(address!("4000000000000000000000000000000000000005").as_slice());
+    data[44..64].copy_from_slice(address!("4000000000000000000000000000000000000005").as_slice());
     let l = log(
         address!("cccccccccccccccccccccccccccccccccccccccc"),
         vec![*GELATO_EXEC_SUCCESS_TOPIC],

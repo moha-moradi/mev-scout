@@ -1,7 +1,7 @@
 //! Labels / rejections for ExplorerStore.
 use alloy::primitives::Address;
 
-use super::{ExplorerStore, RejectedRow};
+use super::ExplorerStore;
 
 impl ExplorerStore {
     /// Insert an address label (classifier growth loop).
@@ -119,57 +119,6 @@ impl ExplorerStore {
             ],
         )?;
         Ok(())
-    }
-    /// Rejected candidates in a block window (`validate`/`explain`).
-    pub fn rejected_in_range(
-        &self,
-        chain: &str,
-        from_block: u64,
-        to_block: u64,
-    ) -> anyhow::Result<Vec<RejectedRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT block_number, tx_index, strategy, pool_a, pool_b, token_in, token_out,
-                    expected_profit, gas_cost_wei, reject_reason, detail
-             FROM rejected_candidates
-             WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3
-             ORDER BY block_number, tx_index",
-        )?;
-        let rows = stmt.query_map(
-            rusqlite::params![chain, from_block as i64, to_block as i64],
-            |r| {
-                Ok(RejectedRow {
-                    block_number: r.get::<_, i64>(0)? as u64,
-                    tx_index: r.get::<_, Option<i64>>(1)?.map(|v| v as u64),
-                    strategy: r.get(2)?,
-                    pool_a: r.get(3)?,
-                    pool_b: r.get(4)?,
-                    token_in: r.get(5)?,
-                    token_out: r.get(6)?,
-                    expected_profit: r.get(7)?,
-                    gas_cost_wei: r.get(8)?,
-                    reject_reason: r.get(9)?,
-                    detail: r.get(10)?,
-                })
-            },
-        )?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
-    }
-    /// True when the window has any rejection rows (drives the
-    /// `unknown-coverage` degradation in `validate`).
-    pub fn has_rejections(&self, chain: &str, from_block: u64, to_block: u64) -> bool {
-        self.conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM rejected_candidates
-                 WHERE chain = ?1 AND block_number BETWEEN ?2 AND ?3)",
-                rusqlite::params![chain, from_block as i64, to_block as i64],
-                |r| r.get::<_, i64>(0),
-            )
-            .map(|v| v != 0)
-            .unwrap_or(false)
     }
     /// Label a searcher automatically after a confirmed classifier hit
     /// (growth loop): address → label with `source = classifier`.

@@ -211,6 +211,12 @@ impl SqliteStore {
                 name       TEXT,
                 icon_url   TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS discovery_scan_watermark (
+                id         INTEGER PRIMARY KEY CHECK (id = 1),
+                low_block  INTEGER NOT NULL,
+                high_block INTEGER NOT NULL
+            );
             ",
         )?;
 

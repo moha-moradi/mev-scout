@@ -185,4 +185,3 @@ pub fn attach_swap_tokens(
         s.token_source = combine_leg_source(in_how, out_how);
     }
 }
-
