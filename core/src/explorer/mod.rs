@@ -10,7 +10,7 @@
 //! Pipeline: `ingest` (block+receipt fetch, reorg-aware) → `decode` (swaps,
 //! transfers, liquidation facts) → `classify` (per-block pattern passes) →
 //! `profit` (balance-delta accounting, gas, USD) → `store` (SQLite facts) →
-//! `query` (live/stats/top/show/export CLI surface).
+//! `query` (revenue-report / index CLI surface).
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
@@ -29,6 +29,7 @@
 pub(crate) mod canonical;
 pub(crate) mod classify;
 pub(crate) mod decode;
+#[cfg(test)]
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
@@ -44,11 +45,9 @@ pub(crate) mod strategy_tags;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 pub mod types;
-pub mod validate;
 
 pub use canonical::explorer_canonical_id;
 pub use classify::{classify_block, BlockInput, TxInput};
-pub use golden::{score_embedded_causal_set, GoldenSetScore};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};

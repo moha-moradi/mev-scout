@@ -62,14 +62,6 @@ pub fn validate_rpc_urls(urls: &[String]) -> std::result::Result<(), ConfigError
 
 fn validate_explorer_tolerances(config: &Config) -> std::result::Result<(), ConfigError> {
     for (field, value) in [
-        (
-            "explorer.trace_tolerance_pct",
-            config.explorer.trace_tolerance_pct,
-        ),
-        (
-            "explorer.trace_error_usd_tol",
-            config.explorer.trace_error_usd_tol,
-        ),
         // MEV gate (detector expected vs realized net profit).
         (
             "explorer.mev_tolerance_pct",
@@ -443,12 +435,6 @@ mod tests {
 
         type Case = (&'static str, fn(&mut Config));
         let cases: &[Case] = &[
-            ("explorer.trace_tolerance_pct", |c| {
-                c.explorer.trace_tolerance_pct = -1.0
-            }),
-            ("explorer.trace_error_usd_tol", |c| {
-                c.explorer.trace_error_usd_tol = f64::NAN
-            }),
             ("explorer.mev_tolerance_pct", |c| {
                 c.explorer.mev_tolerance_pct = -1.0
             }),

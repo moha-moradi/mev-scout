@@ -90,7 +90,7 @@ mev-scout explorer
 | `discover` | Find pools (hybrid TVL ranking; `[discover].source` for factory-only) | [§3.3](docs/CLI.md#33-discover--build-the-pool-universe) |
 | `live` | Detect at tip → opportunities + virtual P&L ledger | [§3.2](docs/CLI.md#32-live--the-default-command) |
 | `report` | Re-render a recorded run from SQLite | [§3.5](docs/CLI.md#35-report--re-render-saved-results) |
-| `explorer` | Realized revenue report (bare); `index` / `show` for ingest and detail | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
+| `explorer` | Realized revenue report (bare); `index` for ingest | [§3.6](docs/CLI.md#36-explorer--realized-mev-forensics) |
 
 `run` and `paper` were folded into `live`, which detects at chain tip and
 always runs its paper ledger (`--initial-balance`, `--reserve`). At session
@@ -99,9 +99,6 @@ per-strategy breakdown; `report` shows a run's ledger session alongside its
 results. `--max-fills-per-block` moved to `[paper]` in the TOML.
 Bare `explorer` is the revenue report; `explorer index` covers both historical
 backfill (default trailing 7 days) and tip-follow (`--loop`).
-
-`explorer validate` is a research command hidden behind a non-default Cargo
-feature — build with `--features validate` to expose it.
 
 Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.

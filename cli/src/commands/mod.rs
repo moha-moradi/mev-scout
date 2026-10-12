@@ -11,9 +11,7 @@ mod report;
 
 pub use config::cmd_config;
 pub use discover::cmd_discover;
-#[cfg(feature = "validate")]
-pub use explorer::cmd_explorer_validate;
-pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index, cmd_show};
+pub use explorer::{cmd_backfill, cmd_explorer_report, cmd_index};
 pub use live::cmd_live;
 pub use report::cmd_report;
 
@@ -85,9 +83,6 @@ impl CliCommand for ExplorerArgs {
                     Ok(())
                 }
             }
-            Some(ExplorerCommand::Show(a)) => cmd_show(config, &a.tx_hash, a.trace).await,
-            #[cfg(feature = "validate")]
-            Some(ExplorerCommand::Validate(a)) => cmd_explorer_validate(config, a, progress).await,
         }
     }
 }

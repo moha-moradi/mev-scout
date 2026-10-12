@@ -56,7 +56,6 @@ disk, and mev-scout does not need it.
 | `live`, `explorer index` (tip + recent blocks)                            | yes                                                      |
 | `explorer index` (historical range; overlaps up to `block_concurrency` blocks, packed `rpc_batch_blocks` per POST; classify stays ordered) | yes for blocks and receipts the node has stored since it synced; historical `eth_call` (sAVAX rate, one successful read per hour) uses the archive peer |
 | `eth_getLogs` for discovery (`lookback_days`, activity `batch_size`, coarser `factory_batch_size`) | yes, for logs the node has stored since it synced       |
-| `debug_traceTransaction` on recent blocks (`explorer show --trace`)       | yes                                                      |
 | Deep historical `eth_call` / `eth_getProof` / long `eth_getLogs` ranges   | no — served by the public archive fallback in `rpc_urls` |
 
 
@@ -165,8 +164,7 @@ Binary: `~/avalanche-node/` · Data / configs: `~/.avalanchego/`
 
 Avalanche recommends overriding **only** non-default values. Defaults already
 enable pruning and the core eth APIs. This file turns on **state-sync** (fast
-tip bootstrap) and adds `debug` **/** `debug-tracer` for
-`mev-scout explorer show --trace`.
+tip bootstrap).
 
 Write it, then restart so the node picks it up **before** a long sync finishes
 with the wrong settings:
@@ -183,9 +181,7 @@ cat > ~/.avalanchego/configs/chains/C/config.json <<'EOF'
     "web3",
     "internal-eth",
     "internal-blockchain",
-    "internal-transaction",
-    "debug",
-    "debug-tracer"
+    "internal-transaction"
   ]
 }
 EOF
@@ -193,11 +189,11 @@ sudo systemctl restart avalanchego
 ```
 
 
-| Setting              | Value                               | Why                                 |
-| -------------------- | ----------------------------------- | ----------------------------------- |
-| `state-sync-enabled` | `true`                              | Fast tip sync (default is `false`)  |
-| `pruning-enabled`    | *(default* `true`*)*                | Leave unset — saves disk            |
-| `eth-apis`           | defaults + `debug` + `debug-tracer` | tip scan + `debug_traceTransaction` |
+| Setting              | Value                | Why                                |
+| -------------------- | -------------------- | ---------------------------------- |
+| `state-sync-enabled` | `true`               | Fast tip sync (default is `false`) |
+| `pruning-enabled`    | *(default* `true`*)* | Leave unset — saves disk           |
+| `eth-apis`           | core eth APIs        | tip scan / logs / receipts         |
 
 
 Do not flip to archival (`state-sync` off / pruning off) on this host unless you

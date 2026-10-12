@@ -1050,37 +1050,6 @@ impl RpcClient {
         }
     }
 
-    /// On-demand per-tx trace via `debug_traceTransaction`:
-    /// prestateTracer in diffMode returns exact pre/post state deltas for the
-    /// transaction — used only by `explorer show <TX> --trace` for exact
-    /// profit recomputation. Single-tx, negligible cost; never in backfill.
-    pub async fn debug_trace_transaction_prestatediff(
-        &self,
-        tx_hash: B256,
-    ) -> anyhow::Result<Value> {
-        self.retry_call(
-            |provider| async move {
-                let raw: Value = provider
-                    .client()
-                    .request(
-                        "debug_traceTransaction",
-                        (
-                            format!("{tx_hash:#x}"),
-                            serde_json::json!({
-                                "tracer": "prestateTracer",
-                                "tracerConfig": { "diffMode": true }
-                            }),
-                        ),
-                    )
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{}", e))?;
-                Ok(raw)
-            },
-            ProviderScope::Any,
-        )
-        .await
-    }
-
     /// Fetch a full block (header + transactions) by block number.
     ///
     /// Returns `BlockData` (header fields) and `Vec<TxData>` (transaction list).

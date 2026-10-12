@@ -28,27 +28,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::explorer::types::{MevEvent, MevKind};
 
-/// Trace-based reconciliation record for one tx (`explorer show --trace`).
-///
-/// Measurement-only: compares the classifier's expected USD profit
-/// with the trace-observed native balance delta. Never feeds `classify_block`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TraceVerification {
-    /// Classifier-expected USD profit (sum over the tx's ops), if priced.
-    pub expected_profit_usd: Option<f64>,
-    /// Trace-observed native balance delta converted to USD (signed).
-    pub trace_profit_usd: Option<f64>,
-    /// `(expected − trace) / expected × 100`; > 0 = classifier over-estimate.
-    pub profit_error_pct: Option<f64>,
-    /// Raw trace native delta in wei, signed decimal string.
-    pub native_delta_wei: String,
-    pub note: String,
-    /// Gate verdict tag: `pass | fail | unverifiable`.
-    pub trace_check: Option<String>,
-    /// Human-readable reason for non-pass verdicts.
-    pub trace_check_reason: Option<String>,
-}
-
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
 ///
 /// Persists open JIT Mint positions so cross-block JIT detection survives live restarts. A row
@@ -110,26 +89,6 @@ pub struct StatsRow {
     pub ops: i64,
     pub gross_usd: f64,
     pub net_usd: f64,
-}
-
-/// Live-feed row (tail of `mev_ops`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FeedRow {
-    pub ts: u64,
-    pub block_number: u64,
-    pub kind: String,
-    pub profit_token: Option<String>,
-    pub profit_amount: Option<String>,
-    pub profit_usd: Option<f64>,
-    pub gas_cost_usd: Option<f64>,
-    pub net_profit_usd: Option<f64>,
-    pub eoa: String,
-    pub tx_hash: String,
-    pub route_json: Option<String>,
-    pub details_json: Option<String>,
-    /// Spot USD for the chain native / wrapped-native (mevlive Price column).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub native_price_usd: Option<f64>,
 }
 
 pub struct ExplorerStore {
@@ -234,54 +193,6 @@ pub struct OpportunityInput<'a> {
     pub canonical_id: Option<&'a str>,
 }
 
-/// One scanner opportunity row (`opportunities` table).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OpportunityRow {
-    pub run_id: Option<String>,
-    pub block_number: u64,
-    pub tx_index: Option<u64>,
-    pub strategy: String,
-    pub pool_a: Option<String>,
-    pub pool_b: Option<String>,
-    pub token_in: Option<String>,
-    pub token_out: Option<String>,
-    pub expected_profit: Option<String>,
-    /// Detector gas estimate in wei (present on retention rows; drives the
-    /// detector-vs-realized `expected_net_wei` in the MEV verdict).
-    pub gas_cost_wei: Option<String>,
-    pub mempool_only: bool,
-    pub detection_path: Option<String>,
-    pub canonical_id: Option<String>,
-    pub tx_hash: Option<String>,
-}
-
-/// One rejected-candidate row (`rejected_candidates` table).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RejectedRow {
-    pub block_number: u64,
-    pub tx_index: Option<u64>,
-    pub strategy: String,
-    pub pool_a: Option<String>,
-    pub pool_b: Option<String>,
-    pub token_in: Option<String>,
-    pub token_out: Option<String>,
-    pub expected_profit: Option<String>,
-    pub gas_cost_wei: Option<String>,
-    pub reject_reason: String,
-    pub detail: Option<String>,
-}
-
-/// Window-wide overview stats (`explorer stats` header).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OverviewRow {
-    pub ops: i64,
-    pub gross_usd: f64,
-    pub net_usd: f64,
-    pub gas_usd: f64,
-    pub highest_single_usd: f64,
-    pub searchers: i64,
-}
-
 /// One cost · profit · volume row for the revenue report (per kind, per day,
 /// or the window overview).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,39 +219,6 @@ pub struct ReportOverview {
     pub searchers: i64,
     /// Distinct competitor bots (`COALESCE(contract, eoa)`).
     pub competitors: i64,
-}
-
-pub(super) fn map_feed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FeedRow> {
-    Ok(FeedRow {
-        ts: r.get::<_, i64>(0)? as u64,
-        block_number: r.get::<_, i64>(1)? as u64,
-        kind: r.get(2)?,
-        profit_token: r.get(3)?,
-        profit_amount: r.get(4)?,
-        profit_usd: r.get(5)?,
-        gas_cost_usd: r.get(6)?,
-        net_profit_usd: r.get(7)?,
-        eoa: r.get(8)?,
-        tx_hash: r.get(9)?,
-        route_json: r.get(10)?,
-        details_json: r.get(11)?,
-        native_price_usd: None,
-    })
-}
-
-pub(super) fn latest_native_price(conn: &rusqlite::Connection) -> anyhow::Result<Option<f64>> {
-    // Native keyed at 0x000…000 in the prices table.
-    let mut stmt = conn.prepare(
-        "SELECT usd FROM prices
-         WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
-         ORDER BY hour DESC LIMIT 1",
-    )?;
-    let mut rows = stmt.query([])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(row.get::<_, f64>(0)?))
-    } else {
-        Ok(None)
-    }
 }
 
 pub(super) fn map_stats_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatsRow> {
@@ -389,33 +267,6 @@ pub(super) fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow
         detector: r.get(20)?,
         created_at: r.get::<_, i64>(21)? as u64,
     })
-}
-
-pub(super) fn stats_grouped(
-    conn: &Connection,
-    group_col: &str,
-    since_ts: u64,
-    kind: Option<&str>,
-) -> anyhow::Result<Vec<StatsRow>> {
-    let kind_clause = kind
-        .map(|k| format!("AND kind = '{k}'"))
-        .unwrap_or_default();
-    let sql = format!(
-        "SELECT {group_col} AS label, COUNT(*) AS ops,
-                COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                COALESCE(SUM(net_profit_usd), 0) AS net_usd
-         FROM mev_ops
-         WHERE ts >= {since_ts} {kind_clause}
-         GROUP BY label
-         ORDER BY gross_usd DESC"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_stats_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
 }
 
 pub(super) fn top_grouped(
@@ -549,11 +400,6 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("ArbAtomic|"));
-
-        let blocks = store
-            .blocks_with_kind(100, 100, MevKind::ArbAtomic)
-            .unwrap();
-        assert!(blocks.contains(&100));
 
         let gaps = store.unclassified_blocks(99, 102).unwrap();
         assert_eq!(gaps, vec![99, 101, 102]);
@@ -987,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn stats_kind_filter_matches_only_that_kind() {
+    fn top_senders_kind_filter_matches_only_that_kind() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut prices = std::collections::HashMap::new();
         prices.insert(
@@ -1030,32 +876,6 @@ mod tests {
             },
         );
         assert_eq!(n, 1);
-
-        let all = store.stats_by_kind_filtered(1_699_999_000, None).unwrap();
-        assert_eq!(all.len(), 2);
-
-        let arb = store
-            .stats_by_kind_filtered(1_699_999_000, Some("arb_atomic"))
-            .unwrap();
-        assert_eq!(arb.len(), 1);
-        assert_eq!(arb[0].label, "arb_atomic");
-        assert_eq!(arb[0].ops, 1);
-
-        let sand = store
-            .stats_by_kind_filtered(1_699_999_000, Some("sandwich"))
-            .unwrap();
-        assert_eq!(sand.len(), 1);
-        assert_eq!(sand[0].label, "sandwich");
-
-        let none = store
-            .stats_by_kind_filtered(1_699_999_000, Some("liquidation"))
-            .unwrap();
-        assert!(none.is_empty());
-
-        let overview = store
-            .stats_overview_filtered(1_699_999_000, Some("sandwich"))
-            .unwrap();
-        assert_eq!(overview.ops, 1);
 
         let senders = store
             .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"))
@@ -1220,98 +1040,6 @@ mod tests {
         let ov_k = store.report_window_overview(0, Some("sandwich")).unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(store.report_by_kind(0, Some("sandwich")).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn trace_verification_replaces_stale_fields() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 600,
-                block_hash: &b256!(
-                    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-                ),
-                ts: 1_700_000_000,
-                tx_count: 1,
-                swaps: &[],
-                events: &[sample_event(600)],
-                token_prices: &usdc_price(),
-            },
-        );
-        let tx_hash = store.ops_in_range(600, 600, &[]).unwrap()[0]
-            .tx_hash
-            .clone();
-
-        store
-            .mark_trace_verified(
-                &tx_hash,
-                &TraceVerification {
-                    expected_profit_usd: Some(100.0),
-                    trace_profit_usd: Some(95.0),
-                    profit_error_pct: Some(5.0),
-                    native_delta_wei: "123".into(),
-                    note: "first".into(),
-                    trace_check: Some("pass".into()),
-                    trace_check_reason: None,
-                },
-            )
-            .unwrap();
-        let first = store.ops_in_range(600, 600, &[]).unwrap()[0]
-            .details_json
-            .clone()
-            .unwrap();
-        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
-        assert_eq!(first["trace_check"], "pass");
-        assert_eq!(first["profit_error_pct"], 5.0);
-
-        store
-            .mark_trace_verified(
-                &tx_hash,
-                &TraceVerification {
-                    expected_profit_usd: None,
-                    trace_profit_usd: None,
-                    profit_error_pct: None,
-                    native_delta_wei: String::new(),
-                    note: "second".into(),
-                    trace_check: Some("unverifiable".into()),
-                    trace_check_reason: Some("no price".into()),
-                },
-            )
-            .unwrap();
-        let second = store.ops_in_range(600, 600, &[]).unwrap()[0]
-            .details_json
-            .clone()
-            .unwrap();
-        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
-        assert_eq!(second["trace_check"], "unverifiable");
-        assert_eq!(second["trace_check_reason"], "no price");
-        assert!(second.get("expected_profit_usd").is_none());
-        assert!(second.get("trace_profit_usd").is_none());
-        assert!(second.get("profit_error_pct").is_none());
-        assert!(second.get("trace_native_delta_wei").is_none());
-
-        store
-            .mark_trace_verified(
-                &tx_hash,
-                &TraceVerification {
-                    expected_profit_usd: Some(100.0),
-                    trace_profit_usd: Some(95.0),
-                    profit_error_pct: Some(5.0),
-                    native_delta_wei: "123".into(),
-                    note: "third".into(),
-                    trace_check: Some("pass".into()),
-                    trace_check_reason: None,
-                },
-            )
-            .unwrap();
-        let third = store.ops_in_range(600, 600, &[]).unwrap()[0]
-            .details_json
-            .clone()
-            .unwrap();
-        let third: serde_json::Value = serde_json::from_str(&third).unwrap();
-        assert_eq!(third["trace_check"], "pass");
-        assert!(third.get("trace_check_reason").is_none());
     }
 
     #[test]

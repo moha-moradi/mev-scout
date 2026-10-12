@@ -324,7 +324,7 @@ impl BacktestRunner {
 
     /// Buffer rejected candidates with their filter reason. Opt-in —
     /// off by default to bound write volume; recommended ON for windows later
-    /// fed to `explorer validate`.
+    /// for offline miss attribution.
     pub fn with_record_rejections(mut self, enabled: bool) -> Self {
         self.record_rejections = enabled;
         self

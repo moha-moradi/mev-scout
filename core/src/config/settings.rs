@@ -229,19 +229,12 @@ pub struct ExplorerConfig {
     /// ownership rules in `docs/mev_strategies.md` (Part V).
     #[serde(default = "default_false")]
     pub arb_likely_parity: bool,
-    /// Classifier-vs-trace profit tolerance for `explorer show --trace`
+    /// Detector-vs-realized profit tolerance for corpus / MEV gate checks
     /// (percent, absolute value). `|profit_error_pct| > this` => `Fail`.
-    #[serde(default = "default_explorer_trace_tolerance_pct")]
-    pub trace_tolerance_pct: f64,
-    /// Absolute USD tolerance when expected profit is ~0 (`show --trace`).
-    #[serde(default = "default_explorer_trace_error_usd_tol")]
-    pub trace_error_usd_tol: f64,
-    /// Detector-vs-realized profit tolerance for the `explorer show` MEV
-    /// verdict (percent, absolute value). `|profit_error_pct| > this` => `Fail`.
     #[serde(default = "default_explorer_mev_tolerance_pct")]
     pub mev_tolerance_pct: f64,
-    /// Absolute USD tolerance used to derive the wei band for the `show` MEV
-    /// verdict when the expected net profit is ~0 (degenerate branch).
+    /// Absolute USD tolerance used to derive the wei band for the MEV gate
+    /// when the expected net profit is ~0 (degenerate branch).
     #[serde(default = "default_explorer_mev_error_usd_tol")]
     pub mev_error_usd_tol: f64,
 }
@@ -278,12 +271,6 @@ fn default_explorer_confirmations() -> u64 {
 }
 fn default_explorer_poll_ms() -> u64 {
     2000
-}
-fn default_explorer_trace_tolerance_pct() -> f64 {
-    20.0
-}
-fn default_explorer_trace_error_usd_tol() -> f64 {
-    0.50
 }
 fn default_explorer_mev_tolerance_pct() -> f64 {
     20.0
@@ -468,8 +455,6 @@ impl Default for ExplorerConfig {
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
             arb_likely_parity: false,
-            trace_tolerance_pct: default_explorer_trace_tolerance_pct(),
-            trace_error_usd_tol: default_explorer_trace_error_usd_tol(),
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
         }

@@ -1,8 +1,7 @@
 //! Rejection capture — the scanner's negative space.
 //!
-//! Cross-validation of false negatives is only explainable if the candidates
-//! the scanner rejected are observable. When `--record-rejections` is enabled,
-//! the runner buffers every candidate dropped by its filters with a reason;
+//! When `record_rejections` is enabled in config, the runner buffers every
+//! candidate dropped by its filters with a reason;
 //! `run`/`live` drain the buffer into the explorer store's
 //! `rejected_candidates` table.
 use serde::{Deserialize, Serialize};
@@ -22,8 +21,8 @@ pub enum RejectReason {
     GasDominates,
     /// Dropped by the per-tx top-N cap (normal competition pressure).
     MaxCandidates,
-    /// Scanner never ran over the block — recorded by `validate`, not
-    /// by the runner; listed here so the enum is exhaustive.
+    /// Scanner never ran over the block (taxonomy placeholder; not emitted by
+    /// the runner).
     StateStale,
     /// Anything else (M-detail in `detail`).
     Other,
