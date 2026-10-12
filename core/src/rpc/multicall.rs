@@ -11,7 +11,7 @@
 //! is not actually a CL pool) returns empty data for its slot instead of failing
 //! the whole batch.
 use std::collections::HashMap;
-use crate::utils::topic_address;
+use crate::utils::{abi_word_i32, abi_word_u32, topic_address};
 
 use alloy::primitives::{address, Address, Bytes};
 
@@ -240,12 +240,12 @@ pub async fn resolve_pool_metadata(
         let addr_at = |w: Option<[u8; 32]>| w.map(topic_address);
         let uint_at = |w: Option<[u8; 32]>| {
             w.filter(|b| b[..28].iter().all(|&x| x == 0))
-                .map(|b| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
+                .and_then(|b| abi_word_u32(b, 0))
                 .filter(|v| *v != 0)
         };
         let int_at = |w: Option<[u8; 32]>| {
             w.filter(|b| b[..28].iter().all(|&x| x == 0))
-                .map(|b| i32::from_be_bytes([b[28], b[29], b[30], b[31]]))
+                .and_then(|b| abi_word_i32(b, 0))
                 .filter(|v| *v != 0)
         };
         let token0 = addr_at(parse_word(0)).filter(|a| !a.is_zero());

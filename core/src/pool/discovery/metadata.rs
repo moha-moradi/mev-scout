@@ -9,7 +9,7 @@ use super::{DexType, RpcClient};
 use crate::pool::selectors::{
     FEE, PENDLE_SY, TICK_SPACING, TOKEN0, TOKEN1, TRADER_JOE_TOKEN_X, TRADER_JOE_TOKEN_Y,
 };
-use crate::utils::abi_decode_address;
+use crate::utils::{abi_decode_address, abi_word_i32, abi_word_u32};
 
 /// Per-DEX fallback swap fee (ppm) applied when metadata fetch returns none or
 /// the pool type has no on-chain fee. V2/Solidly default to 30 bps unless the
@@ -155,18 +155,16 @@ pub(super) fn fetch_pool_metadata(
                         .and_then(|b| abi_decode_address(&b, 0))
                 },
                 async {
-                    rpc.call_latest(addr, sel_fee).await.ok().and_then(|b| {
-                        (b.len() >= 32).then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
-                    })
+                    rpc.call_latest(addr, sel_fee)
+                        .await
+                        .ok()
+                        .and_then(|b| abi_word_u32(&b, 0))
                 },
                 async {
-                    rpc.call_latest(addr, sel_ts).await.ok().and_then(|b| {
-                        (b.len() >= 32).then(|| {
-                            let mut ts = [0u8; 4];
-                            ts.copy_from_slice(&b[28..32]);
-                            i32::from_be_bytes(ts) as u32
-                        })
-                    })
+                    rpc.call_latest(addr, sel_ts)
+                        .await
+                        .ok()
+                        .and_then(|b| abi_word_i32(&b, 0).map(|v| v as u32))
                 },
             )
             .await;

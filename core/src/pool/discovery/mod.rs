@@ -21,6 +21,7 @@ use crate::pool::selectors::SYMBOL;
 use crate::pool::state::pool_types::{is_fee_on_transfer_token, is_rebase_token};
 use crate::pool::state::PoolInfo;
 use crate::rpc::RpcClient;
+use crate::utils::{abi_word_address, topic_address};
 
 /// One DEX activity hit keyed by pool address — shared across per-DEX scanners.
 #[derive(Clone, Copy)]
@@ -712,6 +713,37 @@ pub(super) struct ScanContext<'a> {
     pub(super) current: u64,
     pub(super) batch_end: u64,
     pub(super) provider_idx: Option<usize>,
+}
+
+/// Shared fields decoded from factory PairCreated / PoolCreated logs where
+/// `topics[1]`/`topics[2]` are the token pair and the pool address sits in a
+/// data word. Callers keep protocol-specific fee / tick / stable decoding.
+struct IndexedPair {
+    pool: Address,
+    token0: Address,
+    token1: Address,
+    factory: Address,
+    creation_block: u64,
+}
+
+fn decode_indexed_pair(
+    log: &alloy::rpc::types::Log,
+    pool_word: usize,
+    min_data: usize,
+    min_topics: usize,
+) -> Option<IndexedPair> {
+    let log_data = log.data();
+    let topics = log.topics();
+    if log_data.data.len() < min_data || topics.len() < min_topics {
+        return None;
+    }
+    Some(IndexedPair {
+        pool: abi_word_address(&log_data.data, pool_word),
+        token0: topic_address(topics[1]),
+        token1: topic_address(topics[2]),
+        factory: log.address(),
+        creation_block: log.block_number.unwrap_or(0),
+    })
 }
 
 /// Pins to a specific provider when `provider_idx` is `Some`.

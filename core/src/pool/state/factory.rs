@@ -10,7 +10,7 @@ use crate::dex_type::DexType;
 use crate::pool::math::consts::{
     BALANCER_FEE_ETHER_DIVISOR, BPS_DENOMINATOR, MAX_V2_RESERVE_RATIO,
 };
-use crate::utils::{abi_decode_address, u128_from_be_bytes};
+use crate::utils::{abi_decode_address, abi_word_i32, abi_word_u32, u128_from_be_bytes};
 use crate::pool::selectors::{
     CURVE_A, CURVE_BALANCES_I128, CURVE_BALANCES_U256, CURVE_BASE_POOL, CURVE_COINS_I128,
     CURVE_COINS_U256, CURVE_FEE, CURVE_GAMMA, CURVE_GET_A, CURVE_PRICE_SCALE, FEE,
@@ -409,28 +409,19 @@ impl PoolManager {
                     fee = Self::call_once(&rpc, job.addr, FEE.clone(), br)
                         .await
                         .ok()
-                        .and_then(|b| {
-                            (b.len() >= 32)
-                                .then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
-                        });
+                        .and_then(|b| abi_word_u32(&b, 0));
                 }
                 if job.tick_spacing {
                     ts = Self::call_once(&rpc, job.addr, TICK_SPACING.clone(), br)
                         .await
                         .ok()
-                        .and_then(|b| {
-                            (b.len() >= 32)
-                                .then(|| i32::from_be_bytes([b[28], b[29], b[30], b[31]]))
-                        });
+                        .and_then(|b| abi_word_i32(&b, 0));
                 }
                 if job.bin_step {
                     bin_step = Self::call_once(&rpc, job.addr, LB_GET_BIN_STEP.clone(), br)
                         .await
                         .ok()
-                        .and_then(|b| {
-                            (b.len() >= 32)
-                                .then(|| u32::from_be_bytes([b[28], b[29], b[30], b[31]]))
-                        });
+                        .and_then(|b| abi_word_u32(&b, 0));
                 }
                 (job.addr, job.dex_type, t0, t1, fee, ts, bin_step)
             }
