@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::decode;
-use crate::explorer::profit::{has_closed_cycle, net_flash_loan, select_profit_token, DeltaLedger};
+use crate::explorer::profit::{
+    has_closed_cycle, has_inventory_spend, net_flash_loan, select_profit_token, DeltaLedger,
+};
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact};
 
@@ -111,9 +113,14 @@ pub(super) fn classify_arbs(
             .collect();
         // Exact only on a closed directed cycle spanning ≥2 pools
         // attributable to a single flow owner among the searcher's route.
+        // Swap-edge cycles alone are not enough: aggregator inventory trades
+        // (WAVAX→USDC split across pools) produce bidirectional edges while
+        // the searcher ledger stays open (−input token, +output token).
+        let inventory_open = candidate.is_some_and(|a| has_inventory_spend(&ledger, a));
         let arb_confirmed = resolved_edges.len() >= 2
             && has_closed_cycle(&resolved_edges)
-            && flow_attributable(&tx.swaps, &candidates);
+            && flow_attributable(&tx.swaps, &candidates)
+            && !inventory_open;
         // Mevlive-parity fallback: single-hop / unresolved profitable residuals
         // are labeled arb (mevlive Type=Arbitrage) while the parity flag holds.
         let arb_likely = arb_confirmed || (!tx.swaps.is_empty() && input.arb_likely_parity);
@@ -129,6 +136,12 @@ pub(super) fn classify_arbs(
                     // with a positive residual are NOT MEV — do not emit them
                     // as Unknown (that polluted the live feed as fake arb/$).
                     let transfer_cycle = has_transfer_cycle(searcher, &tx.transfers);
+                    // Open inventory (spent A, received B) is a trade, not arb,
+                    // unless mevlive parity or an explicit transfer-cycle upgrade
+                    // path applies.
+                    if inventory_open && !input.arb_likely_parity && !transfer_cycle {
+                        continue;
+                    }
                     if !arb_likely && !transfer_cycle {
                         continue;
                     }

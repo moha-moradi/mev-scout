@@ -29,8 +29,18 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
         // pool → (token → amount, recipients)
         let mut by_pool: HashMap<Address, HashMap<Address, (U256, HashSet<Address>)>> =
             HashMap::new();
+        // Pools that also *receive* tokens in this tx are doing swap-like
+        // activity (even when the AMM's Swap event is undecoded). Real skim
+        // is one-way outbound with no inbound.
+        let mut inbound_pools: HashSet<Address> = HashSet::new();
         for t in &tx.transfers {
-            if t.amount.is_zero() || t.from.is_zero() {
+            if t.amount.is_zero() {
+                continue;
+            }
+            if input.v2_like_pools.contains(&t.to) {
+                inbound_pools.insert(t.to);
+            }
+            if t.from.is_zero() {
                 continue;
             }
             if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
@@ -45,6 +55,9 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
         }
 
         for (pool, tokens) in by_pool {
+            if inbound_pools.contains(&pool) {
+                continue;
+            }
             let mut profit_tokens: Vec<(Address, U256)> = tokens
                 .iter()
                 .filter(|(_, (amt, _))| !amt.is_zero())

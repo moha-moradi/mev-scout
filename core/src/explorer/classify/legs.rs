@@ -5,7 +5,9 @@ use alloy::primitives::{Address, B256, U256};
 
 use super::{flow_attributable, has_unresolved_tokens, BlockInput, TxInput};
 use crate::explorer::decode;
-use crate::explorer::profit::{has_closed_cycle, select_profit_token, DeltaLedger};
+use crate::explorer::profit::{
+    has_closed_cycle, has_inventory_spend, select_profit_token, DeltaLedger,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct SwapLeg {
@@ -147,6 +149,9 @@ pub(super) fn tx_cycle_profit(
         return None; // "closed cycle; else rejected" (§24) + flow ownership (§7.1)
     }
     for searcher in candidates {
+        if has_inventory_spend(&ledger, searcher) {
+            continue;
+        }
         if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
             let amount = ledger.net(searcher, token);
             if !amount.is_zero() {

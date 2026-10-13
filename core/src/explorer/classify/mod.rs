@@ -621,6 +621,62 @@ mod tests {
     }
 
     #[test]
+    fn inventory_swap_with_bidirectional_edges_is_not_arb() {
+        // Regression: Avalanche tx 0x266f47… — aggregator sells WAVAX for USDC
+        // across several pools. Swap edges form USDC↔WNATIVE cycles (≥2 pools)
+        // so a naive graph walk looks like Exact arb, but the searcher ledger
+        // is open (−WNATIVE, +USDC). With parity off this must emit nothing.
+        let router = address!("70000000000000000000000000000000000000aa");
+        let swaps = vec![
+            swap(POOL_A, USDC, WNATIVE, 100, 10),
+            swap(POOL_B, WNATIVE, USDC, 1000, 500),
+        ];
+        let transfers = vec![
+            transfer(0, WNATIVE, ATK, router, 1000),
+            transfer(1, WNATIVE, router, POOL_B, 1000),
+            transfer(2, USDC, POOL_B, router, 500),
+            // Reverse-looking leg that closes the *edge* graph only:
+            transfer(3, USDC, router, POOL_A, 100),
+            transfer(4, WNATIVE, POOL_A, router, 10),
+            transfer(5, USDC, router, ATK, 400),
+        ];
+        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        input.arb_likely_parity = false;
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "inventory WAVAX→USDC must not be ArbAtomic, got {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|e| e.kind != MevKind::ArbAtomic && e.kind != MevKind::Unknown),
+            "expected no arb/unknown pollution, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn skim_excluded_when_pool_also_receives_tokens() {
+        // Undecoded AMM swap: registry V2-like pool both receives and sends
+        // in the same tx — must not be classified as skim.
+        let t = tx(
+            0,
+            ATK,
+            true,
+            vec![], // no decoded SwapFact
+            vec![
+                transfer(0, WNATIVE, ATK, POOL_A, 1000),
+                transfer(1, USDC, POOL_A, ATK, 500),
+            ],
+        );
+        let input = block_with_v2(vec![t], &[POOL_A]);
+        assert!(
+            !kinds(&classify_block(&input)).contains(&MevKind::Skim),
+            "inbound+outbound on the pair is swap-like, not skim"
+        );
+    }
+
+    #[test]
     fn transfer_cycle_upgrades_unknown_to_arb() {
         // Aggregator-routed flow: swap tokens don't close a cycle (USDC→TOKA→
         // WNATIVE is acyclic), but the transfer graph closes ATK → router →

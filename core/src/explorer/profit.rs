@@ -112,6 +112,33 @@ impl DeltaLedger {
         out.dedup();
         out
     }
+
+    /// Tokens that appear on either side of the ledger for `addr`.
+    pub fn touched_tokens(&self, addr: Address) -> Vec<Address> {
+        let mut out: Vec<Address> = self
+            .pos
+            .keys()
+            .chain(self.neg.keys())
+            .filter(|(a, _)| *a == addr)
+            .map(|(_, t)| *t)
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+/// True when `addr` has a strictly negative signed residual in any token.
+///
+/// Closed-cycle arb leaves intermediate tokens at ~0 and only the profit
+/// token positive. An inventory trade (e.g. WAVAX→USDC aggregator split
+/// across pools) leaves −WAVAX +USDC — the swap-edge graph can still look
+/// cyclic because legs run in both directions, but it is not atomic arb.
+pub fn has_inventory_spend(ledger: &DeltaLedger, addr: Address) -> bool {
+    ledger
+        .touched_tokens(addr)
+        .into_iter()
+        .any(|t| ledger.net_signed(addr, t).is_negative())
 }
 
 /// Sentinel marker used as "token" for native-value flows (no ERC-20).
@@ -310,6 +337,38 @@ mod tests {
             weth: W,
         };
         assert_eq!(select_profit_token(&ledger, me, &policy), Some(usdc));
+    }
+
+    #[test]
+    fn inventory_spend_detects_open_leg() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let pool = address!("2000000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let wavax = address!("5000000000000000000000000000000000000000");
+        // Spend WAVAX, receive USDC — inventory swap, not closed-cycle arb.
+        let transfers = vec![tf(0, wavax, me, pool, 1000), tf(1, usdc, pool, me, 500)];
+        let ledger = DeltaLedger::from_transfers(&transfers, W, (Address::ZERO, U256::ZERO));
+        assert!(has_inventory_spend(&ledger, me));
+        assert_eq!(ledger.net(me, usdc), U256::from(500));
+        assert!(ledger.net_signed(me, wavax).is_negative());
+    }
+
+    #[test]
+    fn inventory_spend_absent_on_closed_cycle() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let pool_a = address!("2000000000000000000000000000000000000000");
+        let pool_b = address!("3000000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let foo = address!("5000000000000000000000000000000000000000");
+        let transfers = vec![
+            tf(0, usdc, me, pool_a, 100),
+            tf(1, foo, pool_a, me, 500),
+            tf(2, foo, me, pool_b, 500),
+            tf(3, usdc, pool_b, me, 110),
+        ];
+        let ledger = DeltaLedger::from_transfers(&transfers, W, (Address::ZERO, U256::ZERO));
+        assert!(!has_inventory_spend(&ledger, me));
+        assert_eq!(ledger.net(me, usdc), U256::from(10));
     }
 
     #[test]
