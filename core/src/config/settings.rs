@@ -223,12 +223,6 @@ pub struct ExplorerConfig {
     /// Live-mode polling interval in milliseconds.
     #[serde(default = "default_explorer_poll_ms")]
     pub poll_interval_ms: u64,
-    /// Mevlive-parity `arb_atomic` fallback. When true, a profitable
-    /// non-cycle residual is still labeled arb (can FP simple swaps as arb).
-    /// Default **false** so classification matches the closed-cycle + flow-
-    /// ownership rules in `docs/mev_strategies.md` (Part V).
-    #[serde(default = "default_false")]
-    pub arb_likely_parity: bool,
     /// Detector-vs-realized profit tolerance for corpus / MEV gate checks
     /// (percent, absolute value). `|profit_error_pct| > this` => `Fail`.
     #[serde(default = "default_explorer_mev_tolerance_pct")]
@@ -454,7 +448,6 @@ impl Default for ExplorerConfig {
             db_path: String::new(),
             confirmations: default_explorer_confirmations(),
             poll_interval_ms: default_explorer_poll_ms(),
-            arb_likely_parity: false,
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
         }

@@ -417,8 +417,7 @@ mev-scout explorer index --loop
 mev-scout explorer index --loop --duration 15m
 ```
 
-Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`,
-`arb_likely_parity`.
+Ingest tuning lives in TOML `[explorer]`: `confirmations`, `poll_interval_ms`.
 
 #### Classifier-change replay recipe (wipe + reindex)
 
@@ -455,9 +454,9 @@ mev-scout explorer --windows 1d,7d,30d
 Record coverage notes on every phase merge (`cargo test` + clippy alone are not the
 gate). Numbers are data-dependent — tests assert report *shape* only:
 
-| Window | ops indexed | notes | `arb_likely` parity |
-|---|---|---|---|
-| *(pending — run recipe above with RPC)* | — | — | `false` (default) |
+| Window | ops indexed | notes |
+|---|---|---|
+| *(pending — run recipe above with RPC)* | — | — |
 
 Avalanche C-Chain factories in [`core/data/chains.toml`](../core/data/chains.toml)
 now include LFJ V1 + Sushi + Pangolin V2, Curve Stableswap NG, Uni/Pharaoh/
@@ -471,12 +470,10 @@ mev-scout explorer index --loop --duration 1h
 mev-scout explorer --windows 1d,7d,30d
 ```
 
-Paste report output into notes above. `arb_likely_parity` defaults to
-`false` (closed-cycle-only arb) to match the opportunity detection spec.
+Paste report output into notes above. Atomic arb is closed-cycle Exact only
+(no mevlive parity catch-all).
 
 Gates that depend on this table:
-- **Phase 1.2**: `explorer.arb_likely_parity=false` is the default (precision over
-  mevlive catch-all recall). Set `true` only for explicit mevlive-parity experiments.
 - **Phase 3 ship gate**: labeled golden set (Phase 0.5) must show acceptable
   backrun/frontrun precision. Synthetic CI set: `cargo test -p mev-scout-core golden`.
   Causal ops are tagged `tier=inferred` (logs-only) until REVM counterfactuals land.
@@ -503,7 +500,6 @@ Gates that depend on this table:
 
 | Bias | Status | Notes |
 |---|---|---|
-| Historical `arb_likely` catch-all | Off by default (`arb_likely_parity=false`) | Opt-in only; when true, single-hop profitable residuals label `arb_atomic` (mevlive Type=Arbitrage parity). |
 | Logs-only Backrun / Frontrun | By design | Execution-price proxies ≠ REVM `profit(B\|before_A)` vs `profit(B\|after_A)`. `STATE_DELTA_MATCH` / `PROFIT_VERIFIED` are **not** REVM-verified. |
 | Gas | Mitigated (Phase 2.1) | Prefer receipt `effectiveGasPrice`, then legacy `gasPrice`; only fall back to `base_fee + priority`. |
 | Multi-token profit | Mitigated (Phase 2.3) | Persist sums USD across all positive residuals; `profit_token` remains display-primary. JIT fee-capture stays unit-reported (`profit_token=None`). |

@@ -60,9 +60,6 @@ pub struct IngestConfig {
     pub wrapped_native: Address,
     /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
-    /// Mevlive-parity fallback for `arb_atomic`. Default false —
-    /// only closed multi-pool cycles are labeled arb (spec /).
-    pub arb_likely_parity: bool,
     /// Emitter-address → protocol label relabels for liquidation events whose
     /// topic0 is shared with another protocol (Aave-V3 ABI: Spark; Compound V2
     /// ABI: Benqi qiTokens — plan P0.2 /).
@@ -103,7 +100,6 @@ impl IngestConfig {
             confirmations: 6,
             wrapped_native,
             profit_token_priority: priority,
-            arb_likely_parity: false,
             liquidation_protocol_aliases,
             chainlink_feeds,
             savax: chain_config.savax,
@@ -486,7 +482,6 @@ pub async fn index_block_fetched(
             wrapped_native: cfg.wrapped_native,
             weth: cfg.wrapped_native,
         },
-        arb_likely_parity: cfg.arb_likely_parity,
         open_positions,
         v2_like_pools: pools.v2_like.clone(),
         chainlink_feeds: cfg.chainlink_feeds.clone(),

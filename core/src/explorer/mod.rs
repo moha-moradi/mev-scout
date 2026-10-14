@@ -14,17 +14,16 @@
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
-//! (`ArbAtomic`, exact/estimated), three-leg sandwiches (`Sandwich`), frontruns
+//! (`ArbAtomic`, Exact only), three-leg sandwiches (`Sandwich`), frontruns
 //! (`Frontrun`), backruns (`Backrun`), and narrowly-intersected JIT liquidity
 //! (`Jit`). Kinds are mutually exclusive by priority (`Sandwich` > `Frontrun` >
 //! `Backrun` > `ArbAtomic` > `JitArb` > `Jit` > `Liquidation` > `Skim`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
 //! is non-positive is dropped at persist time (profitability gate).
-//! The atomic-arb pass requires the closed-cycle swaps to belong to
-//! a single funder-owner that is a searcher candidate of that transaction
-//! (`exact`) unless the cycle is unowned (`estimated`); it is otherwise skipped
-//! to control false positives.
+//! The atomic-arb pass requires a closed multi-pool swap cycle with flow
+//! ownership collapsing to a single searcher candidate and a closed ledger
+//! (no open inventory spend); otherwise the tx is skipped.
 
 pub(crate) mod canonical;
 pub(crate) mod classify;

@@ -29,7 +29,7 @@ use crate::explorer::types::{
 // ── Baseline kinds ──────────────────────────────────────────────────────
 
 /// Baseline `ArbAtomic`: two-pool closed cycle → R, exact pnl. Negative:
-/// single-hop residual with the mevlive-parity fallback off emits nothing.
+/// single-hop residual emits nothing.
 #[test]
 fn baseline_atomic_arb() {
     let swaps = vec![
@@ -51,15 +51,14 @@ fn baseline_atomic_arb() {
     assert_eq!(ev.profit_amount, Some(U256::from(10)));
     assert_eq!(pnl_basis(&ev), Some("R"));
 
-    // Negative: not a closed cycle and parity disabled → no event at all.
-    let mut input = block(vec![tx(
+    // Negative: not a closed cycle → no event at all.
+    let input = block(vec![tx(
         0,
         ATK,
         true,
         vec![swap(POOL_A, USDC, TOKA, 100, 200)],
         vec![transfer(0, USDC, ATK, POOL_A, 100)],
     )]);
-    input.arb_likely_parity = false;
     assert!(classify_block(&input).is_empty());
 }
 

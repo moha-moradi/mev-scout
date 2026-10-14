@@ -23,7 +23,6 @@ pub async fn cmd_backfill(
     let (_, chain_cfg) = validation::resolve_chain(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
-    cfg.arb_likely_parity = config.explorer.arb_likely_parity;
     cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
 
     let (from, to) = match (days, from_block, to_block) {

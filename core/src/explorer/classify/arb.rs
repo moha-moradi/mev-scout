@@ -1,6 +1,6 @@
-//! Atomic-arb attribution, Unknown upgrades, and adjacent Exact fingerprints
+//! Atomic-arb attribution and adjacent Exact fingerprints
 //! (keeper / claim-and-sell / ERC-4337 bundler).
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use alloy::primitives::{Address, U256};
 
@@ -9,11 +9,11 @@ use crate::explorer::profit::{
     has_closed_cycle, has_inventory_spend, net_flash_loan, select_profit_token, DeltaLedger,
 };
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact};
+use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis, SwapFact};
 
-use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
+use super::{append_tag, has_unresolved_tokens, BlockInput};
 
-/// Swap attribution + atomic arb + keeper/claim/bundler + transfer-cycle upgrade.
+/// Swap attribution + atomic arb + keeper/claim/bundler.
 pub(super) fn classify_arbs(
     input: &BlockInput,
     liq_txs: &HashSet<u64>,
@@ -121,106 +121,79 @@ pub(super) fn classify_arbs(
             && has_closed_cycle(&resolved_edges)
             && flow_attributable(&tx.swaps, &candidates)
             && !inventory_open;
-        // Mevlive-parity fallback: single-hop / unresolved profitable residuals
-        // are labeled arb (mevlive Type=Arbitrage) while the parity flag holds.
-        let arb_likely = arb_confirmed || (!tx.swaps.is_empty() && input.arb_likely_parity);
+
+        if !arb_confirmed {
+            continue;
+        }
 
         if let Some(searcher) = candidate {
             if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
                 let amount = ledger.net(searcher, token);
-                let is_dust_or_wrap = amount.is_zero();
-                if !is_dust_or_wrap {
-                    // Spec /: only emit when we have a confirmed cycle
-                    // (or mevlive parity catch-all), or a ≥3-entity transfer
-                    // cycle that Stage 3b may upgrade. Plain single-hop swaps
-                    // with a positive residual are NOT MEV — do not emit them
-                    // as Unknown (that polluted the live feed as fake arb/$).
-                    let transfer_cycle = has_transfer_cycle(searcher, &tx.transfers);
-                    // Open inventory (spent A, received B) is a trade, not arb,
-                    // unless mevlive parity or an explicit transfer-cycle upgrade
-                    // path applies.
-                    if inventory_open && !input.arb_likely_parity && !transfer_cycle {
-                        continue;
-                    }
-                    if !arb_likely && !transfer_cycle {
-                        continue;
-                    }
-                    // emit every positive residual so persist can
-                    // USD-sum across them; the selected pair stays display-primary.
-                    let profit_tokens: Vec<(Address, U256)> = ledger
-                        .positive_tokens(searcher)
-                        .into_iter()
-                        .map(|t| (t, ledger.net(searcher, t)))
-                        .filter(|(_, amt)| *amt > U256::ZERO)
-                        .collect();
-                    let kind = if arb_likely {
-                        MevKind::ArbAtomic
-                    } else {
-                        MevKind::Unknown
-                    };
-                    // P0.4: flash-swap / flash-loan flag when principal was borrowed.
-                    let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
-                    // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-                    let long_tail =
-                        arb_likely && is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
-                    let mut tags: Vec<&str> = Vec::new();
-                    if flash_arb && arb_likely {
-                        tags.push("flash_arb");
-                    }
-                    if long_tail {
-                        tags.push("long_tail");
-                    }
-                    if arb_likely {
-                        tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
-                    }
-                    events.push(MevEvent {
-                        block: input.block,
-                        ts: input.ts,
-                        tx_index: tx.tx_index,
-                        tx_hash: tx.tx_hash,
-                        kind,
-                        searcher,
-                        contract: if searcher == tx.from { None } else { tx.to },
-                        pools: tx.swaps.iter().map(|s| s.pool).collect(),
-                        profit_token: Some(token),
-                        profit_amount: Some(amount),
-                        profit_tokens,
-                        profit_usd: None, // pricing applied at persist time
-                        gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
-                            (tx.effective_gas_price_gwei * 1e9) as u128,
-                        )),
-                        flashloan_fee_wei,
-                        flashloan_fee_token,
-                        confidence: if arb_confirmed {
-                            Confidence::Exact
-                        } else {
-                            Confidence::Inferred
-                        },
-                        victim_hashes: vec![],
-                        victim_swap_size: None,
-                        details: serde_json::json!({
-                            "mode": "realized",
-                            "tags": tags,
-                            "pnl_basis": PnlBasis::R.as_str(),
-                            "pnl": {
-                                "basis": PnlBasis::R.as_str(),
-                                "profit_amount": amount.to_string(),
-                                "profit_token": format!("{:#x}", token),
-                            },
-                            "route": tx.swaps.iter().map(|s| serde_json::json!({
-                                "pool": format!("{:#x}", s.pool),
-                                "amm": s.amm.as_str(),
-                                "token_in": format!("{:#x}", s.token_in),
-                                "token_out": format!("{:#x}", s.token_out),
-                                "token_source": s.token_source.as_str(),
-                                "amount_in": s.amount_in.to_string(),
-                                "amount_out": s.amount_out.to_string(),
-                            })).collect::<Vec<_>>(),
-                            "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
-                        }),
-                    });
+                if amount.is_zero() {
                     continue;
                 }
+                // emit every positive residual so persist can
+                // USD-sum across them; the selected pair stays display-primary.
+                let profit_tokens: Vec<(Address, U256)> = ledger
+                    .positive_tokens(searcher)
+                    .into_iter()
+                    .map(|t| (t, ledger.net(searcher, t)))
+                    .filter(|(_, amt)| *amt > U256::ZERO)
+                    .collect();
+                // P0.4: flash-swap / flash-loan flag when principal was borrowed.
+                let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
+                // P1.3: multi-hop arb whose route includes a non-blue-chip token.
+                let long_tail = is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
+                let mut tags: Vec<&str> = Vec::new();
+                if flash_arb {
+                    tags.push("flash_arb");
+                }
+                if long_tail {
+                    tags.push("long_tail");
+                }
+                tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
+                events.push(MevEvent {
+                    block: input.block,
+                    ts: input.ts,
+                    tx_index: tx.tx_index,
+                    tx_hash: tx.tx_hash,
+                    kind: MevKind::ArbAtomic,
+                    searcher,
+                    contract: if searcher == tx.from { None } else { tx.to },
+                    pools: tx.swaps.iter().map(|s| s.pool).collect(),
+                    profit_token: Some(token),
+                    profit_amount: Some(amount),
+                    profit_tokens,
+                    profit_usd: None, // pricing applied at persist time
+                    gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
+                        (tx.effective_gas_price_gwei * 1e9) as u128,
+                    )),
+                    flashloan_fee_wei,
+                    flashloan_fee_token,
+                    confidence: Confidence::Exact,
+                    victim_hashes: vec![],
+                    victim_swap_size: None,
+                    details: serde_json::json!({
+                        "mode": "realized",
+                        "tags": tags,
+                        "pnl_basis": PnlBasis::R.as_str(),
+                        "pnl": {
+                            "basis": PnlBasis::R.as_str(),
+                            "profit_amount": amount.to_string(),
+                            "profit_token": format!("{:#x}", token),
+                        },
+                        "route": tx.swaps.iter().map(|s| serde_json::json!({
+                            "pool": format!("{:#x}", s.pool),
+                            "amm": s.amm.as_str(),
+                            "token_in": format!("{:#x}", s.token_in),
+                            "token_out": format!("{:#x}", s.token_out),
+                            "token_source": s.token_source.as_str(),
+                            "amount_in": s.amount_in.to_string(),
+                            "amount_out": s.amount_out.to_string(),
+                        })).collect::<Vec<_>>(),
+                        "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
+                    }),
+                });
             }
         }
 
@@ -380,54 +353,6 @@ pub(super) fn classify_arbs(
         }
     }
 
-    // ── 3b. Transfer-graph cycle upgrade ────────────────────
-    // Unknown events whose tx shows a closed ≥3-entity transfer cycle rooted
-    // at the searcher (searcher → X → … → searcher) upgrade to ArbAtomic.
-    // This recovers aggregator/routing flows whose swap logs are not
-    // decodable; it is independent of the `arb_likely_parity` heuristic and
-    // stays Inferred — the upgrade never inflates Exact arb.
-    {
-        let txs_by_index: HashMap<u64, &TxInput> =
-            input.txs.iter().map(|t| (t.tx_index, t)).collect();
-        for ev in events.iter_mut() {
-            if ev.kind != MevKind::Unknown {
-                continue;
-            }
-            // Keeper / bundler / claim-and-sell stay on their declared basis;
-            // do not promote them via the transfer-cycle arb heuristic.
-            if ev
-                .details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| {
-                    a.iter().any(|x| {
-                        matches!(
-                            x.as_str(),
-                            Some("keeper") | Some("bundler") | Some("claim_and_sell")
-                        )
-                    })
-                })
-            {
-                continue;
-            }
-            let Some(tx) = txs_by_index.get(&ev.tx_index).copied() else {
-                continue;
-            };
-            if has_transfer_cycle(ev.searcher, &tx.transfers) {
-                ev.kind = MevKind::ArbAtomic;
-                ev.details["mode"] = serde_json::json!("realized");
-                ev.details["reasons"] = serde_json::json!(["TRANSFER_CYCLE"]);
-                ev.details["evidence"] = serde_json::json!({
-                    "transfer_cycle": true,
-                    "note": "closed >=3-entity transfer cycle with positive ledger delta",
-                });
-                ev.details["arb_meta"] = arb_route_meta(&tx.swaps, !tx.flashloans.is_empty());
-                if let Some(meta) = ev.details.get_mut("arb_meta") {
-                    meta["arb_shape"] = serde_json::json!("transfer_cycle");
-                }
-            }
-        }
-    }
     events
 }
 
@@ -451,9 +376,7 @@ fn arb_route_meta(swaps: &[SwapFact], flashloan_funded: bool) -> serde_json::Val
     tokens.sort();
     tokens.dedup();
     let unique_tokens = tokens.len();
-    let arb_shape = if hop_count == 0 {
-        "transfer_cycle"
-    } else if hop_count == 2 || unique_tokens == 2 {
+    let arb_shape = if hop_count == 2 || unique_tokens == 2 {
         "two_pool"
     } else if hop_count == 3 || unique_tokens == 3 {
         "triangular"
@@ -511,45 +434,4 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
         None => true, // nothing to disprove
         Some(o) => candidates.contains(&o),
     }
-}
-
-/// True when the tx's ERC-20 transfer graph contains a closed ≥3-entity cycle
-/// rooted at `searcher` (searcher → X → … → searcher with ≥2 distinct
-/// intermediate addresses). Zero-address nodes (wrapped-native mint/burn) are
-/// excluded. Evidence for the Unknown→ArbAtomic upgrade.
-fn has_transfer_cycle(searcher: Address, transfers: &[TransferFact]) -> bool {
-    let mut adj: HashMap<Address, Vec<Address>> = HashMap::new();
-    for t in transfers {
-        if t.amount.is_zero() || t.from.is_zero() || t.to.is_zero() || t.from == t.to {
-            continue;
-        }
-        adj.entry(t.from).or_default().push(t.to);
-    }
-    let Some(outs) = adj.get(&searcher).cloned() else {
-        return false;
-    };
-    for n in outs {
-        if n == searcher {
-            continue;
-        }
-        let mut stack = vec![(n, vec![n])];
-        while let Some((node, path)) = stack.pop() {
-            let Some(nexts) = adj.get(&node) else {
-                continue;
-            };
-            for &m in nexts {
-                if m == searcher {
-                    // Back to the searcher through ≥2 distinct intermediaries.
-                    if path.len() >= 2 {
-                        return true;
-                    }
-                } else if m != node && path.len() < 6 && !path.contains(&m) {
-                    let mut p = path.clone();
-                    p.push(m);
-                    stack.push((m, p));
-                }
-            }
-        }
-    }
-    false
 }

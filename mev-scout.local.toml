@@ -52,5 +52,3 @@ poll_interval_ms = 500
 
 [explorer]
 confirmations = 4
-# Closed-cycle arb only (spec §7.1). Set true only for mevlive Type=Arbitrage parity.
-arb_likely_parity = false

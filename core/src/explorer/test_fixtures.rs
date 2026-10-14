@@ -188,7 +188,6 @@ pub fn block(txs: Vec<TxInput>) -> BlockInput {
             wrapped_native: WNATIVE,
             weth: WNATIVE,
         },
-        arb_likely_parity: true,
         open_positions: vec![],
         v2_like_pools: HashSet::new(),
         chainlink_feeds: HashMap::new(),

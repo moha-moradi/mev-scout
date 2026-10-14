@@ -74,7 +74,6 @@ output = "table"
 
 # ── Explorer (realized-MEV forensic layer) ──────────────────────────
 # [explorer]
-# arb_likely_parity = false
 # confirmations = 6
 # Detector-vs-realized MEV gate (corpus / offline checks): percent band and
 # absolute USD floor when expected net ≈ 0.

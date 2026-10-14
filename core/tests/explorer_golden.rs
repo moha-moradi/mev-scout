@@ -193,7 +193,6 @@ fn golden_input() -> BlockInput {
             wrapped_native: WNATIVE,
             weth: WNATIVE,
         },
-        arb_likely_parity: true,
         open_positions: vec![],
         v2_like_pools: std::collections::HashSet::new(),
         chainlink_feeds: HashMap::new(),

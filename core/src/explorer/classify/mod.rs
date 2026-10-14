@@ -90,10 +90,6 @@ pub struct BlockInput {
     pub ts: u64,
     pub wrapped_native: Address,
     pub profit_policy: ProfitTokenPolicy,
-    /// Mevlive-parity fallback: when true, a profitable residual
-    /// that is not a closed cycle is still labeled `arb_atomic`/`inferred`.
-    /// Default true until the Phase-0 window gate passes.
-    pub arb_likely_parity: bool,
     /// Cross-block JIT open Mint positions, loaded from the store
     /// window for the current block.
     pub open_positions: Vec<OpenPosition>,
@@ -491,10 +487,9 @@ mod tests {
     }
 
     #[test]
-    fn arb_cycle_mixed_flow_owner_is_not_exact() {
+    fn arb_cycle_mixed_flow_owner_is_dropped() {
         // The second leg of the closed cycle is funded by an unrelated actor
-        // inside the same tx — the cycle mixes routes and must NOT be Exact
-        // . The parity fallback still labels it arb/Inferred.
+        // inside the same tx — flow is not attributable → no ArbAtomic.
         const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
         let swaps = vec![
             swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
@@ -507,19 +502,17 @@ mod tests {
             transfer(3, USDC, POOL_B, ATK, 110),
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(
-            ev.confidence,
-            Confidence::Inferred,
-            "cycle mixes unrelated owners"
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "cycle mixes unrelated owners, got {events:?}"
         );
-        assert_eq!(ev.searcher, ATK);
     }
 
     #[test]
-    fn arb_cycle_owned_only_by_non_candidate_is_not_exact() {
+    fn arb_cycle_owned_only_by_non_candidate_is_dropped() {
         // A closed cycle whose legs are all funded by an address that is not a
-        // searcher candidate is not attributable to the route → not Exact.
+        // searcher candidate is not attributable → no ArbAtomic.
         const OUTSIDER: Address = address!("7000000000000000000000000000000000000012");
         let swaps = vec![
             swap_owned(OUTSIDER, POOL_A, USDC, TOKA, 100, 200),
@@ -532,11 +525,10 @@ mod tests {
             transfer(3, USDC, POOL_B, ATK, 110),
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(
-            ev.confidence,
-            Confidence::Inferred,
-            "flow owner is not a candidate"
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "flow owner is not a candidate, got {events:?}"
         );
     }
 
@@ -587,32 +579,14 @@ mod tests {
     }
 
     #[test]
-    fn non_cycle_profitable_swap_is_arb_likely() {
+    fn non_cycle_profitable_swap_emits_nothing() {
+        // Spec: a single-hop profitable residual is not MEV.
         let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
         let transfers = vec![
             transfer(0, USDC, ATK, POOL_A, 100),
             transfer(1, TOKA, POOL_A, ATK, 200),
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        // Single-hop profitable residuals are labeled arb (not Unknown) for
-        // live-feed parity with tip explorers (mevlive Type=Arbitrage).
-        let ev = classify_kind(&input, MevKind::ArbAtomic);
-        assert_eq!(ev.confidence, Confidence::Inferred);
-        assert_eq!(ev.profit_token, Some(TOKA));
-        assert_eq!(ev.profit_amount, Some(U256::from(200)));
-    }
-
-    #[test]
-    fn non_cycle_with_parity_off_emits_nothing() {
-        // Spec: a single-hop profitable residual is not MEV. With parity
-        // off we must not emit Unknown (that used to flood the live feed).
-        let swaps = vec![swap(POOL_A, USDC, TOKA, 100, 200)];
-        let transfers = vec![
-            transfer(0, USDC, ATK, POOL_A, 100),
-            transfer(1, TOKA, POOL_A, ATK, 200),
-        ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.arb_likely_parity = false;
         let events = classify_block(&input);
         assert!(
             events.is_empty(),
@@ -625,7 +599,7 @@ mod tests {
         // Regression: Avalanche tx 0x266f47… — aggregator sells WAVAX for USDC
         // across several pools. Swap edges form USDC↔WNATIVE cycles (≥2 pools)
         // so a naive graph walk looks like Exact arb, but the searcher ledger
-        // is open (−WNATIVE, +USDC). With parity off this must emit nothing.
+        // is open (−WNATIVE, +USDC). Must emit nothing.
         let router = address!("70000000000000000000000000000000000000aa");
         let swaps = vec![
             swap(POOL_A, USDC, WNATIVE, 100, 10),
@@ -640,8 +614,7 @@ mod tests {
             transfer(4, WNATIVE, POOL_A, router, 10),
             transfer(5, USDC, router, ATK, 400),
         ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.arb_likely_parity = false;
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         let events = classify_block(&input);
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
@@ -677,11 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn transfer_cycle_upgrades_unknown_to_arb() {
-        // Aggregator-routed flow: swap tokens don't close a cycle (USDC→TOKA→
-        // WNATIVE is acyclic), but the transfer graph closes ATK → router →
-        // POOL_A → ATK — a ≥3-entity cycle. With parity off the residual would
-        // be Unknown; the transfer cycle upgrades it to ArbAtomic (Inferred).
+    fn transfer_cycle_does_not_promote_open_inventory() {
+        // Router-mediated inventory swap: ATK → router → pool → ATK forms a
+        // ≥3-entity transfer cycle, but the ledger stays open (−USDC, +TOKA).
+        // Must not become ArbAtomic / Unknown.
         let router = address!("7000000000000000000000000000000000000007");
         let swaps = vec![
             swap(POOL_A, USDC, TOKA, 100, 200),
@@ -692,17 +664,42 @@ mod tests {
             transfer(1, USDC, router, POOL_A, 100),
             transfer(2, TOKA, POOL_A, ATK, 200),
         ];
-        let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.arb_likely_parity = false;
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         let events = classify_block(&input);
-        let ev = event_of(&events, MevKind::ArbAtomic);
-        assert_eq!(ev.confidence, Confidence::Inferred);
-        assert_eq!(ev.details["reasons"], serde_json::json!(["TRANSFER_CYCLE"]));
-        assert_eq!(
-            ev.details["evidence"]["transfer_cycle"],
-            serde_json::json!(true)
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "open-inventory transfer cycle must not promote, got {events:?}"
         );
-        assert_eq!(ev.profit_amount, Some(U256::from(200))); // TOKA payout
+        assert!(
+            events.iter().all(|e| e.kind != MevKind::Unknown),
+            "expected no unknown pollution, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn incomplete_swap_edges_do_not_emit_arb_via_transfer_cycle() {
+        // Closed residual (+USDC) but only one *resolved* swap edge (second
+        // leg unresolved) so swap-graph cycle fails. Transfer-cycle upgrade
+        // is gone — must not emit ArbAtomic.
+        let router = address!("7000000000000000000000000000000000000007");
+        let s0 = swap(POOL_A, USDC, TOKA, 100, 200);
+        let mut s1 = swap(POOL_B, TOKA, USDC, 200, 110);
+        s1.token_in = crate::explorer::decode::TOKEN0_SENTINEL;
+        s1.token_out = crate::explorer::decode::TOKEN1_SENTINEL;
+        let transfers = vec![
+            transfer(0, USDC, ATK, router, 100),
+            transfer(1, USDC, router, POOL_A, 100),
+            transfer(2, TOKA, POOL_A, ATK, 200),
+            transfer(3, TOKA, ATK, router, 200),
+            transfer(4, TOKA, router, POOL_B, 200),
+            transfer(5, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, vec![s0, s1], transfers)]);
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "incomplete swap edges must not emit ArbAtomic, got {events:?}"
+        );
     }
 
     #[test]
