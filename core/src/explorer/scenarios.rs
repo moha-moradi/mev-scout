@@ -18,8 +18,8 @@ use alloy::primitives::{address, b256, Address, U256};
 use crate::explorer::classify::{classify_block, decode_tx_logs_with_aliases};
 use crate::explorer::test_fixtures::{
     block, block_with_v2, classify_kind, event_of, flash_loan, has_tag, jit, kinds, liquidation,
-    pnl_basis, swap, swap_at_tick, transfer, tx, ATK, FOT, MARKET, POOL_A, POOL_B, REBASE, SAVAX,
-    TOKA, USDC, VICTIM, WNATIVE,
+    pnl_basis, swap, swap_agg, swap_at_tick, transfer, tx, tx_to, ATK, FOT, MARKET, POOL_A, POOL_B,
+    REBASE, SAVAX, TOKA, USDC, VICTIM, WNATIVE,
 };
 use crate::explorer::types::{
     Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind, OracleUpdateFact,
@@ -59,6 +59,43 @@ fn baseline_atomic_arb() {
         vec![swap(POOL_A, USDC, TOKA, 100, 200)],
         vec![transfer(0, USDC, ATK, POOL_A, 100)],
     )]);
+    assert!(classify_block(&input).is_empty());
+}
+
+/// Cost-on-initiator guard: a closed swap cycle whose output lands on the
+/// receiver contract (`tx.to`) while the initiator (`tx.from`) funds an
+/// unmatched ERC-20 inventory spend is an inventory conversion, not atomic
+/// arb (regression: 10k USDC → WAVAX mislabeled as $9,978 profit).
+#[test]
+fn cost_on_initiator_rejects_atomic_arb() {
+    let swaps = vec![
+        swap(POOL_A, WNATIVE, USDC, 1000, 1000),
+        swap(POOL_B, USDC, WNATIVE, 1000, 110),
+    ];
+    let transfers = vec![
+        transfer(0, USDC, ATK, POOL_A, 1000),
+        transfer(1, WNATIVE, POOL_B, MARKET, 110),
+    ];
+    let input = block(vec![tx_to(0, ATK, MARKET, true, swaps, transfers)]);
+    assert!(classify_block(&input).is_empty());
+}
+
+/// Aggregator legs cannot close a searcher's arb cycle: a one-way conversion
+/// routed through a router's internal pools (regression: two ~$76–78 USDC
+/// "arbs" via the KyberSwap executor) is not atomic arb.
+#[test]
+fn aggregator_leg_does_not_close_arb_cycle() {
+    let swaps = vec![
+        swap(POOL_A, WNATIVE, TOKA, 100, 200),
+        swap_agg(POOL_B, TOKA, WNATIVE, 200, 110),
+    ];
+    let transfers = vec![
+        transfer(0, WNATIVE, ATK, POOL_A, 100),
+        transfer(1, TOKA, POOL_A, ATK, 200),
+        transfer(2, TOKA, ATK, POOL_B, 200),
+        transfer(3, WNATIVE, POOL_B, ATK, 110),
+    ];
+    let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
     assert!(classify_block(&input).is_empty());
 }
 

@@ -128,6 +128,14 @@ pub fn swap_at_tick(
     s
 }
 
+/// Aggregator/router leg (its internal routing must not close an arb cycle).
+pub fn swap_agg(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> SwapFact {
+    SwapFact {
+        amm: Amm::Aggregator,
+        ..swap(pool, tin, tout, ain, aout)
+    }
+}
+
 pub fn transfer(
     log_idx: u64,
     token: Address,
@@ -175,6 +183,22 @@ pub fn tx(
         epoch_rewards: vec![],
         gmx_events: vec![],
         user_ops: vec![],
+    }
+}
+
+/// Like [`tx`] but with an explicit receiver contract (`tx.to`), so the
+/// initiator and the profit-bearing contract can differ.
+pub fn tx_to(
+    idx: u64,
+    from: Address,
+    to: Address,
+    success: bool,
+    swaps: Vec<SwapFact>,
+    transfers: Vec<TransferFact>,
+) -> TxInput {
+    TxInput {
+        to: Some(to),
+        ..tx(idx, from, success, swaps, transfers)
     }
 }
 

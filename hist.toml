@@ -1,0 +1,18 @@
+chain = "avalanche"
+gas_model = "historical_exact"
+strategies = "all"
+output = "table"
+rpc_urls = [
+  "https://avalanche.drpc.org",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+]
+rpc_rps = [5.0, 3.0]
+rps_limit = 5
+block_concurrency = 5
+rpc_batch_blocks = 1
+
+[explorer]
+confirmations = 4
+poll_interval_ms = 2000
+arb_likely_parity = false
+db_path = "cache/hist-explorer-avalanche.sqlite"

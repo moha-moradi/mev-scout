@@ -55,7 +55,7 @@ impl DeltaLedger {
     pub fn from_transfers(
         transfers: &[TransferFact],
         wrapped_native: Address,
-        native_value: (Address, U256), // (recipient_of_value, value)
+        native_value: (Address, U256), // (spender_of_value, value)
     ) -> DeltaLedger {
         let mut ledger = DeltaLedger::default();
         for t in transfers {
@@ -65,10 +65,14 @@ impl DeltaLedger {
             ledger.apply(t.token, t.from, t.amount, false);
             ledger.apply(t.token, t.to, t.amount, true);
         }
-        // Native POL/AVAX/BNB received in `value` (transfers to EOAs / plain sends)
-        let (to, v) = native_value;
-        if !v.is_zero() && !to.is_zero() {
-            ledger.apply(wrapped_native_marker(), to, v, true);
+        // Native POL/AVAX/BNB *spent* by the sender via `value` (a contract
+        // call carries no ERC-20 transfer for the native leg). This MUST be a
+        // debit: crediting the sender hid the spend, so `has_inventory_spend`
+        // returned false and native→token inventory trades (aggregator/router
+        // splits) masqueraded as closed-cycle atomic arbitrage.
+        let (spender, v) = native_value;
+        if !v.is_zero() && !spender.is_zero() {
+            ledger.apply(wrapped_native_marker(), spender, v, false);
         }
         ledger
     }
@@ -396,5 +400,24 @@ mod tests {
         );
         assert_eq!(ledger.net(me, junk), U256::ZERO);
         assert_eq!(ledger.net(me, third), U256::from(42));
+    }
+
+    #[test]
+    fn native_value_is_debited_from_sender() {
+        // Regression: a native→token inventory swap (e.g. an aggregator split)
+        // must show the native spend, so `has_inventory_spend` is true and the
+        // tx cannot be mislabelled as closed-cycle atomic arbitrage.
+        let me = address!("1000000000000000000000000000000000000000");
+        let router = address!("2000000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        // Sender pays 30 AVAX (value) and receives 300 USDC; no AVAX back.
+        let transfers = vec![tf(0, usdc, router, me, 300)];
+        let ledger = DeltaLedger::from_transfers(&transfers, W, (me, U256::from(30)));
+        assert!(
+            has_inventory_spend(&ledger, me),
+            "native spend must be visible"
+        );
+        assert!(ledger.net_signed(me, wrapped_native_marker()).is_negative());
+        assert_eq!(ledger.net(me, usdc), U256::from(300));
     }
 }

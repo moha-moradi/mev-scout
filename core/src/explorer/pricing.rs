@@ -323,15 +323,13 @@ pub async fn fetch_prices_llama(
         return Ok(HashMap::new());
     }
     let prefix = llama_chain_prefix(chain);
-    let assets: Vec<String> = tokens.iter().map(|t| format!("{prefix}:{t:#x}")).collect();
+    // DefiLlama historical prices are path-based: the coin list is a single
+    // comma-separated path segment (`?coins=` query form 404s).
+    let coins: Vec<String> = tokens.iter().map(|t| format!("{prefix}:{t:#x}")).collect();
     let url = format!(
-        "https://coins.llama.fi/prices/historical/{}?{}",
+        "https://coins.llama.fi/prices/historical/{}/{}",
         timestamp,
-        assets
-            .iter()
-            .map(|a| format!("coins={}", crate::utils::urlencode(a)))
-            .collect::<Vec<_>>()
-            .join("&")
+        coins.join(",")
     );
     let client = crate::utils::http_client(std::time::Duration::from_secs(15));
     let resp: LlamaResponse = client.get(&url).send().await?.json().await?;

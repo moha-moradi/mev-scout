@@ -7,9 +7,10 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::decode;
 use crate::explorer::profit::{
     has_closed_cycle, has_inventory_spend, net_flash_loan, select_profit_token, DeltaLedger,
+    NATIVE_MARKER,
 };
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis, SwapFact};
+use crate::explorer::types::{Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact};
 
 use super::{append_tag, has_unresolved_tokens, BlockInput};
 
@@ -101,11 +102,20 @@ pub(super) fn classify_arbs(
 
         // ── Atomic arb ─────────────────────────────────────────────────
         // Resolved directional edges (token_in, token_out, pool).
+        //
+        // Aggregator/router legs are excluded: those edges are the router's
+        // *internal* routing (e.g. a token→USDC sale split across its own
+        // pools), decoded only by token proximity. Letting them close the
+        // cycle mislabels a one-way aggregator conversion as the searcher's
+        // atomic arb (regression: two ~$76–78 USDC "arbs" via the KyberSwap
+        // executor that mev.zone does not count). Genuine searcher cycles run
+        // over real DEX pools (v2/v3/v4).
         let resolved_edges: Vec<(Address, Address, Address)> = tx
             .swaps
             .iter()
             .filter(|s| {
-                !has_unresolved_tokens(s)
+                s.amm != Amm::Aggregator
+                    && !has_unresolved_tokens(s)
                     && s.token_in != decode::TOKEN0_SENTINEL
                     && s.token_in != decode::TOKEN1_SENTINEL
             })
@@ -117,10 +127,20 @@ pub(super) fn classify_arbs(
         // (WAVAX→USDC split across pools) produce bidirectional edges while
         // the searcher ledger stays open (−input token, +output token).
         let inventory_open = candidate.is_some_and(|a| has_inventory_spend(&ledger, a));
+        // Cost-on-initiator guard: when the profit-bearing candidate is not the
+        // tx initiator, an unmatched ERC-20 inventory spend by `tx.from` means
+        // the initiator funded an inventory conversion (e.g. 10k USDC → WAVAX)
+        // whose output merely lands on a downstream contract. That is not an
+        // atomic arb. Native value is excluded: gas/fee flows are expected.
+        let initiator_inventory_open = !tx.from.is_zero()
+            && ledger.touched_tokens(tx.from).into_iter().any(|t| {
+                t != NATIVE_MARKER && ledger.net_signed(tx.from, t).is_negative()
+            });
         let arb_confirmed = resolved_edges.len() >= 2
             && has_closed_cycle(&resolved_edges)
             && flow_attributable(&tx.swaps, &candidates)
-            && !inventory_open;
+            && !inventory_open
+            && !initiator_inventory_open;
 
         if !arb_confirmed {
             continue;
