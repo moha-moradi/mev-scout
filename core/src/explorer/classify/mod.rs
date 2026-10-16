@@ -533,6 +533,55 @@ mod tests {
     }
 
     #[test]
+    fn arb_cycle_pool_funded_intermediate_is_attributable() {
+        // Intermediate token moves pool→pool (not through the searcher), so the
+        // second leg's funder-owner is POOL_A — a pool of this very route. That
+        // owner is neutral; the external owner (ATK) still attributes the
+        // cycle. Regression: 5 mev.zone atomic arbs dropped by the old
+        // "every owner must equal the searcher" rule.
+        let swaps = vec![
+            swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(POOL_A, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, POOL_B, 200),
+            transfer(2, USDC, POOL_B, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        assert_eq!(ev.confidence, Confidence::Exact);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(10)));
+    }
+
+    #[test]
+    fn arb_cycle_pool_and_outsider_owner_is_dropped() {
+        // A neutral route-pool owner must not mask an unrelated external
+        // owner: with owners {ATK, POOL_A (route pool), OUTSIDER}, the external
+        // owners {ATK, OUTSIDER} do not collapse → no ArbAtomic.
+        const OUTSIDER: Address = address!("7000000000000000000000000000000000000013");
+        const POOL_C: Address = address!("300000000000000000000000000000000000000c");
+        let swaps = vec![
+            swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(POOL_A, POOL_B, TOKA, WNATIVE, 200, 30),
+            swap_owned(OUTSIDER, POOL_C, WNATIVE, USDC, 30, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, POOL_B, 200),
+            transfer(2, WNATIVE, POOL_B, POOL_C, 30),
+            transfer(3, USDC, POOL_C, ATK, 110),
+        ];
+        let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "an unrelated external owner must still reject the cycle, got {events:?}"
+        );
+    }
+
+    #[test]
     fn multi_residual_arb_captures_every_positive_token() {
         const TOKB: Address = address!("7000000000000000000000000000000000000009");
         let swaps = vec![

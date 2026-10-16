@@ -436,7 +436,25 @@ fn is_long_tail_arb(swaps: &[SwapFact], blue_chips: &[Address]) -> bool {
 /// transfer observable) cannot disprove ownership and pass (preserves recall
 /// for flash-mint / internal-balance flows); an unrelated actor's legs always
 /// fail.
+///
+/// Owners that are *pools of this route* are neutral: in a genuine atomic
+/// cycle the intermediate token legitimately moves pool→pool, so a hop's
+/// input is funded by the previous pool rather than by the searcher contract
+/// (regression: 5 mev.zone arbs where exactly one hop was funded by a route
+/// pool while the rest were funded by the searcher). Only *external* owners
+/// must collapse to a single candidate; a pool never appearing in the
+/// resolved route (e.g. an aggregator/router) is not neutralized.
 pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> bool {
+    let route_pools: HashSet<Address> = swaps
+        .iter()
+        .filter(|s| {
+            s.amm != Amm::Aggregator
+                && !has_unresolved_tokens(s)
+                && s.token_in != decode::TOKEN0_SENTINEL
+                && s.token_in != decode::TOKEN1_SENTINEL
+        })
+        .map(|s| s.pool)
+        .collect();
     let mut owner: Option<Address> = None;
     for s in swaps {
         if has_unresolved_tokens(s) {
@@ -445,6 +463,9 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
         let Some(o) = s.owner else {
             continue;
         };
+        if route_pools.contains(&o) {
+            continue; // intermediate hop funded by a pool of this route
+        }
         match owner {
             Some(cur) if cur != o => return false,
             _ => owner = Some(o),
