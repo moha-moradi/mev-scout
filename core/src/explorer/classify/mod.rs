@@ -462,7 +462,8 @@ mod tests {
     use crate::explorer::store::OpenPosition;
     use crate::explorer::test_fixtures::{
         block, block_with_v2, classify_kind, event_of, flash_loan, jit, kinds, liquidation, swap,
-        swap_at_tick, swap_owned, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM, WNATIVE,
+        swap_at_tick, swap_owned, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM,
+        WNATIVE,
     };
     use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
     use alloy::primitives::{address, b256, U256};
@@ -578,6 +579,35 @@ mod tests {
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
             "an unrelated external owner must still reject the cycle, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn arb_cycle_net_zero_searcher_forwards_residual_to_third_party_is_dropped() {
+        // Known gap (scenario D): the searcher contract runs the cycle, nets
+        // exactly zero and forwards the residual to a third-party address.
+        // Neither the initiator nor the contract holds a positive residual, so
+        // no candidate is profit-positive → no ArbAtomic. Conservative by
+        // design: the recipient may be a builder tip rather than searcher
+        // profit (mev.zone counts these; we intentionally under-count).
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        const RECIPIENT: Address = address!("a00000000000000000000000000000000000000a");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, SEARCHER, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, SEARCHER, 200),
+            transfer(2, TOKA, SEARCHER, POOL_B, 200),
+            transfer(3, USDC, POOL_B, SEARCHER, 110),
+            transfer(4, USDC, SEARCHER, RECIPIENT, 10),
+        ];
+        let input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "net-zero searcher with a third-party residual must be dropped, got {events:?}"
         );
     }
 
