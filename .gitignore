@@ -12,3 +12,8 @@ mev-scout.toml
 mev-scout.avax.toml
 
 .freebuff/project-id
+
+node_modules/
+package-lock.json
+mev-scout.hunt-*.toml
+

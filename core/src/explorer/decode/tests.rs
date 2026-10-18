@@ -356,6 +356,38 @@ fn liquidation_compound_v2_decodes() {
     assert_eq!(liq.collateral_amount, U256::from(500));
 }
 
+/// Benqi (Avalanche) emits `LiquidateBorrow` with topic0 only — liquidator,
+/// borrower, repay, cTokenCollateral, seize all in data (5 ABI words).
+#[test]
+fn liquidation_compound_v2_nonindexed_data_layout() {
+    let mut data = vec![0u8; 160];
+    data[12..32].copy_from_slice(address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").as_slice());
+    data[44..64].copy_from_slice(address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").as_slice());
+    data[88..96].copy_from_slice(&99u64.to_be_bytes());
+    data[108..128].copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice());
+    data[152..160].copy_from_slice(&500u64.to_be_bytes());
+    let l = log(
+        address!("dddddddddddddddddddddddddddddddddddddddd"),
+        vec![*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC],
+        data,
+    );
+    let liq = decode_liquidation(&l).unwrap();
+    assert_eq!(
+        liq.liquidator,
+        address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
+    assert_eq!(
+        liq.user,
+        address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    );
+    assert_eq!(
+        liq.collateral_asset,
+        address!("cccccccccccccccccccccccccccccccccccccccc")
+    );
+    assert_eq!(liq.debt_to_cover, U256::from(99));
+    assert_eq!(liq.collateral_amount, U256::from(500));
+}
+
 /// P0.2 positive (آ mode A / آ): Compound V2 `LiquidateBorrow`
 /// emitted by a Benqi qiToken market shares topic0 with Compound, so only
 /// the emitter address identifies the protocol â€” the alias registry

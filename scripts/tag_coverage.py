@@ -68,7 +68,8 @@ def main() -> int:
 
     conn = sqlite3.connect(path)
     kinds = conn.execute(
-        "SELECT kind, COUNT(*) FROM mev_ops GROUP BY kind ORDER BY 2 DESC"
+        "SELECT kind, COUNT(*), COALESCE(SUM(profit_usd), 0) "
+        "FROM mev_ops GROUP BY kind ORDER BY 2 DESC"
     ).fetchall()
     total = conn.execute("SELECT COUNT(*) FROM mev_ops").fetchone()[0]
     br = conn.execute(
@@ -77,25 +78,29 @@ def main() -> int:
     print(f"db={path}")
     print(f"mev_ops={total} blocks={br[0]}..{br[1]}")
     print("KINDS:")
-    kind_set = {k for k, _ in kinds}
-    for k, n in kinds:
-        print(f"  {k}: {n}")
+    kind_set = {k for k, _, _ in kinds}
+    for k, n, profit in kinds:
+        print(f"  {k}: {n} profit_usd_sum={profit}")
     for k in EXPECTED_KINDS:
         if k not in kind_set:
             print(f"  MISSING kind: {k}")
 
     tags: collections.Counter[str] = collections.Counter()
+    tag_profit: collections.Counter[str] = collections.Counter()
     flags: collections.Counter[str] = collections.Counter()
-    for (dj,) in conn.execute(
-        "SELECT details_json FROM mev_ops WHERE details_json IS NOT NULL"
+    for dj, profit in conn.execute(
+        "SELECT details_json, profit_usd FROM mev_ops "
+        "WHERE details_json IS NOT NULL"
     ):
         try:
             d = json.loads(dj)
         except json.JSONDecodeError:
             continue
+        p = float(profit or 0.0)
         for t in d.get("tags") or []:
             if isinstance(t, str):
                 tags[t] += 1
+                tag_profit[t] += p
         for flag in (
             "interest_accrued",
             "oracle_poke_block",
@@ -107,7 +112,7 @@ def main() -> int:
 
     print("TAGS:")
     for t, n in tags.most_common():
-        print(f"  {t}: {n}")
+        print(f"  {t}: {n} profit_usd_sum={tag_profit[t]}")
     skip = AVAX_SKIP if args.chain == "avalanche" else set()
     missing = [t for t in EXPECTED_TAGS if t not in tags and t not in skip]
     present = [t for t in EXPECTED_TAGS if t in tags]

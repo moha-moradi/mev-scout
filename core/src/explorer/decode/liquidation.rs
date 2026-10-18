@@ -61,26 +61,45 @@ pub fn decode_liquidation(log: &LogData) -> Option<LiquidationFact> {
         });
     }
     if topic0 == *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC {
-        // topics: [sig, liquidator, borrower]
-        // data: repayAmount, cTokenCollateral (word), seizeTokens
-        if log.topics.len() < 3 || log.data.len() < 96 {
-            return None;
+        // Compound V2 indexes liquidator/borrower:
+        //   topics: [sig, liquidator, borrower]
+        //   data: repayAmount, cTokenCollateral, seizeTokens
+        // Benqi (and some forks) emit the same topic0 with *no* indexed
+        // params — everything lives in data (5 words):
+        //   liquidator, borrower, repayAmount, cTokenCollateral, seizeTokens
+        if log.topics.len() >= 3 && log.data.len() >= 96 {
+            return Some(LiquidationFact {
+                tx_index: 0,
+                log_index: 0,
+                protocol: "compound_v2",
+                emitter: log.address,
+                user: topic_address(log.topics[2]),
+                liquidator: topic_address(log.topics[1]),
+                // Repaid market is the emitting cToken; seized collateral is a
+                // different cToken address encoded in the data.
+                debt_asset: log.address,
+                debt_to_cover: U256::from_be_slice(&log.data[0..32]),
+                collateral_asset: abi_word_address(&log.data, 1),
+                collateral_amount: U256::from_be_slice(&log.data[64..96]),
+                bad_debt_assets: U256::ZERO,
+            });
         }
-        return Some(LiquidationFact {
-            tx_index: 0,
-            log_index: 0,
-            protocol: "compound_v2",
-            emitter: log.address,
-            user: topic_address(log.topics[2]),
-            liquidator: topic_address(log.topics[1]),
-            // Repaid market is the emitting cToken; seized collateral is a
-            // different cToken address encoded in the data.
-            debt_asset: log.address,
-            debt_to_cover: U256::from_be_slice(&log.data[0..32]),
-            collateral_asset: abi_word_address(&log.data, 1),
-            collateral_amount: U256::from_be_slice(&log.data[64..96]),
-            bad_debt_assets: U256::ZERO,
-        });
+        if log.topics.len() == 1 && log.data.len() >= 160 {
+            return Some(LiquidationFact {
+                tx_index: 0,
+                log_index: 0,
+                protocol: "compound_v2",
+                emitter: log.address,
+                liquidator: abi_word_address(&log.data, 0),
+                user: abi_word_address(&log.data, 1),
+                debt_asset: log.address,
+                debt_to_cover: U256::from_be_slice(&log.data[64..96]),
+                collateral_asset: abi_word_address(&log.data, 3),
+                collateral_amount: U256::from_be_slice(&log.data[128..160]),
+                bad_debt_assets: U256::ZERO,
+            });
+        }
+        return None;
     }
     if topic0 == *MORPHO_BLUE_LIQUIDATE_TOPIC {
         // topics: [sig, id, caller, borrower]
