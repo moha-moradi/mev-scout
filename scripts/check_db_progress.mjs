@@ -1,0 +1,1 @@
+import { DatabaseSync } from 'node:sqlite'; const db = new DatabaseSync('cache/explorer-avalanche.sqlite'); const r = db.prepare('SELECT COUNT(*) c, MIN(block_number) a, MAX(block_number) b FROM mev_ops').get(); const bc = db.prepare('SELECT COUNT(*) c, MIN(block) a, MAX(block) b FROM blocks_classified').get(); console.log(JSON.stringify({ops:r, classified:bc}));

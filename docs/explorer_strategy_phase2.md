@@ -1,43 +1,31 @@
 # Explorer strategy Phase-2 frequency / volume snapshot
 
-Generated from forensic DBs already on disk (2026-10-18). Full 7d tip-follow on
-Avalanche publicnode failed mid-window (`missing trie node` on eth_call); use an
-archive RPC for a clean 7d/30d recount.
+Last refresh: **2026-10-18T09:09:53.886Z** (interim while AVAX `--days 7` backfill runs).
 
 Source JSON: `cache/phase2_coverage.json`.
 
-## Avalanche (`cache/explorer-avalanche.sqlite`)
+## Avalanche (`cache/explorer-avalanche.sqlite`) ? IN PROGRESS
 
-- ops: **83** across blocks **97505001..97857389** (slice grew during verify)
-- kinds: unknown 54, arb_atomic 22 (~1637 USD), jit 5, liquidation 2
-- tags: bundler/erc4337 51, claim_and_sell/airdrop 2, long_tail 1, flash_loan_liq 1, benqi protocol 1
+- Historical window target: ~97562463..=97864863 (~302401 blocks, archive = dwellir + avalanche.drpc.org)
+- ops so far: **831** across blocks **97505001..97857389**
+- classified_blocks (DB total): **36449**
+- kinds: unknown 401 (~28 USD), arb_atomic 364 (~6062 USD), jit 54, liquidation 12 (~-191869785 USD)
+- tags: bundler 391, erc4337 391, long_tail 320, epoch_transition 24, rate_provider_staleness 11, claim_and_sell 10, airdrop 10, curve_imbalance 6, flash_loan_liq 4, savax_rate_arb 2
+- flags: {"interest_accrued":7}
 
 ## Polygon
 
-- ops: **3** @ block 95391632 -- bundler x2 + arb_atomic x1
+- ops: **3**; kinds: unknown 2 (~0 USD), arb_atomic 1; tags: bundler 2, erc4337 2
 
 ## Ethereum
 
-- ops: **508** across blocks **26059586..26214788**
-- kinds: arb_atomic 473 (~11641 USD), sandwich 8, jit 6, owner_salvage 12, liquidation 1, bundler/unknown 7
-- tags: bundler, long_tail, bad_debt_liq; flags interest_accrued=1, bad_debt=1 @ 26214788
+- ops: **508** across **26059586..26214788**
+- kinds: arb_atomic 473 (~11641 USD), owner_salvage 12, sandwich 8 (~1 USD), unknown 7 (~0 USD), jit 6, liquidation 1, refinance 1
+- tags: bundler 7, erc4337 7, long_tail 1, bad_debt_liq 1; flags: {"interest_accrued":1,"bad_debt":1}
 
-## vs docs/mev_strategies.md Opps/Mo bands
-
-Indexed windows are narrow forensic slices, not month-normalized rates.
-
-| surface | doc band | observed (this run) |
-|---------|----------|---------------------|
-| arb / long_tail | Continuous / 1K-10K/mo | dense on ETH; present on AVAX |
-| sandwich | Continuous / 500-5K/mo | ETH yes; AVAX slice no |
-| bundler | Continuous | dominant AVAX tip tag |
-| flash_loan_liq | Daily / 100-500/mo | rare on AVAX (1 in set) |
-| bad_debt_liq | Daily | 1 Morpho hit on ETH |
-| keeper / GMX ADL / epoch | Continuous-Weekly | not observed (RPC limits) |
-
-## Next measure step (archive RPC)
+## Measure command
 
 ```powershell
-mev-scout -f mev-scout.hunt-avax.toml explorer index --days 7
-node --experimental-sqlite scripts/_coverage_report.mjs
+mev-scout -f mev-scout.phase2-avax.toml explorer index --days 7
+node scripts/coverage_report_sqljs.js
 ```
