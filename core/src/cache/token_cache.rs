@@ -150,7 +150,10 @@ impl TokenCache {
             }
         }
 
-        tracing::info!(
+        // `warm` is cheap and may be called once per job (discover/tokens) or
+        // repeatedly from explorer price fills — keep this at debug so backfill
+        // consoles are not flooded with identical lines.
+        tracing::debug!(
             "Token cache: pre-populated with {} known symbols",
             inner.len()
         );

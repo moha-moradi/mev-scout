@@ -1,3 +1,6 @@
+# Avalanche phase-2 explorer backfill config.
+# RPCs probed 2026-10-18 for tip-300k (~7d) eth_getBlockByNumber + eth_getBlockReceipts.
+# OnFinality public dropped after live 1h smoke (constant 429 under concurrency).
 chain = "avalanche"
 gas_model = "historical_exact"
 output = "table"
@@ -6,12 +9,24 @@ strategies = "all"
 rps_limit = 40
 block_concurrency = 32
 rpc_rps = [
-  20.0,
-  20.0,
+  20.0, # dwellir archive (keyed)
+  15.0, # dwellir archive #2
+  10.0, # publicnode
+  8.0,  # sentio
+  8.0,  # drpc
+  3.0,  # simplystaking (strict public limit)
+  5.0,  # thirdweb
+  5.0,  # pocket
 ]
 rpc_urls = [
-  "https://avalanche.drpc.org",
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
+  "https://avalanche-c-chain-rpc.publicnode.com",
+  "https://avalanche.rpc.sentio.xyz",
+  "https://avalanche.drpc.org",
+  "https://spectrum-01.simplystaking.xyz/avalanche-mn-rpc/ext/bc/C/rpc",
+  "https://43114.rpc.thirdweb.com",
+  "https://avax.api.pocket.network",
 ]
 
 [chains.avalanche]
@@ -20,11 +35,23 @@ chain_id = 43114
 [chains.avalanche.rpc]
 rpc_rps = [
   20.0,
-  20.0,
+  15.0,
+  10.0,
+  8.0,
+  8.0,
+  3.0,
+  5.0,
+  5.0,
 ]
 rpc_urls = [
-  "https://avalanche.drpc.org",
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
+  "https://avalanche-c-chain-rpc.publicnode.com",
+  "https://avalanche.rpc.sentio.xyz",
+  "https://avalanche.drpc.org",
+  "https://spectrum-01.simplystaking.xyz/avalanche-mn-rpc/ext/bc/C/rpc",
+  "https://43114.rpc.thirdweb.com",
+  "https://avax.api.pocket.network",
 ]
 
 [explorer]

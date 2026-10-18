@@ -665,6 +665,17 @@ async fn fetch_savax_exchange_rate(
     }
 }
 
+fn known_token_cache(chain_id: u64) -> crate::cache::TokenCache {
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<u64, crate::cache::TokenCache>>> = OnceLock::new();
+    let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    guard
+        .entry(chain_id)
+        .or_insert_with(|| crate::cache::TokenCache::warm(chain_id))
+        .clone()
+}
+
 /// Outcome of a stats-window price fill.
 pub async fn warm_prices_for_tokens(
     cfg: &IngestConfig,
@@ -675,8 +686,9 @@ pub async fn warm_prices_for_tokens(
 ) -> anyhow::Result<HashMap<Address, TokenUsd>> {
     let mut out = HashMap::new();
     // Known-token decimals come from the bundled list via TokenCache::warm;
-    // long-tail tokens get llama-reported decimals when present.
-    let known = crate::cache::TokenCache::warm(cfg.chain_id);
+    // long-tail tokens get llama-reported decimals when present. Cache per
+    // chain_id — this path runs once per indexed block.
+    let known = known_token_cache(cfg.chain_id);
     let decimals_of = |a: &Address| -> Option<u32> {
         known
             .entries()
@@ -824,6 +836,10 @@ pub async fn native_price_cached(
 /// never walks earlier blocks. Runs until `stop` is set; the indexed tip is
 /// hash-verified on every poll and a heavier reorg sweep runs every
 /// 32 blocks.
+///
+/// Returns the number of blocks indexed this session. Emits indeterminate
+/// `backfill` progress (`done` = session blocks, no `total`) plus a final
+/// `complete` when the stop flag ends the loop.
 pub async fn run_live(
     rpc: &RpcClient,
     store: &ExplorerStore,
@@ -831,14 +847,31 @@ pub async fn run_live(
     pools: PoolViews<'_>,
     poll_ms: u64,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    progress: &dyn JobProgress,
 ) -> anyhow::Result<u64> {
     use std::sync::atomic::Ordering;
 
-    let mut indexed_total: u64 = 0;
+    let mut blocks_session: u64 = 0;
+    let mut ops_session: u64 = 0;
     let mut since_reorg_check: u64 = 0;
     let mut savax_rates = SavaxRateCache::default();
     // `None` until the first successful tip probe — then pinned to tip, not DB.
     let mut next_block: Option<u64> = None;
+    let t0 = std::time::Instant::now();
+    let mut last_emit = t0;
+
+    let mut emit_progress = |blocks: u64, ops: u64, force: bool| {
+        if !force && last_emit.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        let mut evt = ProgressEvent::stage("backfill");
+        evt.done = Some(blocks);
+        evt.ops = Some(ops);
+        evt.elapsed_ms = Some(t0.elapsed().as_millis() as u64);
+        progress.emit(evt);
+        last_emit = std::time::Instant::now();
+    };
+    emit_progress(0, 0, true);
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -902,10 +935,13 @@ pub async fn run_live(
                     savax_rates: &mut savax_rates,
                 })
                 .await?;
-                indexed_total += indexed.ops as u64;
+                blocks_session += 1;
+                ops_session += indexed.ops as u64;
+                emit_progress(blocks_session, ops_session, false);
             }
             store.set_sync_state(cfg.chain_id, safe, safe)?;
             next_block = Some(safe + 1);
+            emit_progress(blocks_session, ops_session, true);
         } else {
             next_block = Some(cursor);
         }
@@ -913,7 +949,12 @@ pub async fn run_live(
         tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
     }
 
-    Ok(indexed_total)
+    emit_progress(blocks_session, ops_session, true);
+    let mut done = ProgressEvent::stage("complete");
+    done.ops = Some(ops_session);
+    done.elapsed_ms = Some(t0.elapsed().as_millis() as u64);
+    progress.emit(done);
+    Ok(blocks_session)
 }
 
 /// Historical / range backfill: index every block in `[from_block, to_block]`
@@ -967,19 +1008,38 @@ pub async fn run_range(
     let missing = store.unclassified_blocks(from_block, end)?;
     let mut outcome = RangeOutcome::default();
     let mut native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
-    let emit = |done: u64| {
+    let t0 = std::time::Instant::now();
+    let mut last_emit = t0;
+    // Emit every concurrency stride or ~1s wall-clock, whichever comes first.
+    let emit_stride = (block_concurrency.max(1) as u64).max(1);
+    let mut emit_progress = |done: u64, ops: u64, force: bool| {
+        let due = force
+            || done == 0
+            || done == total
+            || done.is_multiple_of(emit_stride)
+            || last_emit.elapsed() >= std::time::Duration::from_secs(1);
+        if !due {
+            return;
+        }
         let mut evt = ProgressEvent::stage("backfill");
         evt.done = Some(done);
         evt.total = Some(total);
+        evt.ops = Some(ops);
+        evt.elapsed_ms = Some(t0.elapsed().as_millis() as u64);
         progress.emit(evt);
+        last_emit = std::time::Instant::now();
     };
-    emit(0);
+    emit_progress(0, 0, true);
 
     if missing.is_empty() {
         store.set_sync_state(cfg.chain_id, tip, end)?;
         if total > 0 {
-            emit(total);
+            emit_progress(total, 0, true);
         }
+        let mut done = ProgressEvent::stage("complete");
+        done.ops = Some(0);
+        done.elapsed_ms = Some(t0.elapsed().as_millis() as u64);
+        progress.emit(done);
         return Ok(outcome);
     }
 
@@ -1007,9 +1067,7 @@ pub async fn run_range(
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;
             let done = block - from_block + 1;
-            if done.is_multiple_of(500) || done == total {
-                emit(done);
-            }
+            emit_progress(done, outcome.ops, done == total);
         }
     } else {
         let posts = (cap / chunk).max(1);
@@ -1081,9 +1139,7 @@ pub async fn run_range(
                 outcome.ops += indexed.ops as u64;
                 next_persist += 1;
                 let done = need - from_block + 1;
-                if done.is_multiple_of(500) || done == total {
-                    emit(done);
-                }
+                emit_progress(done, outcome.ops, done == total);
                 while next_spawn < missing.len() && inflight.len() < posts {
                     spawn_one(&mut next_spawn, &mut inflight)?;
                 }
@@ -1112,8 +1168,12 @@ pub async fn run_range(
 
     store.set_sync_state(cfg.chain_id, tip, end)?;
     if total > 0 {
-        emit(total);
+        emit_progress(total, outcome.ops, true);
     }
+    let mut done = ProgressEvent::stage("complete");
+    done.ops = Some(outcome.ops);
+    done.elapsed_ms = Some(t0.elapsed().as_millis() as u64);
+    progress.emit(done);
     Ok(outcome)
 }
 

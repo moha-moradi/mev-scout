@@ -101,6 +101,7 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
         },
         config.explorer.poll_interval_ms,
         stop,
+        &mev_scout_core::progress::NoopProgress,
     )
     .await?;
     let _ = deadline.await;

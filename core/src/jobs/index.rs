@@ -108,18 +108,19 @@ pub async fn job_index(
             },
             config.explorer.poll_interval_ms,
             stop,
+            progress,
         )
     );
-    let indexed = indexed?;
+    let blocks_indexed = indexed?;
     let elapsed = t0.elapsed();
+    let ops = store.op_count_since(0)?;
     progress.log(&format!(
-        "Live indexing done — {indexed} blocks indexed, {} ops total in {:.1}s",
-        store.op_count_since(0)?,
+        "Live indexing done — {blocks_indexed} blocks indexed, {ops} ops total in {:.1}s",
         elapsed.as_secs_f64(),
     ));
     Ok(IndexOutcome {
-        blocks_indexed: indexed,
-        ops: store.op_count_since(0)?,
+        blocks_indexed,
+        ops,
         elapsed,
     })
 }

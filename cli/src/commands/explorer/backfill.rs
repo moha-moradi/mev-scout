@@ -4,7 +4,7 @@
 //! `blocks_classified`.
 use super::*;
 
-use crate::job_progress::BarProgress;
+use crate::job_progress::JobProgress;
 
 use mev_scout_core::chain::timing::blocks_per_day;
 use mev_scout_core::explorer::ingest::{
@@ -17,6 +17,7 @@ pub async fn cmd_backfill(
     days: Option<u64>,
     from_block: Option<u64>,
     to_block: Option<u64>,
+    progress: &dyn JobProgress,
 ) -> anyhow::Result<BackfillOutcome> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chain = v.chain_name;
@@ -66,9 +67,9 @@ pub async fn cmd_backfill(
     let registry = load_pool_registry(config, &chain);
     let bc = config.effective_block_concurrency(chain, &setup.provider_configs);
 
-    println!(
+    progress.log(&format!(
         "Historical backfill — {chain} indexing {from}..={to} (~{span} blocks, resumable, concurrency={bc})"
-    );
+    ));
     let t0 = std::time::Instant::now();
     let out = run_range(
         &setup.rpc,
@@ -84,16 +85,16 @@ pub async fn cmd_backfill(
             to_block: to,
             block_concurrency: bc,
         },
-        &BarProgress::new(),
+        progress,
     )
     .await?;
     let elapsed = t0.elapsed();
-    println!(
+    progress.log(&format!(
         "Backfill done — {} new blocks indexed, {} ops in {:.1}s",
         out.blocks_processed,
         out.ops,
         elapsed.as_secs_f64()
-    );
+    ));
     Ok(BackfillOutcome {
         from_block: from,
         to_block: to,

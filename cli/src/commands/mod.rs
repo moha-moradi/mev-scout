@@ -79,7 +79,7 @@ impl CliCommand for ExplorerArgs {
                     if a.duration.is_some() {
                         anyhow::bail!("--duration requires --loop");
                     }
-                    cmd_backfill(config, a.days, a.from_block, a.to_block).await?;
+                    cmd_backfill(config, a.days, a.from_block, a.to_block, progress).await?;
                     Ok(())
                 }
             }
