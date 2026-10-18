@@ -430,7 +430,7 @@ pub async fn job_discover(
     if should_fetch_remote {
         remote_pools = fetch_remote(chain_name, Some(max_pools_opt), min_tvl_opt).await;
         progress.log(&format!(
-            "Remote aggregators: {} pool(s)",
+            "Remote pool sources: {} pool(s)",
             remote_pools.len()
         ));
     }

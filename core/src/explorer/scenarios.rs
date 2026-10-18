@@ -22,8 +22,8 @@ use crate::explorer::test_fixtures::{
     REBASE, SAVAX, TOKA, USDC, VICTIM, WNATIVE,
 };
 use crate::explorer::types::{
-    Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind, OracleUpdateFact,
-    ReserveDataFact, UserOpFact,
+    AggregatorSignal, Amm, Confidence, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevKind,
+    OracleUpdateFact, ReserveDataFact, UserOpFact,
 };
 
 // ── Baseline kinds ──────────────────────────────────────────────────────
@@ -138,6 +138,7 @@ fn baseline_sandwich() {
     assert_eq!(ev.profit_amount, Some(U256::from(95)));
     assert_eq!(ev.confidence, Confidence::Exact);
     assert_eq!(pnl_basis(&ev), Some("R"));
+    assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(false));
 
     // Negative: attacker buys then sells with no intervening victim.
     let neg0 = tx(
@@ -161,6 +162,59 @@ fn baseline_sandwich() {
         ],
     );
     assert!(!kinds(&classify_block(&block(vec![neg0, neg1]))).contains(&MevKind::Sandwich));
+}
+
+/// Sandwich victim routed via aggregator: classification unchanged, details
+/// gain `victim_via_aggregator` + brand from the side-channel signal.
+#[test]
+fn sandwich_victim_via_aggregator_tagged() {
+    let t0 = tx(
+        0,
+        ATK,
+        true,
+        vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+        vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+        ],
+    );
+    let mut t1 = tx(
+        1,
+        VICTIM,
+        true,
+        vec![swap(POOL_A, USDC, TOKA, 200, 350)],
+        vec![
+            transfer(0, USDC, VICTIM, POOL_A, 200),
+            transfer(1, TOKA, POOL_A, VICTIM, 350),
+        ],
+    );
+    t1.aggregator_signals.push(AggregatorSignal {
+        brand: "odos",
+        router: address!("0xCf5540fFFCdC3d510B18bFcA6d2b9987b0772559"),
+        token_in: USDC,
+        token_out: TOKA,
+        amount_in: U256::from(200),
+        amount_out: U256::from(350),
+        log_index: 0,
+    });
+    let t2 = tx(
+        2,
+        ATK,
+        true,
+        vec![swap(POOL_A, TOKA, USDC, 350, 195)],
+        vec![
+            transfer(0, TOKA, ATK, POOL_A, 350),
+            transfer(1, USDC, POOL_A, ATK, 195),
+        ],
+    );
+    let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
+    assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(true));
+    assert_eq!(ev.details["victim_aggregator_brand"], serde_json::json!("odos"));
+    assert!(ev.details["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r.as_str() == Some("VICTIM_VIA_AGGREGATOR")));
 }
 
 /// Baseline `Frontrun`: searcher moves the pool, a third party executes

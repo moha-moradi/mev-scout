@@ -25,9 +25,9 @@ use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::store::OpenPosition;
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
-    BuyCollateralFact, EpochRewardFact, GmxEventFact, JitFact, KeeperFact, MevEvent, MevKind,
-    OracleUpdateFact, RateCacheFact, ReserveDataFact, SwapFact, TransferFact, UserOpFact,
-    V2PairOpFact,
+    AggregatorSignal, BuyCollateralFact, EpochRewardFact, GmxEventFact, JitFact, KeeperFact,
+    MevEvent, MevKind, OracleUpdateFact, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
+    UserOpFact, V2PairOpFact,
 };
 
 mod arb;
@@ -82,6 +82,8 @@ pub struct TxInput {
     pub gmx_events: Vec<GmxEventFact>,
     /// ERC-4337 UserOperationEvent facts (plan P3.11).
     pub user_ops: Vec<UserOpFact>,
+    /// Aggregator/router intent signals (side-channel; survives swap dedup).
+    pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
 /// One block's classified input.
@@ -292,6 +294,7 @@ pub type TxFacts = (
     Vec<EpochRewardFact>,
     Vec<GmxEventFact>,
     Vec<UserOpFact>,
+    Vec<AggregatorSignal>,
 );
 
 /// Decode a tx's receipt logs into facts (used by ingest / scenarios).
@@ -317,12 +320,18 @@ pub(crate) fn decode_tx_logs_with_aliases(
     let mut epoch_rewards = Vec::new();
     let mut gmx_events = Vec::new();
     let mut user_ops = Vec::new();
+    let mut aggregator_signals = Vec::new();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
         if let Some(mut t) = decode::decode_transfer(log) {
             t.tx_index = tx_index;
             t.log_index = log_idx;
             transfers.push(t);
+        }
+        // Collect aggregator intent before swap-edge dedup so brand survives.
+        if let Some(mut sig) = decode::decode_aggregator_signal(log) {
+            sig.log_index = log_idx;
+            aggregator_signals.push(sig);
         }
         if let Some((amm, mut s)) = decode::decode_swap(log) {
             s.tx_index = tx_index;
@@ -414,6 +423,7 @@ pub(crate) fn decode_tx_logs_with_aliases(
         epoch_rewards,
         gmx_events,
         user_ops,
+        aggregator_signals,
     )
 }
 

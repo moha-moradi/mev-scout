@@ -29,11 +29,12 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-pub use aggregator::dedup_aggregator_facts;
+pub use aggregator::{brand_for_router, decode_aggregator_signal, dedup_aggregator_facts};
 // Topic pins are consumed by `chain::events` tests and decode unit tests.
 #[allow(unused_imports)]
 pub use aggregator::{
-    ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC, PARASWAP_SWAPPED_V3_TOPIC, ZRX_FILL_TOPIC,
+    ODOS_SWAP_TOPIC, ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC, PARASWAP_SWAPPED_V3_TOPIC,
+    ZRX_FILL_TOPIC,
 };
 pub use attach::attach_swap_tokens;
 pub use flash_loan::decode_flash_loan;

@@ -1,17 +1,37 @@
-//! Aggregator/router swap edges and DEX-edge dedup.
+//! Aggregator/router swap edges, brand signals, and DEX-edge dedup.
 use crate::utils::{abi_word_address, topic_address};
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{address, Address, B256, U256};
 
 use crate::data::LogData;
-use crate::explorer::types::{Amm, LegSource, SwapFact};
+use crate::explorer::types::{AggregatorSignal, Amm, LegSource, SwapFact};
 
 use super::sentinels::is_unresolved_token;
 
 /// Decode an aggregator/DEX-router edge. Returns fully-directional
-/// facts for 1inch `Swapped`, Paraswap `Swapped`/`SwappedV3`, and 0x `Fill`.
+/// facts for 1inch `Swapped`, Paraswap `Swapped`/`SwappedV3`, 0x `Fill`,
+/// and Odos Router V2 `Swap`. Brand is resolved via router allowlist with
+/// topic fallback (Kyber MetaAggregation shares the 1inch `Swapped` topic).
 /// 0x tokens are not in the event payload (asset encodings live in dynamic
 /// data), so token slots stay unresolved for the transfer-pairing fallback.
 pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
+    decode_aggregator_inner(log).map(|(_, fact)| (Amm::Aggregator, fact))
+}
+
+/// Side-channel intent signal (brand + amounts). Survives dedup of swap edges.
+pub fn decode_aggregator_signal(log: &LogData) -> Option<AggregatorSignal> {
+    let (brand, fact) = decode_aggregator_inner(log)?;
+    Some(AggregatorSignal {
+        brand,
+        router: fact.pool,
+        token_in: fact.token_in,
+        token_out: fact.token_out,
+        amount_in: fact.amount_in,
+        amount_out: fact.amount_out,
+        log_index: 0,
+    })
+}
+
+fn decode_aggregator_inner(log: &LogData) -> Option<(&'static str, SwapFact)> {
     let topic0 = *log.topics.first()?;
     let base = |pool: Address| SwapFact {
         tx_index: 0,
@@ -27,8 +47,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         owner: None,
     };
 
-    // 1inch V4/V5: Swapped(sender, srcToken, dstToken, dstReceiver,
-    // spentAmount, returnAmount), no indexed params.
+    // 1inch V4/V5 (and Kyber MetaAggregation with the same ABI):
+    // Swapped(sender, srcToken, dstToken, dstReceiver, spentAmount, returnAmount).
     if topic0 == ONEINCH_SWAPPED_TOPIC {
         if log.data.len() < 192 {
             return None;
@@ -38,7 +58,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         fact.token_out = abi_word_address(&log.data, 2);
         fact.amount_in = U256::from_be_slice(&log.data[128..160]);
         fact.amount_out = U256::from_be_slice(&log.data[160..192]);
-        return Some((Amm::Aggregator, fact));
+        let brand = brand_for_router(log.address).unwrap_or("1inch");
+        return Some((brand, fact));
     }
 
     // Paraswap v3/v4: Swapped(initiator, beneficiary, srcToken, destToken,
@@ -53,7 +74,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         fact.token_out = topic_address(log.topics[3]);
         fact.amount_in = U256::from_be_slice(&log.data[32..64]);
         fact.amount_out = U256::from_be_slice(&log.data[64..96]);
-        return Some((Amm::Aggregator, fact));
+        let brand = brand_for_router(log.address).unwrap_or("paraswap");
+        return Some((brand, fact));
     }
 
     // Paraswap v5/v6: SwappedV3(uuid, partner, feePercent, initiator,
@@ -68,7 +90,8 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         fact.token_out = topic_address(log.topics[3]);
         fact.amount_in = U256::from_be_slice(&log.data[128..160]);
         fact.amount_out = U256::from_be_slice(&log.data[160..192]);
-        return Some((Amm::Aggregator, fact));
+        let brand = brand_for_router(log.address).unwrap_or("paraswap");
+        return Some((brand, fact));
     }
 
     // 0x Exchange `Fill`: makerAddress/feeRecipientAddress/orderHash indexed;
@@ -84,10 +107,46 @@ pub(super) fn decode_aggregator_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         let mut fact = base(log.address);
         fact.amount_in = U256::from_be_slice(&log.data[224..256]);
         fact.amount_out = U256::from_be_slice(&log.data[192..224]);
-        return Some((Amm::Aggregator, fact));
+        let brand = brand_for_router(log.address).unwrap_or("0x");
+        return Some((brand, fact));
+    }
+
+    // Odos Router V2: Swap(sender, inputAmount, inputToken, amountOut,
+    // outputToken, slippage, referralCode) — all non-indexed.
+    if topic0 == ODOS_SWAP_TOPIC {
+        if log.data.len() < 224 {
+            return None;
+        }
+        let mut fact = base(log.address);
+        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+        fact.token_in = abi_word_address(&log.data, 2);
+        fact.amount_out = U256::from_be_slice(&log.data[96..128]);
+        fact.token_out = abi_word_address(&log.data, 4);
+        let brand = brand_for_router(log.address).unwrap_or("odos");
+        return Some((brand, fact));
     }
 
     None
+}
+
+/// Known DEX-router deployments → brand. Kyber shares the 1inch `Swapped`
+/// topic, so allowlist is the only way to label it correctly.
+pub fn brand_for_router(router: Address) -> Option<&'static str> {
+    // Keep lowercase hex comparisons via Address equality.
+    match router {
+        // 1inch AggregationRouter V4 / V5 / V6 (canonical multi-chain)
+        a if a == address!("0x1111111254fb6c44bac0bed2854e76f90643097d") => Some("1inch"),
+        a if a == address!("0x111111125421ca6dc452d289314280a0f8842a65") => Some("1inch"),
+        a if a == address!("0x1111111254eeb25477b68fb85ed929f73a960582") => Some("1inch"),
+        // Paraswap AugustusSwapper
+        a if a == address!("0xDEF171Fe48CF0115B1d80b88dc8eAB59176FEe57") => Some("paraswap"),
+        // Odos Router V2 (deterministic / shared across many chains)
+        a if a == address!("0xCf5540fFFCdC3d510B18bFcA6d2b9987b0772559") => Some("odos"),
+        a if a == address!("0xca423977156bb05b13a2ba3b76bc5419e2fe9680") => Some("odos"),
+        // Kyber MetaAggregationRouterV2 (multi-chain)
+        a if a == address!("0x6131B5fae19EA4f9D964eAc0408E4408b66337b5") => Some("kyber"),
+        _ => None,
+    }
 }
 
 /// Drop aggregator edges that duplicate registry/DEX swap edges in the same tx
@@ -215,3 +274,8 @@ pub const PARASWAP_SWAPPED_V3_TOPIC: B256 =
 // makerAddress/feeRecipientAddress/orderHash indexed.
 pub const ZRX_FILL_TOPIC: B256 =
     alloy::primitives::b256!("6869791f0a34781b29882982cc39e882768cf2c96995c2a110c577c53bc932d5");
+
+// Odos Router V2 `Swap(address sender, uint256 inputAmount, address inputToken,
+// uint256 amountOut, address outputToken, int256 slippage, uint32 referralCode)`.
+pub const ODOS_SWAP_TOPIC: B256 =
+    alloy::primitives::b256!("823eaf01002d7353fbcadb2ea3305cc46fa35d799cb0914846d185ac06f8ad05");

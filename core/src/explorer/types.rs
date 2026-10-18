@@ -262,9 +262,22 @@ pub enum Amm {
     Solidly,
     Lb,
     Pendle,
-    /// Aggregator/DEX-router edge (0x, 1inch, Paraswap) with tokens carried
-    /// explicitly by the router event.
+    /// Aggregator/DEX-router edge (0x, 1inch, Paraswap, Odos) with tokens
+    /// carried explicitly by the router event.
     Aggregator,
+}
+
+/// Side-channel aggregator intent (survives swap-edge dedup; never enters
+/// arb cycle walks or sandwich `SwapLeg`s).
+#[derive(Debug, Clone)]
+pub struct AggregatorSignal {
+    pub brand: &'static str,
+    pub router: Address,
+    pub token_in: Address,
+    pub token_out: Address,
+    pub amount_in: U256,
+    pub amount_out: U256,
+    pub log_index: u64,
 }
 
 impl Amm {

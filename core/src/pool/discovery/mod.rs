@@ -5,6 +5,12 @@
 //! AND factory creation events (PairCreated, PoolCreated, PoolRegistered,
 //! PoolAdded) for pools created in the range. This ensures comprehensive
 //! coverage for backtesting recent periods.
+//!
+//! **Boundary:** DEX *router* aggregators (1inch, Odos, 0x, Paraswap, Kyber,
+//! …) are **not** discovery venues — they have no pool state. Their events are
+//! an explorer side-channel (`AggregatorSignal`). Do not add them as
+//! `DexType` / factory scanners. Remote "aggregators" in `remote/` means
+//! GeckoTerminal / DexScreener pool lists (TVL sources), not those routers.
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::LazyLock;

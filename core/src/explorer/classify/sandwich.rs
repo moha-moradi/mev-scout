@@ -152,6 +152,30 @@ pub(super) fn fold_sandwich(
         reasons.push("CONTRACT_MEDIATED");
     }
 
+    // Aggregator intent side-channel: victim tx emitted a router event and/or
+    // targeted a known router (`tx.to`). Does not change classification.
+    let mut victim_via_aggregator = false;
+    let mut victim_aggregator_brand: Option<&'static str> = None;
+    for v in &walk.victims {
+        if let Some(vtx) = input.txs.iter().find(|t| t.tx_index == v.tx_index) {
+            if let Some(sig) = vtx.aggregator_signals.first() {
+                victim_via_aggregator = true;
+                victim_aggregator_brand = Some(sig.brand);
+                break;
+            }
+            if let Some(to) = vtx.to {
+                if let Some(brand) = crate::explorer::decode::brand_for_router(to) {
+                    victim_via_aggregator = true;
+                    victim_aggregator_brand = Some(brand);
+                    break;
+                }
+            }
+        }
+    }
+    if victim_via_aggregator {
+        reasons.push("VICTIM_VIA_AGGREGATOR");
+    }
+
     MevEvent {
         block: input.block,
         ts: input.ts,
@@ -206,6 +230,8 @@ pub(super) fn fold_sandwich(
                 .iter()
                 .map(|v| v.amount_in.to_string())
                 .collect::<Vec<_>>(),
+            "victim_via_aggregator": victim_via_aggregator,
+            "victim_aggregator_brand": victim_aggregator_brand,
             "evidence": {
                 "same_pool": true,
                 "direction_match": true,

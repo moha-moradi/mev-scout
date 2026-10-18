@@ -366,8 +366,8 @@ mod tests {
     #[test]
     fn topic_manifest_is_pinned_and_distinct() {
         use crate::explorer::decode::{
-            ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC, PARASWAP_SWAPPED_V3_TOPIC,
-            ZRX_FILL_TOPIC,
+            ODOS_SWAP_TOPIC, ONEINCH_SWAPPED_TOPIC, PARASWAP_SWAPPED_TOPIC,
+            PARASWAP_SWAPPED_V3_TOPIC, ZRX_FILL_TOPIC,
         };
         use crate::pipeline::scanner::topics;
         use crate::pool::decoders::{
@@ -498,6 +498,11 @@ mod tests {
             "0x fill",
             ZRX_FILL_TOPIC,
             "Fill(address,address,bytes,bytes,bytes,bytes,bytes32,address,address,uint256,uint256,uint256,uint256,uint256)",
+        );
+        pin_sig(
+            "odos swap",
+            ODOS_SWAP_TOPIC,
+            "Swap(address,uint256,address,uint256,address,int256,uint32)",
         );
         pin_sig(
             "lb deposit",

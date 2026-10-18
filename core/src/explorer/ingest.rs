@@ -305,6 +305,7 @@ fn decode_successful_txs(
             epoch_rewards,
             gmx_events,
             user_ops,
+            aggregator_signals,
         ) = classify::decode_tx_logs_with_aliases(
             tx.index,
             &receipt.logs,
@@ -380,6 +381,7 @@ fn decode_successful_txs(
             epoch_rewards,
             gmx_events,
             user_ops,
+            aggregator_signals,
         });
     }
     out

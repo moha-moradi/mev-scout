@@ -614,13 +614,54 @@ fn oneinch_swapped_decodes() {
     data[64 + 12..64 + 32].copy_from_slice(dst.as_slice()); // dstToken
     data[128 + 24..160].copy_from_slice(&1000u64.to_be_bytes()); // spentAmount
     data[160 + 24..192].copy_from_slice(&990u64.to_be_bytes()); // returnAmount
-    let (amm, s) = decode_swap(&log(router, vec![ONEINCH_SWAPPED_TOPIC], data)).unwrap();
+    let l = log(router, vec![ONEINCH_SWAPPED_TOPIC], data);
+    let (amm, s) = decode_swap(&l).unwrap();
     assert_eq!(amm, Amm::Aggregator);
     assert_eq!(s.pool, router);
     assert_eq!(s.token_in, src);
     assert_eq!(s.token_out, dst);
     assert_eq!(s.amount_in, U256::from(1000));
     assert_eq!(s.amount_out, U256::from(990));
+    let sig = decode_aggregator_signal(&l).unwrap();
+    assert_eq!(sig.brand, "1inch");
+}
+
+#[test]
+fn kyber_swapped_same_topic_branded_via_allowlist() {
+    // Kyber MetaAggregationRouterV2 shares 1inch Swapped ABI/topic.
+    let router = address!("6131B5fae19EA4f9D964eAc0408E4408b66337b5");
+    let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let mut data = vec![0u8; 192];
+    data[32 + 12..32 + 32].copy_from_slice(src.as_slice());
+    data[64 + 12..64 + 32].copy_from_slice(dst.as_slice());
+    data[128 + 24..160].copy_from_slice(&1000u64.to_be_bytes());
+    data[160 + 24..192].copy_from_slice(&990u64.to_be_bytes());
+    let sig = decode_aggregator_signal(&log(router, vec![ONEINCH_SWAPPED_TOPIC], data)).unwrap();
+    assert_eq!(sig.brand, "kyber");
+    assert_eq!(sig.router, router);
+}
+
+#[test]
+fn odos_swap_decodes() {
+    let router = address!("Cf5540fFFCdC3d510B18bFcA6d2b9987b0772559");
+    let src = address!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let dst = address!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    // Swap(sender, inputAmount, inputToken, amountOut, outputToken, slippage, referralCode)
+    let mut data = vec![0u8; 224];
+    data[32 + 24..64].copy_from_slice(&1000u64.to_be_bytes()); // inputAmount
+    data[64 + 12..96].copy_from_slice(src.as_slice()); // inputToken
+    data[96 + 24..128].copy_from_slice(&990u64.to_be_bytes()); // amountOut
+    data[128 + 12..160].copy_from_slice(dst.as_slice()); // outputToken
+    let l = log(router, vec![ODOS_SWAP_TOPIC], data);
+    let (amm, s) = decode_swap(&l).unwrap();
+    assert_eq!(amm, Amm::Aggregator);
+    assert_eq!(s.token_in, src);
+    assert_eq!(s.token_out, dst);
+    assert_eq!(s.amount_in, U256::from(1000));
+    assert_eq!(s.amount_out, U256::from(990));
+    let sig = decode_aggregator_signal(&l).unwrap();
+    assert_eq!(sig.brand, "odos");
 }
 
 #[test]
