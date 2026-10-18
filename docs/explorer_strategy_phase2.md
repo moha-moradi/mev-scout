@@ -1,17 +1,17 @@
 # Explorer strategy Phase-2 frequency / volume snapshot
 
-Last refresh: **2026-10-18T09:09:53.886Z** (interim while AVAX `--days 7` backfill runs).
+Last refresh: **2026-10-18T09:40:23.486Z** (paused; resume with `node scripts/run_backfill.mjs`).
 
 Source JSON: `cache/phase2_coverage.json`.
 
-## Avalanche (`cache/explorer-avalanche.sqlite`) ? IN PROGRESS
+## Avalanche (`cache/explorer-avalanche.sqlite`) - PAUSED (~21% of 7d window classified)
 
 - Historical window target: ~97562463..=97864863 (~302401 blocks, archive = dwellir + avalanche.drpc.org)
-- ops so far: **831** across blocks **97505001..97857389**
-- classified_blocks (DB total): **36449**
-- kinds: unknown 401 (~28 USD), arb_atomic 364 (~6062 USD), jit 54, liquidation 12 (~-191869785 USD)
-- tags: bundler 391, erc4337 391, long_tail 320, epoch_transition 24, rate_provider_staleness 11, claim_and_sell 10, airdrop 10, curve_imbalance 6, flash_loan_liq 4, savax_rate_arb 2
-- flags: {"interest_accrued":7}
+- ops so far: **1391** across blocks **97505001..97857389**
+- classified_blocks (DB total): **63583** (~62k inside 7d window)
+- kinds: unknown 827 (~64 USD), arb_atomic 450 (~8082 USD), jit 96, liquidation 18 (~-191869785 USD)
+- tags: bundler 800, erc4337 800, long_tail 393, claim_and_sell 28, airdrop 28, epoch_transition 24, rate_provider_staleness 14, flash_loan_liq 9, curve_imbalance 9, savax_rate_arb 4
+- flags: {"interest_accrued":8}
 
 ## Polygon
 
