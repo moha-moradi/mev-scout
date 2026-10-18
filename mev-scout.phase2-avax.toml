@@ -1,6 +1,5 @@
 # Avalanche phase-2 explorer backfill config.
-# RPCs probed 2026-10-18 for tip-300k (~7d) eth_getBlockByNumber + eth_getBlockReceipts.
-# OnFinality public dropped after live 1h smoke (constant 429 under concurrency).
+# Public RPCs capped at ~1 RPS after live 429s; dwellir keyed archives keep higher budget.
 chain = "avalanche"
 gas_model = "historical_exact"
 output = "table"
@@ -11,12 +10,12 @@ block_concurrency = 32
 rpc_rps = [
   20.0, # dwellir archive (keyed)
   15.0, # dwellir archive #2
-  10.0, # publicnode
-  8.0,  # sentio
-  8.0,  # drpc
-  3.0,  # simplystaking (strict public limit)
-  5.0,  # thirdweb
-  5.0,  # pocket
+  1.0,  # publicnode
+  1.0,  # sentio
+  1.0,  # drpc
+  1.0,  # simplystaking
+  1.0,  # thirdweb
+  1.0,  # pocket
 ]
 rpc_urls = [
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
@@ -36,12 +35,12 @@ chain_id = 43114
 rpc_rps = [
   20.0,
   15.0,
-  10.0,
-  8.0,
-  8.0,
-  3.0,
-  5.0,
-  5.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
+  1.0,
 ]
 rpc_urls = [
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
