@@ -100,11 +100,92 @@ fn push_reason(details: &mut serde_json::Value, reason: &str) {
     details["reasons"] = serde_json::json!(reasons);
 }
 
-/// Rewrite Benqi liquidation events so PnL prices underlyings, never qiTokens.
+/// Apply Benqi underlying rewrite when the collateral exchange rate is known
+/// (or mark `QI_EXCHANGE_RATE_MISSING` when it is not).
 ///
-/// Debt address is remapped (repay is already underlying). Collateral seize
-/// amount is converted with `exchangeRateStored`. Missing collateral rate →
-/// `QI_EXCHANGE_RATE_MISSING` and clear profit fields so persist leaves USD null.
+/// `collateral_rate`: `Some(rate)` converts seizeTokens; `None` with a qi
+/// collateral leaves USD null. Debt repay amount is already underlying — only
+/// the debt address is remapped.
+pub fn apply_benqi_liq_conversion(
+    ev: &mut MevEvent,
+    underlyings: &HashMap<Address, Address>,
+    collateral_rate: Option<U256>,
+) {
+    if ev.kind != MevKind::Liquidation {
+        return;
+    }
+    let Some(liq) = crate::explorer::types::LiquidationDetails::from_details(&ev.details) else {
+        return;
+    };
+    let debt_is_qi = underlyings.contains_key(&liq.debt_asset);
+    let coll_is_qi = underlyings.contains_key(&liq.collateral_asset);
+    if !debt_is_qi && !coll_is_qi {
+        return;
+    }
+
+    let mut details = ev.details.clone();
+    if debt_is_qi {
+        details["qi_debt_asset"] = serde_json::json!(format!("{:#x}", liq.debt_asset));
+        details["qi_debt_to_cover"] = serde_json::json!(liq.debt_to_cover.to_string());
+        let new_debt = underlyings[&liq.debt_asset];
+        details["debt_asset"] = serde_json::json!(format!("{:#x}", new_debt));
+    }
+    if coll_is_qi {
+        details["qi_collateral_asset"] = serde_json::json!(format!("{:#x}", liq.collateral_asset));
+        details["qi_collateral_amount"] = serde_json::json!(liq.collateral_amount.to_string());
+        let Some(rate) = collateral_rate else {
+            push_reason(&mut details, "QI_EXCHANGE_RATE_MISSING");
+            ev.profit_token = None;
+            ev.profit_amount = None;
+            ev.profit_usd = None;
+            ev.details = details;
+            return;
+        };
+        let new_coll = underlyings[&liq.collateral_asset];
+        let new_coll_amt = qi_tokens_to_underlying(liq.collateral_amount, rate);
+        details["collateral_asset"] = serde_json::json!(format!("{:#x}", new_coll));
+        details["collateral_amount"] = serde_json::json!(new_coll_amt.to_string());
+        details["qi_exchange_rate_wad"] = serde_json::json!(rate.to_string());
+        if let Some(pnl) = details.get_mut("pnl").and_then(|v| v.as_object_mut()) {
+            pnl.insert(
+                "collateral_amount".into(),
+                serde_json::json!(new_coll_amt.to_string()),
+            );
+        }
+        ev.profit_token = Some(new_coll);
+        ev.profit_amount = Some(new_coll_amt);
+    } else if let Some(tok) = ev.profit_token {
+        // Debt-only remap: keep profit on whatever collateral was already set.
+        let _ = tok;
+    }
+
+    if let Some(pnl) = details.get_mut("pnl").and_then(|v| v.as_object_mut()) {
+        pnl.insert(
+            "debt_to_cover".into(),
+            serde_json::json!(liq.debt_to_cover.to_string()),
+        );
+    }
+    // If only debt remapped, refresh profit_token from details collateral.
+    if !coll_is_qi {
+        if let Some(c) = details
+            .get("collateral_asset")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Address>().ok())
+        {
+            ev.profit_token = Some(c);
+        }
+        if let Some(a) = details
+            .get("collateral_amount")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<U256>().ok())
+        {
+            ev.profit_amount = Some(a);
+        }
+    }
+    ev.details = details;
+}
+
+/// Rewrite Benqi liquidation events so PnL prices underlyings, never qiTokens.
 pub async fn convert_benqi_liquidation_events(
     rpc: &RpcClient,
     events: &mut [MevEvent],
@@ -123,69 +204,19 @@ pub async fn convert_benqi_liquidation_events(
         let Some(liq) = crate::explorer::types::LiquidationDetails::from_details(&ev.details) else {
             continue;
         };
-        let debt_is_qi = underlyings.contains_key(&liq.debt_asset);
         let coll_is_qi = underlyings.contains_key(&liq.collateral_asset);
-        if !debt_is_qi && !coll_is_qi {
+        let debt_is_qi = underlyings.contains_key(&liq.debt_asset);
+        if !coll_is_qi && !debt_is_qi {
             continue;
         }
-
-        let mut details = ev.details.clone();
-        // Preserve raw qi economics before rewrite.
-        if debt_is_qi {
-            details["qi_debt_asset"] = serde_json::json!(format!("{:#x}", liq.debt_asset));
-            details["qi_debt_to_cover"] = serde_json::json!(liq.debt_to_cover.to_string());
-        }
-        if coll_is_qi {
-            details["qi_collateral_asset"] =
-                serde_json::json!(format!("{:#x}", liq.collateral_asset));
-            details["qi_collateral_amount"] = serde_json::json!(liq.collateral_amount.to_string());
-        }
-
-        let mut new_debt = liq.debt_asset;
-        let new_debt_amt = liq.debt_to_cover; // already underlying for Compound/Benqi
-        if debt_is_qi {
-            new_debt = underlyings[&liq.debt_asset];
-            details["debt_asset"] = serde_json::json!(format!("{:#x}", new_debt));
-        }
-
-        let mut new_coll = liq.collateral_asset;
-        let mut new_coll_amt = liq.collateral_amount;
-        if coll_is_qi {
-            let Some(rate) =
-                fetch_exchange_rate_stored(rpc, liq.collateral_asset, block, ts, cache).await
-            else {
-                push_reason(&mut details, "QI_EXCHANGE_RATE_MISSING");
-                // Do not leave qi addresses for pricing — clear display amounts.
-                ev.profit_token = None;
-                ev.profit_amount = None;
-                ev.profit_usd = None;
-                ev.details = details;
-                continue;
-            };
-            new_coll = underlyings[&liq.collateral_asset];
-            new_coll_amt = qi_tokens_to_underlying(liq.collateral_amount, rate);
-            details["collateral_asset"] = serde_json::json!(format!("{:#x}", new_coll));
-            details["collateral_amount"] = serde_json::json!(new_coll_amt.to_string());
-            details["qi_exchange_rate_wad"] = serde_json::json!(rate.to_string());
-            if let Some(pnl) = details.get_mut("pnl").and_then(|v| v.as_object_mut()) {
-                pnl.insert(
-                    "collateral_amount".into(),
-                    serde_json::json!(new_coll_amt.to_string()),
-                );
-            }
-        }
-
-        ev.profit_token = Some(new_coll);
-        ev.profit_amount = Some(new_coll_amt);
-        // Keep debt_to_cover numeric (unchanged) but asset may have been remapped.
-        if let Some(pnl) = details.get_mut("pnl").and_then(|v| v.as_object_mut()) {
-            pnl.insert(
-                "debt_to_cover".into(),
-                serde_json::json!(new_debt_amt.to_string()),
-            );
-        }
-        let _ = new_debt;
-        ev.details = details;
+        // None only when collateral is qi and the rate call failed / was cached miss.
+        // Debt-only remaps pass Some(_) that apply ignores (coll not qi).
+        let collateral_rate = if coll_is_qi {
+            fetch_exchange_rate_stored(rpc, liq.collateral_asset, block, ts, cache).await
+        } else {
+            Some(U256::ZERO)
+        };
+        apply_benqi_liq_conversion(ev, underlyings, collateral_rate);
     }
 }
 
@@ -193,10 +224,46 @@ pub async fn convert_benqi_liquidation_events(
 mod tests {
     use super::*;
     use alloy::primitives::address;
+    use crate::explorer::types::{Confidence, MevEvent, MevKind};
+
+    fn liq_event(collateral: Address, debt: Address, seize: u64, repay: u64) -> MevEvent {
+        MevEvent {
+            block: 1,
+            ts: 1,
+            tx_index: 0,
+            tx_hash: alloy::primitives::B256::ZERO,
+            kind: MevKind::Liquidation,
+            searcher: Address::ZERO,
+            contract: None,
+            pools: vec![],
+            profit_token: Some(collateral),
+            profit_amount: Some(U256::from(seize)),
+            profit_tokens: vec![],
+            profit_usd: None,
+            gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence: Confidence::Exact,
+            victim_hashes: vec![],
+            victim_swap_size: None,
+            details: serde_json::json!({
+                "protocol": "benqi",
+                "collateral_asset": format!("{collateral:#x}"),
+                "debt_asset": format!("{debt:#x}"),
+                "collateral_amount": seize.to_string(),
+                "debt_to_cover": repay.to_string(),
+                "reasons": [],
+                "pnl": {
+                    "basis": "O",
+                    "collateral_amount": seize.to_string(),
+                    "debt_to_cover": repay.to_string(),
+                },
+            }),
+        }
+    }
 
     #[test]
     fn qi_tokens_to_underlying_scales_by_wad() {
-        // 100 qi * 2e18 rate → 200 underlying (same decimals as rate scale).
         let qi = U256::from(100u64);
         let rate = U256::from(2u64) * U256::from(10u64.pow(18));
         assert_eq!(qi_tokens_to_underlying(qi, rate), U256::from(200u64));
@@ -216,14 +283,46 @@ mod tests {
     }
 
     #[test]
-    fn convert_marks_missing_rate_without_rpc() {
-        // Sync path: empty cache + no underlyings → no-op.
-        let underlyings = HashMap::new();
-        let mut events = vec![];
-        let mut cache = QiRateCache::default();
-        // Just ensure empty map is a no-op (async runtime not needed for empty).
-        assert!(underlyings.is_empty());
-        assert!(events.is_empty());
-        let _ = &mut cache;
+    fn apply_converts_seize_and_remaps_debt() {
+        let qi_avax = address!("5c0401e81bc07ca70fad469b451682c0d747ef1c");
+        let wavax = address!("B31f66AA3C1e785363F0875A1B74E27b85FD66c7");
+        let qi_btc = address!("89a415b3d20098e6a6c8f7a59001c67bd3129821");
+        let btc_b = address!("152b9d0FdC40C096757F570A51E494bd4b943E50");
+        let mut map = HashMap::new();
+        map.insert(qi_avax, wavax);
+        map.insert(qi_btc, btc_b);
+
+        let mut ev = liq_event(qi_avax, qi_btc, 100, 50);
+        let rate = U256::from(2u64) * U256::from(10u64.pow(18));
+        apply_benqi_liq_conversion(&mut ev, &map, Some(rate));
+
+        assert_eq!(ev.profit_token, Some(wavax));
+        assert_eq!(ev.profit_amount, Some(U256::from(200u64)));
+        let liq = crate::explorer::types::LiquidationDetails::from_details(&ev.details).unwrap();
+        assert_eq!(liq.collateral_asset, wavax);
+        assert_eq!(liq.collateral_amount, U256::from(200u64));
+        assert_eq!(liq.debt_asset, btc_b);
+        assert_eq!(liq.debt_to_cover, U256::from(50u64)); // repay already underlying
+        assert_eq!(
+            ev.details["qi_collateral_asset"].as_str().unwrap().to_lowercase(),
+            format!("{qi_avax:#x}")
+        );
+    }
+
+    #[test]
+    fn apply_missing_rate_marks_reason_and_clears_profit() {
+        let qi_avax = address!("5c0401e81bc07ca70fad469b451682c0d747ef1c");
+        let wavax = address!("B31f66AA3C1e785363F0875A1B74E27b85FD66c7");
+        let mut map = HashMap::new();
+        map.insert(qi_avax, wavax);
+
+        let mut ev = liq_event(qi_avax, wavax, 100, 1);
+        apply_benqi_liq_conversion(&mut ev, &map, None);
+        assert!(ev.profit_token.is_none());
+        assert!(ev.profit_amount.is_none());
+        let reasons = ev.details["reasons"].as_array().unwrap();
+        assert!(reasons.iter().any(|r| r.as_str() == Some("QI_EXCHANGE_RATE_MISSING")));
+        // qi amounts preserved for forensics
+        assert!(ev.details.get("qi_collateral_asset").is_some());
     }
 }

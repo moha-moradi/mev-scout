@@ -780,6 +780,20 @@ mod tests {
     }
 
     #[test]
+    fn liquidation_pnl_skips_unconverted_qi() {
+        let qi = address!("5c0401e81bc07ca70fad469b451682c0d747ef1c");
+        let mut prices = std::collections::HashMap::new();
+        // Even if a feed somehow prices the qi address, skip when flagged.
+        prices.insert(qi, token_usd(10.0, 8));
+        let mut ev = liquidation_event(qi, qi);
+        ev.details["reasons"] = serde_json::json!(["QI_EXCHANGE_RATE_MISSING"]);
+        let (usd, conf, details) = liquidation_pnl(&ev, &prices);
+        assert!(usd.is_none());
+        assert_eq!(conf, "inferred");
+        assert!(details.contains("skipped_qi_unconverted"));
+    }
+
+    #[test]
     fn sandwich_loss_gate_skips_unprofitable() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut prices = std::collections::HashMap::new();

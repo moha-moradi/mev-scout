@@ -4,13 +4,13 @@ overview: سود لیکوییدیشن Benqi الان روی واحد qiToken ق�
 todos:
   - id: map-underlyings
     content: Add Benqi qiToken→underlying map in chains.toml and load it into IngestConfig
-    status: in_progress
+    status: completed
   - id: convert-before-pnl
     content: Convert seize/repay with cached exchangeRateStored before pricing; never price raw qiToken amounts
-    status: in_progress
+    status: completed
   - id: tests
     content: Unit tests for conversion, null-on-missing-rate, and config load
-    status: pending
+    status: completed
 isProject: false
 ---
 

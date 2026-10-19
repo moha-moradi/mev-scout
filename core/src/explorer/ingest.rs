@@ -1275,6 +1275,20 @@ mod tests {
                 .copied(),
             Some("benqi")
         );
+        // Core Benqi qi → underlying map (isolated markets omitted).
+        assert_eq!(avax.benqi_qi_underlyings.len(), 13);
+        assert_eq!(
+            avax.benqi_qi_underlyings
+                .get(&address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"))
+                .copied(),
+            Some(address!("B31f66AA3C1e785363F0875A1B74E27b85FD66c7")) // WAVAX
+        );
+        assert_eq!(
+            avax.benqi_qi_underlyings
+                .get(&address!("89a415b3d20098e6a6c8f7a59001c67bd3129821"))
+                .copied(),
+            Some(address!("152b9d0FdC40C096757F570A51E494bd4b943E50")) // BTC.b
+        );
         let eth = IngestConfig::from_chain(ChainName::Ethereum, &chains["ethereum"]);
         assert_eq!(
             eth.liquidation_protocol_aliases
@@ -1282,8 +1296,10 @@ mod tests {
                 .copied(),
             Some("spark")
         );
+        assert!(eth.benqi_qi_underlyings.is_empty());
         let poly = IngestConfig::from_chain(ChainName::Polygon, &chains["polygon"]);
         assert!(poly.liquidation_protocol_aliases.is_empty());
+        assert!(poly.benqi_qi_underlyings.is_empty());
     }
 
     /// P1.4 config wiring: Avalanche ships Chainlink feed → asset map.
