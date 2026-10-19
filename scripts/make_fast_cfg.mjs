@@ -1,6 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
-const hist = readFileSync("hist.toml", "utf8");
-const urls = [...hist.matchAll(/"https?:\/\/[^"]+"/g)].map((x) => x[0]);
+import { writeFileSync } from "node:fs";
 const out = `chain = "avalanche"
 gas_model = "historical_exact"
 output = "table"
@@ -10,10 +8,15 @@ rps_limit = 40
 block_concurrency = 32
 rpc_rps = [
   20.0,
-  20.0,
+  15.0,
+  1.0,
+  1.0,
 ]
 rpc_urls = [
-  ${urls.join(",\n  ")},
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
+  "https://avalanche-c-chain-rpc.publicnode.com",
+  "https://avalanche.drpc.org",
 ]
 
 [chains.avalanche]
@@ -22,10 +25,15 @@ chain_id = 43114
 [chains.avalanche.rpc]
 rpc_rps = [
   20.0,
-  20.0,
+  15.0,
+  1.0,
+  1.0,
 ]
 rpc_urls = [
-  ${urls.join(",\n  ")},
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+  "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
+  "https://avalanche-c-chain-rpc.publicnode.com",
+  "https://avalanche.drpc.org",
 ]
 
 [explorer]
@@ -33,4 +41,4 @@ confirmations = 4
 poll_interval_ms = 2000
 `;
 writeFileSync("mev-scout.phase2-avax.toml", out);
-console.log("wrote clean config");
+console.log("fixed toml");

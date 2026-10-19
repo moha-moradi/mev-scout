@@ -128,11 +128,15 @@ resolved config with `mev-scout config`. Change chain, RPC URLs, or
 `output` in the TOML (or pass `-f` to pick a different file); those are
 not clap flags.
 
-To avoid public / free-tier RPCs, run AvalancheGo natively on Ubuntu and
-point `[chains.avalanche.rpc]` at `http://127.0.0.1:9650/ext/bc/C/rpc`
-(C-Chain WebSocket is also on the same node at
-`ws://127.0.0.1:9650/ext/bc/C/ws`) — see
-[`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md).
+To avoid public / free-tier RPCs, run a **dedicated** pruned tip node per
+chain (do not co-host Avalanche + Polygon + BSC on one box) and point
+`rpc_urls` at localhost:
+
+| Chain | Guide | Local profile | Local RPC |
+| --- | --- | --- | --- |
+| Avalanche | [`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md) | [`mev-scout.local.toml`](mev-scout.local.toml) | `http://127.0.0.1:9650/ext/bc/C/rpc` |
+| Polygon | [`docs/LOCAL_POLYGON.md`](docs/LOCAL_POLYGON.md) | [`mev-scout.local-polygon.toml`](mev-scout.local-polygon.toml) | `http://127.0.0.1:8545` |
+| BSC | [`docs/LOCAL_BSC.md`](docs/LOCAL_BSC.md) | [`mev-scout.local-bsc.toml`](mev-scout.local-bsc.toml) | `http://127.0.0.1:8545` |
 
 ## Validation
 

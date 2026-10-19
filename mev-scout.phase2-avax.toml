@@ -1,5 +1,3 @@
-# Avalanche phase-2 explorer backfill config.
-# Public RPCs capped at ~1 RPS after live 429s; dwellir keyed archives keep higher budget.
 chain = "avalanche"
 gas_model = "historical_exact"
 output = "table"
@@ -8,24 +6,16 @@ strategies = "all"
 rps_limit = 40
 block_concurrency = 32
 rpc_rps = [
-  20.0, # dwellir archive (keyed)
-  15.0, # dwellir archive #2
-  1.0,  # publicnode
-  1.0,  # sentio
-  1.0,  # drpc
-  1.0,  # simplystaking
-  1.0,  # thirdweb
-  1.0,  # pocket
+  20.0,
+  15.0,
+  1.0,
+  1.0,
 ]
 rpc_urls = [
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
   "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
   "https://avalanche-c-chain-rpc.publicnode.com",
-  "https://avalanche.rpc.sentio.xyz",
   "https://avalanche.drpc.org",
-  "https://spectrum-01.simplystaking.xyz/avalanche-mn-rpc/ext/bc/C/rpc",
-  "https://43114.rpc.thirdweb.com",
-  "https://avax.api.pocket.network",
 ]
 
 [chains.avalanche]
@@ -37,20 +27,12 @@ rpc_rps = [
   15.0,
   1.0,
   1.0,
-  1.0,
-  1.0,
-  1.0,
-  1.0,
 ]
 rpc_urls = [
   "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
   "https://api-avalanche-mainnet-archive.n.dwellir.com/a67b8037-e81e-4d08-bdff-b56fe8eec197/ext/bc/C/rpc",
   "https://avalanche-c-chain-rpc.publicnode.com",
-  "https://avalanche.rpc.sentio.xyz",
   "https://avalanche.drpc.org",
-  "https://spectrum-01.simplystaking.xyz/avalanche-mn-rpc/ext/bc/C/rpc",
-  "https://43114.rpc.thirdweb.com",
-  "https://avax.api.pocket.network",
 ]
 
 [explorer]

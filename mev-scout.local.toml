@@ -1,4 +1,5 @@
-# Full-speed profile — local AvalancheGo node (docs/LOCAL_AVALANCHE.md).
+# Full-speed profile — local AvalancheGo on a dedicated host
+# (docs/LOCAL_AVALANCHE.md). Do not co-host Polygon/BSC on that server.
 # No secrets here: if the node sits behind an auth proxy, the password comes
 # from the environment via ${RPC_PASS} inside the URL.
 chain = "avalanche"
