@@ -64,6 +64,8 @@ pub struct IngestConfig {
     /// topic0 is shared with another protocol (Aave-V3 ABI: Spark; Compound V2
     /// ABI: Benqi qiTokens — plan P0.2 /).
     pub liquidation_protocol_aliases: HashMap<Address, &'static str>,
+    /// Benqi qiToken → underlying ERC-20 (seizeTokens conversion before PnL).
+    pub benqi_qi_underlyings: HashMap<Address, Address>,
     /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
     pub chainlink_feeds: HashMap<Address, Address>,
     pub savax: Option<Address>,
@@ -88,6 +90,10 @@ impl IngestConfig {
             liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
         }
         let chainlink_feeds = chain_config.chainlink_feeds.clone().unwrap_or_default();
+        let benqi_qi_underlyings = chain_config
+            .benqi_qi_underlyings
+            .clone()
+            .unwrap_or_default();
         let gmx_event_emitters = chain_config
             .gmx_event_emitters
             .clone()
@@ -101,6 +107,7 @@ impl IngestConfig {
             wrapped_native,
             profit_token_priority: priority,
             liquidation_protocol_aliases,
+            benqi_qi_underlyings,
             chainlink_feeds,
             savax: chain_config.savax,
             gmx_event_emitters,
@@ -228,6 +235,7 @@ pub struct IndexBlockRequest<'a> {
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
     pub savax_rates: &'a mut SavaxRateCache,
+    pub qi_rates: &'a mut crate::explorer::benqi_liq::QiRateCache,
 }
 
 /// Fetch one block + receipts, decode, classify, persist. Idempotent: an
@@ -243,6 +251,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         native_price,
         token_prices,
         savax_rates,
+        qi_rates,
     } = req;
     if store.block_classified(block_number)? {
         debug!(block = block_number, "already classified, skipping");
@@ -266,6 +275,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
             bundle,
         },
         savax_rates,
+        qi_rates,
     )
     .await
 }
@@ -450,6 +460,7 @@ pub async fn index_block_fetched(
     pools: PoolViews<'_>,
     input: FetchedBlockInput,
     savax_rates: &mut SavaxRateCache,
+    qi_rates: &mut crate::explorer::benqi_liq::QiRateCache,
 ) -> anyhow::Result<IndexedBlock> {
     let FetchedBlockInput {
         block_number,
@@ -512,6 +523,17 @@ pub async fn index_block_fetched(
     let ops = events.len();
 
     persist_mode_b_lookback(store, block_number, &input.txs);
+
+    // Benqi: seizeTokens → underlying before price warm / PnL (never price qi).
+    crate::explorer::benqi_liq::convert_benqi_liquidation_events(
+        rpc,
+        &mut events,
+        &cfg.benqi_qi_underlyings,
+        block_number,
+        block_data.timestamp,
+        qi_rates,
+    )
+    .await;
 
     let mut token_prices = match token_prices {
         Some(p) => p,
@@ -873,6 +895,7 @@ pub async fn run_live(
     let mut ops_session: u64 = 0;
     let mut since_reorg_check: u64 = 0;
     let mut savax_rates = SavaxRateCache::default();
+    let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
     // `None` until the first successful tip probe — then pinned to tip, not DB.
     let mut next_block: Option<u64> = None;
     let t0 = std::time::Instant::now();
@@ -951,6 +974,7 @@ pub async fn run_live(
                     native_price,
                     token_prices: None,
                     savax_rates: &mut savax_rates,
+                    qi_rates: &mut qi_rates,
                 })
                 .await?;
                 blocks_session += 1;
@@ -1062,6 +1086,7 @@ pub async fn run_range(
     }
 
     let mut savax_rates = SavaxRateCache::default();
+    let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
     let cap = block_concurrency.max(1).min(missing.len());
     // One POST of `chunk` blocks. In-flight blocks stay at `cap`: a chunk of
     // 32 with concurrency 32 is one POST, not 32×32.
@@ -1080,6 +1105,7 @@ pub async fn run_range(
                 native_price,
                 token_prices: None,
                 savax_rates: &mut savax_rates,
+                qi_rates: &mut qi_rates,
             })
             .await?;
             outcome.blocks_processed += 1;

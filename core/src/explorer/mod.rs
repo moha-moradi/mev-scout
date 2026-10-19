@@ -25,6 +25,7 @@
 //! ownership collapsing to a single searcher candidate and a closed ledger
 //! (no open inventory spend); otherwise the tx is skipped.
 
+pub(crate) mod benqi_liq;
 pub(crate) mod canonical;
 pub(crate) mod classify;
 pub(crate) mod decode;

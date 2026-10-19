@@ -14,6 +14,15 @@ pub(super) fn liquidation_pnl(
 ) -> (Option<f64>, &'static str, String) {
     use crate::explorer::types::LiquidationDetails;
 
+    // Benqi seizeTokens left in qi units when exchangeRateStored failed —
+    // never price the qiToken address (wrong Llama matches / inflated USD).
+    let reasons_pre = reason_list(&ev.details);
+    if reasons_pre.iter().any(|r| r == "QI_EXCHANGE_RATE_MISSING") {
+        let mut details = ev.details.clone();
+        details["profit_usd_method"] = serde_json::json!("skipped_qi_unconverted");
+        return (None, "inferred", details.to_string());
+    }
+
     let liq = LiquidationDetails::from_details(&ev.details);
     let price_usd = |asset: Address, amount: U256| -> Option<f64> {
         let p = token_prices.get(&asset)?;

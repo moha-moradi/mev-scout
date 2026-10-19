@@ -55,6 +55,9 @@ selector!(
     "getPooledAvaxByShares(uint256)"
 );
 
+// Compound V2 / Benqi qiToken: seizeTokens → underlying via exchangeRateStored.
+selector!(CTOKEN_EXCHANGE_RATE_STORED, "exchangeRateStored()");
+
 // ── Curve ────────────────────────────────────────────────────────────────
 
 selector!(CURVE_COINS_I128, "coins(int128)"); // 0x23746eb8 — classic Vyper pools
