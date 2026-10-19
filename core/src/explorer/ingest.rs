@@ -1177,6 +1177,7 @@ pub async fn run_range(
                         bundle,
                     },
                     &mut savax_rates,
+                    &mut qi_rates,
                 )
                 .await?;
                 outcome.blocks_processed += 1;
