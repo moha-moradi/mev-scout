@@ -1,3 +1,5 @@
+Superseded for live progress by [`docs/explorer_strategy_phase2_progress.md`](explorer_strategy_phase2_progress.md) (2026-10-19 stop snapshot).
+
 # Explorer strategy Phase-2 frequency / volume snapshot
 
 Last refresh: **2026-10-18T09:40:23.486Z** (paused; resume with `node scripts/run_backfill.mjs`).
