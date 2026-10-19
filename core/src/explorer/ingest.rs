@@ -109,12 +109,14 @@ impl IngestConfig {
     }
 }
 
-/// Successful sAVAX exchange-rate reads, keyed by [`pricing::hour_bucket`].
-/// Failures are not stored: a missing rate loosens `savax_rate_arb` tagging,
-/// so a single timeout must not stick for the rest of the hour.
+/// sAVAX exchange-rate reads, keyed by [`pricing::hour_bucket`].
+/// A success is reused for the hour. A failure is remembered too: public
+/// nodes prune historical state, and retrying `eth_call` on every block
+/// serializes the backfill. Tagging falls back to route co-presence either way.
 #[derive(Debug, Default)]
 pub struct SavaxRateCache {
     by_hour: HashMap<u64, U256>,
+    missed: HashSet<u64>,
 }
 
 impl SavaxRateCache {
@@ -123,7 +125,16 @@ impl SavaxRateCache {
     }
 
     fn insert(&mut self, hour: u64, rate: U256) {
+        self.missed.remove(&hour);
         self.by_hour.insert(hour, rate);
+    }
+
+    fn missed(&self, hour: u64) -> bool {
+        self.missed.contains(&hour)
+    }
+
+    fn miss(&mut self, hour: u64) {
+        self.missed.insert(hour);
     }
 }
 
@@ -649,6 +660,9 @@ async fn fetch_savax_exchange_rate(
     if let Some(rate) = cache.get(hour) {
         return Some(rate);
     }
+    if cache.missed(hour) {
+        return None;
+    }
     let mut data = crate::pool::selectors::SAVAX_GET_POOLED_AVAX_BY_SHARES.to_vec();
     data.extend_from_slice(&U256::from(10u64.pow(18)).to_be_bytes::<32>());
     match rpc.call(savax, Bytes::from(data), block).await {
@@ -657,9 +671,13 @@ async fn fetch_savax_exchange_rate(
             cache.insert(hour, rate);
             Some(rate)
         }
-        Ok(_) => None,
+        Ok(_) => {
+            cache.miss(hour);
+            None
+        }
         Err(e) => {
             debug!(block, "sAVAX exchangeRate eth_call failed: {e}");
+            cache.miss(hour);
             None
         }
     }
@@ -1193,6 +1211,14 @@ mod tests {
         cache.insert(hour, U256::from(42u64));
         assert_eq!(cache.get(hour), Some(U256::from(42u64)));
         assert!(cache.get(pricing::hour_bucket(ts + 3600)).is_none());
+        cache.miss(hour);
+        cache.insert(hour, U256::from(7u64));
+        assert!(!cache.missed(hour));
+        assert_eq!(cache.get(hour), Some(U256::from(7u64)));
+        let next = pricing::hour_bucket(ts + 3600);
+        cache.miss(next);
+        assert!(cache.missed(next));
+        assert!(cache.get(next).is_none());
     }
 
     #[test]

@@ -53,17 +53,33 @@ fn is_transport_error(msg: &str) -> bool {
         || is_rate_limit_error(msg)
 }
 
+/// `code` matches only as its own token. A bare `contains("429")` false-positives
+/// on trie hashes (`...b64297...`) and then `record_rate_limited` collapses RPS.
+fn has_http_status(m: &str, code: &str) -> bool {
+    let b = m.as_bytes();
+    let n = code.as_bytes();
+    b.windows(n.len()).enumerate().any(|(i, w)| {
+        if w != n {
+            return false;
+        }
+        let before = i == 0 || !b[i - 1].is_ascii_hexdigit();
+        let after_i = i + n.len();
+        let after = after_i >= b.len() || !b[after_i].is_ascii_hexdigit();
+        before && after
+    })
+}
+
 /// Whether an RPC error message signals an upstream rate limit (HTTP 429).
 /// Rate-limited requests should trigger a rate reduction + retry rather than
 /// the full failure/cooldown penalty, since the endpoint is still healthy.
 fn is_rate_limit_error(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
-    m.contains("429")
+    has_http_status(&m, "429")
+        || has_http_status(&m, "402")
         || m.contains("too many requests")
         || m.contains("rate limit")
         || m.contains("throttl")
         || m.contains("out of cu")
-        || m.contains("402")
 }
 
 /// Whether an RPC error message means the requested historical state is
@@ -605,9 +621,12 @@ impl RpcClient {
                     }
                     Err((e, is_evm_revert)) => {
                         let err_msg = format!("{e:#}");
-                        let rate_limited = !is_evm_revert && is_rate_limit_error(&err_msg);
                         let state_unavailable =
                             !is_evm_revert && is_state_unavailable_error(&err_msg);
+                        // State-unavailable wins: a trie hash can still contain the
+                        // digits of an HTTP status, and that must not cut RPS.
+                        let rate_limited =
+                            !is_evm_revert && !state_unavailable && is_rate_limit_error(&err_msg);
                         let mut provs = self.providers.lock().await;
                         if let Some(p) = provs.get_mut(*idx) {
                             if is_evm_revert {
@@ -1867,8 +1886,13 @@ mod tests {
             "invalid argument: hex string",
             "chain ID mismatch: got 137, expected 43114",
             "VM Exception while processing transaction: revert",
+            "missing trie node e0fc53929b1da04ef8afa2ec7c7d406ab4eb55b64297b5601bb2b208463740d9 (path ) state 0xe0fc53929b1da04ef8afa2ec7c7d406ab4eb55b64297b5601bb2b208463740d9 is not available",
         ] {
             assert!(!is_transport_error(msg), "should not be transient: {msg}");
+            assert!(
+                !is_rate_limit_error(msg),
+                "should not be a rate limit: {msg}"
+            );
         }
     }
 }
