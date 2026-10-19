@@ -128,9 +128,10 @@ resolved config with `mev-scout config`. Change chain, RPC URLs, or
 `output` in the TOML (or pass `-f` to pick a different file); those are
 not clap flags.
 
-To avoid public / free-tier RPCs, run a **dedicated** pruned tip node per
-chain (do not co-host Avalanche + Polygon + BSC on one box) and point
-`rpc_urls` at localhost:
+To avoid public / free-tier RPCs, run one small tip node for the chain you
+are scanning (one chain per box — the disk budgets do not stack) and point
+`rpc_urls` at localhost. The guides size that box for `live` and
+`explorer index` over SSH, not for a validator or a public RPC:
 
 | Chain | Guide | Local profile | Local RPC |
 | --- | --- | --- | --- |

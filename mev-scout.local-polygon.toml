@@ -1,6 +1,6 @@
-# Full-speed profile — local Polygon Bor on a dedicated host
-# (docs/LOCAL_POLYGON.md). Do not co-host Avalanche/BSC on that server.
-# No secrets here: auth-proxy passwords come from ${RPC_PASS} in the URL.
+# Local pruned Bor profile for the 4 vCPU / 16 GB box in
+# docs/LOCAL_POLYGON.md. One chain on that machine.
+# Concurrency stays small so Heimdall + Bor + this process fit in 16 GB.
 chain = "polygon"
 gas_model = "historical_exact"
 strategies = "all"
@@ -10,8 +10,8 @@ output = "table"
 # block/log sharding. Public archive peer is failover for those reads
 # and first choice for historical eth_call.
 rps_limit = 0
-block_concurrency = 32
-rpc_batch_blocks = 32
+block_concurrency = 4
+rpc_batch_blocks = 4
 batch_rpc = true
 
 [chains.polygon]
@@ -30,8 +30,10 @@ rpc_rps = [0.0, 1.0]
 source = "onchain"
 batch_size = 2000
 factory_batch_size = 10000
+# 30 days of logs only if the pruned snap still has them. Otherwise
+# `discover --blocks 2000` and let the public URL cover the rest.
 lookback_days = 30
-rpc_concurrency = 32
+rpc_concurrency = 4
 
 [live]
 # Default 2000; Polygon blocks are ~2 s.

@@ -72,4 +72,4 @@ node scripts/coverage_report_sqljs.js
 
 ## RPC note (why slow)
 
-At stop time: dwellir#1 flaky/cooldowns, dwellir#2 often 429, publicnode OK, drpc unreliable for `eth_getBlockReceipts`. Local AvalancheGo was down. Full-speed path is `mev-scout.local.toml` when the node is up.
+At stop time: dwellir#1 flaky/cooldowns, dwellir#2 often 429, publicnode OK, drpc unreliable for `eth_getBlockReceipts`. Local AvalancheGo was down. Local path is `mev-scout.local.toml` when the node is up.

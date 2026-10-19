@@ -1,7 +1,7 @@
-# Full-speed profile — local AvalancheGo on a dedicated host
-# (docs/LOCAL_AVALANCHE.md). Do not co-host Polygon/BSC on that server.
-# No secrets here: if the node sits behind an auth proxy, the password comes
-# from the environment via ${RPC_PASS} inside the URL.
+# Local AvalancheGo profile for the 4 vCPU / 16 GB box in
+# docs/LOCAL_AVALANCHE.md. One chain on that machine.
+# Concurrency stays small so the node and this process fit in 16 GB.
+# Raise block_concurrency / rpc_concurrency only when `free -h` shows idle RAM.
 chain = "avalanche"
 gas_model = "historical_exact"
 strategies = "all"
@@ -11,12 +11,11 @@ output = "table"
 # block/log sharding. The public archive peer is failover for those reads
 # and the first choice for historical eth_call.
 rps_limit = 0
-# In-flight blocks for explorer backfill and backtest fetch. Together with
-# rpc_batch_blocks this stays one wave of that many blocks, not N times more.
-block_concurrency = 32
+# In-flight blocks for explorer backfill and backtest fetch.
+block_concurrency = 4
 # Blocks packed into one eth_getBlockByNumber + eth_getBlockReceipts POST.
 # Public configs leave this unset (default 1 = one block per POST).
-rpc_batch_blocks = 32
+rpc_batch_blocks = 4
 # Also enables the backtest fetcher's batched block+receipt POST.
 # AvalancheGo allows up to 1000 requests per batch.
 batch_rpc = true
@@ -40,12 +39,12 @@ source = "onchain"
 batch_size = 2000
 factory_batch_size = 10000
 # Default discover window when no --days / --from-block is passed.
-# A month of C-Chain is ~1.3M blocks. Ignored when unset (public profile
-# keeps chains.toml's 1000-block lookback).
+# A month of C-Chain is ~1.3M blocks. A fresh state-sync node does not have
+# that history — use `discover --blocks 2000` until it does. Ignored when
+# unset (public profile keeps chains.toml's 1000-block lookback).
 lookback_days = 30
-# Concurrent activity windows on the unlimited node, and multicall metadata
-# (default 8). Rate-limited shards stay serial.
-rpc_concurrency = 32
+# Concurrent activity windows on the unlimited node. Rate-limited shards stay serial.
+rpc_concurrency = 4
 
 [live]
 # Default 2000; C-Chain blocks are ~2 s.

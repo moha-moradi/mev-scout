@@ -1,6 +1,6 @@
-# Full-speed profile — local BSC geth on a dedicated host
-# (docs/LOCAL_BSC.md). Do not co-host Avalanche/Polygon on that server.
-# No secrets here: auth-proxy passwords come from ${RPC_PASS} in the URL.
+# Local BSC fast-node profile for the 8 vCPU / 16 GB box in
+# docs/LOCAL_BSC.md. One chain on that machine.
+# Concurrency stays small so geth --cache 4096 and this process fit in 16 GB.
 chain = "bsc"
 gas_model = "historical_exact"
 strategies = "all"
@@ -10,8 +10,8 @@ output = "table"
 # block/log sharding. Public archive peer is failover for those reads
 # and first choice for historical eth_call.
 rps_limit = 0
-block_concurrency = 32
-rpc_batch_blocks = 32
+block_concurrency = 4
+rpc_batch_blocks = 4
 batch_rpc = true
 
 [chains.bsc]
@@ -30,9 +30,10 @@ rpc_rps = [0.0, 1.0]
 source = "onchain"
 batch_size = 2000
 factory_batch_size = 10000
-# BSC is faster than Polygon/Avalanche; keep the default window modest.
-lookback_days = 14
-rpc_concurrency = 32
+# Fast node keeps 600k blocks of logs (~3 days). A 14-day lookback is not
+# on this disk; it would fall through to the public URL.
+lookback_days = 2
+rpc_concurrency = 4
 
 [live]
 # Default 2000; BSC blocks are ~0.75 s.
