@@ -4,31 +4,31 @@ overview: "AVAX→Polygon→BSC liquidation gaps via topic0 + emitter-alias: fin
 todos:
   - id: shared-c-token-map
     content: Rename/merge benqi_qi_underlyings → c_token_underlyings (config alias ok); neutral convert fn; one ingest wiring path
-    status: in_progress
+    status: completed
   - id: avax-benqi-underlyings
     content: Pin 9 Benqi isolated/qiASD/qiEVC underlyings; ingest assert underlyings 13→22 only (aliases already 22)
-    status: pending
+    status: completed
   - id: avax-aave-v2
     content: Add aave_v2_pool + ingest alias; pin AVAX 0x4F01…; re-index 97782322; corpus assert protocol==aave_v2
-    status: pending
+    status: completed
   - id: poly-corpus-assert
     content: Assert protocol/USD on poly-liquidation-window + poly-liquidation-94431566; checklist polygon.liquidation; hunt only if broken
-    status: pending
+    status: completed
   - id: poly-aave-v2-evidence
     content: Count LiquidationCall on Polygon V2 pool; pin aave_v2_pool only with evidence
-    status: pending
+    status: completed
   - id: bsc-aave-v2
     content: Hunt+confirm BSC Aave pool address; pin aave_v2_pool; corpus seed assert protocol==aave_v2 (+ USD)
-    status: pending
+    status: completed
   - id: bsc-venus
     content: Venus aliases from getAllMarkets into c_token_underlyings; corpus assert protocol==venus + USD; checklist bsc.venus
-    status: pending
+    status: completed
   - id: negative-tests
     content: "Unit tests: alias-without-underlying → null USD+reason; cross-market Benqi both sides; seed no TRANSFER_MISMATCH"
-    status: pending
+    status: completed
   - id: checklist-docs
     content: Checklist rows per phase; stale CLI.md; optional unlabeled-emitter count on AVAX re-index
-    status: pending
+    status: completed
 isProject: false
 ---
 

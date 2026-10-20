@@ -13,8 +13,11 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 | baseline.backrun | backrun | A | pending | - | | | not in indexed windows |
 | baseline.jit | jit | A | verified | avalanche | 97783274 | 97783274 | Seeded in scenario_targets |
 | baseline.skim | skim | A | pending | - | | | not observed |
-| P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq |
-| P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow decode fix |
+| P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq; `aave_v2_pool` remap → details.protocol=aave_v2 |
+| P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
+| polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |
+| bsc.aave | liquidation | A | pending | bsc | | | Aave V3 pool 0x6807… (no V2 on BSC); seed hunt blocked by public RPC log limits |
+| bsc.venus | liquidation | A | candidate_block | bsc | | | 55 vToken aliases + 54 underlyings pinned; corpus seed TBD |
 | P0.3 | buycollateral | C | pending | ethereum | | | no BuyCollateral in tip 40k |
 | P0.4 | flash_arb | A | pending | avalanche | | | flashes rare; no arb co-hit |
 | P1.1 | interest_accrued | D | sparse_cross_chain | ethereum | 26214788 | 26214788 | Morpho liq flag |

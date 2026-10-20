@@ -468,6 +468,50 @@ fn liquidation_unaliased_emitter_keeps_compound_v2() {
     assert_eq!(liq.protocol, "compound_v2");
 }
 
+/// Aave V2 LendingPool shares LiquidationCall topic0 with V3 — emitter remap.
+#[test]
+fn liquidation_aave_v2_pool_relabels() {
+    let collateral = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let debt = b256!("000000000000000000000000cccccccccccccccccccccccccccccccccccccccc");
+    let user = b256!("000000000000000000000000dddddddddddddddddddddddddddddddddddddddd");
+    let mut data = vec![0u8; 64];
+    data[24..32].copy_from_slice(&99u64.to_be_bytes());
+    data[56..64].copy_from_slice(&500u64.to_be_bytes());
+    let pool = address!("4F01AeD16D97E3aB5ab2B501154DC9bb0F1A5A2C");
+    let l = log(
+        pool,
+        vec![*AAVE_V3_LIQUIDATION_CALL_TOPIC, collateral, debt, user],
+        data,
+    );
+    let mut liq = decode_liquidation(&l).unwrap();
+    assert_eq!(liq.protocol, "aave_v3");
+    let aliases = std::collections::HashMap::from([(pool, "aave_v2")]);
+    remap_liquidation_protocol(&mut liq, &aliases);
+    assert_eq!(liq.protocol, "aave_v2");
+}
+
+/// Venus vToken shares LiquidateBorrow topic0 — emitter remap to `venus`.
+#[test]
+fn liquidation_venus_vtoken_relabels() {
+    let liquidator = b256!("000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let borrower = b256!("000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    let mut data = vec![0u8; 96];
+    data[24..32].copy_from_slice(&99u64.to_be_bytes());
+    data[44..64].copy_from_slice(address!("cccccccccccccccccccccccccccccccccccccccc").as_slice());
+    data[88..96].copy_from_slice(&500u64.to_be_bytes());
+    let vusdc = address!("eca88125a5adbe82614ffc12d0db554e2e2867c8");
+    let l = log(
+        vusdc,
+        vec![*COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, liquidator, borrower],
+        data,
+    );
+    let mut liq = decode_liquidation(&l).unwrap();
+    assert_eq!(liq.protocol, "compound_v2");
+    let aliases = std::collections::HashMap::from([(vusdc, "venus")]);
+    remap_liquidation_protocol(&mut liq, &aliases);
+    assert_eq!(liq.protocol, "venus");
+}
+
 /// P1.4: Chainlink AnswerUpdated decodes to the feed emitter.
 #[test]
 fn decode_chainlink_answer_updated() {

@@ -100,13 +100,13 @@ fn push_reason(details: &mut serde_json::Value, reason: &str) {
     details["reasons"] = serde_json::json!(reasons);
 }
 
-/// Apply Benqi underlying rewrite when the collateral exchange rate is known
-/// (or mark `QI_EXCHANGE_RATE_MISSING` when it is not).
+/// Apply Compound-V2-fork underlying rewrite when the collateral exchange rate
+/// is known (or mark `QI_EXCHANGE_RATE_MISSING` when it is not).
 ///
-/// `collateral_rate`: `Some(rate)` converts seizeTokens; `None` with a qi
+/// `collateral_rate`: `Some(rate)` converts seizeTokens; `None` with a cToken
 /// collateral leaves USD null. Debt repay amount is already underlying — only
 /// the debt address is remapped.
-pub fn apply_benqi_liq_conversion(
+pub fn apply_c_token_liq_conversion(
     ev: &mut MevEvent,
     underlyings: &HashMap<Address, Address>,
     collateral_rate: Option<U256>,
@@ -185,8 +185,9 @@ pub fn apply_benqi_liq_conversion(
     ev.details = details;
 }
 
-/// Rewrite Benqi liquidation events so PnL prices underlyings, never qiTokens.
-pub async fn convert_benqi_liquidation_events(
+/// Rewrite Compound-V2-fork liquidation events so PnL prices underlyings,
+/// never cToken/qiToken/vToken addresses.
+pub async fn convert_c_token_liquidation_events(
     rpc: &RpcClient,
     events: &mut [MevEvent],
     underlyings: &HashMap<Address, Address>,
@@ -209,14 +210,14 @@ pub async fn convert_benqi_liquidation_events(
         if !coll_is_qi && !debt_is_qi {
             continue;
         }
-        // None only when collateral is qi and the rate call failed / was cached miss.
-        // Debt-only remaps pass Some(_) that apply ignores (coll not qi).
+        // None only when collateral is a cToken and the rate call failed / was
+        // cached miss. Debt-only remaps pass Some(_) that apply ignores.
         let collateral_rate = if coll_is_qi {
             fetch_exchange_rate_stored(rpc, liq.collateral_asset, block, ts, cache).await
         } else {
             Some(U256::ZERO)
         };
-        apply_benqi_liq_conversion(ev, underlyings, collateral_rate);
+        apply_c_token_liq_conversion(ev, underlyings, collateral_rate);
     }
 }
 
@@ -294,7 +295,7 @@ mod tests {
 
         let mut ev = liq_event(qi_avax, qi_btc, 100, 50);
         let rate = U256::from(2u64) * U256::from(10u64.pow(18));
-        apply_benqi_liq_conversion(&mut ev, &map, Some(rate));
+        apply_c_token_liq_conversion(&mut ev, &map, Some(rate));
 
         assert_eq!(ev.profit_token, Some(wavax));
         assert_eq!(ev.profit_amount, Some(U256::from(200u64)));
@@ -317,12 +318,51 @@ mod tests {
         map.insert(qi_avax, wavax);
 
         let mut ev = liq_event(qi_avax, wavax, 100, 1);
-        apply_benqi_liq_conversion(&mut ev, &map, None);
+        apply_c_token_liq_conversion(&mut ev, &map, None);
         assert!(ev.profit_token.is_none());
         assert!(ev.profit_amount.is_none());
         let reasons = ev.details["reasons"].as_array().unwrap();
         assert!(reasons.iter().any(|r| r.as_str() == Some("QI_EXCHANGE_RATE_MISSING")));
         // qi amounts preserved for forensics
         assert!(ev.details.get("qi_collateral_asset").is_some());
+    }
+
+    /// Alias present but underlying map empty for that cToken → conversion
+    /// no-ops (caller must leave USD null via rate-miss path, not invent USD).
+    #[test]
+    fn apply_skips_when_collateral_not_in_underlyings_map() {
+        let qi_avax = address!("5c0401e81bc07ca70fad469b451682c0d747ef1c");
+        let wavax = address!("B31f66AA3C1e785363F0875A1B74E27b85FD66c7");
+        let map = HashMap::new(); // empty — aliased market not pinned
+        let mut ev = liq_event(qi_avax, wavax, 100, 1);
+        apply_c_token_liq_conversion(&mut ev, &map, Some(U256::from(10u64.pow(18))));
+        // Unchanged: still prices qi address (store layer skips / nulls).
+        assert_eq!(ev.profit_token, Some(qi_avax));
+        assert_eq!(ev.profit_amount, Some(U256::from(100u64)));
+        assert!(ev.details.get("qi_collateral_asset").is_none());
+    }
+
+    /// Cross-market: debt and collateral both cTokens (isolated) → both remap.
+    #[test]
+    fn apply_cross_market_both_isolated_remaps() {
+        let qi_coq = address!("0ebfebd41e1ea83be5e911cdcd2730a0ccee344d");
+        let coq = address!("420FcA0121DC28039145009570975747295F2329");
+        let qi_joe = address!("4036cb0d6bf6b5f17aa4e05191f86d4b1655b0d9");
+        let joe = address!("6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd");
+        let mut map = HashMap::new();
+        map.insert(qi_coq, coq);
+        map.insert(qi_joe, joe);
+
+        let mut ev = liq_event(qi_coq, qi_joe, 50, 10);
+        let rate = U256::from(3u64) * U256::from(10u64.pow(18));
+        apply_c_token_liq_conversion(&mut ev, &map, Some(rate));
+
+        let liq = crate::explorer::types::LiquidationDetails::from_details(&ev.details).unwrap();
+        assert_eq!(liq.collateral_asset, coq);
+        assert_eq!(liq.collateral_amount, U256::from(150u64));
+        assert_eq!(liq.debt_asset, joe);
+        assert_eq!(liq.debt_to_cover, U256::from(10u64));
+        assert_eq!(ev.profit_token, Some(coq));
+        assert_eq!(ev.profit_amount, Some(U256::from(150u64)));
     }
 }

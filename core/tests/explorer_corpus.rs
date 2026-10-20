@@ -459,10 +459,37 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
         );
     }
 
+    if let Some(want) = expected_protocol(case.id) {
+        let hit = ops.iter().any(|o| {
+            o.details_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+                .and_then(|v| {
+                    v.get("protocol")
+                        .and_then(|p| p.as_str())
+                        .map(|p| p == want)
+                })
+                .unwrap_or(false)
+        });
+        assert!(
+            hit,
+            "{}: expected details.protocol == {want:?} on at least one op",
+            case.id
+        );
+    }
+
     eprintln!(
         "{}: ok — {} {} ops in {}..={} (floor {})",
         case.id, observed, case.kind, case.from_block, case.to_block, case.min_ops
     );
+}
+
+/// Protocol-label expectations for liquidation corpus cases (plan verify).
+fn expected_protocol(case_id: &str) -> Option<&'static str> {
+    match case_id {
+        "poly-liquidation-window" | "poly-liquidation-94431566" => Some("aave_v3"),
+        _ => None,
+    }
 }
 
 /// Merge case ranges that sit within `GAP` blocks of each other. Distant

@@ -2,6 +2,8 @@
 chain_id = 137
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
+# Aave V2 LendingPool (0x8dFf5E27…) — not pinned: tip hunts found 0 LiquidationCall
+# volume; re-evaluate before adding aave_v2_pool.
 uniswap_v3_factories = [
   "0x1F98431c8aD98523631AE4a59f267346ea31F984",
   "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09",
@@ -26,6 +28,8 @@ metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
 chain_id = 43114
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x69FA688f1Dc47d4B5d8029D5a35FB7a548E0B9b0"
+# Aave V2 LendingPool (same LiquidationCall topic0 — remapped to aave_v2).
+aave_v2_pool = "0x4F01AeD16D97E3aB5ab2B501154DC9bb0F1A5A2C"
 uniswap_v3_factories = [
   "0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD",
   "0xAE6E5c62328ade73ceefD42228528b70c8157D0d",
@@ -88,11 +92,11 @@ entry_point = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" # ERC-4337 EntryPoint
 "0x0ffac5aae14e28e79c5ccc7a335d8c70ee458a3a" = "benqi" # isolated SolvBTC
 "0x51758d811696acb994aa993bd3dd088b6c3320f3" = "benqi" # isolated NXPC
 
-# Benqi qiToken → ERC-20 underlying (core markets only). LiquidateBorrow
-# stores seizeTokens in qi units and repayAmount already in underlying;
-# PnL must price the underlyings, never the qiToken addresses themselves.
-# Isolated markets are omitted until their underlyings are pinned.
-[avalanche.benqi_qi_underlyings]
+# Compound-V2-fork cToken → ERC-20 underlying (Benqi + Venus share this map).
+# LiquidateBorrow stores seizeTokens in cToken units and repayAmount already
+# in underlying; PnL must price underlyings, never the cToken addresses.
+# Isolated Benqi underlyings pinned via eth_call underlying() @ tip 2026-10-20.
+[avalanche.c_token_underlyings]
 "0x5c0401e81bc07ca70fad469b451682c0d747ef1c" = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7" # qiAVAX → WAVAX
 "0xe194c4c5ac32a3c9ffdb358d9bfd523a0b6d1568" = "0x50b7545627a5162F82A992c33b87aDc75187B218" # qiBTC → WBTC.e
 "0x334ad834cd4481bb02d09615e7c11a00579a7909" = "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB" # qiETH → WETH.e
@@ -106,6 +110,15 @@ entry_point = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789" # ERC-4337 EntryPoint
 "0xf362fea9659cf036792c9cb02f8ff8198e21b4cb" = "0x2b2C81e08f1Af8835a78Bb2A90AE924ACE0eA4bE" # qisAVAX → sAVAX
 "0x89a415b3d20098e6a6c8f7a59001c67bd3129821" = "0x152b9d0FdC40C096757F570A51E494bd4b943E50" # qiBTC.b → BTC.b
 "0x872670ccae8c19557cc9443eff587d7086b8043a" = "0x19860CCB0A68fd4213aB9D8266F7bBf05A8dDe98" # qiBUSD → BUSD.e
+"0x190d94613a09ad7931fcd17cd6a8f9b6b47ad414" = "0x00000000Efe302beAa2b3e6E1b18d08d69A9012A" # qiASD → AUSD
+"0x7fa9442f28948e948e86c0258e361f1208699b41" = "0xc891eb4CbDEFf6e073e859e987815Ed1505c2aCd" # qiEVC → EVC
+"0x6b35eb18bca06bd7d66a428eeb45ac7d200c1e4e" = "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E" # isolated USDC → USDC
+"0x0ebfebd41e1ea83be5e911cdcd2730a0ccee344d" = "0x420FcA0121DC28039145009570975747295F2329" # isolated COQ → COQ
+"0x4036cb0d6bf6b5f17aa4e05191f86d4b1655b0d9" = "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd" # isolated JOE → JOE
+"0x545356e396350d40cdea888ad73534517399bf96" = "0x8729438EB15e4C7b7BB9B4d2eF468bC0B8c94Bb6" # isolated QI → QI
+"0xb7cfb8ae67e20059021a0d20fc30311a6c67c734" = "0x00000000Efe302beAa2b3e6E1b18d08d69A9012A" # isolated AUSD → AUSD
+"0x0ffac5aae14e28e79c5ccc7a335d8c70ee458a3a" = "0xbc78D84Ba0c46dFe32cf2895a19939c86b81a777" # isolated SolvBTC → SolvBTC
+"0x51758d811696acb994aa993bd3dd088b6c3320f3" = "0x5E0E90E268BC247Cc850c789A0DB0d5c7621fb59" # isolated NXPC → NXPC
 
 # Chainlink aggregator proxies → underlying asset (plan P1.1 / P1.4).
 # Proxies from docs.chain.link Avalanche price-feed list (2026).
@@ -146,6 +159,120 @@ curve_factories = ["0xd7E72f3615aa65b92A4DBdC211E296a35512988B"]
 pendle_factory = "0x80cE46449DF1c977f6ba60495125ce282F83DdFB"
 # Metric V2 AMM factory (same deterministic address on all chains).
 metric_factory = "0xe22F9fc0f04486dE25ed6CF1800a4a47aFD82e0C"
+# Venus core-pool vTokens (getAllMarkets on Unitroller 0xfD36…8384).
+# vBNB (0xa07c5b74…) has no underlying() — omitted from c_token_underlyings.
+[bsc.liquidation_protocol_aliases]
+"0xeca88125a5adbe82614ffc12d0db554e2e2867c8" = "venus"
+"0xfd5840cd36d94d7229439859c0112a4185bc0255" = "venus"
+"0x95c78222b3d6e262426483d42cfa53685a67ab9d" = "venus"
+"0x2ff3d0f6990a40261c66e1ff2017acbc282eb6d0" = "venus"
+"0x151b1e2635a717bcdc836ecd6fbb62b674fe3e1d" = "venus"
+"0xa07c5b74c9b40447a954e1466938b865b6bbea36" = "venus"
+"0x882c173bc7ff3b7786ca16dfed3dfffb9ee7847b" = "venus"
+"0xf508fcd89b8bd15579dc79a6827cb4686a3592c8" = "venus"
+"0x57a5297f2cb2c0aac9d554660acd6d385ab50c6b" = "venus"
+"0xb248a295732e0225acd3337607cc01068e3b9c10" = "venus"
+"0x5f0388ebc2b94fa8e123f404b79ccf5f40b29176" = "venus"
+"0x1610bc33319e9398de5f57b33a5b184c806ad217" = "venus"
+"0x650b940a1033b8a1b1873f78730fcfc73ec11f1f" = "venus"
+"0x334b3ecb4dca3593bccc3c7ebd1a1c1d1780fbf1" = "venus"
+"0xf91d58b5ae142dacc749f58a49fcbac340cb0343" = "venus"
+"0x972207a639cc1b374b893cc33fa251b55ceb7c07" = "venus"
+"0xebd0070237a0713e8d94fef1b728d3d993d290ef" = "venus"
+"0x9a0af7fdb2065ce470d72664de73cae409da28ec" = "venus"
+"0xec3422ef92b2fb59e84c8b02ba73f1fe84ed8d71" = "venus"
+"0x5c9476fcd6a4f9a3654139721c949c2233bbbbc8" = "venus"
+"0x86ac3974e2bd0d60825230fa6f355ff11409df5c" = "venus"
+"0x26da28954763b92139ed49283625cecaf52c6f94" = "venus"
+"0x08ceb3f4a7ed3500ca0982bcd0fc7816688084c3" = "venus"
+"0x61edcfe8dd6ba3c891cb9bec2dc7657b3b422e93" = "venus"
+"0x78366446547d062f45b4c0f320cdaa6d710d87bb" = "venus"
+"0xb91a659e88b51474767cd97ef3196a3e7cedd2c8" = "venus"
+"0xc5d3466aa484b040ee977073fcf337f2c00071c1" = "venus"
+"0x6cfdec747f37daf3b87a35a1d9c8ad3063a1a8a0" = "venus"
+"0xbf762cd5991ca1dcddac9ae5c638f5b5dc3bee6e" = "venus"
+"0x27ff564707786720c71a2e5c1490a63266683612" = "venus"
+"0xc4ef4229fec74ccfe17b2bdef7715fac740ba0ba" = "venus"
+"0x4d41a36d04d97785bcea57b057c412b278e6edcc" = "venus"
+"0xf841cb62c19fcd4ff5cd0aab5939f3140baac3ea" = "venus"
+"0x86e06eafa6a1ea631eab51de500e3d474933739f" = "venus"
+"0xbf515ba4d1b52ffdceabf20d31d705ce789f2cec" = "venus"
+"0x689e0dab47ab16bcae87ec18491692bf621dc6ab" = "venus"
+"0x9e4e5fed5ac5b9f732d0d850a615206330bf1866" = "venus"
+"0x699658323d58ee25c69f1a29d476946ab011bd18" = "venus"
+"0x74ca6930108f775cc667894eea33843e691680d7" = "venus"
+"0x0c1da220d301155b87318b90692da8dc43b67340" = "venus"
+"0xd804de60afd05ee6b89aab5d152258fd461b07d5" = "venus"
+"0xcc1db43a06d97f736c7b045aedd03c6707c09bdf" = "venus"
+"0x6bca74586218db34cdb402295796b79663d816e9" = "venus"
+"0x6d0cdb3355c93a0cd20071abbb3622731a95c73e" = "venus"
+"0x89c910eb8c90df818b4649b508ba22130dc73adc" = "venus"
+"0x3d5e269787d562b74acc55f18bd26c5d09fa245e" = "venus"
+"0x6d3bd68e90b42615cb5abf4b8de92b154adc435e" = "venus"
+"0x92e6ea74a1a3047dabf4186405a21c7d63a0612a" = "venus"
+"0x97421799419eb782628e73e7220d8e0a207469a3" = "venus"
+"0xeb8ca841cbe1bc4832a10b15c7dab1081edad371" = "venus"
+"0xc36dfacc7a125859c106f29b9f2d874ccf29a55a" = "venus"
+"0x3e281461efb3d53ec20db207674373ed8ef3bba9" = "venus"
+"0xc0768948e668b7bacff8b4bd1babe0ed2b512d3c" = "venus"
+"0xb1ab0399766997c5d66a30b2f2055277b7fa5d6c" = "venus"
+"0x80a5694441810d2b871beed644b6d16d113ce06e" = "venus"
+
+[bsc.c_token_underlyings]
+"0xeca88125a5adbe82614ffc12d0db554e2e2867c8" = "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d"
+"0xfd5840cd36d94d7229439859c0112a4185bc0255" = "0x55d398326f99059ff775485246999027b3197955"
+"0x95c78222b3d6e262426483d42cfa53685a67ab9d" = "0xe9e7cea3dedca5984780bafc599bd69add087d56"
+"0x2ff3d0f6990a40261c66e1ff2017acbc282eb6d0" = "0x47bead2563dcbf3bf2c9407fea4dc236faba485a"
+"0x151b1e2635a717bcdc836ecd6fbb62b674fe3e1d" = "0xcf6bb5389c92bdda8a3747ddb454cb7a64626c63"
+"0x882c173bc7ff3b7786ca16dfed3dfffb9ee7847b" = "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c"
+"0xf508fcd89b8bd15579dc79a6827cb4686a3592c8" = "0x2170ed0880ac9a755fd29b2688956bd959f933f8"
+"0x57a5297f2cb2c0aac9d554660acd6d385ab50c6b" = "0x4338665cbb7b2485a8855a139b75d5e34ab0db94"
+"0xb248a295732e0225acd3337607cc01068e3b9c10" = "0x1d2f0da169ceb9fc7b3144628db156f3f6c60dbe"
+"0x5f0388ebc2b94fa8e123f404b79ccf5f40b29176" = "0x8ff795a6f4d97e7887c79bea79aba5cc76444adf"
+"0x1610bc33319e9398de5f57b33a5b184c806ad217" = "0x7083609fce4d1d8dc0c979aab8c869ea2c873402"
+"0x650b940a1033b8a1b1873f78730fcfc73ec11f1f" = "0xf8a0bf9cf54bb92f17374d9e9a321e6a111a51bd"
+"0x334b3ecb4dca3593bccc3c7ebd1a1c1d1780fbf1" = "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3"
+"0xf91d58b5ae142dacc749f58a49fcbac340cb0343" = "0x0d8ce2a99bb6e3b7db580ed848240e4a0f9ae153"
+"0x972207a639cc1b374b893cc33fa251b55ceb7c07" = "0x250632378e573c6be1ac2f97fcdf00515d0aa91b"
+"0xebd0070237a0713e8d94fef1b728d3d993d290ef" = "0x20bff4bbeda07536ff00e073bd8359e5d80d733d"
+"0x9a0af7fdb2065ce470d72664de73cae409da28ec" = "0x3ee2200efb3400fabb9aacf31297cbdd1d435d47"
+"0xec3422ef92b2fb59e84c8b02ba73f1fe84ed8d71" = "0xba2ae424d960c26247dd6c32edc70b295c744c43"
+"0x5c9476fcd6a4f9a3654139721c949c2233bbbbc8" = "0xcc42724c6683b7e57334c4e856f4c9965ed682bd"
+"0x86ac3974e2bd0d60825230fa6f355ff11409df5c" = "0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82"
+"0x26da28954763b92139ed49283625cecaf52c6f94" = "0xfb6115445bff7b52feb98650c87f44907e58f802"
+"0x08ceb3f4a7ed3500ca0982bcd0fc7816688084c3" = "0x14016e85a25aeb13065688cafb43044c2ef86784"
+"0x61edcfe8dd6ba3c891cb9bec2dc7657b3b422e93" = "0x85eac5ac2f758618dfa09bdbe0cf174e7d574d5b"
+"0x78366446547d062f45b4c0f320cdaa6d710d87bb" = "0x3d4350cd54aef9f9b2c29435e0fa809957b3f30a"
+"0xb91a659e88b51474767cd97ef3196a3e7cedd2c8" = "0x156ab3346823b651294766e23e6cf87254d68962"
+"0xc5d3466aa484b040ee977073fcf337f2c00071c1" = "0xce7de646e7208a4ef112cb6ed5038fa6cc6b12e3"
+"0x6cfdec747f37daf3b87a35a1d9c8ad3063a1a8a0" = "0xa2e3356610840701bdf5611a53974510ae27e2e1"
+"0xbf762cd5991ca1dcddac9ae5c638f5b5dc3bee6e" = "0x40af3827f39d0eacbf4a168f8d4ee67c121d11c9"
+"0x27ff564707786720c71a2e5c1490a63266683612" = "0xbf5140a22578168fd562dccf235e5d43a02ce9b1"
+"0xc4ef4229fec74ccfe17b2bdef7715fac740ba0ba" = "0xc5f0f7b66764f6ec8c8dff7ba683102295e16409"
+"0x4d41a36d04d97785bcea57b057c412b278e6edcc" = "0x4b0f1812e5df2a09796481ff14017e6005508003"
+"0xf841cb62c19fcd4ff5cd0aab5939f3140baac3ea" = "0x4aae823a6a0b376de6a78e74ecc5b079d38cbcf7"
+"0x86e06eafa6a1ea631eab51de500e3d474933739f" = "0xf4c8e32eadec4bfe97e0f595add0f4450a863a11"
+"0xbf515ba4d1b52ffdceabf20d31d705ce789f2cec" = "0x570a5d26f7765ecb712c0924e4de545b89fd43df"
+"0x689e0dab47ab16bcae87ec18491692bf621dc6ab" = "0x0782b6d8c4551b9760e74c0545a9bcd90bdc41e5"
+"0x9e4e5fed5ac5b9f732d0d850a615206330bf1866" = "0xdd809435ba6c9d6903730f923038801781ca66ce"
+"0x699658323d58ee25c69f1a29d476946ab011bd18" = "0x211cc4dd073734da055fbf44a2b4667d5e5fe5d2"
+"0x74ca6930108f775cc667894eea33843e691680d7" = "0x5d3a1ff2b6bab83b63cd9ad0787074081a52ef34"
+"0x0c1da220d301155b87318b90692da8dc43b67340" = "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+"0xd804de60afd05ee6b89aab5d152258fd461b07d5" = "0x1346b618dc92810ec74163e4c27004c921d446a5"
+"0xcc1db43a06d97f736c7b045aedd03c6707c09bdf" = "0x77734e70b6e88b4d82fe632a168edf6e700912b6"
+"0x6bca74586218db34cdb402295796b79663d816e9" = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+"0x6d0cdb3355c93a0cd20071abbb3622731a95c73e" = "0x607c834cfb7fcbbb341cbe23f77a6e83bcf3f55c"
+"0x89c910eb8c90df818b4649b508ba22130dc73adc" = "0xb0b84d294e0c75a6abe60171b70edeb2efd14a1b"
+"0x3d5e269787d562b74acc55f18bd26c5d09fa245e" = "0xce24439f2d9c6a2289f741120fe202248b666666"
+"0x6d3bd68e90b42615cb5abf4b8de92b154adc435e" = "0xe052823b4aefc6e230faf46231a57d0905e30ae0"
+"0x92e6ea74a1a3047dabf4186405a21c7d63a0612a" = "0x23ae4fd8e7844cdbc97775496ebd0e8248656028"
+"0x97421799419eb782628e73e7220d8e0a207469a3" = "0x5b1910eaad6450e50f816082aa078c41f10c292f"
+"0xeb8ca841cbe1bc4832a10b15c7dab1081edad371" = "0x02fca66c1d1afb4e2a7884261eb00f63598a7436"
+"0xc36dfacc7a125859c106f29b9f2d874ccf29a55a" = "0xbe9d156892e55e7154bcd3cb0fea677f9d3103e1"
+"0x3e281461efb3d53ec20db207674373ed8ef3bba9" = "0xca750ef65f295bbecd685abf54e82caf297bdb61"
+"0xc0768948e668b7bacff8b4bd1babe0ed2b512d3c" = "0x18afdacf30f8671021dec4b78297e39d2fe87226"
+"0xb1ab0399766997c5d66a30b2f2055277b7fa5d6c" = "0x9d2d9592cf8dfbf59107faab703d08494be14617"
+"0x80a5694441810d2b871beed644b6d16d113ce06e" = "0x0e5aa174d4f31b757a237eb1999de151596788b0"
 
 [arbitrum]
 chain_id = 42161

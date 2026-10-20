@@ -22,6 +22,10 @@ pub struct ChainConfig {
     pub balancer_vault: Option<Address>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aave_v3_pool: Option<Address>,
+    /// Aave V2 LendingPool (same `LiquidationCall` topic0 as V3 — remapped by
+    /// emitter address via ingest aliases).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aave_v2_pool: Option<Address>,
     /// SparkLend pool (Aave-V3 ABI alias — same `LiquidationCall` topic0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spark_pool: Option<Address>,
@@ -32,10 +36,15 @@ pub struct ChainConfig {
     /// the comptroller — the comptroller never emits `LiquidateBorrow`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub liquidation_protocol_aliases: Option<HashMap<Address, String>>,
-    /// Benqi qiToken market → ERC-20 underlying. Used to convert seizeTokens
-    /// via `exchangeRateStored` before liquidation USD PnL (never price qi).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub benqi_qi_underlyings: Option<HashMap<Address, Address>>,
+    /// Compound-V2-fork cToken/qiToken/vToken → ERC-20 underlying. Used to
+    /// convert seizeTokens via `exchangeRateStored` before liquidation USD
+    /// PnL (never price the cToken itself). Shared by Benqi and Venus.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "benqi_qi_underlyings"
+    )]
+    pub c_token_underlyings: Option<HashMap<Address, Address>>,
     /// Chainlink aggregator proxy → underlying asset (plan P1.1 / P1.4).
     /// Used for oracle-poke co-block and interest-accrual attribution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,9 +139,10 @@ impl ChainConfig {
             rpc,
             balancer_vault,
             aave_v3_pool,
+            aave_v2_pool,
             spark_pool,
             liquidation_protocol_aliases,
-            benqi_qi_underlyings,
+            c_token_underlyings,
             chainlink_feeds,
             savax,
             gmx_event_emitters,

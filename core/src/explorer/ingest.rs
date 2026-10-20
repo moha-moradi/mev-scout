@@ -61,11 +61,12 @@ pub struct IngestConfig {
     /// Profit-token priority from chain config.
     pub profit_token_priority: Vec<Address>,
     /// Emitter-address → protocol label relabels for liquidation events whose
-    /// topic0 is shared with another protocol (Aave-V3 ABI: Spark; Compound V2
-    /// ABI: Benqi qiTokens — plan P0.2 /).
+    /// topic0 is shared with another protocol (Aave-V3 ABI: Spark / Aave V2;
+    /// Compound V2 ABI: Benqi qiTokens / Venus vTokens — plan P0.2 /).
     pub liquidation_protocol_aliases: HashMap<Address, &'static str>,
-    /// Benqi qiToken → underlying ERC-20 (seizeTokens conversion before PnL).
-    pub benqi_qi_underlyings: HashMap<Address, Address>,
+    /// Compound-V2-fork cToken → underlying ERC-20 (seizeTokens conversion
+    /// before PnL). Shared by Benqi and Venus.
+    pub c_token_underlyings: HashMap<Address, Address>,
     /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
     pub chainlink_feeds: HashMap<Address, Address>,
     pub savax: Option<Address>,
@@ -83,6 +84,9 @@ impl IngestConfig {
         // here so the per-log remap stays a `&'static str` pointer compare.
         let intern = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
         let mut liquidation_protocol_aliases = HashMap::new();
+        if let Some(v2) = chain_config.aave_v2_pool {
+            liquidation_protocol_aliases.insert(v2, "aave_v2");
+        }
         if let Some(spark) = chain_config.spark_pool {
             liquidation_protocol_aliases.insert(spark, "spark");
         }
@@ -90,8 +94,8 @@ impl IngestConfig {
             liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
         }
         let chainlink_feeds = chain_config.chainlink_feeds.clone().unwrap_or_default();
-        let benqi_qi_underlyings = chain_config
-            .benqi_qi_underlyings
+        let c_token_underlyings = chain_config
+            .c_token_underlyings
             .clone()
             .unwrap_or_default();
         let gmx_event_emitters = chain_config
@@ -107,7 +111,7 @@ impl IngestConfig {
             wrapped_native,
             profit_token_priority: priority,
             liquidation_protocol_aliases,
-            benqi_qi_underlyings,
+            c_token_underlyings,
             chainlink_feeds,
             savax: chain_config.savax,
             gmx_event_emitters,
@@ -525,10 +529,10 @@ pub async fn index_block_fetched(
     persist_mode_b_lookback(store, block_number, &input.txs);
 
     // Benqi: seizeTokens → underlying before price warm / PnL (never price qi).
-    crate::explorer::benqi_liq::convert_benqi_liquidation_events(
+    crate::explorer::benqi_liq::convert_c_token_liquidation_events(
         rpc,
         &mut events,
-        &cfg.benqi_qi_underlyings,
+        &cfg.c_token_underlyings,
         block_number,
         block_data.timestamp,
         qi_rates,
@@ -1268,27 +1272,34 @@ mod tests {
         use alloy::primitives::address;
         let chains = crate::config::defaults::default_chains();
         let avax = IngestConfig::from_chain(ChainName::Avalanche, &chains["avalanche"]);
-        assert_eq!(avax.liquidation_protocol_aliases.len(), 22);
         assert_eq!(
             avax.liquidation_protocol_aliases
                 .get(&address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"))
                 .copied(),
             Some("benqi")
         );
-        // Core Benqi qi → underlying map (isolated markets omitted).
-        assert_eq!(avax.benqi_qi_underlyings.len(), 13);
+        // Benqi qi → underlying map (core + isolated).
+        assert_eq!(avax.c_token_underlyings.len(), 22);
         assert_eq!(
-            avax.benqi_qi_underlyings
+            avax.c_token_underlyings
                 .get(&address!("5c0401e81bc07ca70fad469b451682c0d747ef1c"))
                 .copied(),
             Some(address!("B31f66AA3C1e785363F0875A1B74E27b85FD66c7")) // WAVAX
         );
         assert_eq!(
-            avax.benqi_qi_underlyings
+            avax.c_token_underlyings
                 .get(&address!("89a415b3d20098e6a6c8f7a59001c67bd3129821"))
                 .copied(),
             Some(address!("152b9d0FdC40C096757F570A51E494bd4b943E50")) // BTC.b
         );
+        assert_eq!(
+            avax.liquidation_protocol_aliases
+                .get(&address!("4F01AeD16D97E3aB5ab2B501154DC9bb0F1A5A2C"))
+                .copied(),
+            Some("aave_v2")
+        );
+        // aave_v2_pool + 22 Benqi aliases.
+        assert_eq!(avax.liquidation_protocol_aliases.len(), 23);
         let eth = IngestConfig::from_chain(ChainName::Ethereum, &chains["ethereum"]);
         assert_eq!(
             eth.liquidation_protocol_aliases
@@ -1296,10 +1307,23 @@ mod tests {
                 .copied(),
             Some("spark")
         );
-        assert!(eth.benqi_qi_underlyings.is_empty());
+        assert!(eth.c_token_underlyings.is_empty());
         let poly = IngestConfig::from_chain(ChainName::Polygon, &chains["polygon"]);
         assert!(poly.liquidation_protocol_aliases.is_empty());
-        assert!(poly.benqi_qi_underlyings.is_empty());
+        assert!(poly.c_token_underlyings.is_empty());
+        let bsc = IngestConfig::from_chain(ChainName::Bsc, &chains["bsc"]);
+        assert_eq!(bsc.liquidation_protocol_aliases.len(), 55);
+        assert!(bsc
+            .liquidation_protocol_aliases
+            .values()
+            .all(|l| *l == "venus"));
+        assert_eq!(bsc.c_token_underlyings.len(), 54); // vBNB has no underlying()
+        assert_eq!(
+            bsc.c_token_underlyings
+                .get(&address!("eca88125a5adbe82614ffc12d0db554e2e2867c8"))
+                .copied(),
+            Some(address!("8ac76a51cc950d9822d68b83fe1ad97b32cd580d")) // USDC
+        );
     }
 
     /// P1.4 config wiring: Avalanche ships Chainlink feed → asset map.
