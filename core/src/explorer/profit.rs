@@ -186,17 +186,49 @@ pub fn select_profit_token(
 /// Unlike a naive log-order chain, this tolerates interleaved multi-hop
 /// cycles. `edges` = `(token_in, token_out, pool)` per resolved swap.
 pub fn has_closed_cycle(edges: &[(Address, Address, Address)]) -> bool {
+    find_closed_cycle(edges).is_some()
+}
+
+/// First closed walk: `(anchor_token, tokens_on_walk)`.
+///
+/// `anchor` is the token the walk returns to (`edges[start].token_in`).
+/// Walk tokens are every `token_in` / `token_out` on the used edges.
+pub fn find_closed_cycle(
+    edges: &[(Address, Address, Address)],
+) -> Option<(Address, std::collections::HashSet<Address>)> {
     if edges.len() < 2 {
-        return false;
+        return None;
     }
     let n = edges.len();
     let mut used = vec![false; n];
     for start_edge in 0..n {
-        if dfs_cycle(edges, start_edge, start_edge, &mut used, 0) {
-            return true;
+        if let Some(walk) = dfs_cycle(edges, start_edge, start_edge, &mut used, 0) {
+            return Some(walk);
         }
     }
-    false
+    None
+}
+
+/// True when a negative residual is dust: ≤1 wei, or ≤1 bps of `hop_max`
+/// (largest same-token hop amount on the tx). Material deficits still veto.
+pub fn is_dust_deficit(deficit: U256, hop_max: U256) -> bool {
+    if deficit.is_zero() || deficit <= U256::from(1u64) {
+        return true;
+    }
+    if hop_max.is_zero() {
+        return false;
+    }
+    deficit <= hop_max / U256::from(10_000u64)
+}
+
+/// Absolute magnitude of a negative signed net (zero when non-negative).
+pub fn deficit_amount(ledger: &DeltaLedger, addr: Address, token: Address) -> U256 {
+    let signed = ledger.net_signed(addr, token);
+    if signed.is_negative() {
+        (-signed).into_raw()
+    } else {
+        U256::ZERO
+    }
 }
 
 /// DFS from `start_edge` looking for a path back to the start token. The walk
@@ -207,11 +239,11 @@ fn dfs_cycle(
     cur_edge: usize,
     used: &mut [bool],
     depth: usize,
-) -> bool {
+) -> Option<(Address, std::collections::HashSet<Address>)> {
     let (_, next, _) = edges[cur_edge];
     let start = edges[start_edge].0;
     used[cur_edge] = true;
-    let mut found = false;
+    let mut found = None;
     if depth + 1 >= 2 && next == start {
         // A closed walk of ≥2 edges; require ≥2 distinct pools among used edges.
         let mut pools: Vec<Address> = edges
@@ -222,12 +254,23 @@ fn dfs_cycle(
             .collect();
         pools.sort();
         pools.dedup();
-        found = pools.len() >= 2;
+        if pools.len() >= 2 {
+            let mut tokens = std::collections::HashSet::new();
+            for (i, e) in edges.iter().enumerate() {
+                if used[i] {
+                    tokens.insert(e.0);
+                    tokens.insert(e.1);
+                }
+            }
+            found = Some((start, tokens));
+        }
     } else {
         for e in 0..edges.len() {
-            if !used[e] && edges[e].0 == next && dfs_cycle(edges, start_edge, e, used, depth + 1) {
-                found = true;
-                break;
+            if !used[e] && edges[e].0 == next {
+                if let Some(walk) = dfs_cycle(edges, start_edge, e, used, depth + 1) {
+                    found = Some(walk);
+                    break;
+                }
             }
         }
     }

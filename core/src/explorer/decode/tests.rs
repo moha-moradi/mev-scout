@@ -4,7 +4,8 @@ use alloy::primitives::{address, b256, Address, B256, U256};
 
 use crate::chain::events::{
     AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
-    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, TRANSFER_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
+    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC,
+    V2_SWAP_TOPIC, V3_SWAP_TOPIC,
 };
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
@@ -250,6 +251,34 @@ fn v3_swap_decodes_direction() {
     assert_eq!(s.amount_in, U256::from(100));
     assert_eq!(s.amount_out, U256::from(90));
     assert_eq!(s.token_in, TOKEN0_SENTINEL);
+}
+
+#[test]
+fn lb_legacy_swap_decodes_packed_xy() {
+    // Real Avalanche LB 2.1/2.2 shape: Y in → X out (USDC→BTC.b style).
+    let pool = address!("4224f6f4c9280509724db2dbac314621e4465c29");
+    let mut data = vec![0u8; 192];
+    // id
+    data[29..32].copy_from_slice(&0x801a31u32.to_be_bytes()[1..]);
+    // amountsIn: Y=147207300 in high 16 bytes
+    data[32 + 12..32 + 16].copy_from_slice(&147_207_300u32.to_be_bytes());
+    // amountsOut: X=180816 in low 16 bytes
+    data[64 + 28..64 + 32].copy_from_slice(&180_816u32.to_be_bytes());
+    let l = log(
+        pool,
+        vec![
+            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+            B256::ZERO,
+            B256::ZERO,
+        ],
+        data,
+    );
+    let (amm, s) = decode_swap(&l).unwrap();
+    assert_eq!(amm, Amm::Lb);
+    assert_eq!(s.amount_in, U256::from(147_207_300u64));
+    assert_eq!(s.amount_out, U256::from(180_816u64));
+    assert_eq!(s.token_in, TOKEN1_SENTINEL);
+    assert_eq!(s.token_out, TOKEN0_SENTINEL);
 }
 
 #[test]

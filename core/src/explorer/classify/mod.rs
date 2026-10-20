@@ -236,6 +236,13 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     let mut superseder: HashMap<u64, MevKind> = HashMap::new();
     for e in frontruns.iter().chain(backruns.iter()) {
         superseder.entry(e.tx_index).or_insert(e.kind);
+        // Frontrun close tx may itself be a closed cycle; drop ArbAtomic /
+        // Unknown there so P&L is not double-counted (same rule as JitArb).
+        if e.kind == MevKind::Frontrun {
+            if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
+                superseder.entry(c).or_insert(MevKind::Frontrun);
+            }
+        }
     }
     events.retain(|e| {
         !(matches!(e.kind, MevKind::ArbAtomic | MevKind::Unknown)
@@ -622,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_residual_arb_captures_every_positive_token() {
+    fn multi_residual_arb_keeps_anchor_only_in_profit_tokens() {
         const TOKB: Address = address!("7000000000000000000000000000000000000009");
         let swaps = vec![
             swap(POOL_A, USDC, TOKA, 100, 200),
@@ -637,13 +644,100 @@ mod tests {
         ];
         let input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         let ev = classify_kind(&input, MevKind::ArbAtomic);
-        // Display-primary stays the priority token; every positive residual is
-        // listed for persist-time USD summation (2.3), zero-nets excluded.
+        // Anchor-only profit_tokens (USD must not inflate with unrelated inbound).
         assert_eq!(ev.profit_token, Some(USDC));
         assert_eq!(ev.profit_amount, Some(U256::from(10)));
-        let mut toks = ev.profit_tokens.clone();
-        toks.sort();
-        assert_eq!(toks, vec![(USDC, U256::from(10)), (TOKB, U256::from(500))]);
+        assert_eq!(ev.profit_tokens, vec![(USDC, U256::from(10))]);
+        let other = ev.details["other_residuals"].as_array().unwrap();
+        assert!(other.iter().any(|r| {
+            r["token"].as_str() == Some(&format!("{TOKB:#x}"))
+                && r["amount"].as_str() == Some("500")
+        }));
+    }
+
+    #[test]
+    fn arb_cycle_in_walk_dust_deficit_still_emits() {
+        // Anchor +10 USDC; leave 1 wei of TOKA stuck (dust) → still ArbAtomic.
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 200),
+            swap(POOL_B, TOKA, USDC, 199, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 200),
+            transfer(2, TOKA, ATK, POOL_B, 199),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let ev = classify_kind(&block(vec![tx(0, ATK, true, swaps, transfers)]), MevKind::ArbAtomic);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(10)));
+        assert_eq!(ev.profit_tokens, vec![(USDC, U256::from(10))]);
+    }
+
+    #[test]
+    fn arb_cycle_material_in_walk_deficit_is_dropped() {
+        // Spend more TOKA than received (inventory dump), far above 1 bps.
+        let swaps = vec![
+            swap(POOL_A, USDC, TOKA, 100, 100),
+            swap(POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, ATK, 100),
+            transfer(2, TOKA, ATK, POOL_B, 200),
+            transfer(3, USDC, POOL_B, ATK, 110),
+        ];
+        let events = classify_block(&block(vec![tx(0, ATK, true, swaps, transfers)]));
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "material intermediate deficit must drop, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn arb_cycle_eoa_funds_anchor_contract_holds_profit() {
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, SEARCHER, 100),
+            transfer(1, USDC, SEARCHER, POOL_A, 100),
+            transfer(2, TOKA, POOL_A, SEARCHER, 200),
+            transfer(3, TOKA, SEARCHER, POOL_B, 200),
+            transfer(4, USDC, POOL_B, SEARCHER, 110),
+        ];
+        let ev = classify_kind(
+            &block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]),
+            MevKind::ArbAtomic,
+        );
+        assert_eq!(ev.searcher, SEARCHER);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(10)));
+    }
+
+    #[test]
+    fn arb_cycle_eoa_negative_outside_walk_is_dropped() {
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        const TOKB: Address = address!("7000000000000000000000000000000000000009");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, ATK, SEARCHER, 100),
+            transfer(1, TOKB, ATK, VICTIM, 50), // EOA spends outside walk
+            transfer(2, USDC, SEARCHER, POOL_A, 100),
+            transfer(3, TOKA, POOL_A, SEARCHER, 200),
+            transfer(4, TOKA, SEARCHER, POOL_B, 200),
+            transfer(5, USDC, POOL_B, SEARCHER, 110),
+        ];
+        let events = classify_block(&block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]));
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "EOA outside-walk spend must drop, got {events:?}"
+        );
     }
 
     #[test]
@@ -1028,9 +1122,189 @@ mod tests {
             assert!(reasons.contains(&"PROFIT_VERIFIED"));
             assert_eq!(ev.details["tier"], serde_json::json!("inferred"));
             assert_eq!(ev.details["victim_tx_index"], serde_json::json!(1));
+            assert_eq!(ev.details["close_tx_index"], serde_json::json!(2));
             assert!(!kinds(&events).contains(&MevKind::Sandwich));
         }
     }
+
+    #[test]
+    fn backrun_same_token_size_accepts_decimal_mismatched_amount_in() {
+        // Move amount_in (50 USDC) < backrun amount_in (200 TOKA) — old gate
+        // rejected. Same-token: move.amount_out (1000) >= back.amount_in (200).
+        let mut txs = Vec::new();
+        txs.push(tx(
+            0,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+            vec![
+                transfer(0, TOKA, VICTIM, POOL_A, 100),
+                transfer(1, USDC, POOL_A, VICTIM, 110),
+            ],
+        ));
+        txs.push(tx(
+            1,
+            MARKET,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 50, 1000)],
+            vec![
+                transfer(0, USDC, MARKET, POOL_A, 50),
+                transfer(1, TOKA, POOL_A, MARKET, 1000),
+            ],
+        ));
+        txs.push(tx(
+            2,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 200, 250),
+                swap(POOL_B, USDC, TOKA, 250, 260),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 250),
+                transfer(2, USDC, ATK, POOL_B, 250),
+                transfer(3, TOKA, POOL_B, ATK, 260),
+            ],
+        ));
+        let events = classify_block(&block(txs));
+        assert!(
+            kinds(&events).contains(&MevKind::Backrun),
+            "same-token size gate should accept, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn frontrun_multi_hop_close_uses_anchor_ledger() {
+        const TOKB: Address = address!("700000000000000000000000000000000000000b");
+        const POOL_C: Address = address!("300000000000000000000000000000000000000c");
+        let f = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let v = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 150),
+            ],
+        );
+        let c = tx(
+            2,
+            ATK,
+            true,
+            vec![
+                swap(POOL_B, TOKA, TOKB, 200, 50),
+                swap(POOL_C, TOKB, USDC, 50, 160),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_B, 200),
+                transfer(1, TOKB, POOL_B, ATK, 50),
+                transfer(2, TOKB, ATK, POOL_C, 50),
+                transfer(3, USDC, POOL_C, ATK, 160),
+            ],
+        );
+        let events = classify_block(&block(vec![f, v, c]));
+        let ev = event_of(&events, MevKind::Frontrun);
+        assert_eq!(ev.profit_token, Some(USDC));
+        assert_eq!(ev.profit_amount, Some(U256::from(60)));
+        assert!(!kinds(&events).contains(&MevKind::ArbAtomic));
+    }
+
+    #[test]
+    fn frontrun_material_inventory_spend_is_rejected() {
+        const TOKB: Address = address!("700000000000000000000000000000000000000b");
+        let f = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let v = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 150),
+            ],
+        );
+        // Close spends pre-existing TOKB (not produced by the front).
+        let c = tx(
+            2,
+            ATK,
+            true,
+            vec![swap(POOL_B, TOKB, USDC, 500, 250)],
+            vec![
+                transfer(0, TOKB, ATK, POOL_B, 500),
+                transfer(1, USDC, POOL_B, ATK, 250),
+            ],
+        );
+        let events = classify_block(&block(vec![f, v, c]));
+        assert!(
+            !kinds(&events).contains(&MevKind::Frontrun),
+            "material inventory spend must not be frontrun, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn frontrun_records_close_tx_and_leaves_no_arb_on_close() {
+        let f = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let v = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 150),
+            ],
+        );
+        let c = tx(
+            2,
+            ATK,
+            true,
+            vec![swap(POOL_B, TOKA, USDC, 200, 250)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_B, 200),
+                transfer(1, USDC, POOL_B, ATK, 250),
+            ],
+        );
+        let events = classify_block(&block(vec![f, v, c]));
+        let ev = event_of(&events, MevKind::Frontrun);
+        assert_eq!(ev.details["close_tx_index"], serde_json::json!(2));
+        assert_eq!(ev.profit_amount, Some(U256::from(150)));
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.kind == MevKind::ArbAtomic && e.tx_index == 2),
+            "close tx must not keep ArbAtomic, got {events:?}"
+        );
+    }
+
     #[test]
     fn sandwich_consumed_legs_not_reclaimed_by_phase3() {
         // The classic three-EOA sandwich: front (tx0), victim (tx1), back

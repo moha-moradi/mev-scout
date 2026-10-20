@@ -1,0 +1,46 @@
+{
+  "window": {
+    "from": 98039265,
+    "to": 98041064,
+    "feed_rows": 18
+  },
+  "feed_recall_after": 1.0,
+  "miss_before_count": 1,
+  "recovered_count": 1,
+  "still_miss_count": 0,
+  "profit_mismatch_count": 0,
+  "swap_log_vs_transfer_count": 1,
+  "after_only_arb_count": 16,
+  "dropped_feed_from_before": 0,
+  "kind_flips": [],
+  "swap_vs_xfer": [
+    {
+      "hash": "0x3c648059183848ab78c73fb94f6b61ac50109a78e67dc992433908c9e99451a2",
+      "feed_delta": 43250,
+      "local_amount": 35654,
+      "kind": "arb_atomic"
+    }
+  ],
+  "profit_mismatch": [],
+  "recovered": [
+    "0x3c648059183848ab78c73fb94f6b61ac50109a78e67dc992433908c9e99451a2"
+  ],
+  "after_only_arb_sample": [
+    "0x03557b4ba1b4660aee356890d8e5d00e45bd21497114ba3d0a65a5d6d6b56ef8",
+    "0x0b18c045011b866d7733cb0e00f22db8d82de32fe191fe9062cec33f2aaa5187",
+    "0x2551300f4666fa5624b604e04f3a759ab84a3216ad3414f859fa76457bf63f59",
+    "0x3bdd8ec66e2ca66340b899645bd1a5af433fef00e22a6f65936c81e5bc32db25",
+    "0x3bea7e80b68bacc832b4c3deae9a4b9fa81f6f5dc91244a68dbf99c9409df006",
+    "0x44c8de74eac8a877e41793f354603da7131a1b66051a34c450bde7f5c02d1b7a",
+    "0x4b2bd98cbd277c231783af395da899462c77d822424f13203e6de01274f46417",
+    "0x6c6cf5b0b0f65c9342284f2bdc76af167a77c18e160adddb20b24b536ed4fdf5",
+    "0x9d392d57a6d300900a616073e052e9e334c671520f82bf175697f07320e1d96f",
+    "0xa6c2f2013c29fd7014aaa0c14753c3a901a241d58d9615a50f690f8d8b08a9c1",
+    "0xc7cd747c804c9d66b2b61d3e7d6122acd07982ac81cc87b2f30af2d983f15d4d",
+    "0xc9b0a6a6fffb7465a4ad1fa5685dbbcc0ad7ff6356bc9020ae0eaa7661a080ba",
+    "0xcb29c674850fc040058a20006f806949e72238d7c36968e3e32fa0a10427c235",
+    "0xcbac41eb793d6d22826fb24fc9afc68d0e5e12ea273a2f05a86388a65fb0ce2f",
+    "0xce1f923d6a2720630a00634be52f5fb8c5252213ab86c9c2fe372d767dcc44cb",
+    "0xfca5aafec6822195f946929b5878313870daf7052b61a253874367589c6322ff"
+  ]
+}

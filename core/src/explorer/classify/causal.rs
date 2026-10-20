@@ -3,6 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
+use crate::explorer::profit::{
+    deficit_amount, is_dust_deficit, DeltaLedger, NATIVE_MARKER,
+};
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
 use super::legs::{
@@ -53,8 +56,10 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
                 if !opposite_dir(aleg, bleg) {
                     continue;
                 }
-                // Large-notional market move: A at least as large as B.
-                if aleg.amount_in < bleg.amount_in {
+                // Same-token size: victim received `token_out` which the
+                // backrun spends as `token_in` (opposite dirs). Comparing
+                // `amount_in` across directions mixes decimals/units.
+                if aleg.amount_out < bleg.amount_in {
                     continue;
                 }
                 // Pre-move price reference: nearest earlier same-direction leg.
@@ -147,17 +152,9 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
 pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
     let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
-    // Global, tx-ordered leg index so the searcher's profitable opposite close
-    // can land on a different pool than the victim's (: "subsequent
-    // profitable opposite leg" — no same-pool requirement). A same-pool close
-    // after a third-party victim is, by construction, also a commodity
-    // sandwich; the sandwich pass owns that case (front/back anchors land in
-    // `consumed` via kind priority).
-    let mut all: Vec<(u64, Address, SwapLeg)> = by_pool
-        .values()
-        .flat_map(|legs| legs.iter().map(|(tx, from, leg)| (*tx, *from, leg.clone())))
-        .collect();
-    all.sort_by_key(|(tx, _, _)| *tx);
+    // Same-pool close after a third-party victim is owned by the sandwich
+    // pass (front/back anchors land in `consumed`). Cross-pool / multi-hop
+    // close uses the sender's transfer ledger from front through close.
     let mut out: Vec<MevEvent> = Vec::new();
     let mut claimed: HashSet<(Address, u64, u64)> = HashSet::new();
 
@@ -189,19 +186,40 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
             if claimed.contains(&(pool, *ftx, vtx)) {
                 continue;
             }
-            // Searcher's profitable opposite leg after the victim
-            // (PROFIT_VERIFIED), on any pool the searcher trades.
-            let close = all.iter().find(|(ctx, cfrom, cleg)| {
-                *ctx >= vtx
-                    && *cfrom == *ffrom
-                    && opposite_dir(fleg, cleg)
-                    && cleg.amount_out > fleg.amount_in
-            });
-            let Some((_, _, cleg)) = close else {
+            // Close: earliest later tx from the same sender inside the window
+            // whose cross-tx ledger (front..=close) is net-positive on the
+            // front's token_in with only in-walk dust deficits.
+            let anchor = fleg.token_in;
+            let mut close_idx: Option<u64> = None;
+            let mut profit = U256::ZERO;
+            let mut close_hash = fleg.tx_hash;
+            for tx in &input.txs {
+                if tx.tx_index < vtx || tx.from != *ffrom {
+                    continue;
+                }
+                if tx.tx_index.saturating_sub(*ftx) > CAUSAL_WINDOW_TXS {
+                    break;
+                }
+                if consumed.contains(&tx.tx_index) {
+                    continue;
+                }
+                let Some((net, ok)) =
+                    frontrun_cross_tx_profit(input, *ffrom, *ftx, tx.tx_index, anchor)
+                else {
+                    continue;
+                };
+                if !ok || net.is_zero() {
+                    continue;
+                }
+                close_idx = Some(tx.tx_index);
+                profit = net;
+                close_hash = tx.tx_hash;
+                break;
+            }
+            let Some(ctx) = close_idx else {
                 continue;
             };
-            let profit = cleg.amount_out.saturating_sub(fleg.amount_in);
-            if profit.is_zero() || !claimed.insert((pool, *ftx, vtx)) {
+            if !claimed.insert((pool, *ftx, vtx)) {
                 continue;
             }
             let ftx_data = txs_by_index.get(ftx).copied();
@@ -218,7 +236,7 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                 searcher: *ffrom,
                 contract: None,
                 pools: vec![pool],
-                profit_token: Some(fleg.token_in),
+                profit_token: Some(anchor),
                 profit_amount: Some(profit),
                 profit_tokens: vec![],
                 profit_usd: None,
@@ -235,10 +253,12 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                     "pnl": {
                         "basis": PnlBasis::R.as_str(),
                         "profit_amount": profit.to_string(),
-                        "profit_token": format!("{:#x}", fleg.token_in),
+                        "profit_token": format!("{anchor:#x}"),
                     },
                     "pool": format!("{pool:#x}"),
                     "victim_tx_index": vtx,
+                    "close_tx_index": ctx,
+                    "close_tx_hash": format!("{close_hash:#x}"),
                     "front_run": {
                         "tx_index": ftx,
                         "tx_hash": format!("{:#x}", fleg.tx_hash),
@@ -263,4 +283,66 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
         }
     }
     out
+}
+
+/// Cross-tx ledger for a frontrun close: sum `searcher`'s transfers from
+/// `front_tx` through `close_tx`. Returns `(anchor_net, deficits_are_dust)`.
+fn frontrun_cross_tx_profit(
+    input: &BlockInput,
+    searcher: Address,
+    front_tx: u64,
+    close_tx: u64,
+    anchor: Address,
+) -> Option<(U256, bool)> {
+    let mut transfers = Vec::new();
+    let mut hop_max: HashMap<Address, U256> = HashMap::new();
+    let mut walk_tokens: HashSet<Address> = HashSet::new();
+    walk_tokens.insert(anchor);
+    let mut native_value = U256::ZERO;
+    for tx in &input.txs {
+        if tx.tx_index < front_tx || tx.tx_index > close_tx {
+            continue;
+        }
+        if tx.from == searcher {
+            native_value = native_value.saturating_add(tx.value);
+        }
+        for t in &tx.transfers {
+            transfers.push(t.clone());
+        }
+        for s in &tx.swaps {
+            if s.token_in.is_zero() || s.token_out.is_zero() {
+                continue;
+            }
+            walk_tokens.insert(s.token_in);
+            walk_tokens.insert(s.token_out);
+            for (tok, amt) in [(s.token_in, s.amount_in), (s.token_out, s.amount_out)] {
+                let e = hop_max.entry(tok).or_insert(U256::ZERO);
+                if amt > *e {
+                    *e = amt;
+                }
+            }
+        }
+    }
+    let ledger = DeltaLedger::from_transfers(&transfers, input.wrapped_native, (searcher, native_value));
+    let net = ledger.net(searcher, anchor);
+    if net.is_zero() {
+        return None;
+    }
+    for t in ledger.touched_tokens(searcher) {
+        if t == NATIVE_MARKER {
+            continue;
+        }
+        let def = deficit_amount(&ledger, searcher, t);
+        if def.is_zero() {
+            continue;
+        }
+        if !walk_tokens.contains(&t) {
+            return Some((net, false));
+        }
+        let max = hop_max.get(&t).copied().unwrap_or(U256::ZERO);
+        if !is_dust_deficit(def, max) {
+            return Some((net, false));
+        }
+    }
+    Some((net, true))
 }

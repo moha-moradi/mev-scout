@@ -73,7 +73,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "searcher swap before victim on same pool; RECORD dense windows",
+        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich",
     },
     StrategyScenarioTarget {
         id: "baseline.backrun",
@@ -83,7 +83,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "searcher swap after victim on same pool",
+        hunt: "third same-pool print + same-token size (victim.amount_out >= back.amount_in)",
     },
     StrategyScenarioTarget {
         id: "baseline.liquidation",

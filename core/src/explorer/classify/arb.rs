@@ -1,18 +1,18 @@
 //! Atomic-arb attribution and adjacent Exact fingerprints
 //! (keeper / claim-and-sell / ERC-4337 bundler).
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::decode;
 use crate::explorer::profit::{
-    has_closed_cycle, has_inventory_spend, net_flash_loan, select_profit_token, DeltaLedger,
-    NATIVE_MARKER,
+    deficit_amount, find_closed_cycle, is_dust_deficit, net_flash_loan, select_profit_token,
+    DeltaLedger, NATIVE_MARKER,
 };
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact};
 
-use super::{append_tag, has_unresolved_tokens, BlockInput};
+use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 /// Swap attribution + atomic arb + keeper/claim/bundler.
 pub(super) fn classify_arbs(
@@ -95,11 +95,6 @@ pub(super) fn classify_arbs(
             .collect();
         candidates.extend(qualified);
 
-        let candidate = candidates
-            .iter()
-            .copied()
-            .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some());
-
         // ── Atomic arb ─────────────────────────────────────────────────
         // Resolved directional edges (token_in, token_out, pool).
         //
@@ -121,101 +116,119 @@ pub(super) fn classify_arbs(
             })
             .map(|s| (s.token_in, s.token_out, s.pool))
             .collect();
-        // Exact only on a closed directed cycle spanning ≥2 pools
-        // attributable to a single flow owner among the searcher's route.
-        // Swap-edge cycles alone are not enough: aggregator inventory trades
-        // (WAVAX→USDC split across pools) produce bidirectional edges while
-        // the searcher ledger stays open (−input token, +output token).
-        let inventory_open = candidate.is_some_and(|a| has_inventory_spend(&ledger, a));
-        // Cost-on-initiator guard: when the profit-bearing candidate is not the
-        // tx initiator, an unmatched ERC-20 inventory spend by `tx.from` means
-        // the initiator funded an inventory conversion (e.g. 10k USDC → WAVAX)
-        // whose output merely lands on a downstream contract. That is not an
-        // atomic arb. Native value is excluded: gas/fee flows are expected.
-        let initiator_inventory_open = !tx.from.is_zero()
-            && ledger.touched_tokens(tx.from).into_iter().any(|t| {
-                t != NATIVE_MARKER && ledger.net_signed(tx.from, t).is_negative()
-            });
-        let arb_confirmed = resolved_edges.len() >= 2
-            && has_closed_cycle(&resolved_edges)
-            && flow_attributable(&tx.swaps, &candidates)
-            && !inventory_open
-            && !initiator_inventory_open;
 
-        if !arb_confirmed {
+        let Some((anchor, walk_tokens)) = find_closed_cycle(&resolved_edges) else {
+            continue;
+        };
+        if !flow_attributable(&tx.swaps, &candidates) {
             continue;
         }
 
-        if let Some(searcher) = candidate {
-            if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
-                let amount = ledger.net(searcher, token);
-                if amount.is_zero() {
-                    continue;
-                }
-                // emit every positive residual so persist can
-                // USD-sum across them; the selected pair stays display-primary.
-                let profit_tokens: Vec<(Address, U256)> = ledger
-                    .positive_tokens(searcher)
-                    .into_iter()
-                    .map(|t| (t, ledger.net(searcher, t)))
-                    .filter(|(_, amt)| *amt > U256::ZERO)
-                    .collect();
-                // P0.4: flash-swap / flash-loan flag when principal was borrowed.
-                let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
-                // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-                let long_tail = is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
-                let mut tags: Vec<&str> = Vec::new();
-                if flash_arb {
-                    tags.push("flash_arb");
-                }
-                if long_tail {
-                    tags.push("long_tail");
-                }
-                tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
-                events.push(MevEvent {
-                    block: input.block,
-                    ts: input.ts,
-                    tx_index: tx.tx_index,
-                    tx_hash: tx.tx_hash,
-                    kind: MevKind::ArbAtomic,
-                    searcher,
-                    contract: if searcher == tx.from { None } else { tx.to },
-                    pools: tx.swaps.iter().map(|s| s.pool).collect(),
-                    profit_token: Some(token),
-                    profit_amount: Some(amount),
-                    profit_tokens,
-                    profit_usd: None, // pricing applied at persist time
-                    gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
-                        (tx.effective_gas_price_gwei * 1e9) as u128,
-                    )),
-                    flashloan_fee_wei,
-                    flashloan_fee_token,
-                    confidence: Confidence::Exact,
-                    victim_hashes: vec![],
-                    victim_swap_size: None,
-                    details: serde_json::json!({
-                        "mode": "realized",
-                        "tags": tags,
-                        "pnl_basis": PnlBasis::R.as_str(),
-                        "pnl": {
-                            "basis": PnlBasis::R.as_str(),
-                            "profit_amount": amount.to_string(),
-                            "profit_token": format!("{:#x}", token),
-                        },
-                        "route": tx.swaps.iter().map(|s| serde_json::json!({
-                            "pool": format!("{:#x}", s.pool),
-                            "amm": s.amm.as_str(),
-                            "token_in": format!("{:#x}", s.token_in),
-                            "token_out": format!("{:#x}", s.token_out),
-                            "token_source": s.token_source.as_str(),
-                            "amount_in": s.amount_in.to_string(),
-                            "amount_out": s.amount_out.to_string(),
-                        })).collect::<Vec<_>>(),
-                        "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
-                    }),
-                });
-            }
+        let hop_max = hop_max_by_token(&tx.swaps);
+        // Prefer a candidate with a positive anchor residual (EOA-funded
+        // contract holds amountOut−amountIn while the EOA is negative).
+        let searcher = candidates
+            .iter()
+            .copied()
+            .find(|a| ledger.net(*a, anchor) > U256::ZERO)
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some())
+            });
+        let Some(searcher) = searcher else {
+            continue;
+        };
+        // When the EOA only funds the anchor into the searcher contract, the
+        // contract ledger still shows +amountOut (funding credit + cycle).
+        // Combine with the EOA's negative anchor residual so profit is
+        // amountOut−amountIn, not the gross contract balance.
+        let amount = anchor_profit_amount(&ledger, tx.from, searcher, anchor);
+        if amount.is_zero() {
+            continue;
         }
+
+        // Material deficit on the profit holder: outside-walk negatives always
+        // veto; in-walk negatives veto unless dust (≤1 wei or ≤1 bps of hop).
+        if has_material_deficit(&ledger, searcher, &walk_tokens, &hop_max) {
+            continue;
+        }
+        // EOA may fund only the anchor into the profit holder; any other
+        // ERC-20 spend by tx.from (outside-walk or material in-walk) vetoes.
+        if initiator_blocks_cycle(tx, &ledger, searcher, anchor, &walk_tokens, &hop_max) {
+            continue;
+        }
+
+        // Anchor-only profit (matches mev.zone amountOut−amountIn). Extra
+        // positive residuals stay in details, not profit_tokens (USD-sum).
+        let profit_tokens: Vec<(Address, U256)> = vec![(anchor, amount)];
+        let other_positives: Vec<serde_json::Value> = ledger
+            .positive_tokens(searcher)
+            .into_iter()
+            .filter(|t| *t != anchor)
+            .map(|t| {
+                serde_json::json!({
+                    "token": format!("{t:#x}"),
+                    "amount": ledger.net(searcher, t).to_string(),
+                })
+            })
+            .collect();
+        // P0.4: flash-swap / flash-loan flag when principal was borrowed.
+        let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
+        // P1.3: multi-hop arb whose route includes a non-blue-chip token.
+        let long_tail = is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
+        let mut tags: Vec<&str> = Vec::new();
+        if flash_arb {
+            tags.push("flash_arb");
+        }
+        if long_tail {
+            tags.push("long_tail");
+        }
+        tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
+        events.push(MevEvent {
+            block: input.block,
+            ts: input.ts,
+            tx_index: tx.tx_index,
+            tx_hash: tx.tx_hash,
+            kind: MevKind::ArbAtomic,
+            searcher,
+            contract: if searcher == tx.from { None } else { tx.to },
+            pools: tx.swaps.iter().map(|s| s.pool).collect(),
+            profit_token: Some(anchor),
+            profit_amount: Some(amount),
+            profit_tokens,
+            profit_usd: None, // pricing applied at persist time
+            gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
+                (tx.effective_gas_price_gwei * 1e9) as u128,
+            )),
+            flashloan_fee_wei,
+            flashloan_fee_token,
+            confidence: Confidence::Exact,
+            victim_hashes: vec![],
+            victim_swap_size: None,
+            details: serde_json::json!({
+                "mode": "realized",
+                "tags": tags,
+                "pnl_basis": PnlBasis::R.as_str(),
+                "pnl": {
+                    "basis": PnlBasis::R.as_str(),
+                    "profit_amount": amount.to_string(),
+                    "profit_token": format!("{anchor:#x}"),
+                },
+                "other_residuals": other_positives,
+                "route": tx.swaps.iter().map(|s| serde_json::json!({
+                    "pool": format!("{:#x}", s.pool),
+                    "amm": s.amm.as_str(),
+                    "token_in": format!("{:#x}", s.token_in),
+                    "token_out": format!("{:#x}", s.token_out),
+                    "token_source": s.token_source.as_str(),
+                    "amount_in": s.amount_in.to_string(),
+                    "amount_out": s.amount_out.to_string(),
+                })).collect::<Vec<_>>(),
+                "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
+            }),
+        });
 
         // ── 5. JIT pass (Mint+Burn same position, same block) ──────────
         // Handled block-wide below (needs cross-tx pairing); per-tx we only
@@ -475,4 +488,130 @@ pub(crate) fn flow_attributable(swaps: &[SwapFact], candidates: &[Address]) -> b
         None => true, // nothing to disprove
         Some(o) => candidates.contains(&o),
     }
+}
+
+/// Anchor profit: searcher net, or searcher+EOA when the EOA funded the
+/// searcher (so capital inflow is not counted as profit).
+fn anchor_profit_amount(
+    ledger: &DeltaLedger,
+    eoa: Address,
+    searcher: Address,
+    anchor: Address,
+) -> U256 {
+    let searcher_net = ledger.net_signed(searcher, anchor);
+    if eoa.is_zero() || eoa == searcher {
+        return if searcher_net.is_positive() {
+            searcher_net.into_raw()
+        } else {
+            U256::ZERO
+        };
+    }
+    let eoa_net = ledger.net_signed(eoa, anchor);
+    let funded = eoa_net.is_negative()
+        && searcher_net.is_positive();
+    let combined = if funded {
+        searcher_net + eoa_net
+    } else {
+        searcher_net
+    };
+    if combined.is_positive() {
+        combined.into_raw()
+    } else {
+        U256::ZERO
+    }
+}
+
+/// Largest hop amount per token across resolved swap legs (for dust bps).
+fn hop_max_by_token(swaps: &[SwapFact]) -> HashMap<Address, U256> {
+    let mut out: HashMap<Address, U256> = HashMap::new();
+    let bump = |m: &mut HashMap<Address, U256>, tok: Address, amt: U256| {
+        if tok.is_zero() || amt.is_zero() {
+            return;
+        }
+        let e = m.entry(tok).or_insert(U256::ZERO);
+        if amt > *e {
+            *e = amt;
+        }
+    };
+    for s in swaps {
+        if s.amm == Amm::Aggregator || has_unresolved_tokens(s) {
+            continue;
+        }
+        bump(&mut out, s.token_in, s.amount_in);
+        bump(&mut out, s.token_out, s.amount_out);
+    }
+    out
+}
+
+/// True when `addr` has a material (non-dust) negative residual on any token.
+/// Outside-walk deficits always count; in-walk deficits need >1 wei and >1 bps.
+fn has_material_deficit(
+    ledger: &DeltaLedger,
+    addr: Address,
+    walk_tokens: &HashSet<Address>,
+    hop_max: &HashMap<Address, U256>,
+) -> bool {
+    for t in ledger.touched_tokens(addr) {
+        if t == NATIVE_MARKER {
+            continue;
+        }
+        let def = deficit_amount(ledger, addr, t);
+        if def.is_zero() {
+            continue;
+        }
+        if !walk_tokens.contains(&t) {
+            return true;
+        }
+        let max = hop_max.get(&t).copied().unwrap_or(U256::ZERO);
+        if !is_dust_deficit(def, max) {
+            return true;
+        }
+    }
+    false
+}
+
+/// EOA funding of the anchor into the profit holder is allowed. Any other
+/// material ERC-20 spend by `tx.from` vetoes (inventory conversion).
+fn initiator_blocks_cycle(
+    tx: &TxInput,
+    ledger: &DeltaLedger,
+    searcher: Address,
+    anchor: Address,
+    walk_tokens: &HashSet<Address>,
+    hop_max: &HashMap<Address, U256>,
+) -> bool {
+    if tx.from.is_zero() || tx.from == searcher {
+        return false;
+    }
+    for t in ledger.touched_tokens(tx.from) {
+        if t == NATIVE_MARKER {
+            continue;
+        }
+        let def = deficit_amount(ledger, tx.from, t);
+        if def.is_zero() {
+            continue;
+        }
+        if t == anchor {
+            // Allowed when the EOA funded the profit holder and that holder
+            // is net-positive on the anchor (do not sum EOA+contract nets).
+            let funded = tx.transfers.iter().any(|tr| {
+                tr.token == anchor
+                    && tr.from == tx.from
+                    && tr.to == searcher
+                    && !tr.amount.is_zero()
+            });
+            if funded && ledger.net(searcher, anchor) > U256::ZERO {
+                continue;
+            }
+            return true;
+        }
+        if walk_tokens.contains(&t) {
+            let max = hop_max.get(&t).copied().unwrap_or(U256::ZERO);
+            if is_dust_deficit(def, max) {
+                continue;
+            }
+        }
+        return true;
+    }
+    false
 }

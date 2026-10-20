@@ -2,7 +2,9 @@
 use crate::utils::topic_address;
 use alloy::primitives::{Address, U256};
 
-use crate::chain::events::{INF_CL_SWAP_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC};
+use crate::chain::events::{
+    INF_CL_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+};
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact};
 use crate::pool::decoders::{
@@ -191,6 +193,37 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         return Some((Amm::Lb, fact));
     }
 
+    if topic0 == *TRADER_JOE_LB_SWAP_LEGACY_TOPIC {
+        // LB 2.1/2.2: topics [sig, sender, to]; data =
+        // id(uint24), amountsIn(bytes32), amountsOut(bytes32), ...
+        // PackedUint128: amountX low 16 bytes, amountY high 16 bytes.
+        if log.topics.len() < 3 || log.data.len() < 96 {
+            return None;
+        }
+        let (in_x, in_y) = unpack_lb_amounts_xy(&log.data[32..64]);
+        let (out_x, out_y) = unpack_lb_amounts_xy(&log.data[64..96]);
+        let mut fact = base(Amm::Lb, log.address);
+        // Exactly one side should be non-zero on each packed word for a
+        // normal swap; prefer X-in when both somehow set.
+        if !in_x.is_zero() {
+            fact.amount_in = in_x;
+            fact.amount_out = out_y;
+            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+            fact.token_out = super::sentinels::TOKEN1_SENTINEL;
+        } else if !in_y.is_zero() {
+            fact.amount_in = in_y;
+            fact.amount_out = out_x;
+            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
+            fact.token_out = super::sentinels::TOKEN0_SENTINEL;
+        } else {
+            return None;
+        }
+        if fact.amount_in.is_zero() || fact.amount_out.is_zero() {
+            return None;
+        }
+        return Some((Amm::Lb, fact));
+    }
+
     if topic0 == *PENDLE_SWAP_TOPIC {
         // topics: [sig, caller, receiver]; data: int256 netPt, int256 netSy,...
         if log.topics.len() < 3 || log.data.len() < 64 {
@@ -282,4 +315,12 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     }
 
     None
+}
+
+/// LFJ PackedUint128: amountX in the low 16 bytes, amountY in the high 16.
+fn unpack_lb_amounts_xy(word: &[u8]) -> (U256, U256) {
+    debug_assert!(word.len() >= 32);
+    let ax = U256::from_be_slice(&word[16..32]);
+    let ay = U256::from_be_slice(&word[0..16]);
+    (ax, ay)
 }
