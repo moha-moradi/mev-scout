@@ -15,7 +15,7 @@ todos:
     content: Assert protocol/USD on poly-liquidation-window + poly-liquidation-94431566; checklist polygon.liquidation; hunt only if broken
     status: completed
   - id: poly-aave-v2-evidence
-    content: Count LiquidationCall on Polygon V2 pool; pin aave_v2_pool only with evidence
+    content: "Pin aave_v2_pool=0x8dFf… (DefiLlama + publicnode: 2 LiquidationCall / last 20k); corpus poly-aave-v2-95893023 protocol=aave_v2"
     status: completed
   - id: bsc-aave-v2
     content: no Aave V2 on BSC verified; corpus bsc-aave-127706714 (protocol=aave_v3, searcher 0xec40d8aa…1118); checklist bsc.aave verified

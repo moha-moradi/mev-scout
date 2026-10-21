@@ -2,8 +2,10 @@
 chain_id = 137
 balancer_vault = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 aave_v3_pool = "0x794a61358D6845594F94dc1DB02A252b5b4814aD"
-# Aave V2 LendingPool (0x8dFf5E27…) — not pinned: tip hunts found 0 LiquidationCall
-# volume; re-evaluate before adding aave_v2_pool.
+# Aave V2 LendingPool — pinned: DefiLlama aave-v2 still shows Polygon
+# CollateralLiquidated (e.g. ~$63/24h, ~$1.5k/7d). Free RPC getLogs hunts
+# false-zero'd; same LiquidationCall topic0 as V3 → remap via aave_v2_pool.
+aave_v2_pool = "0x8dFf5E27EA6b7AC08EbFdf9eB090F32ee9a30fcf"
 uniswap_v3_factories = [
   "0x1F98431c8aD98523631AE4a59f267346ea31F984",
   "0x08958a3a1324f4870eb0028f1e93b2e3d8d78e09",

@@ -16,6 +16,7 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 | P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq; `aave_v2_pool` remap → details.protocol=aave_v2 |
 | P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
 | polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |
+| polygon.aave_v2 | liquidation | A | verified | polygon | 95893023 | 95893023 | corpus `poly-aave-v2-95893023`; `aave_v2_pool` pin; searcher `0xd9ff…76c3` |
 | bsc.aave | liquidation | A | verified | bsc | 127706714 | 127706714 | corpus `bsc-aave-127706714`; protocol=aave_v3 (no V2 on BSC); searcher `0xec40d8aa…1118` |
 | bsc.venus | liquidation | A | verified | bsc | 102639252 | 102639252 | corpus `bsc-venus-102639252`; protocol=venus (vUSDT emitter); searcher `0x6898c2c1…e052` |
 | P0.3 | buycollateral | C | pending | ethereum | | | no BuyCollateral in tip 40k |

@@ -19,7 +19,9 @@
 //! - `0xa6563baa758a7c39960a339750c89663aadf9fd2`: 17 ops
 //! - block 94430259: 5 `arb_atomic` ops, max profit \$25
 //! - blocks 94430973..=94431381: 8 liquidations by
-//!   `0x7f1aacb852a7457e8eb97e5196276b92f408d990`
+//!   `0x7f1aacb852a7457e8eb97e5196276b92f408d990` (Aave V3)
+//! - block 95893023: Aave V2 LiquidationCall on `0x8dFf…`, searcher
+//!   `0xd9ff…76c3` (publicnode tip hunt; DefiLlama still shows Polygon V2 volume)
 //!
 //! BSC seeds (liq coverage plan Phase 3):
 //! - block 127706714: Aave V3 LiquidationCall, searcher `0xec40d8aa…1118`
@@ -249,6 +251,18 @@ const CORPUS: &[CorpusCase] = &[
         kind: "liquidation",
         min_ops: 1,
         searcher: Some(address!("7f1aacb852a7457e8eb97e5196276b92f408d990")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Polygon Aave V2 LiquidationCall on LendingPool 0x8dFf… (evidence-gated pin).
+    CorpusCase {
+        id: "poly-aave-v2-95893023",
+        chain: ChainName::Polygon,
+        from_block: 95_893_023,
+        to_block: 95_893_023,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("d9fffdf0c4b18fb7e225da15b2af9f88e55676c3")),
         profit_usd_min: None,
         profit_usd_max: None,
     },
@@ -518,6 +532,7 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
 fn expected_protocol(case_id: &str) -> Option<&'static str> {
     match case_id {
         "poly-liquidation-window" | "poly-liquidation-94431566" => Some("aave_v3"),
+        id if id.starts_with("poly-aave-v2-") => Some("aave_v2"),
         id if id.starts_with("bsc-aave-") => Some("aave_v3"),
         id if id.starts_with("bsc-venus-") => Some("venus"),
         _ => None,

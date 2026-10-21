@@ -1309,7 +1309,13 @@ mod tests {
         );
         assert!(eth.c_token_underlyings.is_empty());
         let poly = IngestConfig::from_chain(ChainName::Polygon, &chains["polygon"]);
-        assert!(poly.liquidation_protocol_aliases.is_empty());
+        assert_eq!(
+            poly.liquidation_protocol_aliases
+                .get(&address!("8dFf5E27EA6b7AC08EbFdf9eB090F32ee9a30fcf"))
+                .copied(),
+            Some("aave_v2")
+        );
+        assert_eq!(poly.liquidation_protocol_aliases.len(), 1);
         assert!(poly.c_token_underlyings.is_empty());
         let bsc = IngestConfig::from_chain(ChainName::Bsc, &chains["bsc"]);
         assert_eq!(bsc.liquidation_protocol_aliases.len(), 55);
