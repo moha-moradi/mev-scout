@@ -488,6 +488,8 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
 fn expected_protocol(case_id: &str) -> Option<&'static str> {
     match case_id {
         "poly-liquidation-window" | "poly-liquidation-94431566" => Some("aave_v3"),
+        id if id.starts_with("bsc-aave-") => Some("aave_v3"),
+        id if id.starts_with("bsc-venus-") => Some("venus"),
         _ => None,
     }
 }

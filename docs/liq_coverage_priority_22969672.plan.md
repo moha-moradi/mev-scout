@@ -18,11 +18,11 @@ todos:
     content: Count LiquidationCall on Polygon V2 pool; pin aave_v2_pool only with evidence
     status: completed
   - id: bsc-aave-v2
-    content: Hunt+confirm BSC Aave pool address; pin aave_v2_pool; corpus seed assert protocol==aave_v2 (+ USD)
-    status: completed
+    content: no Aave V2 on BSC verified (0x6c81… LendingPool has no code, V3 0x6807… live; aave_v2_pool correctly unpinned, BSC Aave labels aave_v3). Expected_protocol scaffolding added. Left: BSC Aave corpus seed bsc-aave-<block> (+USD) — needs a real BSC liquidation block; public RPC blocks getLogs, needs archive token to hunt.
+    status: pending
   - id: bsc-venus
-    content: Venus aliases from getAllMarkets into c_token_underlyings; corpus assert protocol==venus + USD; checklist bsc.venus
-    status: completed
+    content: 55 Venus aliases + 54 underlyings pinned (verified, BSC Venus labels venus). Expected_protocol scaffolding added. Left: BSC Venus corpus seed bsc-venus-<block> (+USD) — needs a real BSC Venus liquidation block; public RPC blocks getLogs, needs archive token to hunt.
+    status: pending
   - id: negative-tests
     content: "Unit tests: alias-without-underlying → null USD+reason; cross-market Benqi both sides; seed no TRANSFER_MISMATCH"
     status: completed
