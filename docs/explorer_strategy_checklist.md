@@ -16,8 +16,8 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 | P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq; `aave_v2_pool` remap → details.protocol=aave_v2 |
 | P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
 | polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |
-| bsc.aave | liquidation | A | pending | bsc | | | no V2 on BSC **verified** (0x6c81… LendingPool has no code, V3 0x6807… live; `aave_v2_pool` correctly unpinned → BSC Aave labels `aave_v3`). Explorer BSC ingest path confirmed (block+receipts, no getLogs). Left: corpus seed `bsc-aave-<block>` (assert scaffolding added) — needs a real BSC liquidation block; public RPC blocks getLogs, needs archive token (e.g. allnodes/dwellir) to hunt. |
-| bsc.venus | liquidation | A | candidate_block | bsc | | | 55 vToken aliases + 54 underlyings pinned; BSC Venus labels `venus` (verified). Explorer BSC ingest path confirmed. Left: corpus seed `bsc-venus-<block>` (assert scaffolding added) — needs a real BSC Venus liquidation block; public RPC blocks getLogs, needs archive token to hunt. |
+| bsc.aave | liquidation | A | verified | bsc | 127706714 | 127706714 | corpus `bsc-aave-127706714`; protocol=aave_v3 (no V2 on BSC); searcher `0xec40d8aa…1118` |
+| bsc.venus | liquidation | A | verified | bsc | 102639252 | 102639252 | corpus `bsc-venus-102639252`; protocol=venus (vUSDT emitter); searcher `0x6898c2c1…e052` |
 | P0.3 | buycollateral | C | pending | ethereum | | | no BuyCollateral in tip 40k |
 | P0.4 | flash_arb | A | pending | avalanche | | | flashes rare; no arb co-hit |
 | P1.1 | interest_accrued | D | sparse_cross_chain | ethereum | 26214788 | 26214788 | Morpho liq flag |

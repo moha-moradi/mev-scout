@@ -21,6 +21,10 @@
 //! - blocks 94430973..=94431381: 8 liquidations by
 //!   `0x7f1aacb852a7457e8eb97e5196276b92f408d990`
 //!
+//! BSC seeds (liq coverage plan Phase 3):
+//! - block 127706714: Aave V3 LiquidationCall, searcher `0xec40d8aa…1118`
+//! - block 102639252: Venus LiquidateBorrow (vUSDT), searcher `0x6898c2c1…e052`
+//!
 //! Ethereum seed (backfill 26055651..=26055745, 2026-09-25): 5 `sandwich`
 //! ops. Three are from `0xae2fc483527b8ef99eb5d9b44875f005ba1fae13`, best
 //! priced profit about \$10. No `jit` mint/burn pair landed in that window.
@@ -245,6 +249,32 @@ const CORPUS: &[CorpusCase] = &[
         kind: "liquidation",
         min_ops: 1,
         searcher: Some(address!("7f1aacb852a7457e8eb97e5196276b92f408d990")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // BSC Aave V3 LiquidationCall on pool 0x6807… (aavescan BNB V3 seed).
+    // Emitter remap leaves protocol=aave_v3 (no aave_v2_pool on BSC).
+    CorpusCase {
+        id: "bsc-aave-127706714",
+        chain: ChainName::Bsc,
+        from_block: 127_706_714,
+        to_block: 127_706_714,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("ec40d8aa0f9493fa6d369347ab777e7709641118")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // BSC Venus LiquidateBorrow on vUSDT 0xfd58… via Venus Liquidator helper.
+    // Alias map remaps emitter → protocol=venus; seize converted via c_token_underlyings.
+    CorpusCase {
+        id: "bsc-venus-102639252",
+        chain: ChainName::Bsc,
+        from_block: 102_639_252,
+        to_block: 102_639_252,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("6898c2c1f07ed80c27c1370cd7c251a52246e052")),
         profit_usd_min: None,
         profit_usd_max: None,
     },
