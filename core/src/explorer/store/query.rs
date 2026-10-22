@@ -6,8 +6,20 @@ use crate::types::{MevOpportunity, Strategy};
 
 use super::{
     map_mev_op_row, map_report_row, map_stats_row, top_grouped, ExplorerStore, MevOpRow,
-    OpportunityInput, PoolSwapRow, ReportOverview, ReportRow, StatsRow,
+    OpportunityInput, PoolSwapRow, ReportOverview, ReportQuality, ReportRow, StatsRow,
 };
+
+/// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.
+fn report_filter_clause(kind: Option<&str>, confidence: Option<&str>) -> String {
+    let mut s = String::new();
+    if let Some(k) = kind {
+        s.push_str(&format!("AND kind = '{k}' "));
+    }
+    if let Some(c) = confidence {
+        s.push_str(&format!("AND confidence = '{c}' "));
+    }
+    s
+}
 
 impl ExplorerStore {
     /// Insert one opportunity row from a `ResultsFile` entry.
@@ -72,8 +84,9 @@ impl ExplorerStore {
         since_ts: u64,
         limit: usize,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        top_grouped(&self.conn, "eoa", since_ts, limit, kind)
+        top_grouped(&self.conn, "eoa", since_ts, limit, kind, confidence)
     }
     /// Competitor leaderboard: group by bot identity
     /// `COALESCE(contract, eoa)` so EOAs sharing an executor collapse.
@@ -82,17 +95,16 @@ impl ExplorerStore {
         since_ts: u64,
         limit: usize,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        let kind_clause = kind
-            .map(|k| format!("AND kind = '{k}'"))
-            .unwrap_or_default();
+        let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT COALESCE(NULLIF(contract, ''), eoa) AS label,
                     COUNT(*) AS ops,
                     COALESCE(SUM(profit_usd), 0) AS gross_usd,
                     COALESCE(SUM(net_profit_usd), 0) AS net_usd
              FROM mev_ops
-             WHERE ts >= {since_ts} {kind_clause}
+             WHERE ts >= {since_ts} {filter}
              GROUP BY label
              ORDER BY gross_usd DESC
              LIMIT {limit}"
@@ -111,18 +123,23 @@ impl ExplorerStore {
         since_ts: u64,
         limit: usize,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<StatsRow>> {
         // Pools live inside route_json; extract with json_each.
-        let kind_clause = kind
-            .map(|k| format!("AND m.kind = '{k}'"))
-            .unwrap_or_default();
+        let mut filter = String::new();
+        if let Some(k) = kind {
+            filter.push_str(&format!("AND m.kind = '{k}' "));
+        }
+        if let Some(c) = confidence {
+            filter.push_str(&format!("AND m.confidence = '{c}' "));
+        }
         let sql = format!(
             "SELECT j.value->>'$.pool' AS label,
                     COUNT(DISTINCT m.id) AS ops,
                     COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
                     COALESCE(SUM(m.net_profit_usd), 0) AS net_usd
              FROM mev_ops m, json_each(COALESCE(m.route_json, '[]')) j
-             WHERE m.ts >= {since_ts} {kind_clause} AND j.value->>'$.pool' IS NOT NULL
+             WHERE m.ts >= {since_ts} {filter} AND j.value->>'$.pool' IS NOT NULL
              GROUP BY label
              ORDER BY gross_usd DESC
              LIMIT {limit}"
@@ -386,10 +403,9 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<ReportOverview> {
-        let kind_clause = kind
-            .map(|k| format!("AND kind = '{k}'"))
-            .unwrap_or_default();
+        let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT COUNT(*),
                     COALESCE(SUM(volume_usd), 0),
@@ -399,8 +415,15 @@ impl ExplorerStore {
                     COALESCE(SUM(net_profit_usd), 0),
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa),
-                    COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa))
-             FROM mev_ops WHERE ts >= {since_ts} {kind_clause}"
+                    COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa)),
+                    SUM(CASE WHEN profit_usd IS NOT NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN profit_usd IS NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN confidence = 'exact' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN confidence = 'inferred' THEN 1 ELSE 0 END),
+                    COALESCE(SUM(CASE WHEN confidence = 'exact' THEN net_profit_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN net_profit_usd ELSE 0 END), 0),
+                    SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END)
+             FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
             Ok(ReportOverview {
@@ -413,6 +436,15 @@ impl ExplorerStore {
                 highest_single_usd: r.get(6)?,
                 searchers: r.get::<_, i64>(7)?,
                 competitors: r.get::<_, i64>(8)?,
+                quality: ReportQuality {
+                    ops_priced: r.get::<_, i64>(9).unwrap_or(0),
+                    ops_unpriced: r.get::<_, i64>(10).unwrap_or(0),
+                    ops_exact: r.get::<_, i64>(11).unwrap_or(0),
+                    ops_inferred: r.get::<_, i64>(12).unwrap_or(0),
+                    net_usd_exact: r.get(13).unwrap_or(0.0),
+                    net_usd_inferred: r.get(14).unwrap_or(0.0),
+                    ops_approx: r.get::<_, i64>(15).unwrap_or(0),
+                },
             })
         })?;
         Ok(row)
@@ -422,10 +454,9 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<ReportRow>> {
-        let kind_clause = kind
-            .map(|k| format!("AND kind = '{k}'"))
-            .unwrap_or_default();
+        let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT kind AS label, COUNT(*) AS ops,
                     COALESCE(SUM(volume_usd), 0),
@@ -434,7 +465,7 @@ impl ExplorerStore {
                     COALESCE(SUM(flashloan_fee_usd), 0),
                     COALESCE(SUM(net_profit_usd), 0)
              FROM mev_ops
-             WHERE ts >= {since_ts} {kind_clause}
+             WHERE ts >= {since_ts} {filter}
              GROUP BY kind
              ORDER BY gross DESC"
         );
@@ -451,10 +482,9 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<ReportRow>> {
-        let kind_clause = kind
-            .map(|k| format!("AND kind = '{k}'"))
-            .unwrap_or_default();
+        let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT date(ts, 'unixepoch') AS label, COUNT(*),
                     COALESCE(SUM(volume_usd), 0),
@@ -463,7 +493,7 @@ impl ExplorerStore {
                     COALESCE(SUM(flashloan_fee_usd), 0),
                     COALESCE(SUM(net_profit_usd), 0)
              FROM mev_ops
-             WHERE ts >= {since_ts} {kind_clause}
+             WHERE ts >= {since_ts} {filter}
              GROUP BY label
              ORDER BY label DESC"
         );
@@ -482,17 +512,16 @@ impl ExplorerStore {
         since_ts: u64,
         limit: usize,
         kind: Option<&str>,
+        confidence: Option<&str>,
     ) -> anyhow::Result<Vec<MevOpRow>> {
-        let kind_clause = kind
-            .map(|k| format!("AND kind = '{k}'"))
-            .unwrap_or_default();
+        let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
                     route_json, victim_hashes, details_json, detector, created_at
              FROM mev_ops
-             WHERE ts >= {since_ts} {kind_clause}
+             WHERE ts >= {since_ts} {filter}
              ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC
              LIMIT {limit}"
         );

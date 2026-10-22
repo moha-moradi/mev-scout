@@ -111,13 +111,40 @@ pub struct BlockInput {
     pub prior_oracle_answers: HashMap<Address, i128>,
     /// Benqi sAVAX `getPooledAvaxByShares(1e18)` at this block (plan P3.16).
     pub savax_exchange_rate_wad: Option<U256>,
+    /// Addresses that must not be attributed as searcher profit (block
+    /// coinbase + optional config tip sinks). Forwarded residual landing
+    /// solely here is dropped so validator tips do not inflate PnL.
+    pub tip_sinks: HashSet<Address>,
     pub txs: Vec<TxInput>,
 }
 
-/// Classify one block. Returns (events, bundle_details) where bundle details
-/// for sandwiches are already folded into `details_json` per event.
-pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
+/// Output of [`classify_block`]: realized events plus classify-side drops.
+#[derive(Debug, Clone, Default)]
+pub struct ClassifyOutput {
+    pub events: Vec<MevEvent>,
+    pub rejects: Vec<crate::explorer::RejectedCandidate>,
+}
+
+impl std::ops::Deref for ClassifyOutput {
+    type Target = [MevEvent];
+    fn deref(&self) -> &Self::Target {
+        &self.events
+    }
+}
+
+impl IntoIterator for ClassifyOutput {
+    type Item = MevEvent;
+    type IntoIter = std::vec::IntoIter<MevEvent>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.events.into_iter()
+    }
+}
+
+/// Classify one block. Sandwich bundle details are folded into `details_json`
+/// per event. Dropped near-miss arb cycles land in [`ClassifyOutput::rejects`].
+pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut events: Vec<MevEvent> = Vec::new();
+    let mut rejects: Vec<crate::explorer::RejectedCandidate> = Vec::new();
 
     // Block-wide oracle / reserve facts (P1.1 / P1.4 co-block checks).
     let block_oracle_updates: Vec<&OracleUpdateFact> = input
@@ -177,7 +204,9 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     events.extend(classify_skims(input));
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/bundler/upgrade)
-    events.extend(classify_arbs(input, &liq_txs, &arb_tag_opts));
+    let (arb_events, arb_rejects) = classify_arbs(input, &liq_txs, &arb_tag_opts);
+    events.extend(arb_events);
+    rejects.extend(arb_rejects);
 
     // ── 5b. JIT block-wide pairing ──────────────────────────────────────
     let mut jit_events = classify_jit(input);
@@ -255,12 +284,17 @@ pub fn classify_block(input: &BlockInput) -> Vec<MevEvent> {
     events.sort_by(|a, b| {
         a.tx_index
             .cmp(&b.tx_index)
-            .then_with(|| kind_order(a.kind).cmp(&kind_order(b.kind)))
+            .then_with(|| kind_precedence(a.kind).cmp(&kind_precedence(b.kind)))
     });
-    events
+    ClassifyOutput { events, rejects }
 }
 
-fn kind_order(k: MevKind) -> u8 {
+/// Kind priority for sort / supersede (lower = higher priority).
+/// Single source of truth for Sandwich > Frontrun > Backrun > ArbAtomic >
+/// JitArb > Jit > Liquidation > Skim > Unknown. The JitArb upgrade +
+/// Frontrun/Backrun retain paths must stay consistent with this order so
+/// P&L is never double-counted on one tx_index.
+pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
         MevKind::Sandwich => 0,
         MevKind::Frontrun => 1,
@@ -285,24 +319,25 @@ pub(super) fn append_tag(details: &mut serde_json::Value, tag: &str) {
     }
 }
 
-/// Decoded facts for one transaction.
-pub type TxFacts = (
-    Vec<TransferFact>,
-    Vec<SwapFact>,
-    Vec<crate::explorer::types::LiquidationFact>,
-    Vec<crate::explorer::types::FlashLoanFact>,
-    Vec<BuyCollateralFact>,
-    Vec<JitFact>,
-    Vec<V2PairOpFact>,
-    Vec<OracleUpdateFact>,
-    Vec<ReserveDataFact>,
-    Vec<RateCacheFact>,
-    Vec<KeeperFact>,
-    Vec<EpochRewardFact>,
-    Vec<GmxEventFact>,
-    Vec<UserOpFact>,
-    Vec<AggregatorSignal>,
-);
+/// Decoded facts for one transaction (named fields — avoid fragile tuples).
+#[derive(Debug, Clone, Default)]
+pub struct DecodedTxFacts {
+    pub transfers: Vec<TransferFact>,
+    pub swaps: Vec<SwapFact>,
+    pub liquidations: Vec<crate::explorer::types::LiquidationFact>,
+    pub flashloans: Vec<crate::explorer::types::FlashLoanFact>,
+    pub buy_collaterals: Vec<BuyCollateralFact>,
+    pub jit: Vec<JitFact>,
+    pub v2_pair_ops: Vec<V2PairOpFact>,
+    pub oracle_updates: Vec<OracleUpdateFact>,
+    pub reserve_updates: Vec<ReserveDataFact>,
+    pub rate_cache_updates: Vec<RateCacheFact>,
+    pub keepers: Vec<KeeperFact>,
+    pub epoch_rewards: Vec<EpochRewardFact>,
+    pub gmx_events: Vec<GmxEventFact>,
+    pub user_ops: Vec<UserOpFact>,
+    pub aggregator_signals: Vec<AggregatorSignal>,
+}
 
 /// Decode a tx's receipt logs into facts (used by ingest / scenarios).
 /// `pool_tokens` = pool → (token0, token1) registry for swap direction (1.1).
@@ -312,126 +347,96 @@ pub(crate) fn decode_tx_logs_with_aliases(
     logs: &[crate::data::LogData],
     pool_tokens: &HashMap<Address, (Address, Address)>,
     liquidation_protocol_aliases: &HashMap<Address, &'static str>,
-) -> TxFacts {
-    let mut transfers = Vec::new();
-    let mut swaps = Vec::new();
-    let mut liquidations = Vec::new();
-    let mut flashloans = Vec::new();
-    let mut buy_collaterals = Vec::new();
-    let mut jit = Vec::new();
-    let mut v2_pair_ops = Vec::new();
-    let mut oracle_updates = Vec::new();
-    let mut reserve_updates = Vec::new();
-    let mut rate_cache_updates = Vec::new();
-    let mut keepers = Vec::new();
-    let mut epoch_rewards = Vec::new();
-    let mut gmx_events = Vec::new();
-    let mut user_ops = Vec::new();
-    let mut aggregator_signals = Vec::new();
+) -> DecodedTxFacts {
+    let mut facts = DecodedTxFacts::default();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
         if let Some(mut t) = decode::decode_transfer(log) {
             t.tx_index = tx_index;
             t.log_index = log_idx;
-            transfers.push(t);
+            facts.transfers.push(t);
         }
         // Collect aggregator intent before swap-edge dedup so brand survives.
         if let Some(mut sig) = decode::decode_aggregator_signal(log) {
             sig.log_index = log_idx;
-            aggregator_signals.push(sig);
+            facts.aggregator_signals.push(sig);
         }
         if let Some((amm, mut s)) = decode::decode_swap(log) {
             s.tx_index = tx_index;
             s.log_index = log_idx;
             s.amm = amm;
-            swaps.push(s);
+            facts.swaps.push(s);
         }
         if let Some(mut l) = decode::decode_liquidation(log) {
             l.tx_index = tx_index;
             l.log_index = log_idx;
             decode::remap_liquidation_protocol(&mut l, liquidation_protocol_aliases);
-            liquidations.push(l);
+            facts.liquidations.push(l);
         }
         if let Some(mut f) = decode::decode_flash_loan(log) {
             f.tx_index = tx_index;
             f.log_index = log_idx;
-            flashloans.push(f);
+            facts.flashloans.push(f);
         }
         if let Some(mut b) = decode::decode_buy_collateral(log) {
             b.tx_index = tx_index;
             b.log_index = log_idx;
-            buy_collaterals.push(b);
+            facts.buy_collaterals.push(b);
         }
         if let Some(mut j) = decode::decode_v3_mint_burn(log) {
             j.tx_index = tx_index;
             j.log_index = log_idx;
-            jit.push(j);
+            facts.jit.push(j);
         } else if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
             j.tx_index = tx_index;
             j.log_index = log_idx;
-            jit.push(j);
+            facts.jit.push(j);
         }
         if let Some(mut op) = decode::decode_v2_pair_op(log) {
             op.tx_index = tx_index;
             op.log_index = log_idx;
-            v2_pair_ops.push(op);
+            facts.v2_pair_ops.push(op);
         }
         if let Some(mut o) = decode::decode_oracle_update(log) {
             o.tx_index = tx_index;
             o.log_index = log_idx;
-            oracle_updates.push(o);
+            facts.oracle_updates.push(o);
         }
         if let Some(mut r) = decode::decode_reserve_data(log) {
             r.tx_index = tx_index;
             r.log_index = log_idx;
-            reserve_updates.push(r);
+            facts.reserve_updates.push(r);
         }
         if let Some(mut rc) = decode::decode_rate_cache_update(log) {
             rc.tx_index = tx_index;
             rc.log_index = log_idx;
-            rate_cache_updates.push(rc);
+            facts.rate_cache_updates.push(rc);
         }
         if let Some(mut k) = decode::decode_keeper(log) {
             k.tx_index = tx_index;
             k.log_index = log_idx;
-            keepers.push(k);
+            facts.keepers.push(k);
         }
         if let Some(mut e) = decode::decode_epoch_reward(log) {
             e.tx_index = tx_index;
             e.log_index = log_idx;
-            epoch_rewards.push(e);
+            facts.epoch_rewards.push(e);
         }
         if let Some(mut g) = decode::decode_gmx_event(log) {
             g.tx_index = tx_index;
             g.log_index = log_idx;
-            gmx_events.push(g);
+            facts.gmx_events.push(g);
         }
         if let Some(mut u) = decode::decode_user_op(log) {
             u.tx_index = tx_index;
             u.log_index = log_idx;
-            user_ops.push(u);
+            facts.user_ops.push(u);
         }
     }
-    decode::attach_swap_tokens(&mut swaps, &transfers, pool_tokens);
+    decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);
     // drop aggregator edges already covered by DEX swap edges.
-    decode::dedup_aggregator_facts(&mut swaps);
-    (
-        transfers,
-        swaps,
-        liquidations,
-        flashloans,
-        buy_collaterals,
-        jit,
-        v2_pair_ops,
-        oracle_updates,
-        reserve_updates,
-        rate_cache_updates,
-        keepers,
-        epoch_rewards,
-        gmx_events,
-        user_ops,
-        aggregator_signals,
-    )
+    decode::dedup_aggregator_facts(&mut facts.swaps);
+    facts
 }
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
@@ -600,13 +605,9 @@ mod tests {
     }
 
     #[test]
-    fn arb_cycle_net_zero_searcher_forwards_residual_to_third_party_is_dropped() {
-        // Known gap (scenario D): the searcher contract runs the cycle, nets
-        // exactly zero and forwards the residual to a third-party address.
-        // Neither the initiator nor the contract holds a positive residual, so
-        // no candidate is profit-positive → no ArbAtomic. Conservative by
-        // design: the recipient may be a builder tip rather than searcher
-        // profit (mev.zone counts these; we intentionally under-count).
+    fn arb_cycle_net_zero_searcher_forwards_residual_to_third_party_is_inferred() {
+        // Searcher contract runs the cycle, nets zero, forwards residual to a
+        // single non-swap third party → ArbAtomic Inferred + forwarded_profit.
         const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
         const RECIPIENT: Address = address!("a00000000000000000000000000000000000000a");
         let swaps = vec![
@@ -621,10 +622,91 @@ mod tests {
             transfer(4, USDC, SEARCHER, RECIPIENT, 10),
         ];
         let input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        let ev = classify_kind(&input, MevKind::ArbAtomic);
+        assert_eq!(ev.searcher, RECIPIENT);
+        assert_eq!(ev.confidence, Confidence::Inferred);
+        assert_eq!(ev.profit_amount, Some(U256::from(10)));
+        assert_eq!(ev.contract, Some(SEARCHER));
+        let tags = ev.details["tags"].as_array().unwrap();
+        assert!(tags.iter().any(|t| t.as_str() == Some("forwarded_profit")));
+        let forwarded_from = format!("{SEARCHER:#x}");
+        assert_eq!(
+            ev.details["forwarded_from"].as_str(),
+            Some(forwarded_from.as_str())
+        );
+    }
+
+    #[test]
+    fn arb_cycle_forwarded_to_tip_sink_is_dropped() {
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        const COINBASE: Address = address!("b00000000000000000000000000000000000000b");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, SEARCHER, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, SEARCHER, 200),
+            transfer(2, TOKA, SEARCHER, POOL_B, 200),
+            transfer(3, USDC, POOL_B, SEARCHER, 110),
+            transfer(4, USDC, SEARCHER, COINBASE, 10),
+        ];
+        let mut input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        input.tip_sinks.insert(COINBASE);
         let events = classify_block(&input);
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
-            "net-zero searcher with a third-party residual must be dropped, got {events:?}"
+            "tip-sink residual must not count as arb PnL, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn arb_cycle_forwarded_to_two_recipients_is_dropped() {
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        const R1: Address = address!("a00000000000000000000000000000000000000a");
+        const R2: Address = address!("a00000000000000000000000000000000000000b");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, SEARCHER, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, SEARCHER, 200),
+            transfer(2, TOKA, SEARCHER, POOL_B, 200),
+            transfer(3, USDC, POOL_B, SEARCHER, 110),
+            transfer(4, USDC, SEARCHER, R1, 6),
+            transfer(5, USDC, SEARCHER, R2, 4),
+        ];
+        let input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        assert!(
+            !kinds(&classify_block(&input)).contains(&MevKind::ArbAtomic),
+            "ambiguous multi-recipient forward must drop"
+        );
+    }
+
+    #[test]
+    fn arb_cycle_forwarded_inbound_from_outsider_is_dropped() {
+        const SEARCHER: Address = address!("9000000000000000000000000000000000000009");
+        const RECIPIENT: Address = address!("a00000000000000000000000000000000000000a");
+        const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, SEARCHER, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, SEARCHER, 200),
+            transfer(2, TOKA, SEARCHER, POOL_B, 200),
+            transfer(3, USDC, POOL_B, SEARCHER, 110),
+            // Residual appears on recipient but funded by an outsider, not the
+            // searcher/EOA — must not attribute.
+            transfer(4, USDC, OUTSIDER, RECIPIENT, 10),
+            transfer(5, USDC, SEARCHER, OUTSIDER, 10),
+        ];
+        let input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        assert!(
+            !kinds(&classify_block(&input)).contains(&MevKind::ArbAtomic),
+            "outsider-funded residual must drop"
         );
     }
 
@@ -1909,5 +1991,104 @@ mod tests {
         let ks = kinds(&events);
         assert!(ks.contains(&MevKind::Skim), "got {ks:?}");
         assert!(ks.contains(&MevKind::ArbAtomic), "got {ks:?}");
+    }
+
+    /// Kinds that carry token/gas P&L (excludes tag-only Unknown).
+    fn pnl_kind(k: MevKind) -> bool {
+        matches!(
+            k,
+            MevKind::Sandwich
+                | MevKind::Frontrun
+                | MevKind::Backrun
+                | MevKind::ArbAtomic
+                | MevKind::JitArb
+                | MevKind::Jit
+                | MevKind::Liquidation
+                | MevKind::Skim
+        )
+    }
+
+    #[test]
+    fn pnl_kinds_at_most_one_per_tx_index() {
+        // Sandwich + arb + jit_arb fixtures: each tx_index may carry at most
+        // one P&L-bearing kind (Unknown tag-only fingerprints are exempt).
+        let sandwich = block(vec![
+            tx(
+                0,
+                ATK,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                vec![
+                    transfer(0, USDC, ATK, POOL_A, 100),
+                    transfer(1, TOKA, POOL_A, ATK, 200),
+                ],
+            ),
+            tx(
+                1,
+                VICTIM,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 200, 350)],
+                vec![
+                    transfer(0, USDC, VICTIM, POOL_A, 200),
+                    transfer(1, TOKA, POOL_A, VICTIM, 350),
+                ],
+            ),
+            tx(
+                2,
+                ATK,
+                true,
+                vec![swap(POOL_A, TOKA, USDC, 350, 195)],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_A, 350),
+                    transfer(1, USDC, POOL_A, ATK, 195),
+                ],
+            ),
+        ]);
+        let jit_arb = {
+            let swaps = vec![
+                swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 0),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+            ];
+            let transfers = vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+            ];
+            let mint = JitFact {
+                log_index: 9,
+                ..jit(0, true)
+            };
+            let burn = jit(1, false);
+            let mut t0 = tx(0, ATK, true, swaps, transfers);
+            t0.jit = vec![mint];
+            let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
+            t1.jit = vec![burn];
+            block(vec![t0, t1])
+        };
+        for input in [&sandwich, &jit_arb] {
+            let events = classify_block(input);
+            let mut seen: HashSet<u64> = HashSet::new();
+            for e in events.iter() {
+                if !pnl_kind(e.kind) {
+                    continue;
+                }
+                assert!(
+                    seen.insert(e.tx_index),
+                    "duplicate P&L kind on tx_index {}: {:?}",
+                    e.tx_index,
+                    events
+                        .iter()
+                        .filter(|x| x.tx_index == e.tx_index)
+                        .map(|x| x.kind)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        assert_eq!(kind_precedence(MevKind::Sandwich), 0);
+        assert!(kind_precedence(MevKind::Sandwich) < kind_precedence(MevKind::Frontrun));
+        assert!(kind_precedence(MevKind::Frontrun) < kind_precedence(MevKind::Backrun));
+        assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::ArbAtomic));
+        assert!(kind_precedence(MevKind::JitArb) < kind_precedence(MevKind::Jit));
     }
 }

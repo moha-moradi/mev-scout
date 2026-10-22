@@ -165,15 +165,18 @@ pub fn select_profit_token(
             return Some(*t);
         }
     }
-    // Fallback: largest positive delta token (deterministic tie-break by address)
+    // Fallback: largest *net* positive residual (deterministic tie-break by
+    // address). Gross `pos` alone is wrong when the same address later
+    // forwards the residual — pos stays high while net is zero.
     let mut best: Option<(U256, Address)> = None;
-    for ((a, t), amt) in &ledger.pos {
-        if *a != searcher || amt.is_zero() {
+    for t in ledger.positive_tokens(searcher) {
+        let net = ledger.net(searcher, t);
+        if net.is_zero() {
             continue;
         }
         match best {
-            Some((bamt, _)) if bamt >= *amt => {}
-            _ => best = Some((*amt, *t)),
+            Some((bamt, _)) if bamt >= net => {}
+            _ => best = Some((net, t)),
         }
     }
     best.map(|(_, t)| t)

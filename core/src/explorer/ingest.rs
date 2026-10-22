@@ -71,6 +71,12 @@ pub struct IngestConfig {
     pub chainlink_feeds: HashMap<Address, Address>,
     pub savax: Option<Address>,
     pub gmx_event_emitters: HashSet<Address>,
+    /// Extra tip/fee-recipient sinks merged with each block's coinbase so
+    /// forwarded residuals to builders are not counted as searcher PnL.
+    pub tip_sink_addresses: HashSet<Address>,
+    /// Persist explorer-classify near-miss drops into `rejected_candidates`
+    /// (same flag as scanner `record_rejections`).
+    pub record_rejections: bool,
     /// Blocks per JSON-RPC batch POST during [`run_range`]. `1` fetches one
     /// block per POST.
     pub rpc_batch_blocks: usize,
@@ -115,6 +121,8 @@ impl IngestConfig {
             chainlink_feeds,
             savax: chain_config.savax,
             gmx_event_emitters,
+            tip_sink_addresses: HashSet::new(),
+            record_rejections: false,
             rpc_batch_blocks: 1,
         }
     }
@@ -315,23 +323,7 @@ fn decode_successful_txs(
         if !receipt.status {
             continue;
         }
-        let (
-            transfers,
-            swaps,
-            liquidations,
-            flashloans,
-            buy_collaterals,
-            jit,
-            v2_pair_ops,
-            oracle_updates,
-            reserve_updates,
-            rate_cache_updates,
-            keepers,
-            epoch_rewards,
-            gmx_events,
-            user_ops,
-            aggregator_signals,
-        ) = classify::decode_tx_logs_with_aliases(
+        let facts = classify::decode_tx_logs_with_aliases(
             tx.index,
             &receipt.logs,
             pools.tokens,
@@ -358,7 +350,7 @@ fn decode_successful_txs(
             priority_fee_gwei: priority_gwei,
             value: tx.value,
         });
-        for s in &swaps {
+        for s in &facts.swaps {
             out.swap_rows.push(SwapRow {
                 tx_index: s.tx_index,
                 log_index: s.log_index,
@@ -370,7 +362,7 @@ fn decode_successful_txs(
                 amount_out: s.amount_out,
             });
         }
-        for t in &transfers {
+        for t in &facts.transfers {
             out.transfer_rows.push(TransferRow {
                 tx_index: t.tx_index,
                 log_index: t.log_index,
@@ -380,7 +372,7 @@ fn decode_successful_txs(
                 amount: t.amount,
             });
         }
-        if !jit.is_empty() {
+        if !facts.jit.is_empty() {
             out.jit_hashes.insert(tx.index, tx.hash);
         }
         out.tx_inputs.push(TxInput {
@@ -392,21 +384,21 @@ fn decode_successful_txs(
             gas_used: receipt.gas_used,
             effective_gas_price_gwei: effective_gwei,
             value: tx.value,
-            transfers,
-            swaps,
-            liquidations,
-            flashloans,
-            buy_collaterals,
-            jit,
-            v2_pair_ops,
-            oracle_updates,
-            reserve_updates,
-            rate_cache_updates,
-            keepers,
-            epoch_rewards,
-            gmx_events,
-            user_ops,
-            aggregator_signals,
+            transfers: facts.transfers,
+            swaps: facts.swaps,
+            liquidations: facts.liquidations,
+            flashloans: facts.flashloans,
+            buy_collaterals: facts.buy_collaterals,
+            jit: facts.jit,
+            v2_pair_ops: facts.v2_pair_ops,
+            oracle_updates: facts.oracle_updates,
+            reserve_updates: facts.reserve_updates,
+            rate_cache_updates: facts.rate_cache_updates,
+            keepers: facts.keepers,
+            epoch_rewards: facts.epoch_rewards,
+            gmx_events: facts.gmx_events,
+            user_ops: facts.user_ops,
+            aggregator_signals: facts.aggregator_signals,
         });
     }
     out
@@ -519,10 +511,27 @@ pub async fn index_block_fetched(
         interest_lookback,
         prior_oracle_answers,
         savax_exchange_rate_wad,
+        tip_sinks: {
+            let mut sinks = cfg.tip_sink_addresses.clone();
+            if !block_data.coinbase.is_zero() {
+                sinks.insert(block_data.coinbase);
+            }
+            sinks
+        },
         txs: tx_inputs,
     };
 
-    let mut events: Vec<MevEvent> = classify::filter_unresolved(classify::classify_block(&input));
+    let classified = classify::classify_block(&input);
+    if cfg.record_rejections && !classified.rejects.is_empty() {
+        let chain_str = cfg.chain.to_string();
+        let run_id = format!("explorer-index-{block_number}");
+        for r in &classified.rejects {
+            if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
+                tracing::warn!("explorer_classify reject insert failed: {e}");
+            }
+        }
+    }
+    let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 

@@ -47,7 +47,7 @@ pub(crate) mod test_fixtures;
 pub mod types;
 
 pub use canonical::explorer_canonical_id;
-pub use classify::{classify_block, BlockInput, TxInput};
+pub use classify::{classify_block, BlockInput, ClassifyOutput, TxInput};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};

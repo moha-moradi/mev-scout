@@ -10,17 +10,23 @@ use crate::explorer::profit::{
     DeltaLedger, NATIVE_MARKER,
 };
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
-use crate::explorer::types::{Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact};
+use crate::explorer::reject::{RejectReason, RejectedCandidate};
+use crate::explorer::types::{
+    Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
+};
 
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
+
+const CLASSIFY_STRATEGY: &str = "explorer_classify";
 
 /// Swap attribution + atomic arb + keeper/claim/bundler.
 pub(super) fn classify_arbs(
     input: &BlockInput,
     liq_txs: &HashSet<u64>,
     arb_tag_opts: &ArbTagOpts<'_>,
-) -> Vec<MevEvent> {
+) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
     let mut events: Vec<MevEvent> = Vec::new();
+    let mut rejects: Vec<RejectedCandidate> = Vec::new();
     // ── 2-3. Swap attribution + atomic arb pass ─────────────────────────
     for tx in &input.txs {
         if !tx.success {
@@ -118,45 +124,117 @@ pub(super) fn classify_arbs(
             .collect();
 
         let Some((anchor, walk_tokens)) = find_closed_cycle(&resolved_edges) else {
+            if resolved_edges.len() >= 2 {
+                rejects.push(classify_reject(
+                    input.block,
+                    tx.tx_index,
+                    RejectReason::UnresolvedCycle,
+                    None,
+                ));
+            }
             continue;
         };
         if !flow_attributable(&tx.swaps, &candidates) {
+            rejects.push(classify_reject(
+                input.block,
+                tx.tx_index,
+                RejectReason::MixedFlowOwner,
+                None,
+            ));
             continue;
         }
 
         let hop_max = hop_max_by_token(&tx.swaps);
+        // Route pools often appear in `candidates` via transfer participation and
+        // can hold a transient positive residual on the anchor (inventory of the
+        // hop). They must never be the profit holder — otherwise a net-zero
+        // executor that forwards profit never reaches the forwarded heuristic.
+        let route_pools: HashSet<Address> = resolved_edges.iter().map(|(_, _, p)| *p).collect();
+        let profit_candidates: Vec<Address> = candidates
+            .iter()
+            .copied()
+            .filter(|a| !route_pools.contains(a))
+            .collect();
         // Prefer a candidate with a positive anchor residual (EOA-funded
         // contract holds amountOut−amountIn while the EOA is negative).
-        let searcher = candidates
+        // When the executor nets zero and forwards the residual to a single
+        // non-swap third party, attribute Inferred + forwarded_profit (unless
+        // that party is a tip sink / coinbase).
+        let mut forwarded_from: Option<Address> = None;
+        let forwarded = forwarded_anchor_recipient(
+            &ledger,
+            &tx.transfers,
+            &tx.swaps,
+            &profit_candidates,
+            &input.tip_sinks,
+            anchor,
+            tx.from,
+            tx.to,
+        );
+        let searcher = profit_candidates
             .iter()
             .copied()
             .find(|a| ledger.net(*a, anchor) > U256::ZERO)
             .or_else(|| {
-                candidates
+                profit_candidates
                     .iter()
                     .copied()
                     .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some())
+            })
+            .or_else(|| match &forwarded {
+                ForwardedLookup::Hit {
+                    recipient,
+                    forwarded_from: from_addr,
+                } => {
+                    forwarded_from = Some(*from_addr);
+                    Some(*recipient)
+                }
+                ForwardedLookup::TipSink | ForwardedLookup::None => None,
             });
         let Some(searcher) = searcher else {
+            let reason = match forwarded {
+                ForwardedLookup::TipSink => RejectReason::BuilderTip,
+                _ => RejectReason::NetZeroSearcher,
+            };
+            rejects.push(classify_reject(input.block, tx.tx_index, reason, None));
             continue;
         };
+        let is_forwarded = forwarded_from.is_some();
         // When the EOA only funds the anchor into the searcher contract, the
         // contract ledger still shows +amountOut (funding credit + cycle).
         // Combine with the EOA's negative anchor residual so profit is
         // amountOut−amountIn, not the gross contract balance.
         let amount = anchor_profit_amount(&ledger, tx.from, searcher, anchor);
         if amount.is_zero() {
+            rejects.push(classify_reject(
+                input.block,
+                tx.tx_index,
+                RejectReason::NetZeroSearcher,
+                Some("anchor_profit_zero".into()),
+            ));
             continue;
         }
 
         // Material deficit on the profit holder: outside-walk negatives always
         // veto; in-walk negatives veto unless dust (≤1 wei or ≤1 bps of hop).
         if has_material_deficit(&ledger, searcher, &walk_tokens, &hop_max) {
+            rejects.push(classify_reject(
+                input.block,
+                tx.tx_index,
+                RejectReason::MaterialDeficit,
+                None,
+            ));
             continue;
         }
         // EOA may fund only the anchor into the profit holder; any other
         // ERC-20 spend by tx.from (outside-walk or material in-walk) vetoes.
         if initiator_blocks_cycle(tx, &ledger, searcher, anchor, &walk_tokens, &hop_max) {
+            rejects.push(classify_reject(
+                input.block,
+                tx.tx_index,
+                RejectReason::OpenInventory,
+                None,
+            ));
             continue;
         }
 
@@ -185,7 +263,37 @@ pub(super) fn classify_arbs(
         if long_tail {
             tags.push("long_tail");
         }
+        if is_forwarded {
+            tags.push("forwarded_profit");
+        }
         tags.extend(strategy_tags::arb_strategy_tags(&tx.swaps, arb_tag_opts));
+        let mut details = serde_json::json!({
+            "mode": "realized",
+            "tags": tags,
+            "pnl_basis": PnlBasis::R.as_str(),
+            "pnl": {
+                "basis": PnlBasis::R.as_str(),
+                "profit_amount": amount.to_string(),
+                "profit_token": format!("{anchor:#x}"),
+            },
+            "other_residuals": other_positives,
+            "route": tx.swaps.iter().map(|s| serde_json::json!({
+                "pool": format!("{:#x}", s.pool),
+                "amm": s.amm.as_str(),
+                "token_in": format!("{:#x}", s.token_in),
+                "token_out": format!("{:#x}", s.token_out),
+                "token_source": s.token_source.as_str(),
+                "amount_in": s.amount_in.to_string(),
+                "amount_out": s.amount_out.to_string(),
+            })).collect::<Vec<_>>(),
+            "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
+        });
+        if tags.iter().any(|t| *t == "savax_rate_arb") {
+            details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
+        }
+        if let Some(from_addr) = forwarded_from {
+            details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
+        }
         events.push(MevEvent {
             block: input.block,
             ts: input.ts,
@@ -193,7 +301,11 @@ pub(super) fn classify_arbs(
             tx_hash: tx.tx_hash,
             kind: MevKind::ArbAtomic,
             searcher,
-            contract: if searcher == tx.from { None } else { tx.to },
+            contract: if searcher == tx.from {
+                None
+            } else {
+                tx.to.or(forwarded_from)
+            },
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(anchor),
             profit_amount: Some(amount),
@@ -204,30 +316,14 @@ pub(super) fn classify_arbs(
             )),
             flashloan_fee_wei,
             flashloan_fee_token,
-            confidence: Confidence::Exact,
+            confidence: if is_forwarded {
+                Confidence::Inferred
+            } else {
+                Confidence::Exact
+            },
             victim_hashes: vec![],
             victim_swap_size: None,
-            details: serde_json::json!({
-                "mode": "realized",
-                "tags": tags,
-                "pnl_basis": PnlBasis::R.as_str(),
-                "pnl": {
-                    "basis": PnlBasis::R.as_str(),
-                    "profit_amount": amount.to_string(),
-                    "profit_token": format!("{anchor:#x}"),
-                },
-                "other_residuals": other_positives,
-                "route": tx.swaps.iter().map(|s| serde_json::json!({
-                    "pool": format!("{:#x}", s.pool),
-                    "amm": s.amm.as_str(),
-                    "token_in": format!("{:#x}", s.token_in),
-                    "token_out": format!("{:#x}", s.token_out),
-                    "token_source": s.token_source.as_str(),
-                    "amount_in": s.amount_in.to_string(),
-                    "amount_out": s.amount_out.to_string(),
-                })).collect::<Vec<_>>(),
-                "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
-            }),
+            details,
         });
 
         // ── 5. JIT pass (Mint+Burn same position, same block) ──────────
@@ -386,7 +482,32 @@ pub(super) fn classify_arbs(
         }
     }
 
-    events
+    (events, rejects)
+}
+
+fn classify_reject(
+    block_number: u64,
+    tx_index: u64,
+    reason: RejectReason,
+    detail: Option<String>,
+) -> RejectedCandidate {
+    RejectedCandidate {
+        block_number,
+        tx_index: Some(tx_index),
+        strategy: CLASSIFY_STRATEGY.to_string(),
+        pool_a: None,
+        pool_b: None,
+        path: None,
+        token_in: None,
+        token_out: None,
+        input_amount: None,
+        expected_profit: None,
+        expected_profit_usd: None,
+        gas_cost_wei: None,
+        reject_reason: reason.as_str().to_string(),
+        detail,
+        created_at: crate::utils::epoch_secs(),
+    }
 }
 
 /// Derive route geometry metadata for an atomic arb (spec /).
@@ -440,6 +561,84 @@ fn is_long_tail_arb(swaps: &[SwapFact], blue_chips: &[Address]) -> bool {
         (!s.token_in.is_zero() && !blue.contains(&s.token_in))
             || (!s.token_out.is_zero() && !blue.contains(&s.token_out))
     })
+}
+
+/// Outcome of looking for a third-party residual after a net-zero executor.
+enum ForwardedLookup {
+    Hit {
+        recipient: Address,
+        forwarded_from: Address,
+    },
+    /// Single residual holder is coinbase / configured tip sink — not PnL.
+    TipSink,
+    None,
+}
+
+/// When no searcher candidate holds a positive anchor residual, recover a
+/// single third-party recipient that received the cycle profit solely from
+/// `tx.from` / `tx.to` and did not participate in swaps.
+fn forwarded_anchor_recipient(
+    ledger: &DeltaLedger,
+    transfers: &[TransferFact],
+    swaps: &[SwapFact],
+    candidates: &[Address],
+    tip_sinks: &HashSet<Address>,
+    anchor: Address,
+    from: Address,
+    to: Option<Address>,
+) -> ForwardedLookup {
+    let route_pools: HashSet<Address> = swaps
+        .iter()
+        .filter(|s| !has_unresolved_tokens(s) && s.amm != Amm::Aggregator)
+        .map(|s| s.pool)
+        .collect();
+    let mut holders: Vec<Address> = ledger
+        .pos
+        .keys()
+        .filter(|(addr, tok)| {
+            *tok == anchor
+                && !addr.is_zero()
+                && !candidates.contains(addr)
+                && !route_pools.contains(addr)
+                && ledger.net(*addr, anchor) > U256::ZERO
+        })
+        .map(|(addr, _)| *addr)
+        .collect();
+    holders.sort();
+    holders.dedup();
+    if holders.len() != 1 {
+        return ForwardedLookup::None;
+    }
+    let recipient = holders[0];
+    if tip_sinks.contains(&recipient) {
+        return ForwardedLookup::TipSink;
+    }
+    // Recipient must not have funded any swap leg (not a cycle actor).
+    if swaps.iter().any(|s| s.owner == Some(recipient)) {
+        return ForwardedLookup::None;
+    }
+    let funders: HashSet<Address> = [Some(from), to].into_iter().flatten().collect();
+    let inbound: Vec<&TransferFact> = transfers
+        .iter()
+        .filter(|t| t.token == anchor && t.to == recipient && !t.amount.is_zero())
+        .collect();
+    if inbound.is_empty() {
+        return ForwardedLookup::None;
+    }
+    if !inbound.iter().all(|t| funders.contains(&t.from)) {
+        return ForwardedLookup::None;
+    }
+    // Prefer the contract (`to`) as forwarded_from when it sent; else EOA.
+    let forwarded_from = to
+        .filter(|c| inbound.iter().any(|t| t.from == *c))
+        .unwrap_or(from);
+    if forwarded_from.is_zero() {
+        return ForwardedLookup::None;
+    }
+    ForwardedLookup::Hit {
+        recipient,
+        forwarded_from,
+    }
 }
 
 /// flow ownership: a closed cycle must be attributable

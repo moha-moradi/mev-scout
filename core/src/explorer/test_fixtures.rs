@@ -222,6 +222,7 @@ pub fn block(txs: Vec<TxInput>) -> BlockInput {
         interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,
+        tip_sinks: HashSet::new(),
         txs,
     }
 }

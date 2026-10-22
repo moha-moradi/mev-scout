@@ -52,7 +52,7 @@ impl CliCommand for ExplorerArgs {
 
         if self.command.is_some() && self.report_flags_set() {
             anyhow::bail!(
-                "--windows / --kind / --top belong on bare `explorer` (the revenue report)"
+                "--windows / --kind / --top / --confidence belong on bare `explorer` (the revenue report)"
             );
         }
 
@@ -63,6 +63,7 @@ impl CliCommand for ExplorerArgs {
                     config,
                     &self.resolved_windows(),
                     self.kind.as_deref(),
+                    self.resolved_confidence(),
                     self.resolved_top(),
                 )
                 .await

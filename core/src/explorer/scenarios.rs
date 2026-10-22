@@ -480,14 +480,14 @@ fn p0_2_benqi_alias() {
     };
 
     let aliases: HashMap<Address, &'static str> = HashMap::from([(qi_avax, "benqi")]);
-    let (_, _, liquidations, ..) =
+    let aliased =
         decode_tx_logs_with_aliases(0, std::slice::from_ref(&liq_log), &HashMap::new(), &aliases);
-    assert_eq!(liquidations.len(), 1);
-    assert_eq!(liquidations[0].protocol, "benqi");
+    assert_eq!(aliased.liquidations.len(), 1);
+    assert_eq!(aliased.liquidations[0].protocol, "benqi");
 
-    let (_, _, unaliased, ..) =
+    let unaliased =
         decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
-    assert_eq!(unaliased[0].protocol, "compound_v2");
+    assert_eq!(unaliased.liquidations[0].protocol, "compound_v2");
 
     let mut t = tx(
         0,
@@ -496,7 +496,7 @@ fn p0_2_benqi_alias() {
         vec![],
         vec![transfer(0, qi_eth, POOL_A, ATK, 500)],
     );
-    t.liquidations = liquidations;
+    t.liquidations = aliased.liquidations;
     let ev = classify_kind(&block(vec![t]), MevKind::Liquidation);
     assert_eq!(ev.details["protocol"], serde_json::json!("benqi"));
     assert_eq!(pnl_basis(&ev), Some("O"));
@@ -1077,7 +1077,7 @@ fn p3_15_epoch_transition() {
 /// sAVAX present but no wrapped-native leg.
 #[test]
 fn p3_16_savax_rate_arb() {
-    let build = |quote: Address| {
+    let build = |quote: Address, with_rate: bool| {
         let swaps = vec![
             swap(POOL_A, SAVAX, quote, 100, 110),
             swap(POOL_B, quote, SAVAX, 110, 105),
@@ -1091,12 +1091,24 @@ fn p3_16_savax_rate_arb() {
         let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
         input.savax = Some(SAVAX);
         input.profit_policy.priority = vec![SAVAX, WNATIVE, USDC];
+        // 1.0 AVAX/sAVAX vs pool 1.1 → ≥5 bps divergence.
+        if with_rate {
+            input.savax_exchange_rate_wad = Some(U256::from(10u64.pow(18)));
+        }
         classify_kind(&input, MevKind::ArbAtomic)
     };
-    let ev = build(WNATIVE);
+    let ev = build(WNATIVE, true);
     assert!(has_tag(std::slice::from_ref(&ev), "savax_rate_arb"));
     assert_eq!(pnl_basis(&ev), Some("R"));
+    assert_eq!(
+        ev.details["tag_modes"]["savax_rate_arb"].as_str(),
+        Some("exact")
+    );
 
-    let ev = build(USDC);
+    // No rate → no tag even with sAVAX↔WNATIVE route.
+    let ev = build(WNATIVE, false);
+    assert!(!has_tag(std::slice::from_ref(&ev), "savax_rate_arb"));
+
+    let ev = build(USDC, true);
     assert!(!has_tag(std::slice::from_ref(&ev), "savax_rate_arb"));
 }

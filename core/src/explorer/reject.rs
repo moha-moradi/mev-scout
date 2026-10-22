@@ -24,6 +24,19 @@ pub enum RejectReason {
     /// Scanner never ran over the block (taxonomy placeholder; not emitted by
     /// the runner).
     StateStale,
+    /// Explorer classify: closed swap-edge cycle failed (≥2 resolved edges).
+    UnresolvedCycle,
+    /// Explorer classify: flow owners do not collapse to one searcher candidate.
+    MixedFlowOwner,
+    /// Explorer classify: no profit-positive candidate (and forwarded residual
+    /// either absent or tip-sink).
+    NetZeroSearcher,
+    /// Explorer classify: material inventory/deficit on the profit holder.
+    MaterialDeficit,
+    /// Explorer classify: initiator spent outside the closed walk (open ledger).
+    OpenInventory,
+    /// Explorer classify: residual forwarded only to coinbase / tip sink.
+    BuilderTip,
     /// Anything else (M-detail in `detail`).
     Other,
 }
@@ -38,6 +51,12 @@ impl RejectReason {
             RejectReason::GasDominates => "gas_dominates",
             RejectReason::MaxCandidates => "max_candidates",
             RejectReason::StateStale => "state_stale",
+            RejectReason::UnresolvedCycle => "unresolved_cycle",
+            RejectReason::MixedFlowOwner => "mixed_flow_owner",
+            RejectReason::NetZeroSearcher => "net_zero_searcher",
+            RejectReason::MaterialDeficit => "material_deficit",
+            RejectReason::OpenInventory => "open_inventory",
+            RejectReason::BuilderTip => "builder_tip",
             RejectReason::Other => "other",
         }
     }

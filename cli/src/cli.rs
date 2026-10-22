@@ -114,12 +114,28 @@ pub struct ExplorerArgs {
     /// (default 10). Only valid on bare `explorer`.
     #[arg(long, value_name = "N")]
     pub top: Option<usize>,
+
+    /// Filter to exact / inferred / all confidence (default all).
+    /// Only valid on bare `explorer`.
+    #[arg(long, value_name = "LEVEL", value_parser = ["exact", "inferred", "all"])]
+    pub confidence: Option<String>,
 }
 
 impl ExplorerArgs {
     /// True when any revenue-report flag was set on the command line.
     pub fn report_flags_set(&self) -> bool {
-        !self.windows.is_empty() || self.kind.is_some() || self.top.is_some()
+        !self.windows.is_empty()
+            || self.kind.is_some()
+            || self.top.is_some()
+            || self.confidence.is_some()
+    }
+
+    /// Resolved confidence filter for the revenue report (`None` = all).
+    pub fn resolved_confidence(&self) -> Option<&str> {
+        match self.confidence.as_deref() {
+            None | Some("all") => None,
+            Some(c) => Some(c),
+        }
     }
 
     /// Resolved windows for the revenue report.

@@ -206,6 +206,19 @@ pub struct ReportRow {
     pub net_usd: f64,
 }
 
+/// Pricing / confidence quality slice for one report window.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReportQuality {
+    pub ops_priced: i64,
+    pub ops_unpriced: i64,
+    pub ops_exact: i64,
+    pub ops_inferred: i64,
+    pub net_usd_exact: f64,
+    pub net_usd_inferred: f64,
+    /// Ops flagged `usd_approximate` in details_json.
+    pub ops_approx: i64,
+}
+
 /// Revenue-report window header (bare `explorer` overview).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportOverview {
@@ -219,6 +232,8 @@ pub struct ReportOverview {
     pub searchers: i64,
     /// Distinct competitor bots (`COALESCE(contract, eoa)`).
     pub competitors: i64,
+    #[serde(default)]
+    pub quality: ReportQuality,
 }
 
 pub(super) fn map_stats_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatsRow> {
@@ -275,16 +290,21 @@ pub(super) fn top_grouped(
     since_ts: u64,
     limit: usize,
     kind: Option<&str>,
+    confidence: Option<&str>,
 ) -> anyhow::Result<Vec<StatsRow>> {
-    let kind_clause = kind
-        .map(|k| format!("AND kind = '{k}'"))
-        .unwrap_or_default();
+    let mut filter = String::new();
+    if let Some(k) = kind {
+        filter.push_str(&format!("AND kind = '{k}' "));
+    }
+    if let Some(c) = confidence {
+        filter.push_str(&format!("AND confidence = '{c}' "));
+    }
     let sql = format!(
         "SELECT {group_col} AS label, COUNT(*) AS ops,
                 COALESCE(SUM(profit_usd), 0) AS gross_usd,
                 COALESCE(SUM(net_profit_usd), 0) AS net_usd
          FROM mev_ops
-         WHERE ts >= {since_ts} {kind_clause} AND {group_col} IS NOT NULL
+         WHERE ts >= {since_ts} {filter} AND {group_col} IS NOT NULL
          GROUP BY label
          ORDER BY gross_usd DESC
          LIMIT {limit}"
@@ -892,17 +912,17 @@ mod tests {
         assert_eq!(n, 1);
 
         let senders = store
-            .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"))
+            .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"), None)
             .unwrap();
         assert!(!senders.is_empty());
 
         let senders_sand = store
-            .top_senders_filtered(1_699_999_000, 5, Some("sandwich"))
+            .top_senders_filtered(1_699_999_000, 5, Some("sandwich"), None)
             .unwrap();
         assert!(!senders_sand.is_empty());
 
         let misc = store
-            .top_senders_filtered(1_699_999_000, 5, Some("liquidations"))
+            .top_senders_filtered(1_699_999_000, 5, Some("liquidations"), None)
             .unwrap();
         assert!(misc.is_empty());
     }
@@ -1022,7 +1042,7 @@ mod tests {
             );
         }
 
-        let ov = store.report_window_overview(0, None).unwrap();
+        let ov = store.report_window_overview(0, None, None).unwrap();
         assert_eq!(ov.ops, 2);
         assert_eq!(ov.searchers, 1);
         assert_eq!(ov.competitors, 1);
@@ -1035,25 +1055,31 @@ mod tests {
         assert!(ov.net_usd < ov.gross_usd, "net subtracts gas");
         assert!(ov.gas_usd > 0.0);
         assert_eq!(ov.flash_fee_usd, 0.0);
+        assert_eq!(ov.quality.ops_priced, 2);
 
-        let kinds = store.report_by_kind(0, None).unwrap();
+        let kinds = store.report_by_kind(0, None, None).unwrap();
         assert_eq!(kinds.len(), 2);
         let arb_row = kinds.iter().find(|r| r.label == "arb_atomic").unwrap();
         assert!((arb_row.volume_usd - 5.0).abs() < 1e-6);
 
-        let daily = store.report_daily(0, None).unwrap();
+        let daily = store.report_daily(0, None, None).unwrap();
         assert_eq!(daily.len(), 2, "two distinct days: {:?}", daily);
 
-        let top = store.top_ops(0, 5, None).unwrap();
+        let top = store.top_ops(0, 5, None, None).unwrap();
         assert_eq!(top.len(), 2);
         assert!(top[0].net_profit_usd.unwrap() >= top[1].net_profit_usd.unwrap());
 
         assert_eq!(store.blocks_in_window(0).unwrap(), 2);
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
-        let ov_k = store.report_window_overview(0, Some("sandwich")).unwrap();
+        let ov_k = store
+            .report_window_overview(0, Some("sandwich"), None)
+            .unwrap();
         assert_eq!(ov_k.ops, 1);
-        assert_eq!(store.report_by_kind(0, Some("sandwich")).unwrap().len(), 1);
+        assert_eq!(
+            store.report_by_kind(0, Some("sandwich"), None).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -1101,12 +1127,12 @@ mod tests {
             },
         );
 
-        let ov = store.report_window_overview(0, None).unwrap();
+        let ov = store.report_window_overview(0, None, None).unwrap();
         assert_eq!(ov.ops, 2);
         assert_eq!(ov.searchers, 2);
         assert_eq!(ov.competitors, 1);
 
-        let comps = store.top_competitors_filtered(0, 10, None).unwrap();
+        let comps = store.top_competitors_filtered(0, 10, None, None).unwrap();
         assert_eq!(comps.len(), 1);
         assert_eq!(comps[0].label, format!("{contract:#x}"));
         assert_eq!(comps[0].ops, 2);

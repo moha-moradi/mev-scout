@@ -79,7 +79,7 @@ fn explorer_help_lists_subcommands() {
             "explorer --help still lists removed subcommand '{removed}'"
         );
     }
-    for flag in ["--windows", "--kind", "--top"] {
+    for flag in ["--windows", "--kind", "--top", "--confidence"] {
         assert!(
             out.stdout.contains(flag),
             "explorer --help missing report flag '{flag}'"

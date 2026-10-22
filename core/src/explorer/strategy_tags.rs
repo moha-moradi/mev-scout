@@ -76,8 +76,8 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
         tags.push("rebase_arb");
     }
 
-    // P3.16 — sAVAX rate arb: sAVAX ↔ wrapped-native route; when exchangeRate
-    // is known, require pool-implied divergence ≥ SAVAX_RATE_DIVERGENCE_BPS.
+    // P3.16 — sAVAX rate arb: only when exchangeRate is known and the pool
+    // implied rate diverges ≥ SAVAX_RATE_DIVERGENCE_BPS (no rate → no tag).
     if let Some(savax) = opts.savax {
         let has_savax = swaps
             .iter()
@@ -86,14 +86,10 @@ pub fn arb_strategy_tags(swaps: &[SwapFact], opts: &ArbTagOpts<'_>) -> Vec<&'sta
             .iter()
             .any(|s| s.token_in == opts.wrapped_native || s.token_out == opts.wrapped_native);
         if has_savax && has_native {
-            let tag = match opts.savax_exchange_rate_wad {
-                Some(rate) if !rate.is_zero() => {
-                    savax_pool_diverges(swaps, savax, opts.wrapped_native, rate)
+            if let Some(rate) = opts.savax_exchange_rate_wad.filter(|r| !r.is_zero()) {
+                if savax_pool_diverges(swaps, savax, opts.wrapped_native, rate) {
+                    tags.push("savax_rate_arb");
                 }
-                _ => true, // no eth_call rate → route co-presence (mode A surface)
-            };
-            if tag {
-                tags.push("savax_rate_arb");
             }
         }
     }
@@ -263,13 +259,17 @@ mod tests {
     }
 
     #[test]
-    fn savax_rate_arb_requires_both_legs() {
+    fn savax_rate_arb_requires_both_legs_and_rate() {
         let mut o = opts();
         o.savax = Some(SAVAX);
-        let tags = arb_strategy_tags(&[swap(Amm::V2, SAVAX, WAVAX)], &o);
-        assert!(tags.contains(&"savax_rate_arb"));
-        let tags = arb_strategy_tags(&[swap(Amm::V2, SAVAX, USDC)], &o);
-        assert!(!tags.contains(&"savax_rate_arb"));
+        // No exchange rate → never tag (even with both legs).
+        assert!(!arb_strategy_tags(&[swap(Amm::V2, SAVAX, WAVAX)], &o).contains(&"savax_rate_arb"));
+        o.savax_exchange_rate_wad = Some(U256::from(10u64.pow(18))); // 1.0
+        let mut s = swap(Amm::V2, SAVAX, WAVAX);
+        s.amount_in = U256::from(10u64.pow(18));
+        s.amount_out = U256::from(11u64) * U256::from(10u64.pow(17)); // 1.1 → diverges
+        assert!(arb_strategy_tags(&[s], &o).contains(&"savax_rate_arb"));
+        assert!(!arb_strategy_tags(&[swap(Amm::V2, SAVAX, USDC)], &o).contains(&"savax_rate_arb"));
     }
 
     #[test]

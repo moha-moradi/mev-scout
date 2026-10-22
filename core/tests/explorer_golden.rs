@@ -202,6 +202,7 @@ fn golden_input() -> BlockInput {
         interest_lookback: Default::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,
+        tip_sinks: std::collections::HashSet::new(),
         txs: vec![arb_tx, front, victim, back, mint_tx, burn_tx],
     }
 }

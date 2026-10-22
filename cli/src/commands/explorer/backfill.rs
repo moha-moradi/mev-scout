@@ -25,6 +25,7 @@ pub async fn cmd_backfill(
     let mut cfg = IngestConfig::from_chain(chain, &chain_cfg);
     cfg.confirmations = config.explorer.confirmations;
     cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
+    cfg.record_rejections = config.backtest.record_rejections;
 
     let (from, to) = match (days, from_block, to_block) {
         (Some(d), None, None) => {

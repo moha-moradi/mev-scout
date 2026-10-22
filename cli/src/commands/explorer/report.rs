@@ -130,6 +130,7 @@ pub async fn cmd_explorer_report(
     config: &Config,
     windows: &[String],
     kind: Option<&str>,
+    confidence: Option<&str>,
     top: usize,
 ) -> anyhow::Result<()> {
     let v = validation::validate_live(config).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -147,6 +148,7 @@ pub async fn cmd_explorer_report(
             Some(parsed.as_str())
         }
     };
+    let confidence_str = confidence;
 
     // `--windows` is comma-delimited; also tolerate spaces after commas.
     let mut window_list: Vec<String> = Vec::new();
@@ -175,13 +177,14 @@ pub async fn cmd_explorer_report(
     let mut reports: Vec<WindowReport> = Vec::with_capacity(window_list.len());
     for window in &window_list {
         let since = since_ts(Some(window));
-        let overview = store.report_window_overview(since, kind_str)?;
-        let by_kind = store.report_by_kind(since, kind_str)?;
-        let daily = store.report_daily(since, kind_str)?;
-        let top_competitors = store.top_competitors_filtered(since, top, kind_str)?;
-        let top_senders = store.top_senders_filtered(since, 10, kind_str)?;
-        let top_pools = store.top_pools_filtered(since, 10, kind_str)?;
-        let top_ops = store.top_ops(since, top, kind_str)?;
+        let overview = store.report_window_overview(since, kind_str, confidence_str)?;
+        let by_kind = store.report_by_kind(since, kind_str, confidence_str)?;
+        let daily = store.report_daily(since, kind_str, confidence_str)?;
+        let top_competitors =
+            store.top_competitors_filtered(since, top, kind_str, confidence_str)?;
+        let top_senders = store.top_senders_filtered(since, 10, kind_str, confidence_str)?;
+        let top_pools = store.top_pools_filtered(since, 10, kind_str, confidence_str)?;
+        let top_ops = store.top_ops(since, top, kind_str, confidence_str)?;
         let blocks = store.blocks_in_window(since)?;
         let coverage_pct = expected_blocks(chain, window).map(|expected| {
             if expected == 0 {
@@ -210,6 +213,9 @@ pub async fn cmd_explorer_report(
     );
     if let Some(k) = kind_str {
         println!("  (kind filter: {k})");
+    }
+    if let Some(c) = confidence_str {
+        println!("  (confidence filter: {c})");
     }
 
     match config.output.output {
@@ -298,6 +304,23 @@ fn render_window(r: &WindowReport) {
         usd(o.net_usd),
         usd(o.highest_single_usd),
     );
+    let q = &o.quality;
+    println!(
+        "  quality: priced {}/{} | exact {} (net ${}) | inferred {} (net ${}) | approx {}",
+        q.ops_priced,
+        o.ops,
+        q.ops_exact,
+        usd(q.net_usd_exact),
+        q.ops_inferred,
+        usd(q.net_usd_inferred),
+        q.ops_approx,
+    );
+    if o.net_usd > 0.0 && o.highest_single_usd / o.net_usd > 0.4 {
+        eprintln!(
+            "  warning: one op is {:.0}% of window net — totals may be dominated by a single hit.",
+            100.0 * o.highest_single_usd / o.net_usd
+        );
+    }
 
     println!("\n  Per kind:");
     let mut t = Table::new();
