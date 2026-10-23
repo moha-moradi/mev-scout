@@ -16,19 +16,19 @@ todos:
     status: completed
   - id: phase2-rejects
     content: ClassifyOutput + extend RejectReason; persist explorer_classify rejects from ingest
-    status: in_progress
+    status: completed
   - id: phase2-savax-tag
     content: Require exchange rate for savax_rate_arb; tag_modes in details
-    status: pending
+    status: completed
   - id: phase2-report-quality
     content: Revenue report --windows quality slice (exact/inferred, unpriced, pricing coverage)
-    status: pending
+    status: completed
   - id: phase3-seeds
     content: Hunt/pin frontrun|backrun|skim; update scenario_targets + checklist
-    status: pending
+    status: completed
   - id: phase4-causal-calibrate
     content: Calibrate causal thresholds from pinned seeds; optional offline REVM sample FP check
-    status: pending
+    status: in_progress
 isProject: false
 ---
 
