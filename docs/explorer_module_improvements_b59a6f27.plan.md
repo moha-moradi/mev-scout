@@ -28,7 +28,7 @@ todos:
     status: in_progress
   - id: phase4-causal-calibrate
     content: Calibrate causal thresholds from pinned seeds; optional offline REVM sample FP check
-    status: in_progress
+    status: completed
 isProject: false
 ---
 
@@ -155,6 +155,8 @@ pub struct ClassifyOutput {
 
 1. بعد از Phase 3 seeds، thresholdهای [`causal.rs`](core/src/explorer/classify/causal.rs) (`price_better_by(..., 0.5)`, `CAUSAL_WINDOW_TXS`) را روی corpus pinned بازبینی کن؛ مقادیر را به‌صورت ثابتِ مستند در کد نگه دار (نه magic بی‌توضیح).
 2. اسکریپت/تست offline اختیاری: روی N op اینفر‌شده، `profit(B|after A)` با REVM فقط برای اندازه‌گیری FP rate — **نه** در `ingest` live. اگر REVM harness موجود نیست، فقط calibration از seeds + negative fixtures؛ REVM را به عنوان follow-up علامت بزن ولی در پلن بماند تا هدف دقت فراموش نشود.
+
+**نتیجه (۲۰۲۶-۱۰-۲۴):** REVM بر روی کش فعلی درfeasible نیست (در `avalanche-mev-scout.sqlite` صفر ردیف `blocks`/`receipts`/`transactions` — هیچ state‌ای برای اجرا نیست)؛ طبق قاعدهٔ پلن، کنترل FP آفلاین به‌صورت **negative fixture** اجرا شد: `core/tests/causal_fp_corpus.rs` روی ۳۸٬۶۴۵ بلوک seed (۵٬۴۲۹ swap-dense، ≥۲ swap) مسیر دقیق ingest (`classify_block`) را می‌گذراند و **صفر claim** از Backrun/Frontrun ثبت می‌کند (gate = ۰؛ ground-truth این داده‌ها صفر causal op است) — تست pass. آستانه‌ها (`CAUSAL_WINDOW_TXS=8`، `CAUSAL_PRICE_MIN_PCT=0.5`) ثابت‌های نام‌دهی‌شده و مستند در `legs.rs` هستند و رفتار مرزی از سوی ship-gate گلدن causal (`explorer_golden.rs`) و همین تست FP قفل است. REVM `profit(B|after A)` به‌عنوان follow-up باقی می‌ماند تا seed با state (یا کش blocks/receipts) در دسترس باشد.
 
 ---
 

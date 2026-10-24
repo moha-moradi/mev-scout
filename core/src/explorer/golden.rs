@@ -22,6 +22,9 @@ const ATK: Address = address!("1000000000000000000000000000000000000001");
 const VICTIM: Address = address!("2000000000000000000000000000000000000002");
 const MARKET: Address = address!("8000000000000000000000000000000000000008");
 const WNATIVE: Address = address!("6000000000000000000000000000000000000007");
+/// No-swap placeholder tx used to widen causal-window boundaries in the
+/// out-of-window fixture cases.
+const FILLER: Address = address!("9000000000000000000000000000000000000009");
 
 /// Expected causal claim for one labeled case.
 #[derive(Debug, Clone, Copy)]
@@ -179,6 +182,12 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
         tip_sinks: HashSet::new(),
         txs,
     }
+}
+
+/// No-op filler: carries no swaps or transfers, so it cannot anchor or
+/// interfere with any classify pass; it only advances tx indices.
+fn filler(idx: u64) -> TxInput {
+    tx(idx, FILLER, vec![], vec![])
 }
 
 /// Embedded labeled set (synthetic positives + negatives).
@@ -387,8 +396,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                        transfer(USDC, ATK, POOL_A, 100),
-                        transfer(TOKA, POOL_A, ATK, 200),
+                transfer(USDC, ATK, POOL_A, 100),
+                transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -396,8 +405,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 200, 350)],
                     vec![
-                        transfer(USDC, VICTIM, POOL_A, 200),
-                        transfer(TOKA, POOL_A, VICTIM, 350),
+                transfer(USDC, VICTIM, POOL_A, 200),
+                transfer(TOKA, POOL_A, VICTIM, 350),
                     ],
                 ),
                 tx(
@@ -405,11 +414,246 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, TOKA, USDC, 350, 195)],
                     vec![
-                        transfer(TOKA, ATK, POOL_A, 350),
-                        transfer(USDC, POOL_A, ATK, 195),
+                transfer(TOKA, ATK, POOL_A, 350),
+                transfer(USDC, POOL_A, ATK, 195),
                     ],
                 ),
             ]),
+        },
+        // ── Backrun: closer improves less than CAUSAL_PRICE_MIN_PCT ────
+        // Reference 110/100 = 1.10; closer 221/200 = 1.105 → +0.4545% < 0.5%.
+        // Move (4000→400) passes the same-token size gate (400 ≥ 200), so
+        // price materiality alone is the deciding gate.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_sub_threshold_improvement",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: block(vec![
+                tx(
+                    0,
+                    VICTIM,
+                    vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                    vec![
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
+                    ],
+                ),
+                tx(
+                    1,
+                    MARKET,
+                    vec![swap(POOL_A, USDC, TOKA, 4000, 400)],
+                    vec![
+                        transfer(USDC, MARKET, POOL_A, 4000),
+                        transfer(TOKA, POOL_A, MARKET, 400),
+                    ],
+                ),
+                tx(
+                    2,
+                    ATK,
+                    vec![
+                        swap(POOL_A, TOKA, USDC, 200, 221),
+                        swap(POOL_B, USDC, TOKA, 221, 230),
+                    ],
+                    vec![
+                        transfer(TOKA, ATK, POOL_A, 200),
+                        transfer(USDC, POOL_A, ATK, 221),
+                        transfer(USDC, ATK, POOL_B, 221),
+                        transfer(TOKA, POOL_B, ATK, 230),
+                    ],
+                ),
+            ]),
+        },
+        // ── Backrun: move farther than CAUSAL_WINDOW_TXS before the closer
+        // (distance 19-10 = 9 > 8). Filler no-ops widen the gap; the ref is
+        // also out of window, so the move loop finds no qualified `a`.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_move_outside_window",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: block({
+                let mut txs = vec![
+                    tx(
+                        0,
+                        VICTIM,
+                        vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                        vec![
+                            transfer(TOKA, VICTIM, POOL_A, 100),
+                            transfer(USDC, POOL_A, VICTIM, 110),
+                        ],
+                    ),
+                ];
+                for i in 1..=9 {
+                    txs.push(filler(i));
+                }
+                txs.push(
+                    tx(
+                        10,
+                        MARKET,
+                        vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+                        vec![
+                            transfer(USDC, MARKET, POOL_A, 1000),
+                            transfer(TOKA, POOL_A, MARKET, 100),
+                        ],
+                    ),
+                );
+                for i in 11..=18 {
+                    txs.push(filler(i));
+                }
+                txs.push(
+                    tx(
+                        19,
+                        ATK,
+                        vec![
+                            swap(POOL_A, TOKA, USDC, 100, 120),
+                            swap(POOL_B, USDC, TOKA, 120, 130),
+                        ],
+                        vec![
+                            transfer(TOKA, ATK, POOL_A, 100),
+                            transfer(USDC, POOL_A, ATK, 120),
+                            transfer(USDC, ATK, POOL_B, 120),
+                            transfer(TOKA, POOL_B, ATK, 130),
+                        ],
+                    ),
+                );
+                txs
+            }),
+        },
+        // ── Backrun: closer spends more of the shared token than the move
+        // printed (same-token size gate: move.amount_out < back.amount_in).
+        // Price improvement (250/200 vs 110/100) is otherwise well above
+        // threshold, so size is the deciding gate.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "backrun_size_mismatch",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: block(vec![
+                tx(
+                    0,
+                    VICTIM,
+                    vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                    vec![
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
+                    ],
+                ),
+                tx(
+                    1,
+                    MARKET,
+                    vec![swap(POOL_A, USDC, TOKA, 5000, 100)],
+                    vec![
+                        transfer(USDC, MARKET, POOL_A, 5000),
+                        transfer(TOKA, POOL_A, MARKET, 100),
+                    ],
+                ),
+                tx(
+                    2,
+                    ATK,
+                    vec![
+                        swap(POOL_A, TOKA, USDC, 200, 250),
+                        swap(POOL_B, USDC, TOKA, 250, 260),
+                    ],
+                    vec![
+                        transfer(TOKA, ATK, POOL_A, 200),
+                        transfer(USDC, POOL_A, ATK, 250),
+                        transfer(USDC, ATK, POOL_B, 250),
+                        transfer(TOKA, POOL_B, ATK, 260),
+                    ],
+                ),
+            ]),
+        },
+        // ── Frontrun: victim degrades less than CAUSAL_PRICE_MIN_PCT
+        // (2.09 vs 2.10 front → 0.476% < 0.5%). Close is otherwise a
+        // profitable 2-pool cycle (+50 USDC), so the degradation gate alone
+        // keeps this out of the claims.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "frontrun_sub_threshold_degradation",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: block(vec![
+                tx(
+                    0,
+                    ATK,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 210)],
+                    vec![
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 210),
+                    ],
+                ),
+                tx(
+                    1,
+                    VICTIM,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 209)],
+                    vec![
+                        transfer(USDC, VICTIM, POOL_A, 100),
+                        transfer(TOKA, POOL_A, VICTIM, 209),
+                    ],
+                ),
+                tx(
+                    2,
+                    ATK,
+                    vec![swap(POOL_B, TOKA, USDC, 210, 260)],
+                    vec![
+                        transfer(TOKA, ATK, POOL_B, 210),
+                        transfer(USDC, POOL_B, ATK, 260),
+                    ],
+                ),
+            ]),
+        },
+        // ── Frontrun: victim farther than CAUSAL_WINDOW_TXS after the front
+        // (distance 10-0 = 10 > 8); no same-direction victim qualifies.
+        LabeledCase {
+            expectation: LabeledExpectation {
+                id: "frontrun_victim_outside_window",
+                expect_kind: None,
+                expect_tx_index: None,
+            },
+            input: block({
+                let mut txs = vec![
+                    tx(
+                        0,
+                        ATK,
+                        vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                        vec![
+                            transfer(USDC, ATK, POOL_A, 100),
+                            transfer(TOKA, POOL_A, ATK, 200),
+                        ],
+                    ),
+                ];
+                for i in 1..=9 {
+                    txs.push(filler(i));
+                }
+                txs.push(
+                    tx(
+                        10,
+                        VICTIM,
+                        vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+                        vec![
+                            transfer(USDC, VICTIM, POOL_A, 100),
+                            transfer(TOKA, POOL_A, VICTIM, 150),
+                        ],
+                    ),
+                );
+                txs.push(
+                    tx(
+                        11,
+                        ATK,
+                        vec![swap(POOL_B, TOKA, USDC, 200, 250)],
+                        vec![
+                            transfer(TOKA, ATK, POOL_B, 200),
+                            transfer(USDC, POOL_B, ATK, 250),
+                        ],
+                    ),
+                );
+                txs
+            }),
         },
     ]
 }
@@ -533,8 +777,11 @@ mod tests {
             "causal golden set must be perfect on the synthetic labels:\n{}",
             score.render()
         );
-        assert_eq!(score.cases, 6);
+        // 2 positives; negatives: no-ref, same-sender, no-degradation,
+        // sandwich, sub-threshold improvement, move out of window, size
+        // mismatch, sub-threshold degradation, victim out of window.
+        assert_eq!(score.cases, 11);
         assert_eq!(score.true_positives, 2);
-        assert_eq!(score.true_negatives, 4);
+        assert_eq!(score.true_negatives, 9);
     }
 }

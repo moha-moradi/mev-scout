@@ -27,9 +27,18 @@ pub(super) struct SandwichWalk {
     pub(super) victims: Vec<SwapLeg>,
 }
 
-/// Max tx-index distance that still counts as "adjacent" for causal
-/// backrun/frontrun passes ( /). Blocks are sorted; a window of 8
-/// keeps the pair causal without spanning unrelated traffic.
+/// Max tx-index distance that still counts as "adjacent" for the causal
+/// backrun/frontrun passes: a pair farther apart than this is not considered
+/// causally linked. A window of 8 txs spans the activity between the two legs
+/// without bridging unrelated traffic.
+///
+/// Heuristic, not yet calibrated against a pinned real seed (Phase 3 re-hunt
+/// 2026-10-24: 0 `frontrun`/`backrun`/`skim` ops in 95681722..=95682322 and
+/// 98415954..=98416254). Kept as a named constant rather than an inline magic
+/// number; the window boundary behavior is pinned by the causal golden set ship
+/// gate (`core/tests/explorer_golden.rs`) and the offline FP check
+/// (`core/tests/causal_fp_corpus.rs`). See
+/// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4.
 pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 
 /// Minimum relative price advantage (percentage points) a causal leg must
@@ -38,9 +47,12 @@ pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 /// pre-move reference; frontruns require the third-party victim to execute at
 /// least this much worse than the mover. `0.5` means 0.5%.
 ///
-/// Heuristic, not yet calibrated against a pinned real seed (Phase 3). Keep as
-/// a named constant rather than an inline magic number; revisit once a real
-/// `frontrun`/`backrun` corpus seed is available (see
+/// Heuristic, not yet calibrated against a pinned real seed (Phase 3 re-hunt
+/// 2026-10-24: 0 ops). Kept as a named constant rather than an inline magic
+/// number; the threshold boundary behavior is pinned by the causal golden set
+/// ship gate (`core/tests/explorer_golden.rs`) and the offline FP check
+/// (`core/tests/causal_fp_corpus.rs`). Revisit once a real `frontrun`/`backrun`
+/// corpus seed is available (see
 /// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4).
 pub(super) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
 
