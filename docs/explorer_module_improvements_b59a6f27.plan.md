@@ -143,6 +143,8 @@ pub struct ClassifyOutput {
 
 بدون شل کردن classifier اگر seed پیدا نشد.
 
+**نتیجهٔ re-hunt 2026-10-24:** پنجرهٔ اخیر Avalanche (98415954..=98416254، 301 بلوک، با classifier فعلی) صفر عمل از frontrun/backrun/skim؛ پنجرهٔ dense (95681722..=95682322) صفر (جستجوی 2026-10-18). هیچ seed واقعی‌ای پیدا نشد؛ طبق قاعدهٔ پلن classifier شل نمی‌شود و seeds در `Hunt`/`pending` باقی می‌مانند. در نتیجهٔ نبود seed، «کالیبراسیون روی seeds» (فاز 4) `blocked` است و فقط یادداشت FP + کنترل مرزی اجرا شده.
+
 ---
 
 ## Phase 4 — Causal FP control (از out-of-scope قبلی — **وارد پلن شد**)

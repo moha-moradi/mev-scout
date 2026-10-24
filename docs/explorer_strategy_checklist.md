@@ -1,6 +1,6 @@
 # Explorer strategy verify checklist
 
-Working status for the hunt -> explorer-index -> pin loop (2026-10-18 run).
+Working status for the hunt -> explorer-index -> pin loop. 2026-10-24 re-hunt (current classifier): recent Avalanche window 98415954..=98416254 (301 blocks) found 0 frontrun/backrun/skim ops; dense window 95681722..=95682322 = 0 (2026-10-18 run); all free Ethereum endpoints failed to serve the ingest (local node down). No seeds found — classifier not loosened per plan rule.
 
 Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain` | `blocked`
 
@@ -9,10 +9,10 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 | baseline.arb | arb_atomic | smoke | verified | avalanche | 95681722 | 95682322 | corpus Seeded |
 | baseline.liquidation | liquidation | smoke | verified | avalanche | 95682033 | 95682033 | corpus Seeded |
 | baseline.sandwich | sandwich | B | sparse_cross_chain | ethereum | 26089508 | 26089508 | AVAX empty; ETH DB verified |
-| baseline.frontrun | frontrun | A | pending | - | | | not in indexed windows |
-| baseline.backrun | backrun | A | pending | - | | | not in indexed windows |
+| baseline.frontrun | frontrun | A | pending | - | | | not in indexed windows; 2026-10-24 re-hunt 0 |
+| baseline.backrun | backrun | A | pending | - | | | not in indexed windows; 2026-10-24 re-hunt 0 |
 | baseline.jit | jit | A | verified | avalanche | 97783274 | 97783274 | Seeded in scenario_targets |
-| baseline.skim | skim | A | pending | - | | | not observed |
+| baseline.skim | skim | A | pending | - | | | not observed; 2026-10-24 re-hunt 0 |
 | P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq; `aave_v2_pool` remap → details.protocol=aave_v2 |
 | P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
 | polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |

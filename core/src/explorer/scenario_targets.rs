@@ -73,7 +73,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich",
+        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich; 2026-10-24 re-hunt 301 recent blocks: 0 ops",
     },
     StrategyScenarioTarget {
         id: "baseline.backrun",
@@ -83,7 +83,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "third same-pool print + same-token size (victim.amount_out >= back.amount_in)",
+        hunt: "third same-pool print + same-token size (victim.amount_out >= back.amount_in); 2026-10-24 re-hunt 301 recent blocks: 0 ops",
     },
     StrategyScenarioTarget {
         id: "baseline.liquidation",
@@ -113,7 +113,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "V2-like pair Transfer out without Swap/Sync/Mint/Burn",
+        hunt: "V2-like pair Transfer out without Swap/Sync/Mint/Burn; 2026-10-24 re-hunt 301 recent blocks: 0 ops",
     },
     // ── P0 ─────────────────────────────────────────────────────────────
     StrategyScenarioTarget {
