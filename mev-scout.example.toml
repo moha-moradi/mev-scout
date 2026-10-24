@@ -79,6 +79,10 @@ output = "table"
 # absolute USD floor when expected net ≈ 0.
 # mev_tolerance_pct = 20.0
 # mev_error_usd_tol = 0.50
+# Extra tip/fee-recipient addresses (e.g. a builder fee receiver) merged with
+# each block's coinbase so a forwarded residual landing solely on them is
+# dropped (BuilderTip) instead of attributed as searcher PnL. Optional.
+# tip_sink_addresses = ["0x0000000000000000000000000000000000000000"]
 
 [chains.polygon]
 chain_id = 137

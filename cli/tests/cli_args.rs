@@ -409,6 +409,39 @@ fn bare_explorer_is_revenue_report() {
     }
 }
 
+/// `--confidence` accepts exactly the documented values; `all` and omission both
+/// mean "no filter" (`None`), while `exact`/`inferred` resolve to that level so
+/// the report queries filter on the `mev_ops.confidence` column.
+#[test]
+fn explorer_confidence_flag_resolves_to_documented_values() {
+    use clap::Parser;
+    use mev_scout_cli::cli::{Cli, Command};
+
+    let all = Cli::parse_from(["mev-scout", "explorer", "--confidence", "all"]);
+    match all.command {
+        Some(Command::Explorer(a)) => {
+            assert!(a.report_flags_set());
+            assert!(
+                a.resolved_confidence().is_none(),
+                "'all' must mean no filter"
+            );
+        }
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let exact = Cli::parse_from(["mev-scout", "explorer", "--confidence", "exact"]);
+    match exact.command {
+        Some(Command::Explorer(a)) => assert_eq!(a.resolved_confidence(), Some("exact")),
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+
+    let inferred = Cli::parse_from(["mev-scout", "explorer", "--confidence", "inferred"]);
+    match inferred.command {
+        Some(Command::Explorer(a)) => assert_eq!(a.resolved_confidence(), Some("inferred")),
+        other => panic!("expected Explorer, got {other:?}"),
+    }
+}
+
 /// `explorer index` without `--loop` is a bounded backfill (default 7 days).
 #[test]
 fn explorer_index_defaults_to_backfill_shape() {
@@ -462,6 +495,22 @@ fn explorer_index_rejects_loop_with_days() {
     assert!(
         out.combined().contains("cannot be combined with --loop"),
         "expected loop/days conflict message, got:\n{}",
+        out.combined()
+    );
+}
+
+/// Unknown `--confidence` values are rejected at the clap level (offline),
+/// so an invalid value never reaches the report SQL path.
+#[test]
+fn explorer_invalid_confidence_value_fails_at_clap() {
+    let ws = temp_ws("args_explorer_confidence_invalid");
+    let out = run(&ws, &["explorer", "--confidence", "bogus"]);
+    expect_fail(&out, "explorer --confidence bogus");
+    assert!(
+        out.combined()
+            .contains("invalid value")
+            && out.combined().contains("bogus"),
+        "expected clap rejection for --confidence 'bogus', got:\n{}",
         out.combined()
     );
 }

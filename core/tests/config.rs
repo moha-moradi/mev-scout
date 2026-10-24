@@ -212,8 +212,70 @@ fn all_still_expands_to_runnable_strategies() {
 }
 
 /// A genuinely unknown name is still a hard error — the tombstone list must not
-/// degrade into a blanket "ignore what you cannot parse".
+/// degrade into a blanket "ignore what it cannot parse".
 #[test]
 fn unknown_strategy_name_is_still_an_error() {
     assert!(Strategy::from_comma_list("sandwich").is_err());
+}
+
+/// ── Explorer tip-sink addresses (builder-tip PnL guard) ─────────────────────
+
+/// Default config carries no tip sinks so existing TOML files keep parsing and
+/// no new rejection behavior is introduced by default.
+#[test]
+fn explorer_tip_sink_addresses_default_empty() {
+    let config = Config::default();
+    assert!(config.explorer.tip_sink_addresses.is_empty());
+}
+
+/// `tip_sink_addresses` in the `[explorer]` section parses as a `Vec<Address>`
+/// and lands in the explorer sub-config.
+#[test]
+fn explorer_tip_sink_addresses_parse_from_toml() {
+    let sink = address!("1111000000000000000000000000000000000011");
+    let config: Config = toml::from_str(
+        &format!("chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink}\"]\n"),
+    )
+        .expect("valid tip sink addresses must parse");
+    assert_eq!(config.explorer.tip_sink_addresses, vec![sink]);
+}
+
+/// A list with multiple configured tip sinks parses in order.
+#[test]
+fn explorer_tip_sink_multiple_addresses_parse() {
+    let sink1 = address!("2222000000000000000000000000000000000022");
+    let sink2 = address!("3333000000000000000000000000000000000033");
+    let config: Config = toml::from_str(
+        &format!(
+            "chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink1}\", \"{sink2}\"]\n"
+        ),
+    )
+        .unwrap();
+    assert_eq!(config.explorer.tip_sink_addresses, vec![sink1, sink2]);
+}
+
+/// A malformed tip-sink address is a hard TOML parse error, matching the
+/// strictness of the per-chain address fields (`savax`, factories, …).
+#[test]
+fn explorer_tip_sink_invalid_address_is_rejected() {
+    let err = toml::from_str::<Config>(
+        "chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"notanaddress\"]\n",
+    );
+    let msg = match err {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("invalid tip sink address must fail to parse"),
+    };
+    assert!(msg.contains("address"), "parse error should mention the field, got: {msg}");
+}
+
+/// Roundtrip through the config serializer: tip sinks survive `to_toml_string`
+/// (empty by default) and a set list.
+#[test]
+fn explorer_tip_sink_roundtrip_preserves_set_list() {
+    let sink = address!("4444000000000000000000000000000000000044");
+    let mut config = Config::default();
+    config.explorer.tip_sink_addresses = vec![sink];
+    let toml_str = config.to_toml_string().unwrap();
+    let parsed: Config = toml::from_str(&toml_str).expect("serialized config must parse");
+    assert_eq!(parsed.explorer.tip_sink_addresses, vec![sink]);
 }

@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 
 use super::defaults::{default_chains, merge_default_chains, ChainConfig};
@@ -231,6 +232,11 @@ pub struct ExplorerConfig {
     /// when the expected net profit is ~0 (degenerate branch).
     #[serde(default = "default_explorer_mev_error_usd_tol")]
     pub mev_error_usd_tol: f64,
+    /// Extra tip/fee-recipient addresses merged with each block's coinbase so
+    /// forwarded residuals to builders are not counted as searcher PnL.
+    /// Optional; empty by default. Coinbase is always merged per-block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tip_sink_addresses: Vec<Address>,
 }
 
 fn default_false() -> bool {
@@ -450,6 +456,7 @@ impl Default for ExplorerConfig {
             poll_interval_ms: default_explorer_poll_ms(),
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
+            tip_sink_addresses: Vec::new(),
         }
     }
 }

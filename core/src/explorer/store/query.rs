@@ -406,6 +406,11 @@ impl ExplorerStore {
         confidence: Option<&str>,
     ) -> anyhow::Result<ReportOverview> {
         let filter = report_filter_clause(kind, confidence);
+        // Reason counts scan `details_json`. These tokens are written verbatim
+        // into the `reasons` array (and `pricing_clamped` is also a top-level
+        // key), so a substring match is precise for the values `note_pricing_issue`
+        // emits. `SUM` skips NULL, so `gross` already counts only priced ops
+        // (unpriced rows carry NULL `profit_usd`).
         let sql = format!(
             "SELECT COUNT(*),
                     COALESCE(SUM(volume_usd), 0),
@@ -416,18 +421,23 @@ impl ExplorerStore {
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa),
                     COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa)),
-                    SUM(CASE WHEN profit_usd IS NOT NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN profit_usd IS NULL THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN confidence = 'exact' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN confidence = 'inferred' THEN 1 ELSE 0 END),
+                    COALESCE(SUM(CASE WHEN profit_usd IS NOT NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN profit_usd IS NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'exact' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'exact' THEN net_profit_usd ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN net_profit_usd ELSE 0 END), 0),
-                    SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END)
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%NATIVE_UNPRICED%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%MULTI_ASSET_PRICING%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0)
              FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
+            let ops = r.get::<_, i64>(0)?;
+            let ops_priced = r.get::<_, i64>(9).unwrap_or(0);
             Ok(ReportOverview {
-                ops: r.get::<_, i64>(0)?,
+                ops,
                 volume_usd: r.get(1)?,
                 gross_usd: r.get(2)?,
                 gas_usd: r.get(3)?,
@@ -437,13 +447,22 @@ impl ExplorerStore {
                 searchers: r.get::<_, i64>(7)?,
                 competitors: r.get::<_, i64>(8)?,
                 quality: ReportQuality {
-                    ops_priced: r.get::<_, i64>(9).unwrap_or(0),
+                    ops_priced,
                     ops_unpriced: r.get::<_, i64>(10).unwrap_or(0),
                     ops_exact: r.get::<_, i64>(11).unwrap_or(0),
                     ops_inferred: r.get::<_, i64>(12).unwrap_or(0),
                     net_usd_exact: r.get(13).unwrap_or(0.0),
                     net_usd_inferred: r.get(14).unwrap_or(0.0),
                     ops_approx: r.get::<_, i64>(15).unwrap_or(0),
+                    gross_usd_priced_only: r.get(2)?,
+                    pricing_coverage_pct: if ops == 0 {
+                        100.0
+                    } else {
+                        (ops_priced as f64 / ops as f64) * 100.0
+                    },
+                    ops_native_unpriced: r.get::<_, i64>(16).unwrap_or(0),
+                    ops_multi_asset: r.get::<_, i64>(17).unwrap_or(0),
+                    ops_pricing_clamped: r.get::<_, i64>(18).unwrap_or(0),
                 },
             })
         })?;

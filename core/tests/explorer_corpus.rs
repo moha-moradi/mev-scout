@@ -27,6 +27,15 @@
 //! - block 127706714: Aave V3 LiquidationCall, searcher `0xec40d8aa…1118`
 //! - block 102639252: Venus LiquidateBorrow (vUSDT), searcher `0x6898c2c1…e052`
 //!
+//! Avalanche seed (97505001..=98035036 record run; corpus DB, seeds in
+//! `scenario_targets`):
+//! - block 97783274: 1 `jit` (owner 0x3fed017e…, V3 tick range)
+//! - block 97782322: 1 Aave V3 flash-loan `liquidation` (searcher 0xd9fffdf0…)
+//! - block 97850836: 1 Benqi `liquidation` (Liquidator helper 0x5ac9bc…)
+//! - block 97783552: 1 long-tail `arb_atomic` (searcher 0xf6d7c920…, Proximity v3)
+//! - block 97505001: 1 ERC-4337 bundler (`unknown`, EntryPoint 0x5ff137d4…)
+//! - block 97781738: 1 claim_and_sell/airdrop (`unknown`, 0x04d9634d…)
+//!
 //! Ethereum seed (backfill 26055651..=26055745, 2026-09-25): 5 `sandwich`
 //! ops. Three are from `0xae2fc483527b8ef99eb5d9b44875f005ba1fae13`, best
 //! priced profit about \$10. No `jit` mint/burn pair landed in that window.
@@ -422,6 +431,93 @@ const CORPUS: &[CorpusCase] = &[
         profit_usd_min: None,
         profit_usd_max: Some(100_000.0),
     },
+    // Avalanche baseline JIT: owner 0x3fed017e… mints a V3 position over ticks
+    // [-253400, -253200] (opened 97782941) and burns it in block 97783274 with
+    // an in-range swap in between. Realized fee capture — no realized profit
+    // (fees estimated from in-range volume at 30 bps). Pinned seed for
+    // `scenario_targets` baseline.jit.
+    CorpusCase {
+        id: "av-jit-97783274",
+        chain: ChainName::Avalanche,
+        from_block: 97_783_274,
+        to_block: 97_783_274,
+        kind: "jit",
+        min_ops: 1,
+        searcher: Some(address!("3fed017ec0f5517cdf2e8a9a4156c64d74252146")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Avalanche Aave V3 flash-loan liquidation in block 97782322: Aave
+    // FlashLoan + LiquidationCall in the same tx (tags flash_loan_liq,
+    // protocol aave_v3). Pinned seed for the P0.1 scenario.
+    CorpusCase {
+        id: "av-flash-loan-liq-97782322",
+        chain: ChainName::Avalanche,
+        from_block: 97_782_322,
+        to_block: 97_782_322,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("d9fffdf0c4b18fb7e225da15b2af9f88e55676c3")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Avalanche Benqi LiquidateBorrow in block 97850836 from the Liquidator
+    // helper (eoa == contract 0x5ac9bc…, non-indexed data layout, protocol
+    // benqi). Pinned seed for the P0.2 scenario.
+    CorpusCase {
+        id: "av-benqi-97850836",
+        chain: ChainName::Avalanche,
+        from_block: 97_850_836,
+        to_block: 97_850_836,
+        kind: "liquidation",
+        min_ops: 1,
+        searcher: Some(address!("5ac9bc14376bf2727c6211960cf3cec1e2f295bd")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Avalanche long-tail atomic arb in block 97783552: profit token
+    // 0xb97ef9ef… (non-blue-chip) routed through Proximity v3
+    // (tags long_tail). Pinned seed for the P1.3 scenario.
+    CorpusCase {
+        id: "av-long-tail-97783552",
+        chain: ChainName::Avalanche,
+        from_block: 97_783_552,
+        to_block: 97_783_552,
+        kind: "arb_atomic",
+        min_ops: 1,
+        searcher: Some(address!("f6d7c920f6235abab9a9a5a6905ddbcaa1733394")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Avalanche ERC-4337 bundler in block 97505001: UserOperation via the
+    // EntryPoint 0x5ff137d4… (tags bundler/erc4337, kind unknown — no profit
+    // leg). Pinned seed for the P3.11 scenario.
+    CorpusCase {
+        id: "av-bundler-97505001",
+        chain: ChainName::Avalanche,
+        from_block: 97_505_001,
+        to_block: 97_505_001,
+        kind: "unknown",
+        min_ops: 1,
+        searcher: Some(address!("4337003fcd2f56de3977ccb806383e9161628d0e")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    // Avalanche claim-and-sell (airdrop) in block 97781738: same-tx transfer
+    // from 0x0 + swap selling the claimed token (tags claim_and_sell/airdrop,
+    // kind unknown, USD approximate — MULTI_ASSET_PRICING). Pinned seed for the
+    // P3.13 scenario.
+    CorpusCase {
+        id: "av-claim-sell-97781738",
+        chain: ChainName::Avalanche,
+        from_block: 97_781_738,
+        to_block: 97_781_738,
+        kind: "unknown",
+        min_ops: 1,
+        searcher: Some(address!("04d9634df20aa66b23f114d37c45fa6c6ab76d56")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
 ];
 
 /// Build the runtime config for a corpus chain: defaults + chain + the
@@ -535,6 +631,8 @@ fn expected_protocol(case_id: &str) -> Option<&'static str> {
         id if id.starts_with("poly-aave-v2-") => Some("aave_v2"),
         id if id.starts_with("bsc-aave-") => Some("aave_v3"),
         id if id.starts_with("bsc-venus-") => Some("venus"),
+        "av-flash-loan-liq-97782322" => Some("aave_v3"),
+        "av-benqi-97850836" => Some("benqi"),
         _ => None,
     }
 }
@@ -875,6 +973,7 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let kind = match t.label {
             "arb_atomic" | "long_tail" | "flash_arb" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
+            "bundler" | "claim_and_sell" => "unknown",
             other => other,
         };
         let hit = CORPUS.iter().any(|c| {

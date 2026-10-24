@@ -217,6 +217,18 @@ pub struct ReportQuality {
     pub net_usd_inferred: f64,
     /// Ops flagged `usd_approximate` in details_json.
     pub ops_approx: i64,
+    /// Gross USD over ops that carry a USD price (`profit_usd IS NOT NULL`).
+    /// Fully-unpriced ops (NULL) are excluded from this total, never zeroed.
+    pub gross_usd_priced_only: f64,
+    /// Fraction of ops with a non-NULL USD price, in percent (0..=100).
+    /// `100.0` when the window has no ops.
+    pub pricing_coverage_pct: f64,
+    /// Ops whose details carry the `NATIVE_UNPRICED` reason (net incomplete).
+    pub ops_native_unpriced: i64,
+    /// Ops whose details carry the `MULTI_ASSET_PRICING` reason.
+    pub ops_multi_asset: i64,
+    /// Ops whose details carry the `pricing_clamped` reason.
+    pub ops_pricing_clamped: i64,
 }
 
 /// Revenue-report window header (bare `explorer` overview).
@@ -234,6 +246,26 @@ pub struct ReportOverview {
     pub competitors: i64,
     #[serde(default)]
     pub quality: ReportQuality,
+}
+
+impl ReportOverview {
+    /// Percentage of window net profit attributable to the single highest op.
+    ///
+    /// Numerator: `highest_single_usd`. Denominator: window `net_usd`. The
+    /// denominator guard (`net_usd > 0`) is required so the warning cannot
+    /// divide by zero, and a zero/negative net window (where "dominant share"
+    /// is not meaningful) yields `None` instead of a misleading percentage.
+    pub fn net_concentration_pct(&self) -> Option<f64> {
+        let denom = self.net_usd;
+        if denom <= 0.0 || !denom.is_finite() {
+            return None;
+        }
+        let top = self.highest_single_usd;
+        if !top.is_finite() {
+            return None;
+        }
+        Some(100.0 * top / denom)
+    }
 }
 
 pub(super) fn map_stats_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatsRow> {
@@ -1080,6 +1112,128 @@ mod tests {
             store.report_by_kind(0, Some("sandwich"), None).unwrap().len(),
             1
         );
+    }
+
+    /// The overview must expose every pricing-reason count, `gross_usd_priced_only`,
+    /// and a reconciling pricing coverage — and must never silently treat an
+    /// unpriced op (NULL `profit_usd`) as $0 in the priced total.
+    #[test]
+    fn report_window_overview_exposes_reasons_coverage_and_gross_priced() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let usdc = address!("4444000000000000000000000000000000000004");
+        let longtail = address!("0a00000000000000000000000000000000000000");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(usdc, token_usd(1.0, 6));
+
+        // 1. fully priced, exact, no pricing reason.
+        let exact = sample_event(600);
+
+        // 2. realized-rate clamped to the trusted route → `pricing_clamped`.
+        let mut clamped = sample_event(610);
+        clamped.profit_token = Some(longtail);
+        clamped.profit_amount = Some(U256::from(1_000_000u64));
+        clamped.details = serde_json::json!({
+            "route": [{
+                "token_in": format!("{longtail:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
+                "amount_in": "1",
+                "amount_out": "1000000",
+            }]
+        });
+
+        // 3. native residual with no native price → `NATIVE_UNPRICED` (inferred).
+        let mut native = sample_event(611);
+        native.profit_token = Some(usdc);
+        native.profit_amount = Some(U256::from(1_000_000u64));
+        native.profit_tokens = vec![
+            (usdc, U256::from(1_000_000u64)),
+            (crate::explorer::profit::NATIVE_MARKER, U256::from(1u64)),
+        ];
+        native.confidence = Confidence::Inferred;
+
+        // 4. partially priced multi-asset residual → `MULTI_ASSET_PRICING`.
+        let mut multi = sample_event(612);
+        multi.profit_token = Some(usdc);
+        multi.profit_amount = Some(U256::from(1_000_000u64));
+        multi.profit_tokens = vec![(usdc, U256::from(1_000_000u64)), (longtail, U256::from(100u64))];
+
+        // 5. wholly unpriced (token absent, no route) → NULL profit_usd +
+        // `MULTI_ASSET_PRICING`.
+        let mut unpriced = sample_event(613);
+        unpriced.profit_token = Some(longtail);
+        unpriced.profit_tokens = vec![];
+        unpriced.details = serde_json::json!({ "route": [] });
+
+        for (block, ev) in [(600u64, exact), (610, clamped), (611, native), (612, multi), (613, unpriced)] {
+            seed_block(
+                &store,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    ),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: std::slice::from_ref(&ev),
+                    token_prices: &prices,
+                },
+            );
+        }
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 5);
+        assert_eq!(ov.quality.ops_priced, 4);
+        assert_eq!(ov.quality.ops_unpriced, 1);
+        assert_eq!(ov.quality.ops_exact, 4);
+        assert_eq!(ov.quality.ops_inferred, 1);
+        assert_eq!(ov.quality.ops_approx, 4);
+        assert_eq!(ov.quality.ops_multi_asset, 2);
+        assert_eq!(ov.quality.ops_native_unpriced, 1);
+        assert_eq!(ov.quality.ops_pricing_clamped, 1);
+        // Each priced op nets $1 (gas ~$0.000075 is tiny relative to 4.0).
+        assert!((ov.quality.gross_usd_priced_only - 4.0).abs() < 1e-6);
+        assert_eq!(ov.quality.gross_usd_priced_only, ov.gross_usd, "priced-only gross must equal SUM(profit_usd)");
+        assert_eq!(ov.quality.pricing_coverage_pct, 80.0);
+        assert!(ov.net_usd > 0.0, "net should be positive for 4 priced $1 ops");
+        // No divide-by-zero: one $1 op of $4 net ≈ 25% (< 40%), so no warning path.
+        let pct = ov.net_concentration_pct().expect("net>0 must yield a percentage");
+        assert!(pct > 0.0 && pct < 100.0);
+        // The unpriced op itself must be NULL in the store (excluded, not zeroed).
+        let ops = store.ops_in_range(600, 613, &[]).unwrap();
+        assert!(ops.iter().any(|op| op.profit_usd.is_none()), "expected one NULL-profit op");
+    }
+
+    /// The net-concentration guard must never divide by zero and must only emit
+    /// a value for a strictly-positive net window.
+    #[test]
+    fn net_concentration_pct_boundary_cases() {
+        let ov = |net: f64, top: f64| ReportOverview {
+            ops: 1,
+            volume_usd: 0.0,
+            gross_usd: 0.0,
+            gas_usd: 0.0,
+            flash_fee_usd: 0.0,
+            net_usd: net,
+            highest_single_usd: top,
+            searchers: 0,
+            competitors: 0,
+            quality: ReportQuality::default(),
+        };
+
+        // above and below the 40% threshold both return a value (warning decision is display-side).
+        assert_eq!(ov(110.0, 100.0).net_concentration_pct(), Some((100.0 / 110.0) * 100.0));
+        assert_eq!(ov(100.0, 30.0).net_concentration_pct(), Some(30.0));
+        assert_eq!(ov(100.0, 40.0).net_concentration_pct(), Some(40.0));
+        // zero net → None (no divide-by-zero).
+        assert!(ov(0.0, 5.0).net_concentration_pct().is_none());
+        // negative net → None (dominant share undefined).
+        assert!(ov(-1.0, 3.0).net_concentration_pct().is_none());
+        // non-finite numerator → None.
+        assert!(ov(10.0, f64::INFINITY).net_concentration_pct().is_none());
+        // non-finite denominator → None.
+        assert!(ov(f64::NAN, 5.0).net_concentration_pct().is_none());
     }
 
     #[test]

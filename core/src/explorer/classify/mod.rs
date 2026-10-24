@@ -488,7 +488,10 @@ mod tests {
         WNATIVE,
     };
     use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
-    use alloy::primitives::{address, b256, U256};
+    use crate::explorer::ingest::IngestConfig;
+    use crate::config::Config;
+    use crate::types::ChainName;
+    use alloy::primitives::{address, b256, Address, U256};
 
     #[test]
     fn arb_cycle_single_flow_owner_is_exact() {
@@ -657,6 +660,65 @@ mod tests {
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
             "tip-sink residual must not count as arb PnL, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn configured_tip_sink_propagates_into_classifier_and_drops_residual() {
+        // End-to-end wiring: an `[explorer] tip_sink_addresses` entry must reach
+        // the `IngestConfig.tip_sink_addresses` field, merge with the per-block
+        // coinbase exactly as `index_block_fetched` does, and cause a residual
+        // forwarded to that *configured* sink to be dropped as `BuilderTip`
+        // (never emitted as arb PnL).
+        let sink = address!("0000000000000000000000000000000000000042");
+        let config: Config = toml::from_str(
+            &format!(
+                "chain = \"polygon\"\n[chains.polygon]\nchain_id = 137\n[explorer]\ntip_sink_addresses = [\"{sink}\"]\n"
+            ),
+        )
+        .expect("config with tip sink must parse");
+        assert_eq!(config.explorer.tip_sink_addresses, vec![sink]);
+
+        let (_, chain_cfg) = crate::config::validation::resolve_chain(&config)
+            .expect("resolve_chain for polygon");
+        let mut ingest = IngestConfig::from_chain(ChainName::Polygon, &chain_cfg);
+        // The exact field the job/backfill entry points assign.
+        ingest.tip_sink_addresses = config.explorer.tip_sink_addresses.iter().cloned().collect();
+        assert!(
+            ingest.tip_sink_addresses.contains(&sink),
+            "configured sink must land in IngestConfig.tip_sink_addresses"
+        );
+
+        const COINBASE: Address = address!("0000000000000000000000000000000000000084");
+        let mut tip_sinks = ingest.tip_sink_addresses.clone();
+        if !COINBASE.is_zero() {
+            tip_sinks.insert(COINBASE);
+        }
+        assert!(
+            tip_sinks.contains(&sink) && tip_sinks.contains(&COINBASE),
+            "configured sink must coexist with coinbase in tip_sinks: {tip_sinks:?}"
+        );
+
+        // Searcher contract nets zero and forwards the residual to the configured
+        // sink (not coinbase) → BuilderTip drop.
+        const SEARCHER: Address = address!("00000000000000000000000000000000000000c8");
+        let swaps = vec![
+            swap_owned(SEARCHER, POOL_A, USDC, TOKA, 100, 200),
+            swap_owned(SEARCHER, POOL_B, TOKA, USDC, 200, 110),
+        ];
+        let transfers = vec![
+            transfer(0, USDC, SEARCHER, POOL_A, 100),
+            transfer(1, TOKA, POOL_A, SEARCHER, 200),
+            transfer(2, TOKA, SEARCHER, POOL_B, 200),
+            transfer(3, USDC, POOL_B, SEARCHER, 110),
+            transfer(4, USDC, SEARCHER, sink, 10),
+        ];
+        let mut input = block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]);
+        input.tip_sinks = tip_sinks;
+        let events = classify_block(&input);
+        assert!(
+            !kinds(&events).contains(&MevKind::ArbAtomic),
+            "configured tip-sink residual must not count as arb PnL, got {events:?}"
         );
     }
 

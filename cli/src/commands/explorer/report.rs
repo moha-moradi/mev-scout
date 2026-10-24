@@ -306,20 +306,33 @@ fn render_window(r: &WindowReport) {
     );
     let q = &o.quality;
     println!(
-        "  quality: priced {}/{} | exact {} (net ${}) | inferred {} (net ${}) | approx {}",
+        "  quality: priced {}/{} ({}% coverage) | gross (priced only) ${} | exact {} (net ${}) | inferred {} (net ${}) | approx {}",
         q.ops_priced,
         o.ops,
+        q.pricing_coverage_pct,
+        usd(q.gross_usd_priced_only),
         q.ops_exact,
         usd(q.net_usd_exact),
         q.ops_inferred,
         usd(q.net_usd_inferred),
         q.ops_approx,
     );
-    if o.net_usd > 0.0 && o.highest_single_usd / o.net_usd > 0.4 {
+    if q.ops_native_unpriced + q.ops_multi_asset + q.ops_pricing_clamped > 0 {
         eprintln!(
-            "  warning: one op is {:.0}% of window net — totals may be dominated by a single hit.",
-            100.0 * o.highest_single_usd / o.net_usd
+            "  pricing reasons: {} native-unpriced | {} multi-asset | {} clamped \
+             (USD figures approximate; net may be incomplete)",
+            q.ops_native_unpriced,
+            q.ops_multi_asset,
+            q.ops_pricing_clamped,
         );
+    }
+    if let Some(pct) = o.net_concentration_pct() {
+        if pct > 40.0 {
+            eprintln!(
+                "  warning: top op is {:.0}% of window net — totals may be dominated by a single hit.",
+                pct
+            );
+        }
     }
 
     println!("\n  Per kind:");

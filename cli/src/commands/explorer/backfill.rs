@@ -26,6 +26,7 @@ pub async fn cmd_backfill(
     cfg.confirmations = config.explorer.confirmations;
     cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
     cfg.record_rejections = config.backtest.record_rejections;
+    cfg.tip_sink_addresses = config.explorer.tip_sink_addresses.iter().cloned().collect();
 
     let (from, to) = match (days, from_block, to_block) {
         (Some(d), None, None) => {
