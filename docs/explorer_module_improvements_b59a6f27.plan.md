@@ -25,7 +25,7 @@ todos:
     status: completed
   - id: phase3-seeds
     content: Hunt/pin frontrun|backrun|skim; update scenario_targets + checklist
-    status: completed
+    status: in_progress
   - id: phase4-causal-calibrate
     content: Calibrate causal thresholds from pinned seeds; optional offline REVM sample FP check
     status: in_progress

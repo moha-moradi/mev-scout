@@ -10,7 +10,7 @@ use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
 use super::legs::{
     opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit, SwapLeg,
-    CAUSAL_WINDOW_TXS,
+    CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS,
 };
 use super::{BlockInput, TxInput};
 
@@ -68,7 +68,7 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
                     .rev()
                     .find(|(_, f, l)| *f != *afrom && same_dir(l, bleg));
                 if let Some((_, _, ref_leg)) = ref_ {
-                    if price_better_by(bleg, ref_leg, 0.5) {
+                    if price_better_by(bleg, ref_leg, CAUSAL_PRICE_MIN_PCT) {
                         move_ = Some((&legs[ai], ref_leg));
                         break;
                     }
@@ -126,7 +126,7 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
                         "STATE_DELTA_MATCH": true,
                         "DIRECTION_OF_BENEFIT": opposite_dir(aleg, bleg),
                         "PROFIT_VERIFIED": true,
-                        "exec_better_than_pre_move": price_better_by(bleg, a.1, 0.5),
+                        "exec_better_than_pre_move": price_better_by(bleg, a.1, CAUSAL_PRICE_MIN_PCT),
                         "cycle": true,
                         "supporting_tx_hashes": [format!("{a_hash:#x}")],
                     },
@@ -175,7 +175,7 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                 if !same_dir(vleg, fleg) {
                     continue;
                 }
-                if price_worse_by(vleg, fleg, 0.5) {
+                 if price_worse_by(vleg, fleg, CAUSAL_PRICE_MIN_PCT) {
                     victim_ = Some((*vt, *vfrom, vleg));
                     break;
                 }

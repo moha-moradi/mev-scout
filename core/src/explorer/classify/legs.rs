@@ -32,6 +32,18 @@ pub(super) struct SandwichWalk {
 /// keeps the pair causal without spanning unrelated traffic.
 pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 
+/// Minimum relative price advantage (percentage points) a causal leg must
+/// show to be counted as *material* rather than float / gas-ordering noise.
+/// Backruns require the closer to execute at least this much better than the
+/// pre-move reference; frontruns require the third-party victim to execute at
+/// least this much worse than the mover. `0.5` means 0.5%.
+///
+/// Heuristic, not yet calibrated against a pinned real seed (Phase 3). Keep as
+/// a named constant rather than an inline magic number; revisit once a real
+/// `frontrun`/`backrun` corpus seed is available (see
+/// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4).
+pub(super) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
+
 /// True when `a` and `b` swap the same token pair in the same direction.
 pub(super) fn same_dir(a: &SwapLeg, b: &SwapLeg) -> bool {
     !a.token_in.is_zero()
