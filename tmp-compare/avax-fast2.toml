@@ -1,0 +1,27 @@
+chain = "avalanche"
+gas_model = "historical_exact"
+output = "table"
+priority_fee_gwei = 30
+block_concurrency = 12
+rpc_batch_blocks = 4
+rps_limit = 40
+rpc_rps = [25.0, 20.0]
+rpc_urls = [
+    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+    "https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy",
+]
+strategies = "all"
+
+[chains.avalanche]
+chain_id = 43114
+
+[chains.avalanche.rpc]
+rpc_rps = [25.0, 20.0]
+rpc_urls = [
+    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
+    "https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy",
+]
+
+[explorer]
+confirmations = 4
+poll_interval_ms = 2000

@@ -61,6 +61,15 @@ pub const V3_BURN_TOPIC: B256 =
 pub static UNI_V3_FLASH_TOPIC: LazyLock<B256> =
     LazyLock::new(|| keccak256("Flash(address,address,uint256,uint256,uint256,uint256)"));
 
+/// Donaswap V3 (Avalanche, factory `0xf72f4652785a5186edf7b93a9cfd246fefc0ef5c`)
+/// pool Swap event — the Uniswap V3 signature with two trailing uint128
+/// protocol-fee words. Same indexed topics (sender, recipient) and identical
+/// amount/sqrtPrice/liquidity/tick data layout, so the V3 decoder applies
+/// once this topic is matched.
+pub static DONASWAP_V3_SWAP_TOPIC: LazyLock<B256> = LazyLock::new(|| {
+    keccak256("Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)")
+});
+
 // ── Uniswap V4 ──────────────────────────────────────────────────────
 
 /// Uniswap V4 PoolManager Swap event (verified against v4-core PoolManager):
@@ -398,6 +407,11 @@ mod tests {
             "v3 swap",
             V3_SWAP_TOPIC,
             "Swap(address,address,int256,int256,uint160,uint128,int24)",
+        );
+        pin_sig(
+            "donaswap v3 swap",
+            *DONASWAP_V3_SWAP_TOPIC,
+            "Swap(address,address,int256,int256,uint160,uint128,int24,uint128,uint128)",
         );
         pin_sig(
             "v3 mint",

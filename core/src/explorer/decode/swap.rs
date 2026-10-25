@@ -3,7 +3,8 @@ use crate::utils::topic_address;
 use alloy::primitives::{Address, U256};
 
 use crate::chain::events::{
-    INF_CL_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC, V4_SWAP_TOPIC,
+    DONASWAP_V3_SWAP_TOPIC, INF_CL_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, V2_SWAP_TOPIC,
+    V3_SWAP_TOPIC, V4_SWAP_TOPIC,
 };
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact};
@@ -107,7 +108,9 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         return Some((Amm::V2, fact));
     }
 
-    if topic0 == V3_SWAP_TOPIC {
+    // Donaswap V3 shares the Uniswap V3 data layout (amounts, sqrtPrice,
+    // liquidity, tick) plus two ignored uint128 protocol-fee words.
+    if topic0 == V3_SWAP_TOPIC || topic0 == *DONASWAP_V3_SWAP_TOPIC {
         // data: int256 amount0, int256 amount1, sqrtPriceX96, liquidity, tick
         let mut fact = base(Amm::V3, log.address);
         if !apply_signed_deltas(&mut fact, &log.data) {

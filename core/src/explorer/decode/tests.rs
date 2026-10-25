@@ -4,8 +4,8 @@ use alloy::primitives::{address, b256, Address, B256, U256};
 
 use crate::chain::events::{
     AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
-    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC, TRANSFER_TOPIC,
-    V2_SWAP_TOPIC, V3_SWAP_TOPIC,
+    COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, DONASWAP_V3_SWAP_TOPIC, TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+    TRANSFER_TOPIC, V2_SWAP_TOPIC, V3_SWAP_TOPIC,
 };
 use crate::data::LogData;
 use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
@@ -251,6 +251,32 @@ fn v3_swap_decodes_direction() {
     assert_eq!(s.amount_in, U256::from(100));
     assert_eq!(s.amount_out, U256::from(90));
     assert_eq!(s.token_in, TOKEN0_SENTINEL);
+}
+
+#[test]
+fn donaswap_v3_swap_decodes_like_v3() {
+    // Real Donaswap V3 pool (Avalanche 0x85b54e9e…, factory 0xf72f4652…):
+    // V3 layout plus two trailing uint128 protocol-fee words (data = 224).
+    let pool = address!("85b54e9e86c2061c4d49608c51111db2a914d731");
+    // amount0 = -1091246873451144093 (WAVAX received), amount1 = +12641094804701311522 (GPC paid out)
+    let mut data = vec![0u8; 224];
+    // sign-extension: amount0 = -1091246873451144093 (WAVAX received)
+    for b in data[0..24].iter_mut() {
+        *b = 0xff;
+    }
+    data[24..32].copy_from_slice(&(-1_091_246_873_451_144_093i64).to_be_bytes());
+    // amount1 = +12641094804701311522 (GPC paid out)
+    data[56..64].copy_from_slice(&12_641_094_804_701_311_522u64.to_be_bytes());
+    // tick right-aligned in bytes 128..160
+    data[156..160].copy_from_slice(&(-5_120i32).to_be_bytes());
+    let l = log(pool, vec![*DONASWAP_V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data);
+    let (amm, s) = decode_swap(&l).unwrap();
+    assert_eq!(amm, Amm::V3);
+    assert_eq!(s.pool, pool);
+    assert_eq!(s.amount_in, U256::from(1_091_246_873_451_144_093u64));
+    assert_eq!(s.amount_out, U256::from(12_641_094_804_701_311_522u64));
+    assert_eq!(s.token_in, TOKEN0_SENTINEL);
+    assert_eq!(s.tick, Some(-5_120));
 }
 
 #[test]
