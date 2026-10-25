@@ -7,7 +7,9 @@ use super::*;
 use serde::Serialize;
 
 use mev_scout_core::chain::timing::block_time_secs;
-use mev_scout_core::explorer::store::{ReportOverview, ReportRow, StatsRow};
+use mev_scout_core::explorer::store::{
+    RejectCount, ReportOverview, ReportRow, StatsRow,
+};
 use mev_scout_core::types::OutputFormat;
 
 /// One window's worth of report data, ready for table / JSON / CSV rendering.
@@ -26,6 +28,8 @@ struct WindowReport {
     top_senders: Vec<StatsRow>,
     top_pools: Vec<StatsRow>,
     top_ops: Vec<MevOpRow>,
+    /// `explorer_classify` reject counts by reason (strategy record_rejections).
+    classify_rejects: Vec<RejectCount>,
 }
 
 /// Expected blocks in a window using the chain's authoritative block time.
@@ -186,6 +190,7 @@ pub async fn cmd_explorer_report(
         let top_pools = store.top_pools_filtered(since, 10, kind_str, confidence_str)?;
         let top_ops = store.top_ops(since, top, kind_str, confidence_str)?;
         let blocks = store.blocks_in_window(since)?;
+        let classify_rejects = store.report_classify_rejects(since)?;
         let coverage_pct = expected_blocks(chain, window).map(|expected| {
             if expected == 0 {
                 1.0
@@ -204,6 +209,7 @@ pub async fn cmd_explorer_report(
             top_senders,
             top_pools,
             top_ops,
+            classify_rejects,
         });
     }
 
@@ -333,6 +339,15 @@ fn render_window(r: &WindowReport) {
                 pct
             );
         }
+    }
+    if !r.classify_rejects.is_empty() {
+        let joined = r
+            .classify_rejects
+            .iter()
+            .map(|c| format!("{} {}", c.reason, c.count))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        println!("  classify rejects: {joined}");
     }
 
     println!("\n  Per kind:");

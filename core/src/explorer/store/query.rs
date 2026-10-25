@@ -6,7 +6,8 @@ use crate::types::{MevOpportunity, Strategy};
 
 use super::{
     map_mev_op_row, map_report_row, map_stats_row, top_grouped, ExplorerStore, MevOpRow,
-    OpportunityInput, PoolSwapRow, ReportOverview, ReportQuality, ReportRow, StatsRow,
+    OpportunityInput, PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow,
+    StatsRow,
 };
 
 /// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.
@@ -467,6 +468,31 @@ impl ExplorerStore {
             })
         })?;
         Ok(row)
+    }
+    /// `explorer_classify` reject counts by reason inside a window.
+    ///
+    /// Window membership uses the block's indexed ts when the block row
+    /// exists, falling back to the reject row's `created_at` (approximate for
+    /// backfilled blocks whose block row is missing).
+    pub fn report_classify_rejects(&self, since_ts: u64) -> anyhow::Result<Vec<RejectCount>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.reject_reason, COUNT(*)
+             FROM rejected_candidates r
+             LEFT JOIN blocks b ON b.block_number = r.block_number
+             WHERE r.strategy = 'explorer_classify'
+               AND COALESCE(b.ts, r.created_at) >= ?1
+             GROUP BY r.reject_reason
+             ORDER BY COUNT(*) DESC, r.reject_reason",
+        )?;
+        let rows = stmt
+            .query_map([since_ts as i64], |r| {
+                Ok(RejectCount {
+                    reason: r.get(0)?,
+                    count: r.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
     /// Per-kind revenue rows in a window (bare `explorer` kinds table).
     pub fn report_by_kind(

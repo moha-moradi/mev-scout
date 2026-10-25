@@ -206,6 +206,13 @@ pub struct ReportRow {
     pub net_usd: f64,
 }
 
+/// `explorer_classify` reject count for one reason inside a report window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RejectCount {
+    pub reason: String,
+    pub count: i64,
+}
+
 /// Pricing / confidence quality slice for one report window.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ReportQuality {
@@ -355,6 +362,7 @@ mod tests {
     use super::pnl::liquidation_pnl;
     use super::*;
     use crate::explorer::types::{Confidence, MevEvent};
+    use crate::explorer::RejectedCandidate;
     use alloy::primitives::{address, b256};
 
     fn token_usd(usd: f64, decimals: u32) -> crate::explorer::pricing::TokenUsd {
@@ -1331,5 +1339,79 @@ mod tests {
         assert_eq!(name, "unclassified-searcher");
         let bot = format!("{searcher:#x}");
         assert_eq!(entity.as_deref(), Some(bot.as_str()));
+    }
+
+    fn sample_reject(block_number: u64, reason: &str, created_at: u64) -> RejectedCandidate {
+        RejectedCandidate {
+            block_number,
+            tx_index: Some(1),
+            strategy: "explorer_classify".into(),
+            pool_a: None,
+            pool_b: None,
+            path: None,
+            token_in: None,
+            token_out: None,
+            input_amount: None,
+            expected_profit: None,
+            expected_profit_usd: None,
+            gas_cost_wei: None,
+            reject_reason: reason.into(),
+            detail: None,
+            created_at,
+        }
+    }
+
+    #[test]
+    fn report_classify_rejects_counts_by_reason_in_window() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let since = 1_700_000_000u64;
+        // Block row present → window membership via blocks.ts.
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 900,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa90"
+                ),
+                ts: since + 10,
+                tx_count: 0,
+                swaps: &[],
+                events: &[],
+                token_prices: &usdc_price(),
+            },
+        );
+        store
+            .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
+            .unwrap();
+        store
+            .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
+            .unwrap();
+        store
+            .insert_rejected_candidate("run", "test", &sample_reject(900, "unresolved_cycle", 0))
+            .unwrap();
+        // No block row → falls back to created_at; before the window.
+        store
+            .insert_rejected_candidate("run", "test", &sample_reject(901, "open_inventory", since - 1))
+            .unwrap();
+        // No block row → created_at inside the window.
+        store
+            .insert_rejected_candidate("run", "test", &sample_reject(902, "builder_tip", since + 5))
+            .unwrap();
+        // Other strategies never show up in the classify slice.
+        let mut scanner_reject = sample_reject(900, "no_pool", since + 10);
+        scanner_reject.strategy = "scanner_v1".into();
+        store.insert_rejected_candidate("run", "test", &scanner_reject).unwrap();
+
+        let rejects = store.report_classify_rejects(since).unwrap();
+        assert_eq!(rejects.len(), 3);
+        assert_eq!(rejects[0].reason, "net_zero_searcher");
+        assert_eq!(rejects[0].count, 2);
+        assert_eq!(rejects[1].reason, "builder_tip");
+        assert_eq!(rejects[1].count, 1);
+        assert_eq!(rejects[2].reason, "unresolved_cycle");
+        assert_eq!(rejects[2].count, 1);
+
+        // Older window excludes everything.
+        assert!(store.report_classify_rejects(since + 100).unwrap().is_empty());
     }
 }

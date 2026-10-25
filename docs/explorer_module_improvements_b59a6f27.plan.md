@@ -129,7 +129,7 @@ pub struct ClassifyOutput {
 2. **Confidence split:** یک ردیف یا زیرجدول `exact` vs `inferred` برای ops + net_usd (فیلتر SQL روی ستون `confidence`).
 3. **Flag تمرکز:** اگر `highest_single_usd / net_usd > 0.4` در window → هشدار «one op dominates».
 4. **CLI:** `--confidence exact|inferred|all` (default `all`) کنار `--kind` / `--windows` / `--top`.
-5. **Rejects (اگر 2a روشن است):** یک خط اختیاری `classify_rejects` count by reason در همان window (از `rejected_candidates` با `strategy='explorer_classify'` و `block_number` در بازهٔ زمانی تقریبی یا join روی ts اگر موجود).
+5. **Rejects (اگر 2a روشن است):** یک خط اختیاری `classify_rejects` count by reason در همان window (از `rejected_candidates` با `strategy='explorer_classify'` و `block_number` در بازهٔ زمانی تقریبی یا join روی ts اگر موجود). — **✅ انجام شد (2026-10-25)**: `RejectCount` + `store.report_classify_rejects(since)` (LEFT JOIN `blocks` روی ts بلوک با fallback به `created_at`)؛ خط `classify rejects: <reason> <count> | ...` در `render_window` + فیلد `classify_rejects` در JSON هر window؛ تست `report_classify_rejects_counts_by_reason_in_window`.
 
 عمداً در این فاز نه: breakdown کامل per-tag در table اصلی (JSON می‌تواند `by_tag` سبک داشته باشد اگر ارزان است؛ وگرنه بعداً).
 
