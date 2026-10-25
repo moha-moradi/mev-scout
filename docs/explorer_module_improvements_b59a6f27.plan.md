@@ -145,7 +145,9 @@ pub struct ClassifyOutput {
 
 **نتیجهٔ re-hunt 2026-10-24 (Avalanche):** پنجرهٔ اخیر Avalanche (98415954..=98416254، 301 بلوک) و پنجرهٔ dense (95681722..=95682322) با classifier فعلی: صفر عمل frontrun/backrun/skim.
 
-**نتیجهٔ re-hunt 2026-10-25 (Ethereum):** با RPC drpc، پنجرهٔ 26264000..=26264962 (۹۶۳ بلوک، ۲۰۲۶-۱۰-۲۵) با classifier فعلی: **۲ seed backrun** — بلوک 26264539 (searcher `0xe85091501587b32a323be2512b36fab392d7c6bc`) و بلوک 26264858 (searcher `0xb52dae80b2ce64715d50ff3dfe4edd337f3d29bf`) — و صفر frontrun و صفر skim. seedها در `scenario_targets.rs` + checklist + corpus (`eth-backrun-*`) پین شدند. (پنجرهٔ کامل‌تر 26264000..=26267500 به‌خاطر rate-limit روی RPCهای آزاد فقط بخشی индекс شد؛ ۲۱۳۷ بلوک باقی ماند.) طبق قاعدهٔ پلن classifier **شل نشد** — seedها با همان thresholdهای فعلی (`CAUSAL_WINDOW_TXS=8`, `CAUSAL_PRICE_MIN_PCT=0.5`) تشخیص شده‌اند. از این پس «کالیبراسیون روی seeds» (فاز 4) می‌تواند روی این ۲ seed backrun ادامه یابد.
+**نتیجهٔ re-hunt 2026-10-25 (Ethereum):** با RPC drpc، پنجرهٔ 26264000..=26264962 (۹۶۳ بلوک، ۲۰۲۶-۱۰-۲۵) با classifier فعلی: **۲ seed backrun** — بلوک 26264539 (searcher `0xe85091501587b32a323be2512b36fab392d7c6bc`) و بلوک 26264858 (searcher `0xb52dae80b2ce64715d50ff3dfe4edd337f3d29bf`) — و صفر frontrun و صفر skim. seedها در `scenario_targets.rs` + checklist + corpus (`eth-backrun-*`) پین شدند. (پنجرهٔ کامل‌تر 26264000..=26267500 به‌خاطر rate-limit روی RPCهای آزاد فقط بخشی index شد؛ ۲۱۳۷ بلوک باقی ماند.) طبق قاعدهٔ پلن classifier **شل نشد** — seedها با همان thresholdهای فعلی (`CAUSAL_WINDOW_TXS=8`, `CAUSAL_PRICE_MIN_PCT=0.5`) تشخیص شده‌اند. از این پس «کالیبراسیون روی seeds» (فاز 4) می‌تواند روی این ۲ seed backrun ادامه یابد.
+
+**نتیجهٔ re-hunt 2026-10-25 (Avalanche):** با RPC archive dwellir، پنجرهٔ 98489000..=98494000 (۵۰۰۱ بلوک، ۲۰۲۶-۱۰-۲۵) با classifier فعلی: **صفر** عمل frontrun/backrun/skim. با ۲ re-hunt (2026-10-24 + 2026-10-25) روی AVAX، صفر causal op؛ این تأیید می‌کند causal (frontrun/backrun) عمدتاً روی ETH است و skim روی AVAX نادر است (همچنین registry V2-like روی AVAX تقریباً خالی — فقط ۱ pool).
 
 ---
 

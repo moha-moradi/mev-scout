@@ -73,7 +73,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich; 2026-10-24 re-hunt 301 recent blocks: 0 ops",
+        hunt: "cross-pool/multi-hop close with victim price degradation; same-pool close is Sandwich; 2026-10-24 re-hunt 301 recent blocks: 0; AVAX 2026-10-25 (5001 blk, dwellir) 0",
     },
     StrategyScenarioTarget {
         id: "baseline.backrun",
@@ -83,7 +83,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "third same-pool print; ETH verified @ 26264539 + 26264858 (2026-10-25 drpc re-hunt 26264000..=26264962, 2 seeds, 0 frontrun/skim); 301 recent AVAX blocks: 0",
+        hunt: "third same-pool print; ETH verified @ 26264539 + 26264858 (2026-10-25 drpc, 2 seeds); AVAX 2026-10-25 (5001 blk, 98489000..=98494000, dwellir) 0",
     },
     StrategyScenarioTarget {
         id: "baseline.liquidation",
@@ -113,7 +113,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "V2-like pair Transfer out without Swap/Sync/Mint/Burn; 2026-10-24 re-hunt 301 recent blocks: 0 ops",
+        hunt: "V2-like pair Transfer out without Swap/Sync/Mint/Burn; 2026-10-24 re-hunt 301 recent blocks: 0; AVAX 2026-10-25 (5001 blk, dwellir) 0",
     },
     // ── P0 ─────────────────────────────────────────────────────────────
     StrategyScenarioTarget {
