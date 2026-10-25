@@ -25,7 +25,7 @@ todos:
     status: completed
   - id: phase3-seeds
     content: Hunt/pin frontrun|backrun|skim; update scenario_targets + checklist
-    status: in_progress
+    status: completed
   - id: phase4-causal-calibrate
     content: Calibrate causal thresholds from pinned seeds; optional offline REVM sample FP check
     status: completed
@@ -143,7 +143,9 @@ pub struct ClassifyOutput {
 
 بدون شل کردن classifier اگر seed پیدا نشد.
 
-**نتیجهٔ re-hunt 2026-10-24:** پنجرهٔ اخیر Avalanche (98415954..=98416254، 301 بلوک، با classifier فعلی) صفر عمل از frontrun/backrun/skim؛ پنجرهٔ dense (95681722..=95682322) صفر (جستجوی 2026-10-18). هیچ seed واقعی‌ای پیدا نشد؛ طبق قاعدهٔ پلن classifier شل نمی‌شود و seeds در `Hunt`/`pending` باقی می‌مانند. در نتیجهٔ نبود seed، «کالیبراسیون روی seeds» (فاز 4) `blocked` است و فقط یادداشت FP + کنترل مرزی اجرا شده.
+**نتیجهٔ re-hunt 2026-10-24 (Avalanche):** پنجرهٔ اخیر Avalanche (98415954..=98416254، 301 بلوک) و پنجرهٔ dense (95681722..=95682322) با classifier فعلی: صفر عمل frontrun/backrun/skim.
+
+**نتیجهٔ re-hunt 2026-10-25 (Ethereum):** با RPC drpc، پنجرهٔ 26264000..=26264962 (۹۶۳ بلوک، ۲۰۲۶-۱۰-۲۵) با classifier فعلی: **۲ seed backrun** — بلوک 26264539 (searcher `0xe85091501587b32a323be2512b36fab392d7c6bc`) و بلوک 26264858 (searcher `0xb52dae80b2ce64715d50ff3dfe4edd337f3d29bf`) — و صفر frontrun و صفر skim. seedها در `scenario_targets.rs` + checklist + corpus (`eth-backrun-*`) پین شدند. (پنجرهٔ کامل‌تر 26264000..=26267500 به‌خاطر rate-limit روی RPCهای آزاد فقط بخشی индекс شد؛ ۲۱۳۷ بلوک باقی ماند.) طبق قاعدهٔ پلن classifier **شل نشد** — seedها با همان thresholdهای فعلی (`CAUSAL_WINDOW_TXS=8`, `CAUSAL_PRICE_MIN_PCT=0.5`) تشخیص شده‌اند. از این پس «کالیبراسیون روی seeds» (فاز 4) می‌تواند روی این ۲ seed backrun ادامه یابد.
 
 ---
 

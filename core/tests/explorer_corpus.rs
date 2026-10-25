@@ -248,6 +248,32 @@ const CORPUS: &[CorpusCase] = &[
         profit_usd_min: Some(5.0),
         profit_usd_max: None,
     },
+    // ETH backrun seeds from the 2026-10-25 re-hunt (drpc, 26264000..=26264962,
+    // 963 blocks, 0 frontrun / 0 skim). Single-block causal pins; the explorer
+    // re-ingests the block and re-runs the backrun pass. Count + searcher only
+    // (no price cache in the E2E gate, so profit floors stay None).
+    CorpusCase {
+        id: "eth-backrun-26264539",
+        chain: ChainName::Ethereum,
+        from_block: 26_264_539,
+        to_block: 26_264_539,
+        kind: "backrun",
+        min_ops: 1,
+        searcher: Some(address!("e85091501587b32a323be2512b36fab392d7c6bc")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
+    CorpusCase {
+        id: "eth-backrun-26264858",
+        chain: ChainName::Ethereum,
+        from_block: 26_264_858,
+        to_block: 26_264_858,
+        kind: "backrun",
+        min_ops: 1,
+        searcher: Some(address!("b52dae80b2ce64715d50ff3dfe4edd337f3d29bf")),
+        profit_usd_min: None,
+        profit_usd_max: None,
+    },
     // Adjacent Polygon window (201 blocks) recorded without a pool cache: one
     // liquidation in block 94431566, from the same liquidator EOA as
     // `poly-liquidation-window` above. Priced at $0.00 (no position to bill),

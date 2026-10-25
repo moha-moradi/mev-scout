@@ -83,7 +83,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "third same-pool print + same-token size (victim.amount_out >= back.amount_in); 2026-10-24 re-hunt 301 recent blocks: 0 ops",
+        hunt: "third same-pool print; ETH verified @ 26264539 + 26264858 (2026-10-25 drpc re-hunt 26264000..=26264962, 2 seeds, 0 frontrun/skim); 301 recent AVAX blocks: 0",
     },
     StrategyScenarioTarget {
         id: "baseline.liquidation",
