@@ -288,7 +288,7 @@ pub(super) fn classify_arbs(
             })).collect::<Vec<_>>(),
             "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
         });
-        if tags.iter().any(|t| *t == "savax_rate_arb") {
+        if tags.contains(&"savax_rate_arb") {
             details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
         }
         if let Some(from_addr) = forwarded_from {
@@ -576,6 +576,8 @@ enum ForwardedLookup {
 /// When no searcher candidate holds a positive anchor residual, recover a
 /// single third-party recipient that received the cycle profit solely from
 /// `tx.from` / `tx.to` and did not participate in swaps.
+// Eight correlated ledger views; Task B2 splits the arb pass.
+#[allow(clippy::too_many_arguments)]
 fn forwarded_anchor_recipient(
     ledger: &DeltaLedger,
     transfers: &[TransferFact],

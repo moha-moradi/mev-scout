@@ -913,10 +913,17 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
 async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
     let Some(rpc_url) = rpc_url() else {
         // `rpc_url()` is `None` both when the live gate was not requested and
-        // when it was requested without an endpoint. The latter is an explicit
-        // request that must not read as a pass.
+        // when it was requested without an endpoint. Either way an explicit
+        // request must not read as a pass: `MEV_SCOUT_E2E=1` alone fails, and
+        // so does an endpoint supplied without `MEV_SCOUT_E2E=1`.
         if std::env::var("MEV_SCOUT_E2E").as_deref() == Ok("1") {
             anyhow::bail!("MEV_SCOUT_E2E=1 but RPC_URL is unset or empty");
+        }
+        if std::env::var("RPC_URL").is_ok_and(|v| !v.is_empty()) {
+            anyhow::bail!(
+                "RPC_URL is set but MEV_SCOUT_E2E=1 is not — set MEV_SCOUT_E2E=1 to run \
+                 this live test, or unset RPC_URL to skip it"
+            );
         }
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
         return Ok(());

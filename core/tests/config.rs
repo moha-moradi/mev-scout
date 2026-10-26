@@ -218,7 +218,7 @@ fn unknown_strategy_name_is_still_an_error() {
     assert!(Strategy::from_comma_list("sandwich").is_err());
 }
 
-/// ── Explorer tip-sink addresses (builder-tip PnL guard) ─────────────────────
+// ── Explorer tip-sink addresses (builder-tip PnL guard) ─────────────────────
 
 /// Default config carries no tip sinks so existing TOML files keep parsing and
 /// no new rejection behavior is introduced by default.

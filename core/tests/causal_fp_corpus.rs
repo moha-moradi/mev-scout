@@ -18,12 +18,7 @@
 //!
 //! Reads the seeded explorer cache only; no RPC. Skips (no hard fail) when the
 //! cache is absent, mirroring the RPC corpus gating.
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::too_many_lines,
-    clippy::unused_params
-)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -48,6 +43,34 @@ const MIN_SWAPS_PER_BLOCK: usize = 2;
 /// Documented FP gate. The seed data has zero real causal ops, so the target is
 /// a tight count; any claim is an FP by construction.
 const CAUSAL_FP_GATE: usize = 0;
+
+/// Raw `txs` row: `(hash, tx_index, block_number, from, to, success, gas_used,
+/// effective_gas_price_gwei, value_native)`.
+type TxRow = (
+    String,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    bool,
+    i64,
+    f64,
+    String,
+);
+
+/// Raw `swaps` row: `(block_number, tx_index, log_index, pool, amm, token_in,
+/// token_out, amount_in, amount_out)`.
+type SwapRow = (
+    i64,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+);
 
 fn seed_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -76,7 +99,7 @@ fn amm_from(amm: Option<&str>) -> Amm {
 
 #[inline(always)]
 fn addr(s: &str) -> Address {
-    Address::from_str(s).unwrap_or_else(|_| Address::ZERO)
+    Address::from_str(s).unwrap_or(Address::ZERO)
 }
 #[inline(always)]
 fn u256(s: &str) -> U256 {
@@ -198,17 +221,7 @@ fn causal_classifier_offline_fp_gate() {
                  effective_gas_price_gwei, value_native FROM txs",
             )
             .unwrap();
-        let rows: Vec<(
-            String,
-            i64,
-            i64,
-            String,
-            Option<String>,
-            bool,
-            i64,
-            f64,
-            String,
-        )> = stmt
+        let rows: Vec<TxRow> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -262,17 +275,7 @@ fn causal_classifier_offline_fp_gate() {
                  amount_in, amount_out FROM swaps",
             )
             .unwrap();
-        let rows: Vec<(
-            i64,
-            i64,
-            i64,
-            String,
-            Option<String>,
-            String,
-            String,
-            String,
-            String,
-        )> = stmt
+        let rows: Vec<SwapRow> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -399,8 +402,8 @@ fn causal_classifier_offline_fp_gate() {
         eprintln!("  FP {kind} @ block {block} tx {txi}: searcher {searcher}");
     }
 
-    assert!(
-        fp_count <= CAUSAL_FP_GATE,
+    assert_eq!(
+        fp_count, CAUSAL_FP_GATE,
         "causal FP gate: observed {fp_count} Backrun/Frontrun claims on zero-real-op \
          seed data; gate = {CAUSAL_FP_GATE}"
     );

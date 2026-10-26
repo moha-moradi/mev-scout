@@ -1280,42 +1280,43 @@ mod tests {
     fn backrun_same_token_size_accepts_decimal_mismatched_amount_in() {
         // Move amount_in (50 USDC) < backrun amount_in (200 TOKA) — old gate
         // rejected. Same-token: move.amount_out (1000) >= back.amount_in (200).
-        let mut txs = Vec::new();
-        txs.push(tx(
-            0,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-            vec![
-                transfer(0, TOKA, VICTIM, POOL_A, 100),
-                transfer(1, USDC, POOL_A, VICTIM, 110),
-            ],
-        ));
-        txs.push(tx(
-            1,
-            MARKET,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 50, 1000)],
-            vec![
-                transfer(0, USDC, MARKET, POOL_A, 50),
-                transfer(1, TOKA, POOL_A, MARKET, 1000),
-            ],
-        ));
-        txs.push(tx(
-            2,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 200, 250),
-                swap(POOL_B, USDC, TOKA, 250, 260),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 250),
-                transfer(2, USDC, ATK, POOL_B, 250),
-                transfer(3, TOKA, POOL_B, ATK, 260),
-            ],
-        ));
+        let txs = vec![
+            tx(
+                0,
+                VICTIM,
+                true,
+                vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                vec![
+                    transfer(0, TOKA, VICTIM, POOL_A, 100),
+                    transfer(1, USDC, POOL_A, VICTIM, 110),
+                ],
+            ),
+            tx(
+                1,
+                MARKET,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 50, 1000)],
+                vec![
+                    transfer(0, USDC, MARKET, POOL_A, 50),
+                    transfer(1, TOKA, POOL_A, MARKET, 1000),
+                ],
+            ),
+            tx(
+                2,
+                ATK,
+                true,
+                vec![
+                    swap(POOL_A, TOKA, USDC, 200, 250),
+                    swap(POOL_B, USDC, TOKA, 250, 260),
+                ],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_A, 200),
+                    transfer(1, USDC, POOL_A, ATK, 250),
+                    transfer(2, USDC, ATK, POOL_B, 250),
+                    transfer(3, TOKA, POOL_B, ATK, 260),
+                ],
+            ),
+        ];
         let events = classify_block(&block(txs));
         assert!(
             kinds(&events).contains(&MevKind::Backrun),

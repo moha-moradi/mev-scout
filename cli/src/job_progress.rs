@@ -21,9 +21,11 @@ impl BarProgress {
         guard: &mut Option<indicatif::ProgressBar>,
         total: Option<u64>,
     ) -> &indicatif::ProgressBar {
-        if guard.is_none() {
+        // `get_or_insert_with` never yields the absent case, so no `expect` is
+        // needed to hand the bar back out.
+        guard.get_or_insert_with(|| {
             let determinate = total.unwrap_or(0) > 0;
-            let pb = if determinate {
+            if determinate {
                 let pb = indicatif::ProgressBar::new(total.unwrap_or(0));
                 #[allow(clippy::expect_used)]
                 let style = indicatif::ProgressStyle::default_bar()
@@ -43,11 +45,8 @@ impl BarProgress {
                 pb.set_style(style);
                 pb.enable_steady_tick(std::time::Duration::from_millis(100));
                 pb
-            };
-            *guard = Some(pb);
-        }
-        // SAFETY: just inserted or already present.
-        guard.as_ref().expect("bar present")
+            }
+        })
     }
 }
 

@@ -18,6 +18,8 @@ jobs:
     env:
       MEV_SCOUT_E2E: "1"
       RPC_URL: ${{ vars.RPC_URL }}
+      MEV_SCOUT_COVERAGE: "1"
+      MEV_SCOUT_COVERAGE_CONFIG: ${{ vars.COVERAGE_CONFIG || 'mev-scout.coverage.toml' }}
       MEV_SCOUT_COVERAGE_STRICT: "1"
     steps:
       - uses: actions/checkout@v4
