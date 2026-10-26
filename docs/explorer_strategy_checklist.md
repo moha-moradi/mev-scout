@@ -42,3 +42,141 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 - `scripts/hunt_strategy.py` / `scripts/hunt_strategy.mjs` -- eth_getLogs hunt
 - `scripts/verify_explorer_block.mjs` -- index + tag/kind assert
 - `scripts/tag_coverage.py` / `scripts/_coverage_report.mjs` -- coverage + profit sums
+
+## External coverage oracle — baseline
+
+Frozen 2026-10-26 before any Phase-A change (Task M0 of the explorer improvement plan). The explorer's arb output is measured against an independent external oracle — the BigLabs arbitrage feed — so every later checkpoint re-indexes the *same* block range and compares against the *same* snapshot. Freeze once: the snapshot is the only durable copy of that hour; later checkpoints must never re-fetch or re-range.
+
+- Vendor window `2026-10-26T04:06:49Z` .. `2026-10-26T05:06:49Z` (3600 s), newest vendor block time `2026-10-26T05:06:49Z`; 46 records / 46 unique hashes, 1 page (`per_page=50`, `sortBy=-created_at`), all `type=arbitrage`, 12 distinct senders, 37 of 46 at `usdProfit < $0.01`.
+- Frozen block range `98572463..=98575973` (3511 blocks), derived from the snapshot's min/max `blockNumber`.
+- Our side: code commit `351a19c` (pre-plan), DB `cache/oracle-avalanche.sqlite` (git-ignored), archive RPC = the user-provided `mev-scout.avalanche-run.toml` dwellir endpoint (user override of the brief's `hist.toml`; generated config `cache/oracle-avalanche.toml`, both git-ignored). 3511/3511 blocks classified, 117 `mev_ops` rows / 117 unique hashes (67 `arb_atomic`, 30 `unknown`, 20 `jit`), 20 NULL profit (all JIT), 0 `rejected_candidates` (`record_rejections` off by default).
+- Snapshot `docs/oracle/biglabs-avalanche-98572463-98575973.json`, SHA256 `e9b06cfc518e4accb43e8098d20ff73e80b5aa40f8a3707040b232a4d19896cb`. Frozen L\V adjudications live in `docs/oracle/adjudications-baseline.json` and are reused by every later checkpoint (only `adjudication` and `note` are read).
+- Reproduce (writes the git-ignored machine report `cache/oracle-report-baseline.json`):
+
+```
+python scripts/compare_biglabs.py \
+  --db cache/oracle-avalanche.sqlite \
+  --snapshot docs/oracle/biglabs-avalanche-98572463-98575973.json \
+  --chain avalanche --lo 98572463 --hi 98575973 --label baseline \
+  --adjudications docs/oracle/adjudications-baseline.json --local-commit 351a19c
+```
+
+### Baseline metrics (verbatim script output)
+
+<!-- compare_biglabs.py v1.0.0 label=baseline -->
+
+Snapshot: `docs/oracle/biglabs-avalanche-98572463-98575973.json`  
+SHA256: `e9b06cfc518e4accb43e8098d20ff73e80b5aa40f8a3707040b232a4d19896cb`  
+Vendor fetch: fetched_at `2026-10-26T05:54:48Z`, newest vendor block time `2026-10-26T05:06:49Z`, pages 1  
+Local index: `cache/oracle-avalanche.sqlite` (code commit 351a19c)  
+Block range: 98572463..=98575973 (3511 blocks)
+Index facts: blocks classified 3511/3511, rejected_candidates 0
+
+| metric | value |
+|--------|-------|
+| vendor txs (unique hashes) | 46 |
+| local mev_ops rows (unique hashes) | 117 (117) |
+| intersection V n L | 46 |
+| recall_vs_vendor | 1.0000 (46/46) |
+| vendor_agreement (lower bound) | 0.3932 (46/117) |
+| L\V | 71 |
+| V\L | 0 |
+| matched rows: kind we assigned | arb_atomic=46 |
+| delta on V n L: median / p90 / worst / best | -0.531% / -0.055% / -99.399% / +0.013% (n=46, skipped vendor null/zero=0, skipped local null=0) |
+
+L\V composition: unknown=30, arb_atomic=21, jit=20
+
+Adjudication counts: `tp_vendor_miss`=15, `fp_suspect`=6, `unknown`=50
+
+| block | tx | kind | conf | local profit | net | adjudication | note |
+|-------|----|------|------|--------------|-----|--------------|------|
+| 98572511 | `0xfbf67ff0...7cc6e1` | arb_atomic | exact | $0.0129 | $0.005024 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.012948 net $0.005024 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98572517 | `0x86238f16...1e7f47` | unknown | exact | $0.0119 | $-0.001970 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98572610 | `0xdbea7759...fd792e` | arb_atomic | inferred | $4.9822 | $4.9656 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $4.982246 net $4.965578 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98572640 | `0x250340e1...c78a8f` | unknown | exact | $0.003784 | $0.000104 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98572713 | `0xb8ea931d...e40744` | unknown | exact | $0.002840 | $-0.001843 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98572721 | `0xd9275078...43fd86` | unknown | exact | $0.002761 | $0.000006 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98572740 | `0x7b1b0dd5...c02d02` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572740 | `0x94eff59d...a50228` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572740 | `0x988f0ef2...b14a39` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572740 | `0xeddab874...ae2d33` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572744 | `0x63dd3445...1dfd5e` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572744 | `0x65a8a055...5e1863` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98572754 | `0x24ad482c...46fba3` | arb_atomic | exact | $0.0151 | $0.005688 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.015071 net $0.005688 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98572768 | `0x5495a368...923178` | arb_atomic | exact | $0.0117 | $0.002389 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.011696 net $0.002389 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98572847 | `0x1296d36a...4a24ed` | arb_atomic | exact | $0.006664 | $0.001385 | `fp_suspect` | realized triangular cycle, net $0.001385, but profit $0.006664 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive |
+| 98572947 | `0xc3a6575a...d5209e` | arb_atomic | exact | $0.0197 | $0.000302 | `tp_vendor_miss` | realized triangular 6-hop cross-DEX cycle, profit $0.019726 net $0.000302 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98572994 | `0x65423fa0...3b468a` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98573056 | `0x4cae09e5...cc5845` | unknown | exact | $0.006969 | $-0.003228 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573218 | `0x07f16e14...eee5f1` | unknown | exact | $0.002605 | $-0.000435 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573296 | `0x350938b3...27df61` | unknown | exact | $0.007029 | $-0.000743 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573341 | `0x1c5c59b6...ffd1e9` | arb_atomic | exact | $0.0281 | $0.0143 | `tp_vendor_miss` | realized two_pool 2-hop cross-DEX cycle, profit $0.028061 net $0.014315 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98573342 | `0xdd3a0026...917894` | arb_atomic | exact | $0.0102 | $0.003702 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.010239 net $0.003702 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98573377 | `0x908ae93e...df321c` | unknown | exact | $0.005010 | $0.000282 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573622 | `0x374bbd6d...b5a0de` | arb_atomic | exact | $0.0187 | $0.005900 | `tp_vendor_miss` | realized two_pool 4-hop cross-DEX cycle, profit $0.018651 net $0.005900 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98573708 | `0x09e2adf8...6c1e78` | unknown | exact | $0.002854 | $-0.001830 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573714 | `0x1766761a...2b366c` | unknown | exact | $0.002768 | $-0.000141 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98573840 | `0xf4226a77...1366ba` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98573856 | `0x14533e36...8aac8f` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98573974 | `0x44a33965...edbfa9` | unknown | exact | $0.002609 | $-0.000436 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574019 | `0x98b277a8...93f98d` | unknown | exact | $0.008259 | $-0.001046 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574212 | `0xfcca76f2...6e98d4` | unknown | exact | $0.004948 | $0.000221 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574250 | `0xedd773e1...da5ddf` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x41100c6d...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98574267 | `0x3658fc3b...e150f6` | unknown | exact | $0.007199 | $-0.000525 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574510 | `0x33a3e2a6...7b4d41` | unknown | exact | $0.003067 | $-0.004007 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574670 | `0x54ecf25f...326bfd` | unknown | exact | $0.003235 | $-0.001652 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574677 | `0x197a23f5...431ba9` | unknown | exact | $0.002873 | $-0.000255 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574735 | `0xf0b54c5c...fd2176` | arb_atomic | exact | $0.008134 | $0.000625 | `fp_suspect` | realized triangular cycle, net $0.000625, but profit $0.008134 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive |
+| 98574833 | `0x8d9466c9...fc377c` | arb_atomic | exact | $0.0821 | $0.0383 | `tp_vendor_miss` | realized two_pool 4-hop cross-DEX cycle, profit $0.082116 net $0.038326 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98574850 | `0xf299e7d6...1333a3` | arb_atomic | exact | $0.0110 | $0.004378 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.010969 net $0.004378 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98574910 | `0x3dd02ebb...74924d` | unknown | exact | $0.005010 | $0.000282 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98574947 | `0xbb986a40...0fefb9` | unknown | exact | $0.006560 | $-0.003059 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575039 | `0x5d8f68e5...32b624` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575039 | `0x98e898cc...ce22d3` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575039 | `0xc307afd8...036253` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575040 | `0x3c03fb78...900c09` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575040 | `0x63d11092...1277a5` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575075 | `0x3c5178ac...0569c2` | arb_atomic | exact | $0.008731 | $0.001862 | `fp_suspect` | realized triangular cycle, net $0.001862, but profit $0.008731 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive |
+| 98575075 | `0x46ee0c4e...8c6091` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575085 | `0xedeab064...9887b4` | arb_atomic | exact | $0.004983 | $0.000927 | `fp_suspect` | realized two_pool cycle, net $0.000927, but profit $0.004983 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive |
+| 98575118 | `0xb8fa4197...077340` | unknown | exact | $0.003290 | $-0.001408 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575245 | `0x25571cb6...d581ee` | unknown | exact | $0.0157 | $-0.005154 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575444 | `0xb9d5c7a8...1bfb8b` | unknown | exact | $0.0145 | $-0.004308 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575481 | `0x47c164ef...5998c3` | unknown | exact | $0.0157 | $-0.004651 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575495 | `0xb18ede98...d22a6b` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575502 | `0x026a5e4e...052a29` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575502 | `0xebcbf01b...a8e140` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575559 | `0x84eaba2b...065bc7` | unknown | exact | $0.002948 | $-0.001845 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575566 | `0x8cd21cce...aa79af` | unknown | exact | $0.003717 | $-0.000602 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575569 | `0xb7a5ea75...e0b40b` | unknown | exact | $0.004627 | $-0.002654 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575571 | `0x1fe46000...fc4520` | unknown | exact | $0.003961 | $0.000158 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575571 | `0xb77466f8...ae72f8` | jit | exact | NULL | NULL | `unknown` | JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline) |
+| 98575604 | `0x2c388e3d...2c30cb` | arb_atomic | exact | $0.000001 | $-0.008134 | `fp_suspect` | profit_amount is a single raw USDC unit ($0.000001) and net is negative (-$0.008134): rounding residue of an unrelated multi-hop swap, true fp candidate for A14 |
+| 98575637 | `0x3b1c7aad...080faa` | arb_atomic | inferred | $0.0439 | $0.002937 | `tp_vendor_miss` | realized triangular 3-hop cross-DEX cycle, profit $0.043903 net $0.002937 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98575643 | `0x43f31df0...e26930` | arb_atomic | inferred | $0.0136 | $0.004505 | `tp_vendor_miss` | realized triangular 4-hop cross-DEX cycle, profit $0.013647 net $0.004505 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98575677 | `0xe8e2134c...9bfd36` | unknown | exact | $0.006339 | $-0.001674 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575764 | `0x5e7ae25c...f0188c` | unknown | exact | $0.003284 | $-0.001386 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575799 | `0xf1a09a33...626de8` | arb_atomic | exact | $0.006341 | $0.001238 | `fp_suspect` | realized triangular cycle, net $0.001238, but profit $0.006341 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive |
+| 98575834 | `0xe57cdf46...ca6164` | arb_atomic | exact | $0.0227 | $0.0136 | `tp_vendor_miss` | realized two_pool 2-hop cross-DEX cycle, profit $0.022677 net $0.013614 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98575951 | `0x7c4e94f6...5ff2a9` | unknown | exact | $0.006026 | $-0.001642 | `unknown` | ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design |
+| 98575963 | `0x65e857c1...7a2ff5` | arb_atomic | exact | $0.0113 | $0.003964 | `tp_vendor_miss` | realized two_pool 2-hop cross-DEX cycle, profit $0.011318 net $0.003964 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+| 98575968 | `0x0aaaa158...9fe4fd` | arb_atomic | exact | $0.0165 | $0.006461 | `tp_vendor_miss` | realized two_pool 2-hop cross-DEX cycle, profit $0.016494 net $0.006461 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss |
+
+### Station caveats
+
+- **Coverage oracle, not ground truth.** The vendor lists what it saw; it is not a census of Avalanche arbitrage, so `recall_vs_vendor` is a lower bound on true recall and `V \ L = 0` does not prove completeness.
+- **`vendor_agreement` is a lower bound**, never "precision": it is `|V n L| / |L|`, and the denominator includes kinds the vendor cannot possibly list.
+- **The endpoint is arb-only** (`type=arbitrage`, one class): structurally blind to JIT, sandwich, frontrun/backrun, liquidation, and to our kind-precedence choices, so kind disagreement on a shared hash is a finding, not a miss.
+- **The vendor has no size floor** — it lists txs down to `$0.000016` — so its misses are not explained by a profit threshold. That is why sub-`$0.01` local arbs are separated out as `fp_suspect` (A14 materiality candidates) instead of being recorded as vendor misses.
+- **Profit deltas are valuation / route-scope differences, not detection errors.** The worst delta (-99.399%) is block 98572491 `0x8c0f891e...30b5d6`: the vendor values a 7-hop `AVAX/BLACK/XAUT0` route at `$0.947217` while we value the residual in long-tail token `0xcd94...43f6` at `$0.005694`. The row matches; the numbers do not.
+- 20 of 117 rows carry a NULL `profit_usd` (all `jit`, by design), so aggregate profit sums over `mev_ops` are not comparable to the vendor's `usdProfit` sums.
+
+### Adjudicating L\V (71 rows)
+
+Counts: `tp_vendor_miss`=15, `fp_suspect`=6, `unknown`=50 (20 JIT + 30 `unknown`-kind ERC-4337 bundler).
+
+- `unknown` — JIT rows (20) and the utility family (30 rows of `kind=unknown`, all `protocol=erc4337` bundler flows) are invisible to an arb-only oracle by design. They are not evidence of false positives, and later checkpoints must not "fix" them away by dropping detection.
+- `tp_vendor_miss` — 15 `arb_atomic` rows with `profit_usd >= $0.01`, all real cross-DEX cycles (2–6 hops, `pnl_basis=R`). The largest is block 98572610 `0xdbea7759...fd792e` at `$4.982246` (`inferred`, `forwarded_profit`) — the vendor missed the biggest arb we found. Vendor coverage gap, not our error.
+- `fp_suspect` — 6 `arb_atomic` rows at `profit_usd < $0.01`. Five are real but sub-floor dust (net `$0.0006`–`$0.0019`); one (block 98575604 `0x2c388e3d...2c30cb`) is a single raw USDC unit (`$0.000001`) with negative net — a rounding residue of an unrelated multi-hop swap, the only true-fp candidate. These six are the A14 (profit floor) baseline: A14 must show their emission drop without losing any `tp_vendor_miss` row.
+
+A row that disappears from L\V at a later checkpoint must map to a predicted task effect, or it is a regression flag. The only edit path for the frozen labels is a reviewed edit of `docs/oracle/adjudications-baseline.json`.

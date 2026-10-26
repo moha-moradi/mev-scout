@@ -1,0 +1,2207 @@
+{
+ "meta": {
+  "fetched_at": "2026-10-26T05:54:48Z",
+  "url": "https://gateway.biglabs.eu/api/avalanche/arbitrages?per_page=50&sortBy=-created_at",
+  "chain": "avalanche",
+  "per_page": 50,
+  "pages_fetched": 1,
+  "page_count": 1,
+  "window_secs": 3600,
+  "newest_vendor_time": "2026-10-26T05:06:49Z",
+  "window_start": "2026-10-26T04:06:49Z",
+  "window_end": "2026-10-26T05:06:49Z",
+  "records": 46,
+  "block_lo": 98572463,
+  "block_hi": 98575973,
+  "unique_hashes": 46
+ },
+ "records": [
+  {
+   "hash": "0x763801efa82736c196d1a8a8e73065c2e01d19621fa37aadc44549809c11e865",
+   "blockNumber": 98575973,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x4D6Ec47118f807ACE03d3B3A4EE6AA96CB2AB677",
+     "decimals": 18,
+     "symbol": "BNZ",
+     "name": "Bonez",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "358681177065251949",
+   "amountOut": "359552037515630999",
+   "usdPrice": 8.924,
+   "usdProfit": 0.007771558659182642,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:49Z"
+  },
+  {
+   "hash": "0xbcaba90bcd646d23f850c90defac0a78f59246d92b78371c9e59baac229c0660",
+   "blockNumber": 98575971,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x02139aB36E4B3dd88c286C5C53306F08258E4D53",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x488F73cddDA1DE3664775fFd91623637383D6404",
+     "decimals": 18,
+     "symbol": "YTS",
+     "name": "YetiSwap",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/f6049bbc-c802-4883-9ac2-c65800150531/b987fd927eadd7bec7541f7d399348c5/43114-0x488F73cddDA1DE3664775fFd91623637383D6404.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "109295920078028946",
+   "amountOut": "110084795417404568",
+   "usdPrice": 8.924,
+   "usdProfit": 0.00703992352858805,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:48Z"
+  },
+  {
+   "hash": "0x219ccaf56c0369955dd644e7dbb1d5f3094edee1e5035dd0ef853cfd147b6023",
+   "blockNumber": 98575970,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0809434D95AB31d21e9DAa6D4CdBd0c1b99F8cF3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "75729680112409908",
+   "amountOut": "76292195417123582",
+   "usdPrice": 8.924,
+   "usdProfit": 0.0050198865792648265,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:43Z"
+  },
+  {
+   "hash": "0x16efbe65b9f1db324367248a18d6d8bda10d356e1681ef503fa03fa15f777b46",
+   "blockNumber": 98575968,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x39cf1BD5f15fb22eC3D9Ff86b0727aFc203427cc",
+     "decimals": 18,
+     "symbol": "SUSHI",
+     "name": "SushiToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/2953cf24-059e-40bd-82a6-09ece95f3b5f/152ca43ff38860c402383e79d34c38f1/43114-0x39cf1BD5f15fb22eC3D9Ff86b0727aFc203427cc.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "57241153633336161",
+   "amountOut": "58038524273252624",
+   "usdPrice": 8.924,
+   "usdProfit": 0.007115735590614515,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:41Z"
+  },
+  {
+   "hash": "0x958fe22af53738607eb541bd4340e54d7dfb862237106308642356681deba829",
+   "blockNumber": 98575966,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x098D1768Cccfd822d4d16F545ac46c3C6f913a17",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "344873153619127354",
+   "amountOut": "345619355085793435",
+   "usdPrice": 8.924,
+   "usdProfit": 0.006659101888528107,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:40Z"
+  },
+  {
+   "hash": "0xedfc7b498a5efd0c7a425c84a950d992bf79cec797513a87b0af49178ec10de4",
+   "blockNumber": 98575963,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x644E5b7c5D4Bc8073732CEa72c66e0BB90dFC00f",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1705831928171236608",
+   "amountOut": "1711307653895259886",
+   "usdPrice": 8.924,
+   "usdProfit": 1.6004712790933822e-05,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:06:38Z"
+  },
+  {
+   "hash": "0x8d9d7445e7ba9a2d73cc1afa791599378beb47dae30eedf8613ef63c71c86e18",
+   "blockNumber": 98575801,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x05C6516a09b04230620843eA2B624056658697C6",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd",
+     "decimals": 18,
+     "symbol": "JOE",
+     "name": "JoeToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/26671384-7603-4879-b462-f5a0c79de0ac/b70d5821e8a746153ad958cde6156855/43114-0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "68632895695417025",
+   "amountOut": "69270240495545719",
+   "usdPrice": 8.917,
+   "usdProfit": 0.005683203582747564,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:04:01Z"
+  },
+  {
+   "hash": "0x46669d77eb8e9dff4a477cab667fc05d41ac2650d29b1ad0e6fb427611d3afce",
+   "blockNumber": 98575797,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x61eCd63e42C27415696e10864d70ecEA4aA11289",
+     "decimals": 18,
+     "symbol": "RUGPULL",
+     "name": "RUGPULL",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/1cc55e89-9923-4bb3-a797-846660e472c8/1ff01b3cd84de02a1561ea2f4fd16246/43114-0x61eCd63e42C27415696e10864d70ecEA4aA11289.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "24981291647521746",
+   "amountOut": "25677327197057141",
+   "usdPrice": 8.917,
+   "usdProfit": 0.006206548995207117,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:03:58Z"
+  },
+  {
+   "hash": "0xe305ee60f7247aea7877a6b2614cdb431ab5bf10bb6debe7698a9244291a9d66",
+   "blockNumber": 98575795,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x02139aB36E4B3dd88c286C5C53306F08258E4D53",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xf39f9671906d8630812f9d9863bBEf5D523c84Ab",
+     "decimals": 18,
+     "symbol": "UNI",
+     "name": "Uniswap",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7aa84fb8-0240-49e8-b852-53c163763441/378dd7d5fb0029f8c9303cd7e19b8458/43114-0xf39f9671906d8630812f9d9863bBEf5D523c84Ab.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "82756477676293103",
+   "amountOut": "83469563781165619",
+   "usdPrice": 8.916,
+   "usdProfit": 0.006357875711043353,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:03:56Z"
+  },
+  {
+   "hash": "0x2175d6656950c0f4e3ab2a0e4b2db38bd34f138c4ac2e4f41f626deda8f5a4fc",
+   "blockNumber": 98575700,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0809434D95AB31d21e9DAa6D4CdBd0c1b99F8cF3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1154961770000252120",
+   "amountOut": "1155570754177563624",
+   "usdPrice": 8.926,
+   "usdProfit": 0.005435792766682485,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:02:23Z"
+  },
+  {
+   "hash": "0xc604b026077131103e6fd55745f307e63137a55001defc793eb00d1c753d98a3",
+   "blockNumber": 98575645,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x072E401629ac6Cb31516a30bE883FA053224D108",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4",
+     "decimals": 18,
+     "symbol": "XAVA",
+     "name": "Avalaunch",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5bfdc73f-edf5-485b-aa46-a358faeafa34/fb2dfcd37bebed4d0692188924de2b18/43114-0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1420714104338744662",
+   "amountOut": "1422323320815508337",
+   "usdPrice": 8.91,
+   "usdProfit": 0.014338118807964345,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:36Z"
+  },
+  {
+   "hash": "0x22db2a73e2aa5349aa8ab6c76ed987f0703f77ae615d4ee5ca93b73445fa78e5",
+   "blockNumber": 98575645,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x1b27D7A06DeEa4d5CB4fd60c164153C90f64281D",
+     "decimals": 18,
+     "symbol": "GPC",
+     "name": "Gold Pegged Coin",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1403308918241540993",
+   "amountOut": "1405004037532067574",
+   "usdPrice": 8.91,
+   "usdProfit": 0.015103512878591838,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:36Z"
+  },
+  {
+   "hash": "0xbdd82685f2793be5d724d2e1e9f4a7cc58bc0bba2ffe498c4485f5d821e4b6b8",
+   "blockNumber": 98575643,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x098D1768Cccfd822d4d16F545ac46c3C6f913a17",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x50b7545627a5162F82A992c33b87aDc75187B218",
+     "decimals": 8,
+     "symbol": "WBTC.e",
+     "name": "Wrapped BTC",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7395522b-a14b-4d9d-bce2-bd54b9a6107b/4c54d120f309e0b34fe54dedc718ecce/43114-0x50b7545627a5162F82A992c33b87aDc75187B218.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1256123444601144464",
+   "amountOut": "1257956394830560902",
+   "usdPrice": 8.908,
+   "usdProfit": 0.01632792064364163,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:31Z"
+  },
+  {
+   "hash": "0x4cb898de160e712304233c6c69194a77913dd6604d01b1e615962fbc62b79db0",
+   "blockNumber": 98575640,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0449410eF3b726138A1C2E6F1e0C3BF01Bf17c1F",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd",
+     "decimals": 18,
+     "symbol": "JOE",
+     "name": "JoeToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/26671384-7603-4879-b462-f5a0c79de0ac/b70d5821e8a746153ad958cde6156855/43114-0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1069073038444351281",
+   "amountOut": "1069966999663983368",
+   "usdPrice": 8.908,
+   "usdProfit": 0.00796340654448263,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:29Z"
+  },
+  {
+   "hash": "0xa7202170333ef82f0e42a6239dd4b1874c3aabcc2c1837a3db8659c95b0ed157",
+   "blockNumber": 98575638,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0xF9d8DA146dBD8e003717828d916E4222C95F7e4C",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",
+     "decimals": 6,
+     "symbol": "USDC.e",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7b95b093-de51-4395-bb70-dc73832f5436/d17948934c0d7c7433902630140f4580/43114-0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664.png"
+    },
+    {
+     "token": "0x50b7545627a5162F82A992c33b87aDc75187B218",
+     "decimals": 8,
+     "symbol": "WBTC.e",
+     "name": "Wrapped BTC",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7395522b-a14b-4d9d-bce2-bd54b9a6107b/4c54d120f309e0b34fe54dedc718ecce/43114-0x50b7545627a5162F82A992c33b87aDc75187B218.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1187307498990472507",
+   "amountOut": "1189431628413198065",
+   "usdPrice": 8.909,
+   "usdProfit": 0.018370989438475257,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:27Z"
+  },
+  {
+   "hash": "0x9040d10e7e4168b746a939ea84bdda39e2eadb8a8b5fdf65eb703582324a1be2",
+   "blockNumber": 98575637,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0809434D95AB31d21e9DAa6D4CdBd0c1b99F8cF3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4",
+     "decimals": 18,
+     "symbol": "XAVA",
+     "name": "Avalaunch",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5bfdc73f-edf5-485b-aa46-a358faeafa34/fb2dfcd37bebed4d0692188924de2b18/43114-0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "662995087045032946",
+   "amountOut": "664277514787375873",
+   "usdPrice": 8.909,
+   "usdProfit": 0.011425148756533138,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:27Z"
+  },
+  {
+   "hash": "0xc4ed461dab90f09f1385d3fc0a890133a653a34abb7a93ee649c12b657e46234",
+   "blockNumber": 98575615,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "212231819061735359",
+   "amountOut": "213065956767148351",
+   "usdPrice": 8.908,
+   "usdProfit": 0.007430498679818933,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:01:05Z"
+  },
+  {
+   "hash": "0x0733000e177d9d57d9f808547bd51dff0bfc00994a9f642379f482d07e807c26",
+   "blockNumber": 98575612,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x072E401629ac6Cb31516a30bE883FA053224D108",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x1b27D7A06DeEa4d5CB4fd60c164153C90f64281D",
+     "decimals": 18,
+     "symbol": "GPC",
+     "name": "Gold Pegged Coin",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1128378332003934451",
+   "amountOut": "1129462132869487343",
+   "usdPrice": 8.903,
+   "usdProfit": 0.009649079106017398,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:00:59Z"
+  },
+  {
+   "hash": "0xa63ae6bb68b5920f53158ecc40d8da0c10614c17d469dcbfc3faa0f2017b5bbe",
+   "blockNumber": 98575597,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd",
+     "decimals": 18,
+     "symbol": "JOE",
+     "name": "JoeToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/26671384-7603-4879-b462-f5a0c79de0ac/b70d5821e8a746153ad958cde6156855/43114-0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1069976043559314450",
+   "amountOut": "1070874834935402620",
+   "usdPrice": 8.903,
+   "usdProfit": 0.008001939621312978,
+   "type": "arbitrage",
+   "time": "2026-10-26T05:00:49Z"
+  },
+  {
+   "hash": "0x20a35b41943d5517734efe519b8042fed2bb93751bcbf3aebdbb3ef4faefd462",
+   "blockNumber": 98575161,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "302273710939193751",
+   "amountOut": "303013117214278376",
+   "usdPrice": 8.884,
+   "usdProfit": 0.006568885347851809,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:53:24Z"
+  },
+  {
+   "hash": "0x959a6cfadc0a780e71661aca3d6ef6b5385fb9da80aea8b64bef50459c416605",
+   "blockNumber": 98575157,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x098D1768Cccfd822d4d16F545ac46c3C6f913a17",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x1b27D7A06DeEa4d5CB4fd60c164153C90f64281D",
+     "decimals": 18,
+     "symbol": "GPC",
+     "name": "Gold Pegged Coin",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1066708345526313749",
+   "amountOut": "1067682531025518703",
+   "usdPrice": 8.883,
+   "usdProfit": 0.008653689789437605,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:53:21Z"
+  },
+  {
+   "hash": "0x83eeab59f6ddaf5ed4bc3aea38f4a7720bd92c8a443665b1641e8d90faed0323",
+   "blockNumber": 98575155,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x072E401629ac6Cb31516a30bE883FA053224D108",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4",
+     "decimals": 18,
+     "symbol": "XAVA",
+     "name": "Avalaunch",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5bfdc73f-edf5-485b-aa46-a358faeafa34/fb2dfcd37bebed4d0692188924de2b18/43114-0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "664663619740227459",
+   "amountOut": "665429078562898179",
+   "usdPrice": 8.883,
+   "usdProfit": 0.006799570721784005,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:53:19Z"
+  },
+  {
+   "hash": "0x17310b841661d793bbc1c9a43edcb60023bb566c1e8778cd462baf871c43b075",
+   "blockNumber": 98575153,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x05C6516a09b04230620843eA2B624056658697C6",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd",
+     "decimals": 18,
+     "symbol": "JOE",
+     "name": "JoeToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/26671384-7603-4879-b462-f5a0c79de0ac/b70d5821e8a746153ad958cde6156855/43114-0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "938955071809468723",
+   "amountOut": "939840967173567819",
+   "usdPrice": 8.882,
+   "usdProfit": 0.00786852262392817,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:53:18Z"
+  },
+  {
+   "hash": "0xa1a0a72dcb52ef8ec3a594d0ca7d1ae8b8b80dff191b051d40880a4b83b88029",
+   "blockNumber": 98575149,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0809434D95AB31d21e9DAa6D4CdBd0c1b99F8cF3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4",
+     "decimals": 18,
+     "symbol": "XAVA",
+     "name": "Avalaunch",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5bfdc73f-edf5-485b-aa46-a358faeafa34/fb2dfcd37bebed4d0692188924de2b18/43114-0xd1c3f94DE7e5B45fa4eDBBA472491a9f4B166FC4.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "947393519587735589",
+   "amountOut": "948091982983332524",
+   "usdPrice": 8.881,
+   "usdProfit": 0.00620305341629638,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:53:12Z"
+  },
+  {
+   "hash": "0x97c4c6ddc466848ae51220ff2cc0bc81e89897651380673f882720e38dbae7fd",
+   "blockNumber": 98575087,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x062aF28251bcde1562f3F358096D54C18d7CeF2B",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x8D88e48465F30Acfb8daC0b3E35c9D6D7d36abaf",
+     "decimals": 18,
+     "symbol": "CNR",
+     "name": "Canary",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/d17681fe-b158-48b0-b161-7a7dfdf35c8e/b2e7964870a461ee7933fd8f0a2bc8ed/43114-0x8D88e48465F30Acfb8daC0b3E35c9D6D7d36abaf.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "27743227334520902",
+   "amountOut": "28500607048543775",
+   "usdPrice": 8.865,
+   "usdProfit": 0.006714171164812769,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:52:10Z"
+  },
+  {
+   "hash": "0x7555adf8584d6db026ca58c40335014b08d3fcef83029a0b333d79fa2c9bf5ad",
+   "blockNumber": 98575083,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0449410eF3b726138A1C2E6F1e0C3BF01Bf17c1F",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xB3fe5374F67D7a22886A0eE082b2E2f9d2651651",
+     "decimals": 18,
+     "symbol": "LINK",
+     "name": "ChainLink Token",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/1755e210-1e01-43a9-8c83-c7abb414cb82/ca6caeb8b64162c6ae270db8687a5650/43114-0xB3fe5374F67D7a22886A0eE082b2E2f9d2651651.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "106907337160289996",
+   "amountOut": "107835265988870727",
+   "usdPrice": 8.865,
+   "usdProfit": 0.00822608906536818,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:52:07Z"
+  },
+  {
+   "hash": "0xef530d437d7cf4c06df046ebba209d57a96477806472cd3720368c0e02bb7a8e",
+   "blockNumber": 98575081,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xde3A24028580884448a5397872046a019649b084",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "Tether USD",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "222401299601761827",
+   "amountOut": "223345847838420632",
+   "usdPrice": 8.861,
+   "usdProfit": 0.008369641925033672,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:52:06Z"
+  },
+  {
+   "hash": "0xbcd201bd71b4733e485ccbdfb900a8f792a4198f2a1be9de79e9777874d20ae4",
+   "blockNumber": 98574737,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x072E401629ac6Cb31516a30bE883FA053224D108",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x99519AcB025a0e0d44c3875A4BbF03af65933627",
+     "decimals": 18,
+     "symbol": "YFI",
+     "name": "yearn.finance",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/fee1839d-61d2-4c9a-be4e-32368cfeded4/b13cbaa24a36e0706cd592599cb81955/43114-0x99519AcB025a0e0d44c3875A4BbF03af65933627.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "23822383510307204",
+   "amountOut": "24507089976821257",
+   "usdPrice": 8.858,
+   "usdProfit": 0.006065129880381482,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:46:04Z"
+  },
+  {
+   "hash": "0xfed651ea820d8977238463e768e9398f7433288df85e1535af08271d8ec080e2",
+   "blockNumber": 98574662,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x05C6516a09b04230620843eA2B624056658697C6",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x4D6Ec47118f807ACE03d3B3A4EE6AA96CB2AB677",
+     "decimals": 18,
+     "symbol": "BNZ",
+     "name": "Bonez",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "93268094625754799",
+   "amountOut": "94115538153487457",
+   "usdPrice": 8.857,
+   "usdProfit": 0.007505807325128152,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:45:00Z"
+  },
+  {
+   "hash": "0xc8e11a58a63c1b139bbdfdc33681012eb946c0c49fe04fd22933b2dccc6f62a9",
+   "blockNumber": 98574452,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0449410eF3b726138A1C2E6F1e0C3BF01Bf17c1F",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x62D0A8458eD7719FDAF978fe5929C6D342B0bFcE",
+     "decimals": 18,
+     "symbol": "BEAM",
+     "name": "Beam",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/2ZXZw0POSuXhwoGTiv2fzh/5b9d9e81acb434461da5addb1965f59d/chain-logo.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "41126100590511095",
+   "amountOut": "41937676939989982",
+   "usdPrice": 8.857,
+   "usdProfit": 0.007188131727334502,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:41:31Z"
+  },
+  {
+   "hash": "0xecf218184ccaba449b6c1ec210bdb8fcc09d51b393f69a0275eea03afcd9612f",
+   "blockNumber": 98574372,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x62D0A8458eD7719FDAF978fe5929C6D342B0bFcE",
+     "decimals": 18,
+     "symbol": "BEAM",
+     "name": "Beam",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/2ZXZw0POSuXhwoGTiv2fzh/5b9d9e81acb434461da5addb1965f59d/chain-logo.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "573150614777279844",
+   "amountOut": "573954558812268760",
+   "usdPrice": 8.86,
+   "usdProfit": 0.007122944150001796,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:40:11Z"
+  },
+  {
+   "hash": "0xa228ea1923d36f0db5f53243369a8e9ab40bc83d5429da1411b3df91fb558b2b",
+   "blockNumber": 98573865,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x02139aB36E4B3dd88c286C5C53306F08258E4D53",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x4D6Ec47118f807ACE03d3B3A4EE6AA96CB2AB677",
+     "decimals": 18,
+     "symbol": "BNZ",
+     "name": "Bonez",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "108957702744357468",
+   "amountOut": "109853992572609285",
+   "usdPrice": 8.85,
+   "usdProfit": 0.00793216498002858,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:32:25Z"
+  },
+  {
+   "hash": "0x8e4c0992938a9e4280cbe7e7a1d12d0b283fbfdc52d2c4362516fa81996522f6",
+   "blockNumber": 98573843,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1282925203147127904",
+   "amountOut": "1283744361909053166",
+   "usdPrice": 8.842,
+   "usdProfit": 0.007243001772943167,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:32:09Z"
+  },
+  {
+   "hash": "0x4405c0dd12ea7bec76f1afc36a2afd74445254f3bc668db9f9b67aa5df0e39e7",
+   "blockNumber": 98573111,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x062aF28251bcde1562f3F358096D54C18d7CeF2B",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x62D0A8458eD7719FDAF978fe5929C6D342B0bFcE",
+     "decimals": 18,
+     "symbol": "BEAM",
+     "name": "Beam",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/2ZXZw0POSuXhwoGTiv2fzh/5b9d9e81acb434461da5addb1965f59d/chain-logo.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "567672419842326875",
+   "amountOut": "568412890461449372",
+   "usdPrice": 8.854,
+   "usdProfit": 0.006556126861710588,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:21:16Z"
+  },
+  {
+   "hash": "0x975b13f4e57ca3fa452b67e6c5614b21e5f59569fea3185e2d215d66268bf401",
+   "blockNumber": 98572845,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0a8577EB450BD1e926325986F2B00D127120342A",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x432d38F83a50EC77C409D086e97448794cf76dCF",
+     "decimals": 18,
+     "symbol": "HERESY",
+     "name": "Heresy",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "194074094317036517",
+   "amountOut": "195427035114988852",
+   "usdPrice": 8.868,
+   "usdProfit": 0.011997878996241306,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:17:17Z"
+  },
+  {
+   "hash": "0x8267c311f5706c5ec6e023692a77473be3ef1daec53f253bde0b7d06dd2c030d",
+   "blockNumber": 98572843,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x062aF28251bcde1562f3F358096D54C18d7CeF2B",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xC38f41A296A4493Ff429F1238e030924A1542e50",
+     "decimals": 18,
+     "symbol": "SNOB",
+     "name": "Snowball",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0c5a7765-aee3-4f90-81c8-9b30e22fefff/d5e3101be6fccf352b46d19a2ae6daf2/43114-0xC38f41A296A4493Ff429F1238e030924A1542e50.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "38491516301882296",
+   "amountOut": "39134151010656649",
+   "usdPrice": 8.869,
+   "usdProfit": 0.005699527232119737,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:17:12Z"
+  },
+  {
+   "hash": "0xbf9e639d41ebb76eb2c834124fd37983fca4d63f6e293c8015bb4e593b5c4e31",
+   "blockNumber": 98572843,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x072E401629ac6Cb31516a30bE883FA053224D108",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xe896CDeaAC9615145c0cA09C8Cd5C25bced6384c",
+     "decimals": 18,
+     "symbol": "PEFI",
+     "name": "Penguin Finance",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/9206de6d-1af9-44d1-be58-0c80fffa36bf/68fda0419522996f0076622db1364850/43114-0xe896CDeaAC9615145c0cA09C8Cd5C25bced6384c.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "165673966980011401",
+   "amountOut": "166551330142917141",
+   "usdPrice": 8.869,
+   "usdProfit": 0.0077813338918110075,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:17:12Z"
+  },
+  {
+   "hash": "0x966632e62ecb6c5d4a22d802465b77fdb8c3188a2e94f83c1c926ab312027e00",
+   "blockNumber": 98572822,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x05C6516a09b04230620843eA2B624056658697C6",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0x488F73cddDA1DE3664775fFd91623637383D6404",
+     "decimals": 18,
+     "symbol": "YTS",
+     "name": "YetiSwap",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/f6049bbc-c802-4883-9ac2-c65800150531/b987fd927eadd7bec7541f7d399348c5/43114-0x488F73cddDA1DE3664775fFd91623637383D6404.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "101421354535337595",
+   "amountOut": "102093951324623176",
+   "usdPrice": 8.882,
+   "usdProfit": 0.0059740046824345305,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:16:49Z"
+  },
+  {
+   "hash": "0x385833bc71fe18e08a6c564cc8dc6b7bc4758c9ca47b5112d6d7f4d656039f3e",
+   "blockNumber": 98572757,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0x60781C2586D68229fde47564546784ab3fACA982",
+     "decimals": 18,
+     "symbol": "PNG",
+     "name": "Pangolin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/a454f74a-f7c6-452a-97f5-e2b5ad9420c0/e5b7c1d3244dfe52d6f1f3e26e54e06a/43114-0x60781C2586D68229fde47564546784ab3fACA982.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "243590074323118205",
+   "amountOut": "244625553304453223",
+   "usdPrice": 8.853,
+   "usdProfit": 0.009167095421758914,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:15:51Z"
+  },
+  {
+   "hash": "0x63191538106d074df7fe1138adfe34829cf6932f5813985edafcfa535f15ff67",
+   "blockNumber": 98572747,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x05C6516a09b04230620843eA2B624056658697C6",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1223535808784213032",
+   "amountOut": "1224298843343472732",
+   "usdPrice": 8.853,
+   "usdProfit": 0.006755144953126124,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:15:44Z"
+  },
+  {
+   "hash": "0x8cc0e73c20bff966f57cba277bdf3d0c17d669315fbea57be8f9af2da31e5a57",
+   "blockNumber": 98572747,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0449410eF3b726138A1C2E6F1e0C3BF01Bf17c1F",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",
+     "decimals": 6,
+     "symbol": "USDC.e",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7b95b093-de51-4395-bb70-dc73832f5436/d17948934c0d7c7433902630140f4580/43114-0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "663089183082356825",
+   "amountOut": "664450836039135184",
+   "usdPrice": 8.853,
+   "usdProfit": 0.012054713626358812,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:15:44Z"
+  },
+  {
+   "hash": "0x2dda8ba879c790d298ace0915de6edcdf6447a668dc3752c89c7e3d37f76cfb9",
+   "blockNumber": 98572744,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x098D1768Cccfd822d4d16F545ac46c3C6f913a17",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0x1b27D7A06DeEa4d5CB4fd60c164153C90f64281D",
+     "decimals": 18,
+     "symbol": "GPC",
+     "name": "Gold Pegged Coin",
+     "logoAsset": ""
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1257214246852569960",
+   "amountOut": "1259143349613219766",
+   "usdPrice": 8.853,
+   "usdProfit": 0.01707834674003273,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:15:42Z"
+  },
+  {
+   "hash": "0xfb1383259f318fcb077473dbe441e57ed30fc64b2dd70b24f2b6c31e8f509c96",
+   "blockNumber": 98572515,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0449410eF3b726138A1C2E6F1e0C3BF01Bf17c1F",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",
+     "decimals": 6,
+     "symbol": "USDC.e",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/7b95b093-de51-4395-bb70-dc73832f5436/d17948934c0d7c7433902630140f4580/43114-0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1494862503307050424",
+   "amountOut": "1495577006183654629",
+   "usdPrice": 8.827,
+   "usdProfit": 0.0063069168917853176,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:12:05Z"
+  },
+  {
+   "hash": "0xb831c1ad65c7db56040a9f295ea3b0326fb0645e1be29396d4bb641f21e2ce77",
+   "blockNumber": 98572513,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0809434D95AB31d21e9DAa6D4CdBd0c1b99F8cF3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+     "decimals": 6,
+     "symbol": "USDC",
+     "name": "USD Coin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/e50058c1-2296-4e7e-91ea-83eb03db95ee/8db2a492ce64564c96de87c05a3756fd/43114-0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E.png"
+    },
+    {
+     "token": "0xd586E7F844cEa2F87f50152665BCbc2C279D8d70",
+     "decimals": 18,
+     "symbol": "DAI.e",
+     "name": "Dai Stablecoin",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/08d60afe-4426-40f1-9356-bb27d0acad4d/2aa78ad0e667b9579548be8c96061a5c/43114-0xd586E7F844cEa2F87f50152665BCbc2C279D8d70.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1114536155745494185",
+   "amountOut": "1115416203512465976",
+   "usdPrice": 8.827,
+   "usdProfit": 0.007768181639059999,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:12:03Z"
+  },
+  {
+   "hash": "0x8c0f891ef2592bbff546dbf952b51a1d3c0589abedcbfc7be35c0526c430b5d6",
+   "blockNumber": 98572491,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x84A6D0e6bc2f5bA5aD4e512Dabcb083B43C8CCd8",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0xcd94a87696FAC69Edae3a70fE5725307Ae1c43f6",
+     "decimals": 18,
+     "symbol": "BLACK",
+     "name": "Blackhole",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5meMVH6UsfeHb3RBhw7tCv/f5e2ada51a21a871773d886aaededf9b/image.png"
+    },
+    {
+     "token": "0x468A5c400577B0AB8f1D54FDd8577f46829f1566",
+     "decimals": 0,
+     "symbol": "",
+     "name": "",
+     "logoAsset": ""
+    },
+    {
+     "token": "0x8dA512fFf8F70570149e665AC99E406ab20C1776",
+     "decimals": 0,
+     "symbol": "",
+     "name": "",
+     "logoAsset": ""
+    },
+    {
+     "token": "0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32",
+     "decimals": 6,
+     "symbol": "XAUT0",
+     "name": "Tether Gold Tokens",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/27CzxcEpGWFKBVisUuUtyO/dbee1653a608f4c6ba9e165b4886cd52/0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32.png"
+    },
+    {
+     "token": "0xcd94a87696FAC69Edae3a70fE5725307Ae1c43f6",
+     "decimals": 18,
+     "symbol": "BLACK",
+     "name": "Blackhole",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/5meMVH6UsfeHb3RBhw7tCv/f5e2ada51a21a871773d886aaededf9b/image.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "103962891294816176",
+   "amountOut": "107369920464361365",
+   "usdPrice": 8.822,
+   "usdProfit": 0.9472174383365959,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:11:47Z"
+  },
+  {
+   "hash": "0xa15383819c8aba5f4d48fa17f2aaaea9b255bbc69c4b4ed8fdda4da4bb811dd4",
+   "blockNumber": 98572463,
+   "token": {
+    "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+    "decimals": 18,
+    "symbol": "AVAX",
+    "name": "Wrapped AVAX",
+    "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+   },
+   "sender": "0x0372B63390591007e61d0E15EcB40579F0D08dE3",
+   "path": [
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    },
+    {
+     "token": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7",
+     "decimals": 6,
+     "symbol": "USDT",
+     "name": "TetherToken",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/4ac7cb0c-5260-473b-a4bc-b809801aa5da/49d45340a82166bdb26fce4d3e62ce65/43114-0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7.png"
+    },
+    {
+     "token": "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
+     "decimals": 18,
+     "symbol": "AVAX",
+     "name": "Wrapped AVAX",
+     "logoAsset": "https://images.ctfassets.net/gcj8jwzm6086/0921c633-a8d2-4de6-b9f3-6508c641c44c/8b92abcbf0f59c9ad3188b0d9e8e3e3b/43114-0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7.png"
+    }
+   ],
+   "amountIn": "1762928755775435433",
+   "amountOut": "1763779546183954972",
+   "usdPrice": 8.822,
+   "usdProfit": 0.007505672983959372,
+   "type": "arbitrage",
+   "time": "2026-10-26T04:11:26Z"
+  }
+ ]
+}

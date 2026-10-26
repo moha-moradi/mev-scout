@@ -1,0 +1,664 @@
+{
+  "label": "baseline",
+  "frozen_at": "2026-10-26",
+  "note": "Frozen L\\V adjudications for the Task M0 baseline. Later checkpoints reuse this file: a row that disappears must map to a predicted task effect or it is a regression flag. Only 'adjudication' and 'note' are read by the script.",
+  "block_range": {
+    "lo": 98572463,
+    "hi": 98575973
+  },
+  "snapshot_sha256": "e9b06cfc518e4accb43e8098d20ff73e80b5aa40f8a3707040b232a4d19896cb",
+  "local_commit": "351a19c",
+  "vendor_min_usd_profit": 1.6004712790933822e-05,
+  "rules": {
+    "jit": "unknown - vendor is arb-only, blind to JIT by design",
+    "erc4337_bundler": "unknown - utility family (bundler/keeper/claim), vendor blind by design",
+    "arb_material": "tp_vendor_miss - arb_atomic with profit_usd >= $0.01",
+    "arb_dust": "fp_suspect - arb_atomic with profit_usd < $0.01 or a rounding residue (A14 candidate)"
+  },
+  "counts": {
+    "tp_vendor_miss": 15,
+    "unknown": 50,
+    "fp_suspect": 6
+  },
+  "rows": {
+    "0xfbf67ff0658362a22c9442257880514cbb2388deb009647710635842247cc6e1": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.012948 net $0.005024 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98572511,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.012947536537428687,
+      "net_profit_usd": 0.005024441298329536
+    },
+    "0x86238f16cd8f510ff8688ed2ba90026be248f0580086aea4aa46bbcecd1e7f47": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98572517,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.011928534777545685,
+      "net_profit_usd": -0.0019700927431153033
+    },
+    "0xdbea775929cd63bfe622781d8bc5cd74ba3884d18cfd01fb9abf16fe32fd792e": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $4.982246 net $4.965578 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98572610,
+      "kind": "arb_atomic",
+      "confidence": "inferred",
+      "profit_usd": 4.982246425197114,
+      "net_profit_usd": 4.965578363938867
+    },
+    "0x250340e1ef128ade03ba86ab144db662b239090100d10aac86d556af84c78a8f": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98572640,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0037839834700747073,
+      "net_profit_usd": 0.00010446476394602132
+    },
+    "0xb8ea931d864368695bbcbc34bba9374eb6548b7ce6b0bb7d091a9e3a62e40744": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98572713,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.002840272694247063,
+      "net_profit_usd": -0.001843009345868861
+    },
+    "0xd9275078eccf9980e1fa2975091749a1630ff174b4b906b8ed2b20380543fd86": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98572721,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.002760997910823439,
+      "net_profit_usd": 5.555096776675185e-06
+    },
+    "0x7b1b0dd5d4359b2e610fc89683dd15b396f1086e41bfc19c8a690dff24c02d02": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572740,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x94eff59de30e4ddcc06d4e22329162ba511befbfc9d66d0fa1ecab6790a50228": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572740,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x988f0ef246e6b6dc695ceb76ca9f15c0ad23952f0eb9fc36ad7586ab14b14a39": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572740,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0xeddab874374e008dea5772a01be4ac8e3840945026440cf52a9cd1dd03ae2d33": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572740,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x63dd344516aad8372e70abed7a46f51a939ee41c304417c51ac445e1a01dfd5e": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572744,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x65a8a0559ee64a963c9d816c9287cef950bebe0faa5a3b2e45f707132c5e1863": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572744,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x24ad482cfb6b73dad5fc0943ba1268d32e773f0c9113d436069581c66446fba3": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.015071 net $0.005688 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98572754,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.015071455180432746,
+      "net_profit_usd": 0.005687763008587587
+    },
+    "0x5495a3681027cad621a7b9a6666318b4ae29cc2a8f449dc675ec7429bc923178": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.011696 net $0.002389 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98572768,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.011695909443813799,
+      "net_profit_usd": 0.0023892941059020355
+    },
+    "0x1296d36af3d654b90796a09396cf5afe9fca497275088d79a79e08ced94a24ed": {
+      "adjudication": "fp_suspect",
+      "note": "realized triangular cycle, net $0.001385, but profit $0.006664 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "block_number": 98572847,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.006663539178528651,
+      "net_profit_usd": 0.0013853594139445688
+    },
+    "0xc3a6575ad10175637038634e25ebd2319c256bf4d321ce0059e5bbec99d5209e": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 6-hop cross-DEX cycle, profit $0.019726 net $0.000302 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98572947,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.01972567547861788,
+      "net_profit_usd": 0.00030211040416244436
+    },
+    "0x65423fa0197da1bf1d17f093a7531d60110587684c59b4e5810dab0c413b468a": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98572994,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x4cae09e5fadbacb55cb0ee34e1ca824f4e52405bcf3622dbabd9b296f6cc5845": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573056,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.00696868403141157,
+      "net_profit_usd": -0.0032281418509697837
+    },
+    "0x07f16e141c4c9cb4e5d01ecc8501b713f0eacefa864274469db46bd2c1eee5f1": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573218,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.002605351739393831,
+      "net_profit_usd": -0.00043536271790836373
+    },
+    "0x350938b3cb913a7330e59b47fc06d6b5d0976b8f9f10d71ebe09389e2427df61": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573296,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.007028628564409028,
+      "net_profit_usd": -0.0007430249706765818
+    },
+    "0x1c5c59b623f50a57c3ffe436eebd24423689fa90471215b7f391fef221ffd1e9": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 2-hop cross-DEX cycle, profit $0.028061 net $0.014315 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98573341,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.028060666331836952,
+      "net_profit_usd": 0.014314637911596966
+    },
+    "0xdd3a0026a6c09a52745239e4675d584bfa0711712e1eec3c8ecbd051a5917894": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.010239 net $0.003702 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98573342,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.010238678901299541,
+      "net_profit_usd": 0.0037018395699809775
+    },
+    "0x908ae93e19b1a378610634b711d88b76a79b74374557c2912d957bdf1bdf321c": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573377,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.00500962335779815,
+      "net_profit_usd": 0.00028179968334734497
+    },
+    "0x374bbd6dd1802966a029e9cb615c06bb71f7ff7f733c39a887c802f379b5a0de": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 4-hop cross-DEX cycle, profit $0.018651 net $0.005900 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98573622,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.01865097174198536,
+      "net_profit_usd": 0.005899976669688141
+    },
+    "0x09e2adf85e16f85479224a78b7f1952e38240aa1fd2740857c8524e0ff6c1e78": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573708,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0028535168123870404,
+      "net_profit_usd": -0.0018299721874031213
+    },
+    "0x1766761a53fd45378d7112ecf4062c27dc259bae706e189db33f81111d2b366c": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573714,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.002767805586182533,
+      "net_profit_usd": -0.0001408764410805413
+    },
+    "0xf4226a77f43bfe5de83e2aec473d005ac206feb565bfbed1a089b4d8b11366ba": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98573840,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x14533e36a38f211075c81a804a04b1d818801a4ac81d7886f36a6b55f38aac8f": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98573856,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x44a3396523dd1b93f0bc292edf21bbb49be30993221204033ec389e82dedbfa9": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98573974,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0026088370494744034,
+      "net_profit_usd": -0.0004361011551944462
+    },
+    "0x98b277a89d93e1f8f44e7fde9c245147a61690c6c287b74ce9adb1225b93f98d": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574019,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.008259372370334864,
+      "net_profit_usd": -0.0010459467155304863
+    },
+    "0xfcca76f244c550daed53137acc7645de81980e46bc073565beda7f66f06e98d4": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574212,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.004948316047555176,
+      "net_profit_usd": 0.00022055915404784864
+    },
+    "0xedd773e13b2ee924e50913925508758d2b37d38af508d2b22af1f6c612da5ddf": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x41100c6d...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98574250,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x3658fc3b0540e75bca4f070a52d7208eebe6ab408300b02eb49ada2a42e150f6": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574267,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.007198792403866337,
+      "net_profit_usd": -0.0005253621278432487
+    },
+    "0x33a3e2a65d5c840604f48fc7a8f6754d2190971908d8e48c517e96125c7b4d41": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574510,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.003066751397728028,
+      "net_profit_usd": -0.004006886520707535
+    },
+    "0x54ecf25fc3d694f347661b1122f1fa144f83a7a435005f5de841fda734326bfd": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574670,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0032350176122805264,
+      "net_profit_usd": -0.0016524741736303914
+    },
+    "0x197a23f56d5a13e604d40489edcd852dc1856304c9393e5d142f4155a3431ba9": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574677,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0028733518092413602,
+      "net_profit_usd": -0.00025492775671387977
+    },
+    "0xf0b54c5c4a5adeff91889ce9cff8a8bbc7296d63313d7796c2110aad16fd2176": {
+      "adjudication": "fp_suspect",
+      "note": "realized triangular cycle, net $0.000625, but profit $0.008134 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "block_number": 98574735,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.008133981361983846,
+      "net_profit_usd": 0.0006254628709237891
+    },
+    "0x8d9466c99cbdd31dec13802a8e83fd2a2c2300d91ff5d9b8c8dbb7b0d2fc377c": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 4-hop cross-DEX cycle, profit $0.082116 net $0.038326 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98574833,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.08211563874647823,
+      "net_profit_usd": 0.038325523481830166
+    },
+    "0xf299e7d69d745d52b8b2a73e63d16f2922762f23fa486b27de7bebda0a1333a3": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.010969 net $0.004378 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98574850,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.01096862624741691,
+      "net_profit_usd": 0.004378111835941108
+    },
+    "0x3dd02ebb93c12640c296d3e760a7c8908095023b21fd671adf4ddd1d2574924d": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574910,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.00500962335779815,
+      "net_profit_usd": 0.00028179968334734497
+    },
+    "0xbb986a407103d5e7086fd7699bb7ec83149fcf9648075967a7fdc7b2fe0fefb9": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98574947,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.00656017161467419,
+      "net_profit_usd": -0.0030585983855378404
+    },
+    "0x5d8f68e53c27cab7c35940bd308baeb6efe5510d25f7bc9bd3aa8dda6332b624": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575039,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x98e898cca686d60c32142a303ca821a41b881178d4339805f089e1f83cce22d3": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575039,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0xc307afd82a63247c68f0c37ea9580371f41b6d9ce85881545f1fcf0dc0036253": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575039,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x3c03fb78d75d159e066f2993ca1be5ae200a839a44b4f1f68d12266986900c09": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575040,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x63d1109233c548df1cdb44e8bafae5dba278db0d6f4ebc5697b8a179871277a5": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575040,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x3c5178ac76cb3e0469cbec2db01ca1cd94beb3ef1e7194a05a1af7bfb40569c2": {
+      "adjudication": "fp_suspect",
+      "note": "realized triangular cycle, net $0.001862, but profit $0.008731 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "block_number": 98575075,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.00873052307152222,
+      "net_profit_usd": 0.0018623729906591798
+    },
+    "0x46ee0c4e5361a66203164f396472ff339e2194e1c99445015bb0e891558c6091": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575075,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0xedeab0649b95605ed772852275141c0a5d8c592af0b1ec79eb882baebc9887b4": {
+      "adjudication": "fp_suspect",
+      "note": "realized two_pool cycle, net $0.000927, but profit $0.004983 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "block_number": 98575085,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.004982876695376278,
+      "net_profit_usd": 0.000927049798272345
+    },
+    "0xb8fa4197f5a4061e01dadb2543fd256c1cc45c8b242bdc332ccd7aa9e6077340": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575118,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0032898914956834497,
+      "net_profit_usd": -0.0014079135751055207
+    },
+    "0x25571cb6922148e193facbeff1782202f09b928c0e94c61c37eff122a7d581ee": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575245,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.015657906069327616,
+      "net_profit_usd": -0.0051543994450682674
+    },
+    "0xb9d5c7a8a382c5f5a8c90086878ced0429f66133863752345436525c5d1bfb8b": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575444,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.01450531372262274,
+      "net_profit_usd": -0.0043083132512633324
+    },
+    "0x47c164efce8f39e53b7d16022f7f80824fba9c48ea3f29605f0888ca875998c3": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575481,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.015657905269985502,
+      "net_profit_usd": -0.00465065720135175
+    },
+    "0xb18ede9850ec35bc3fdb0495b83661eb23f35ce579be1a763cb40b1592d22a6b": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575495,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x026a5e4e93b58fb6617de51df2148a1bec4a23a126360962f5c0b50d07052a29": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575502,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0xebcbf01b300ad0d0ded4e192ec726fe75303e9e2213a4757835600f0e2a8e140": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575502,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x84eaba2bd92391028ca7154b4cb7a5f9d4c4873cdeaa6654e5e939926b065bc7": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575559,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0029481465176100894,
+      "net_profit_usd": -0.0018446835877110172
+    },
+    "0x8cd21cce9db64123bc9323264ac238d2d262ea42f5384d347b7555d4d0aa79af": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575566,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.003716586441135176,
+      "net_profit_usd": -0.0006015215074333582
+    },
+    "0xb7a5ea75c5a5420364a7aca8e41a08d0940fecdc7a00e6cb6ae08a8394e0b40b": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575569,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.004627405161339715,
+      "net_profit_usd": -0.0026536426679295835
+    },
+    "0x1fe46000bf6d503f3cef6bf96519080ce283bf7ae80d54c9c119917134fc4520": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575571,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.003960908440676953,
+      "net_profit_usd": 0.0001584856535766523
+    },
+    "0xb77466f826c178c7ed67e58defe45a26addf94edca43e204d66b6e76baae72f8": {
+      "adjudication": "unknown",
+      "note": "JIT liquidity in pool 0x8ac5707f...; vendor lists only arbitrage, so JIT sits outside its observation set by design (profit NULL in baseline)",
+      "block_number": 98575571,
+      "kind": "jit",
+      "confidence": "exact",
+      "profit_usd": null,
+      "net_profit_usd": null
+    },
+    "0x2c388e3dbbf171ae9a1e19fd1e767b7ed87a81e8dffbaa6ba04e5cc3112c30cb": {
+      "adjudication": "fp_suspect",
+      "note": "profit_amount is a single raw USDC unit ($0.000001) and net is negative (-$0.008134): rounding residue of an unrelated multi-hop swap, true fp candidate for A14",
+      "block_number": 98575604,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 9.997665103206668e-07,
+      "net_profit_usd": -0.008133505294256885
+    },
+    "0x3b1c7aadedd0c74afba17f638f11c6e41b833887fd4ac8cdb5c1555a0e080faa": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 3-hop cross-DEX cycle, profit $0.043903 net $0.002937 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98575637,
+      "kind": "arb_atomic",
+      "confidence": "inferred",
+      "profit_usd": 0.043902671401683455,
+      "net_profit_usd": 0.0029366858069705126
+    },
+    "0x43f31df0779f86943cbf3d13042368872146410dec8663369f4ad9ad0ce26930": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular 4-hop cross-DEX cycle, profit $0.013647 net $0.004505 (inferred, forwarded_profit); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98575643,
+      "kind": "arb_atomic",
+      "confidence": "inferred",
+      "profit_usd": 0.013647458053301266,
+      "net_profit_usd": 0.0045051237797859595
+    },
+    "0xe8e2134c619fe6b8906afaebccd670827892620dbc7e192ce76dd0f00b9bfd36": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575677,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.0063393909279323675,
+      "net_profit_usd": -0.001674244097967694
+    },
+    "0x5e7ae25c91d38fea4eb4de52cfa9f1485398e8429cc716d6a7db6f9eb0f0188c": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575764,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.003283886153981521,
+      "net_profit_usd": -0.0013859939498643689
+    },
+    "0xf1a09a339aaae8f49c7a643352bd9830dfef6b779d06749c09ec468f14626de8": {
+      "adjudication": "fp_suspect",
+      "note": "realized triangular cycle, net $0.001238, but profit $0.006341 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "block_number": 98575799,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.006340705733500727,
+      "net_profit_usd": 0.0012375865657491703
+    },
+    "0xe57cdf46bf799065367a64e78ac0fdfa2f74b9c15469e485e5b4d45989ca6164": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 2-hop cross-DEX cycle, profit $0.022677 net $0.013614 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98575834,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.02267743844876672,
+      "net_profit_usd": 0.013613655773809396
+    },
+    "0x7c4e94f6e97a3886ef978e8e9bb707bf5047d75910c50e5a3da01472fa5ff2a9": {
+      "adjudication": "unknown",
+      "note": "ERC-4337 bundler flow (protocol=erc4337); utility family, invisible to the arb-only vendor by design",
+      "block_number": 98575951,
+      "kind": "unknown",
+      "confidence": "exact",
+      "profit_usd": 0.006026051018644101,
+      "net_profit_usd": -0.0016423577367441437
+    },
+    "0x65e857c14e708b574ea735b77b689ff83141b3532d721d5cd2ba71576a7a2ff5": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 2-hop cross-DEX cycle, profit $0.011318 net $0.003964 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98575963,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.01131841485053616,
+      "net_profit_usd": 0.0039635135749497485
+    },
+    "0x0aaaa1582e8b707eff7266875225c83ff656a4807fc15fe5ed39dadb7b9fe4fd": {
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool 2-hop cross-DEX cycle, profit $0.016494 net $0.006461 (exact); vendor lists txs down to $0.000016, so its default sender/pool watch set, not a size floor, explains the miss",
+      "block_number": 98575968,
+      "kind": "arb_atomic",
+      "confidence": "exact",
+      "profit_usd": 0.01649418696102855,
+      "net_profit_usd": 0.006461211600587812
+    }
+  }
+}
