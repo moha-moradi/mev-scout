@@ -50,13 +50,27 @@ impl ExplorerStore {
     /// Native USD price at the hour bucket nearest `ts` (native keyed at
     /// `0x…0` / `0x0`). Drives the USD→wei conversion for the detector-vs-
     /// realized verdict when a trace native delta is unavailable.
+    ///
+    /// `ts` is epoch seconds and is divided down to an hour bucket before
+    /// matching, because `prices.hour` stores hour buckets, not seconds. Only
+    /// rows within ±24h of that bucket are considered; a timestamp with no
+    /// nearby observation yields `None` rather than a stale price.
+    ///
+    /// Convention caveat: token prices are keyed by *block* hour
+    /// (`ingest.rs` `pricing::hour_bucket(block ts)`), while native prices are
+    /// keyed by *fetch-time* hour (every `native_price_cached` call site passes
+    /// `crate::utils::epoch_secs()`). Those two conventions differ, and this
+    /// lookup does not resolve the mismatch; see the deferred historical
+    /// native-pricing work.
     pub fn native_price_near(&self, ts: u64) -> anyhow::Result<Option<f64>> {
+        let bucket = ts / 3600;
         let mut stmt = self.conn.prepare(
             "SELECT usd FROM prices
              WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
+               AND hour BETWEEN ?1 - 24 AND ?1 + 24
              ORDER BY ABS(hour - ?1) ASC LIMIT 1",
         )?;
-        let mut rows = stmt.query([ts as i64])?;
+        let mut rows = stmt.query([bucket as i64])?;
         Ok(match rows.next()? {
             Some(row) => Some(row.get::<_, f64>(0)?),
             None => None,
@@ -144,5 +158,30 @@ impl ExplorerStore {
             [before_block as i64],
         )?;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::store::ExplorerStore;
+
+    #[test]
+    fn native_price_near_returns_bucket_nearest_ts() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        let hour_a = 100u64;
+        let hour_b = 200u64;
+        store.put_price(Address::ZERO, hour_a, 10.0, "test").unwrap();
+        store.put_price(Address::ZERO, hour_b, 99.0, "test").unwrap();
+        // ts inside hour_a: 100*3600 + 1800
+        let got = store.native_price_near(100 * 3600 + 1800).unwrap();
+        assert_eq!(
+            got,
+            Some(10.0),
+            "must pick the hour bucket containing ts, not the latest row"
+        );
+        // ts nearest hour_b
+        let got = store.native_price_near(199 * 3600 + 3500).unwrap();
+        assert_eq!(got, Some(99.0));
     }
 }
