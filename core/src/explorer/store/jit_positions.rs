@@ -184,4 +184,18 @@ mod tests {
         let got = store.native_price_near(199 * 3600 + 3500).unwrap();
         assert_eq!(got, Some(99.0));
     }
+
+    #[test]
+    fn native_price_near_returns_none_outside_staleness_bound() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        store.put_price(Address::ZERO, 100, 10.0, "test").unwrap();
+        // Bucket 200 is 100 hours past the only cached observation, far outside
+        // the +-24h window. Pins the "stale is None" contract, so dropping the
+        // BETWEEN bound (falling back to an unbounded nearest-row lookup) fails.
+        let got = store.native_price_near(200 * 3600).unwrap();
+        assert_eq!(
+            got, None,
+            "must return None rather than a price outside the +-24h window"
+        );
+    }
 }

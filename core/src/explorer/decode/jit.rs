@@ -158,8 +158,11 @@ pub(super) fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec
 /// DepositedToBins / WithdrawnFromBins payload. Each bytes32 packs
 /// amountX in the low 128 bits and amountY in the high 128 bits (LFJ layout).
 ///
-/// Arrays declaring more than 64 entries are rejected (`None`) for the same
-/// reason as [`decode_abi_u256_array`].
+/// An array declaring more than 64 entries is rejected here (`None`) for the
+/// same reason as [`decode_abi_u256_array`]. That rejection is decode-level
+/// only: the sole call site, [`decode_lb_bins_liquidity`], converts `None` into
+/// `(U256::ZERO, U256::ZERO)`, so an oversized amounts payload does *not* drop
+/// the position there — it is still emitted with zero amounts.
 pub(super) fn decode_lb_amounts_xy(data: &[u8]) -> Option<(U256, U256)> {
     if data.len() < 64 {
         return None;
