@@ -258,12 +258,23 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut back_consumed = consumed;
     back_consumed.extend(frontrun_consumed);
     let mut backruns = classify_backruns(input, &back_consumed);
-    // Kind precedence on the same claimed tx: Frontrun > Backrun > ArbAtomic >
-    // Unknown. A causal claim lifts a profitable closed-cycle tx out of the arb
-    // pass; the arb/unknown event on that tx is superseded so P&L is never
-    // double-counted (Frontrun/Backrun win per the precedence list).
+    // Kind precedence on the same claimed tx: Sandwich > Frontrun > Backrun >
+    // ArbAtomic > Unknown. A causal claim lifts a profitable closed-cycle tx
+    // out of the arb pass; the arb/unknown event on that tx is superseded so
+    // P&L is never double-counted (Frontrun/Backrun win per the precedence
+    // list). Sandwich legs claim their tx_indices first with `insert`: the arb
+    // pass runs before sandwiches exist, so a front-run (or back-run) tx that
+    // also closed a cycle still carries an ArbAtomic event that must go.
     let mut superseder: HashMap<u64, MevKind> = HashMap::new();
+    for s in &sandwiches {
+        superseder.insert(s.tx_index, MevKind::Sandwich);
+        if let Some(b) = s.details.get("backrun_tx_index").and_then(|v| v.as_u64()) {
+            superseder.insert(b, MevKind::Sandwich);
+        }
+    }
     for e in frontruns.iter().chain(backruns.iter()) {
+        // Frontruns/backruns never collide with sandwich legs because
+        // `consumed` already excluded them at classify time.
         superseder.entry(e.tx_index).or_insert(e.kind);
         // Frontrun close tx may itself be a closed cycle; drop ArbAtomic /
         // Unknown there so P&L is not double-counted (same rule as JitArb).
@@ -2158,5 +2169,69 @@ mod tests {
         assert!(kind_precedence(MevKind::Frontrun) < kind_precedence(MevKind::Backrun));
         assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::ArbAtomic));
         assert!(kind_precedence(MevKind::JitArb) < kind_precedence(MevKind::Jit));
+    }
+
+    #[test]
+    fn sandwich_front_supersedes_arb_on_same_tx() {
+        // tx0 is the sandwich front-run (TOKA→USDC on POOL_A) *and* closes a
+        // 2-pool cycle (USDC→TOKA on POOL_B), so the arb pass emits ArbAtomic
+        // on the same tx_index as the Sandwich anchor. Kind precedence
+        // (Sandwich > ArbAtomic) must drop the arb event: P&L is attributed
+        // once, to the Sandwich.
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 200, 250),
+                swap(POOL_B, USDC, TOKA, 250, 260),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 250),
+                transfer(2, USDC, ATK, POOL_B, 250),
+                transfer(3, TOKA, POOL_B, ATK, 260),
+            ],
+        );
+        let t1 = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+            vec![
+                transfer(0, TOKA, VICTIM, POOL_A, 100),
+                transfer(1, USDC, POOL_A, VICTIM, 110),
+            ],
+        );
+        let t2 = tx(
+            2,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 105)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 105),
+            ],
+        );
+        let events = classify_block(&block(vec![t0, t1, t2]));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == MevKind::Sandwich && e.tx_index == 0),
+            "fixture must produce the sandwich anchor on tx0, got {events:?}"
+        );
+
+        let mut by_tx: HashMap<u64, Vec<MevKind>> = HashMap::new();
+        for e in events.iter() {
+            by_tx.entry(e.tx_index).or_default().push(e.kind);
+        }
+        for (tx, kinds) in by_tx {
+            let has_sandwich = kinds.contains(&MevKind::Sandwich);
+            let has_arb = kinds.contains(&MevKind::ArbAtomic) || kinds.contains(&MevKind::Unknown);
+            assert!(
+                !(has_sandwich && has_arb),
+                "tx {tx} carries both Sandwich and Arb/Unknown: {kinds:?}"
+            );
+        }
     }
 }
