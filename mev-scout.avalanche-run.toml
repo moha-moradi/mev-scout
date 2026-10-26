@@ -3,20 +3,13 @@ gas_model = "historical_exact"
 output = "table"
 priority_fee_gwei = 30
 rpc_rps = [
-    25.0,
-    20.0,
-    20.0,
-    5.0,
-    1.0,
+    10.0
 ]
 rpc_urls = [
-    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
-    "https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy",
-    "https://api.avax.network/ext/bc/C/rpc",
-    "https://shared.eu-central-1.getblock.io/6498629d9b6a4c07a3714cd683117a74/ext/bc/C/rpc",
-    "https://avalanche-c-chain-rpc.publicnode.com",
+    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc"
+   
 ]
-rps_limit = 20
+rps_limit = 10
 strategies = "all"
 
 [chains.avalanche]
@@ -24,18 +17,10 @@ chain_id = 43114
 
 [chains.avalanche.rpc]
 rpc_rps = [
-    25.0,
-    20.0,
-    20.0,
-    5.0,
-    1.0,
+    10.0
 ]
 rpc_urls = [
-    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc",
-    "https://lb.drpc.live/avalanche/AlEVHe8j40WBrjJdhDUkokAKhSn-rBQR8bjj0neqFxjy",
-    "https://api.avax.network/ext/bc/C/rpc",
-    "https://shared.eu-central-1.getblock.io/6498629d9b6a4c07a3714cd683117a74/ext/bc/C/rpc",
-    "https://avalanche-c-chain-rpc.publicnode.com",
+    "https://api-avalanche-mainnet-archive.n.dwellir.com/87efcc6b-d1fd-48f8-8ca3-4c53ae7b732b/ext/bc/C/rpc"
 ]
 
 [explorer]

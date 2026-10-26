@@ -61,12 +61,19 @@ pub(super) fn classify_arbs(
             } else {
                 fl.initiator
             };
-            let repaid = tx.transfers.iter().any(|t| {
-                t.token == fl.token
-                    && t.amount >= fl.amount
-                    && (t.from == borrower || t.from == tx.from)
-                    && (t.to == fl.provider || t.to == fl.recipient)
-            });
+            // Aggregate: Balancer-style repays can be split into several
+            // transfers, so a single full-amount leg is not required — the sum
+            // of repay legs to the provider/recipient is what the ledger nets.
+            let repaid_total = tx
+                .transfers
+                .iter()
+                .filter(|t| {
+                    t.token == fl.token
+                        && (t.from == borrower || t.from == tx.from)
+                        && (t.to == fl.provider || t.to == fl.recipient)
+                })
+                .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
+            let repaid = repaid_total >= fl.amount;
             if !repaid {
                 net_flash_loan(&mut ledger, borrower, fl.token, fl.amount, fee);
                 if let Some(to) = tx.to {
@@ -813,4 +820,73 @@ fn initiator_blocks_cycle(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod repay_tests {
+    use super::*;
+    use crate::explorer::classify::classify_block;
+    use crate::explorer::test_fixtures::{
+        block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC,
+    };
+    use crate::explorer::types::FlashLoanFact;
+    use alloy::primitives::address;
+
+    /// Balancer-style vault: distinct from the borrower and from the pools.
+    const PROVIDER: Address = address!("7000000000000000000000000000000000000009");
+
+    /// One tx: 1000 USDC flash loan in, two-hop arb to +200 USDC, repaid as
+    /// two 500 transfer legs (Balancer split repay) instead of one 1000 leg.
+    fn split_repay_input() -> BlockInput {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, ATK, 1000), // loan in
+                transfer(1, USDC, ATK, POOL_A, 1000),
+                transfer(2, TOKA, POOL_A, ATK, 1100),
+                transfer(3, TOKA, ATK, POOL_B, 1100),
+                transfer(4, USDC, POOL_B, ATK, 1200),
+                transfer(5, USDC, ATK, PROVIDER, 500), // repay half
+                transfer(6, USDC, ATK, PROVIDER, 500), // repay half
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "balancer_v2",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(1000u64),
+            fee: Some(U256::ZERO),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        block(vec![t])
+    }
+
+    /// Two half-amount repayments to the provider must count as repaid, so
+    /// `net_flash_loan` must NOT subtract the principal again (which erases
+    /// the real +200 profit and rejects the op as `NetZeroSearcher`).
+    #[test]
+    fn split_flash_repay_is_detected() {
+        let input = split_repay_input();
+        let out = classify_block(&input);
+        assert!(
+            out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "split-repay flash arb must classify: rejects were {:?}",
+            out.rejects
+        );
+        let arb = out.events.iter().find(|e| e.kind == MevKind::ArbAtomic);
+        assert_eq!(
+            arb.and_then(|e| e.profit_amount),
+            Some(U256::from(200u64)),
+            "principal must not be netted twice; residual is +200"
+        );
+    }
 }

@@ -27,7 +27,62 @@
 - **One-file sequencing track (`core/src/explorer/ingest.rs`).** Tasks A6, A8, A21, C4, C7, C8, C9, D10 and D12 all edit `ingest.rs`. The claim "tasks within a phase are mostly independent" does **not** hold for that file. Execute them in exactly this order, one at a time: **A6 → A8 → A21 → C4 → C7 → C8 → C9 → D10 → D12**. C8 moves the async/store boundary that A8, A21 and D10 all touch, so landing it late avoids rework.
 - Commit style: conventional commits (`fix:`, `refactor:`, `perf:`, `test:`, `docs:`), matching repo history.
 - **Working-tree hygiene (re-verified 2026-10-25; supersedes the earlier dirty-tree note).** The in-flight `block_indexer`/`QiRateCache` work the first draft warned about landed in commit `4b5da5e`; at re-verification the tree was clean apart from this plan file. Do not trust any snapshot — including this one — for long: **run `git status` before starting each task and again before each commit**, and reconcile with any new in-flight work before proceeding. The standing rule survives regardless: **never use `git add -A`/`git add .`** — every task stages explicit paths, so unrelated work can never be swept into a `fix(explorer):` commit.
-- Do not `cd`; run all commands from repo root `E:\Projects\Repository\mev-scout`.
+- Do not `cd`; run all commands from repo root `D:\gitlab.dte.repo\mev-scout`.
+
+---
+
+## Phase M — External coverage oracle (measurement harness; M0 before Phase A, M1 at audit checkpoints)  *(added 2026-10-26)*
+
+**Why this phase exists — the one gap every other gate in this plan shares:** goldens are self-generated baselines (a bug present in both the old and the new code passes every golden), and the A15 census is an internal query. Nothing else in this plan validates emitted rows against an independent external source. The 2026-10-25 manual comparison against explorer.mev.zone's backend (recall 7/7 vs the vendor, vendor agreement 50%, matched-hash profit deltas ≤ 0.61%) proved the method; these two tasks make it reproducible and turn "the plan should improve accuracy" into a measured claim.
+
+**Oracle:** `https://gateway.biglabs.eu/api/avalanche/arbitrages?per_page=50&sortBy=-created_at` (backend of explorer.mev.zone mevlive). Verified quirks (2026-10-25): no `created_at` field is returned despite the sort parameter — `time` equals the block timestamp, so window filtering is by `time`/`blockNumber`; `sender` is the initiating EOA. Other chains swap the path segment (`/api/ethereum/arbitrages`, `/api/polygon/arbitrages`, …).
+
+**Standing caveats for every metric below (do not let the harness imply more than it measures):**
+- The vendor is a **coverage oracle, not ground truth**. It misses large real arbs — relayer-routed bots whose profit stays in the contract are invisible to it (the 50% agreement means half our rows were vendor-unseen). Therefore: a vendor row we miss is a real bug (recall is a lower bound on ours); a local row the vendor lacks is *not* a false positive until adjudicated by hand.
+- The endpoint is `/arbitrages` only — it is **blind to sandwich/liquidation/JIT classification** and to kind-precedence changes (B8) and the `Unknown`→`Utility` rename (B11). Those ride the A15 census and the goldens. The oracle's lane is: arb recall, and the P&L math tasks (A9, A13, A14, A16, B1).
+- Vendor profit figures are not truth either — "delta shrank" is weak evidence. The strong check is the plan's own predicted direction per task (see M1).
+
+### Task M0: Freeze the baseline before Phase A  *(runs alongside A0; Steps 1–2 must complete before the first Phase A task lands)*
+
+**Files:**
+- Create: `scripts/compare_biglabs.py` (explicit `--db`, `--snapshot`, `--chain`, `--lo`, `--hi`; no hardcoded DB path — D15's rule applies to this script too)
+- Create: `docs/oracle/biglabs-avalanche-<LO>-<HI>.json` (frozen vendor snapshot, committed — the API will not serve this window again, so the file is the only durable copy)
+- Modify: `docs/explorer_strategy_checklist.md` (new "External coverage oracle — baseline" section holding the metrics table)
+
+**Non-negotiable design point — freeze once, never re-fetch.** "Last 1 hour" taken before implementation and again after implementation are two *different* windows; the comparison would be meaningless, and the API only serves recent data anyway. So: fetch the vendor's last hour **once, now**; derive the fixed block range `[LO, HI]` from the snapshot; commit the raw JSON. Every later checkpoint re-indexes *that same range* and compares against *that same snapshot*. Comparability comes from the frozen snapshot, not from re-calling the API.
+
+- [ ] **Step 1: Fetch and freeze.** Paginate the API until `time` falls below the window start (1 hour of Avalanche ≈ 1,800 blocks); save the raw pages as `docs/oracle/biglabs-avalanche-<LO>-<HI>.json` with fetch metadata (`fetched_at`, URL, page count). Derive `[LO, HI]` from the snapshot's min/max `blockNumber`.
+- [ ] **Step 2: Index the same range with the current (pre-plan) code** into a dedicated DB (`cache/oracle-avalanche.sqlite`) via the CLI backfill path with the archive endpoints from `hist.toml` — never the live `explorer-avalanche.sqlite`, and never publicnode (D15 documents why it cannot serve historical blocks). Record the commit hash of the binary that indexed it next to the metrics; a baseline of unknown code version is not a baseline.
+- [ ] **Step 3: Write the comparison script.** Hash-level join, kind-agnostic on our side (any local `mev_ops` row on the same tx hash counts as a match — a vendor arb that we label `Unknown`/`Frontrun` is a finding, not a miss). Prior art: the deleted `tmp-compare/compare_mevlive.py` (`git show 5ad9630^:tmp-compare/compare_mevlive.py`) already implements the hash join and the profit-delta core — resurrect it rather than rewriting. Report:
+  - `recall_vs_vendor = |V ∩ L| / |V|` (V = vendor tx hashes in range, L = local tx hashes in range), plus the kind label we assigned each matched vendor row
+  - `vendor_agreement = |V ∩ L| / |L|` — labelled *lower-bound agreement*, never "precision"
+  - per-hash relative profit deltas on `V ∩ L` (median / p90 / max)
+  - the `L \ V` list with a per-row adjudication column: `tp_vendor_miss` | `fp_suspect` | `unknown` — adjudicated by hand in this baseline run; every M1 checkpoint re-adjudicates it, and a row that disappears must map to a predicted task effect or it is a regression flag
+  - machine output `cache/oracle-report-<label>.json` + a markdown table for the checklist doc
+- [ ] **Step 4: Record the baseline** in `docs/explorer_strategy_checklist.md`: block range, both code versions (our commit, vendor fetch time), all metrics, the adjudicated `L \ V` table, and the snapshot's SHA256. This table is the "before" every M1 run is judged against.
+- [ ] **Step 5: Commit** — `git commit -m "test(explorer): freeze biglabs coverage-oracle baseline (recall/agreement/profit deltas) before improvement plan"`
+
+---
+
+### Task M1: Re-run the oracle at each audit checkpoint — did the plan actually move the numbers?
+
+**Files:**
+- Modify: `docs/explorer_strategy_checklist.md` (one metrics table per checkpoint, next to the M0 baseline)
+
+**Checkpoints (three re-runs; each re-indexes the same frozen `[LO, HI]` from scratch into `cache/oracle-avalanche.sqlite` — recreate the DB each run, because A21/B10 reorg and upsert semantics differ across checkpoints and a reused DB would mix them):**
+1. **End of Phase A**, attached to the Phase-A audit commit the re-baseline discipline already defines. Phase A is where the money tasks land (A9, A13, A14, A16), so this is the run that matters most.
+2. **End of Phase B** — B1 (~1.7% gas), B3, B8, B10, B11 are declared number-movers by the phase-contract correction.
+3. **Final run**, closing the plan — the before/after table in the checklist doc is the plan's externally visible evidence.
+
+**What each run checks — predicted direction, not "closer to vendor":**
+- A14: fake-`$0`-quote rows vanish from `L` (watch them leave `L \ V` with `fp_suspect` → gone).
+- A13: net profit on flash-loan rows moves *up* by (once) the fee amount. B1: net moves *down* by the gas understatement (~1.7% of gas). A16: `NULL`-profit rows in range drop to zero.
+- Recall is the one hard gate: `recall_vs_vendor` may not drop below the M0 baseline at any checkpoint — this is stop-the-line, everything else is evidence.
+- The oracle is blind to B8/B11 kind changes — say so in the table rather than implying coverage.
+
+- [ ] **Step 1 (per checkpoint):** re-index `[LO, HI]` with the checkpoint's code, run the script, append the table (label: `phase-a`, `phase-b`, `final`).
+- [ ] **Step 2 (per checkpoint):** diff the `L \ V` set against the previous run's adjudicated table — every appeared/disappeared row gets a one-line cause tied to a task ID, or a `REGRESSION?` flag.
+- [ ] **Step 3 (final run only, optional sanity):** one *fresh* last-hour fetch (a new window) to confirm recall also holds on live data — comparison is recall-only on that window, never profit, and it never replaces the frozen-window runs.
 
 ---
 
@@ -1795,6 +1850,7 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - **Two items in the first review were corrected by verification, not accepted.** `report_filter_clause`'s string-built SQL (A5) is **not** an injection today — clap restricts `--confidence` to `exact|inferred|all` at `cli/src/cli.rs:120` — so A5 is an API-hardening task, not a security fix, and should be described that way. And `explorer_tag_coverage.rs` *is* properly `#[ignore]`d (`:45`), so A0's problem there is that the plan's gate line never runs it, not that it fakes a pass; only `explorer_corpus.rs:903` fakes a pass.
 - **Ordering / dependency graph (the authoritative execution sequence, replacing "phases are mostly independent").**
   - **A0 first, unconditionally** — every "expected: PASS" below it is unverifiable otherwise.
+  - **M0 alongside A0; its Steps 1–2 (vendor fetch + baseline index) must complete before the first Phase A task lands** — the baseline must capture pre-plan code or there is no "before" to compare against. **M1** rides the Phase-A audit commit, a post-Phase-B run, and one final run; it adds no new timeline.
   - **A14 → A9 → A10** (a fake `$0` price manufactures the loss A10 would faithfully persist).
   - **A15 → B8**; **A1 → B8** (B8 must show zero golden drift because A15 and A1 already settled the invariant).
   - **A18 → A7** (a shared DB makes A7's multi-table DELETE delete another chain's rows).
@@ -1807,6 +1863,6 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
   - **ingest.rs single track: A6 → A8 → A21 → C4 → C7 → C8 → C9 → D10 → D12.**
   - **D11 → D12** (one config change), **D14 → D6** or the reverse, but one commit that makes checklist/corpus/catalogue agree.
   - **D13** and **D15** are independent of everything above; they are the two with the highest immediate operator cost per hour lost, so front-load them if execution is opportunistic.
-- **Re-baseline discipline (corrected — the original wording had a tension).** Deferring every baseline update to a single end-of-Phase-A pass would make the accumulated golden diff unattributable, which defeats the "predicted diff" rule. Instead: after each number-moving task (A1, A4, A9-A14, A16, A17, A19, B1, B3, B8, B10, B11), run the goldens *in that task*, capture the diff, and update the baseline in that task's commit with a `PENDING-REBASELINE(<task>)` note in the commit body recording the observed shift and the predicted direction. One audit commit at the end of Phase A then reconciles the accumulated shifts task-by-task against each prediction, and records the A15 census table and the C1/C9 blocks-per-second numbers alongside. A golden diff you predicted is evidence; a golden diff you "updated" is a lost finding — the per-task note is what keeps the audit honest.
+- **Re-baseline discipline (corrected — the original wording had a tension).** Deferring every baseline update to a single end-of-Phase-A pass would make the accumulated golden diff unattributable, which defeats the "predicted diff" rule. Instead: after each number-moving task (A1, A4, A9-A14, A16, A17, A19, B1, B3, B8, B10, B11), run the goldens *in that task*, capture the diff, and update the baseline in that task's commit with a `PENDING-REBASELINE(<task>)` note in the commit body recording the observed shift and the predicted direction. One audit commit at the end of Phase A then reconciles the accumulated shifts task-by-task against each prediction, and records the A15 census table, the C1/C9 blocks-per-second numbers, and the **M1 end-of-Phase-A oracle run** (recall floor + adjudicated `L \ V` diff against the M0 baseline) alongside. A golden diff you predicted is evidence; a golden diff you "updated" is a lost finding — the per-task note is what keeps the audit honest.
 - **Riskiest tasks.** B8 (structural claims — gated by A15 evidence), C8 (async/store boundary), B9 (wide mechanical rename), A21 (reorg semantics — changes *when* data is deleted), A17 (changes what the arb pass's inventory vetoes see), D13/D15 (touch operator workflow, not code paths). Each may be deferred individually except A0, which nothing else may be deferred behind.
 - **Still open after this plan (deliberately):** trace-level native credits, per-pool V3 fee truth, money-as-float, FK enforcement, key rotation, provider cooldown policy, and receipts/tx-count validation on the fetch side — see the deferred section for why each is a design task rather than a checkbox.
