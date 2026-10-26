@@ -6,8 +6,7 @@ use crate::types::{MevOpportunity, Strategy};
 
 use super::{
     map_mev_op_row, map_report_row, map_stats_row, top_grouped, ExplorerStore, MevOpRow,
-    OpportunityInput, PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow,
-    StatsRow,
+    OpportunityInput, PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow, StatsRow,
 };
 
 /// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.

@@ -100,10 +100,7 @@ impl IngestConfig {
             liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
         }
         let chainlink_feeds = chain_config.chainlink_feeds.clone().unwrap_or_default();
-        let c_token_underlyings = chain_config
-            .c_token_underlyings
-            .clone()
-            .unwrap_or_default();
+        let c_token_underlyings = chain_config.c_token_underlyings.clone().unwrap_or_default();
         let gmx_event_emitters = chain_config
             .gmx_event_emitters
             .clone()

@@ -481,6 +481,8 @@ pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::explorer::ingest::IngestConfig;
     use crate::explorer::store::OpenPosition;
     use crate::explorer::test_fixtures::{
         block, block_with_v2, classify_kind, event_of, flash_loan, jit, kinds, liquidation, swap,
@@ -488,8 +490,6 @@ mod tests {
         WNATIVE,
     };
     use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
-    use crate::explorer::ingest::IngestConfig;
-    use crate::config::Config;
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
 
@@ -679,8 +679,8 @@ mod tests {
         .expect("config with tip sink must parse");
         assert_eq!(config.explorer.tip_sink_addresses, vec![sink]);
 
-        let (_, chain_cfg) = crate::config::validation::resolve_chain(&config)
-            .expect("resolve_chain for polygon");
+        let (_, chain_cfg) =
+            crate::config::validation::resolve_chain(&config).expect("resolve_chain for polygon");
         let mut ingest = IngestConfig::from_chain(ChainName::Polygon, &chain_cfg);
         // The exact field the job/backfill entry points assign.
         ingest.tip_sink_addresses = config.explorer.tip_sink_addresses.iter().cloned().collect();
@@ -812,7 +812,10 @@ mod tests {
             transfer(2, TOKA, ATK, POOL_B, 199),
             transfer(3, USDC, POOL_B, ATK, 110),
         ];
-        let ev = classify_kind(&block(vec![tx(0, ATK, true, swaps, transfers)]), MevKind::ArbAtomic);
+        let ev = classify_kind(
+            &block(vec![tx(0, ATK, true, swaps, transfers)]),
+            MevKind::ArbAtomic,
+        );
         assert_eq!(ev.profit_token, Some(USDC));
         assert_eq!(ev.profit_amount, Some(U256::from(10)));
         assert_eq!(ev.profit_tokens, vec![(USDC, U256::from(10))]);
@@ -877,7 +880,9 @@ mod tests {
             transfer(4, TOKA, SEARCHER, POOL_B, 200),
             transfer(5, USDC, POOL_B, SEARCHER, 110),
         ];
-        let events = classify_block(&block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]));
+        let events = classify_block(&block(vec![tx_to(
+            0, ATK, SEARCHER, true, swaps, transfers,
+        )]));
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
             "EOA outside-walk spend must drop, got {events:?}"

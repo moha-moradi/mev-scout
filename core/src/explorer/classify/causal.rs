@@ -3,9 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
-use crate::explorer::profit::{
-    deficit_amount, is_dust_deficit, DeltaLedger, NATIVE_MARKER,
-};
+use crate::explorer::profit::{deficit_amount, is_dust_deficit, DeltaLedger, NATIVE_MARKER};
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
 use super::legs::{
@@ -175,7 +173,7 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                 if !same_dir(vleg, fleg) {
                     continue;
                 }
-                 if price_worse_by(vleg, fleg, CAUSAL_PRICE_MIN_PCT) {
+                if price_worse_by(vleg, fleg, CAUSAL_PRICE_MIN_PCT) {
                     victim_ = Some((*vt, *vfrom, vleg));
                     break;
                 }
@@ -323,7 +321,8 @@ fn frontrun_cross_tx_profit(
             }
         }
     }
-    let ledger = DeltaLedger::from_transfers(&transfers, input.wrapped_native, (searcher, native_value));
+    let ledger =
+        DeltaLedger::from_transfers(&transfers, input.wrapped_native, (searcher, native_value));
     let net = ledger.net(searcher, anchor);
     if net.is_zero() {
         return None;

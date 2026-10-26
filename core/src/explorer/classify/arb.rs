@@ -9,8 +9,8 @@ use crate::explorer::profit::{
     deficit_amount, find_closed_cycle, is_dust_deficit, net_flash_loan, select_profit_token,
     DeltaLedger, NATIVE_MARKER,
 };
-use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::reject::{RejectReason, RejectedCandidate};
+use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
     Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
 };
@@ -311,9 +311,8 @@ pub(super) fn classify_arbs(
             profit_amount: Some(amount),
             profit_tokens,
             profit_usd: None, // pricing applied at persist time
-            gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
-                (tx.effective_gas_price_gwei * 1e9) as u128,
-            )),
+            gas_cost_wei: U256::from(tx.gas_used)
+                .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
             flashloan_fee_wei,
             flashloan_fee_token,
             confidence: if is_forwarded {
@@ -706,8 +705,7 @@ fn anchor_profit_amount(
         };
     }
     let eoa_net = ledger.net_signed(eoa, anchor);
-    let funded = eoa_net.is_negative()
-        && searcher_net.is_positive();
+    let funded = eoa_net.is_negative() && searcher_net.is_positive();
     let combined = if funded {
         searcher_net + eoa_net
     } else {

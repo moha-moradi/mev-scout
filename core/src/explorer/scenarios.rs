@@ -138,7 +138,10 @@ fn baseline_sandwich() {
     assert_eq!(ev.profit_amount, Some(U256::from(95)));
     assert_eq!(ev.confidence, Confidence::Exact);
     assert_eq!(pnl_basis(&ev), Some("R"));
-    assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(false));
+    assert_eq!(
+        ev.details["victim_via_aggregator"],
+        serde_json::json!(false)
+    );
 
     // Negative: attacker buys then sells with no intervening victim.
     let neg0 = tx(
@@ -209,7 +212,10 @@ fn sandwich_victim_via_aggregator_tagged() {
     );
     let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
     assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(true));
-    assert_eq!(ev.details["victim_aggregator_brand"], serde_json::json!("odos"));
+    assert_eq!(
+        ev.details["victim_aggregator_brand"],
+        serde_json::json!("odos")
+    );
     assert!(ev.details["reasons"]
         .as_array()
         .unwrap()
@@ -485,8 +491,7 @@ fn p0_2_benqi_alias() {
     assert_eq!(aliased.liquidations.len(), 1);
     assert_eq!(aliased.liquidations[0].protocol, "benqi");
 
-    let unaliased =
-        decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
+    let unaliased = decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
     assert_eq!(unaliased.liquidations[0].protocol, "compound_v2");
 
     let mut t = tx(

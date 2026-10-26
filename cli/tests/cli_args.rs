@@ -507,9 +507,7 @@ fn explorer_invalid_confidence_value_fails_at_clap() {
     let out = run(&ws, &["explorer", "--confidence", "bogus"]);
     expect_fail(&out, "explorer --confidence bogus");
     assert!(
-        out.combined()
-            .contains("invalid value")
-            && out.combined().contains("bogus"),
+        out.combined().contains("invalid value") && out.combined().contains("bogus"),
         "expected clap rejection for --confidence 'bogus', got:\n{}",
         out.combined()
     );

@@ -42,8 +42,17 @@
 //!
 //! Distant windows on one chain are ingested separately (see `ingest_windows`).
 //!
-//! Gated like every other live-RPC test: `MEV_SCOUT_E2E=1` + `RPC_URL`
-//! (`common::setup::rpc_url`), otherwise it skips with no network I/O.
+//! Gated like every other live-RPC test: the live test is `#[ignore]`d, and
+//! running it needs `MEV_SCOUT_E2E=1` + `RPC_URL` (`common::setup::rpc_url`).
+//! Ignored, it does no network I/O:
+//!
+//! ```text
+//! set MEV_SCOUT_E2E=1 & set RPC_URL=…
+//! cargo test -p mev-scout-core --test explorer_corpus -- --ignored --nocapture
+//! ```
+//!
+//! Once un-ignored, `MEV_SCOUT_E2E=1` without an `RPC_URL`, or an `RPC_URL`
+//! with no reachable corpus chain, fails instead of passing silently.
 //!
 //! ## Seeding new cases (e.g. the missing `jit` kind)
 //!
@@ -900,10 +909,17 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
 }
 
 #[tokio::test]
-async fn real_block_corpus_matches_derived_facts() {
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]
+async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
     let Some(rpc_url) = rpc_url() else {
+        // `rpc_url()` is `None` both when the live gate was not requested and
+        // when it was requested without an endpoint. The latter is an explicit
+        // request that must not read as a pass.
+        if std::env::var("MEV_SCOUT_E2E").as_deref() == Ok("1") {
+            anyhow::bail!("MEV_SCOUT_E2E=1 but RPC_URL is unset or empty");
+        }
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
-        return;
+        return Ok(());
     };
 
     // A hunt (`MEV_SCOUT_RECORD_CHAIN`) is about the named chain only, so it
@@ -928,7 +944,7 @@ async fn real_block_corpus_matches_derived_facts() {
         }
     }
     if checked == 0 {
-        eprintln!("Skipping: no corpus chain reachable");
+        anyhow::bail!("RPC_URL supplied but no corpus chain was reachable");
     }
     // A named chain with no cases and no usable hunt window has nothing to
     // ingest, so the record run would exit silently — say so.
@@ -942,6 +958,7 @@ async fn real_block_corpus_matches_derived_facts() {
             }
         }
     }
+    Ok(())
 }
 
 #[test]

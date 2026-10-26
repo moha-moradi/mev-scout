@@ -269,7 +269,11 @@ fn donaswap_v3_swap_decodes_like_v3() {
     data[56..64].copy_from_slice(&12_641_094_804_701_311_522u64.to_be_bytes());
     // tick right-aligned in bytes 128..160
     data[156..160].copy_from_slice(&(-5_120i32).to_be_bytes());
-    let l = log(pool, vec![*DONASWAP_V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data);
+    let l = log(
+        pool,
+        vec![*DONASWAP_V3_SWAP_TOPIC, B256::ZERO, B256::ZERO],
+        data,
+    );
     let (amm, s) = decode_swap(&l).unwrap();
     assert_eq!(amm, Amm::V3);
     assert_eq!(s.pool, pool);
@@ -292,11 +296,7 @@ fn lb_legacy_swap_decodes_packed_xy() {
     data[64 + 28..64 + 32].copy_from_slice(&180_816u32.to_be_bytes());
     let l = log(
         pool,
-        vec![
-            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-            B256::ZERO,
-            B256::ZERO,
-        ],
+        vec![*TRADER_JOE_LB_SWAP_LEGACY_TOPIC, B256::ZERO, B256::ZERO],
         data,
     );
     let (amm, s) = decode_swap(&l).unwrap();

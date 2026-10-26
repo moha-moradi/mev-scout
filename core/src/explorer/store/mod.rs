@@ -1117,7 +1117,10 @@ mod tests {
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
-            store.report_by_kind(0, Some("sandwich"), None).unwrap().len(),
+            store
+                .report_by_kind(0, Some("sandwich"), None)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -1164,7 +1167,10 @@ mod tests {
         let mut multi = sample_event(612);
         multi.profit_token = Some(usdc);
         multi.profit_amount = Some(U256::from(1_000_000u64));
-        multi.profit_tokens = vec![(usdc, U256::from(1_000_000u64)), (longtail, U256::from(100u64))];
+        multi.profit_tokens = vec![
+            (usdc, U256::from(1_000_000u64)),
+            (longtail, U256::from(100u64)),
+        ];
 
         // 5. wholly unpriced (token absent, no route) → NULL profit_usd +
         // `MULTI_ASSET_PRICING`.
@@ -1173,7 +1179,13 @@ mod tests {
         unpriced.profit_tokens = vec![];
         unpriced.details = serde_json::json!({ "route": [] });
 
-        for (block, ev) in [(600u64, exact), (610, clamped), (611, native), (612, multi), (613, unpriced)] {
+        for (block, ev) in [
+            (600u64, exact),
+            (610, clamped),
+            (611, native),
+            (612, multi),
+            (613, unpriced),
+        ] {
             seed_block(
                 &store,
                 SeedBlockParams {
@@ -1202,15 +1214,26 @@ mod tests {
         assert_eq!(ov.quality.ops_pricing_clamped, 1);
         // Each priced op nets $1 (gas ~$0.000075 is tiny relative to 4.0).
         assert!((ov.quality.gross_usd_priced_only - 4.0).abs() < 1e-6);
-        assert_eq!(ov.quality.gross_usd_priced_only, ov.gross_usd, "priced-only gross must equal SUM(profit_usd)");
+        assert_eq!(
+            ov.quality.gross_usd_priced_only, ov.gross_usd,
+            "priced-only gross must equal SUM(profit_usd)"
+        );
         assert_eq!(ov.quality.pricing_coverage_pct, 80.0);
-        assert!(ov.net_usd > 0.0, "net should be positive for 4 priced $1 ops");
+        assert!(
+            ov.net_usd > 0.0,
+            "net should be positive for 4 priced $1 ops"
+        );
         // No divide-by-zero: one $1 op of $4 net ≈ 25% (< 40%), so no warning path.
-        let pct = ov.net_concentration_pct().expect("net>0 must yield a percentage");
+        let pct = ov
+            .net_concentration_pct()
+            .expect("net>0 must yield a percentage");
         assert!(pct > 0.0 && pct < 100.0);
         // The unpriced op itself must be NULL in the store (excluded, not zeroed).
         let ops = store.ops_in_range(600, 613, &[]).unwrap();
-        assert!(ops.iter().any(|op| op.profit_usd.is_none()), "expected one NULL-profit op");
+        assert!(
+            ops.iter().any(|op| op.profit_usd.is_none()),
+            "expected one NULL-profit op"
+        );
     }
 
     /// The net-concentration guard must never divide by zero and must only emit
@@ -1231,7 +1254,10 @@ mod tests {
         };
 
         // above and below the 40% threshold both return a value (warning decision is display-side).
-        assert_eq!(ov(110.0, 100.0).net_concentration_pct(), Some((100.0 / 110.0) * 100.0));
+        assert_eq!(
+            ov(110.0, 100.0).net_concentration_pct(),
+            Some((100.0 / 110.0) * 100.0)
+        );
         assert_eq!(ov(100.0, 30.0).net_concentration_pct(), Some(30.0));
         assert_eq!(ov(100.0, 40.0).net_concentration_pct(), Some(40.0));
         // zero net → None (no divide-by-zero).
@@ -1391,7 +1417,11 @@ mod tests {
             .unwrap();
         // No block row → falls back to created_at; before the window.
         store
-            .insert_rejected_candidate("run", "test", &sample_reject(901, "open_inventory", since - 1))
+            .insert_rejected_candidate(
+                "run",
+                "test",
+                &sample_reject(901, "open_inventory", since - 1),
+            )
             .unwrap();
         // No block row → created_at inside the window.
         store
@@ -1400,7 +1430,9 @@ mod tests {
         // Other strategies never show up in the classify slice.
         let mut scanner_reject = sample_reject(900, "no_pool", since + 10);
         scanner_reject.strategy = "scanner_v1".into();
-        store.insert_rejected_candidate("run", "test", &scanner_reject).unwrap();
+        store
+            .insert_rejected_candidate("run", "test", &scanner_reject)
+            .unwrap();
 
         let rejects = store.report_classify_rejects(since).unwrap();
         assert_eq!(rejects.len(), 3);
@@ -1412,6 +1444,9 @@ mod tests {
         assert_eq!(rejects[2].count, 1);
 
         // Older window excludes everything.
-        assert!(store.report_classify_rejects(since + 100).unwrap().is_empty());
+        assert!(store
+            .report_classify_rejects(since + 100)
+            .unwrap()
+            .is_empty());
     }
 }

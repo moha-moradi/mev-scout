@@ -62,7 +62,10 @@ async fn fetch_exchange_rate_stored(
         return None;
     }
     let data = crate::pool::selectors::CTOKEN_EXCHANGE_RATE_STORED.to_vec();
-    match rpc.call(qi, alloy::primitives::Bytes::from(data), block).await {
+    match rpc
+        .call(qi, alloy::primitives::Bytes::from(data), block)
+        .await
+    {
         Ok(ret) if ret.len() >= 32 => {
             let rate = U256::from_be_slice(&ret[..32]);
             if rate.is_zero() {
@@ -77,7 +80,10 @@ async fn fetch_exchange_rate_stored(
             None
         }
         Err(e) => {
-            debug!(?qi, block, "qiToken exchangeRateStored eth_call failed: {e}");
+            debug!(
+                ?qi,
+                block, "qiToken exchangeRateStored eth_call failed: {e}"
+            );
             cache.miss(qi, hour);
             None
         }
@@ -202,7 +208,8 @@ pub async fn convert_c_token_liquidation_events(
         if ev.kind != MevKind::Liquidation {
             continue;
         }
-        let Some(liq) = crate::explorer::types::LiquidationDetails::from_details(&ev.details) else {
+        let Some(liq) = crate::explorer::types::LiquidationDetails::from_details(&ev.details)
+        else {
             continue;
         };
         let coll_is_qi = underlyings.contains_key(&liq.collateral_asset);
@@ -224,8 +231,8 @@ pub async fn convert_c_token_liquidation_events(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::address;
     use crate::explorer::types::{Confidence, MevEvent, MevKind};
+    use alloy::primitives::address;
 
     fn liq_event(collateral: Address, debt: Address, seize: u64, repay: u64) -> MevEvent {
         MevEvent {
@@ -305,7 +312,10 @@ mod tests {
         assert_eq!(liq.debt_asset, btc_b);
         assert_eq!(liq.debt_to_cover, U256::from(50u64)); // repay already underlying
         assert_eq!(
-            ev.details["qi_collateral_asset"].as_str().unwrap().to_lowercase(),
+            ev.details["qi_collateral_asset"]
+                .as_str()
+                .unwrap()
+                .to_lowercase(),
             format!("{qi_avax:#x}")
         );
     }
@@ -322,7 +332,9 @@ mod tests {
         assert!(ev.profit_token.is_none());
         assert!(ev.profit_amount.is_none());
         let reasons = ev.details["reasons"].as_array().unwrap();
-        assert!(reasons.iter().any(|r| r.as_str() == Some("QI_EXCHANGE_RATE_MISSING")));
+        assert!(reasons
+            .iter()
+            .any(|r| r.as_str() == Some("QI_EXCHANGE_RATE_MISSING")));
         // qi amounts preserved for forensics
         assert!(ev.details.get("qi_collateral_asset").is_some());
     }

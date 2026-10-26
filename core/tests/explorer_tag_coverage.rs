@@ -1,10 +1,13 @@
 //! Live/tip explorer indexing for tag coverage.
 //!
-//! Gated: set `MEV_SCOUT_COVERAGE=1` and run:
+//! Gated: the test is `#[ignore]`d, so a plain `cargo test` run skips it. Set
+//! `MEV_SCOUT_COVERAGE=1` and select it explicitly:
 //! ```text
 //! cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored --nocapture
 //! ```
-//! Optional: `MEV_SCOUT_COVERAGE_DURATION=15m`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`.
+//! Optional: `MEV_SCOUT_COVERAGE_DURATION=15m`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`,
+//! and `MEV_SCOUT_COVERAGE_STRICT=1` to fail on incomplete tag coverage instead
+//! of printing a warning.
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,7 +108,10 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
     )
     .await?;
     let _ = deadline.await;
-    eprintln!("indexed {indexed} tip blocks; ops={}", store.op_count_since(0)?);
+    eprintln!(
+        "indexed {indexed} tip blocks; ops={}",
+        store.op_count_since(0)?
+    );
 
     let tags = collect_tags(&store)?;
     let skip: HashSet<&str> = AVAX_SKIP.iter().copied().collect();
@@ -128,7 +134,10 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
             "WARN incomplete coverage (set MEV_SCOUT_COVERAGE_STRICT=1 to fail): {missing:?}"
         );
     }
-    anyhow::ensure!(indexed > 0 || store.op_count_since(0)? > 0, "no blocks indexed");
+    anyhow::ensure!(
+        indexed > 0 || store.op_count_since(0)? > 0,
+        "no blocks indexed"
+    );
     Ok(())
 }
 

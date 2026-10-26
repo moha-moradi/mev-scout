@@ -396,8 +396,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                transfer(USDC, ATK, POOL_A, 100),
-                transfer(TOKA, POOL_A, ATK, 200),
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -405,8 +405,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 200, 350)],
                     vec![
-                transfer(USDC, VICTIM, POOL_A, 200),
-                transfer(TOKA, POOL_A, VICTIM, 350),
+                        transfer(USDC, VICTIM, POOL_A, 200),
+                        transfer(TOKA, POOL_A, VICTIM, 350),
                     ],
                 ),
                 tx(
@@ -414,8 +414,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, TOKA, USDC, 350, 195)],
                     vec![
-                transfer(TOKA, ATK, POOL_A, 350),
-                transfer(USDC, POOL_A, ATK, 195),
+                        transfer(TOKA, ATK, POOL_A, 350),
+                        transfer(USDC, POOL_A, ATK, 195),
                     ],
                 ),
             ]),
@@ -475,50 +475,44 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 expect_tx_index: None,
             },
             input: block({
-                let mut txs = vec![
-                    tx(
-                        0,
-                        VICTIM,
-                        vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-                        vec![
-                            transfer(TOKA, VICTIM, POOL_A, 100),
-                            transfer(USDC, POOL_A, VICTIM, 110),
-                        ],
-                    ),
-                ];
+                let mut txs = vec![tx(
+                    0,
+                    VICTIM,
+                    vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                    vec![
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
+                    ],
+                )];
                 for i in 1..=9 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        10,
-                        MARKET,
-                        vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
-                        vec![
-                            transfer(USDC, MARKET, POOL_A, 1000),
-                            transfer(TOKA, POOL_A, MARKET, 100),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    10,
+                    MARKET,
+                    vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+                    vec![
+                        transfer(USDC, MARKET, POOL_A, 1000),
+                        transfer(TOKA, POOL_A, MARKET, 100),
+                    ],
+                ));
                 for i in 11..=18 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        19,
-                        ATK,
-                        vec![
-                            swap(POOL_A, TOKA, USDC, 100, 120),
-                            swap(POOL_B, USDC, TOKA, 120, 130),
-                        ],
-                        vec![
-                            transfer(TOKA, ATK, POOL_A, 100),
-                            transfer(USDC, POOL_A, ATK, 120),
-                            transfer(USDC, ATK, POOL_B, 120),
-                            transfer(TOKA, POOL_B, ATK, 130),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    19,
+                    ATK,
+                    vec![
+                        swap(POOL_A, TOKA, USDC, 100, 120),
+                        swap(POOL_B, USDC, TOKA, 120, 130),
+                    ],
+                    vec![
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
+                    ],
+                ));
                 txs
             }),
         },
@@ -616,42 +610,36 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 expect_tx_index: None,
             },
             input: block({
-                let mut txs = vec![
-                    tx(
-                        0,
-                        ATK,
-                        vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                        vec![
-                            transfer(USDC, ATK, POOL_A, 100),
-                            transfer(TOKA, POOL_A, ATK, 200),
-                        ],
-                    ),
-                ];
+                let mut txs = vec![tx(
+                    0,
+                    ATK,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                    vec![
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
+                    ],
+                )];
                 for i in 1..=9 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        10,
-                        VICTIM,
-                        vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-                        vec![
-                            transfer(USDC, VICTIM, POOL_A, 100),
-                            transfer(TOKA, POOL_A, VICTIM, 150),
-                        ],
-                    ),
-                );
-                txs.push(
-                    tx(
-                        11,
-                        ATK,
-                        vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                        vec![
-                            transfer(TOKA, ATK, POOL_B, 200),
-                            transfer(USDC, POOL_B, ATK, 250),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    10,
+                    VICTIM,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+                    vec![
+                        transfer(USDC, VICTIM, POOL_A, 100),
+                        transfer(TOKA, POOL_A, VICTIM, 150),
+                    ],
+                ));
+                txs.push(tx(
+                    11,
+                    ATK,
+                    vec![swap(POOL_B, TOKA, USDC, 200, 250)],
+                    vec![
+                        transfer(TOKA, ATK, POOL_B, 200),
+                        transfer(USDC, POOL_B, ATK, 250),
+                    ],
+                ));
                 txs
             }),
         },

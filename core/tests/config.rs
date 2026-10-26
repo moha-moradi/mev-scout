@@ -233,10 +233,10 @@ fn explorer_tip_sink_addresses_default_empty() {
 #[test]
 fn explorer_tip_sink_addresses_parse_from_toml() {
     let sink = address!("1111000000000000000000000000000000000011");
-    let config: Config = toml::from_str(
-        &format!("chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink}\"]\n"),
-    )
-        .expect("valid tip sink addresses must parse");
+    let config: Config = toml::from_str(&format!(
+        "chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink}\"]\n"
+    ))
+    .expect("valid tip sink addresses must parse");
     assert_eq!(config.explorer.tip_sink_addresses, vec![sink]);
 }
 
@@ -245,12 +245,10 @@ fn explorer_tip_sink_addresses_parse_from_toml() {
 fn explorer_tip_sink_multiple_addresses_parse() {
     let sink1 = address!("2222000000000000000000000000000000000022");
     let sink2 = address!("3333000000000000000000000000000000000033");
-    let config: Config = toml::from_str(
-        &format!(
-            "chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink1}\", \"{sink2}\"]\n"
-        ),
-    )
-        .unwrap();
+    let config: Config = toml::from_str(&format!(
+        "chain = \"polygon\"\n[explorer]\ntip_sink_addresses = [\"{sink1}\", \"{sink2}\"]\n"
+    ))
+    .unwrap();
     assert_eq!(config.explorer.tip_sink_addresses, vec![sink1, sink2]);
 }
 
@@ -265,7 +263,10 @@ fn explorer_tip_sink_invalid_address_is_rejected() {
         Err(e) => e.to_string(),
         Ok(_) => panic!("invalid tip sink address must fail to parse"),
     };
-    assert!(msg.contains("address"), "parse error should mention the field, got: {msg}");
+    assert!(
+        msg.contains("address"),
+        "parse error should mention the field, got: {msg}"
+    );
 }
 
 /// Roundtrip through the config serializer: tip sinks survive `to_toml_string`

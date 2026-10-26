@@ -142,6 +142,33 @@ are scanning (one chain per box — the disk budgets do not stack) and point
 ## Validation
 
 ```powershell
-cargo test --workspace          # unit + integration
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace          # unit + integration; live-RPC tests are ignored
 ```
+
+### CI
+
+`.github/workflows/ci.yml` runs the same gates on every push to `main` and on
+every pull request:
+
+| Job | Gates |
+| --- | --- |
+| `static` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p mev-scout-core --test explorer_golden` |
+| `live` | `cargo test -p mev-scout-core --test explorer_corpus -- --ignored` and `cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored`, with `MEV_SCOUT_E2E=1`, `RPC_URL` and `MEV_SCOUT_COVERAGE_STRICT=1` |
+
+The `live` job only runs when the repository variable `RPC_URL` is set; when it
+is not, the job reports as skipped — never as a green check.
+
+Live-RPC tests are `#[ignore]`d, so a plain `cargo test` run skips them; select
+them with `--ignored` and supply the environment each one names:
+
+| Test | Environment |
+| --- | --- |
+| `explorer_corpus` | `MEV_SCOUT_E2E=1`, `RPC_URL` |
+| `explorer_tag_coverage` | `MEV_SCOUT_COVERAGE=1`, and `MEV_SCOUT_COVERAGE_STRICT=1` so incomplete tag coverage fails |
+
+The `live` job sets `MEV_SCOUT_COVERAGE_STRICT` but not `MEV_SCOUT_COVERAGE`, so
+its tag-coverage step skips until that variable is provided to the runner. Once
+a test is selected, a missing endpoint or zero reachable chains is a failure,
+not a skip.

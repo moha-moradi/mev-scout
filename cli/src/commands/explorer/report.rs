@@ -7,9 +7,7 @@ use super::*;
 use serde::Serialize;
 
 use mev_scout_core::chain::timing::block_time_secs;
-use mev_scout_core::explorer::store::{
-    RejectCount, ReportOverview, ReportRow, StatsRow,
-};
+use mev_scout_core::explorer::store::{RejectCount, ReportOverview, ReportRow, StatsRow};
 use mev_scout_core::types::OutputFormat;
 
 /// One window's worth of report data, ready for table / JSON / CSV rendering.
@@ -327,9 +325,7 @@ fn render_window(r: &WindowReport) {
         eprintln!(
             "  pricing reasons: {} native-unpriced | {} multi-asset | {} clamped \
              (USD figures approximate; net may be incomplete)",
-            q.ops_native_unpriced,
-            q.ops_multi_asset,
-            q.ops_pricing_clamped,
+            q.ops_native_unpriced, q.ops_multi_asset, q.ops_pricing_clamped,
         );
     }
     if let Some(pct) = o.net_concentration_pct() {

@@ -18,7 +18,12 @@
 //!
 //! Reads the seeded explorer cache only; no RPC. Skips (no hard fail) when the
 //! cache is absent, mirroring the RPC corpus gating.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines, clippy::unused_params)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::unused_params
+)]
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -26,9 +31,9 @@ use std::str::FromStr;
 use alloy::primitives::{address, Address, B256, U256};
 use rusqlite::Connection;
 
-use mev_scout_core::explorer::{classify_block, BlockInput, TxInput};
 use mev_scout_core::explorer::profit::ProfitTokenPolicy;
 use mev_scout_core::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
+use mev_scout_core::explorer::{classify_block, BlockInput, TxInput};
 
 // ── Avalanche C-Chain values (core/data/chains.toml) ──────────────────────────
 const WAVAX: Address = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");
@@ -164,7 +169,9 @@ fn causal_classifier_offline_fp_gate() {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        rows.into_iter().map(|(b, ts)| (b as u64, ts as u64)).collect()
+        rows.into_iter()
+            .map(|(b, ts)| (b as u64, ts as u64))
+            .collect()
     };
 
     // seed a PerBlock for every block, then fill.
@@ -188,10 +195,20 @@ fn causal_classifier_offline_fp_gate() {
         let mut stmt = conn
             .prepare(
                 "SELECT hash, tx_index, block_number, `from`, `to`, success, gas_used, \
-                 effective_gas_price_gwei, value_native FROM txs"
+                 effective_gas_price_gwei, value_native FROM txs",
             )
             .unwrap();
-        let rows: Vec<(String, i64, i64, String, Option<String>, bool, i64, f64, String)> = stmt
+        let rows: Vec<(
+            String,
+            i64,
+            i64,
+            String,
+            Option<String>,
+            bool,
+            i64,
+            f64,
+            String,
+        )> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -219,7 +236,8 @@ fn causal_classifier_offline_fp_gate() {
                     swaps: HashMap::new(),
                     transfers: HashMap::new(),
                 })
-                .txs.insert(
+                .txs
+                .insert(
                     tx,
                     TxInput {
                         tx_index: tx,
@@ -241,10 +259,20 @@ fn causal_classifier_offline_fp_gate() {
         let mut stmt = conn
             .prepare(
                 "SELECT block_number, tx_index, log_index, pool, amm, token_in, token_out, \
-                 amount_in, amount_out FROM swaps"
+                 amount_in, amount_out FROM swaps",
             )
             .unwrap();
-        let rows: Vec<(i64, i64, i64, String, Option<String>, String, String, String, String)> = stmt
+        let rows: Vec<(
+            i64,
+            i64,
+            i64,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+        )> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -296,7 +324,7 @@ fn causal_classifier_offline_fp_gate() {
         let mut stmt = conn
             .prepare(
                 "SELECT block_number, tx_index, log_index, token, `from`, `to`, amount \
-                 FROM transfers"
+                 FROM transfers",
             )
             .unwrap();
         let rows: Vec<(i64, i64, i64, String, String, String, String)> = stmt
