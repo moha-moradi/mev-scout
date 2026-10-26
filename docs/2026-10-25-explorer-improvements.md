@@ -51,16 +51,16 @@
 
 **Non-negotiable design point — freeze once, never re-fetch.** "Last 1 hour" taken before implementation and again after implementation are two *different* windows; the comparison would be meaningless, and the API only serves recent data anyway. So: fetch the vendor's last hour **once, now**; derive the fixed block range `[LO, HI]` from the snapshot; commit the raw JSON. Every later checkpoint re-indexes *that same range* and compares against *that same snapshot*. Comparability comes from the frozen snapshot, not from re-calling the API.
 
-- [ ] **Step 1: Fetch and freeze.** Paginate the API until `time` falls below the window start (1 hour of Avalanche ≈ 1,800 blocks); save the raw pages as `docs/oracle/biglabs-avalanche-<LO>-<HI>.json` with fetch metadata (`fetched_at`, URL, page count). Derive `[LO, HI]` from the snapshot's min/max `blockNumber`.
-- [ ] **Step 2: Index the same range with the current (pre-plan) code** into a dedicated DB (`cache/oracle-avalanche.sqlite`) via the CLI backfill path with the archive endpoints from `hist.toml` — never the live `explorer-avalanche.sqlite`, and never publicnode (D15 documents why it cannot serve historical blocks). Record the commit hash of the binary that indexed it next to the metrics; a baseline of unknown code version is not a baseline.
-- [ ] **Step 3: Write the comparison script.** Hash-level join, kind-agnostic on our side (any local `mev_ops` row on the same tx hash counts as a match — a vendor arb that we label `Unknown`/`Frontrun` is a finding, not a miss). Prior art: the deleted `tmp-compare/compare_mevlive.py` (`git show 5ad9630^:tmp-compare/compare_mevlive.py`) already implements the hash join and the profit-delta core — resurrect it rather than rewriting. Report:
+- [x] **Step 1: Fetch and freeze.** Paginate the API until `time` falls below the window start (1 hour of Avalanche ≈ 1,800 blocks); save the raw pages as `docs/oracle/biglabs-avalanche-<LO>-<HI>.json` with fetch metadata (`fetched_at`, URL, page count). Derive `[LO, HI]` from the snapshot's min/max `blockNumber`.
+- [x] **Step 2: Index the same range with the current (pre-plan) code** into a dedicated DB (`cache/oracle-avalanche.sqlite`) via the CLI backfill path with the archive endpoints from `hist.toml` — never the live `explorer-avalanche.sqlite`, and never publicnode (D15 documents why it cannot serve historical blocks). Record the commit hash of the binary that indexed it next to the metrics; a baseline of unknown code version is not a baseline.
+- [x] **Step 3: Write the comparison script.** Hash-level join, kind-agnostic on our side (any local `mev_ops` row on the same tx hash counts as a match — a vendor arb that we label `Unknown`/`Frontrun` is a finding, not a miss). Prior art: the deleted `tmp-compare/compare_mevlive.py` (`git show 5ad9630^:tmp-compare/compare_mevlive.py`) already implements the hash join and the profit-delta core — resurrect it rather than rewriting. Report:
   - `recall_vs_vendor = |V ∩ L| / |V|` (V = vendor tx hashes in range, L = local tx hashes in range), plus the kind label we assigned each matched vendor row
   - `vendor_agreement = |V ∩ L| / |L|` — labelled *lower-bound agreement*, never "precision"
   - per-hash relative profit deltas on `V ∩ L` (median / p90 / max)
   - the `L \ V` list with a per-row adjudication column: `tp_vendor_miss` | `fp_suspect` | `unknown` — adjudicated by hand in this baseline run; every M1 checkpoint re-adjudicates it, and a row that disappears must map to a predicted task effect or it is a regression flag
   - machine output `cache/oracle-report-<label>.json` + a markdown table for the checklist doc
-- [ ] **Step 4: Record the baseline** in `docs/explorer_strategy_checklist.md`: block range, both code versions (our commit, vendor fetch time), all metrics, the adjudicated `L \ V` table, and the snapshot's SHA256. This table is the "before" every M1 run is judged against.
-- [ ] **Step 5: Commit** — `git commit -m "test(explorer): freeze biglabs coverage-oracle baseline (recall/agreement/profit deltas) before improvement plan"`
+- [x] **Step 4: Record the baseline** in `docs/explorer_strategy_checklist.md`: block range, both code versions (our commit, vendor fetch time), all metrics, the adjudicated `L \ V` table, and the snapshot's SHA256. This table is the "before" every M1 run is judged against.
+- [x] **Step 5: Commit** — `git commit -m "test(explorer): freeze biglabs coverage-oracle baseline (recall/agreement/profit deltas) before improvement plan"`
 
 ---
 
@@ -98,8 +98,8 @@
 
 **Problem:** Every later task in this plan is gated on `cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus --test explorer_tag_coverage`, but two of those targets are silent no-ops by default (`explorer_corpus.rs:903` `return`s without `#[ignore]`; `explorer_tag_coverage.rs:45` is `#[ignore]`d and only `WARN`s without `MEV_SCOUT_COVERAGE_STRICT=1`). There is also no CI enforcing `warnings = "deny"` / `unwrap_used = "deny"` (`Cargo.toml:7-11`, `clippy.toml`), so a task can land red and nothing catches it. The plan's safety net is currently a mirror.
 
-- [ ] **Step 1: Make the corpus skip honest.** Replace the early-return-with-`Ok` at `explorer_corpus.rs:903-906` with an explicit skip that cannot read as a pass. Preferred shape: keep the test, add `#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]` on the `#[tokio::test]`, and inside the body `anyhow::bail!` if `MEV_SCOUT_E2E=1` was set but no RPC resolved (that is the "I asked for it and you silently skipped" case). Same treatment for the `checked == 0` path at `:929-930`: when an RPC URL was supplied, zero reachable chains is a failure, not a shrug.
-- [ ] **Step 2: Add the workflow** — `.github/workflows/ci.yml`:
+- [x] **Step 1: Make the corpus skip honest.** Replace the early-return-with-`Ok` at `explorer_corpus.rs:903-906` with an explicit skip that cannot read as a pass. Preferred shape: keep the test, add `#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]` on the `#[tokio::test]`, and inside the body `anyhow::bail!` if `MEV_SCOUT_E2E=1` was set but no RPC resolved (that is the "I asked for it and you silently skipped" case). Same treatment for the `checked == 0` path at `:929-930`: when an RPC URL was supplied, zero reachable chains is a failure, not a shrug.
+- [x] **Step 2: Add the workflow** — `.github/workflows/ci.yml`:
 
 ```yaml
 name: ci
@@ -132,8 +132,8 @@ jobs:
 
   The `live` job's `if:` is the point: an explicitly-requested live gate that gets skipped must be visible as a skipped job, never as a green check.
 - [ ] **Step 3: Re-baseline the plan's own gate lines.** Append to Global Constraints (done above) and to each later task's verify step where the corpus is load-bearing: `MEV_SCOUT_COVERAGE_STRICT=1` and `--ignored` where a live gate is intended, so "PASS" means the assertions ran.
-- [ ] **Step 4: Verify locally** — `cargo test -p mev-scout-core 2>&1 | grep -E "explorer_corpus|ignored"`: the corpus test must now report as `ignored`, not `ok`. Commit body must state how many tests are ignored by default so no future reader mistakes silence for success.
-- [ ] **Step 5: Commit** — `git commit -m "ci(explorer): enforce fmt/clippy/test and make live-RPC tests skip loudly instead of passing silently"`
+- [x] **Step 4: Verify locally** — `cargo test -p mev-scout-core 2>&1 | grep -E "explorer_corpus|ignored"`: the corpus test must now report as `ignored`, not `ok`. Commit body must state how many tests are ignored by default so no future reader mistakes silence for success.
+- [x] **Step 5: Commit** — `git commit -m "ci(explorer): enforce fmt/clippy/test and make live-RPC tests skip loudly instead of passing silently"`
 
 ---
 
@@ -151,7 +151,7 @@ jobs:
 
 **Scope note (added after review).** Verified: `consumed` (mod.rs:249-255) is only handed to `classify_frontruns`/`classify_backruns`, and `classify_arbs` runs at mod.rs:207 — *before* sandwiches exist at `:243` — so the hole is real, and the fix does not drop the sandwich itself because `sandwiches` is appended at `:282` outside the `retain`. Two constraints: (1) this fix only covers `Sandwich` vs `ArbAtomic|Unknown`; the identical hole exists for Sandwich vs `Jit`/`JitArb`/`Skim`/`Liquidation` and is closed structurally only by B8. (2) A1 and B8 implement one invariant twice — decide up-front whether B8 re-baselines again or merely absorbs A1's mechanism, and say which in the A1 commit body. Prefer: A1 lands the fix, B8 lands the authority and must expect **zero** golden drift.
 
-- [ ] **Step 1: Write the failing test** — append to `core/src/explorer/classify/mod.rs`:
+- [x] **Step 1: Write the failing test** — append to `core/src/explorer/classify/mod.rs`:
 
 ```rust
 #[cfg(test)]
@@ -190,10 +190,10 @@ mod supersede_tests {
 
 (The `/* BlockInput ... */` site is the one place the executor must design the fixture: use the builders in `core/src/explorer/test_fixtures.rs` — read that file first; it has `tx`, `swap`, `transfer`, `block` helpers with `effective_gas_price_gwei: 30.0` defaults. Model the front tx on an existing `Sandwich` scenario in `core/src/explorer/scenarios.rs` and add one extra swap edge through a second pool so the tx also closes a cycle. Acceptance criterion: before the fix, this test FAILS with "tx N carries both Sandwich and Arb/Unknown"; after, it PASSES.)
 
-- [ ] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core supersede_tests`
+- [x] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core supersede_tests`
 Expected: FAIL with the double-count assertion (if it unexpectedly passes, the fixture does not reproduce the bug — strengthen it before proceeding; do NOT proceed with a test that never failed).
 
-- [ ] **Step 3: Implement the fix** — in `classify_block` at `core/src/explorer/classify/mod.rs`, extend the `superseder` population (currently lines 265-275) so sandwich legs claim their tx_indices *before* the `retain` at line 276:
+- [x] **Step 3: Implement the fix** — in `classify_block` at `core/src/explorer/classify/mod.rs`, extend the `superseder` population (currently lines 265-275) so sandwich legs claim their tx_indices *before* the `retain` at line 276:
 
 ```rust
     let mut superseder: HashMap<u64, MevKind> = HashMap::new();
@@ -217,12 +217,12 @@ Expected: FAIL with the double-count assertion (if it unexpectedly passes, the f
 
 (Sandwich entries use `insert` — highest precedence per `kind_precedence` — while the existing `entry().or_insert()` chain stays below them.)
 
-- [ ] **Step 4: Run the test and the full gates**
+- [x] **Step 4: Run the test and the full gates**
 
 Run: `cargo test -p mev-scout-core supersede_tests && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`
 Expected: new test PASS. Golden/corpus: PASS, or fail with diffs showing ArbAtomic events disappearing from txs that are also sandwich legs — in that case update those baselines deliberately.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/src/explorer/classify/mod.rs
@@ -242,7 +242,7 @@ git commit -m "fix(explorer): sandwich legs supersede ArbAtomic on the same tx_i
 
 **Problem:** `native_price_near` orders by `ABS(hour - ?1)` where `hour` is an hour bucket (`ts/3600`) but `?1` is bound to raw `ts` seconds (jit_positions.rs:59). `ABS(100 - 361800)` vs `ABS(200 - 361800)` — the second is always smaller, so it returns the *latest* cached price, not the one nearest the queried timestamp. This silently mis-prices the detector-vs-realized USD→wei conversion.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[cfg(test)]
@@ -269,10 +269,10 @@ mod tests {
 
 (Verified, so the hedging here can be dropped: `ExplorerStore::open_in_memory()` **does** exist at `store/schema.rs:21-26` and runs the same `initialize()` as the file path, and `put_price(token, hour, usd, source)` has exactly the argument order the snippet uses (`jit_positions.rs:37-43`). One caveat to carry into B6: the in-memory path skips the `journal_mode`/`synchronous` pragma batch that `open()` runs at `schema.rs:15`, so tests exercise a different pragma set than production — B6 should make both paths share one setup.)
 
-- [ ] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core native_price_near`
+- [x] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core native_price_near`
 Expected: FAIL — first assertion returns `Some(99.0)` (wrong bucket).
 
-- [ ] **Step 3: Fix** — replace the body of `native_price_near`:
+- [x] **Step 3: Fix** — replace the body of `native_price_near`:
 
 ```rust
     pub fn native_price_near(&self, ts: u64) -> anyhow::Result<Option<f64>> {
@@ -293,11 +293,11 @@ Expected: FAIL — first assertion returns `Some(99.0)` (wrong bucket).
 
 (The ±24h bound matches `price_at`'s staleness policy at jit_positions.rs:27; without it a store with only ancient prices would happily return them.)
 
-- [ ] **Step 4: Run the *real* consumers too** — `cargo test -p mev-scout-core native_price_near && cargo test -p mev-scout-core explorer_golden && cargo test -p mev-scout-core --test mev_corpus`
+- [x] **Step 4: Run the *real* consumers too** — `cargo test -p mev-scout-core native_price_near && cargo test -p mev-scout-core explorer_golden && cargo test -p mev-scout-core --test mev_corpus`
 Expected: PASS. Note the blast radius is narrower than the gate line in Global Constraints suggests: the **only** production callers of `native_price_near` are `core/tests/mev_corpus.rs:466` and `:485` — a target this plan did not previously run at all. Add it to this task's gate.
-- [ ] **Step 4b: Predict the diff direction before you inspect it.** Two verified facts change what "correct" looks like here: (1) the unit fix converts today's *always returns the newest cached row* into *returns the nearest bucket within ±24h*, so for a historical `ts` in a backfilled DB the result may become `None` rather than a wrong number — a corpus verdict that previously compared against a mis-priced USD will now compare against no price. That is the honest outcome, not a regression; do not "fix" it by widening the bound. (2) The `prices` table already carries **two different hour conventions**: token prices are keyed by block hour (`ingest.rs:751` `pricing::hour_bucket(ts)` with the block's `ts`) while native prices are keyed by fetch-time hour (every `native_price_cached` call site passes `crate::utils::epoch_secs()` — `ingest.rs:1065`, `:1110`, `:1179`). A2 does not resolve that, and the deferred section at the end of this plan (historical native pricing) is what would. Record the convention mismatch in the `native_price_near` doc comment so the next reader does not assume block-hour keying.
+- [x] **Step 4b: Predict the diff direction before you inspect it.** Two verified facts change what "correct" looks like here: (1) the unit fix converts today's *always returns the newest cached row* into *returns the nearest bucket within ±24h*, so for a historical `ts` in a backfilled DB the result may become `None` rather than a wrong number — a corpus verdict that previously compared against a mis-priced USD will now compare against no price. That is the honest outcome, not a regression; do not "fix" it by widening the bound. (2) The `prices` table already carries **two different hour conventions**: token prices are keyed by block hour (`ingest.rs:751` `pricing::hour_bucket(ts)` with the block's `ts`) while native prices are keyed by fetch-time hour (every `native_price_cached` call site passes `crate::utils::epoch_secs()` — `ingest.rs:1065`, `:1110`, `:1179`). A2 does not resolve that, and the deferred section at the end of this plan (historical native pricing) is what would. Record the convention mismatch in the `native_price_near` doc comment so the next reader does not assume block-hour keying.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/src/explorer/store/jit_positions.rs
@@ -317,7 +317,7 @@ git commit -m "fix(explorer): native_price_near compares hour buckets, not raw e
 
 **Problem:** Both functions iterate `0..len.min(64)`, so a Trader Joe LB position spanning >64 bins silently yields wrong min/max bin ids (and wrong tick range → wrong JIT in-range validation) instead of being rejected.
 
-- [ ] **Step 1: Write the failing test** — append to `core/src/explorer/decode/tests.rs`:
+- [x] **Step 1: Write the failing test** — append to `core/src/explorer/decode/tests.rs`:
 
 ```rust
 #[test]
@@ -340,10 +340,10 @@ fn abi_u256_array_rejects_over_64_entries() {
 
 (If `decode_abi_u256_array` is private to `decode/jit.rs`, make it `pub(super)` and re-export for the test module the same way other decode fns are tested in `decode/tests.rs`. `to_be_bytes::<32>()` is alloy's `U256::to_be_bytes` — if the API differs in alloy 2, use `U256::from(65usize).to_be_bytes()` with the appropriate array size or build the word with `U256::to_be_bytes_vec()` sliced to 32.)
 
-- [ ] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core abi_u256_array_rejects`
+- [x] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core abi_u256_array_rejects`
 Expected: FAIL (returns `Some(64 items)` for the 65-entry case).
 
-- [ ] **Step 3: Fix** — in `decode_abi_u256_array` (decode/jit.rs:138-147):
+- [x] **Step 3: Fix** — in `decode_abi_u256_array` (decode/jit.rs:138-147):
 
 ```rust
     let len = u256_to_usize(U256::from_be_slice(&data[rel..rel + 32]))?;
@@ -363,10 +363,10 @@ Expected: FAIL (returns `Some(64 items)` for the 65-entry case).
 
 Apply the identical `if len > 64 { return None; }` guard and remove the two `min(64)`s in `decode_lb_amounts_xy` (decode/jit.rs:164-167).
 
-- [ ] **Step 4: Run tests** — `cargo test -p mev-scout-core decode`
+- [x] **Step 4: Run tests** — `cargo test -p mev-scout-core decode`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/src/explorer/decode/jit.rs core/src/explorer/decode/tests.rs
@@ -387,7 +387,7 @@ git commit -m "fix(explorer): reject ABI arrays over 64 entries instead of silen
 
 **Problem:** `arb.rs:64-69` requires a *single* transfer `t.amount >= fl.amount` to the provider. Balancer-style split/partial repays (two transfers of half each) fail the check, so `net_flash_loan` subtracts principal the ledger already netted — silently erasing real profit and rejecting the op as `NetZeroSearcher`.
 
-- [ ] **Step 1: Write the failing test** — append to `classify/arb.rs`:
+- [x] **Step 1: Write the failing test** — append to `classify/arb.rs`:
 
 ```rust
 #[cfg(test)]
@@ -419,10 +419,10 @@ mod repay_tests {
 
 (Reuse the local test helpers already present in `classify/arb.rs`'s existing `#[cfg(test)] mod tests` — read it first; it will show how `BlockInput` and `ArbTagOpts` are built in this file's tests. Copy that setup and add the split-repay transfer layout. Acceptance: FAIL before the fix with a `NetZeroSearcher`-style reject, PASS after.)
 
-- [ ] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core split_flash_repay`
+- [x] **Step 2: Run it, verify it fails** — `cargo test -p mev-scout-core split_flash_repay`
 Expected: FAIL (op rejected, no ArbAtomic event).
 
-- [ ] **Step 3: Fix** — replace arb.rs:64-69 with an aggregate:
+- [x] **Step 3: Fix** — replace arb.rs:64-69 with an aggregate:
 
 ```rust
             let repaid_total = tx
@@ -439,12 +439,12 @@ Expected: FAIL (op rejected, no ArbAtomic event).
 
 (Do not include `fee` in the threshold — the original single-transfer check compared against `fl.amount` only; keep semantics minimal. Note the aggregate may now over-match unrelated same-token transfers to the provider in the same tx, but those are exactly the transfers the ledger nets anyway, which is the direction the load-bearing comment at arb.rs:47-51 wants.)
 
-- [ ] **Step 4: Run full gates**
+- [x] **Step 4: Run full gates**
 
 Run: `cargo test -p mev-scout-core split_flash_repay && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`
 Expected: PASS; any golden shift must show *newly classified* ops, not lost ones — inspect before updating baselines.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/src/explorer/classify/arb.rs
@@ -800,10 +800,10 @@ git commit -m "fix(explorer): persist loss-gated sandwiches with excluded_from_n
 
 **Problem:** The two pricing paths disagree on what a valid quote is. The route-leg path requires a positive price — `consider_leg` at `pricing.rs:158` rejects `leg_usd <= 0.0` — but the cached-price path at `pricing.rs:90-92` returns `finite_quote(usd, false)`, and `finite_quote` (`:151-152`) only checks `is_finite()`. A cached `0.0` is therefore a *successful* price. It gets there silently: `ingest.rs:772` writes whatever Llama returns via `put_price` (`jit_positions.rs:44-47`, `INSERT OR REPLACE` keyed by `(hour, token)`), so one bad response poisons the whole hour bucket. Downstream, a zero-priced token contributes `0` to the multi-residual sum **without** raising the "pricing incomplete" flag, so a partial total is stored as if it were complete — and for a sandwich that fabricated partial can make `net <= 0`, at which point `facts.rs:347-353` drops the row with no reject record and no log. **Sequencing:** A10 persists loss-gated ops with a flag. If A10 lands before A14, A10 faithfully stores losses that were manufactured by a zero quote. Land A14 first.
 
-- [ ] **Step 1: Write the failing test** — in `pricing.rs` tests: `token_prices` contains `(token → TokenUsd { usd: 0.0, decimals: 18 })`, non-zero `amount`, and a `details` route with one trusted priced leg. Today `amount_usd_realized` returns `Some(0.0)`; after the fix it must fall through to the route path and return the route-derived quote (or `None` if no usable leg exists), and the caller must see the "no external price" branch.
-- [ ] **Step 2: Fix both ends** — (a) guard the cache path: only trust a cached price when it is finite **and** `> 0.0`; (b) stop persisting junk: `put_price` returns `Ok(())` without writing when `!usd.is_finite() || usd <= 0.0`, and the caller emits a `warn!` naming the token and hour. Keep `finite_quote` semantics for the route path unchanged (it already excludes non-positive legs) so only the two wrong behaviors move.
-- [ ] **Step 3: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Expected diff direction: ops previously priced at a fake `$0` either become `profit_usd = NULL` (visible, countable) or pick up the realized-route price. Net totals move in either direction — that is the point — so enumerate the changed rows in the commit body.
-- [ ] **Step 4: Commit** — `git commit -m "fix(explorer): a 0.0 USD price is not a quote; reject it at cache write and price-resolution time"`
+- [x] **Step 1: Write the failing test** — in `pricing.rs` tests: `token_prices` contains `(token → TokenUsd { usd: 0.0, decimals: 18 })`, non-zero `amount`, and a `details` route with one trusted priced leg. Today `amount_usd_realized` returns `Some(0.0)`; after the fix it must fall through to the route path and return the route-derived quote (or `None` if no usable leg exists), and the caller must see the "no external price" branch.
+- [x] **Step 2: Fix both ends** — (a) guard the cache path: only trust a cached price when it is finite **and** `> 0.0`; (b) stop persisting junk: `put_price` returns `Ok(())` without writing when `!usd.is_finite() || usd <= 0.0`, and the caller emits a `warn!` naming the token and hour. Keep `finite_quote` semantics for the route path unchanged (it already excludes non-positive legs) so only the two wrong behaviors move.
+- [x] **Step 3: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Expected diff direction: ops previously priced at a fake `$0` either become `profit_usd = NULL` (visible, countable) or pick up the realized-route price. Net totals move in either direction — that is the point — so enumerate the changed rows in the commit body.
+- [x] **Step 4: Commit** — `git commit -m "fix(explorer): a 0.0 USD price is not a quote; reject it at cache write and price-resolution time"`
 
 ---
 
