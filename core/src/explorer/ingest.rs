@@ -766,6 +766,18 @@ pub async fn warm_prices_for_tokens(
         match pricing::fetch_prices_llama(cfg.chain, ts, &missing).await {
             Ok(prices) => {
                 for (addr, (usd, llama_dec)) in prices {
+                    // A non-positive quote is not a price: caching it would
+                    // value every amount of this token in the hour at $0 and
+                    // silently mark partial totals complete. Leave it unpriced.
+                    if !usd.is_finite() || usd <= 0.0 {
+                        warn!(
+                            token = %format!("{addr:#x}"),
+                            hour,
+                            usd,
+                            "llama returned a non-positive price; leaving token unpriced"
+                        );
+                        continue;
+                    }
                     store.put_price(addr, hour, usd, "llama")?;
                     priced.push((addr, usd));
                     if let Some(d) = llama_dec {

@@ -34,6 +34,9 @@ impl ExplorerStore {
         Ok(v)
     }
     /// Cache a price observation.
+    ///
+    /// A non-finite or non-positive quote is refused: writing it would let a
+    /// bad provider response value a whole hour bucket of amounts at $0.
     pub fn put_price(
         &self,
         token: Address,
@@ -41,6 +44,16 @@ impl ExplorerStore {
         usd: f64,
         source: &str,
     ) -> anyhow::Result<()> {
+        if !usd.is_finite() || usd <= 0.0 {
+            tracing::warn!(
+                token = %format!("{:#x}", token),
+                hour,
+                source,
+                usd,
+                "refusing to cache a non-positive price quote"
+            );
+            return Ok(());
+        }
         self.conn.execute(
             "INSERT OR REPLACE INTO prices(hour, token, usd, source) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![hour as i64, format!("{:#x}", token), usd, source],
@@ -171,8 +184,12 @@ mod tests {
         let store = ExplorerStore::open_in_memory().expect("open store");
         let hour_a = 100u64;
         let hour_b = 200u64;
-        store.put_price(Address::ZERO, hour_a, 10.0, "test").unwrap();
-        store.put_price(Address::ZERO, hour_b, 99.0, "test").unwrap();
+        store
+            .put_price(Address::ZERO, hour_a, 10.0, "test")
+            .unwrap();
+        store
+            .put_price(Address::ZERO, hour_b, 99.0, "test")
+            .unwrap();
         // ts inside hour_a: 100*3600 + 1800
         let got = store.native_price_near(100 * 3600 + 1800).unwrap();
         assert_eq!(
@@ -183,6 +200,25 @@ mod tests {
         // ts nearest hour_b
         let got = store.native_price_near(199 * 3600 + 3500).unwrap();
         assert_eq!(got, Some(99.0));
+    }
+
+    #[test]
+    fn put_price_refuses_non_positive_quote() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        let token = Address::repeat_byte(0x11);
+        let hour = 7u64;
+        store.put_price(token, hour, 0.0, "test").unwrap();
+        assert_eq!(
+            store.price_at(token, hour).unwrap(),
+            None,
+            "a 0.0 quote must not be cached as a price"
+        );
+        store.put_price(token, hour, 1.5, "test").unwrap();
+        assert_eq!(
+            store.price_at(token, hour).unwrap(),
+            Some((1.5, "test".to_string())),
+            "a positive quote still persists"
+        );
     }
 
     #[test]

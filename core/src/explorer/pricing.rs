@@ -87,9 +87,13 @@ pub fn amount_usd_realized(
     token_prices: &HashMap<Address, TokenUsd>,
     details: &serde_json::Value,
 ) -> Option<RealizedUsd> {
+    // A cached zero quote is not a price (a bad provider response was
+    // persisted); treat it as absent and fall through to the route legs.
     if let Some(p) = token_prices.get(&token) {
-        let usd = token_amount_to_usd(amount, p);
-        return finite_quote(usd, false);
+        if p.usd.is_finite() && p.usd > 0.0 {
+            let usd = token_amount_to_usd(amount, p);
+            return finite_quote(usd, false);
+        }
     }
     if amount.is_zero() {
         return None;
@@ -553,6 +557,48 @@ mod tests {
         assert!((q.usd - 50.0).abs() < 1e-6, "got {}", q.usd);
     }
 
+    /// A cached `0.0` quote is not a price: it must not value a non-zero
+    /// amount at $0. The route leg still yields the realized quote.
+    #[test]
+    fn zero_cached_price_falls_through_to_route() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let usdc = address!("4000000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            usdc,
+            TokenUsd {
+                usd: 1.0,
+                decimals: 6,
+            },
+        );
+        prices.insert(
+            token,
+            TokenUsd {
+                usd: 0.0,
+                decimals: 18,
+            },
+        );
+        let details = serde_json::json!({
+            "route": [{
+                "token_in": format!("{token:#x}"),
+                "token_out": format!("{usdc:#x}"),
+                "token_source": "registry",
+                "amount_in": "1000000000000000000",
+                "amount_out": "2000000",
+            }]
+        });
+        // 1 token sold for 2 USDC → 0.5 token is $1.
+        let q = amount_usd_realized(
+            token,
+            U256::from(500_000_000_000_000_000u64),
+            &prices,
+            &details,
+        )
+        .expect("route leg must price the amount despite the zero cache entry");
+        assert!(q.usd > 0.0, "zero cache entry leaked into the quote: {q:?}");
+        assert!((q.usd - 1.0).abs() < 1e-6, "got {}", q.usd);
+    }
+
     #[test]
     fn residual_quote_clamped_to_trusted_route_usd() {
         let token = address!("0a00000000000000000000000000000000000000");
@@ -587,10 +633,12 @@ mod tests {
                 decimals: 18,
             },
         );
-        assert!(
-            amount_usd_realized(token, U256::from(1u64), &prices, &details).is_none(),
-            "non-finite external price is rejected"
-        );
+        // A non-finite cache entry is not a quote either: it is ignored and the
+        // trusted route leg prices the amount (1 raw at the route's $1/raw).
+        let q_inf = amount_usd_realized(token, U256::from(1u64), &prices, &details)
+            .expect("non-finite cache entry must fall through to the route leg");
+        assert!(!q_inf.clamped);
+        assert!((q_inf.usd - 1.0).abs() < 1e-6, "got {}", q_inf.usd);
     }
 
     #[test]
