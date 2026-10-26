@@ -599,6 +599,46 @@ mod tests {
         assert!((q.usd - 1.0).abs() < 1e-6, "got {}", q.usd);
     }
 
+    /// A zero amount against a valid cached price is genuinely $0, not
+    /// "unpriced": the caller can distinguish it from `None`.
+    #[test]
+    fn zero_amount_with_positive_price_is_some_zero() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            token,
+            TokenUsd {
+                usd: 2.0,
+                decimals: 18,
+            },
+        );
+        let details = serde_json::json!({});
+        let q = amount_usd_realized(token, U256::ZERO, &prices, &details)
+            .expect("a positive price values a zero amount at $0");
+        assert_eq!(q.usd, 0.0);
+        assert!(!q.clamped);
+    }
+
+    /// The legacy 0.0-row analogue of the test above: with no usable route leg
+    /// the zero cache entry must yield `None`, not `Some(0.0)`.
+    #[test]
+    fn zero_cached_price_without_route_is_none() {
+        let token = address!("0a00000000000000000000000000000000000000");
+        let mut prices = HashMap::new();
+        prices.insert(
+            token,
+            TokenUsd {
+                usd: 0.0,
+                decimals: 18,
+            },
+        );
+        let details = serde_json::json!({ "route": [] });
+        assert!(
+            amount_usd_realized(token, U256::from(1_000_000u64), &prices, &details).is_none(),
+            "a rejected price with no route leg must be unpriced, not $0"
+        );
+    }
+
     #[test]
     fn residual_quote_clamped_to_trusted_route_usd() {
         let token = address!("0a00000000000000000000000000000000000000");

@@ -3,9 +3,19 @@ use alloy::primitives::Address;
 
 use super::{ExplorerStore, OpenPosition};
 
+/// A quote is usable only when it is a positive, finite USD amount. `0.0`
+/// (and NaN/inf) rows are treated as absent on both write and read.
+fn is_usable_quote(usd: f64) -> bool {
+    usd.is_finite() && usd > 0.0
+}
+
 impl ExplorerStore {
     /// Price cache lookup: USD for a token at an hour bucket (exact hour, or
     /// the most recent cached hour within 24h).
+    ///
+    /// Only a finite, positive quote is returned. Legacy databases can still
+    /// hold `0.0` rows written before writes were guarded, so such a row is
+    /// treated as missing and callers re-fetch.
     pub fn price_at(&self, token: Address, hour: u64) -> anyhow::Result<Option<(f64, String)>> {
         let tok = format!("{:#x}", token);
         let exact: Option<(f64, String)> = self
@@ -16,7 +26,8 @@ impl ExplorerStore {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map(Some)
-            .unwrap_or(None);
+            .unwrap_or(None)
+            .filter(|(usd, _)| is_usable_quote(*usd));
         if exact.is_some() {
             return Ok(exact);
         }
@@ -30,7 +41,8 @@ impl ExplorerStore {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map(Some)
-            .unwrap_or(None);
+            .unwrap_or(None)
+            .filter(|(usd, _)| is_usable_quote(*usd));
         Ok(v)
     }
     /// Cache a price observation.
@@ -44,13 +56,13 @@ impl ExplorerStore {
         usd: f64,
         source: &str,
     ) -> anyhow::Result<()> {
-        if !usd.is_finite() || usd <= 0.0 {
+        if !is_usable_quote(usd) {
             tracing::warn!(
                 token = %format!("{:#x}", token),
                 hour,
                 source,
                 usd,
-                "refusing to cache a non-positive price quote"
+                "refusing to cache a non-finite or non-positive price quote"
             );
             return Ok(());
         }
@@ -213,11 +225,59 @@ mod tests {
             None,
             "a 0.0 quote must not be cached as a price"
         );
+        store.put_price(token, hour + 1, f64::NAN, "test").unwrap();
+        assert_eq!(
+            store.price_at(token, hour + 1).unwrap(),
+            None,
+            "a NaN quote must not be cached as a price"
+        );
+        store
+            .put_price(token, hour + 2, f64::INFINITY, "test")
+            .unwrap();
+        assert_eq!(
+            store.price_at(token, hour + 2).unwrap(),
+            None,
+            "an infinite quote must not be cached as a price"
+        );
         store.put_price(token, hour, 1.5, "test").unwrap();
         assert_eq!(
             store.price_at(token, hour).unwrap(),
             Some((1.5, "test".to_string())),
             "a positive quote still persists"
+        );
+    }
+
+    /// Legacy DBs can hold `0.0` rows written before `put_price` guarded
+    /// non-positive quotes. Both the exact-hour lookup and the within-24h
+    /// fallback must treat such a row as missing.
+    #[test]
+    fn price_at_ignores_legacy_zero_rows() {
+        let store = ExplorerStore::open_in_memory().expect("open store");
+        let token = Address::repeat_byte(0x22);
+        let hour = 50u64;
+        // `put_price` refuses 0.0, so write the legacy row directly.
+        store
+            .connection()
+            .execute(
+                "INSERT OR REPLACE INTO prices(hour, token, usd, source) VALUES(?1, ?2, ?3, ?4)",
+                rusqlite::params![hour as i64, format!("{:#x}", token), 0.0f64, "legacy"],
+            )
+            .expect("insert legacy 0.0 row");
+        assert_eq!(
+            store.price_at(token, hour).unwrap(),
+            None,
+            "exact-hour 0.0 row is not a quote"
+        );
+        assert_eq!(
+            store.price_at(token, hour + 1).unwrap(),
+            None,
+            "within-24h fallback must reject a 0.0 row too"
+        );
+        store.put_price(token, hour, 2.5, "test").unwrap();
+        assert_eq!(
+            store.price_at(token, hour).unwrap(),
+            Some((2.5, "test".to_string())),
+            "a positive row at the same hour still reads back"
         );
     }
 

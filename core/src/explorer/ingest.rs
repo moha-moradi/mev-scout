@@ -882,6 +882,13 @@ pub async fn native_price_cached(
         }
     };
     if let Some((usd, source)) = fetched {
+        // A non-positive fetch is not a usable quote. `put_price` would refuse
+        // the write anyway; returning it here would still surface it as the
+        // in-flight native price (gas at $0, inflated net P&L).
+        if !usd.is_finite() || usd <= 0.0 {
+            warn!("native price {source} returned a non-finite or non-positive quote {usd} for hour {hour}; treating it as unavailable");
+            return Ok(None);
+        }
         store.put_price(marker, hour, usd, source)?;
         // Also cache under wrapped-native so profit_usd converts for WAVAX/WETH.
         if !cfg.wrapped_native.is_zero() {
