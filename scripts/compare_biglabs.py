@@ -48,13 +48,18 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-#: Rows in L \ V with at least this much realized local profit are treated as
-#: genuine vendor misses; below it they are dust and are flagged ``fp_suspect``
-#: (candidate for the A14 profit-floor review).
-MATERIAL_PROFIT_USD = 0.01
+#: Built-in *suggestion* threshold for dust, never an A14 materiality floor.
+#: A positive-profit arb below this size is still a realized cycle: the vendor
+#: lists comparable dust and has no size floor, so the suggestion is
+#: ``tp_vendor_miss`` (a vendor coverage gap).  A14's checkpoint criterion is
+#: that genuinely fake-$0/NULL rows leave L, not that small arbs disappear.
+SUGGEST_DUST_PROFIT_USD = 0.01
+
+#: Profit at or below one raw USDC unit is rounding residue, not a price.
+ZERO_PROFIT_USD = 0.000001
 
 ADJUDICATIONS = ("tp_vendor_miss", "fp_suspect", "unknown")
 
@@ -333,8 +338,9 @@ def compute_metrics(
         vendor_row = vendor_by_hash[tx_hash]
         candidates = local_by_hash[tx_hash]
         chosen = pick_local_row(candidates)
-        for row in candidates:
-            matched_kinds[row["kind"]] = matched_kinds.get(row["kind"], 0) + 1
+        # Unique-hash accounting: one representative row per hash everywhere,
+        # so a hash with several mev_ops rows is counted once.
+        matched_kinds[chosen["kind"]] = matched_kinds.get(chosen["kind"], 0) + 1
 
         vendor_profit = vendor_row["usd_profit"]
         local_profit = chosen["profit_usd"]
@@ -380,6 +386,15 @@ def compute_metrics(
             }
         )
 
+    # One representative row per local-only hash -- the same pick_local_row() row
+    # used for the table and the delta -- so unique-hash composition cannot drift
+    # from the per-row adjudication.
+    local_only_rows = [pick_local_row(local_by_hash[h]) for h in local_only]
+    local_only_kinds: dict[str, int] = {}
+    for representative in local_only_rows:
+        kind = representative["kind"]
+        local_only_kinds[kind] = local_only_kinds.get(kind, 0) + 1
+
     return {
         "counts": {
             "vendor_rows": len(vendor),
@@ -400,19 +415,14 @@ def compute_metrics(
             "vendor_agreement_label": "lower bound on agreement (vendor is a coverage oracle, not ground truth)",
             "matched_kind_labels": dict(sorted(matched_kinds.items())),
             "local_only_kind_composition": dict(
-                sorted(
-                    (
-                        (kind, sum(1 for h in local_only if local_by_hash[h][0]["kind"] == kind))
-                        for kind in {local_by_hash[h][0]["kind"] for h in local_only}
-                    ),
-                    key=lambda kv: (-kv[1], kv[0]),
-                )
+                sorted(local_only_kinds.items(), key=lambda kv: (-kv[1], kv[0]))
             ),
             "vendor_only_hashes": vendor_only,
         },
         "profit_delta_pct": delta_stats,
         "matched": matched,
         "local_only_hashes": local_only,
+        "local_only_rows": local_only_rows,
         "local_by_hash": local_by_hash,
         "vendor_by_hash": vendor_by_hash,
     }
@@ -424,7 +434,15 @@ def compute_metrics(
 
 
 def auto_adjudicate(row: dict[str, Any], vendor_min_profit: float | None) -> tuple[str, str]:
-    """Default per-row call for a local-only row; overridable via --adjudications."""
+    """Default per-row call for a local-only row; overridable via --adjudications.
+
+    ``fp_suspect`` is an *observation* label, reserved for rows whose local
+    profit is ~$0/NULL (a zero quote is not a price, A14) or whose net is
+    negative.  Dust with positive realized profit is a ``tp_vendor_miss``: the
+    vendor lists comparable dust and has no size floor, so a size threshold
+    cannot explain the miss.  ``SUGGEST_DUST_PROFIT_USD`` only separates the
+    suggested note wording; it is never an A14 materiality floor.
+    """
     kind = row["kind"]
     profit = row["profit_usd"]
     net = row["net_profit_usd"]
@@ -455,31 +473,47 @@ def auto_adjudicate(row: dict[str, Any], vendor_min_profit: float | None) -> tup
             f"utility/non-arb flow ({detail}): vendor oracle is arb-only, blind by design",
         )
     if kind == "arb_atomic":
+        vendor_floor = (
+            f"vendor lists comparable dust down to ${vendor_min_profit:.6f} and has no size floor"
+            if vendor_min_profit is not None
+            else "vendor floor unknown"
+        )
+        net_text = f"${net:.6f}" if net is not None else "NULL"
         if profit is None:
             return (
                 "fp_suspect",
-                "arb_atomic with NULL local profit: unresolvable PnL, candidate for A14",
+                "arb_atomic with NULL local profit: a zero/NULL quote is not a "
+                "price (A14 checkpoint); observed suspect, not a proven false positive",
             )
-        if profit >= MATERIAL_PROFIT_USD:
-            vendor_floor = (
-                f"vendor lists dust down to ${vendor_min_profit:.6f}"
-                if vendor_min_profit is not None
-                else "vendor floor unknown"
+        if profit <= ZERO_PROFIT_USD:
+            return (
+                "fp_suspect",
+                f"single-unit/rounding residue (profit ${profit:.6f}, net {net_text}): "
+                "~$0, so this is an observed suspect, not a proven false positive",
             )
+        if net is not None and net < 0:
+            return (
+                "fp_suspect",
+                f"positive gross but negative net (profit ${profit:.6f}, net {net_text}): "
+                "observed suspect, not a proven false positive",
+            )
+        if profit < SUGGEST_DUST_PROFIT_USD:
             return (
                 "tp_vendor_miss",
-                f"material realized arb (profit ${profit:.6f}, net ${net:.6f}); "
-                f"{vendor_floor}, so a size floor cannot explain the miss",
+                f"realized dust arb (profit ${profit:.6f}, net {net_text}); "
+                f"{vendor_floor}, so the miss is a vendor coverage gap, not a false positive",
             )
         return (
-            "fp_suspect",
-            f"sub-threshold realized arb (profit ${profit:.6f} < ${MATERIAL_PROFIT_USD:.2f}; "
-            f"net ${net:.6f}): dust, candidate for the A14 profit floor",
+            "tp_vendor_miss",
+            f"material realized arb (profit ${profit:.6f}, net {net_text}); "
+            f"{vendor_floor}, so a size floor cannot explain the miss",
         )
     return ("unknown", f"no baseline rule for kind={kind}")
 
 
-def load_adjudications(path: Path) -> dict[str, dict[str, str]]:
+def load_adjudications(
+    path: Path,
+) -> tuple[dict[str, dict[str, str]], dict[str, Any]]:
     if not path.is_file():
         die(
             f"adjudications file not found: {path}",
@@ -492,15 +526,24 @@ def load_adjudications(path: Path) -> dict[str, dict[str, str]]:
         die(f"adjudications file is not valid JSON: {path} ({exc})")
 
     rows: Any
-    if isinstance(raw, dict) and isinstance(raw.get("rows"), dict):
-        rows = raw["rows"]
-    elif isinstance(raw, dict):
-        rows = {k: v for k, v in raw.items() if norm_hash(k)}
-    else:
+    if not isinstance(raw, dict):
         die(
             f"adjudications file must be an object: {path}",
             'expected {"rows": {"0x<64 hex>": {"adjudication": "...", "note": "..."}}}',
         )
+    if isinstance(raw.get("rows"), dict):
+        rows = raw["rows"]
+    elif "rows" in raw:
+        die(f"adjudications file has a non-object 'rows': {path}")
+    else:
+        rows = {k: v for k, v in raw.items() if norm_hash(k)}
+
+    metadata = {
+        "snapshot_sha256": raw.get("snapshot_sha256"),
+        "block_range": raw.get("block_range"),
+        "label": raw.get("label"),
+        "local_commit": raw.get("local_commit"),
+    }
 
     out: dict[str, dict[str, str]] = {}
     for key, value in rows.items():
@@ -520,7 +563,59 @@ def load_adjudications(path: Path) -> dict[str, dict[str, str]]:
             "adjudication": str(label),
             "note": str(note) if note else "",
         }
-    return out
+    return out, metadata
+
+
+def validate_adjudications_provenance(
+    path: Path,
+    metadata: dict[str, Any],
+    snapshot_sha256: str,
+    lo: int,
+    hi: int,
+) -> None:
+    """Fail when frozen labels were captured against a different oracle run.
+
+    Reusing the baseline adjudications is only sound against the same frozen
+    snapshot and block range; otherwise a label silently describes another
+    window.  A file without provenance metadata is accepted with a warning so
+    hand-written maps still work.
+    """
+    recorded_sha = metadata.get("snapshot_sha256")
+    recorded_range = metadata.get("block_range")
+    if not recorded_sha and recorded_range is None:
+        warn(
+            f"{path} records no snapshot_sha256/block_range; "
+            "cannot prove the adjudications match this run's frozen artifact"
+        )
+        return
+    if recorded_sha is not None:
+        if not isinstance(recorded_sha, str) or recorded_sha.strip().lower() != snapshot_sha256.lower():
+            die(
+                f"adjudications drift: {path} was frozen against snapshot "
+                f"{recorded_sha!r}, but this run's snapshot SHA256 is {snapshot_sha256}",
+                "compare against the snapshot the adjudications were frozen with, "
+                "or re-freeze a reviewed adjudications file for the new snapshot; "
+                "stale labels must not be applied to a different artifact",
+            )
+    if recorded_range is not None:
+        if not isinstance(recorded_range, dict):
+            die(f"adjudications file has a non-object 'block_range': {path}")
+        raw_lo = recorded_range.get("lo")
+        raw_hi = recorded_range.get("hi")
+        try:
+            block_lo, block_hi = int(raw_lo), int(raw_hi)
+        except (TypeError, ValueError):
+            die(
+                f"adjudications file has a malformed block_range: {recorded_range!r}",
+                'expected {"block_range": {"lo": <int>, "hi": <int>}}',
+            )
+        if (block_lo, block_hi) != (lo, hi):
+            die(
+                f"adjudications drift: {path} was frozen for blocks "
+                f"{block_lo}..={block_hi}, but this run is {lo}..={hi}",
+                "the baseline is range-specific: use the adjudications frozen for "
+                "this exact range, or re-freeze a reviewed file for the new range",
+            )
 
 
 def adjudicate_local_only(
@@ -595,6 +690,15 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     lines.append(f"<!-- compare_biglabs.py v{report['script_version']} label={label} -->")
     lines.append("")
+    baseline = report.get("baseline", {})
+    if baseline.get("incomplete"):
+        allowed = " (allowed by --allow-incomplete)" if baseline.get("allow_incomplete") else ""
+        lines.append(
+            f"**INCOMPLETE: blocks classified {baseline.get('blocks_classified')}/"
+            f"{rng['blocks']} - this DB does not cover the requested range, "
+            f"so this table is NOT a comparable checkpoint{allowed}.**"
+        )
+        lines.append("")
     lines.append(f"Snapshot: `{display_path(report['inputs']['snapshot'])}`  ")
     lines.append(f"SHA256: `{report['inputs']['snapshot_sha256']}`  ")
     lines.append(
@@ -606,8 +710,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Local index: `{display_path(report['inputs']['db'])}` (code commit "
         f"{report['inputs'].get('local_commit') or 'unrecorded'})  "
     )
+    adjudications = report["inputs"].get("adjudications")
+    if adjudications:
+        lines.append(f"Adjudications: frozen map `{display_path(adjudications)}`  ")
+    else:
+        lines.append("Adjudications: built-in suggestions (no `--adjudications` file)  ")
     lines.append(f"Block range: {rng['lo']}..={rng['hi']} ({rng['blocks']} blocks)")
-    baseline = report.get("baseline", {})
     if baseline:
         lines.append(
             f"Index facts: blocks classified {baseline.get('blocks_classified')}/{rng['blocks']}, "
@@ -701,6 +809,11 @@ def main(argv: list[str] | None = None) -> int:
         help="commit hash of the binary that built --db (recorded in the report)",
     )
     parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="allow a DB that does not cover the whole requested range (exit 0, table marked INCOMPLETE)",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         help="only write the machine report; skip the markdown table",
@@ -761,17 +874,36 @@ def main(argv: list[str] | None = None) -> int:
     counts = result["counts"]
     metrics = result["metrics"]
     local_only_hashes: list[str] = result["local_only_hashes"]
-    local_by_hash: dict[str, list[dict[str, Any]]] = result["local_by_hash"]
 
     vendor_profits = [r["usd_profit"] for r in vendor_rows if r["usd_profit"] is not None]
     vendor_min_profit = min(vendor_profits) if vendor_profits else None
 
-    overrides = load_adjudications(adjudications_path) if adjudications_path else None
-    local_only_rows = [pick_local_row(local_by_hash[h]) for h in local_only_hashes]
-    local_only_rows.sort(key=lambda r: (r["block_number"], r["hash"]))
+    overrides = None
+    adjudications_meta: dict[str, Any] = {}
+    if adjudications_path:
+        overrides, adjudications_meta = load_adjudications(adjudications_path)
+        validate_adjudications_provenance(
+            adjudications_path, adjudications_meta, snapshot_sha256, args.lo, args.hi
+        )
+    local_only_rows = sorted(
+        result["local_only_rows"], key=lambda r: (r["block_number"], r["hash"])
+    )
     adjudicated, adjudication_counts, stale, missing = adjudicate_local_only(
         local_only_rows, vendor_min_profit, overrides
     )
+
+    blocks_requested = args.hi - args.lo + 1
+    incomplete = blocks_classified < blocks_requested
+    if incomplete:
+        detail = (
+            f"blocks classified {blocks_classified}/{blocks_requested}; the DB does not "
+            f"cover the requested range"
+        )
+        if args.allow_incomplete:
+            warn(f"INCOMPLETE (allowed by --allow-incomplete): {detail}")
+        else:
+            warn(f"INCOMPLETE: {detail}; refusing to emit a comparable checkpoint (use --allow-incomplete to override)")
+
     if stale:
         warn(
             f"{len(stale)} adjudication entr(y/ies) in {adjudications_path} no longer "
@@ -788,9 +920,12 @@ def main(argv: list[str] | None = None) -> int:
         "script_version": SCRIPT_VERSION,
         "label": args.label,
         "chain": args.chain.lower(),
-        "block_range": {"lo": args.lo, "hi": args.hi, "blocks": args.hi - args.lo + 1},
+        "block_range": {"lo": args.lo, "hi": args.hi, "blocks": blocks_requested},
         "baseline": {
             "blocks_classified": blocks_classified,
+            "blocks_requested": blocks_requested,
+            "incomplete": incomplete,
+            "allow_incomplete": bool(args.allow_incomplete),
             "rejected_candidates": rejected,
             "note": "rejected_candidates is 0 unless record_rejections was enabled at index time",
         },
@@ -802,6 +937,7 @@ def main(argv: list[str] | None = None) -> int:
             "adjudications_sha256": sha256_file(adjudications_path)
             if adjudications_path and adjudications_path.is_file()
             else None,
+            "adjudications_provenance": adjudications_meta,
             "local_commit": args.local_commit,
             "vendor_fetch": {
                 key: meta.get(key)
@@ -848,6 +984,14 @@ def main(argv: list[str] | None = None) -> int:
         print(render_markdown(report))
 
     print(f"wrote {out_path}", file=sys.stderr)
+    if incomplete and not args.allow_incomplete:
+        print(
+            f"compare_biglabs: INCOMPLETE: blocks classified {blocks_classified}/"
+            f"{blocks_requested}; refusing to treat this table as a comparable checkpoint "
+            "(re-index the full range, or pass --allow-incomplete)",
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

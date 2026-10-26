@@ -1,7 +1,7 @@
 {
   "label": "baseline",
   "frozen_at": "2026-10-26",
-  "note": "Frozen L\\V adjudications for the Task M0 baseline. Later checkpoints reuse this file: a row that disappears must map to a predicted task effect or it is a regression flag. Only 'adjudication' and 'note' are read by the script.",
+  "note": "Frozen L\\V adjudications for the Task M0 baseline. Later checkpoints reuse this file: a row that disappears must map to a predicted task effect or it is a regression flag. Per row only 'adjudication' and 'note' are read; 'snapshot_sha256' and 'block_range' are validated against the run. fp_suspect is an observation label (never a proven false positive); A14's checkpoint criterion is that genuinely fake-$0/NULL rows leave L, not that dust disappears.",
   "block_range": {
     "lo": 98572463,
     "hi": 98575973
@@ -12,13 +12,13 @@
   "rules": {
     "jit": "unknown - vendor is arb-only, blind to JIT by design",
     "erc4337_bundler": "unknown - utility family (bundler/keeper/claim), vendor blind by design",
-    "arb_material": "tp_vendor_miss - arb_atomic with profit_usd >= $0.01",
-    "arb_dust": "fp_suspect - arb_atomic with profit_usd < $0.01 or a rounding residue (A14 candidate)"
+    "arb_realized": "tp_vendor_miss - any realized arb_atomic cycle, including dust: the vendor lists comparable dust and has no size floor, so the miss is a coverage gap",
+    "arb_residue": "fp_suspect - profit NULL/~$0 (single-unit residue) or negative net: observed suspect, never a proven false positive"
   },
   "counts": {
-    "tp_vendor_miss": 15,
+    "tp_vendor_miss": 20,
     "unknown": 50,
-    "fp_suspect": 6
+    "fp_suspect": 1
   },
   "rows": {
     "0xfbf67ff0658362a22c9442257880514cbb2388deb009647710635842247cc6e1": {
@@ -148,8 +148,8 @@
       "net_profit_usd": 0.0023892941059020355
     },
     "0x1296d36af3d654b90796a09396cf5afe9fca497275088d79a79e08ced94a24ed": {
-      "adjudication": "fp_suspect",
-      "note": "realized triangular cycle, net $0.001385, but profit $0.006664 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular cycle, profit $0.006664 net $0.001385 (exact); vendor lists comparable dust and has no size floor, so the miss is a vendor coverage gap, not a false positive",
       "block_number": 98572847,
       "kind": "arb_atomic",
       "confidence": "exact",
@@ -346,8 +346,8 @@
       "net_profit_usd": -0.00025492775671387977
     },
     "0xf0b54c5c4a5adeff91889ce9cff8a8bbc7296d63313d7796c2110aad16fd2176": {
-      "adjudication": "fp_suspect",
-      "note": "realized triangular cycle, net $0.000625, but profit $0.008134 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular cycle, profit $0.008134 net $0.000625 (exact); vendor lists comparable dust and has no size floor, so the miss is a vendor coverage gap, not a false positive",
       "block_number": 98574735,
       "kind": "arb_atomic",
       "confidence": "exact",
@@ -436,8 +436,8 @@
       "net_profit_usd": null
     },
     "0x3c5178ac76cb3e0469cbec2db01ca1cd94beb3ef1e7194a05a1af7bfb40569c2": {
-      "adjudication": "fp_suspect",
-      "note": "realized triangular cycle, net $0.001862, but profit $0.008731 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular cycle, profit $0.008731 net $0.001862 (exact); vendor lists comparable dust and has no size floor, so the miss is a vendor coverage gap, not a false positive",
       "block_number": 98575075,
       "kind": "arb_atomic",
       "confidence": "exact",
@@ -454,8 +454,8 @@
       "net_profit_usd": null
     },
     "0xedeab0649b95605ed772852275141c0a5d8c592af0b1ec79eb882baebc9887b4": {
-      "adjudication": "fp_suspect",
-      "note": "realized two_pool cycle, net $0.000927, but profit $0.004983 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "adjudication": "tp_vendor_miss",
+      "note": "realized two_pool cycle, profit $0.004983 net $0.000927 (exact); vendor lists comparable dust and has no size floor, so the miss is a vendor coverage gap, not a false positive",
       "block_number": 98575085,
       "kind": "arb_atomic",
       "confidence": "exact",
@@ -572,7 +572,7 @@
     },
     "0x2c388e3dbbf171ae9a1e19fd1e767b7ed87a81e8dffbaa6ba04e5cc3112c30cb": {
       "adjudication": "fp_suspect",
-      "note": "profit_amount is a single raw USDC unit ($0.000001) and net is negative (-$0.008134): rounding residue of an unrelated multi-hop swap, true fp candidate for A14",
+      "note": "profit_amount is a single raw USDC unit ($0.000001) and net is negative (-$0.008134): rounding residue of an unrelated multi-hop swap. Observed fp_suspect, not a proven A14 target; A14 may or may not remove it, and fp_suspect is an observation label, never a proven false positive",
       "block_number": 98575604,
       "kind": "arb_atomic",
       "confidence": "exact",
@@ -616,8 +616,8 @@
       "net_profit_usd": -0.0013859939498643689
     },
     "0xf1a09a339aaae8f49c7a643352bd9830dfef6b779d06749c09ec468f14626de8": {
-      "adjudication": "fp_suspect",
-      "note": "realized triangular cycle, net $0.001238, but profit $0.006341 < $0.01: below the planned A14 materiality floor; the cycle is real (vendor lists comparable dust), so this is a floor candidate, not a proven false positive",
+      "adjudication": "tp_vendor_miss",
+      "note": "realized triangular cycle, profit $0.006341 net $0.001238 (exact); vendor lists comparable dust and has no size floor, so the miss is a vendor coverage gap, not a false positive",
       "block_number": 98575799,
       "kind": "arb_atomic",
       "confidence": "exact",
