@@ -943,3 +943,47 @@ fn lb_deposited_to_bins_decodes() {
     assert_eq!(j.amount0, U256::from(9));
     assert_eq!(j.amount1, U256::from(7));
 }
+
+#[test]
+fn abi_u256_array_rejects_over_64_entries() {
+    // head word = relative offset 32, then length 65, then 65 zero words.
+    let mut data = vec![0u8; 32]; // offset word (rel = 0x20)
+    data[31] = 32;
+    data.extend_from_slice(&U256::from(65usize).to_be_bytes::<32>()); // len = 65
+    data.extend_from_slice(&[0u8; 65 * 32]);
+    assert!(
+        super::jit::decode_abi_u256_array(&data, 0).is_none(),
+        "arrays > 64 entries must be rejected, not truncated"
+    );
+    // exactly 64 still decodes
+    let mut ok = vec![0u8; 32];
+    ok[31] = 32; // offset word (rel = 0x20)
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&[0u8; 64 * 32]);
+    assert_eq!(
+        super::jit::decode_abi_u256_array(&ok, 0).map(|v| v.len()),
+        Some(64)
+    );
+}
+
+#[test]
+fn lb_amounts_rejects_over_64_entries() {
+    // word 0: ids offset (unused here); word 1: amounts offset = 64, then len.
+    let mut data = vec![0u8; 32];
+    data.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>()); // amounts rel = 0x40
+    data.extend_from_slice(&U256::from(65usize).to_be_bytes::<32>()); // len = 65
+    data.extend_from_slice(&[0u8; 65 * 32]);
+    assert!(
+        super::jit::decode_lb_amounts_xy(&data).is_none(),
+        "amount arrays > 64 entries must be rejected, not truncated"
+    );
+    // exactly 64 still decodes
+    let mut ok = vec![0u8; 32];
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&[0u8; 64 * 32]);
+    assert_eq!(
+        super::jit::decode_lb_amounts_xy(&ok),
+        Some((U256::ZERO, U256::ZERO))
+    );
+}

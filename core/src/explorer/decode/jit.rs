@@ -126,7 +126,11 @@ fn u256_to_usize(v: U256) -> Option<usize> {
 
 /// Read a dynamic `uint256[]` from ABI-encoded `data` starting at the head
 /// word index `head_word` (0 = first 32-byte word is the relative offset).
-fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec<U256>> {
+///
+/// Arrays declaring more than 64 entries are rejected (`None`) instead of
+/// being silently truncated, so an oversized LB bin range cannot yield
+/// plausible-looking-but-wrong min/max bin ids.
+pub(super) fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec<U256>> {
     let head_off = head_word * 32;
     if data.len() < head_off + 32 {
         return None;
@@ -136,8 +140,11 @@ fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec<U256>> {
         return None;
     }
     let len = u256_to_usize(U256::from_be_slice(&data[rel..rel + 32]))?;
-    let mut out = Vec::with_capacity(len.min(64));
-    for i in 0..len.min(64) {
+    if len > 64 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
         let start = rel + 32 + i * 32;
         if data.len() < start + 32 {
             break;
@@ -150,7 +157,10 @@ fn decode_abi_u256_array(data: &[u8], head_word: usize) -> Option<Vec<U256>> {
 /// Sum packed X/Y amounts from the second dynamic `bytes32[]` in a
 /// DepositedToBins / WithdrawnFromBins payload. Each bytes32 packs
 /// amountX in the low 128 bits and amountY in the high 128 bits (LFJ layout).
-fn decode_lb_amounts_xy(data: &[u8]) -> Option<(U256, U256)> {
+///
+/// Arrays declaring more than 64 entries are rejected (`None`) for the same
+/// reason as [`decode_abi_u256_array`].
+pub(super) fn decode_lb_amounts_xy(data: &[u8]) -> Option<(U256, U256)> {
     if data.len() < 64 {
         return None;
     }
@@ -159,9 +169,12 @@ fn decode_lb_amounts_xy(data: &[u8]) -> Option<(U256, U256)> {
         return None;
     }
     let len = u256_to_usize(U256::from_be_slice(&data[rel..rel + 32]))?;
+    if len > 64 {
+        return None;
+    }
     let mut ax = U256::ZERO;
     let mut ay = U256::ZERO;
-    for i in 0..len.min(64) {
+    for i in 0..len {
         let start = rel + 32 + i * 32;
         if data.len() < start + 32 {
             break;
