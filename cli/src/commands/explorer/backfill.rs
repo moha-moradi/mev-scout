@@ -97,6 +97,23 @@ pub async fn cmd_backfill(
         out.ops,
         elapsed.as_secs_f64()
     ));
+    if !out.skipped_blocks.is_empty() {
+        const SHOW: usize = 20;
+        let n = out.skipped_blocks.len();
+        let shown = out
+            .skipped_blocks
+            .iter()
+            .take(SHOW)
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if n > SHOW { "…" } else { "" };
+        tracing::warn!(
+            skipped = n,
+            "backfill skipped {n} blocks whose fetch failed after retries \
+             [{shown}{more}]; re-run the same range to fill the gap"
+        );
+    }
     Ok(BackfillOutcome {
         from_block: from,
         to_block: to,

@@ -5,7 +5,7 @@
 //! the explorer store. Idempotent per block (checkpoints in
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
 //! lag applied before indexing.
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use alloy::primitives::{Address, Bytes, B256, U256};
@@ -227,6 +227,10 @@ pub struct IndexedBlock {
 pub struct RangeOutcome {
     pub blocks_processed: u64,
     pub ops: u64,
+    /// Blocks whose chunk fetch failed after retries and were skipped, sorted
+    /// ascending. A re-run of the same range fills the gap via
+    /// `unclassified_blocks`.
+    pub skipped_blocks: Vec<u64>,
 }
 
 /// Fetch block + receipts (batched JSON-RPC POST).
@@ -1181,7 +1185,9 @@ pub async fn run_range(
     if to_block < from_block {
         anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
     }
-    let tip = rpc.get_block_number().await.unwrap_or(to_block);
+    // A failed head fetch cannot be skipped: nothing can be indexed without a
+    // safe tip, so it must surface instead of clamping to `to_block`.
+    let tip = rpc.get_block_number().await?;
     let safe_tip = tip.saturating_sub(cfg.confirmations);
     let end = to_block.min(safe_tip);
     if end < from_block {
@@ -1236,6 +1242,9 @@ pub async fn run_range(
 
     let mut savax_rates = SavaxRateCache::default();
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
+    // Blocks dropped because their chunk fetch failed after retries. The
+    // serial path has no chunks to skip; it stays empty there.
+    let mut skipped: BTreeSet<u64> = BTreeSet::new();
     let cap = block_concurrency.max(1).min(missing.len());
     // One POST of `chunk` blocks. In-flight blocks stay at `cap`: a chunk of
     // 32 with concurrency 32 is one POST, not 32×32.
@@ -1281,24 +1290,31 @@ pub async fn run_range(
                 let sem = sem.clone();
                 let rpc = rpc.clone();
                 inflight.push(async move {
-                    let _permit = sem
-                        .acquire_owned()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
-                    let rows = if blocks.len() == 1 {
-                        vec![(blocks[0], fetch_block_bundle(&rpc, blocks[0]).await?)]
-                    } else {
-                        let fetched = rpc.get_blocks_and_receipts_batch(&blocks).await?;
-                        if fetched.len() != blocks.len() {
-                            anyhow::bail!(
-                                "batch returned {} blocks, expected {}",
-                                fetched.len(),
-                                blocks.len()
-                            );
-                        }
-                        blocks.into_iter().zip(fetched).collect()
-                    };
-                    Ok::<_, anyhow::Error>(rows)
+                    // Return the chunk's block list alongside the result so a
+                    // failed fetch is attributable to blocks that can be skipped.
+                    let chunk_blocks = blocks.clone();
+                    let result = async {
+                        let _permit = sem
+                            .acquire_owned()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
+                        let rows = if blocks.len() == 1 {
+                            vec![(blocks[0], fetch_block_bundle(&rpc, blocks[0]).await?)]
+                        } else {
+                            let fetched = rpc.get_blocks_and_receipts_batch(&blocks).await?;
+                            if fetched.len() != blocks.len() {
+                                anyhow::bail!(
+                                    "batch returned {} blocks, expected {}",
+                                    fetched.len(),
+                                    blocks.len()
+                                );
+                            }
+                            blocks.into_iter().zip(fetched).collect()
+                        };
+                        Ok::<_, anyhow::Error>(rows)
+                    }
+                    .await;
+                    (chunk_blocks, result)
                 });
                 Ok(())
             };
@@ -1309,6 +1325,10 @@ pub async fn run_range(
 
         while next_persist < missing.len() {
             let need = missing[next_persist];
+            if skipped.contains(&need) {
+                next_persist += 1;
+                continue;
+            }
             if let Some(bundle) = ready.remove(&need) {
                 if need.saturating_sub(from_block) % 256 == 0 {
                     native_price =
@@ -1341,7 +1361,7 @@ pub async fn run_range(
             }
 
             match inflight.next().await {
-                Some(Ok(rows)) => {
+                Some((_chunk_blocks, Ok(rows))) => {
                     for (block, bundle) in rows {
                         ready.insert(block, bundle);
                     }
@@ -1349,7 +1369,24 @@ pub async fn run_range(
                         spawn_one(&mut next_spawn, &mut inflight)?;
                     }
                 }
-                Some(Err(e)) => return Err(e),
+                Some((chunk_blocks, Err(e))) => {
+                    // The fetch path already exhausted `retry_call` backoff.
+                    // Skip the chunk, keep the pipeline full, and let a re-run
+                    // heal the gap via `unclassified_blocks`.
+                    warn!(
+                        blocks = ?chunk_blocks,
+                        error = %e,
+                        "backfill chunk fetch failed after retries; skipping blocks \
+                         (re-run the same range later to fill the gap)"
+                    );
+                    skipped.extend(chunk_blocks);
+                    // Refill exactly like the success branch: without this the
+                    // loop can drain `inflight` while `next_spawn` is still
+                    // pending and bail out as stalled.
+                    while next_spawn < missing.len() && inflight.len() < posts {
+                        spawn_one(&mut next_spawn, &mut inflight)?;
+                    }
+                }
                 None => anyhow::bail!(
                     "backfill fetch pipeline stalled waiting for block {need} \
                      (spawned {next_spawn}/{}, ready {})",
@@ -1360,9 +1397,12 @@ pub async fn run_range(
         }
     }
 
+    outcome.skipped_blocks = skipped.into_iter().collect();
     store.set_sync_state(cfg.chain_id, tip, end)?;
     if total > 0 {
-        emit_progress(total, outcome.ops, true);
+        // Report the blocks actually indexed: a run with gaps must not look
+        // 100% complete.
+        emit_progress(outcome.blocks_processed, outcome.ops, true);
     }
     let mut done = ProgressEvent::stage("complete");
     done.ops = Some(outcome.ops);

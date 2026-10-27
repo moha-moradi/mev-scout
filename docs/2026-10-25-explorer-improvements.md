@@ -651,7 +651,7 @@ git commit -m "fix(explorer): reorg unwind runs in a single transaction"
 
 **Problem:** ingest.rs:1216 (`Some(Err(e)) => return Err(e)`) aborts a multi-hour backfill on the first failed chunk fetch. The fetch path already rides `retry_call` with backoff (`rpc/client.rs`), so an error here means even retries failed — the right move is to skip that chunk, log loudly, and keep going; the range is idempotent and gap-resumable, so a re-run repairs skipped blocks.
 
-- [ ] **Step 1: Implement skip-tracking** — after reading `run_range`:
+- [x] **Step 1: Implement skip-tracking** — after reading `run_range`:
 
   1. Add a `skipped_blocks: Vec<u64>` field to the range-outcome struct (public struct in ingest.rs; update its constructor sites and any CLI consumer — grep `blocks_processed` to find them; the CLI progress printer may want a line for skipped blocks).
   2. Make each in-flight fetch carry its block list so failures are attributable. Find where fetch futures are spawned (`spawn_one` at ~:1140) and change the spawned future's `Ok`/`Err` value to `(Vec<u64>, Result<…>)` — i.e. move the chunk's block numbers out of the closure capture into the returned pair (or, simpler if the closure shape fights this: keep a `HashMap<u64 /*first block*/, Vec<u64>> chunk_of` map alongside `inflight`).
@@ -686,10 +686,10 @@ with:
 
   5. Record `outcome.skipped_blocks = skipped;` before `store.set_sync_state(...)` at :1227. Also check ingest.rs:1048 (`unwrap_or(to_block)`) — per the review, on head-fetch failure it must not clamp to `to_block` past the confirmation lag; change it to `bail!` on head-fetch failure (the head fetch failing is not transient-skippable — nothing can be indexed without a safe tip).
 
-- [ ] **Step 2: Verify** — `cargo test -p mev-scout-core ingest && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`
+- [x] **Step 2: Verify** — `cargo test -p mev-scout-core ingest && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add core/src/explorer/ingest.rs cli/
