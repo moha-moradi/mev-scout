@@ -519,7 +519,7 @@ git commit -m "refactor(explorer): store filters take MevKind/Confidence enums s
 
 **Problem:** `run_live` propagates any single `index_block` error with `?` (ingest.rs:992) and any `native_price_cached` failure (ingest.rs:979), killing the live loop until restart. A transient Llama/price blip or RPC hiccup must not stop indexing.
 
-- [ ] **Step 1: Implement tolerance** — read `core/src/explorer/ingest.rs:900-1005` fully first, then change the poll body:
+- [x] **Step 1: Implement tolerance** — read `core/src/explorer/ingest.rs:900-1005` fully first, then change the poll body:
 
 ```rust
             let native_price = match native_price_cached(cfg, store, crate::utils::epoch_secs()).await {
@@ -561,12 +561,12 @@ git commit -m "refactor(explorer): store filters take MevKind/Confidence enums s
 
 (Leave the reorg-check `?`s at ingest.rs:962-977 untouched for this task — reorg verification failing hard is a different, defensible policy. **Do not settle the `set_sync_state` question by reading.** The snippet's `next_block = Some(block)` + `break` is meant to prevent `store.set_sync_state(cfg.chain_id, safe, safe)` at :997 from recording a completed range that was never indexed; if the break does *not* bypass it, the gap becomes invisible to resume logic — a silent data-loss mode worse than the crash being removed. Pin it with Step 2b instead, and if the break does not bypass the call, use a `let completed = …` flag.)
 
-- [ ] **Step 2b: Add the consecutive-failure cap and pin the cursor invariant.** Two additions the review found missing: (1) an unbounded retry loop is a new failure mode — if the provider is down, this shape polls forever at `poll_ms` with no backpressure. Add a `consecutive_failures` counter reset on success, and after a threshold (name it: `const MAX_CONSECUTIVE_LIVE_FAILURES: u32 = 10;`) `bail!` with the last error and the stuck block number, so a dead RPC ends the run loudly instead of spinning. (2) A test that asserts the invariant the fix depends on: after a simulated failed `index_block` for block N, `get_sync_state`/`indexed_to` must remain `< N` and `block_classified(N)` must be false. If no mock-provider harness exists (check `core/tests/common/`), extract the poll body's error branch into a small pure fn (`fn live_outcome(result, cursor, safe) -> (Option<u64>, bool /*advance sync*/, u32 /*failures*/)`) and unit-test *that* — testing the decision is as good as testing the loop and does not need the network.
+- [x] **Step 2b: Add the consecutive-failure cap and pin the cursor invariant.** Two additions the review found missing: (1) an unbounded retry loop is a new failure mode — if the provider is down, this shape polls forever at `poll_ms` with no backpressure. Add a `consecutive_failures` counter reset on success, and after a threshold (name it: `const MAX_CONSECUTIVE_LIVE_FAILURES: u32 = 10;`) `bail!` with the last error and the stuck block number, so a dead RPC ends the run loudly instead of spinning. (2) A test that asserts the invariant the fix depends on: after a simulated failed `index_block` for block N, `get_sync_state`/`indexed_to` must remain `< N` and `block_classified(N)` must be false. If no mock-provider harness exists (check `core/tests/common/`), extract the poll body's error branch into a small pure fn (`fn live_outcome(result, cursor, safe) -> (Option<u64>, bool /*advance sync*/, u32 /*failures*/)`) and unit-test *that* — testing the decision is as good as testing the loop and does not need the network.
 
-- [ ] **Step 2: Verify** — `cargo test -p mev-scout-core ingest`
+- [x] **Step 2: Verify** — `cargo test -p mev-scout-core ingest`
 Expected: PASS (existing ingest tests; no unit test can easily simulate a mid-loop RPC failure without a mock provider — if `core/tests` has a mock-RPC harness, consider a test there; otherwise manual review + clippy is the gate).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add core/src/explorer/ingest.rs

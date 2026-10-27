@@ -900,11 +900,53 @@ pub async fn native_price_cached(
     }
 }
 
+/// Consecutive transient price/block failures tolerated by [`run_live`] before
+/// it gives up. A dead provider must end the run loudly instead of spinning at
+/// `poll_ms` forever.
+const MAX_CONSECUTIVE_LIVE_FAILURES: u32 = 10;
+
+/// Decision for one block-index attempt in [`run_live`]'s poll body, kept pure
+/// so the cursor/checkpoint invariant is testable without an RPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockAttempt {
+    /// `Some(block)` re-pins the live cursor to the failed block so the next
+    /// poll retries it; `None` on success (the `for` loop advances).
+    next_block: Option<u64>,
+    /// Whether this attempt leaves the `[cursor..=safe]` range checkpointable.
+    /// Always false on failure: a partially indexed range must never be
+    /// recorded as complete, or resume logic would skip the failed blocks.
+    advance_sync: bool,
+    /// Consecutive transient failures after this attempt.
+    consecutive_failures: u32,
+}
+
+/// Fold one block-index attempt into the live loop's state. Success resets the
+/// failure counter; failure counts up (saturating) and forbids the checkpoint.
+fn after_block_attempt(failures: u32, block: u64, ok: bool) -> BlockAttempt {
+    if ok {
+        BlockAttempt {
+            next_block: None,
+            advance_sync: true,
+            consecutive_failures: 0,
+        }
+    } else {
+        BlockAttempt {
+            next_block: Some(block),
+            advance_sync: false,
+            consecutive_failures: failures.saturating_add(1),
+        }
+    }
+}
+
 /// Live streaming mode: on start, jump to the current confirmed tip and only
 /// follow new blocks forward. Never resumes a historical `indexed_to` gap and
 /// never walks earlier blocks. Runs until `stop` is set; the indexed tip is
 /// hash-verified on every poll and a heavier reorg sweep runs every
 /// 32 blocks.
+///
+/// Transient price/RPC failures are retried on the next poll instead of
+/// ending the run; a failed block is never checkpointed as part of a completed
+/// range. [`MAX_CONSECUTIVE_LIVE_FAILURES`] consecutive failures abort loudly.
 ///
 /// Returns the number of blocks indexed this session. Emits indeterminate
 /// `backfill` progress (`done` = session blocks, no `total`) plus a final
@@ -927,6 +969,9 @@ pub async fn run_live(
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
     // `None` until the first successful tip probe — then pinned to tip, not DB.
     let mut next_block: Option<u64> = None;
+    // Transient price/block failures since the last success; capped by
+    // `MAX_CONSECUTIVE_LIVE_FAILURES` so a dead provider ends the run.
+    let mut consecutive_failures: u32 = 0;
     let t0 = std::time::Instant::now();
     let mut last_emit = t0;
 
@@ -992,9 +1037,32 @@ pub async fn run_live(
                 since_reorg_check = 0;
             }
 
-            let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+            let native_price =
+                match native_price_cached(cfg, store, crate::utils::epoch_secs()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (next block {cursor}): native price fetch: {e}"
+                            );
+                        }
+                        warn!(
+                            error = %e,
+                            failures = consecutive_failures,
+                            "native price fetch failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
+                };
+            // Cleared by any failed block: `set_sync_state` below must not
+            // record `[cursor..=safe]` as complete when blocks were skipped,
+            // or resume logic would never revisit them.
+            let mut range_completed = true;
             for block in cursor..=safe {
-                let indexed = index_block(IndexBlockRequest {
+                let indexed = match index_block(IndexBlockRequest {
                     rpc,
                     store,
                     cfg,
@@ -1005,13 +1073,42 @@ pub async fn run_live(
                     savax_rates: &mut savax_rates,
                     qi_rates: &mut qi_rates,
                 })
-                .await?;
+                .await
+                {
+                    Ok(indexed) => indexed,
+                    Err(e) => {
+                        // Transient failure: do not advance the cursor; retry
+                        // this block on the next poll.
+                        let attempt = after_block_attempt(consecutive_failures, block, false);
+                        consecutive_failures = attempt.consecutive_failures;
+                        range_completed &= attempt.advance_sync;
+                        next_block = attempt.next_block;
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures at block {block}: {e}"
+                            );
+                        }
+                        warn!(
+                            block,
+                            error = %e,
+                            failures = consecutive_failures,
+                            "live index_block failed; retrying next poll"
+                        );
+                        break;
+                    }
+                };
+                let attempt = after_block_attempt(consecutive_failures, block, true);
+                consecutive_failures = attempt.consecutive_failures;
+                range_completed &= attempt.advance_sync;
                 blocks_session += 1;
                 ops_session += indexed.ops as u64;
                 emit_progress(blocks_session, ops_session, false);
             }
-            store.set_sync_state(cfg.chain_id, safe, safe)?;
-            next_block = Some(safe + 1);
+            if range_completed {
+                store.set_sync_state(cfg.chain_id, safe, safe)?;
+                next_block = Some(safe + 1);
+            }
             emit_progress(blocks_session, ops_session, true);
         } else {
             next_block = Some(cursor);
@@ -1397,6 +1494,66 @@ mod tests {
         ];
         let toks = event_tokens(&[ev]);
         assert_eq!(toks, vec![primary, residual]);
+    }
+
+    /// A6: a failed block must re-pin the live cursor to that block and forbid
+    /// the completed-range checkpoint — `run_live` gates `set_sync_state` on
+    /// exactly this verdict, so a partially indexed range is never recorded as
+    /// complete.
+    #[test]
+    fn failed_block_attempt_reports_no_sync_advance() {
+        let failed = after_block_attempt(3, 100, false);
+        assert_eq!(failed.next_block, Some(100));
+        assert!(!failed.advance_sync);
+        assert_eq!(failed.consecutive_failures, 4);
+
+        // A second failure keeps counting; failures never reset the cap.
+        let again = after_block_attempt(failed.consecutive_failures, 100, false);
+        assert_eq!(again.next_block, Some(100));
+        assert!(!again.advance_sync);
+        assert_eq!(again.consecutive_failures, 5);
+
+        // Success resets the counter and lets the range be checkpointed.
+        let ok = after_block_attempt(again.consecutive_failures, 100, true);
+        assert!(ok.advance_sync);
+        assert_eq!(ok.consecutive_failures, 0);
+        assert_eq!(ok.next_block, None);
+    }
+
+    /// A6 end-to-end shape without an RPC: replaying the poll body's decision
+    /// and its `set_sync_state` gate leaves `indexed_to` below the failed block
+    /// and the block unclassified.
+    #[test]
+    fn failed_block_is_never_checkpointed_as_complete() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let chain_id = 137u64;
+        store.set_sync_state(chain_id, 99, 99).unwrap();
+
+        let cursor = 100u64;
+        let safe = 104u64;
+        let failing_block = 102u64;
+        let mut failures = 0u32;
+        let mut range_completed = true;
+        let mut next_block = None;
+        for block in cursor..=safe {
+            let attempt = after_block_attempt(failures, block, block != failing_block);
+            failures = attempt.consecutive_failures;
+            range_completed &= attempt.advance_sync;
+            if let Some(n) = attempt.next_block {
+                next_block = Some(n);
+                break;
+            }
+        }
+        // Mirrors `run_live`'s post-loop checkpoint gate.
+        if range_completed {
+            store.set_sync_state(chain_id, safe, safe).unwrap();
+            next_block = Some(safe + 1);
+        }
+
+        assert_eq!(next_block, Some(failing_block));
+        assert!(!range_completed);
+        assert!(store.get_indexed_to(chain_id).unwrap() < failing_block);
+        assert!(!store.block_classified(failing_block).unwrap());
     }
 
     fn sample() -> MevEvent {
