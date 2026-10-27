@@ -335,13 +335,28 @@ impl ExplorerStore {
                         .map(|p| crate::explorer::pricing::token_amount_to_usd(amt, p)),
                     _ => None,
                 };
+                // The classifier netted `borrowed + fee` into the ledger when
+                // the repay Transfer was absent, so the residual it reported is
+                // already fee-netted: subtracting the fee here would count it
+                // twice. The fee is still written to the row for display.
+                let fee_netted = ev
+                    .details
+                    .get("flashloan_fee_netted_in_ledger")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let fee_for_net = if fee_netted {
+                    0.0
+                } else {
+                    flashloan_fee_usd.unwrap_or(0.0)
+                };
                 let net = match (profit_usd, gas_usd) {
-                    (Some(g), Some(gg)) => Some(g - gg - flashloan_fee_usd.unwrap_or(0.0)),
+                    (Some(g), Some(gg)) => Some(g - gg - fee_for_net),
                     _ => None,
                 };
                 // Sandwich profitability gate: a sandwich whose
                 // extractable profit does not cover combined front+back gas
-                // (plus any flash-loan fee) is not a realized-MEV op. Drop it
+                // (plus the flash-loan fee, unless the classifier already
+                // netted it into the ledger) is not a realized-MEV op. Drop it
                 // rather than persist a provably lossy record. Unowned-net
                 // (missing price) events are kept — the gate never guesses.
                 if ev.kind == MevKind::Sandwich {

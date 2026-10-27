@@ -51,6 +51,10 @@ pub(super) fn classify_arbs(
         // ledger already nets it, so subtracting again would erase real profit.
         let mut flashloan_fee_wei: Option<U256> = None;
         let mut flashloan_fee_token: Option<Address> = None;
+        // Largest fee among loans the ledger actually netted. The event's
+        // recorded fee is the max across *all* loans, so only an equal value
+        // proves the recorded fee is already inside the residual.
+        let mut max_netted_fee: Option<U256> = None;
         for fl in &tx.flashloans {
             if fl.token.is_zero() || fl.amount.is_zero() {
                 continue;
@@ -75,11 +79,18 @@ pub(super) fn classify_arbs(
                 .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
             let repaid = repaid_total >= fl.amount;
             if !repaid {
-                net_flash_loan(&mut ledger, borrower, fl.token, fl.amount, fee);
-                if let Some(to) = tx.to {
-                    if to != borrower {
-                        net_flash_loan(&mut ledger, to, fl.token, fl.amount, fee);
-                    }
+                // The principal sits where the loan was delivered: the
+                // recipient (executor contract) when the provider names one,
+                // else the borrower. Netting `tx.to` in addition used to strip
+                // the same principal from the EOA, erasing its real profit.
+                let owner = if fl.recipient.is_zero() {
+                    borrower
+                } else {
+                    fl.recipient
+                };
+                net_flash_loan(&mut ledger, owner, fl.token, fl.amount, fee);
+                if !fee.is_zero() && max_netted_fee.is_none_or(|f| fee > f) {
+                    max_netted_fee = Some(fee);
                 }
             }
             if !fee.is_zero() && flashloan_fee_wei.is_none_or(|f| fee > f) {
@@ -297,6 +308,11 @@ pub(super) fn classify_arbs(
         });
         if tags.contains(&"savax_rate_arb") {
             details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
+        }
+        // The recorded fee is already inside the residual iff its loan was
+        // netted above (repay leg absent). Persist must not subtract it again.
+        if flashloan_fee_wei.is_some() && flashloan_fee_wei == max_netted_fee {
+            details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
         }
         if let Some(from_addr) = forwarded_from {
             details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
@@ -827,7 +843,7 @@ mod repay_tests {
     use super::*;
     use crate::explorer::classify::classify_block;
     use crate::explorer::test_fixtures::{
-        block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC,
+        block, swap, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC,
     };
     use crate::explorer::types::FlashLoanFact;
     use alloy::primitives::address;
@@ -887,6 +903,77 @@ mod repay_tests {
             arb.and_then(|e| e.profit_amount),
             Some(U256::from(200u64)),
             "principal must not be netted twice; residual is +200"
+        );
+    }
+
+    /// Executor contract distinct from the EOA: the loan principal is held by
+    /// the recipient (`tx.to`), and the provider pulls the repay back
+    /// internally (no repay Transfer). Only the recipient owns that principal,
+    /// so netting the EOA as well erases the swept +200 and rejects the op.
+    fn executor_owned_loan_input() -> BlockInput {
+        const EXEC: Address = address!("9000000000000000000000000000000000000009");
+        let mut t = tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, EXEC, 1000), // loan in → executor
+                transfer(1, USDC, EXEC, POOL_A, 1000),
+                transfer(2, TOKA, POOL_A, EXEC, 1100),
+                transfer(3, TOKA, EXEC, POOL_B, 1100),
+                transfer(4, USDC, POOL_B, EXEC, 1200),
+                // Profit sweep; no repay Transfer follows (the provider pulls
+                // 1005 back internally), so this exercises the `!repaid` branch.
+                transfer(5, USDC, EXEC, ATK, 200),
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(1000u64),
+            fee: Some(U256::from(5u64)),
+            recipient: EXEC,
+            provider: PROVIDER,
+        });
+        block(vec![t])
+    }
+
+    /// The borrowed principal must be netted against exactly one owner (the
+    /// loan recipient), leaving the EOA's swept profit intact.
+    #[test]
+    fn executor_held_flash_loan_is_netted_against_one_owner() {
+        let input = executor_owned_loan_input();
+        let out = classify_block(&input);
+        assert!(
+            out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "executor-held flash loan must classify: rejects were {:?}",
+            out.rejects
+        );
+        let arb = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::ArbAtomic)
+            .expect("arb present");
+        assert_eq!(
+            arb.profit_amount,
+            Some(U256::from(200u64)),
+            "the EOA's swept profit (200) must survive; only the recipient owns the principal"
+        );
+        // The recorded fee came from the netted loan, so persist must not
+        // subtract it from the already fee-netted residual again.
+        assert_eq!(
+            arb.details
+                .get("flashloan_fee_netted_in_ledger")
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 }

@@ -529,6 +529,67 @@ mod tests {
             .contains("MULTI_ASSET_PRICING"));
     }
 
+    /// A ledger that already absorbed the flash-loan fee (the repay leg was
+    /// absent, so `arb.rs` recorded `flashloan_fee_netted_in_ledger`) must not
+    /// have that fee removed a second time at persist. The unfetched case keeps
+    /// the old `profit − gas − fee` arithmetic, and the fee stays on the row
+    /// for display either way.
+    #[test]
+    fn flashloan_fee_is_not_subtracted_twice_when_ledger_netted_it() {
+        let tok = address!("4444000000000000000000000000000000000004"); // 6 decimals
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(tok, token_usd(0.5, 6));
+        let profit_usd = 0.5; // 1_000_000 units @ $0.5
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+        let fee_usd = 1_000f64 / 1e6 * 0.5; // 1_000 units @ $0.5 = $0.0005
+
+        let mut ev = sample_event(400);
+        ev.profit_token = Some(tok);
+        ev.profit_amount = Some(U256::from(1_000_000u64));
+        ev.gas_cost_wei = U256::from(100_000_000_000_000u64);
+        ev.flashloan_fee_wei = Some(U256::from(1_000u64));
+        ev.flashloan_fee_token = Some(tok);
+
+        // No signal: the fee was not netted into the ledger, so persist removes it.
+        let plain = ev.clone();
+        // Ledger netted the fee: persist must not remove it again.
+        let mut netted = ev;
+        netted.details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
+
+        for (block, mut event, expected_net) in [
+            (400u64, plain, profit_usd - gas_usd - fee_usd),
+            (401, netted, profit_usd - gas_usd),
+        ] {
+            event.block = block;
+            let store = ExplorerStore::open_in_memory().unwrap();
+            seed_block(
+                &store,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &B256::repeat_byte(block as u8),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[event],
+                    token_prices: &prices,
+                },
+            );
+            let ops = store.ops_in_range(block, block, &[]).unwrap();
+            assert_eq!(ops.len(), 1);
+            let net = ops[0].net_profit_usd.expect("net is priced");
+            assert!(
+                (net - expected_net).abs() < 1e-9,
+                "block {block}: net {net} != expected {expected_net}"
+            );
+            // Display keeps the fee on the row in both cases.
+            let fee_usd_row = ops[0].flashloan_fee_usd.expect("fee stays visible");
+            assert!(
+                (fee_usd_row - fee_usd).abs() < 1e-12,
+                "block {block}: fee {fee_usd_row} != {fee_usd}"
+            );
+        }
+    }
+
     #[test]
     fn fot_profit_token_flagged_approximate_and_realized_rate_falls_back() {
         let usdt = address!("dac17f958d2ee523a2206206994597c13d831ec7"); // bundled FOT
