@@ -332,11 +332,20 @@ fn render_window(r: &WindowReport) {
         usd(q.net_usd_inferred),
         q.ops_approx,
     );
-    if q.ops_native_unpriced + q.ops_multi_asset + q.ops_pricing_clamped > 0 {
+    if q.ops_native_unpriced + q.ops_multi_asset + q.ops_pricing_clamped + q.ops_flash_fee_unpriced
+        > 0
+    {
+        // Shown only when non-zero: a window without unpriced flash fees keeps
+        // the historical warning text verbatim.
+        let flash_fee = if q.ops_flash_fee_unpriced > 0 {
+            format!(" | {} flash-fee-unpriced", q.ops_flash_fee_unpriced)
+        } else {
+            String::new()
+        };
         eprintln!(
-            "  pricing reasons: {} native-unpriced | {} multi-asset | {} clamped \
+            "  pricing reasons: {} native-unpriced | {} multi-asset | {} clamped{} \
              (USD figures approximate; net may be incomplete)",
-            q.ops_native_unpriced, q.ops_multi_asset, q.ops_pricing_clamped,
+            q.ops_native_unpriced, q.ops_multi_asset, q.ops_pricing_clamped, flash_fee,
         );
     }
     if let Some(pct) = o.net_concentration_pct() {

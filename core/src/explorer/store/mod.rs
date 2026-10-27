@@ -236,6 +236,9 @@ pub struct ReportQuality {
     pub ops_multi_asset: i64,
     /// Ops whose details carry the `pricing_clamped` reason.
     pub ops_pricing_clamped: i64,
+    /// Ops whose details carry the `FLASH_FEE_UNPRICED` reason: a non-zero
+    /// flash-loan fee with no usable quote, not already netted into the ledger.
+    pub ops_flash_fee_unpriced: i64,
 }
 
 /// Revenue-report window header (bare `explorer` overview).
@@ -1295,6 +1298,105 @@ mod tests {
             ops.iter().any(|op| op.profit_usd.is_none()),
             "expected one NULL-profit op"
         );
+    }
+
+    /// A non-zero flash-loan fee whose token has no quote is *reported*, not
+    /// silently netted as $0: the row keeps `flashloan_fee_usd = NULL`, carries
+    /// the `FLASH_FEE_UNPRICED` pricing reason (and `usd_approximate`), and is
+    /// counted in `ReportQuality`. The fee the ledger already absorbed (A13) is
+    /// exempt: its residual is inside the token amount, so the missing quote
+    /// does not make `net` incomplete and flagging it would be a false alarm.
+    #[test]
+    fn unpriced_flashloan_fee_is_flagged_unless_the_ledger_netted_it() {
+        let priced = address!("4444000000000000000000000000000000000004"); // 6 decimals
+        let unpriced_tok = address!("0a00000000000000000000000000000000000000");
+        // Only the profit token is priced — the fee token has no quote at all.
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(priced, token_usd(0.5, 6));
+        let profit_usd = 0.5; // 1_000_000 units @ $0.5
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+
+        // Event A: unpriced fee, no netting signal → must be flagged.
+        let mut a = sample_event(700);
+        a.profit_token = Some(priced);
+        a.profit_amount = Some(U256::from(1_000_000u64));
+        a.gas_cost_wei = U256::from(100_000_000_000_000u64);
+        a.flashloan_fee_token = Some(unpriced_tok);
+        a.flashloan_fee_wei = Some(U256::from(1_000u64));
+
+        // Event B: same inputs, but the ledger already netted the fee → no flag.
+        let mut b = a.clone();
+        b.block = 701;
+        b.details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
+
+        let store = ExplorerStore::open_in_memory().unwrap();
+        for ev in [a, b] {
+            let block = ev.block;
+            seed_block(
+                &store,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &B256::repeat_byte(block as u8),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[ev],
+                    token_prices: &prices,
+                },
+            );
+        }
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert_eq!(
+            ov.quality.ops_flash_fee_unpriced, 1,
+            "only the non-netted fee is flagged"
+        );
+        // note_pricing_issue also marks the flagged op approximate.
+        assert_eq!(
+            ov.quality.ops_approx, 1,
+            "the flagged op is the only approximate one"
+        );
+
+        let ops = store.ops_in_range(700, 701, &[]).unwrap();
+        assert_eq!(ops.len(), 2);
+        let row = |block: u64| ops.iter().find(|op| op.block_number == block).unwrap();
+        let details = |block: u64| row(block).details_json.clone().unwrap_or_default();
+
+        let a_details = details(700);
+        assert!(
+            a_details.contains("FLASH_FEE_UNPRICED"),
+            "flagged op must carry the reason: {a_details}"
+        );
+        assert!(
+            a_details.contains("usd_approximate"),
+            "the reason must also mark the op approximate: {a_details}"
+        );
+        let b_details = details(701);
+        assert!(
+            !b_details.contains("FLASH_FEE_UNPRICED"),
+            "a ledger-netted fee must not be flagged: {b_details}"
+        );
+        assert!(
+            !b_details.contains("usd_approximate"),
+            "a ledger-netted fee must not be marked approximate: {b_details}"
+        );
+
+        // Neither row invents a $0 quote, and A13's arithmetic is unchanged:
+        // the unpriceable fee contributes nothing to `net` for both.
+        for block in [700u64, 701] {
+            let op = row(block);
+            assert!(
+                op.flashloan_fee_usd.is_none(),
+                "block {block}: unpriced fee must stay NULL, not 0.0"
+            );
+            let net = op.net_profit_usd.unwrap_or(f64::NAN);
+            assert!(
+                (net - (profit_usd - gas_usd)).abs() < 1e-9,
+                "block {block}: net {net} != {}",
+                profit_usd - gas_usd
+            );
+        }
     }
 
     /// The net-concentration guard must never divide by zero and must only emit

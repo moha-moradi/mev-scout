@@ -433,7 +433,8 @@ impl ExplorerStore {
                     COALESCE(SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%NATIVE_UNPRICED%' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%MULTI_ASSET_PRICING%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%FLASH_FEE_UNPRICED%' THEN 1 ELSE 0 END), 0)
              FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
@@ -466,6 +467,7 @@ impl ExplorerStore {
                     ops_native_unpriced: r.get::<_, i64>(16).unwrap_or(0),
                     ops_multi_asset: r.get::<_, i64>(17).unwrap_or(0),
                     ops_pricing_clamped: r.get::<_, i64>(18).unwrap_or(0),
+                    ops_flash_fee_unpriced: r.get::<_, i64>(19).unwrap_or(0),
                 },
             })
         })?;

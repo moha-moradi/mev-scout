@@ -329,10 +329,28 @@ impl ExplorerStore {
                 let gas_usd = native_price_usd
                     .map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
                 // Flash-loan fee in USD via the borrowed token's price (2.2).
+                // A non-zero fee whose token has no usable quote is not worth
+                // $0: the row keeps NULL (never an invented zero) and the op is
+                // flagged so the report can say the fee is unmeasurable. A zero
+                // quote is not a price (A14), so a non-positive/non-finite USD
+                // value counts as unpriced too.
+                let mut flash_fee_unpriced = false;
                 let flashloan_fee_usd = match (ev.flashloan_fee_token, ev.flashloan_fee_wei) {
-                    (Some(tok), Some(amt)) => token_prices
-                        .get(&tok)
-                        .map(|p| crate::explorer::pricing::token_amount_to_usd(amt, p)),
+                    (Some(tok), Some(amt)) if !amt.is_zero() => match token_prices.get(&tok) {
+                        Some(p) => {
+                            let usd = crate::explorer::pricing::token_amount_to_usd(amt, p);
+                            if usd.is_finite() && usd > 0.0 {
+                                Some(usd)
+                            } else {
+                                flash_fee_unpriced = true;
+                                None
+                            }
+                        }
+                        None => {
+                            flash_fee_unpriced = true;
+                            None
+                        }
+                    },
                     _ => None,
                 };
                 // The classifier netted `borrowed + fee` into the ledger when
@@ -344,6 +362,13 @@ impl ExplorerStore {
                     .get("flashloan_fee_netted_in_ledger")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                // Only an unpriced fee the ledger did *not* already absorb makes
+                // `net` incomplete. A netted fee sits inside the token residual,
+                // so its missing USD quote changes nothing downstream — flagging
+                // it would claim a gap that does not exist.
+                if flash_fee_unpriced && !fee_netted {
+                    note_pricing_issue(&mut details_json, "FLASH_FEE_UNPRICED");
+                }
                 let fee_for_net = if fee_netted {
                     0.0
                 } else {

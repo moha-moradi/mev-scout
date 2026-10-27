@@ -707,12 +707,12 @@ git commit -m "fix(explorer): backfill skips failed chunks and reports the gap i
 
 **Problem:** When a flash-loan fee token is unpriced, `flashloan_fee_usd` is `None` and net is computed as `g - gg - 0.0` — the fee silently becomes $0, overstating net with no pricing-reason flag.
 
-- [ ] **Step 1: Read** `core/src/explorer/store/facts.rs:236-380` to see how `NATIVE_UNPRICED`/`MULTI_ASSET_PRICING` details flags and the `ReportQuality` counters work.
-- [ ] **Step 2: Implement** — where the flash fee is priced (facts.rs:338-341): when the fee is non-zero in token terms but `usd` lookup fails, append `"FLASH_FEE_UNPRICED"` to the event's pricing-reason details (same mechanism as `NATIVE_UNPRICED`), and add an `ops_flash_fee_unpriced` counter to `ReportQuality` surfaced in `report.rs`'s pricing-reasons warning line (report.rs:326-334 — add `| {n} flash-fee-unpriced` when non-zero). Net math stays as-is (still excludes the unknown fee) but it is now visible and countable. Test: build a persisted op with an unpriced fee token via the golden-test store pattern and assert the detail flag + quality counter.
+- [x] **Step 1: Read** `core/src/explorer/store/facts.rs:236-380` to see how `NATIVE_UNPRICED`/`MULTI_ASSET_PRICING` details flags and the `ReportQuality` counters work.
+- [x] **Step 2: Implement** — where the flash fee is priced (facts.rs:338-341): when the fee is non-zero in token terms but `usd` lookup fails, append `"FLASH_FEE_UNPRICED"` to the event's pricing-reason details (same mechanism as `NATIVE_UNPRICED`), and add an `ops_flash_fee_unpriced` counter to `ReportQuality` surfaced in `report.rs`'s pricing-reasons warning line (report.rs:326-334 — add `| {n} flash-fee-unpriced` when non-zero). Net math stays as-is (still excludes the unknown fee) but it is now visible and countable. Test: build a persisted op with an unpriced fee token via the golden-test store pattern and assert the detail flag + quality counter.
 >
 > **Cross-refs (2026-10-25 review).** Land **A14 before A9**: today a `0.0` quote is accepted as a valid price (`pricing.rs:151-152` has no `> 0.0` guard), so an "unpriced fee" can already be misreported as a priced-at-zero one, and this task's flag would then be describing the wrong condition. And coordinate with **A13**, which changes the same `facts.rs:338-341` region for the opposite reason (the fee counted *twice* when it was already netted into the ledger): A13 decides how many times the fee is subtracted, A9 decides what to say when it cannot be priced at all. Do them in that order so the second one builds on settled arithmetic.
-- [ ] **Step 3: Verify** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`
-- [ ] **Step 4: Commit** — `git commit -m "fix(explorer): flag unpriced flash-loan fees in pricing reasons instead of netting them as zero"`
+- [x] **Step 3: Verify** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`
+- [x] **Step 4: Commit** — `git commit -m "fix(explorer): flag unpriced flash-loan fees in pricing reasons instead of netting them as zero"`
 
 ---
 
