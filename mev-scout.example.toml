@@ -75,6 +75,12 @@ output = "table"
 # ── Explorer (realized-MEV forensic layer) ──────────────────────────
 # [explorer]
 # confirmations = 6
+# Explorer SQLite path. Leave unset: each chain then gets its own
+# ./cache/explorer-<chain>.sqlite. Setting one shared path is rejected at
+# load when the config defines multiple [chains.*] sections — the explorer
+# fact tables are not chain-keyed, so two chains would corrupt each other's
+# rows. Single-chain configs (e.g. hist.toml) may set it freely.
+# db_path = "./cache/explorer-polygon.sqlite"
 # Detector-vs-realized MEV gate (corpus / offline checks): percent band and
 # absolute USD floor when expected net ≈ 0.
 # mev_tolerance_pct = 20.0

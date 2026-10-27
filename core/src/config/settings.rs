@@ -581,6 +581,32 @@ impl Config {
         }
     }
 
+    /// Reject a shared `explorer.db_path` when the config targets more than
+    /// one chain. The explorer fact tables carry no chain column, so two
+    /// chains pointed at one file overwrite each other's rows (a classified
+    /// block on one chain makes the other skip it, and `unwind_from` deletes
+    /// the other chain's facts). Must run on the *user-authored* chain
+    /// sections — before `merge_default_chains` inserts the built-in
+    /// registry — and keeps the single-chain config working (`hist.toml`).
+    /// Per-chain schema keying is Task B6's migration; this guard is the
+    /// immediate safety (plan Task A18).
+    pub fn validate_explorer_db_isolation(&self) -> error::Result<()> {
+        if self.explorer.db_path.is_empty() || self.chains.len() <= 1 {
+            return Ok(());
+        }
+        let mut names: Vec<&str> = self.chains.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        Err(error::Error::Other(format!(
+            "explorer.db_path = '{}' is set while the config defines multiple chains ({}). \
+             Explorer fact tables are not chain-keyed, so every chain would share one \
+             database and corrupt each other's rows. Remove `[explorer] db_path` to use \
+             the per-chain defaults (./cache/explorer-<chain>.sqlite), or keep a single \
+             `[chains.*]` section.",
+            self.explorer.db_path,
+            names.join(", ")
+        )))
+    }
+
     /// Parse a TOML configuration file from disk.
     pub fn load(path: &str) -> error::Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
@@ -591,6 +617,7 @@ impl Config {
         })?;
         cfg.expand_env_secrets();
         cfg.config_path = Some(PathBuf::from(path));
+        cfg.validate_explorer_db_isolation()?;
         // Same field-wise merge as `load_or_default`: partial `[chains.<name>]`
         // must not wipe built-in pool_discovery_start_block / factories / vaults.
         merge_default_chains(&mut cfg.chains);
@@ -667,6 +694,7 @@ impl Config {
                 }
             }
         };
+        cfg.validate_explorer_db_isolation()?;
         // Field-wise merge: a partial `[chains.<name>]` (RPC-only) must not
         // wipe built-in pool_discovery_start_block / factories / vaults.
         merge_default_chains(&mut cfg.chains);
@@ -1080,6 +1108,90 @@ fn expand_placeholders(s: &str, lookup: &impl Fn(&str) -> Option<String>) -> Str
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod explorer_db_isolation_tests {
+    use super::Config;
+
+    fn parse(body: &str) -> Config {
+        Config::from_toml_str_with(body, &[])
+    }
+
+    #[test]
+    fn shared_explorer_db_with_multiple_chain_sections_is_rejected() {
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/shared-explorer.sqlite"
+
+[chains.polygon]
+chain_id = 137
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        let err = cfg.validate_explorer_db_isolation().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("explorer.db_path"),
+            "error must name the offending key: {msg}"
+        );
+        assert!(
+            msg.contains("polygon") && msg.contains("avalanche"),
+            "error must name the chains involved: {msg}"
+        );
+    }
+
+    #[test]
+    fn single_chain_section_with_explorer_db_path_still_loads() {
+        // The hist.toml pattern: one [chains.*] section plus an explicit
+        // explorer db_path must keep working.
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/explorer-hist.sqlite"
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert_eq!(cfg.explorer.db_path, "./cache/explorer-hist.sqlite");
+    }
+
+    #[test]
+    fn multiple_chain_sections_without_explorer_db_path_still_load() {
+        // Per-chain default paths (./cache/explorer-<chain>.sqlite) keep the
+        // chains isolated, so a multi-chain registry without a shared
+        // explorer.db_path is fine.
+        let cfg = parse(
+            r#"
+[chains.polygon]
+chain_id = 137
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert!(cfg.explorer.db_path.is_empty());
+    }
+
+    #[test]
+    fn no_chain_sections_with_explorer_db_path_still_loads() {
+        // No [chains.*] sections means the config runs the single default
+        // chain; nothing can share the explorer DB yet.
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/explorer-solo.sqlite"
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert_eq!(cfg.explorer.db_path, "./cache/explorer-solo.sqlite");
+    }
 }
 
 #[cfg(test)]

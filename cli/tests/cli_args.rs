@@ -631,13 +631,22 @@ fn report_selects_explicit_run_id_offline() {
         .unwrap()
         .replace('\\', "/");
 
+    // Single-chain config: the example template is a multi-chain registry,
+    // and a shared explorer.db_path across chain sections is rejected at load
+    // (explorer fact tables are not chain-keyed).
     let write_cfg = |ws: &std::path::Path, extras: &[(&str, &str)]| -> String {
-        let path = make_cfg(ws, extras);
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(f, "\n[explorer]\ndb_path = \"{explorer_db}\"").unwrap();
-        path
+        let mut body = String::from("chain = \"polygon\"\n");
+        for (key, value) in extras {
+            if value.starts_with('"') {
+                body.push_str(&format!("{key} = {value}\n"));
+            } else {
+                body.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+        }
+        body.push_str(&format!("\n[explorer]\ndb_path = \"{explorer_db}\"\n"));
+        let path = ws.join("cfg-single-chain.toml");
+        std::fs::write(&path, body).unwrap();
+        path.to_str().unwrap().to_string()
     };
 
     let cfg_path = write_cfg(&ws, &[("output", "\"json\""), ("db_path", &cache_db)]);
