@@ -922,6 +922,10 @@ struct BlockAttempt {
 
 /// Fold one block-index attempt into the live loop's state. Success resets the
 /// failure counter; failure counts up (saturating) and forbids the checkpoint.
+///
+/// This is the only constructor, so `next_block == Some(_)` and
+/// `advance_sync == false` are never produced separately: pinning the retry
+/// block and clearing the range verdict always happen together.
 fn after_block_attempt(failures: u32, block: u64, ok: bool) -> BlockAttempt {
     if ok {
         BlockAttempt {
@@ -935,6 +939,21 @@ fn after_block_attempt(failures: u32, block: u64, ok: bool) -> BlockAttempt {
             advance_sync: false,
             consecutive_failures: failures.saturating_add(1),
         }
+    }
+}
+
+/// Post-loop checkpoint decision for one `run_live` poll over `[cursor..=safe]`.
+///
+/// `Some(resume_at)` means every block in the range indexed, so the caller may
+/// persist `(safe, safe)` and continue at `resume_at`. `None` means a block
+/// failed and the checkpoint must stay where it was — recording the range as
+/// complete would make resume logic skip the failed blocks forever (silent data
+/// loss). Pure so this gate is testable without an RPC.
+fn checkpoint_target(range_completed: bool, safe: u64) -> Option<u64> {
+    if range_completed {
+        Some(safe.saturating_add(1))
+    } else {
+        None
     }
 }
 
@@ -1045,7 +1064,7 @@ pub async fn run_live(
                         if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
                             anyhow::bail!(
                                 "live indexing aborted after {consecutive_failures} consecutive \
-                                 failures (next block {cursor}): native price fetch: {e}"
+                                 failures (next block {cursor}): native price fetch: {e:#}"
                             );
                         }
                         warn!(
@@ -1086,7 +1105,7 @@ pub async fn run_live(
                         if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
                             anyhow::bail!(
                                 "live indexing aborted after {consecutive_failures} consecutive \
-                                 failures at block {block}: {e}"
+                                 failures at block {block}: {e:#}"
                             );
                         }
                         warn!(
@@ -1099,15 +1118,19 @@ pub async fn run_live(
                     }
                 };
                 let attempt = after_block_attempt(consecutive_failures, block, true);
+                // Success verdict only resets the counter; the `for` loop
+                // advances and `range_completed` stays true.
                 consecutive_failures = attempt.consecutive_failures;
-                range_completed &= attempt.advance_sync;
                 blocks_session += 1;
                 ops_session += indexed.ops as u64;
                 emit_progress(blocks_session, ops_session, false);
             }
-            if range_completed {
+            // The checkpoint decision lives entirely in `checkpoint_target`:
+            // `None` (failed block) leaves the stored checkpoint untouched and
+            // `next_block` pinned to the failed block by the loop above.
+            if let Some(resume_at) = checkpoint_target(range_completed, safe) {
                 store.set_sync_state(cfg.chain_id, safe, safe)?;
-                next_block = Some(safe + 1);
+                next_block = Some(resume_at);
             }
             emit_progress(blocks_session, ops_session, true);
         } else {
@@ -1520,9 +1543,24 @@ mod tests {
         assert_eq!(ok.next_block, None);
     }
 
-    /// A6 end-to-end shape without an RPC: replaying the poll body's decision
-    /// and its `set_sync_state` gate leaves `indexed_to` below the failed block
-    /// and the block unclassified.
+    /// A6: the post-loop checkpoint gate `run_live` calls. Flipping, dropping
+    /// or unconditional-izing that gate fails this test, and deleting the call
+    /// site leaves `checkpoint_target` referenced only from `#[cfg(test)]` —
+    /// a `dead_code` warning under `-D warnings` — so the silent-data-loss mode
+    /// cannot come back unnoticed.
+    #[test]
+    fn checkpoint_target_requires_a_completed_range() {
+        // Any failed block in `[cursor..=safe]` ⇒ no checkpoint; retry instead.
+        assert_eq!(checkpoint_target(false, 104), None);
+        // Fully indexed range ⇒ checkpoint `(safe, safe)` and resume at safe+1.
+        assert_eq!(checkpoint_target(true, 104), Some(105));
+        // Never wraps the resume cursor at the u64 ceiling.
+        assert_eq!(checkpoint_target(true, u64::MAX), Some(u64::MAX));
+    }
+
+    /// A6 end-to-end shape without an RPC: replaying the poll body's decisions
+    /// through the real checkpoint gate leaves `indexed_to` below the failed
+    /// block and the block unclassified.
     #[test]
     fn failed_block_is_never_checkpointed_as_complete() {
         let store = ExplorerStore::open_in_memory().unwrap();
@@ -1544,16 +1582,45 @@ mod tests {
                 break;
             }
         }
-        // Mirrors `run_live`'s post-loop checkpoint gate.
-        if range_completed {
+        // `run_live`'s real post-loop gate — no mirrored `if` here.
+        if let Some(resume_at) = checkpoint_target(range_completed, safe) {
             store.set_sync_state(chain_id, safe, safe).unwrap();
-            next_block = Some(safe + 1);
+            next_block = Some(resume_at);
         }
 
         assert_eq!(next_block, Some(failing_block));
-        assert!(!range_completed);
         assert!(store.get_indexed_to(chain_id).unwrap() < failing_block);
         assert!(!store.block_classified(failing_block).unwrap());
+    }
+
+    /// A6 control: with every block indexed, the same replay through the same
+    /// gate still checkpoints `(safe, safe)` and resumes at `safe + 1` — the
+    /// gate was not fixed by simply disabling checkpointing.
+    #[test]
+    fn completed_range_is_checkpointed_at_safe() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let chain_id = 137u64;
+        store.set_sync_state(chain_id, 99, 99).unwrap();
+
+        let cursor = 100u64;
+        let safe = 104u64;
+        let mut range_completed = true;
+        let mut next_block = None;
+        for block in cursor..=safe {
+            let attempt = after_block_attempt(0, block, true);
+            range_completed &= attempt.advance_sync;
+            if let Some(n) = attempt.next_block {
+                next_block = Some(n);
+                break;
+            }
+        }
+        if let Some(resume_at) = checkpoint_target(range_completed, safe) {
+            store.set_sync_state(chain_id, safe, safe).unwrap();
+            next_block = Some(resume_at);
+        }
+
+        assert_eq!(next_block, Some(safe + 1));
+        assert_eq!(store.get_indexed_to(chain_id).unwrap(), safe);
     }
 
     fn sample() -> MevEvent {
