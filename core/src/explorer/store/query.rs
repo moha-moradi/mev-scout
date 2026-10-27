@@ -1,7 +1,7 @@
 //! Query / stats / report surface for ExplorerStore.
 use alloy::primitives::{Address, U256};
 
-use crate::explorer::types::MevKind;
+use crate::explorer::types::{Confidence, MevKind};
 use crate::types::{MevOpportunity, Strategy};
 
 use super::{
@@ -10,13 +10,16 @@ use super::{
 };
 
 /// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.
-fn report_filter_clause(kind: Option<&str>, confidence: Option<&str>) -> String {
+///
+/// Takes the enums (not `&str`) so arbitrary strings cannot reach SQL: the
+/// SQL spelling is always [`MevKind::as_str`] / [`Confidence::as_str`].
+fn report_filter_clause(kind: Option<MevKind>, confidence: Option<Confidence>) -> String {
     let mut s = String::new();
     if let Some(k) = kind {
-        s.push_str(&format!("AND kind = '{k}' "));
+        s.push_str(&format!("AND kind = '{}' ", k.as_str()));
     }
     if let Some(c) = confidence {
-        s.push_str(&format!("AND confidence = '{c}' "));
+        s.push_str(&format!("AND confidence = '{}' ", c.as_str()));
     }
     s
 }
@@ -83,8 +86,8 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
         top_grouped(&self.conn, "eoa", since_ts, limit, kind, confidence)
     }
@@ -94,8 +97,8 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -122,16 +125,16 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
         // Pools live inside route_json; extract with json_each.
         let mut filter = String::new();
         if let Some(k) = kind {
-            filter.push_str(&format!("AND m.kind = '{k}' "));
+            filter.push_str(&format!("AND m.kind = '{}' ", k.as_str()));
         }
         if let Some(c) = confidence {
-            filter.push_str(&format!("AND m.confidence = '{c}' "));
+            filter.push_str(&format!("AND m.confidence = '{}' ", c.as_str()));
         }
         let sql = format!(
             "SELECT j.value->>'$.pool' AS label,
@@ -402,8 +405,8 @@ impl ExplorerStore {
     pub fn report_window_overview(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<ReportOverview> {
         let filter = report_filter_clause(kind, confidence);
         // Reason counts scan `details_json`. These tokens are written verbatim
@@ -497,8 +500,8 @@ impl ExplorerStore {
     pub fn report_by_kind(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<ReportRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -525,8 +528,8 @@ impl ExplorerStore {
     pub fn report_daily(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<ReportRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -555,8 +558,8 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<MevOpRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -587,5 +590,18 @@ impl ExplorerStore {
             |r| r.get(0),
         )?;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::explorer::types::{Confidence, MevKind};
+
+    #[test]
+    fn filter_clause_takes_enums_not_strings() {
+        let s = report_filter_clause(Some(MevKind::Sandwich), Some(Confidence::Exact));
+        assert!(s.contains("kind = 'sandwich'"));
+        assert!(s.contains("confidence = 'exact'"));
     }
 }

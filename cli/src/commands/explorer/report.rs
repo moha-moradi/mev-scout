@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use mev_scout_core::chain::timing::block_time_secs;
 use mev_scout_core::explorer::store::{RejectCount, ReportOverview, ReportRow, StatsRow};
+use mev_scout_core::explorer::Confidence;
 use mev_scout_core::types::OutputFormat;
 
 /// One window's worth of report data, ready for table / JSON / CSV rendering.
@@ -139,7 +140,7 @@ pub async fn cmd_explorer_report(
     let chain = v.chain_name;
     let store = explorer_store(config, chain)?;
 
-    let kind_str: Option<&str> = match kind {
+    let kind_filter: Option<MevKind> = match kind {
         None => None,
         Some(k) => {
             let parsed = MevKind::parse(k).ok_or_else(|| {
@@ -147,10 +148,20 @@ pub async fn cmd_explorer_report(
                     "invalid --kind '{k}' (expected one of arb_atomic, sandwich, frontrun, backrun, liquidation, jit, jit_arb, skim, unknown)"
                 )
             })?;
-            Some(parsed.as_str())
+            Some(parsed)
         }
     };
-    let confidence_str = confidence;
+    // The store takes typed filters; clap already restricts the CLI values, so
+    // this parse only turns the flag string into the enum.
+    let confidence_filter: Option<Confidence> = match confidence {
+        None => None,
+        Some(c) => match c.parse::<Confidence>() {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                anyhow::bail!("invalid --confidence '{c}' (expected exact, inferred, or all)")
+            }
+        },
+    };
 
     // `--windows` is comma-delimited; also tolerate spaces after commas.
     let mut window_list: Vec<String> = Vec::new();
@@ -179,14 +190,14 @@ pub async fn cmd_explorer_report(
     let mut reports: Vec<WindowReport> = Vec::with_capacity(window_list.len());
     for window in &window_list {
         let since = since_ts(Some(window));
-        let overview = store.report_window_overview(since, kind_str, confidence_str)?;
-        let by_kind = store.report_by_kind(since, kind_str, confidence_str)?;
-        let daily = store.report_daily(since, kind_str, confidence_str)?;
+        let overview = store.report_window_overview(since, kind_filter, confidence_filter)?;
+        let by_kind = store.report_by_kind(since, kind_filter, confidence_filter)?;
+        let daily = store.report_daily(since, kind_filter, confidence_filter)?;
         let top_competitors =
-            store.top_competitors_filtered(since, top, kind_str, confidence_str)?;
-        let top_senders = store.top_senders_filtered(since, 10, kind_str, confidence_str)?;
-        let top_pools = store.top_pools_filtered(since, 10, kind_str, confidence_str)?;
-        let top_ops = store.top_ops(since, top, kind_str, confidence_str)?;
+            store.top_competitors_filtered(since, top, kind_filter, confidence_filter)?;
+        let top_senders = store.top_senders_filtered(since, 10, kind_filter, confidence_filter)?;
+        let top_pools = store.top_pools_filtered(since, 10, kind_filter, confidence_filter)?;
+        let top_ops = store.top_ops(since, top, kind_filter, confidence_filter)?;
         let blocks = store.blocks_in_window(since)?;
         let classify_rejects = store.report_classify_rejects(since)?;
         let coverage_pct = expected_blocks(chain, window).map(|expected| {
@@ -215,11 +226,11 @@ pub async fn cmd_explorer_report(
         "Explorer report — {chain} windows: {}",
         window_list.join(", ")
     );
-    if let Some(k) = kind_str {
+    if let Some(k) = kind_filter {
         println!("  (kind filter: {k})");
     }
-    if let Some(c) = confidence_str {
-        println!("  (confidence filter: {c})");
+    if let Some(c) = confidence_filter {
+        println!("  (confidence filter: {})", c.as_str());
     }
 
     match config.output.output {

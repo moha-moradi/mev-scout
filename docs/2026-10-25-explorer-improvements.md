@@ -472,7 +472,7 @@ git commit -m "fix(explorer): aggregate split flash-loan repays instead of requi
 
 **Problem:** `report_filter_clause` (query.rs:14-23) and `ops_in_range` (query.rs:205-217) interpolate `kind`/`confidence` strings into SQL via `format!`. Safe today only because the CLI pre-validates; the store is a public API and this is one refactor away from an injection bug.
 
-- [ ] **Step 1: Write the failing test** — a compile-level change; write the API-shape test first in `query.rs`:
+- [x] **Step 1: Write the failing test** — a compile-level change; write the API-shape test first in `query.rs`:
 
 ```rust
 #[cfg(test)]
@@ -494,16 +494,16 @@ mod filter_tests {
 
 (First read `core/src/explorer/types.rs` for the exact `Confidence` variants and `as_str` spellings — the test asserts whatever `as_str()` returns; if `Confidence` has no `as_str`, add one mirroring the DB spelling. Adjust the assertion to the real strings.)
 
-- [ ] **Step 2: Change signatures** — mechanical refactor:
+- [x] **Step 2: Change signatures** — mechanical refactor:
   1. `fn report_filter_clause(kind: Option<MevKind>, confidence: Option<Confidence>) -> String` using `format!("AND kind = '{}' ", k.as_str())`.
   2. Every store query fn in `query.rs` and the leaderboard fns in `store/mod.rs` (`top_grouped`, `top_competitors_filtered`, `top_pools_filtered`, `top_senders_filtered`): change `kind: Option<&str>` → `Option<MevKind>`, `confidence: Option<&str>` → `Option<Confidence>`, pass through.
   3. `cli/src/commands/explorer/report.rs`: keep the CLI-side parse (it owns the friendly error), pass `Some(parsed)` (the enum) instead of `Some(parsed.as_str())`; delete `confidence_str` indirection and pass `Confidence::parse(...)` — check `cli/src/cli.rs:118-121` for the existing confidence validation to reuse.
   4. Grep for other callers: `grep -rn "report_by_kind\|top_competitors_filtered\|top_pools_filtered\|top_senders_filtered\|ops_in_range" --include=*.rs core cli` and update all.
 
-- [ ] **Step 3: Run gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`
+- [x] **Step 3: Run gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`
 Expected: PASS, no warnings (workspace denies them).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add core/src/explorer/store/query.rs core/src/explorer/store/mod.rs cli/src/commands/explorer/report.rs

@@ -26,7 +26,7 @@ use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::explorer::types::{MevEvent, MevKind};
+use crate::explorer::types::{Confidence, MevEvent, MevKind};
 
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
 ///
@@ -328,15 +328,15 @@ pub(super) fn top_grouped(
     group_col: &str,
     since_ts: u64,
     limit: usize,
-    kind: Option<&str>,
-    confidence: Option<&str>,
+    kind: Option<MevKind>,
+    confidence: Option<Confidence>,
 ) -> anyhow::Result<Vec<StatsRow>> {
     let mut filter = String::new();
     if let Some(k) = kind {
-        filter.push_str(&format!("AND kind = '{k}' "));
+        filter.push_str(&format!("AND kind = '{}' ", k.as_str()));
     }
     if let Some(c) = confidence {
-        filter.push_str(&format!("AND confidence = '{c}' "));
+        filter.push_str(&format!("AND confidence = '{}' ", c.as_str()));
     }
     let sql = format!(
         "SELECT {group_col} AS label, COUNT(*) AS ops,
@@ -952,17 +952,17 @@ mod tests {
         assert_eq!(n, 1);
 
         let senders = store
-            .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::ArbAtomic), None)
             .unwrap();
         assert!(!senders.is_empty());
 
         let senders_sand = store
-            .top_senders_filtered(1_699_999_000, 5, Some("sandwich"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Sandwich), None)
             .unwrap();
         assert!(!senders_sand.is_empty());
 
         let misc = store
-            .top_senders_filtered(1_699_999_000, 5, Some("liquidations"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Liquidation), None)
             .unwrap();
         assert!(misc.is_empty());
     }
@@ -1113,12 +1113,12 @@ mod tests {
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
         let ov_k = store
-            .report_window_overview(0, Some("sandwich"), None)
+            .report_window_overview(0, Some(MevKind::Sandwich), None)
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
             store
-                .report_by_kind(0, Some("sandwich"), None)
+                .report_by_kind(0, Some(MevKind::Sandwich), None)
                 .unwrap()
                 .len(),
             1
