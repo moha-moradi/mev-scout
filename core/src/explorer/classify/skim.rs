@@ -109,8 +109,7 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 profit_amount: Some(profit_amount),
                 profit_tokens: profit_tokens.clone(),
                 profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 flashloan_fee_wei: None,
                 flashloan_fee_token: None,
                 confidence: Confidence::Exact,

@@ -32,6 +32,7 @@ use crate::explorer::types::{
 
 mod arb;
 mod causal;
+mod gas;
 mod jit;
 mod legs;
 mod liquidation;

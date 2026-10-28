@@ -160,10 +160,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         .txs
         .iter()
         .filter(|t| t.tx_index == mint_tx)
-        .map(|t| {
-            U256::from(t.gas_used)
-                .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128))
-        })
+        .map(super::gas::tx_gas_cost_wei)
         .next()
         .unwrap_or(U256::ZERO);
 

@@ -1,7 +1,7 @@
 //! Liquidation + Compound V3 BuyCollateral classification passes.
 use std::collections::{HashMap, HashSet};
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::Address;
 
 use crate::explorer::interest_attr;
 use crate::explorer::profit::DeltaLedger;
@@ -172,8 +172,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
                 profit_amount: Some(liq.collateral_amount),
                 profit_tokens: vec![],
                 profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 flashloan_fee_wei,
                 flashloan_fee_token,
                 confidence: Confidence::Exact,
@@ -239,8 +238,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
                     profit_amount: Some(buy.collateral_amount),
                     profit_tokens: vec![],
                     profit_usd: None,
-                    gas_cost_wei: U256::from(tx.gas_used)
-                        .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                    gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                     flashloan_fee_wei: None,
                     flashloan_fee_token: None,
                     confidence: if paired {

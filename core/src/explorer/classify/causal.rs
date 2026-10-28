@@ -95,8 +95,7 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
                 profit_amount: Some(bamount),
                 profit_tokens: vec![],
                 profit_usd: None,
-                gas_cost_wei: U256::from(b_tx.gas_used)
-                    .saturating_mul(U256::from((b_tx.effective_gas_price_gwei * 1e9) as u128)),
+                gas_cost_wei: super::gas::tx_gas_cost_wei(b_tx),
                 flashloan_fee_wei: None,
                 flashloan_fee_token: None,
                 confidence: Confidence::Inferred,
@@ -227,10 +226,7 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                 .iter()
                 .filter(|t| t.tx_index >= *ftx && t.tx_index <= ctx)
                 .fold(U256::ZERO, |acc, t| {
-                    acc.saturating_add(
-                        U256::from(t.gas_used)
-                            .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128)),
-                    )
+                    acc.saturating_add(super::gas::tx_gas_cost_wei(t))
                 });
             out.push(MevEvent {
                 block: input.block,

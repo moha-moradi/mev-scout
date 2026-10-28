@@ -109,10 +109,7 @@ pub(super) fn fold_sandwich(
         }
         if (t.tx_index == front.tx_index || t.tx_index == back.tx_index) && seen.insert(t.tx_index)
         {
-            gas_cost_wei = gas_cost_wei.saturating_add(
-                U256::from(t.gas_used)
-                    .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128)),
-            );
+            gas_cost_wei = gas_cost_wei.saturating_add(super::gas::tx_gas_cost_wei(t));
         }
     }
     // Contract-mediated legs (logs-only): either sandwich leg targets a

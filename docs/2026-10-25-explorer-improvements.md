@@ -978,9 +978,9 @@ pub(super) fn tx_gas_cost_wei(tx: &TxInput) -> U256 {
 
 > **Reclassified (2026-10-25 review): this is a correctness task wearing a `refactor:` label.** `.round()` changes the gas cost — and therefore `net` and any sandwich-gate decision — on every fractional-gwei block. The helper extraction is the refactor; the rounding is a fix. Do them in one commit but split the message prefixes (`refactor(explorer): …; also fix gas truncation`) and run the re-baseline alongside Phase A, not after it. The 11 call sites are worth listing in the commit body so a reviewer can confirm none were missed (`grep -n "effective_gas_price_gwei \* 1e9" core/src`).
 
-- [ ] **Step 1: Create the helper** (code above) and wire `pub(super) mod gas;` into `classify/mod.rs`'s module list.
-- [ ] **Step 2: Replace all 11 sites** — each becomes `gas::tx_gas_cost_wei(tx)` (adjust the receiver name per site: `tx`, `t`, `b_tx`). Grep to confirm none remain: `grep -n "effective_gas_price_gwei \* 1e9" core/src` → expect only `classify/gas.rs` and the fixtures.
-- [ ] **Step 3: Unit test** in `gas.rs`:
+- [x] **Step 1: Create the helper** (code above) and wire `pub(super) mod gas;` into `classify/mod.rs`'s module list.
+- [x] **Step 2: Replace all 11 sites** — each becomes `gas::tx_gas_cost_wei(tx)` (adjust the receiver name per site: `tx`, `t`, `b_tx`). Grep to confirm none remain: `grep -n "effective_gas_price_gwei \* 1e9" core/src` → expect only `classify/gas.rs` and the fixtures.
+- [x] **Step 3: Unit test** in `gas.rs`:
 
 ```rust
 #[cfg(test)]
@@ -1002,8 +1002,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Gates** — `cargo test -p mev-scout-core && cargo clippy --workspace --all-targets` (golden numbers may shift microscopically upward for fractional-gwei blocks — inspect diffs; they should be gas-only).
-- [ ] **Step 5: Commit** — `git commit -m "refactor(explorer): single tx_gas_cost_wei helper; round fractional gwei instead of truncating"`
+- [x] **Step 4: Gates** — `cargo test -p mev-scout-core && cargo clippy --workspace --all-targets` (golden numbers may shift microscopically upward for fractional-gwei blocks — inspect diffs; they should be gas-only).
+- [x] **Step 5: Commit** — `git commit -m "refactor(explorer): single tx_gas_cost_wei helper; round fractional gwei instead of truncating"`
 
 ---
 

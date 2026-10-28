@@ -334,8 +334,7 @@ pub(super) fn classify_arbs(
             profit_amount: Some(amount),
             profit_tokens,
             profit_usd: None, // pricing applied at persist time
-            gas_cost_wei: U256::from(tx.gas_used)
-                .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+            gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
             flashloan_fee_wei,
             flashloan_fee_token,
             confidence: if is_forwarded {
@@ -389,8 +388,7 @@ pub(super) fn classify_arbs(
                 profit_amount: fee,
                 profit_tokens: vec![],
                 profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 flashloan_fee_wei: None,
                 flashloan_fee_token: None,
                 confidence: Confidence::Exact,
@@ -442,8 +440,7 @@ pub(super) fn classify_arbs(
             profit_amount: Some(pa),
             profit_tokens: vec![],
             profit_usd: None,
-            gas_cost_wei: U256::from(tx.gas_used)
-                .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+            gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
             flashloan_fee_wei: None,
             flashloan_fee_token: None,
             confidence: Confidence::Exact,
@@ -482,8 +479,7 @@ pub(super) fn classify_arbs(
                 profit_amount: Some(uo.actual_gas_cost),
                 profit_tokens: vec![],
                 profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
+                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 flashloan_fee_wei: None,
                 flashloan_fee_token: None,
                 confidence: Confidence::Exact,
