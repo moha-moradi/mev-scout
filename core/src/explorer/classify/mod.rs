@@ -477,10 +477,7 @@ pub(crate) fn decode_tx_logs_with_aliases(
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
 pub(crate) fn has_unresolved_tokens(s: &SwapFact) -> bool {
-    s.token_in == decode::TOKEN0_SENTINEL
-        || s.token_in == decode::TOKEN1_SENTINEL
-        || s.token_in == Address::ZERO
-        || s.token_out == Address::ZERO
+    decode::is_unresolved_token(s.token_in) || decode::is_unresolved_token(s.token_out)
 }
 
 /// Suppress `unknown` events whose swaps are entirely unresolved-direction
@@ -2258,5 +2255,35 @@ mod tests {
                 "tx {tx} carries both Sandwich and Arb/Unknown: {kinds:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unresolved_token_tests {
+    use super::*;
+    use crate::explorer::decode::{TOKEN0_SENTINEL, TOKEN1_SENTINEL};
+    use crate::explorer::test_fixtures::{swap, POOL_A, TOKA, USDC};
+
+    /// Either side of the swap can be unresolved: the old check tested the
+    /// sentinels on `token_in` only, so a resolved-in / sentinel-out edge kept
+    /// its event and poisoned downstream direction inference.
+    #[test]
+    fn sentinel_detected_on_either_side() {
+        let mut s = swap(POOL_A, USDC, TOKA, 1, 1);
+        assert!(!has_unresolved_tokens(&s), "resolved both sides");
+
+        s.token_out = TOKEN0_SENTINEL;
+        assert!(has_unresolved_tokens(&s), "out-side token0 sentinel");
+
+        s.token_out = TOKA;
+        s.token_in = TOKEN1_SENTINEL;
+        assert!(has_unresolved_tokens(&s), "in-side token1 sentinel");
+
+        s.token_in = Address::ZERO;
+        assert!(has_unresolved_tokens(&s), "in-side zero");
+
+        s.token_in = USDC;
+        s.token_out = Address::ZERO;
+        assert!(has_unresolved_tokens(&s), "out-side zero");
     }
 }

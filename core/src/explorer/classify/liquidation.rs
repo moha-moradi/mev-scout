@@ -165,7 +165,10 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
                 searcher,
                 contract: tx.to,
                 pools: vec![],
-                profit_token: Some(liq.collateral_asset),
+                // Compound V3 `Absorb` carries no per-asset seizure
+                // (collateral=0): leave profit_token NULL so downstream
+                // pricing does not special-case a zero address.
+                profit_token: (!liq.collateral_asset.is_zero()).then_some(liq.collateral_asset),
                 profit_amount: Some(liq.collateral_amount),
                 profit_tokens: vec![],
                 profit_usd: None,
@@ -232,7 +235,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
                     },
                     contract: tx.to,
                     pools: vec![],
-                    profit_token: Some(buy.collateral_asset),
+                    profit_token: (!buy.collateral_asset.is_zero()).then_some(buy.collateral_asset),
                     profit_amount: Some(buy.collateral_amount),
                     profit_tokens: vec![],
                     profit_usd: None,
@@ -273,4 +276,32 @@ fn oracle_poke_for_liq(
     feed_to_asset.iter().any(|(feed, asset)| {
         feeds_in_block.contains(feed) && (*asset == debt || *asset == collateral)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::explorer::classify::classify_block;
+    use crate::explorer::test_fixtures::{block, liquidation, tx, ATK, USDC};
+
+    /// Compound V3 `Absorb` carries no per-asset seizure (collateral = 0).
+    /// The event is still persisted (with TRANSFER_MISMATCH), but its
+    /// `profit_token` must be NULL — never `Some(0x0)`, which forces every
+    /// downstream pricing path to special-case the zero address.
+    #[test]
+    fn zero_collateral_absorb_has_no_profit_token() {
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.liquidations
+            .push(liquidation("compound_v3", ATK, Address::ZERO, USDC, 0, 100));
+        let out = classify_block(&block(vec![t]));
+        let liq = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::Liquidation)
+            .expect("zero-collateral absorb must still be persisted");
+        assert_eq!(
+            liq.profit_token, None,
+            "zero collateral asset must yield profit_token NULL, not Some(0x0)"
+        );
+    }
 }

@@ -67,13 +67,16 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 continue;
             }
             profit_tokens.sort_by_key(|a| a.0);
-            // Primary display token: prefer profit-policy priority, else largest amount.
+            // Primary display token: prefer profit-policy priority, else largest
+            // amount. `profit_tokens` is non-empty (early return above), so the
+            // best-by-amount search always yields a member — no synthetic
+            // zero-address fallback.
             let (profit_token, profit_amount) = profit_tokens
                 .iter()
                 .find(|(tok, _)| input.profit_policy.priority.contains(tok))
                 .copied()
                 .or_else(|| profit_tokens.iter().max_by(|a, b| a.1.cmp(&b.1)).copied())
-                .unwrap_or((Address::ZERO, U256::ZERO));
+                .unwrap_or(profit_tokens[0]);
 
             let recipients: Vec<String> = tokens
                 .values()

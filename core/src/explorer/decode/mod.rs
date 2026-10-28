@@ -40,7 +40,7 @@ pub use attach::attach_swap_tokens;
 pub use flash_loan::decode_flash_loan;
 pub use jit::{decode_lb_bins_liquidity, decode_v3_mint_burn};
 pub use liquidation::{decode_buy_collateral, decode_liquidation, remap_liquidation_protocol};
-pub use sentinels::{TOKEN0_SENTINEL, TOKEN1_SENTINEL};
+pub use sentinels::{is_unresolved_token, TOKEN0_SENTINEL, TOKEN1_SENTINEL};
 pub use signals::{
     decode_epoch_reward, decode_gmx_event, decode_keeper, decode_oracle_update,
     decode_rate_cache_update, decode_reserve_data, decode_user_op,

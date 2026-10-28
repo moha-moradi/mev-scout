@@ -149,7 +149,6 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
 /// `consumed` ( / kind priority).
 pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
-    let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
     // Same-pool close after a third-party victim is owned by the sandwich
     // pass (front/back anchors land in `consumed`). Cross-pool / multi-hop
     // close uses the sender's transfer ledger from front through close.
@@ -220,11 +219,19 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
             if !claimed.insert((pool, *ftx, vtx)) {
                 continue;
             }
-            let ftx_data = txs_by_index.get(ftx).copied();
-            let gas_cost_wei = ftx_data.map_or(U256::ZERO, |t| {
-                U256::from(t.gas_used)
-                    .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128))
-            });
+            // Charge gas for every tx in the front..=close window, matching the
+            // sandwich pass (both legs). The front-run P&L sums transfers
+            // across the window, so the gas side must cover it too.
+            let gas_cost_wei = input
+                .txs
+                .iter()
+                .filter(|t| t.tx_index >= *ftx && t.tx_index <= ctx)
+                .fold(U256::ZERO, |acc, t| {
+                    acc.saturating_add(
+                        U256::from(t.gas_used)
+                            .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128)),
+                    )
+                });
             out.push(MevEvent {
                 block: input.block,
                 ts: input.ts,
