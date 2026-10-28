@@ -583,7 +583,7 @@ git commit -m "fix(explorer): live indexer retries transient block/price failure
 
 **Problem:** `unwind_from` issues 9 separate DELETEs with no transaction (sync.rs:71-106). A crash mid-unwind leaves `mev_ops`/`transfers`/`txs` inconsistent with `blocks_classified`, silently corrupting the reorg recovery the function exists to provide.
 
-- [ ] **Step 1: Write the failing-style test** (atomicity can't be crash-tested; assert behavior + that an error inside rolls everything back). Read how tests construct a store (check `core/src/explorer/store/mod.rs` bottom or `core/tests/explorer_golden.rs` for the open pattern) first. The test must also insert a `rejected_candidates` row for the forked block and assert it is gone after `unwind_from` — that deletion is new in this task and would otherwise land untested:
+- [x] **Step 1: Write the failing-style test** (atomicity can't be crash-tested; assert behavior + that an error inside rolls everything back). Read how tests construct a store (check `core/src/explorer/store/mod.rs` bottom or `core/tests/explorer_golden.rs` for the open pattern) first. The test must also insert a `rejected_candidates` row for the forked block and assert it is gone after `unwind_from` — that deletion is new in this task and would otherwise land untested:
 
 ```rust
 #[cfg(test)]
@@ -602,10 +602,10 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run** — `cargo test -p mev-scout-core unwind_from`
+- [x] **Step 2: Run** — `cargo test -p mev-scout-core unwind_from`
 Expected: PASS already (this is a safety refactor; the test pins the behavior).
 
-- [ ] **Step 3: Wrap in one transaction** — rusqlite 0.31's `Connection::unchecked_transaction()` works on `&self` (no `&mut` needed, so `ExplorerStore`'s `conn` field stays non-mut):
+- [x] **Step 3: Wrap in one transaction** — rusqlite 0.31's `Connection::unchecked_transaction()` works on `&self` (no `&mut` needed, so `ExplorerStore`'s `conn` field stays non-mut):
 
 ```rust
     pub fn unwind_from(&self, fork_block: u64) -> anyhow::Result<()> {
@@ -632,10 +632,10 @@ Expected: PASS already (this is a safety refactor; the test pins the behavior).
 
 **Amendment (2026-10-25 review): the current function is missing a table, not just a transaction.** Verified against the schema: `rejected_candidates` has `block_number INTEGER NOT NULL` and `chain TEXT` (`store/schema.rs:205-224`, indexed `rejected_candidates(chain, block_number)`), so it is unwindable by block — but today's `unwind_from` never deletes it. After a reorg, reject rows from the abandoned chain keep feeding the reject counts that the revenue report prints (and that Task D3 exports to CSV), so the denominators in the "why is this kind empty" analysis become fiction. The code block above adds it. Also decide and document explicitly: `opportunities` (`schema.rs:178-201`) and `paper_sessions`/`paper_fills` are *detector-run* records, not reorg-derived chain state — do **not** unwind them, and say why in the doc comment so nobody "completes" the list later. Finally: `unwind_from` deletes 10 tables by block number, but the fact tables carry **no chain column** (see Task A18) — in a shared DB this deletes the other chain's rows. A18's config guard must land before or with A7 for that to be safe.
 
-- [ ] **Step 4: Run** — `cargo test -p mev-scout-core unwind_from && cargo test -p mev-scout-core explorer_golden`
+- [x] **Step 4: Run** — `cargo test -p mev-scout-core unwind_from && cargo test -p mev-scout-core explorer_golden`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add core/src/explorer/store/sync.rs
@@ -885,11 +885,11 @@ FROM (
 
 **Problem:** `effective_explorer_db_path` (`settings.rs:575-582`) returns `explorer.db_path` **verbatim** for every chain when it is non-empty, and `./cache/explorer-{chain}.sqlite` only when it is empty. The forensic tables carry no chain column at all — verified in `store/schema.rs`: `blocks` (`:30`), `txs` (`:40`), `transfers` (`:54`), `swaps` (`:67`), `mev_ops` (`:83`), `prices` (`:123`), `sync_state` (`:131`, keyed by `chain_id` — the one exception), `blocks_classified` (`:138`), `jit_open_positions` (`:147`), `oracle_answers` (`:161`), `reserve_rates` (`:169`) — while `opportunities` (`:180`), `rejected_candidates` (`:207`) and `paper_sessions` (`:231`) do carry `chain TEXT`. So with a shared file and two chains: chain A marking block N classified makes chain B skip block N forever (the skip lives in the `blocks_classified` check on the ingest path), and `unwind_from` (Task A7) deletes the other chain's rows. Note `hist.toml` already sets `db_path`, so this is not hypothetical for anyone who reuses that config.
 
-- [ ] **Step 1: Write the failing test** — load a config with `[explorer] db_path = "..."` and more than one enabled chain; assert `Config::load`/validation fails with an actionable message naming the offending key and the chains involved.
-- [ ] **Step 2: Implement the guard** — validate at config load: non-empty `explorer.db_path` **and** `chains.len() > 1` ⇒ hard error (not a warning; a silent cross-chain skip is worse than a failed start). Keep the single-chain case working so existing `hist.toml` usage is unaffected.
-- [ ] **Step 3: File the real fix in B6's scope, do not half-do it here** — adding `chain INTEGER NOT NULL DEFAULT <id>` to the eleven tables plus composite keys is a *migration*, and B6 is the task that builds migration machinery. B6 therefore owns it; A18 owns the immediate safety. Cross-reference both ways in the commit bodies.
-- [ ] **Step 4: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-cli -- --nocapture` for the CLI error-path test if you add one.
-- [ ] **Step 5: Commit** — `git commit -m "fix(config): reject a shared explorer.db_path across multiple chains (fact tables are not chain-keyed)"`
+- [x] **Step 1: Write the failing test** — load a config with `[explorer] db_path = "..."` and more than one enabled chain; assert `Config::load`/validation fails with an actionable message naming the offending key and the chains involved.
+- [x] **Step 2: Implement the guard** — validate at config load: non-empty `explorer.db_path` **and** `chains.len() > 1` ⇒ hard error (not a warning; a silent cross-chain skip is worse than a failed start). Keep the single-chain case working so existing `hist.toml` usage is unaffected.
+- [x] **Step 3: File the real fix in B6's scope, do not half-do it here** — adding `chain INTEGER NOT NULL DEFAULT <id>` to the eleven tables plus composite keys is a *migration*, and B6 is the task that builds migration machinery. B6 therefore owns it; A18 owns the immediate safety. Cross-reference both ways in the commit bodies.
+- [x] **Step 4: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-cli -- --nocapture` for the CLI error-path test if you add one.
+- [x] **Step 5: Commit** — `git commit -m "fix(config): reject a shared explorer.db_path across multiple chains (fact tables are not chain-keyed)"`
 
 ---
 
