@@ -751,10 +751,10 @@ git commit -m "fix(explorer): persist loss-gated sandwiches with excluded_from_n
 
 **Problem:** The doc claims "Mint before Burn" but the pairing never checks `burn_tx > mint.tx_index`, and `find` lets one Burn satisfy multiple identical Mints (duplicate JIT events).
 
-- [ ] **Step 1: Read** `classify/jit.rs:30-80` and its existing tests for the fixture pattern.
-- [ ] **Step 2: Write failing tests** — two cases: (1) Burn in tx0, Mint in tx1 (same pool/owner/ticks) must NOT pair; (2) two identical Mints (tx1, tx2) and one Burn (tx3) must produce exactly one JIT event, not two. Build with `test_fixtures` builders per the existing jit tests.
-- [ ] **Step 3: Fix** — in the pairing: require `burn_tx_index > mint.tx_index`, and consume burns (e.g. collect matched burn tx indices into a `HashSet<u64>` and skip already-consumed burns).
-- [ ] **Step 4: Verify + commit** — `cargo test -p mev-scout-core jit && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` (goldens may shift if any seeded block had duplicate pairing — inspect diffs), then `git commit -m "fix(explorer): JIT mint→burn pairing requires ordering and one-shot burn consumption"`. [live half: canonical commands]
+- [x] **Step 1: Read** `classify/jit.rs:30-80` and its existing tests for the fixture pattern.
+- [x] **Step 2: Write failing tests** — two cases: (1) Burn in tx0, Mint in tx1 (same pool/owner/ticks) must NOT pair; (2) two identical Mints (tx1, tx2) and one Burn (tx3) must produce exactly one JIT event, not two. Build with `test_fixtures` builders per the existing jit tests.
+- [x] **Step 3: Fix** — in the pairing: require `burn_tx_index > mint.tx_index`, and consume burns (e.g. collect matched burn tx indices into a `HashSet<u64>` and skip already-consumed burns).
+- [x] **Step 4: Verify + commit** — `cargo test -p mev-scout-core jit && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` (goldens may shift if any seeded block had duplicate pairing — inspect diffs), then `git commit -m "fix(explorer): JIT mint→burn pairing requires ordering and one-shot burn consumption"`. [live half: canonical commands]
 
 ---
 
