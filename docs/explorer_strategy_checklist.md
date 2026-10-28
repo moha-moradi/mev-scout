@@ -184,6 +184,36 @@ A14's checkpoint criterion is that genuinely fake-$0/NULL rows leave L (watch `f
 
 A row that disappears from L\V at a later checkpoint must map to a predicted task effect, or it is a regression flag. The only edit path for the frozen labels is a reviewed edit of `docs/oracle/adjudications-baseline.json`.
 
+### Checkpoint `phase-a` (code `6f4e8d9`, run 2026-10-28)
+
+Re-indexed the same frozen window `98572463..=98575973` from scratch (DB recreated as `cache/oracle-avalanche.sqlite`; the baseline DB was kept as `cache/oracle-avalanche.pre-a.sqlite`): 3511/3511 blocks, 117 ops in 466.7s. All Phase-A tasks landed except A20 (blocked on B7).
+
+```
+python scripts/compare_biglabs.py --db cache/oracle-avalanche.sqlite \
+  --snapshot docs/oracle/biglabs-avalanche-98572463-98575973.json \
+  --chain avalanche --lo 98572463 --hi 98575973 --label phase-a \
+  --adjudications docs/oracle/adjudications-baseline.json --local-commit 6f4e8d9
+```
+
+| metric | baseline `351a19c` | phase-a `6f4e8d9` |
+|---|---|---|
+| recall_vs_vendor | 1.0000 (46/46) | **1.0000 (46/46) — floor held** |
+| vendor_agreement (lower bound) | 0.3932 (46/117) | 0.3932 (46/117) |
+| L\V | 71 | 71 (composition unchanged: unknown=30, arb_atomic=21, jit=20) |
+| V\L | 0 | 0 |
+| matched kinds | arb_atomic 46 (of the vendor set) | arb_atomic 46 |
+| delta on V n L: median / p90 / worst | −0.531% / −0.055% / −99.399% | −0.940% / −0.610% / −99.399% (n=46, skipped local null=0) |
+| adjudication counts | tp=20, fp=1, unknown=50 | tp=20, fp=1, unknown=50 |
+
+**L\V diff vs baseline: none appeared, none disappeared** (same 71 hashes) — no `REGRESSION?` flag. The A19 relabeling is visible in the table only as confidence changes (`arb_atomic` rows stay `exact` where basis R; bundler `unknown` rows and JIT rows now read `inferred`); the oracle is blind to kind/confidence by design.
+
+Per-hash movement and attribution (M1 Step 2):
+
+- **Net changed on all 46 matched rows.** Backfill prices gas at the *run-time* native price (the explicitly deferred historical-native-pricing gap), so `net_profit_usd` is not comparable across checkpoints. The script's delta gate is on gross `profit_usd`; that is the comparable figure.
+- **Gross `profit_usd` changed on 19 WAVAX-denominated rows by a uniform −1.18%.** The new run's `prices` table has no block-hour row for hour `498053` (the old run's fetch-time hour coincided with it), so the lookup falls back to hour `498052`: 8.799 vs 8.904 USD/AVAX = ×0.98820. This is price-source variance between runs, not a task effect — the hour-convention mismatch A2 documents (token prices keyed by block hour, native by fetch hour) and the deferred historical-native-pricing work are the cause.
+- **A14 criterion:** no matched row became NULL (`skipped local null=0`); the single `fp_suspect` residue (one raw USDC unit) remains, exactly as the M0 ruling predicted ("A14 was never going to remove all six").
+- **A13/A16/A19** (fee counted once, native residuals priced, basis-labeled confidence) moved net/confidence as predicted; none touches the vendor-matched gross figures beyond the price variance above.
+
 ## Kind collision census
 
 Task A15 (2026-10-26, run 2026-10-26). Measured which `MevKind` pairs actually co-occur on the same `(block_number, tx_index)` in every DB on disk, before Task B8 turns `kind_precedence` into the tx_index claims registry. Test: `core/tests/explorer_kind_census.rs` — the two census queries and the post-B8 guard are `#[ignore]`d (gates `MEV_SCOUT_CENSUS=1` / `MEV_SCOUT_E2E=1`) and `bail!` when their gate is set but no DB resolves (A0 convention); an always-on static test prepares + executes the census SQL against the real schema. `mev_ops` has no chain column, so the chain label is the DB file stem; DB resolution is `MEV_SCOUT_CENSUS_DB` (path list) or the configured explorer DB. The plan's `gross_profit_usd` maps to the schema's `profit_usd` column (the pre-gas gross); a NULL gross (unpriced op) contributes 0 and the unpriced count is printed next to the sums.
