@@ -38,10 +38,14 @@ pub struct ProfitTokenPolicy {
 /// Wrap-pair noise: a transfer from/to the wrapped-native contract in the
 /// same tx as native-value movement. WETH `deposit` emits
 /// `Transfer(0x0, me, wad)` + `Withdrawal(me, wad)`; `withdraw` emits
-/// `Transfer(me, 0x0, wad)`. Mints/burns on the wrapper are delta noise for
-/// searchers that wrap mid-tx.
-fn is_wrap_noise(t: &TransferFact, wrapped_native: Address) -> bool {
-    t.token == wrapped_native && (t.from == Address::ZERO || t.to == Address::ZERO)
+/// `Transfer(me, 0x0, wad)`. Mints/burns on the wrapper are delta noise only
+/// when the tx actually moves native value to offset them (`tx.value`); with
+/// no paired native flow they are real token deltas and suppressing them
+/// leaves a phantom spend behind (A17).
+fn is_wrap_noise(t: &TransferFact, wrapped_native: Address, has_native_flow: bool) -> bool {
+    has_native_flow
+        && t.token == wrapped_native
+        && (t.from == Address::ZERO || t.to == Address::ZERO)
 }
 
 /// Per-address per-token delta map.
@@ -63,8 +67,10 @@ impl DeltaLedger {
         native_value: (Address, U256), // (spender_of_value, value)
     ) -> DeltaLedger {
         let mut ledger = DeltaLedger::default();
+        let (spender, v) = native_value;
+        let has_native_flow = !v.is_zero();
         for t in transfers {
-            if is_wrap_noise(t, wrapped_native) {
+            if is_wrap_noise(t, wrapped_native, has_native_flow) {
                 continue;
             }
             ledger.apply(t.token, t.from, t.amount, false);
@@ -75,7 +81,6 @@ impl DeltaLedger {
         // debit: crediting the sender hid the spend, so `has_inventory_spend`
         // returned false and native→token inventory trades (aggregator/router
         // splits) masqueraded as closed-cycle atomic arbitrage.
-        let (spender, v) = native_value;
         if !v.is_zero() && !spender.is_zero() {
             ledger.apply(wrapped_native_marker(), spender, v, false);
         }
@@ -348,6 +353,37 @@ mod tests {
         let burn = tf(1, W, me, Address::ZERO, 1000); // withdraw()
         let ledger = DeltaLedger::from_transfers(&[mint, burn], W, (Address::ZERO, U256::ZERO));
         assert_eq!(ledger.net(me, W), U256::ZERO);
+    }
+
+    /// A17: without a paired native flow the wrapper mint is a REAL incoming
+    /// delta. Dropping it unconditionally left only the outgoing spend, a
+    /// phantom inventory spend that poisoned the arb inventory vetoes.
+    #[test]
+    fn wrap_then_spend_without_native_flow_keeps_the_mint() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let pool = address!("2000000000000000000000000000000000000000");
+        let mint = tf(0, W, Address::ZERO, me, 1000); // wrap (no native leg here)
+        let spend = tf(1, W, me, pool, 1000); // spend it
+        let ledger = DeltaLedger::from_transfers(&[mint, spend], W, (Address::ZERO, U256::ZERO));
+        assert!(
+            !ledger.net_signed(me, W).is_negative(),
+            "mint + spend must net to zero, not a phantom spend of 1000"
+        );
+        assert_eq!(ledger.net(me, W), U256::ZERO);
+    }
+
+    /// A17: with the paired native flow (tx.value) present, wrapper
+    /// mint/burn is still delta noise and must stay suppressed.
+    #[test]
+    fn wrap_pair_with_native_flow_is_still_noise() {
+        let me = address!("1000000000000000000000000000000000000000");
+        let mint = tf(0, W, Address::ZERO, me, 1000); // deposit() pairs tx.value
+        let ledger = DeltaLedger::from_transfers(&[mint], W, (me, U256::from(1000u64)));
+        assert_eq!(
+            ledger.net(me, W),
+            U256::ZERO,
+            "paired wrapper mint must remain suppressed"
+        );
     }
 
     #[test]
