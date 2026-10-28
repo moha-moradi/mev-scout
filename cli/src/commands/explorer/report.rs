@@ -319,6 +319,11 @@ fn render_window(r: &WindowReport) {
         usd(o.net_usd),
         usd(o.highest_single_usd),
     );
+    // Shown only when non-zero: a window without loss-gated sandwiches keeps
+    // the historical output verbatim.
+    if o.quality.ops_excluded_from_net > 0 {
+        println!("  loss-gated ops: {}", o.quality.ops_excluded_from_net);
+    }
     let q = &o.quality;
     println!(
         "  quality: priced {}/{} ({}% coverage) | gross (priced only) ${} | exact {} (net ${}) | inferred {} (net ${}) | approx {}",

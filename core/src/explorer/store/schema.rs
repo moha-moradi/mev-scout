@@ -103,7 +103,8 @@ impl ExplorerStore {
               victim_hashes TEXT,
               details_json TEXT,
               detector TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              excluded_from_net INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
             CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
@@ -267,9 +268,17 @@ impl ExplorerStore {
             ",
         )?;
         // runtime migration for databases created before the
-        // flash-loan fee column existed. `volume_usd` likewise for pre-report DBs.
+        // flash-loan fee column existed. `volume_usd` likewise for pre-report
+        // DBs, `excluded_from_net` for pre-loss-gate DBs (A10: lossy
+        // sandwiches are persisted with the flag instead of dropped).
         Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
         Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;
+        Self::ensure_column(
+            &self.conn,
+            "mev_ops",
+            "excluded_from_net",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
         Self::ensure_mev_ops_kind_skim(&self.conn)?;
         Ok(())
     }
@@ -314,13 +323,14 @@ impl ExplorerStore {
               victim_hashes TEXT,
               details_json TEXT,
               detector TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              excluded_from_net INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO mev_ops_new SELECT
               id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
               canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
               gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
-              victim_hashes, details_json, detector, created_at
+              victim_hashes, details_json, detector, created_at, excluded_from_net
             FROM mev_ops;
             DROP TABLE mev_ops;
             ALTER TABLE mev_ops_new RENAME TO mev_ops;

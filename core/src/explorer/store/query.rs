@@ -105,7 +105,8 @@ impl ExplorerStore {
             "SELECT COALESCE(NULLIF(contract, ''), eoa) AS label,
                     COUNT(*) AS ops,
                     COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(net_profit_usd), 0) AS net_usd
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0) AS net_usd
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY label
@@ -140,7 +141,8 @@ impl ExplorerStore {
             "SELECT j.value->>'$.pool' AS label,
                     COUNT(DISTINCT m.id) AS ops,
                     COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(m.net_profit_usd), 0) AS net_usd
+                    COALESCE(SUM(CASE WHEN m.excluded_from_net = 0
+                                      THEN m.net_profit_usd ELSE 0 END), 0) AS net_usd
              FROM mev_ops m, json_each(COALESCE(m.route_json, '[]')) j
              WHERE m.ts >= {since_ts} {filter} AND j.value->>'$.pool' IS NOT NULL
              GROUP BY label
@@ -420,7 +422,8 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0),
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa),
                     COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa)),
@@ -428,13 +431,18 @@ impl ExplorerStore {
                     COALESCE(SUM(CASE WHEN profit_usd IS NULL THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'exact' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN confidence = 'exact' THEN net_profit_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN net_profit_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'exact'
+                                          AND excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'inferred'
+                                          AND excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%NATIVE_UNPRICED%' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%MULTI_ASSET_PRICING%' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%FLASH_FEE_UNPRICED%' THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN details_json LIKE '%FLASH_FEE_UNPRICED%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 1 THEN 1 ELSE 0 END), 0)
              FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
@@ -468,6 +476,7 @@ impl ExplorerStore {
                     ops_multi_asset: r.get::<_, i64>(17).unwrap_or(0),
                     ops_pricing_clamped: r.get::<_, i64>(18).unwrap_or(0),
                     ops_flash_fee_unpriced: r.get::<_, i64>(19).unwrap_or(0),
+                    ops_excluded_from_net: r.get::<_, i64>(20).unwrap_or(0),
                 },
             })
         })?;
@@ -512,7 +521,8 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0) AS gross,
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0)
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0)
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY kind
@@ -540,7 +550,8 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0)
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0)
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY label
@@ -570,7 +581,7 @@ impl ExplorerStore {
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
                     route_json, victim_hashes, details_json, detector, created_at
              FROM mev_ops
-             WHERE ts >= {since_ts} {filter}
+             WHERE ts >= {since_ts} {filter} AND excluded_from_net = 0
              ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC
              LIMIT {limit}"
         );

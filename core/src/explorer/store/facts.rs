@@ -378,19 +378,18 @@ impl ExplorerStore {
                     (Some(g), Some(gg)) => Some(g - gg - fee_for_net),
                     _ => None,
                 };
-                // Sandwich profitability gate: a sandwich whose
-                // extractable profit does not cover combined front+back gas
-                // (plus the flash-loan fee, unless the classifier already
-                // netted it into the ledger) is not a realized-MEV op. Drop it
-                // rather than persist a provably lossy record. Unowned-net
-                // (missing price) events are kept — the gate never guesses.
-                if ev.kind == MevKind::Sandwich {
-                    if let Some(n) = net {
-                        if n <= 0.0 {
-                            continue;
-                        }
-                    }
-                }
+                // Sandwich profitability gate: a sandwich whose extractable
+                // profit does not cover combined front+back gas (plus the
+                // flash-loan fee, unless the classifier already netted it into
+                // the ledger) is not a realized-MEV op worth netting — but it
+                // is persisted anyway with `excluded_from_net = 1` so the
+                // forensics stay queryable and op counts stay truthful; every
+                // *net* aggregation skips the row. Gross, volume and fee sums
+                // still include it: the extraction really happened, only the
+                // provable loss is hidden from net sums. Unowned-net (missing
+                // price) events are kept unflagged — the gate never guesses.
+                let excluded_from_net =
+                    (ev.kind == MevKind::Sandwich && matches!(net, Some(n) if n <= 0.0)) as i64;
                 // USD notional of the op's swap legs (report "volume"): priced
                 // at the block's token prices. Legs with no price/decimals are
                 // skipped; volume is `None` when nothing priced. Attribution is
@@ -416,9 +415,9 @@ impl ExplorerStore {
                         confidence, canonical_id, profit_token, profit_amount,
                         volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
                         net_profit_usd, route_json, victim_hashes, details_json,
-                        detector, created_at)
+                        detector, created_at, excluded_from_net)
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                            ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20)",
+                            ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21)",
                     rusqlite::params![
                         ev.block as i64,
                         ev.tx_index as i64,
@@ -446,6 +445,7 @@ impl ExplorerStore {
                         .ok(),
                         Some(details_json),
                         now,
+                        excluded_from_net,
                     ],
                 )?;
                 pending_labels.push((ev.searcher, ev.contract, ev.block));

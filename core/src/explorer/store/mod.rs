@@ -239,6 +239,10 @@ pub struct ReportQuality {
     /// Ops whose details carry the `FLASH_FEE_UNPRICED` reason: a non-zero
     /// flash-loan fee with no usable quote, not already netted into the ledger.
     pub ops_flash_fee_unpriced: i64,
+    /// Sandwich ops loss-gated at persist (priced net `<= 0`): the row is kept
+    /// — counts and gross stay truthful — but every *net* sum and `top_ops`
+    /// exclude it.
+    pub ops_excluded_from_net: i64,
 }
 
 /// Revenue-report window header (bare `explorer` overview).
@@ -344,7 +348,8 @@ pub(super) fn top_grouped(
     let sql = format!(
         "SELECT {group_col} AS label, COUNT(*) AS ops,
                 COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                COALESCE(SUM(net_profit_usd), 0) AS net_usd
+                COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                  THEN net_profit_usd ELSE 0 END), 0) AS net_usd
          FROM mev_ops
          WHERE ts >= {since_ts} {filter} AND {group_col} IS NOT NULL
          GROUP BY label
@@ -918,14 +923,16 @@ mod tests {
     }
 
     #[test]
-    fn sandwich_loss_gate_skips_unprofitable() {
+    fn sandwich_loss_gate_persists_lossy_rows_with_flag() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
             token_usd(0.5, 6),
         );
-        // Zero extractable profit cannot cover front+back gas → not realized MEV.
+        // Zero extractable profit cannot cover front+back gas → net < 0. The
+        // sandwich is kept with `excluded_from_net = 1` (forensics survive,
+        // counts stay truthful) instead of being dropped.
         let mut loss = sample_event(130);
         loss.kind = MevKind::Sandwich;
         loss.profit_amount = Some(U256::ZERO);
@@ -944,12 +951,24 @@ mod tests {
                 token_prices: &prices,
             },
         );
-        assert_eq!(n, 0);
-        assert!(store.ops_in_range(130, 130, &[]).unwrap().is_empty());
-        // ...but the block is still marked classified (0 persisted ops).
+        assert_eq!(n, 1, "the lossy sandwich is persisted, not dropped");
+        let ops = store.ops_in_range(130, 130, &[]).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert!(ops[0].net_profit_usd.unwrap() < 0.0);
+        let flagged: i64 = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 130",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(flagged, 1, "the lossy sandwich carries the flag");
+        // ...and the block is still marked classified (1 persisted op).
         assert!(store.block_classified(130).unwrap());
 
-        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept.
+        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept
+        // unflagged: the gate fires only on priced net <= 0.
         let mut win = sample_event(131);
         win.kind = MevKind::Sandwich;
         let n = seed_block(
@@ -968,6 +987,15 @@ mod tests {
         );
         assert_eq!(n, 1);
         assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
+        let unflagged: i64 = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 131",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unflagged, 0, "a profitable sandwich is not flagged");
     }
 
     #[test]
@@ -1397,6 +1425,137 @@ mod tests {
                 profit_usd - gas_usd
             );
         }
+    }
+
+    /// A loss-gated sandwich (priced net `<= 0`) is persisted with
+    /// `excluded_from_net = 1` instead of dropped: op counts and gross stay
+    /// inclusive, every *net* sum and `top_ops` skip it, and the report
+    /// exposes the count. `net == 0.0` exactly is gated too (the gate is
+    /// `<= 0.0`).
+    #[test]
+    fn loss_gated_sandwich_is_counted_but_excluded_from_net() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+
+        // Sandwich: $0.5 gross against $0.75 gas → net = −$0.25.
+        let mut loss = sample_event(800);
+        loss.kind = MevKind::Sandwich;
+        loss.tx_index = 1;
+        loss.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000001");
+        // 1 native @ $0.75.
+        loss.gas_cost_wei = U256::from(1_000_000_000_000_000_000u64);
+        // Ordinary profitable arb in the same block: $0.5 gross, ~$0.000075 gas.
+        let mut arb = sample_event(800);
+        arb.tx_index = 2;
+        arb.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000002");
+
+        let n = seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 800,
+                block_hash: &B256::repeat_byte(0x80),
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: &[loss, arb],
+                token_prices: &prices,
+            },
+        );
+        // Counts stay truthful: both rows persisted, so the block counted 2.
+        assert_eq!(n, 2);
+
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+        let arb_net = 0.5 - gas_usd;
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert!(
+            (ov.net_usd - arb_net).abs() < 1e-9,
+            "net must be the arb's only, got {}",
+            ov.net_usd
+        );
+        assert!(
+            (ov.gross_usd - 1.0).abs() < 1e-9,
+            "gross includes both, got {}",
+            ov.gross_usd
+        );
+        assert_eq!(ov.quality.ops_excluded_from_net, 1);
+
+        // The flag itself is persisted on the sandwich row only.
+        let (flagged, flagged_net): (i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net, net_profit_usd FROM mev_ops
+             WHERE kind = 'sandwich' AND block_number = 800",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flagged, 1);
+        assert!((flagged_net - (-0.25)).abs() < 1e-9, "got {flagged_net}");
+
+        // `top_ops` is "top by net": the loss-gated sandwich stays out.
+        let top = store.top_ops(0, 10, None, None).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].kind, "arb_atomic");
+
+        // The competitor leaderboard nets only the arb too.
+        let comps = store.top_competitors_filtered(0, 10, None, None).unwrap();
+        assert_eq!(comps.len(), 1);
+        assert!(
+            (comps[0].net_usd - arb_net).abs() < 1e-9,
+            "got {}",
+            comps[0].net_usd
+        );
+
+        // A sandwich with `net == 0.0` exactly is treated as excluded.
+        let mut zero = sample_event(801);
+        zero.kind = MevKind::Sandwich;
+        zero.tx_index = 1;
+        zero.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000011");
+        zero.profit_amount = Some(U256::ZERO); // priced → profit_usd = Some(0.0)
+        zero.gas_cost_wei = U256::ZERO; // gas_usd = Some(0.0) → net = Some(0.0)
+        let n = seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 801,
+                block_hash: &B256::repeat_byte(0x81),
+                ts: 1_700_000_100,
+                tx_count: 5,
+                swaps: &[],
+                events: &[zero],
+                token_prices: &prices,
+            },
+        );
+        assert_eq!(n, 1);
+        let ops = store.ops_in_range(801, 801, &[]).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(
+            ops[0].net_profit_usd,
+            Some(0.0),
+            "the gate saw net 0.0, not None"
+        );
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 3, "all three rows are counted");
+        assert_eq!(ov.quality.ops_excluded_from_net, 2);
+        assert!(
+            (ov.net_usd - arb_net).abs() < 1e-9,
+            "net unchanged by the zero-net row, got {}",
+            ov.net_usd
+        );
+        assert!((ov.gross_usd - 1.0).abs() < 1e-9);
+
+        // Per kind: sandwich counts stay inclusive while its net sum is empty.
+        let kinds = store.report_by_kind(0, None, None).unwrap();
+        let sand = kinds.iter().find(|r| r.label == "sandwich").unwrap();
+        assert_eq!(sand.ops, 2);
+        assert!((sand.gross_usd - 0.5).abs() < 1e-9);
+        assert_eq!(sand.net_usd, 0.0);
     }
 
     /// The net-concentration guard must never divide by zero and must only emit

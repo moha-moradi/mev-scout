@@ -725,14 +725,14 @@ git commit -m "fix(explorer): backfill skips failed chunks and reports the gap i
 
 **Problem:** The persist-time gate drops provably unprofitable sandwiches entirely (facts.rs:347-353). Once dropped they are unrecoverable forensics — the report can never show how many sandwiches lost money.
 
-- [ ] **Step 1: Read** `facts.rs:340-360` (the gate) and how `mev_ops.net_profit_usd` / details are stored and aggregated in `query.rs`.
-- [ ] **Step 2: Implement** — instead of skipping the insert, insert the row with `details['loss_gate'] = 'dropped_from_net'` (or a dedicated integer column `excluded_from_net INTEGER NOT NULL DEFAULT 0` if the schema is being touched in Task B6 anyway — prefer the column, it makes the SQL filter trivial and indexable):
+- [x] **Step 1: Read** `facts.rs:340-360` (the gate) and how `mev_ops.net_profit_usd` / details are stored and aggregated in `query.rs`.
+- [x] **Step 2: Implement** — instead of skipping the insert, insert the row with `details['loss_gate'] = 'dropped_from_net'` (or a dedicated integer column `excluded_from_net INTEGER NOT NULL DEFAULT 0` if the schema is being touched in Task B6 anyway — prefer the column, it makes the SQL filter trivial and indexable):
   - Schema: add the column (Task B6's migration machinery lands the DDL; if B6 has not run yet, use `ensure_column` per the existing pattern in `schema.rs`).
   - `insert_block_facts`: set the flag instead of `continue`.
   - Every net/gross aggregation in `query.rs` (`report_window_overview`, `report_by_kind`, `report_daily`, leaderboards, `top_ops`): add `WHERE excluded_from_net = 0` to net sums; keep op *counts* inclusive so totals still reflect reality. For `top_ops`, keep excluded rows out of "top by net" ordering.
   - Report: show a `loss-gated ops: N` line in `render_window` (report.rs:300-312 area).
-- [ ] **Step 3: Test** — golden-style: persist a sandwich with negative net, assert the row exists with the flag and that overview net excludes it while op count includes it.
-- [ ] **Step 4: Verify + commit**
+- [x] **Step 3: Test** — golden-style: persist a sandwich with negative net, assert the row exists with the flag and that overview net excludes it while op count includes it.
+- [x] **Step 4: Verify + commit**
 
 ```bash
 cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus && cargo test -p mev-scout-cli
