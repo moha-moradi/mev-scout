@@ -627,58 +627,142 @@ pub async fn safe_head(rpc: &RpcClient, cfg: &IngestConfig) -> anyhow::Result<u6
     Ok(head.saturating_sub(cfg.confirmations))
 }
 
-/// Reorg check: stored hash at `block` differs from chain → unwind from there.
-/// Returns Some(fork_block) when a reorg was detected and unwound.
+/// Blocks per live reorg sweep — the walk-back bound is
+/// `confirmations + REORG_SWEEP_BLOCKS`.
+const REORG_SWEEP_BLOCKS: u64 = 32;
+
+/// Result of a reorg probe. Distinguishes "provider unreachable" from "no
+/// reorg": the pre-A21 code returned `Ok(None)` for both, so a failed probe
+/// read as a clean chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReorgOutcome {
+    NoReorg,
+    Forked { fork_block: u64 },
+    ProbeFailed,
+}
+
+/// Pure fork-point selection over descending per-block hash comparisons.
+///
+/// `checks` is `(block, verdict)` from the probe block downward, where
+/// `Some(true)` = stored hash matches the live chain, `Some(false)` =
+/// mismatch, `None` = no stored hash at that block (below the indexed range).
+/// Returns the lowest mismatching block — the fork point to unwind from — or
+/// `None` when every checked block mismatched (the fork is deeper than the
+/// lookback, so deleting anything would be a guess).
+///
+/// Callers only walk after the probe itself mismatched, so the first entry is
+/// always `(probe, Some(false))`.
+pub(crate) fn fork_block_from_checks(checks: &[(u64, Option<bool>)]) -> Option<u64> {
+    let mut fork: Option<u64> = None;
+    for (block, verdict) in checks {
+        match verdict {
+            Some(false) => fork = Some(*block),
+            // Common ancestor found (or nothing stored below): stop — the
+            // fork is the lowest block already seen to mismatch.
+            Some(true) | None => return fork,
+        }
+    }
+    None
+}
+
+/// Walk back from a mismatched `probe` until the stored and live hashes agree,
+/// then unwind from the fork point. Bounded by `max_lookback`; a walk that
+/// cannot find a common ancestor returns `ProbeFailed` rather than deleting
+/// an arbitrary range.
+async fn walk_to_fork(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    probe: u64,
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
+    // The probe's mismatch is already known — do not re-fetch it.
+    let mut checks: Vec<(u64, Option<bool>)> = vec![(probe, Some(false))];
+    let lo = probe.saturating_sub(max_lookback);
+    for block in (lo..probe).rev() {
+        let Some(stored) = store.block_hash(block)? else {
+            checks.push((block, None));
+            break;
+        };
+        match rpc.get_block_hash(block).await {
+            Ok(onchain) => {
+                let matches = stored == format!("{onchain:#x}");
+                checks.push((block, Some(matches)));
+                if matches {
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!(block, "reorg walk hash fetch failed: {e}");
+                return Ok(ReorgOutcome::ProbeFailed);
+            }
+        }
+    }
+    match fork_block_from_checks(&checks) {
+        Some(fork_block) => {
+            warn!(
+                probe,
+                fork_block, "reorg detected — unwinding from the fork point"
+            );
+            store.unwind_from(fork_block)?;
+            Ok(ReorgOutcome::Forked { fork_block })
+        }
+        None => {
+            warn!(
+                probe,
+                max_lookback, "reorg deeper than the lookback bound — not unwinding"
+            );
+            Ok(ReorgOutcome::ProbeFailed)
+        }
+    }
+}
+
+/// Reorg check: stored hash at `block` differs from chain → walk back to the
+/// true fork and unwind from there (header-only probes; no receipts fetch).
 pub async fn check_reorg(
     rpc: &RpcClient,
     store: &ExplorerStore,
     block: u64,
-) -> anyhow::Result<Option<u64>> {
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
     let Some(stored) = store.block_hash(block)? else {
-        return Ok(None);
+        return Ok(ReorgOutcome::NoReorg);
     };
-    let (block_data, _, _) = match rpc.get_block_and_receipts_batch(block).await {
-        Ok(v) => v,
+    match rpc.get_block_hash(block).await {
+        Ok(onchain) if stored == format!("{onchain:#x}") => Ok(ReorgOutcome::NoReorg),
+        Ok(_) => walk_to_fork(rpc, store, block, max_lookback).await,
         Err(e) => {
-            warn!(block, "reorg-check fetch failed: {e}");
-            return Ok(None);
+            warn!(block, "reorg-check probe failed: {e}");
+            Ok(ReorgOutcome::ProbeFailed)
         }
-    };
-    let onchain: B256 = block_data.hash;
-    if stored != format!("{onchain:#x}") {
-        warn!(block, "reorg detected — unwinding from fork block");
-        store.unwind_from(block)?;
-        Ok(Some(block))
-    } else {
-        Ok(None)
     }
 }
 
 /// Cheap per-poll reorg re-verify: a single header-only hash compare
 /// on the highest already-indexed block. Runs on every live poll, so a reorg of
 /// the indexed tip is caught before the indexer extends onto it; the heavier
-/// 32-block `check_reorg` sweep (block + receipts) stays to catch deeper forks.
+/// 32-block `check_reorg` sweep stays to catch deeper forks. A mismatch walks
+/// back to the fork point exactly like `check_reorg`.
 pub async fn verify_indexed_tip(
     rpc: &RpcClient,
     store: &ExplorerStore,
     block: u64,
-) -> anyhow::Result<Option<u64>> {
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
     let Some(stored) = store.block_hash(block)? else {
-        return Ok(None);
+        return Ok(ReorgOutcome::NoReorg);
     };
     match rpc.get_block_hash(block).await {
         Ok(onchain) if stored != format!("{onchain:#x}") => {
             warn!(
                 block,
-                "reorg detected via indexed-tip hash compare — unwinding"
+                "reorg detected via indexed-tip hash compare — walking to the fork"
             );
-            store.unwind_from(block)?;
-            Ok(Some(block))
+            walk_to_fork(rpc, store, block, max_lookback).await
         }
-        Ok(_) => Ok(None),
+        Ok(_) => Ok(ReorgOutcome::NoReorg),
         Err(e) => {
             warn!(block, "indexed-tip reorg check failed: {e}");
-            Ok(None)
+            Ok(ReorgOutcome::ProbeFailed)
         }
     }
 }
@@ -1042,20 +1126,58 @@ pub async fn run_live(
         if safe >= cursor {
             // cheap per-poll reorg re-verify on the last indexed block.
             // Only meaningful for blocks we indexed this session (checkpoint is
-            // tip-anchored on start).
+            // tip-anchored on start). A failed probe is not "no reorg": it
+            // skips the poll and counts toward the loud-failure cap, because
+            // indexing onto an unverified tip risks extending a fork.
+            let max_lookback = cfg.confirmations.saturating_add(REORG_SWEEP_BLOCKS);
             let indexed_to = store.get_indexed_to(cfg.chain_id)?;
-            if indexed_to > 0
-                && indexed_to < cursor
-                && verify_indexed_tip(rpc, store, indexed_to).await?.is_some()
-            {
-                cursor = indexed_to;
+            if indexed_to > 0 && indexed_to < cursor {
+                match verify_indexed_tip(rpc, store, indexed_to, max_lookback).await? {
+                    ReorgOutcome::Forked { fork_block } => cursor = fork_block,
+                    ReorgOutcome::NoReorg => {}
+                    ReorgOutcome::ProbeFailed => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (tip reorg probe at block {indexed_to}): could not \
+                                 verify the indexed tip"
+                            );
+                        }
+                        warn!(
+                            block = indexed_to,
+                            failures = consecutive_failures,
+                            "tip reorg probe failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
+                }
             }
 
             since_reorg_check += 1;
-            if since_reorg_check >= 32 {
+            if since_reorg_check >= REORG_SWEEP_BLOCKS {
                 let check_at = cursor.saturating_sub(1);
-                if check_reorg(rpc, store, check_at).await?.is_some() {
-                    cursor = check_at;
+                match check_reorg(rpc, store, check_at, max_lookback).await? {
+                    ReorgOutcome::Forked { fork_block } => cursor = fork_block,
+                    ReorgOutcome::NoReorg => {}
+                    ReorgOutcome::ProbeFailed => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (reorg sweep at block {check_at}): could not verify \
+                                 the chain"
+                            );
+                        }
+                        warn!(
+                            block = check_at,
+                            failures = consecutive_failures,
+                            "reorg sweep probe failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
                 }
                 since_reorg_check = 0;
             }
@@ -1685,5 +1807,54 @@ mod tests {
             victim_swap_size: None,
             details: serde_json::json!({}),
         }
+    }
+}
+
+#[cfg(test)]
+mod reorg_fork_tests {
+    use super::fork_block_from_checks;
+
+    /// Diverged at N-2: the probe block N mismatches down to N-2, and N-3
+    /// matches. The walk must return N-2, never the probe block N — the old
+    /// code unwound from the probe, leaving N-2..N-1 from the abandoned chain.
+    #[test]
+    fn walks_back_to_the_fork_not_the_probe() {
+        let n = 100u64;
+        let checks = vec![
+            (n, Some(false)),
+            (n - 1, Some(false)),
+            (n - 2, Some(false)),
+            (n - 3, Some(true)),
+        ];
+        assert_eq!(fork_block_from_checks(&checks), Some(n - 2));
+    }
+
+    /// A single-block fork: probe mismatch with a matching parent → fork = probe.
+    #[test]
+    fn single_block_fork_is_the_probe() {
+        assert_eq!(
+            fork_block_from_checks(&[(100, Some(false)), (99, Some(true))]),
+            Some(100)
+        );
+    }
+
+    /// Nothing stored below the lowest mismatch → unwind from there (that is
+    /// as far back as our own data goes).
+    #[test]
+    fn stops_at_the_lowest_indexed_block() {
+        assert_eq!(
+            fork_block_from_checks(&[(100, Some(false)), (99, None)]),
+            Some(100)
+        );
+    }
+
+    /// Deeper than the lookback: every checked block mismatched, so there is
+    /// no common ancestor to anchor the unwind — return None (the caller maps
+    /// that to `ProbeFailed` and deletes nothing).
+    #[test]
+    fn refuses_when_the_fork_is_deeper_than_the_lookback() {
+        let checks: Vec<(u64, Option<bool>)> =
+            (60..=100u64).rev().map(|b| (b, Some(false))).collect();
+        assert_eq!(fork_block_from_checks(&checks), None);
     }
 }
