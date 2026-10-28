@@ -47,7 +47,9 @@ pub(crate) mod test_fixtures;
 pub mod types;
 
 pub use canonical::explorer_canonical_id;
-pub use classify::{classify_block, BlockInput, ClassifyOutput, TxInput};
+// `kind_precedence` is re-exported so the A15 census test injects the real
+// numbers into its SQL (single source of truth — no test-local copy).
+pub use classify::{classify_block, kind_precedence, BlockInput, ClassifyOutput, TxInput};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};

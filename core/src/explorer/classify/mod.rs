@@ -305,6 +305,31 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
 /// JitArb > Jit > Liquidation > Skim > Unknown. The JitArb upgrade +
 /// Frontrun/Backrun retain paths must stay consistent with this order so
 /// P&L is never double-counted on one tx_index.
+///
+/// # A15 census (2026-10-26) — contested pairs measured, not assumed
+///
+/// The census (`core/tests/explorer_kind_census.rs`; result table in
+/// `docs/explorer_strategy_checklist.md` § "Kind collision census") found ZERO
+/// co-occurring kind pairs on the indexed corpus (`cache/oracle-avalanche.sqlite`,
+/// blocks 98572463..=98575973: 117 ops / 117 unique hashes across
+/// `arb_atomic`/`unknown`/`jit`), so no pair carries measured USD and the
+/// contested-pair decisions below are on-principle. B8 turns this function
+/// into the tx_index claims registry; until then the numbers stay untouched:
+///
+/// - `ArbAtomic`(3) vs `Liquidation`(6): an inferred cycle must NOT outrank an
+///   explicit `LiquidateBorrow` event — the liquidation label wins in B8's
+///   registry, with the cycle's P&L attributed to the liquidation event's
+///   `details`. Today's number orders the opposite; flipping it (and the
+///   golden re-baseline that follows) belongs to B8, not here.
+/// - `ArbAtomic`(3) vs `Jit`(5): an explicit Mint/Burn anchor beats an
+///   inferred cycle (genuine combined cases already upgrade to `JitArb`).
+/// - `ArbAtomic`(3) vs `Skim`(7): explicit pair outflow Transfers beat an
+///   inferred cycle.
+/// - `Liquidation` > `Jit` > `Skim`: explicit-anchored economic purpose of the
+///   tx first (liquidation P&L), fee/outflow annotations second.
+///
+/// Sandwich/Frontrun/Backrun over ArbAtomic/Unknown is not contested: the
+/// superseder `retain` in `classify_block` already enforces it structurally.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
         MevKind::Sandwich => 0,

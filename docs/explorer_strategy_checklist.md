@@ -183,3 +183,47 @@ A14's checkpoint criterion is that genuinely fake-$0/NULL rows leave L (watch `f
 - `fp_suspect` — 1 `arb_atomic` row at block 98575604 `0x2c388e3d...2c30cb`: `profit_usd` is a single raw USDC unit (`$0.000001`) and net is negative (`-$0.008134`), a rounding residue of an unrelated multi-hop swap. A14 may or may not remove it; it is observed, not a proven A14 target. `fp_suspect` is an observation label, never a proven false positive.
 
 A row that disappears from L\V at a later checkpoint must map to a predicted task effect, or it is a regression flag. The only edit path for the frozen labels is a reviewed edit of `docs/oracle/adjudications-baseline.json`.
+
+## Kind collision census
+
+Task A15 (2026-10-26, run 2026-10-26). Measured which `MevKind` pairs actually co-occur on the same `(block_number, tx_index)` in every DB on disk, before Task B8 turns `kind_precedence` into the tx_index claims registry. Test: `core/tests/explorer_kind_census.rs` — the two census queries and the post-B8 guard are `#[ignore]`d (gates `MEV_SCOUT_CENSUS=1` / `MEV_SCOUT_E2E=1`) and `bail!` when their gate is set but no DB resolves (A0 convention); an always-on static test prepares + executes the census SQL against the real schema. `mev_ops` has no chain column, so the chain label is the DB file stem; DB resolution is `MEV_SCOUT_CENSUS_DB` (path list) or the configured explorer DB. The plan's `gross_profit_usd` maps to the schema's `profit_usd` column (the pre-gas gross); a NULL gross (unpriced op) contributes 0 and the unpriced count is printed next to the sums.
+
+Reproduce (repo root; both ignored tests run together):
+
+```
+MEV_SCOUT_CENSUS=1 MEV_SCOUT_E2E=1 \
+MEV_SCOUT_CENSUS_DB='cache/oracle-avalanche.sqlite;cache/avalanche-mev-scout.sqlite' \
+  cargo test -p mev-scout-core --test explorer_kind_census -- --ignored --nocapture
+```
+
+### Result (real test output, 2026-10-26)
+
+Verbatim census header (guard line follows the same run):
+
+```
+== DB D:\gitlab.dte.repo\mev-scout\cache/oracle-avalanche.sqlite (chain label from file stem: oracle-avalanche)
+   ops=117 distinct_kinds=3 window=Some(98572463)..=Some(98575973) blocks_with_ops=99 null_tx_index=0 unpriced_profit_usd=20
+   kind-pair collisions: NONE — no (block_number, tx_index) carries two kinds (census empty)
+guard DB cache/avalanche-mev-scout.sqlite: not an explorer DB (no mev_ops table) — skipped
+guard ok: 0 multi-kind rows across 1 explorer DB(s) — the B8 invariant holds on this data
+census DB cache/avalanche-mev-scout.sqlite: not an explorer DB (no mev_ops table) — skipped
+```
+
+| DB (git-ignored) | chain label | window | mev_ops rows | kinds | NULL tx_index | unpriced `profit_usd` | kind-pair collisions | USD at stake |
+|---|---|---|---|---|---|---|---|---|
+| `cache/oracle-avalanche.sqlite` (frozen M0 oracle baseline) | `oracle-avalanche` | 98572463..=98575973 (99 blocks with ops) | 117 | `arb_atomic` 67, `unknown` 30, `jit` 20 | 0 | 20 (all `jit`) | **none — census empty** | $0.00 |
+| `cache/avalanche-mev-scout.sqlite` | `avalanche-mev-scout` | — | — | — | — | — | not an explorer DB (scanner cache, no `mev_ops` table) — skipped, labeled by filename | — |
+
+**The census is empty — and that is the valuable result.** All 117 `mev_ops` rows in the only explorer DB present sit on unique `(block_number, tx_index)`s (117 unique tx hashes; no tx hosts two rows at all), so no unordered kind pair co-occurs anywhere in the corpus and no precedence choice has measured USD at stake. The co-labeling the A15 brief verified as *unrestrained* in the classifier (the superseder `retain` only drops `ArbAtomic`/`Unknown`, so `Liquidation`/`Jit`/`Skim` co-labeling with a closed-cycle liquidator tx would emit both kinds) simply does not occur in this window. Consequence: **B8 is a no-op on today's corpus**, and the precedence question is answered on principle below. The census is cheap to re-run (env gate + `--ignored`), and the permanent guard `no_tx_index_carries_two_pnl_kinds` passes today; it is EXPECTED to go red on a pre-B8 DB the moment a real co-label lands — that red is B8's fitness function, not breakage (the test's doc comment says so).
+
+### Decided order per contested pair (on-principle — census empty; numbers unchanged until B8)
+
+No `kind_precedence` number changed in A15: an empty census leaves no measured USD to justify a re-baseline outside B8. The decisions B8 must encode (also cited in the `kind_precedence` doc comment):
+
+| pair (loser first) | decision | rationale |
+|---|---|---|
+| Liquidation vs ArbAtomic | **Liquidation wins** | anchored on an explicit `LiquidateBorrow` event; an inferred cycle must not delete the liquidation label. Today's numbers order the opposite (`ArbAtomic` 3 < `Liquidation` 6) — the flip + golden re-baseline is B8's job. Every `P0.*`/`polygon.*`/`bsc.*` row in this checklist is a Liquidation case. |
+| Jit vs ArbAtomic | **Jit wins** | anchored on explicit Mint/Burn facts; genuine combined arb+JIT cases already upgrade to `JitArb`, so a bare Jit-vs-Arb collision would be a mislabel. |
+| Skim vs ArbAtomic | **Skim wins** | anchored on explicit pair outflow `Transfer`s (skim is defined by the absence of Swap/Mint/Burn/Sync on the pair). |
+| Liquidation vs Jit vs Skim | **Liquidation > Jit > Skim** | explicit anchors, economic purpose of the tx first (liquidation P&L), fee/outflow annotations second. |
+| Sandwich/Frontrun/Backrun vs ArbAtomic/Unknown | not contested | already enforced structurally by the superseder `retain` (A1); the precedence list agrees, no decision needed. |
