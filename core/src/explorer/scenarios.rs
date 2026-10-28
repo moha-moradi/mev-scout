@@ -136,8 +136,9 @@ fn baseline_sandwich() {
     let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
     assert_eq!(ev.searcher, ATK);
     assert_eq!(ev.profit_amount, Some(U256::from(95)));
-    assert_eq!(ev.confidence, Confidence::Exact);
-    assert_eq!(pnl_basis(&ev), Some("R"));
+    // A19: sandwich P&L is a gross amount diff, not a ledger residual.
+    assert_eq!(ev.confidence, Confidence::Inferred);
+    assert_eq!(pnl_basis(&ev), Some("gross_amount_diff"));
     assert_eq!(
         ev.details["victim_via_aggregator"],
         serde_json::json!(false)
@@ -349,7 +350,8 @@ fn baseline_liquidation() {
     assert_eq!(ev.searcher, ATK);
     assert_eq!(ev.profit_token, Some(USDC));
     assert_eq!(ev.profit_amount, Some(U256::from(500)));
-    assert_eq!(ev.confidence, Confidence::Exact);
+    // A19: oracle-valued (O) basis is not Exact.
+    assert_eq!(ev.confidence, Confidence::Inferred);
     assert_eq!(pnl_basis(&ev), Some("O"));
 
     assert!(!kinds(&classify_block(&block(vec![tx(
@@ -510,7 +512,8 @@ fn p0_2_benqi_alias() {
         serde_json::json!("500")
     );
     assert_eq!(ev.profit_amount, Some(U256::from(500)));
-    assert_eq!(ev.confidence, Confidence::Exact);
+    // A19: oracle-valued (O) basis is not Exact.
+    assert_eq!(ev.confidence, Confidence::Inferred);
 }
 
 /// P0.4 — flash-swap / flash-loan flag on an atomic arb. Positive carries
@@ -918,7 +921,8 @@ fn p3_11_erc4337_bundler() {
     let events = classify_block(&block(vec![t]));
     assert!(has_tag(&events, "bundler"));
     let ev = event_of(&events, MevKind::Unknown);
-    assert_eq!(pnl_basis(ev), Some("R"));
+    // A19: the bundler books its own gas cost as profit — not a ledger residual.
+    assert_eq!(pnl_basis(ev), Some("gas_cost_as_profit"));
     assert_eq!(ev.profit_amount, Some(U256::from(12_000)));
 
     let mut neg = tx(0, ATK, true, vec![], vec![]);

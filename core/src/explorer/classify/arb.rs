@@ -494,7 +494,7 @@ pub(super) fn classify_arbs(
                     "tags": ["bundler", "erc4337"],
                     "sender": format!("{:#x}", uo.sender),
                     "paymaster": format!("{:#x}", uo.paymaster),
-                    "pnl_basis": PnlBasis::R.as_str(),
+                    "pnl_basis": PnlBasis::GasCostAsProfit.as_str(),
                     "pnl": {
                         "basis": PnlBasis::R.as_str(),
                         "actual_gas_cost": uo.actual_gas_cost.to_string(),

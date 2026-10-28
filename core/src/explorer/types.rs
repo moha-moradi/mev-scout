@@ -75,8 +75,13 @@ impl std::str::FromStr for MevKind {
     }
 }
 
-/// Attribution confidence: `exact` = deterministic event/flow match;
-/// `inferred` = heuristic attribution (score 0..1 carried in details).
+/// Attribution confidence: `exact` means the P&L figure is a **realized
+/// ledger residual** (`details.pnl_basis = "R"`) with a non-empty amount and no
+/// recorded reconcile failure. `inferred` covers every other basis — gross
+/// amount differences, oracle-valued/seized collateral, fee/reward fields,
+/// gas-cost-as-profit — and any event whose amount is absent. A consumer may
+/// treat `exact` as ledger-backed money; `inferred` is an estimate (score 0..1
+/// carried in details where applicable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confidence {
     Exact,
@@ -415,6 +420,12 @@ pub enum PnlBasis {
     O,
     /// Explicit fee/reward event fields (keeper, flash premium, JIT tip).
     F,
+    /// Gross amount difference not netted through the ledger (sandwich
+    /// `back.amount_out − front.amount_in`): never `Exact`.
+    GrossAmountDiff,
+    /// The tx's own gas cost booked as "profit" (ERC-4337 bundler path):
+    /// never `Exact`.
+    GasCostAsProfit,
 }
 
 impl PnlBasis {
@@ -423,7 +434,14 @@ impl PnlBasis {
             PnlBasis::R => "R",
             PnlBasis::O => "O",
             PnlBasis::F => "F",
+            PnlBasis::GrossAmountDiff => "gross_amount_diff",
+            PnlBasis::GasCostAsProfit => "gas_cost_as_profit",
         }
+    }
+
+    /// The only basis that can back `Confidence::Exact` (A19).
+    pub fn is_ledger_residual(self) -> bool {
+        matches!(self, PnlBasis::R)
     }
 }
 

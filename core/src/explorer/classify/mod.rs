@@ -25,9 +25,9 @@ use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::store::OpenPosition;
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
-    AggregatorSignal, BuyCollateralFact, EpochRewardFact, GmxEventFact, JitFact, KeeperFact,
-    MevEvent, MevKind, OracleUpdateFact, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
-    UserOpFact, V2PairOpFact,
+    AggregatorSignal, BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact,
+    KeeperFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact,
+    SwapFact, TransferFact, UserOpFact, V2PairOpFact,
 };
 
 mod arb;
@@ -297,7 +297,36 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
             .cmp(&b.tx_index)
             .then_with(|| kind_precedence(a.kind).cmp(&kind_precedence(b.kind)))
     });
+    normalize_confidence(&mut events);
     ClassifyOutput { events, rejects }
+}
+
+/// A19: `Confidence::Exact` means the P&L figure is a **realized ledger
+/// residual** (`details.pnl_basis = "R"`) with a non-empty amount and no
+/// recorded reconcile failure. Every other basis — gross amount diff, oracle /
+/// seized collateral, fee/reward fields, gas-cost-as-profit — and any
+/// amount-less event is demoted to `Inferred`. Detection is unchanged; only
+/// the confidence claim moves.
+pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
+    for e in events {
+        if e.confidence != Confidence::Exact {
+            continue;
+        }
+        let basis_exact = e
+            .details
+            .get("pnl_basis")
+            .and_then(|v| v.as_str())
+            .is_some_and(|b| b == PnlBasis::R.as_str());
+        let reconciled = !e
+            .details
+            .get("reasons")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("TRANSFER_MISMATCH")));
+        let has_pnl = e.profit_amount.is_some_and(|a| !a.is_zero()) || !e.profit_tokens.is_empty();
+        if !(basis_exact && reconciled && has_pnl) {
+            e.confidence = Confidence::Inferred;
+        }
+    }
 }
 
 /// Kind priority for sort / supersede (lower = higher priority).
@@ -1559,7 +1588,8 @@ mod tests {
                 searcher: Some(ATK),
                 profit_token: Some(USDC),
                 profit_amount: Some(500),
-                confidence: Some(Confidence::Exact),
+                // A19: O basis (seized collateral) is not a ledger residual.
+                confidence: Some(Confidence::Inferred),
                 reconciled: None,
                 reasons: None,
             },
@@ -1589,7 +1619,8 @@ mod tests {
                 searcher: None,
                 profit_token: None,
                 profit_amount: None,
-                confidence: Some(Confidence::Exact),
+                // A19: O basis (seized collateral) is not a ledger residual.
+                confidence: Some(Confidence::Inferred),
                 reconciled: Some(false),
                 reasons: Some(&["TRANSFER_MISMATCH"]),
             },
@@ -1682,7 +1713,8 @@ mod tests {
                         .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("buycollateral")))
             })
             .expect("buycollateral event");
-        assert_eq!(buy.confidence, Confidence::Exact);
+        // A19: oracle-valued (O) basis is no longer Exact.
+        assert_eq!(buy.confidence, Confidence::Inferred);
         assert_eq!(buy.details["pnl_basis"], serde_json::json!("O"));
         assert_eq!(buy.details["absorb_paired"], serde_json::json!(true));
         assert_eq!(buy.details["pnl"]["base_paid"], serde_json::json!("90"));
@@ -2285,5 +2317,77 @@ mod unresolved_token_tests {
         s.token_in = USDC;
         s.token_out = Address::ZERO;
         assert!(has_unresolved_tokens(&s), "out-side zero");
+    }
+}
+
+#[cfg(test)]
+mod confidence_basis_tests {
+    use super::*;
+    use crate::explorer::test_fixtures::{ATK, POOL_A, USDC};
+    use alloy::primitives::B256;
+
+    fn event_with(basis: serde_json::Value, confidence: Confidence) -> MevEvent {
+        MevEvent {
+            block: 1,
+            ts: 1_700_000_000,
+            tx_index: 0,
+            tx_hash: B256::ZERO,
+            kind: MevKind::ArbAtomic,
+            searcher: ATK,
+            contract: None,
+            pools: vec![POOL_A],
+            profit_token: Some(USDC),
+            profit_amount: Some(U256::from(10u64)),
+            profit_tokens: vec![],
+            profit_usd: None,
+            gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence,
+            victim_hashes: vec![],
+            victim_swap_size: None,
+            details: serde_json::json!({ "pnl_basis": basis }),
+        }
+    }
+
+    /// A19: only a realized ledger residual may claim `Exact`; every other
+    /// basis the plan names (oracle, fee fields, gross diff, gas-as-profit)
+    /// is demoted.
+    #[test]
+    fn exact_requires_ledger_residual_basis() {
+        let mut events = vec![
+            event_with(serde_json::json!("R"), Confidence::Exact),
+            event_with(serde_json::json!("O"), Confidence::Exact),
+            event_with(serde_json::json!("F"), Confidence::Exact),
+            event_with(serde_json::json!("gross_amount_diff"), Confidence::Exact),
+            event_with(serde_json::json!("gas_cost_as_profit"), Confidence::Exact),
+        ];
+        normalize_confidence(&mut events);
+        assert_eq!(
+            events[0].confidence,
+            Confidence::Exact,
+            "ledger residual stays Exact"
+        );
+        for (i, e) in events.iter().enumerate().skip(1) {
+            assert_eq!(
+                e.confidence,
+                Confidence::Inferred,
+                "basis at index {i} is not a ledger residual"
+            );
+        }
+    }
+
+    /// A recorded reconcile failure, or no P&L amount at all, demotes even an
+    /// R-basis event: there is nothing exact to stand behind.
+    #[test]
+    fn reconcile_failure_and_missing_amount_demote() {
+        let mut mismatch = event_with(serde_json::json!("R"), Confidence::Exact);
+        mismatch.details["reasons"] = serde_json::json!(["TRANSFER_MISMATCH"]);
+        let mut no_amount = event_with(serde_json::json!("R"), Confidence::Exact);
+        no_amount.profit_amount = None;
+        let mut events = vec![mismatch, no_amount];
+        normalize_confidence(&mut events);
+        assert_eq!(events[0].confidence, Confidence::Inferred);
+        assert_eq!(events[1].confidence, Confidence::Inferred);
     }
 }

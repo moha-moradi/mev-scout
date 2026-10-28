@@ -107,19 +107,21 @@ fn print_top_ops(rows: &[MevOpRow]) {
         "tx",
         "block",
         "kind",
+        "basis",
         "volume USD",
         "gross USD",
         "gas USD",
         "net USD",
     ]);
     if rows.is_empty() {
-        table.add_row(vec!["(no data)", "-", "-", "-", "-", "-", "-"]);
+        table.add_row(vec!["(no data)", "-", "-", "-", "-", "-", "-", "-"]);
     }
     for r in rows {
         table.add_row(vec![
             short_addr(&r.tx_hash),
             r.block_number.to_string(),
             r.kind.clone(),
+            pnl_basis_of(r),
             usd(r.volume_usd.unwrap_or(0.0)),
             usd(r.profit_usd.unwrap_or(0.0)),
             usd(r.gas_cost_usd.unwrap_or(0.0)),
@@ -127,6 +129,20 @@ fn print_top_ops(rows: &[MevOpRow]) {
         ]);
     }
     println!("{table}");
+}
+
+/// A19: the persisted `details.pnl_basis` (R / O / F / gross_amount_diff /
+/// gas_cost_as_profit), so a reader can see why a row is `exact` or not.
+fn pnl_basis_of(r: &MevOpRow) -> String {
+    r.details_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| {
+            v.get("pnl_basis")
+                .and_then(|b| b.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "-".to_string())
 }
 
 pub async fn cmd_explorer_report(

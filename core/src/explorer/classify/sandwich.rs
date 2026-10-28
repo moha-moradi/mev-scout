@@ -197,7 +197,7 @@ pub(super) fn fold_sandwich(
         victim_swap_size: walk.victims.last().map(|v| v.amount_in),
         details: serde_json::json!({
             "mode": "realized",
-            "pnl_basis": PnlBasis::R.as_str(),
+            "pnl_basis": PnlBasis::GrossAmountDiff.as_str(),
             "pnl": {
                 "basis": PnlBasis::R.as_str(),
                 "profit_amount": profit.to_string(),
