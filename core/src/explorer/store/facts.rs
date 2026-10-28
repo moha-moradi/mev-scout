@@ -238,7 +238,17 @@ impl ExplorerStore {
                     let mut total = 0.0f64;
                     for (tok, amt) in &ev.profit_tokens {
                         if *tok == crate::explorer::profit::NATIVE_MARKER {
-                            native_unpriced = true;
+                            // The native price used for gas is already in
+                            // scope: price the native residual with it instead
+                            // of persisting NULL profit for ETH-denominated
+                            // MEV. Only a genuinely missing price is a data
+                            // limit worth flagging.
+                            match native_price_usd {
+                                Some(np) => {
+                                    total += crate::explorer::pricing::wei_to_usd(*amt, np);
+                                }
+                                None => native_unpriced = true,
+                            }
                             continue;
                         }
                         match crate::explorer::pricing::amount_usd_realized(
@@ -275,6 +285,15 @@ impl ExplorerStore {
                     (total > 0.0).then_some(total)
                 } else {
                     match (ev.profit_token, ev.profit_amount) {
+                        (Some(tok), Some(amt)) if tok == crate::explorer::profit::NATIVE_MARKER => {
+                            match native_price_usd {
+                                Some(np) => Some(crate::explorer::pricing::wei_to_usd(amt, np)),
+                                None => {
+                                    native_unpriced = true;
+                                    None
+                                }
+                            }
+                        }
                         (Some(tok), _) if tok == crate::explorer::profit::NATIVE_MARKER => {
                             native_unpriced = true;
                             None

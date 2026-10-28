@@ -12,6 +12,11 @@
 //!   native token are excluded from deltas when the paired native flow exists
 //! - flash-loan borrow/repay is netted before residual computation when the
 //!   same (token, counterparty=pools) pair loops
+//!
+//! Native *inflows* (unwrap-to-beneficiary, builder/MEV-share kickbacks paid
+//! coinbase→searcher) are not observable in logs-only mode — only the tx
+//! `value` debit is. A NULL or low native-denominated figure is that data
+//! limit, not evidence of "no profit".
 use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};

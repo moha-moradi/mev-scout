@@ -799,11 +799,19 @@ mod tests {
         let clamped_details = ops[0].details_json.as_deref().unwrap_or("");
         assert!(clamped_details.contains("pricing_clamped"));
         assert!(clamped_details.contains("\"usd_approximate\":true"));
-        // USDC residual is $1; the native marker contributes a reason, not $0.
+        // USDC residual is $1; since A16 the native residual is priced with
+        // the in-scope native price ($0.75 × 1 wei ≈ $0), so it contributes
+        // real USD and raises no unpriced/approximate reason.
         assert!((ops[1].profit_usd.unwrap() - 1.0).abs() < 1e-6);
         let native_details = ops[1].details_json.as_deref().unwrap_or("");
-        assert!(native_details.contains("NATIVE_UNPRICED"));
-        assert!(native_details.contains("\"usd_approximate\":true"));
+        assert!(
+            !native_details.contains("NATIVE_UNPRICED"),
+            "a native residual priced from the in-scope native price must not be flagged unpriced"
+        );
+        assert!(
+            !native_details.contains("\"usd_approximate\":true"),
+            "a fully priced native residual is not approximate"
+        );
         // Priced USDC is kept; the unpriced residual is not silently folded in as $0.
         assert!((ops[2].profit_usd.unwrap() - 1.0).abs() < 1e-6);
         let partial_details = ops[2].details_json.as_deref().unwrap_or("");
@@ -1245,7 +1253,8 @@ mod tests {
             }]
         });
 
-        // 3. native residual with no native price → `NATIVE_UNPRICED` (inferred).
+        // 3. native residual — since A16 it is priced with the in-scope $0.75
+        // native price (1 wei ≈ $0), so it is no longer unpriced/approximate.
         let mut native = sample_event(611);
         native.profit_token = Some(usdc);
         native.profit_amount = Some(U256::from(1_000_000u64));
@@ -1295,14 +1304,19 @@ mod tests {
         }
 
         let ov = store.report_window_overview(0, None, None).unwrap();
+        // A16 shift: case 3 already counted as priced via its USDC leg; what
+        // changes is that its native residual now contributes real USD and the
+        // op no longer carries NATIVE_UNPRICED / usd_approximate. So priced
+        // stays 4, unpriced stays 1 (case 5 is the genuinely unpriced one),
+        // approx 4→3, native_unpriced 1→0. Coverage/gross are unchanged.
         assert_eq!(ov.ops, 5);
         assert_eq!(ov.quality.ops_priced, 4);
         assert_eq!(ov.quality.ops_unpriced, 1);
         assert_eq!(ov.quality.ops_exact, 4);
         assert_eq!(ov.quality.ops_inferred, 1);
-        assert_eq!(ov.quality.ops_approx, 4);
+        assert_eq!(ov.quality.ops_approx, 3);
         assert_eq!(ov.quality.ops_multi_asset, 2);
-        assert_eq!(ov.quality.ops_native_unpriced, 1);
+        assert_eq!(ov.quality.ops_native_unpriced, 0);
         assert_eq!(ov.quality.ops_pricing_clamped, 1);
         // Each priced op nets $1 (gas ~$0.000075 is tiny relative to 4.0).
         assert!((ov.quality.gross_usd_priced_only - 4.0).abs() < 1e-6);
@@ -1320,11 +1334,104 @@ mod tests {
             .net_concentration_pct()
             .expect("net>0 must yield a percentage");
         assert!(pct > 0.0 && pct < 100.0);
-        // The unpriced op itself must be NULL in the store (excluded, not zeroed).
+        // The wholly unpriced op (case 5) must stay NULL in the store
+        // (excluded, not zeroed).
         let ops = store.ops_in_range(600, 613, &[]).unwrap();
+        let null_blocks: Vec<u64> = ops
+            .iter()
+            .filter(|op| op.profit_usd.is_none())
+            .map(|op| op.block_number)
+            .collect();
+        assert_eq!(
+            null_blocks,
+            vec![613],
+            "only the wholly unpriced op is NULL"
+        );
+    }
+
+    /// A16: a native-denominated residual is priced with the native price
+    /// already in scope for gas. Only a genuinely missing native price keeps
+    /// the row NULL and the `NATIVE_UNPRICED` flag — a NULL is a data limit,
+    /// never an implicit "no profit".
+    #[test]
+    fn native_residual_is_priced_with_the_in_scope_native_price() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let one_native = U256::from(1_000_000_000_000_000_000u128);
+
+        fn persist_native(
+            store: &ExplorerStore,
+            block: u64,
+            native_price_usd: Option<f64>,
+            amount: U256,
+        ) {
+            let mut ev = sample_event(block);
+            ev.profit_token = None;
+            ev.profit_amount = None;
+            ev.profit_tokens = vec![(crate::explorer::profit::NATIVE_MARKER, amount)];
+            let prices: std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd> =
+                Default::default();
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    ),
+                    ts: 1_700_000_000,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps: &[],
+                    transfers: &[],
+                    events: std::slice::from_ref(&ev),
+                    native_price_usd,
+                    token_prices: &prices,
+                })
+                .unwrap();
+        }
+
+        persist_native(&store, 700, Some(0.75), one_native);
+        persist_native(&store, 701, None, one_native);
+
+        let ops = store.ops_in_range(700, 701, &[]).unwrap();
+        let priced = ops
+            .iter()
+            .find(|o| o.block_number == 700)
+            .expect("priced native op");
         assert!(
-            ops.iter().any(|op| op.profit_usd.is_none()),
-            "expected one NULL-profit op"
+            (priced.profit_usd.expect("priced native profit_usd") - 0.75).abs() < 1e-9,
+            "1 native at $0.75 must persist as $0.75, got {:?}",
+            priced.profit_usd
+        );
+        assert!(
+            !priced
+                .details_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("NATIVE_UNPRICED"),
+            "a priced native residual must not carry NATIVE_UNPRICED"
+        );
+
+        let unpriced = ops
+            .iter()
+            .find(|o| o.block_number == 701)
+            .expect("unpriced native op");
+        assert_eq!(
+            unpriced.profit_usd, None,
+            "no native price → NULL, never $0"
+        );
+        assert!(
+            unpriced
+                .details_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("NATIVE_UNPRICED"),
+            "a missing native price must stay flagged"
+        );
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(
+            ov.quality.ops_native_unpriced, 1,
+            "only the genuinely price-less native op is flagged"
         );
     }
 
