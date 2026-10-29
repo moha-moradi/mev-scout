@@ -19,23 +19,30 @@ use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
 
-/// Swap attribution + atomic arb + keeper/claim/bundler.
+/// Swap attribution + atomic arb + keeper/claim/bundler, in that order.
 pub(super) fn classify_arbs(
     input: &BlockInput,
-    liq_txs: &HashSet<u64>,
+    arb_tag_opts: &ArbTagOpts<'_>,
+) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
+    let (mut events, rejects) = classify_atomic_arbs(input, arb_tag_opts);
+    let keepers = classify_keepers(input);
+    let claims = classify_claim_and_sell(input, &mut events);
+    events.extend(keepers);
+    events.extend(claims);
+    events.extend(classify_bundlers(input));
+    (events, rejects)
+}
+
+/// Swap attribution + atomic arb pass (ledger, flash-loan netting, cycle).
+pub(super) fn classify_atomic_arbs(
+    input: &BlockInput,
     arb_tag_opts: &ArbTagOpts<'_>,
 ) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
     let mut events: Vec<MevEvent> = Vec::new();
     let mut rejects: Vec<RejectedCandidate> = Vec::new();
-    // ── 2-3. Swap attribution + atomic arb pass ─────────────────────────
     for tx in &input.txs {
         if !tx.success {
             continue;
-        }
-        if liq_txs.contains(&tx.tx_index) {
-            // Liquidation anchor tx — still scan for arb in the same tx
-            // (liquidator often swaps seized collateral), but do not double-
-            // classify the tx as pure arb unless deltas confirm it.
         }
         if tx.swaps.is_empty() {
             continue;
@@ -346,15 +353,15 @@ pub(super) fn classify_arbs(
             victim_swap_size: None,
             details,
         });
-
-        // ── 5. JIT pass (Mint+Burn same position, same block) ──────────
-        // Handled block-wide below (needs cross-tx pairing); per-tx we only
-        // mark minted positions.
     }
+    (events, rejects)
+}
 
-    // ── 4b. Keeper / automation execution (plan P1.5 /) ─────────────
-    // Mode A: Gelato ExecSuccess / Chainlink UpkeepPerformed|LogTriggered.
-    // Emitted as Unknown + tags so MevKind stays stable; P&L basis F.
+/// Keeper / automation execution (plan P1.5): Gelato ExecSuccess /
+/// Chainlink UpkeepPerformed|LogTriggered. Emitted as Unknown + tags so
+/// MevKind stays stable; P&L basis F.
+pub(super) fn classify_keepers(input: &BlockInput) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         for keeper in &tx.keepers {
             let fee = keeper.fee.filter(|f| !f.is_zero());
@@ -398,10 +405,17 @@ pub(super) fn classify_arbs(
             });
         }
     }
+    events
+}
 
-    // ── 4c. Airdrop claim-and-sell (plan P3.13 /) ──────────────────
-    // Mode A: Transfer from zero + same-tx sell swap; held claims are ignored.
-    // When the tx already produced ArbAtomic, just attach the tag (no double count).
+/// Airdrop claim-and-sell (plan P3.13): Transfer from zero + same-tx sell
+/// swap; held claims are ignored. When the tx already produced ArbAtomic in
+/// `arb_events`, only the tag is attached there (no double count).
+pub(super) fn classify_claim_and_sell(
+    input: &BlockInput,
+    arb_events: &mut [MevEvent],
+) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         if !tx.success {
             continue;
@@ -409,7 +423,7 @@ pub(super) fn classify_arbs(
         let Some(token) = strategy_tags::claim_and_sell_token(&tx.transfers, &tx.swaps) else {
             continue;
         };
-        if let Some(ev) = events
+        if let Some(ev) = arb_events
             .iter_mut()
             .find(|e| e.tx_index == tx.tx_index && e.kind == MevKind::ArbAtomic)
         {
@@ -459,8 +473,12 @@ pub(super) fn classify_arbs(
             }),
         });
     }
+    events
+}
 
-    // ── 4d. ERC-4337 bundler executions (plan P3.11 /) ─────────────
+/// ERC-4337 bundler executions (plan P3.11).
+pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         for uo in &tx.user_ops {
             if !uo.success {
@@ -499,8 +517,7 @@ pub(super) fn classify_arbs(
             });
         }
     }
-
-    (events, rejects)
+    events
 }
 
 fn classify_reject(
@@ -595,7 +612,7 @@ enum ForwardedLookup {
 /// When no searcher candidate holds a positive anchor residual, recover a
 /// single third-party recipient that received the cycle profit solely from
 /// `tx.from` / `tx.to` and did not participate in swaps.
-// Eight correlated ledger views; Task B2 splits the arb pass.
+// Eight correlated ledger views of one tx.
 #[allow(clippy::too_many_arguments)]
 fn forwarded_anchor_recipient(
     ledger: &DeltaLedger,
@@ -832,6 +849,151 @@ fn initiator_blocks_cycle(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use crate::explorer::test_fixtures::{
+        block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
+    };
+    use crate::explorer::types::{KeeperFact, UserOpFact};
+
+    fn tag_opts() -> ArbTagOpts<'static> {
+        ArbTagOpts {
+            wrapped_native: WNATIVE,
+            savax: None,
+            savax_exchange_rate_wad: None,
+            epoch_signal: false,
+            epoch_venue_pools: &[],
+            gmx_adl_signal: false,
+            rate_cache_updates: &[],
+        }
+    }
+
+    fn arb_tx(idx: u64) -> TxInput {
+        tx(
+            idx,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+            ],
+        )
+    }
+
+    #[test]
+    fn orchestrator_matches_the_four_passes_in_order() {
+        let mut keeper_tx = tx(1, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 1,
+            log_index: 0,
+            protocol: "gelato",
+            emitter: ATK,
+            fee: Some(U256::from(10u64)),
+            fee_token: Some(USDC),
+        }];
+        let mut bundler_tx = tx(2, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 2,
+            log_index: 0,
+            entry_point: POOL_A,
+            sender: ATK,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(5u64),
+            success: true,
+        }];
+        let input = block(vec![arb_tx(0), keeper_tx, bundler_tx]);
+        let opts = tag_opts();
+
+        let (orchestrated, rejects) = classify_arbs(&input, &opts);
+
+        let (mut manual, manual_rejects) = classify_atomic_arbs(&input, &opts);
+        let keepers = classify_keepers(&input);
+        let claims = classify_claim_and_sell(&input, &mut manual);
+        manual.extend(keepers);
+        manual.extend(claims);
+        manual.extend(classify_bundlers(&input));
+
+        let signature = |v: &[MevEvent]| -> Vec<(MevKind, u64)> {
+            v.iter().map(|e| (e.kind, e.tx_index)).collect()
+        };
+        assert_eq!(signature(&orchestrated), signature(&manual));
+        assert_eq!(rejects.len(), manual_rejects.len());
+        assert_eq!(
+            signature(&orchestrated),
+            vec![
+                (MevKind::ArbAtomic, 0),
+                (MevKind::Unknown, 1),
+                (MevKind::Unknown, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn claim_and_sell_tags_the_existing_arb_instead_of_double_counting() {
+        // Zero-from TOKA claim is sold by the cycle's TOKA→USDC leg, so the
+        // claim pass must tag the arb event rather than emit a second event.
+        let mut t = arb_tx(0);
+        t.transfers.push(transfer(9, TOKA, Address::ZERO, ATK, 7));
+        let input = block(vec![t]);
+        let opts = tag_opts();
+
+        let (mut events, _) = classify_atomic_arbs(&input, &opts);
+        assert_eq!(events.len(), 1);
+        let claims = classify_claim_and_sell(&input, &mut events);
+
+        assert!(claims.is_empty(), "arb tx must not produce a second event");
+        let tagged = events[0].details["tags"].as_array().is_some_and(|tags| {
+            tags.iter().any(|t| t.as_str() == Some("claim_and_sell"))
+                && tags.iter().any(|t| t.as_str() == Some("airdrop"))
+        });
+        assert!(
+            tagged,
+            "arb event must carry claim_and_sell and airdrop tags"
+        );
+    }
+
+    #[test]
+    fn keeper_and_bundler_passes_emit_unknown() {
+        let mut keeper_tx = tx(0, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink",
+            emitter: ATK,
+            fee: None,
+            fee_token: None,
+        }];
+        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 1,
+            log_index: 0,
+            entry_point: POOL_A,
+            sender: ATK,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(5u64),
+            success: true,
+        }];
+        let input = block(vec![keeper_tx, bundler_tx]);
+
+        let keepers = classify_keepers(&input);
+        assert_eq!(keepers.len(), 1);
+        assert_eq!(keepers[0].kind, MevKind::Unknown);
+        assert_eq!(keepers[0].details["protocol"], "chainlink");
+
+        let bundlers = classify_bundlers(&input);
+        assert_eq!(bundlers.len(), 1);
+        assert_eq!(bundlers[0].kind, MevKind::Unknown);
+        assert_eq!(bundlers[0].details["protocol"], "erc4337");
+    }
 }
 
 #[cfg(test)]

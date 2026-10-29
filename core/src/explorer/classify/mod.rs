@@ -195,17 +195,12 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         block_reserve_owned: &block_reserve_owned,
     };
     events.extend(classify_liquidations(input, &liq_ctx));
-    let liq_txs: HashSet<u64> = events
-        .iter()
-        .filter(|e| e.kind == MevKind::Liquidation)
-        .map(|e| e.tx_index)
-        .collect();
 
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
     events.extend(classify_skims(input));
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/bundler/upgrade)
-    let (arb_events, arb_rejects) = classify_arbs(input, &liq_txs, &arb_tag_opts);
+    let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
     events.extend(arb_events);
     rejects.extend(arb_rejects);
 

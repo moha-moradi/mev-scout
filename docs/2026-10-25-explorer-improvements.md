@@ -88,6 +88,7 @@
 
 - [ ] **Step 1 (per checkpoint):** re-index `[LO, HI]` with the checkpoint's code, run the script, append the table (label: `phase-a`, `phase-b`, `final`).
 - [ ] **Step 2 (per checkpoint):** diff the `L \ V` set against the previous run's adjudicated table — every appeared/disappeared row gets a one-line cause tied to a task ID, or a `REGRESSION?` flag.
+  *Progress: checkpoint `phase-a` done (Steps 1–2, commit `f0efc23`; table in `docs/explorer_strategy_checklist.md`). `phase-b` and `final` pending — boxes stay open until all three runs exist.*
 - [ ] **Step 3 (final run only, optional sanity):** one *fresh* last-hour fetch (a new window) to confirm recall also holds on live data — comparison is recall-only on that window, never profit, and it never replaces the frozen-window runs.
 
 ---
@@ -1027,10 +1028,10 @@ pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent>;
 
 **Problem:** One function runs four unrelated passes (atomic arb w/ ledger machinery, keeper, claim-and-sell, ERC-4337 bundler) sharing one loop and one `events` vec.
 
-- [ ] **Step 1: Read `arb.rs` fully** (816 lines) and identify the four pass boundaries (they are the `// ──`-commented sections after the atomic-arb section ends).
-- [ ] **Step 2: Extract each pass** into its own function; move shared per-tx prerequisites (the `tx.success` / `tx.swaps.is_empty()` guards, ledger construction) into the atomic-arb pass only — check each other pass's actual data needs (keepers likely only need `tx.keepers`, claim-and-sell needs `buy_collaterals` + swaps, bundlers needs `user_ops`) and give each its own minimal guards. Delete the dead `liq_txs` parameter and the empty `if liq_txs.contains(...)` block at arb.rs:35-39 in the same change (empty body = the guard was never implemented; mod.rs:197-201's `liq_txs` construction then becomes dead too — remove it and its comment, noting in the commit that the intended guard was never implemented).
-- [ ] **Step 3: Tests** — existing arb tests must pass unchanged: `cargo test -p mev-scout-core arb && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Behavior must be byte-identical (same events, same order); if order shifts, preserve the original concatenation order in the orchestrator. [live half: canonical commands]
-- [ ] **Step 4: Commit** — `git commit -m "refactor(explorer): split classify_arbs into atomic-arb/keeper/claim-sell/bundler passes"`
+- [x] **Step 1: Read `arb.rs` fully** (816 lines) and identify the four pass boundaries (they are the `// ──`-commented sections after the atomic-arb section ends).
+- [x] **Step 2: Extract each pass** into its own function; move shared per-tx prerequisites (the `tx.success` / `tx.swaps.is_empty()` guards, ledger construction) into the atomic-arb pass only — check each other pass's actual data needs (keepers likely only need `tx.keepers`, claim-and-sell needs `buy_collaterals` + swaps, bundlers needs `user_ops`) and give each its own minimal guards. Delete the dead `liq_txs` parameter and the empty `if liq_txs.contains(...)` block at arb.rs:35-39 in the same change (empty body = the guard was never implemented; mod.rs:197-201's `liq_txs` construction then becomes dead too — remove it and its comment, noting in the commit that the intended guard was never implemented).
+- [x] **Step 3: Tests** — existing arb tests must pass unchanged: `cargo test -p mev-scout-core arb && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Behavior must be byte-identical (same events, same order); if order shifts, preserve the original concatenation order in the orchestrator. [live half: canonical commands]
+- [x] **Step 4: Commit** — `git commit -m "refactor(explorer): split classify_arbs into atomic-arb/keeper/claim-sell/bundler passes"`
 
 ---
 
