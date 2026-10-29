@@ -15,6 +15,7 @@ use crate::explorer::types::{
     Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
 };
 
+use super::legs::searcher_candidates;
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
@@ -107,24 +108,9 @@ pub(super) fn classify_atomic_arbs(
         }
 
         // Participant scope: sender + receiver-side contracts (searcher
-        // attribution: "EOA sender (or its deployed contract)").
-        let mut candidates: Vec<Address> = vec![tx.from];
-        if let Some(to) = tx.to {
-            candidates.push(to);
-        }
-        // Addresses with ≥2 swap participations via transfers also qualify.
-        let mut participation: std::collections::HashMap<Address, usize> =
-            std::collections::HashMap::new();
-        for t in &tx.transfers {
-            *participation.entry(t.from).or_insert(0) += 1;
-            *participation.entry(t.to).or_insert(0) += 1;
-        }
-        let qualified: Vec<Address> = participation
-            .into_iter()
-            .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
-            .map(|(addr, _)| addr)
-            .collect();
-        candidates.extend(qualified);
+        // attribution: "EOA sender (or its deployed contract)") + addresses
+        // with ≥2 transfer participations (see `searcher_candidates`).
+        let candidates = searcher_candidates(tx);
 
         // ── Atomic arb ─────────────────────────────────────────────────
         // Resolved directional edges (token_in, token_out, pool).

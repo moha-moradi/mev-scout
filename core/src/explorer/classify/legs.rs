@@ -134,6 +134,31 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
     by_pool
 }
 
+/// Searcher-attribution candidates for a tx: EOA sender, its receiver-side
+/// contract, plus any address with ≥2 swap participations via transfers.
+/// Order-stable (sender first) for deterministic downstream matching.
+///
+/// The `>= 2` participation threshold is the single chain-configurable knob
+/// Task D12 is meant to expose.
+pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
+    let mut candidates: Vec<Address> = vec![tx.from];
+    if let Some(to) = tx.to {
+        candidates.push(to);
+    }
+    let mut participation: std::collections::HashMap<Address, usize> = Default::default();
+    for t in &tx.transfers {
+        *participation.entry(t.from).or_insert(0) += 1;
+        *participation.entry(t.to).or_insert(0) += 1;
+    }
+    let qualified: Vec<Address> = participation
+        .into_iter()
+        .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
+        .map(|(addr, _)| addr)
+        .collect();
+    candidates.extend(qualified);
+    candidates
+}
+
 /// Logs-only closed-cycle profit of a tx, mirroring the arb pass: the sender
 /// (or a qualified participant) nets a positive delta in a priority token.
 pub(super) fn tx_cycle_profit(
@@ -142,20 +167,7 @@ pub(super) fn tx_cycle_profit(
 ) -> Option<(Address, Address, U256)> {
     let ledger =
         DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
-    let mut candidates: Vec<Address> = vec![tx.from];
-    if let Some(to) = tx.to {
-        candidates.push(to);
-    }
-    let mut participation: HashMap<Address, usize> = HashMap::new();
-    for t in &tx.transfers {
-        *participation.entry(t.from).or_insert(0) += 1;
-        *participation.entry(t.to).or_insert(0) += 1;
-    }
-    for (addr, count) in participation {
-        if count >= 2 && !candidates.contains(&addr) {
-            candidates.push(addr);
-        }
-    }
+    let candidates = searcher_candidates(tx);
     let resolved: Vec<(Address, Address, _)> = tx
         .swaps
         .iter()

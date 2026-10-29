@@ -1,12 +1,10 @@
 //! Classic realized-sandwich detection.
-use std::collections::HashMap;
-
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
-use super::legs::{opposite_dir, same_dir, SandwichWalk, SwapLeg};
-use super::{has_unresolved_tokens, BlockInput};
+use super::legs::{opposite_dir, pool_legs, same_dir, SandwichWalk, SwapLeg};
+use super::BlockInput;
 
 /// Classic realized-sandwich detection (pass 4): one attacker
 /// opens a position on a pool (front-run), a **third-party** same-direction
@@ -19,30 +17,9 @@ use super::{has_unresolved_tokens, BlockInput};
 /// position is open is a victim; the first attacker swap in the opposite
 /// direction after ≥1 victim is the back-run.
 pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
-    // Flatten every successful tx's resolved-direction swaps in block order.
-    let mut by_pool: HashMap<Address, Vec<(u64, Address, SwapLeg)>> = HashMap::new();
-    for tx in &input.txs {
-        if !tx.success {
-            continue;
-        }
-        for s in &tx.swaps {
-            if has_unresolved_tokens(s) {
-                continue; // unresolved direction cannot anchor a leg
-            }
-            by_pool.entry(s.pool).or_default().push((
-                tx.tx_index,
-                tx.from,
-                SwapLeg {
-                    tx_index: tx.tx_index,
-                    tx_hash: tx.tx_hash,
-                    token_in: s.token_in,
-                    token_out: s.token_out,
-                    amount_in: s.amount_in,
-                    amount_out: s.amount_out,
-                },
-            ));
-        }
-    }
+    // Every successful tx's resolved-direction swaps, flattened per pool and
+    // sorted by tx index so the walk never depends on `input.txs` order.
+    let by_pool = pool_legs(input);
 
     let mut out = Vec::new();
     for (pool, pool_swaps) in by_pool {
