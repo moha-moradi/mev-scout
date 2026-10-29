@@ -3,10 +3,8 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};
 
-use crate::explorer::types::MevKind;
-
-use super::pnl::{liquidation_pnl, note_pricing_issue};
-use super::{merge_details_json, BlockFactsInput, ExplorerStore, PersistBlockStats};
+use super::pnl::{annotate_event, PersistedOp};
+use super::{BlockFactsInput, ExplorerStore, PersistBlockStats};
 
 impl ExplorerStore {
     /// Persist Chainlink answers for mode-B pre-poke divergence (plan P1.4).
@@ -213,221 +211,15 @@ impl ExplorerStore {
                 )?;
             }
 
-            let mut inserted = 0usize;
-            let mut pending_labels: Vec<(Address, Option<Address>, u64)> = Vec::new();
-            for ev in events {
-                // Liquidation P&L: profit ≈ collateral_usd −
-                // debt_usd, valued at persist with hourly prices. Never
-                // subtract raw amounts when tokens differ.
-                let mut confidence = ev.confidence.as_str();
-                let mut details_json = ev.details.to_string();
-                let mut pricing_clamped = false;
-                let mut unpriced_residual = false;
-                let mut native_unpriced = false;
-                let profit_usd = if ev.kind == MevKind::Liquidation {
-                    let (usd, conf, details) = liquidation_pnl(ev, token_prices);
-                    confidence = conf;
-                    details_json = details;
-                    usd
-                } else if !ev.profit_tokens.is_empty() {
-                    // USD-sum across every positive residual
-                    // (flash-netting already cleaned the ledger in 2.2) with
-                    // realized-rate fallback for unpriced tokens.
-                    // A missing quote is not zero: the sum is partial and marked
-                    // approximate instead of being stored as a complete figure.
-                    let mut total = 0.0f64;
-                    for (tok, amt) in &ev.profit_tokens {
-                        if *tok == crate::explorer::profit::NATIVE_MARKER {
-                            // The native price used for gas is already in
-                            // scope: price the native residual with it instead
-                            // of persisting NULL profit for ETH-denominated
-                            // MEV. Only a genuinely missing price is a data
-                            // limit worth flagging.
-                            match native_price_usd {
-                                Some(np) => {
-                                    total += crate::explorer::pricing::wei_to_usd(*amt, np);
-                                }
-                                None => native_unpriced = true,
-                            }
-                            continue;
-                        }
-                        match crate::explorer::pricing::amount_usd_realized(
-                            *tok,
-                            *amt,
-                            token_prices,
-                            &ev.details,
-                        ) {
-                            Some(q) if q.usd.is_finite() => {
-                                total += q.usd;
-                                pricing_clamped |= q.clamped;
-                            }
-                            _ => unpriced_residual = true,
-                        }
-                    }
-                    if !total.is_finite() {
-                        total = 0.0;
-                        unpriced_residual = true;
-                    }
-                    details_json = merge_details_json(
-                        &details_json,
-                        [(
-                            "profit_tokens",
-                            serde_json::json!(ev
-                                .profit_tokens
-                                .iter()
-                                .map(|(tok, amt)| serde_json::json!({
-                                    "token": format!("{tok:#x}"),
-                                    "amount": amt.to_string(),
-                                }))
-                                .collect::<Vec<_>>()),
-                        )],
-                    );
-                    (total > 0.0).then_some(total)
-                } else {
-                    match (ev.profit_token, ev.profit_amount) {
-                        (Some(tok), Some(amt)) if tok == crate::explorer::profit::NATIVE_MARKER => {
-                            match native_price_usd {
-                                Some(np) => Some(crate::explorer::pricing::wei_to_usd(amt, np)),
-                                None => {
-                                    native_unpriced = true;
-                                    None
-                                }
-                            }
-                        }
-                        (Some(tok), _) if tok == crate::explorer::profit::NATIVE_MARKER => {
-                            native_unpriced = true;
-                            None
-                        }
-                        (Some(tok), Some(amt)) => {
-                            match crate::explorer::pricing::amount_usd_realized(
-                                tok,
-                                amt,
-                                token_prices,
-                                &ev.details,
-                            ) {
-                                Some(q) if q.usd.is_finite() => {
-                                    pricing_clamped |= q.clamped;
-                                    Some(q.usd)
-                                }
-                                _ => {
-                                    unpriced_residual = true;
-                                    None
-                                }
-                            }
-                        }
-                        _ => None,
-                    }
-                };
-                if unpriced_residual {
-                    note_pricing_issue(&mut details_json, "MULTI_ASSET_PRICING");
-                }
-                if native_unpriced {
-                    note_pricing_issue(&mut details_json, "NATIVE_UNPRICED");
-                }
-                if pricing_clamped {
-                    note_pricing_issue(&mut details_json, "pricing_clamped");
-                }
-                // FOT / rebase profit tokens are flagged approximate
-                // (recorded amounts are distorted by the token mechanics).
-                if let Some(reason) = ev
-                    .profit_tokens
-                    .iter()
-                    .map(|(tok, _)| *tok)
-                    .chain(ev.profit_token)
-                    .find_map(|t| crate::explorer::pricing::approximate_token(&t))
-                {
-                    details_json = merge_details_json(
-                        &details_json,
-                        [
-                            ("usd_approximate", serde_json::json!(true)),
-                            ("approximate_reason", serde_json::json!(reason)),
-                        ],
-                    );
-                }
-                // Gas in USD via native price (gas wei → native → USD).
-                let gas_usd = native_price_usd
-                    .map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
-                // Flash-loan fee in USD via the borrowed token's price (2.2).
-                // A non-zero fee whose token has no usable quote is not worth
-                // $0: the row keeps NULL (never an invented zero) and the op is
-                // flagged so the report can say the fee is unmeasurable. A zero
-                // quote is not a price (A14), so a non-positive/non-finite USD
-                // value counts as unpriced too.
-                let mut flash_fee_unpriced = false;
-                let flashloan_fee_usd = match (ev.flashloan_fee_token, ev.flashloan_fee_wei) {
-                    (Some(tok), Some(amt)) if !amt.is_zero() => match token_prices.get(&tok) {
-                        Some(p) => {
-                            let usd = crate::explorer::pricing::token_amount_to_usd(amt, p);
-                            if usd.is_finite() && usd > 0.0 {
-                                Some(usd)
-                            } else {
-                                flash_fee_unpriced = true;
-                                None
-                            }
-                        }
-                        None => {
-                            flash_fee_unpriced = true;
-                            None
-                        }
-                    },
-                    _ => None,
-                };
-                // The classifier netted `borrowed + fee` into the ledger when
-                // the repay Transfer was absent, so the residual it reported is
-                // already fee-netted: subtracting the fee here would count it
-                // twice. The fee is still written to the row for display.
-                let fee_netted = ev
-                    .details
-                    .get("flashloan_fee_netted_in_ledger")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                // Only an unpriced fee the ledger did *not* already absorb makes
-                // `net` incomplete. A netted fee sits inside the token residual,
-                // so its missing USD quote changes nothing downstream — flagging
-                // it would claim a gap that does not exist.
-                if flash_fee_unpriced && !fee_netted {
-                    note_pricing_issue(&mut details_json, "FLASH_FEE_UNPRICED");
-                }
-                let fee_for_net = if fee_netted {
-                    0.0
-                } else {
-                    flashloan_fee_usd.unwrap_or(0.0)
-                };
-                let net = match (profit_usd, gas_usd) {
-                    (Some(g), Some(gg)) => Some(g - gg - fee_for_net),
-                    _ => None,
-                };
-                // Sandwich profitability gate: a sandwich whose extractable
-                // profit does not cover combined front+back gas (plus the
-                // flash-loan fee, unless the classifier already netted it into
-                // the ledger) is not a realized-MEV op worth netting — but it
-                // is persisted anyway with `excluded_from_net = 1` so the
-                // forensics stay queryable and op counts stay truthful; every
-                // *net* aggregation skips the row. Gross, volume and fee sums
-                // still include it: the extraction really happened, only the
-                // provable loss is hidden from net sums. Unowned-net (missing
-                // price) events are kept unflagged — the gate never guesses.
-                let excluded_from_net =
-                    (ev.kind == MevKind::Sandwich && matches!(net, Some(n) if n <= 0.0)) as i64;
-                // USD notional of the op's swap legs (report "volume"): priced
-                // at the block's token prices. Legs with no price/decimals are
-                // skipped; volume is `None` when nothing priced. Attribution is
-                // per anchor tx — a tx with multiple events shares its legs.
-                let volume_usd = {
-                    let total = swaps.iter().filter(|s| s.tx_index == ev.tx_index).fold(
-                        0.0f64,
-                        |acc, s| {
-                            acc + token_prices
-                                .get(&s.token_in)
-                                .map(|p| {
-                                    crate::explorer::pricing::token_amount_to_usd(s.amount_in, p)
-                                })
-                                .unwrap_or(0.0)
-                        },
-                    );
-                    (total > 0.0).then_some(total)
-                };
-                let canonical = crate::explorer::explorer_canonical_id(ev);
+            // All business logic (PnL annotation, sandwich gate, volume,
+            // flash-fee conversion, native residual, confidence) lives in
+            // `pnl::annotate_event`; the rest of this block only binds and
+            // inserts the already-annotated rows.
+            let ops: Vec<PersistedOp> = events
+                .iter()
+                .map(|ev| annotate_event(ev, swaps, token_prices, native_price_usd, now))
+                .collect();
+            for op in &ops {
                 conn.execute(
                     "INSERT INTO mev_ops
                        (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
@@ -438,38 +230,35 @@ impl ExplorerStore {
                      VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                             ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21)",
                     rusqlite::params![
-                        ev.block as i64,
-                        ev.tx_index as i64,
-                        format!("{:#x}", ev.tx_hash),
-                        ev.ts as i64,
-                        ev.kind.as_str(),
-                        format!("{:#x}", ev.searcher),
-                        ev.contract.map(|a| format!("{:#x}", a)),
-                        confidence,
-                        canonical,
-                        ev.profit_token.map(|a| format!("{:#x}", a)),
-                        ev.profit_amount.map(|a| a.to_string()),
-                        volume_usd,
-                        profit_usd,
-                        gas_usd,
-                        flashloan_fee_usd,
-                        net,
-                        ev.details.get("route").map(|r| r.to_string()),
-                        serde_json::to_string(
-                            &ev.victim_hashes
-                                .iter()
-                                .map(|h| format!("{:#x}", h))
-                                .collect::<Vec<_>>()
-                        )
-                        .ok(),
-                        Some(details_json),
-                        now,
-                        excluded_from_net,
+                        op.block_number as i64,
+                        op.tx_index as i64,
+                        op.tx_hash,
+                        op.ts as i64,
+                        op.kind,
+                        op.eoa,
+                        op.contract,
+                        op.confidence,
+                        op.canonical_id,
+                        op.profit_token,
+                        op.profit_amount,
+                        op.volume_usd,
+                        op.profit_usd,
+                        op.gas_cost_usd,
+                        op.flashloan_fee_usd,
+                        op.net_profit_usd,
+                        op.route_json,
+                        op.victim_hashes,
+                        op.details_json,
+                        op.created_at,
+                        op.excluded_from_net,
                     ],
                 )?;
-                pending_labels.push((ev.searcher, ev.contract, ev.block));
-                inserted += 1;
             }
+            let inserted = ops.len();
+            let pending_labels: Vec<(Address, Option<Address>, u64)> = events
+                .iter()
+                .map(|ev| (ev.searcher, ev.contract, ev.block))
+                .collect();
 
             conn.execute(
                 "INSERT OR REPLACE INTO blocks_classified(block, classified_at, event_count)
