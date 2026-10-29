@@ -1126,10 +1126,10 @@ pub fn annotate_event(/* event + tx row + price inputs */) -> PersistedOp;
 
 **Problem:** `insert_block_facts` (facts.rs:125) is 310 lines mixing business logic into the SQL layer — untestable without a database.
 
-- [ ] **Step 1: Read facts.rs fully** (445 lines) and `pnl.rs`.
-- [ ] **Step 2: Move each logic block** (PnL annotation at :236-307, sandwich gate at :347-353 → now the A10 flag, volume pricing at :358-371, flash-fee conversion at :338-341) into pure functions in `pnl.rs` taking owned/borrowed data and returning the values the INSERT needs. `insert_block_facts` becomes: build `Vec<PersistedOp>`, then run the inserts.
-- [ ] **Step 3: Unit-test the pure fns** — the existing pricing-edge tests (per the review, tests cover the cross-decimal blowup) move/become pure tests without a store: `cargo test -p mev-scout-core pnl`.
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "refactor(explorer): pure PnL/annotation in pnl.rs; facts.rs is SQL only"`
+- [x] **Step 1: Read facts.rs fully** (445 lines) and `pnl.rs`.
+- [x] **Step 2: Move each logic block** (PnL annotation at :236-307, sandwich gate at :347-353 → now the A10 flag, volume pricing at :358-371, flash-fee conversion at :338-341) into pure functions in `pnl.rs` taking owned/borrowed data and returning the values the INSERT needs. `insert_block_facts` becomes: build `Vec<PersistedOp>`, then run the inserts.
+- [x] **Step 3: Unit-test the pure fns** — the existing pricing-edge tests (per the review, tests cover the cross-decimal blowup) move/become pure tests without a store: `cargo test -p mev-scout-core pnl`.
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "refactor(explorer): pure PnL/annotation in pnl.rs; facts.rs is SQL only"`
 
 ---
 
