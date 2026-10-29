@@ -1073,10 +1073,10 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
 
 > **Reclassified (2026-10-25 review).** Part (2) is a latent-bug fix, not a refactor: if any golden shifts, the shift *is* the finding (a sandwich whose legs were assembled in insertion order rather than sorted order). Predict it in the commit body rather than treating it as a failed behavior-preservation check. Also worth doing here while you are in the file: `searcher_candidates` is the right home for the `>= 2` participation rule, but note there are currently **two copies of that rule with different receivers** — `arb.rs:99` and `legs.rs:155` — so unify both into the helper and state in the doc comment whether `>= 2` is intended to be chain-configurable (it is the knob Task D12 exists for).
 
-- [ ] **Step 1: Add `searcher_candidates` to legs.rs** (code above), replace both duplicated scans with calls.
-- [ ] **Step 2: Sandwich walk** — read `sandwich.rs` fully; replace its local leg-walk with a call to `pool_legs` (legs.rs:107-135). Verify the sort does not change any golden output; if a golden shifts, investigate — the shift means the walk was order-dependent (a real latent bug the sort fixes).
-- [ ] **Step 3: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` [live half: canonical commands]
-- [ ] **Step 4: Commit** — `git commit -m "refactor(explorer): shared searcher_candidates; sandwich reuses sorted pool_legs walk"`
+- [x] **Step 1: Add `searcher_candidates` to legs.rs** (code above), replace both duplicated scans with calls.
+- [x] **Step 2: Sandwich walk** — read `sandwich.rs` fully; replace its local leg-walk with a call to `pool_legs` (legs.rs:107-135). Verify the sort does not change any golden output; if a golden shifts, investigate — the shift means the walk was order-dependent (a real latent bug the sort fixes).
+- [x] **Step 3: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` [live half: canonical commands]
+- [x] **Step 4: Commit** — `git commit -m "refactor(explorer): shared searcher_candidates; sandwich reuses sorted pool_legs walk"`
 
 ---
 
