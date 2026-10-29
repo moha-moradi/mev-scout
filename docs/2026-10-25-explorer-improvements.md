@@ -1088,8 +1088,8 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
 
 **Problem:** `decode_tx_logs_with_aliases` calls 15 decoders sequentially per log (each re-comparing topic0), and `decode_swap` is a 250-line topic0 if-chain. A dispatch table makes adding venues a one-line change.
 
-- [ ] **Step 1: Read both regions fully**, plus `decode/mod.rs` (49 lines) for the decoder signatures.
-- [ ] **Step 2: Refactor `decode_tx_logs_with_aliases`** into a `match log.topics()[0]` dispatch (a `const`-style match is preferable to a `HashMap` here — compile-time exhaustiveness, zero allocation):
+- [x] **Step 1: Read both regions fully**, plus `decode/mod.rs` (49 lines) for the decoder signatures.
+- [x] **Step 2: Refactor `decode_tx_logs_with_aliases`** into a `match log.topics()[0]` dispatch (a `const`-style match is preferable to a `HashMap` here — compile-time exhaustiveness, zero allocation):
 
 ```rust
     match log.topics().first() {
@@ -1101,9 +1101,9 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
 ```
 
 Extract the repeated `tx_index/log_index` stamping into a small local closure `let mut stamp = |fact: &mut dyn …|` or per-arm helper so each arm is 1-3 lines. Keep topic0 constants where they live today (`decode/swap.rs` etc. — re-export via `decode/mod.rs` if private).
-- [ ] **Step 3: Refactor `decode_swap`** the same way: hoist the topic0 comparisons into the same match style (the function itself can stay; just replace the if-chain with match arms and per-AMM handlers).
-- [ ] **Step 4: Gates** — decode tests are the safety net: `cargo test -p mev-scout-core decode && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Output must be identical. [live half: canonical commands]
-- [ ] **Step 5: Commit** — `git commit -m "refactor(explorer): topic0 match dispatch for log decoding and swap decoders"`
+- [x] **Step 3: Refactor `decode_swap`** the same way: hoist the topic0 comparisons into the same match style (the function itself can stay; just replace the if-chain with match arms and per-AMM handlers).
+- [x] **Step 4: Gates** — decode tests are the safety net: `cargo test -p mev-scout-core decode && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Output must be identical. [live half: canonical commands]
+- [x] **Step 5: Commit** — `git commit -m "refactor(explorer): topic0 match dispatch for log decoding and swap decoders"`
 
 ---
 

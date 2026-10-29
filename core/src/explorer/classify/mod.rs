@@ -400,6 +400,15 @@ pub struct DecodedTxFacts {
     pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
+fn push_swap(facts: &mut DecodedTxFacts, tx_index: u64, log_idx: u64, log: &crate::data::LogData) {
+    if let Some((amm, mut s)) = decode::decode_swap(log) {
+        s.tx_index = tx_index;
+        s.log_index = log_idx;
+        s.amm = amm;
+        facts.swaps.push(s);
+    }
+}
+
 /// Decode a tx's receipt logs into facts (used by ingest / scenarios).
 /// `pool_tokens` = pool → (token0, token1) registry for swap direction (1.1).
 /// `liquidation_protocol_aliases` remaps shared-topic0 emitters (Spark, Benqi).
@@ -412,86 +421,117 @@ pub(crate) fn decode_tx_logs_with_aliases(
     let mut facts = DecodedTxFacts::default();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
-        if let Some(mut t) = decode::decode_transfer(log) {
-            t.tx_index = tx_index;
-            t.log_index = log_idx;
-            facts.transfers.push(t);
+        if let Some(&topic0) = log.topics.first() {
+            match decode::log_family(topic0) {
+                Some(decode::LogFamily::Transfer) => {
+                    if let Some(mut t) = decode::decode_transfer(log) {
+                        t.tx_index = tx_index;
+                        t.log_index = log_idx;
+                        facts.transfers.push(t);
+                    }
+                }
+                // Signal before the swap edge so brand survives dedup.
+                Some(decode::LogFamily::Aggregator) => {
+                    if let Some(mut sig) = decode::decode_aggregator_signal(log) {
+                        sig.log_index = log_idx;
+                        facts.aggregator_signals.push(sig);
+                    }
+                    push_swap(&mut facts, tx_index, log_idx, log);
+                }
+                Some(decode::LogFamily::Swap) => push_swap(&mut facts, tx_index, log_idx, log),
+                Some(decode::LogFamily::Liquidation) => {
+                    if let Some(mut l) = decode::decode_liquidation(log) {
+                        l.tx_index = tx_index;
+                        l.log_index = log_idx;
+                        decode::remap_liquidation_protocol(&mut l, liquidation_protocol_aliases);
+                        facts.liquidations.push(l);
+                    }
+                }
+                Some(decode::LogFamily::FlashLoan) => {
+                    if let Some(mut f) = decode::decode_flash_loan(log) {
+                        f.tx_index = tx_index;
+                        f.log_index = log_idx;
+                        facts.flashloans.push(f);
+                    }
+                }
+                Some(decode::LogFamily::BuyCollateral) => {
+                    if let Some(mut b) = decode::decode_buy_collateral(log) {
+                        b.tx_index = tx_index;
+                        b.log_index = log_idx;
+                        facts.buy_collaterals.push(b);
+                    }
+                }
+                Some(decode::LogFamily::V3Liquidity) => {
+                    if let Some(mut j) = decode::decode_v3_mint_burn(log) {
+                        j.tx_index = tx_index;
+                        j.log_index = log_idx;
+                        facts.jit.push(j);
+                    }
+                }
+                Some(decode::LogFamily::LbLiquidity) => {
+                    if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
+                        j.tx_index = tx_index;
+                        j.log_index = log_idx;
+                        facts.jit.push(j);
+                    }
+                }
+                Some(decode::LogFamily::V2PairOp) => {
+                    if let Some(mut op) = decode::decode_v2_pair_op(log) {
+                        op.tx_index = tx_index;
+                        op.log_index = log_idx;
+                        facts.v2_pair_ops.push(op);
+                    }
+                }
+                Some(decode::LogFamily::Oracle) => {
+                    if let Some(mut o) = decode::decode_oracle_update(log) {
+                        o.tx_index = tx_index;
+                        o.log_index = log_idx;
+                        facts.oracle_updates.push(o);
+                    }
+                }
+                Some(decode::LogFamily::Reserve) => {
+                    if let Some(mut r) = decode::decode_reserve_data(log) {
+                        r.tx_index = tx_index;
+                        r.log_index = log_idx;
+                        facts.reserve_updates.push(r);
+                    }
+                }
+                Some(decode::LogFamily::RateCache) => {
+                    if let Some(mut rc) = decode::decode_rate_cache_update(log) {
+                        rc.tx_index = tx_index;
+                        rc.log_index = log_idx;
+                        facts.rate_cache_updates.push(rc);
+                    }
+                }
+                Some(decode::LogFamily::Keeper) => {
+                    if let Some(mut k) = decode::decode_keeper(log) {
+                        k.tx_index = tx_index;
+                        k.log_index = log_idx;
+                        facts.keepers.push(k);
+                    }
+                }
+                Some(decode::LogFamily::EpochReward) => {
+                    if let Some(mut e) = decode::decode_epoch_reward(log) {
+                        e.tx_index = tx_index;
+                        e.log_index = log_idx;
+                        facts.epoch_rewards.push(e);
+                    }
+                }
+                Some(decode::LogFamily::UserOp) => {
+                    if let Some(mut u) = decode::decode_user_op(log) {
+                        u.tx_index = tx_index;
+                        u.log_index = log_idx;
+                        facts.user_ops.push(u);
+                    }
+                }
+                None => {}
+            }
         }
-        // Collect aggregator intent before swap-edge dedup so brand survives.
-        if let Some(mut sig) = decode::decode_aggregator_signal(log) {
-            sig.log_index = log_idx;
-            facts.aggregator_signals.push(sig);
-        }
-        if let Some((amm, mut s)) = decode::decode_swap(log) {
-            s.tx_index = tx_index;
-            s.log_index = log_idx;
-            s.amm = amm;
-            facts.swaps.push(s);
-        }
-        if let Some(mut l) = decode::decode_liquidation(log) {
-            l.tx_index = tx_index;
-            l.log_index = log_idx;
-            decode::remap_liquidation_protocol(&mut l, liquidation_protocol_aliases);
-            facts.liquidations.push(l);
-        }
-        if let Some(mut f) = decode::decode_flash_loan(log) {
-            f.tx_index = tx_index;
-            f.log_index = log_idx;
-            facts.flashloans.push(f);
-        }
-        if let Some(mut b) = decode::decode_buy_collateral(log) {
-            b.tx_index = tx_index;
-            b.log_index = log_idx;
-            facts.buy_collaterals.push(b);
-        }
-        if let Some(mut j) = decode::decode_v3_mint_burn(log) {
-            j.tx_index = tx_index;
-            j.log_index = log_idx;
-            facts.jit.push(j);
-        } else if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
-            j.tx_index = tx_index;
-            j.log_index = log_idx;
-            facts.jit.push(j);
-        }
-        if let Some(mut op) = decode::decode_v2_pair_op(log) {
-            op.tx_index = tx_index;
-            op.log_index = log_idx;
-            facts.v2_pair_ops.push(op);
-        }
-        if let Some(mut o) = decode::decode_oracle_update(log) {
-            o.tx_index = tx_index;
-            o.log_index = log_idx;
-            facts.oracle_updates.push(o);
-        }
-        if let Some(mut r) = decode::decode_reserve_data(log) {
-            r.tx_index = tx_index;
-            r.log_index = log_idx;
-            facts.reserve_updates.push(r);
-        }
-        if let Some(mut rc) = decode::decode_rate_cache_update(log) {
-            rc.tx_index = tx_index;
-            rc.log_index = log_idx;
-            facts.rate_cache_updates.push(rc);
-        }
-        if let Some(mut k) = decode::decode_keeper(log) {
-            k.tx_index = tx_index;
-            k.log_index = log_idx;
-            facts.keepers.push(k);
-        }
-        if let Some(mut e) = decode::decode_epoch_reward(log) {
-            e.tx_index = tx_index;
-            e.log_index = log_idx;
-            facts.epoch_rewards.push(e);
-        }
+        // GMX EventEmitter keys eventNameHash on topics[1]; topic0 is not stable.
         if let Some(mut g) = decode::decode_gmx_event(log) {
             g.tx_index = tx_index;
             g.log_index = log_idx;
             facts.gmx_events.push(g);
-        }
-        if let Some(mut u) = decode::decode_user_op(log) {
-            u.tx_index = tx_index;
-            u.log_index = log_idx;
-            facts.user_ops.push(u);
         }
     }
     decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);

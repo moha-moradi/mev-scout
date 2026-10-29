@@ -74,7 +74,31 @@ fn apply_v2_sides(fact: &mut SwapFact, a0i: U256, a1i: U256, a0o: U256, a1o: U25
 /// the log alone; `attach_swap_tokens` fills them from transfer pairing.
 pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
     let topic0 = *log.topics.first()?;
-    let base = |amm: Amm, pool: Address| SwapFact {
+    match topic0 {
+        t if t == V2_SWAP_TOPIC => decode_v2_like(log, Amm::V2),
+        // Donaswap V3 shares the Uniswap V3 data layout plus two ignored
+        // uint128 protocol-fee words.
+        t if t == V3_SWAP_TOPIC || t == *DONASWAP_V3_SWAP_TOPIC => {
+            decode_signed_at(log, Amm::V3, log.address)
+        }
+        t if t == *V4_SWAP_TOPIC => decode_pool_id_signed(log, Amm::V4),
+        t if t == *INF_CL_SWAP_TOPIC => decode_pool_id_signed(log, Amm::Infinity),
+        t if t == *CURVE_TOKEN_EXCHANGE_TOPIC || t == *CURVE_V2_TOKEN_EXCHANGE_TOPIC => {
+            decode_curve(log)
+        }
+        t if t == *BALANCER_SWAP_TOPIC => decode_balancer(log),
+        t if t == *LB_SWAP_TOPIC => decode_lb(log),
+        t if t == *TRADER_JOE_LB_SWAP_LEGACY_TOPIC => decode_lb_legacy(log),
+        t if t == *PENDLE_SWAP_TOPIC => decode_pendle(log),
+        t if t == *FLUID_SWAP_TOPIC => decode_fluid(log),
+        t if t == *METRIC_SWAP_TOPIC => decode_metric(log),
+        t if t == *SOLIDLY_SWAP_TOPIC => decode_v2_like(log, Amm::Solidly),
+        _ => super::aggregator::decode_aggregator_swap(log),
+    }
+}
+
+fn blank_swap(amm: Amm, pool: Address) -> SwapFact {
+    SwapFact {
         tx_index: 0,
         log_index: 0,
         pool,
@@ -86,238 +110,170 @@ pub fn decode_swap(log: &LogData) -> Option<(Amm, SwapFact)> {
         amount_out: U256::ZERO,
         tick: None,
         owner: None,
+    }
+}
+
+/// V2 and Solidly share the four-amount data layout. Direction is resolved
+/// later via transfer pairing.
+fn decode_v2_like(log: &LogData, amm: Amm) -> Option<(Amm, SwapFact)> {
+    if log.data.len() < 128 {
+        return None;
+    }
+    let a0i = U256::from_be_slice(&log.data[0..32]);
+    let a1i = U256::from_be_slice(&log.data[32..64]);
+    let a0o = U256::from_be_slice(&log.data[64..96]);
+    let a1o = U256::from_be_slice(&log.data[96..128]);
+    if a0i.is_zero() && a1i.is_zero() && a0o.is_zero() && a1o.is_zero() {
+        return None;
+    }
+    let mut fact = blank_swap(amm, log.address);
+    apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
+    Some((amm, fact))
+}
+
+fn decode_signed_at(log: &LogData, amm: Amm, pool: Address) -> Option<(Amm, SwapFact)> {
+    let mut fact = blank_swap(amm, pool);
+    if !apply_signed_deltas(&mut fact, &log.data) {
+        return None;
+    }
+    Some((amm, fact))
+}
+
+/// V4 / Infinity: pool id is topics[1]; amounts are signed deltas.
+fn decode_pool_id_signed(log: &LogData, amm: Amm) -> Option<(Amm, SwapFact)> {
+    if log.topics.len() < 2 {
+        return None;
+    }
+    let pool = topic_address(log.topics[1].as_slice());
+    decode_signed_at(log, amm, pool)
+}
+
+fn decode_curve(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.data.len() < 128 {
+        return None;
+    }
+    let mut fact = blank_swap(Amm::Curve, log.address);
+    fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+    fact.amount_out = U256::from_be_slice(&log.data[96..128]);
+    Some((Amm::Curve, fact))
+}
+
+fn decode_balancer(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.topics.len() < 4 || log.data.len() < 64 {
+        return None;
+    }
+    let pool = topic_address(log.topics[1].as_slice());
+    let mut fact = blank_swap(Amm::Balancer, pool);
+    fact.token_in = topic_address(log.topics[2].as_slice());
+    fact.token_out = topic_address(log.topics[3].as_slice());
+    fact.amount_in = U256::from_be_slice(&log.data[0..32]);
+    fact.amount_out = U256::from_be_slice(&log.data[32..64]);
+    Some((Amm::Balancer, fact))
+}
+
+fn decode_lb(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.topics.len() < 3 || log.data.len() < 96 {
+        return None;
+    }
+    let swap_for_y = log.data[31] != 0;
+    let mut fact = blank_swap(Amm::Lb, log.address);
+    fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+    fact.amount_out = U256::from_be_slice(&log.data[64..96]);
+    fact.token_in = if swap_for_y {
+        super::sentinels::TOKEN0_SENTINEL
+    } else {
+        super::sentinels::TOKEN1_SENTINEL
     };
+    fact.token_out = if swap_for_y {
+        super::sentinels::TOKEN1_SENTINEL
+    } else {
+        super::sentinels::TOKEN0_SENTINEL
+    };
+    Some((Amm::Lb, fact))
+}
 
-    if topic0 == V2_SWAP_TOPIC {
-        // data: amount0In, amount1In, amount0Out, amount1Out
-        if log.data.len() < 128 {
-            return None;
-        }
-        let a0i = U256::from_be_slice(&log.data[0..32]);
-        let a1i = U256::from_be_slice(&log.data[32..64]);
-        let a0o = U256::from_be_slice(&log.data[64..96]);
-        let a1o = U256::from_be_slice(&log.data[96..128]);
-        if a0i.is_zero() && a1i.is_zero() && a0o.is_zero() && a1o.is_zero() {
-            return None;
-        }
-        let mut fact = base(Amm::V2, log.address);
-        // One direction decision drives both sides. Independent `max` calls
-        // pair token0's input with token1's output when a flash swap (or a
-        // router hopping twice through one pool) sets both inputs.
-        apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
-        return Some((Amm::V2, fact));
+fn decode_lb_legacy(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.topics.len() < 3 || log.data.len() < 96 {
+        return None;
     }
-
-    // Donaswap V3 shares the Uniswap V3 data layout (amounts, sqrtPrice,
-    // liquidity, tick) plus two ignored uint128 protocol-fee words.
-    if topic0 == V3_SWAP_TOPIC || topic0 == *DONASWAP_V3_SWAP_TOPIC {
-        // data: int256 amount0, int256 amount1, sqrtPriceX96, liquidity, tick
-        let mut fact = base(Amm::V3, log.address);
-        if !apply_signed_deltas(&mut fact, &log.data) {
-            return None;
-        }
-        return Some((Amm::V3, fact));
+    let (in_x, in_y) = unpack_lb_amounts_xy(&log.data[32..64]);
+    let (out_x, out_y) = unpack_lb_amounts_xy(&log.data[64..96]);
+    let mut fact = blank_swap(Amm::Lb, log.address);
+    if !in_x.is_zero() {
+        fact.amount_in = in_x;
+        fact.amount_out = out_y;
+        fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN1_SENTINEL;
+    } else if !in_y.is_zero() {
+        fact.amount_in = in_y;
+        fact.amount_out = out_x;
+        fact.token_in = super::sentinels::TOKEN1_SENTINEL;
+        fact.token_out = super::sentinels::TOKEN0_SENTINEL;
+    } else {
+        return None;
     }
-
-    if topic0 == *V4_SWAP_TOPIC {
-        // topics: [sig, poolId]; data: int128 amount0, int128 amount1,...
-        if log.topics.len() < 2 {
-            return None;
-        }
-        let pool = topic_address(log.topics[1].as_slice());
-        let mut fact = base(Amm::V4, pool);
-        if !apply_signed_deltas(&mut fact, &log.data) {
-            return None;
-        }
-        return Some((Amm::V4, fact));
+    if fact.amount_in.is_zero() || fact.amount_out.is_zero() {
+        return None;
     }
+    Some((Amm::Lb, fact))
+}
 
-    if topic0 == *INF_CL_SWAP_TOPIC {
-        // Pancake Infinity CL singleton manager: same layout as V4 but the
-        // signature carries an extra uint16 protocolFee word (data >= 224).
-        if log.topics.len() < 2 {
-            return None;
-        }
-        let pool = topic_address(log.topics[1].as_slice());
-        let mut fact = base(Amm::Infinity, pool);
-        if !apply_signed_deltas(&mut fact, &log.data) {
-            return None;
-        }
-        return Some((Amm::Infinity, fact));
+fn decode_pendle(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.topics.len() < 3 || log.data.len() < 64 {
+        return None;
     }
-
-    if topic0 == *CURVE_TOKEN_EXCHANGE_TOPIC || topic0 == *CURVE_V2_TOKEN_EXCHANGE_TOPIC {
-        // data: int128 sold_id/coin_sold, uint256 amount_sold, int128 bought_id, uint256 amount_bought
-        if log.data.len() < 128 {
-            return None;
-        }
-        let mut fact = base(Amm::Curve, log.address);
-        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
-        fact.amount_out = U256::from_be_slice(&log.data[96..128]);
-        return Some((Amm::Curve, fact));
+    let pt = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
+    let sy = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
+    if pt.is_zero() && sy.is_zero() {
+        return None;
     }
+    let mut fact = blank_swap(Amm::Pendle, log.address);
+    fact.amount_in = pt.wrapping_abs().into_raw();
+    fact.amount_out = sy.wrapping_abs().into_raw();
+    Some((Amm::Pendle, fact))
+}
 
-    if topic0 == *BALANCER_SWAP_TOPIC {
-        // topics: [sig, poolId, tokenIn, tokenOut]; data: amountIn, amountOut
-        // Pool address is the first 20 bytes of the bytes32 poolId.
-        if log.topics.len() < 4 || log.data.len() < 64 {
-            return None;
-        }
-        let pool = topic_address(log.topics[1].as_slice());
-        let mut fact = base(Amm::Balancer, pool);
-        fact.token_in = topic_address(log.topics[2].as_slice());
-        fact.token_out = topic_address(log.topics[3].as_slice());
-        fact.amount_in = U256::from_be_slice(&log.data[0..32]);
-        fact.amount_out = U256::from_be_slice(&log.data[32..64]);
-        return Some((Amm::Balancer, fact));
+fn decode_fluid(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.data.len() < 128 {
+        return None;
     }
+    let swap0to1 = log.data[31] != 0;
+    let mut fact = blank_swap(Amm::Fluid, log.address);
+    fact.amount_in = U256::from_be_slice(&log.data[32..64]);
+    fact.amount_out = U256::from_be_slice(&log.data[64..96]);
+    fact.token_in = if swap0to1 {
+        super::sentinels::TOKEN0_SENTINEL
+    } else {
+        super::sentinels::TOKEN1_SENTINEL
+    };
+    fact.token_out = if swap0to1 {
+        super::sentinels::TOKEN1_SENTINEL
+    } else {
+        super::sentinels::TOKEN0_SENTINEL
+    };
+    Some((Amm::Fluid, fact))
+}
 
-    if topic0 == *LB_SWAP_TOPIC {
-        // LB 2.0: topics [sig, sender, to]; data = swapForY(bool), amountIn,
-        // amountOut, volatilityAccumulated, fees. Direction: swapForY = X→Y
-        // (token0 in), else Y→X (token1 in). Tokens resolve via transfer pairing.
-        if log.topics.len() < 3 || log.data.len() < 96 {
-            return None;
-        }
-        let swap_for_y = log.data[31] != 0;
-        let mut fact = base(Amm::Lb, log.address);
-        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
-        fact.amount_out = U256::from_be_slice(&log.data[64..96]);
-        fact.token_in = if swap_for_y {
-            super::sentinels::TOKEN0_SENTINEL
-        } else {
-            super::sentinels::TOKEN1_SENTINEL
-        };
-        fact.token_out = if swap_for_y {
-            super::sentinels::TOKEN1_SENTINEL
-        } else {
-            super::sentinels::TOKEN0_SENTINEL
-        };
-        return Some((Amm::Lb, fact));
+fn decode_metric(log: &LogData) -> Option<(Amm, SwapFact)> {
+    if log.data.len() < 160 {
+        return None;
     }
-
-    if topic0 == *TRADER_JOE_LB_SWAP_LEGACY_TOPIC {
-        // LB 2.1/2.2: topics [sig, sender, to]; data =
-        // id(uint24), amountsIn(bytes32), amountsOut(bytes32), ...
-        // PackedUint128: amountX low 16 bytes, amountY high 16 bytes.
-        if log.topics.len() < 3 || log.data.len() < 96 {
-            return None;
-        }
-        let (in_x, in_y) = unpack_lb_amounts_xy(&log.data[32..64]);
-        let (out_x, out_y) = unpack_lb_amounts_xy(&log.data[64..96]);
-        let mut fact = base(Amm::Lb, log.address);
-        // Exactly one side should be non-zero on each packed word for a
-        // normal swap; prefer X-in when both somehow set.
-        if !in_x.is_zero() {
-            fact.amount_in = in_x;
-            fact.amount_out = out_y;
-            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
-            fact.token_out = super::sentinels::TOKEN1_SENTINEL;
-        } else if !in_y.is_zero() {
-            fact.amount_in = in_y;
-            fact.amount_out = out_x;
-            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
-            fact.token_out = super::sentinels::TOKEN0_SENTINEL;
-        } else {
-            return None;
-        }
-        if fact.amount_in.is_zero() || fact.amount_out.is_zero() {
-            return None;
-        }
-        return Some((Amm::Lb, fact));
+    let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
+    let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[64..96]));
+    if a0.is_zero() && a1.is_zero() {
+        return None;
     }
-
-    if topic0 == *PENDLE_SWAP_TOPIC {
-        // topics: [sig, caller, receiver]; data: int256 netPt, int256 netSy,...
-        if log.topics.len() < 3 || log.data.len() < 64 {
-            return None;
-        }
-        let pt = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[0..32]));
-        let sy = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
-        if pt.is_zero() && sy.is_zero() {
-            return None;
-        }
-        let mut fact = base(Amm::Pendle, log.address);
-        fact.amount_in = pt.wrapping_abs().into_raw();
-        fact.amount_out = sy.wrapping_abs().into_raw();
-        return Some((Amm::Pendle, fact));
+    let mut fact = blank_swap(Amm::Metric, log.address);
+    if a0 < alloy::primitives::I256::ZERO {
+        fact.amount_in = a0.wrapping_abs().into_raw();
+        fact.amount_out = a1.wrapping_abs().into_raw();
+        fact.token_in = super::sentinels::TOKEN0_SENTINEL;
+    } else {
+        fact.amount_in = a1.wrapping_abs().into_raw();
+        fact.amount_out = a0.wrapping_abs().into_raw();
+        fact.token_in = super::sentinels::TOKEN1_SENTINEL;
     }
-
-    if topic0 == *FLUID_SWAP_TOPIC {
-        // Fluid: Swap(bool swap0to1, uint256 amountIn, uint256 amountOut, address to),
-        // no indexed params, so data = [swap0to1, amountIn, amountOut, to] = 128 bytes.
-        // Direction is encoded in the first-word bool; tokens resolve via transfer pairing.
-        if log.data.len() < 128 {
-            return None;
-        }
-        let swap0to1 = log.data[31] != 0;
-        let mut fact = base(Amm::Fluid, log.address);
-        fact.amount_in = U256::from_be_slice(&log.data[32..64]);
-        fact.amount_out = U256::from_be_slice(&log.data[64..96]);
-        fact.token_in = if swap0to1 {
-            super::sentinels::TOKEN0_SENTINEL
-        } else {
-            super::sentinels::TOKEN1_SENTINEL
-        };
-        fact.token_out = if swap0to1 {
-            super::sentinels::TOKEN1_SENTINEL
-        } else {
-            super::sentinels::TOKEN0_SENTINEL
-        };
-        return Some((Amm::Fluid, fact));
-    }
-
-    if topic0 == *METRIC_SWAP_TOPIC {
-        // Metric V2: Swap(address sender, address recipient, bool exactInput,
-        // int128 amount0Delta, int128 amount1Delta, int16 newTick, uint104
-        // newPositionInBin). sender/recipient indexed; data =
-        // [exactInput, amount0Delta, amount1Delta, newTick, newPositionInBin] = 160 bytes.
-        if log.data.len() < 160 {
-            return None;
-        }
-        let a0 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[32..64]));
-        let a1 = alloy::primitives::I256::from_raw(U256::from_be_slice(&log.data[64..96]));
-        if a0.is_zero() && a1.is_zero() {
-            return None;
-        }
-        let mut fact = base(Amm::Metric, log.address);
-        if a0 < alloy::primitives::I256::ZERO {
-            fact.amount_in = a0.wrapping_abs().into_raw();
-            fact.amount_out = a1.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN0_SENTINEL;
-        } else {
-            fact.amount_in = a1.wrapping_abs().into_raw();
-            fact.amount_out = a0.wrapping_abs().into_raw();
-            fact.token_in = super::sentinels::TOKEN1_SENTINEL;
-        }
-        return Some((Amm::Metric, fact));
-    }
-
-    if topic0 == *SOLIDLY_SWAP_TOPIC {
-        // Velodrome V2/Aerodrome: topics [sig, sender, to]; data =
-        // [amount0In, amount1In, amount0Out, amount1Out] — the same
-        // four-amount layout as Uniswap V2's Swap data. Direction is
-        // resolved via transfer pairing, exactly like V2.
-        if log.data.len() < 128 {
-            return None;
-        }
-        let a0i = U256::from_be_slice(&log.data[0..32]);
-        let a1i = U256::from_be_slice(&log.data[32..64]);
-        let a0o = U256::from_be_slice(&log.data[64..96]);
-        let a1o = U256::from_be_slice(&log.data[96..128]);
-        if a0i.is_zero() && a1i.is_zero() && a0o.is_zero() && a1o.is_zero() {
-            return None;
-        }
-        let mut fact = base(Amm::Solidly, log.address);
-        apply_v2_sides(&mut fact, a0i, a1i, a0o, a1o);
-        return Some((Amm::Solidly, fact));
-    }
-
-    if let Some(fact) = super::aggregator::decode_aggregator_swap(log) {
-        return Some(fact);
-    }
-
-    None
+    Some((Amm::Metric, fact))
 }
 
 /// LFJ PackedUint128: amountX in the low 16 bytes, amountY in the high 16.
