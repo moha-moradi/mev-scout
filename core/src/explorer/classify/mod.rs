@@ -2427,3 +2427,618 @@ mod confidence_basis_tests {
         assert_eq!(events[1].confidence, Confidence::Inferred);
     }
 }
+
+/// A20: every candidate a classify pass drops must emit a `RejectedCandidate`
+/// whose reason carries the *decision*, so "0 frontrun / backrun / skim over
+/// N blocks" is answerable from data instead of being a guess.
+///
+/// One test per instrumented pass asserts the exact reason string (and the
+/// `detail` gate name) for a near-miss fixture; the absence of that reason is
+/// the test failure. The last test is the structural guard: no bare `continue;`
+/// may land in the instrumented files without either recording a reason or
+/// saying why it is not a candidate drop.
+#[cfg(test)]
+mod a20_reject_reasons {
+    use super::*;
+    use crate::explorer::test_fixtures::{
+        block, block_with_v2, jit, liquidation, swap, swap_at_tick, swap_owned, transfer, tx, ATK,
+        MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM, WNATIVE,
+    };
+    use crate::explorer::types::V2PairOpKind;
+    use alloy::primitives::address;
+
+    const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
+    const FILLER: Address = address!("f000000000000000000000000000000000000001");
+    const POOL_C: Address = address!("300000000000000000000000000000000000000c");
+    const TOKB: Address = address!("700000000000000000000000000000000000000b");
+
+    /// True when a reject carries this reason, this tx anchor (`None` = the
+    /// per-block aggregate row) and a `detail` starting with `gate`.
+    fn has(out: &ClassifyOutput, reason: &str, tx_index: Option<u64>, gate: &str) -> bool {
+        out.rejects.iter().any(|r| {
+            r.reject_reason == reason
+                && r.tx_index == tx_index
+                && r.detail.as_deref().is_some_and(|d| d.starts_with(gate))
+        })
+    }
+
+    fn dump(out: &ClassifyOutput) -> Vec<(String, Option<u64>, Option<String>)> {
+        out.rejects
+            .iter()
+            .map(|r| {
+                (
+                    r.reject_reason.clone(),
+                    r.tx_index,
+                    r.detail.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// A profitable closed cycle (the anchor the causal backrun pass needs)
+    /// plus a market-moving tx at index 0, `gap` txs apart.
+    fn backrun_shape(gap: u64, ref_price: (u64, u64), back_price: (u64, u64)) -> Vec<TxInput> {
+        let mut txs = vec![tx(
+            0,
+            MARKET,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, ref_price.0, ref_price.1)],
+            vec![
+                transfer(0, TOKA, MARKET, POOL_A, ref_price.0),
+                transfer(1, USDC, POOL_A, MARKET, ref_price.1),
+            ],
+        )];
+        // `gap - 1` unrelated filler txs, then the move, then the closer.
+        let mut idx = 1u64;
+        let fillers = gap.saturating_sub(2);
+        for _ in 0..fillers {
+            txs.push(tx(
+                idx,
+                FILLER,
+                true,
+                vec![swap(POOL_C, USDC, TOKA, 10, 10)],
+                vec![
+                    transfer(0, USDC, FILLER, POOL_C, 10),
+                    transfer(1, TOKA, POOL_C, FILLER, 10),
+                ],
+            ));
+            idx += 1;
+        }
+        let move_in = 1000u64;
+        let move_out = 500u64;
+        txs.push(tx(
+            idx,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, move_in, move_out)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, move_in),
+                transfer(1, TOKA, POOL_A, VICTIM, move_out),
+            ],
+        ));
+        idx += 1;
+        txs.push(tx(
+            idx,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, back_price.0, back_price.1),
+                swap(POOL_B, USDC, TOKA, back_price.1, back_price.1 + 10),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, back_price.0),
+                transfer(1, USDC, POOL_A, ATK, back_price.1),
+                transfer(2, USDC, ATK, POOL_B, back_price.1),
+                transfer(3, TOKA, POOL_B, ATK, back_price.1 + 10),
+            ],
+        ));
+        txs
+    }
+
+    #[test]
+    fn cycle_gate_reports_closed_cycle_misses_by_name() {
+        // (fixture, expected tx anchor, expected gate in `detail`).
+        // Two resolved edges that do not close → anchored `cycle_not_closed`.
+        let unclosed = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 120),
+                swap(POOL_B, USDC, TOKB, 120, 130),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+                transfer(2, USDC, ATK, POOL_B, 120),
+                transfer(3, TOKB, POOL_B, ATK, 130),
+            ],
+        )]);
+        let out = classify_block(&unclosed);
+        assert!(
+            has(&out, "cycle_not_closed", Some(0), "no_closed_cycle"),
+            "two unclosed edges must report `no_closed_cycle`, got {:?}",
+            dump(&out)
+        );
+
+        // A single resolved edge is not an anchor at all: one aggregate row.
+        let one_edge = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 100, 120)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+            ],
+        )]);
+        let out = classify_block(&one_edge);
+        assert!(
+            has(
+                &out,
+                "cycle_not_closed",
+                None,
+                "fewer_than_2_resolved_edges"
+            ),
+            "a sub-2-edge tx must be aggregated, not written per tx, got {:?}",
+            dump(&out)
+        );
+
+        // Closed cycle whose legs are funded by an unrelated actor.
+        let mixed = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+                swap_owned(OUTSIDER, POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+            ],
+        )]);
+        let out = classify_block(&mixed);
+        assert!(
+            has(
+                &out,
+                "mixed_flow_owner",
+                Some(0),
+                "cycle_flow_not_attributable"
+            ),
+            "a closed cycle with a foreign leg owner must say so, got {:?}",
+            dump(&out)
+        );
+
+        // Cycle whose only candidates dump pre-existing inventory.
+        let inventory = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 50),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 50),
+            ],
+        )]);
+        let out = classify_block(&inventory);
+        assert!(
+            has(
+                &out,
+                "material_deficit",
+                Some(0),
+                "every_candidate_spends_pre_existing_inventory"
+            ),
+            "an inventory-dumping cycle must report the spend, got {:?}",
+            dump(&out)
+        );
+
+        // Cycle that closes at exactly break-even: no positive residual.
+        let net_zero = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 100),
+            ],
+        )]);
+        let out = classify_block(&net_zero);
+        assert!(
+            has(
+                &out,
+                "net_zero_searcher",
+                Some(0),
+                "no_candidate_holds_a_positive_residual"
+            ),
+            "a break-even cycle must report no residual, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn backrun_reports_no_counterparty_leg_and_the_window_gate() {
+        // A closed profitable cycle that is the only leg on its pool: nothing
+        // moved the market, so there is no counterparty to backrun.
+        let alone = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 120),
+                swap(POOL_B, USDC, TOKA, 120, 130),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+                transfer(2, USDC, ATK, POOL_B, 120),
+                transfer(3, TOKA, POOL_B, ATK, 130),
+            ],
+        )]);
+        let out = classify_block(&alone);
+        assert!(
+            has(
+                &out,
+                "no_counterparty_leg",
+                Some(0),
+                "no_prior_opposite_leg"
+            ),
+            "a cycle with no prior opposite leg must say why, got {:?}",
+            dump(&out)
+        );
+
+        // Same shape, but the counterparty moved 9 txs earlier: beyond the
+        // adjacency window, so the reject names the window, not the price.
+        let out = classify_block(&block(backrun_shape(
+            9,
+            (1000, 1100),
+            (100, 120),
+        )));
+        assert!(
+            has(
+                &out,
+                "causal_window_too_wide",
+                Some(8),
+                "counterparty_leg_behind_causal_window"
+            ),
+            "the CAUSAL_WINDOW_TXS gate must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn backrun_reports_the_price_floor_gate() {
+        // In-window counterparty move present, closed profitable cycle present,
+        // but the closer executes at the pre-move reference price (1.2 vs 1.2):
+        // below CAUSAL_PRICE_MIN_PCT, so it is noise, not a backrun.
+        let out = classify_block(&block(backrun_shape(3, (1000, 1200), (100, 120))));
+        assert!(
+            has(
+                &out,
+                "causal_price_move_below_floor",
+                Some(2),
+                "backrun_price_below_floor"
+            ),
+            "the CAUSAL_PRICE_MIN_PCT gate must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn frontrun_reports_empty_victim_set_and_unclosed_position() {
+        // A mover with no third-party same-direction swap after it: nothing was
+        // frontrun. Aggregate row (no anchor existed).
+        let mover = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        )]);
+        let out = classify_block(&mover);
+        assert!(
+            has(
+                &out,
+                "victim_set_empty",
+                None,
+                "no_third_party_same_direction_leg"
+            ),
+            "an empty victim set must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Degraded third-party victim (the anchor) but the position is never
+        // closed by the mover's sender: a frontrun-shaped candidate that fails
+        // the close gate.
+        let f = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let v = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 150),
+            ],
+        );
+        let out = classify_block(&block(vec![f, v]));
+        assert!(
+            has(
+                &out,
+                "cycle_not_closed",
+                Some(0),
+                "no_profitable_close_leg"
+            ),
+            "a victim-anchored frontrun with no close must say so, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn sandwich_reports_its_leg_walk_rejections() {
+        // Attacker opens and closes on one pool with no third-party swap in
+        // between: a round trip, rejected because the victim set is empty.
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let t1 = tx(
+            1,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 200, 95)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 95),
+            ],
+        );
+        let out = classify_block(&block(vec![t0, t1]));
+        assert!(
+            has(
+                &out,
+                "victim_set_empty",
+                Some(0),
+                "closed_without_third_party_victim"
+            ),
+            "a front/back pair with no victim must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Victims did pile up between the front and a same-direction attacker
+        // swap that never reverses: no back-run leg, so no sandwich.
+        let front = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let victim = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 200, 380)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 200),
+                transfer(1, TOKA, POOL_A, VICTIM, 380),
+            ],
+        );
+        let out = classify_block(&block(vec![front, victim]));
+        assert!(
+            has(
+                &out,
+                "cycle_not_closed",
+                Some(0),
+                "no_closing_back_run_leg"
+            ),
+            "an opened position that never reverses must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn skim_reports_pool_set_rejections() {
+        // An undecoded-pair outflow whose pool has V2 venue evidence (it emits
+        // Sync) but is absent from the registry: the skim pass cannot look at
+        // it. This is the exact "0 skim across N blocks" answer.
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        t.v2_pair_ops = vec![crate::explorer::types::V2PairOpFact {
+            tx_index: 0,
+            log_index: 1,
+            pool: POOL_A,
+            kind: V2PairOpKind::Sync,
+        }];
+        let out = classify_block(&block(vec![t]));
+        assert!(
+            has(
+                &out,
+                "skim_pool_not_v2_like",
+                None,
+                "venue_outflow_not_in_v2_like_registry"
+            ),
+            "a pair outflow excluded by the registry must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Registry pool that both receives and pays out in the same tx:
+        // swap-like activity, not a skim.
+        let swap_like = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, WNATIVE, ATK, POOL_A, 1000),
+                transfer(1, USDC, POOL_A, ATK, 500),
+            ],
+        );
+        let out = classify_block(&block_with_v2(vec![swap_like], &[POOL_A]));
+        assert!(
+            has(
+                &out,
+                "skim_looks_like_swap",
+                Some(0),
+                "pool_also_receives"
+            ),
+            "an inbound+outbound pair must be recorded as swap-like, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn jit_reports_mint_to_burn_pairing_misses() {
+        // A Mint with no Burn that closes it.
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit = vec![jit(0, true)];
+        let out = classify_block(&block(vec![mint_tx.clone()]));
+        assert!(
+            has(&out, "jit_pairing_unmatched", Some(0), "mint_without_burn"),
+            "an unmatched Mint must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Matched Mint+Burn pair, but no swap lands inside the tick range: the
+        // pairing is fine, the range validation is not.
+        let mut t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 200)],
+            vec![],
+        );
+        t0.jit = vec![jit(0, true)];
+        let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
+        t1.jit = vec![jit(1, false)];
+        let out = classify_block(&block(vec![t0, t1]));
+        assert!(
+            has(
+                &out,
+                "jit_pairing_unmatched",
+                Some(0),
+                "no_validating_swap_in_position_range"
+            ),
+            "a range-validation miss must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn liquidation_reports_reconcile_failures() {
+        // Aave-style liquidation that seizes 500 collateral with no Transfer
+        // covering it: the event stands, its P&L does not reconcile.
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let out = classify_block(&block(vec![t]));
+        assert!(
+            has(
+                &out,
+                "liquidation_not_reconciled",
+                Some(0),
+                "transfer_net_below_seized_amount"
+            ),
+            "an unreconciled seizure must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Same event with a covering Transfer: reconciled, so no reject row.
+        let mut ok = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 500)],
+        );
+        ok.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let out = classify_block(&block(vec![ok]));
+        assert!(
+            !has(&out, "liquidation_not_reconciled", Some(0), ""),
+            "a reconciled liquidation must not be reported, got {:?}",
+            dump(&out)
+        );
+    }
+
+    /// Structural guard (Step 4): no instrumented pass may drop a candidate with
+    /// a bare `continue;`. Every one either records a reason on the line above
+    /// or says why it is not a candidate drop (`not-a-drop:`).
+    #[test]
+    fn no_instrumented_pass_drops_a_candidate_without_a_reason() {
+        let files = [
+            ("legs.rs", include_str!("legs.rs")),
+            ("causal.rs", include_str!("causal.rs")),
+            ("skim.rs", include_str!("skim.rs")),
+            ("sandwich.rs", include_str!("sandwich.rs")),
+            ("jit.rs", include_str!("jit.rs")),
+            ("liquidation.rs", include_str!("liquidation.rs")),
+        ];
+        const EMITS: [&str; 4] = [
+            "drops.anchor(",
+            "drops.bump(",
+            "rejects.push(",
+            "sink.anchor(",
+        ];
+        let mut violations: Vec<String> = Vec::new();
+        for (name, src) in files {
+            let mut in_tests = false;
+            for (i, line) in src.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed == "#[cfg(test)]" {
+                    in_tests = true;
+                }
+                if in_tests || !trimmed.starts_with("continue;") {
+                    continue;
+                }
+                let justified = trimmed.contains("not-a-drop:")
+                    || (i >= 3 && src.lines().skip(i.saturating_sub(3)).take(3).any(|p| {
+                        EMITS.iter().any(|emit| p.contains(emit))
+                    }));
+                if !justified {
+                    violations.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "silent `continue;` drop sites with no reject reason: {violations:?}"
+        );
+    }
+}
