@@ -11,8 +11,8 @@
 //! - checkpointing: `sync_state` + `blocks_classified` (gap-safe resume)
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 pub(super) type PoolSwapRow = (String, Option<String>, String, String);
-/// Persist-block return: `(ops_written, open_jit_positions)`.
-pub(super) type PersistBlockStats = (usize, Vec<(Address, Option<Address>, u64)>);
+/// Competitor labels owed by a persisted block: `(eoa, contract, block)`.
+pub(super) type PendingLabels = Vec<(Address, Option<Address>, u64)>;
 
 mod facts;
 mod jit_positions;
@@ -26,7 +26,7 @@ use alloy::primitives::{Address, B256, U256};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::explorer::types::{Confidence, MevEvent, MevKind};
+use crate::explorer::types::{MevEvent, MevKind};
 
 /// One persisted open concentrated-liquidity position (`jit_open_positions`).
 ///
@@ -328,41 +328,6 @@ pub(super) fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow
         detector: r.get(20)?,
         created_at: r.get::<_, i64>(21)? as u64,
     })
-}
-
-pub(super) fn top_grouped(
-    conn: &Connection,
-    group_col: &str,
-    since_ts: u64,
-    limit: usize,
-    kind: Option<MevKind>,
-    confidence: Option<Confidence>,
-) -> anyhow::Result<Vec<StatsRow>> {
-    let mut filter = String::new();
-    if let Some(k) = kind {
-        filter.push_str(&format!("AND kind = '{}' ", k.as_str()));
-    }
-    if let Some(c) = confidence {
-        filter.push_str(&format!("AND confidence = '{}' ", c.as_str()));
-    }
-    let sql = format!(
-        "SELECT {group_col} AS label, COUNT(*) AS ops,
-                COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                COALESCE(SUM(CASE WHEN excluded_from_net = 0
-                                  THEN net_profit_usd ELSE 0 END), 0) AS net_usd
-         FROM mev_ops
-         WHERE ts >= {since_ts} {filter} AND {group_col} IS NOT NULL
-         GROUP BY label
-         ORDER BY gross_usd DESC
-         LIMIT {limit}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_stats_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -1439,8 +1404,12 @@ mod tests {
         store
             .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
             .unwrap();
+        // Same block/tx/reason as the row above, different `detail`: this is a
+        // distinct candidate and must survive the natural-key index.
+        let mut detailed = sample_reject(900, "net_zero_searcher", 0);
+        detailed.detail = Some("anchor_profit_zero".into());
         store
-            .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
+            .insert_rejected_candidate("run", "test", &detailed)
             .unwrap();
         store
             .insert_rejected_candidate("run", "test", &sample_reject(900, "unresolved_cycle", 0))
@@ -1478,5 +1447,101 @@ mod tests {
             .report_classify_rejects(since + 100)
             .unwrap()
             .is_empty());
+    }
+
+    /// Re-indexing a block re-derives the same rejects with only `created_at`
+    /// differing; the natural-key unique index must make that a no-op instead
+    /// of doubling every reject denominator.
+    #[test]
+    fn reject_insert_is_idempotent_across_reindex_passes() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let first = sample_reject(910, "unresolved_cycle", 0);
+        let run_id = "explorer-index-910";
+        store
+            .insert_rejected_candidate(run_id, "test", &first)
+            .unwrap();
+        // Second pass over the same block: same candidate, later `created_at`.
+        let mut again = first.clone();
+        again.created_at = 60;
+        store
+            .insert_rejected_candidate(run_id, "test", &again)
+            .unwrap();
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM rejected_candidates WHERE block_number = 910",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "a re-index pass must not duplicate rejects");
+
+        // A different tx in the same block is a different reject.
+        let mut other_tx = first.clone();
+        other_tx.tx_index = Some(2);
+        store
+            .insert_rejected_candidate(run_id, "test", &other_tx)
+            .unwrap();
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM rejected_candidates WHERE block_number = 910",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    /// A failure part-way through a batch insert must roll back the rows
+    /// already written in that transaction: no half-written results set.
+    #[test]
+    fn insert_opportunities_rolls_back_on_error() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        // Fail the second row after the first one has been inserted inside the
+        // same transaction.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_second_opportunity
+                 BEFORE INSERT ON opportunities
+                 WHEN NEW.block_number = 2
+                 BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+            )
+            .unwrap();
+        let row = |block_number: u64| OpportunityInput {
+            run_id: "rollback-run",
+            chain: "test",
+            block_number,
+            tx_index: Some(0),
+            strategy: "atomic",
+            pool_a: None,
+            pool_b: None,
+            token_in: None,
+            token_out: None,
+            input_amount: None,
+            expected_profit: None,
+            gas_cost_wei: None,
+            path: None,
+            timestamp: None,
+            mempool_only: false,
+            confidence: None,
+            sender: None,
+            tx_hash: None,
+            detection_path: None,
+            canonical_id: None,
+        };
+        let err = store
+            .insert_opportunities(&[row(1), row(2)])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("forced failure"),
+            "unexpected error: {err}"
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM opportunities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the first row must not survive the failed batch");
     }
 }

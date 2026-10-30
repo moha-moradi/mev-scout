@@ -280,7 +280,69 @@ impl ExplorerStore {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         Self::ensure_mev_ops_kind_skim(&self.conn)?;
+        Self::ensure_rejected_candidates_unique(&self.conn)?;
         Ok(())
+    }
+    /// Natural key of one rejected candidate, as a column list usable in both
+    /// a `UNIQUE` index and a `GROUP BY`.
+    ///
+    /// Identity = where the reject was seen (`chain`, `block_number`,
+    /// `tx_index`), which pass produced it (`strategy`), the candidate geometry
+    /// that pass was looking at (pool/path/token/amount columns), why it was
+    /// dropped (`reject_reason`) and the pass's own note (`detail`).
+    ///
+    /// `created_at` and `run_id` are deliberately excluded: a re-index
+    /// re-derives every other field, and it must be a no-op instead of
+    /// appending a second copy of every reject. Scanner rows keep their
+    /// distinctness through the geometry columns, so two candidates dropped
+    /// from the same tx for the same reason (the per-tx top-N cap) stay
+    /// separate rows — only a byte-identical candidate collapses.
+    ///
+    /// Nullable columns are wrapped in `COALESCE(…, '')` because SQLite treats
+    /// NULLs as distinct inside a unique index; without that the classify rows
+    /// (whose geometry columns are all NULL) would never conflict and
+    /// re-indexing would keep duplicating them.
+    const REJECTED_NATURAL_KEY: &str = "
+        COALESCE(chain, ''), block_number, COALESCE(tx_index, -1), strategy,
+        COALESCE(pool_a, ''), COALESCE(pool_b, ''), COALESCE(path, ''),
+        COALESCE(token_in, ''), COALESCE(token_out, ''), COALESCE(input_amount, ''),
+        COALESCE(expected_profit, ''), reject_reason, COALESCE(detail, '')";
+    /// Create the `rejected_candidates` natural-key unique index.
+    ///
+    /// Kept idempotent and local to schema-create (Task B6 owns real
+    /// `PRAGMA user_version` migrations). A pre-B7 database can already hold
+    /// duplicate reject rows — that is the bug this index closes — so a
+    /// constraint failure on the first attempt collapses each natural key onto
+    /// its earliest row and retries once. Any other error surfaces unchanged.
+    fn ensure_rejected_candidates_unique(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        let create = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS rejected_candidates_natural
+               ON rejected_candidates({})",
+            Self::REJECTED_NATURAL_KEY
+        );
+        match conn.execute_batch(&create) {
+            Ok(()) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conn.execute_batch(&format!(
+                    "DELETE FROM rejected_candidates
+                      WHERE rowid NOT IN (
+                        SELECT MIN(rowid) FROM rejected_candidates
+                        GROUP BY {}
+                      )",
+                    Self::REJECTED_NATURAL_KEY
+                ))?;
+                tracing::warn!(
+                    "rejected_candidates held duplicate rows from before the \
+                     natural-key index; collapsed them onto the earliest row \
+                     of each key before indexing"
+                );
+                conn.execute_batch(&create)?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
     /// Widen `mev_ops.kind` CHECK to include `'skim'` (SQLite cannot ALTER CHECK).
     fn ensure_mev_ops_kind_skim(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -366,5 +428,74 @@ impl ExplorerStore {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_db_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "mev-scout-schema-{tag}-{}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    fn remove_db(path: &std::path::Path) {
+        for p in [
+            path.to_path_buf(),
+            path.with_extension("sqlite-wal"),
+            path.with_extension("sqlite-shm"),
+        ] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// A pre-B7 database can already hold duplicate rejects (the bug the
+    /// natural-key index closes). Opening it must collapse each key onto its
+    /// earliest row instead of failing on the new unique index, and reopening
+    /// must stay a no-op.
+    #[test]
+    fn opening_a_legacy_db_collapses_duplicate_rejects() {
+        let path = legacy_db_path("rejects");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);
+                 INSERT INTO rejected_candidates
+                   (chain, block_number, tx_index, strategy, reject_reason, created_at)
+                 VALUES ('polygon', 7, 1, 'explorer_classify', 'unresolved_cycle', 0),
+                        ('polygon', 7, 1, 'explorer_classify', 'unresolved_cycle', 99);",
+            )
+            .unwrap();
+        }
+
+        let count = |store: &ExplorerStore| -> i64 {
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM rejected_candidates", [], |r| r.get(0))
+                .unwrap()
+        };
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(
+                count(&store),
+                1,
+                "duplicates collapse onto the earliest row"
+            );
+        }
+        {
+            // Reopening (the index already exists) is a no-op.
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(count(&store), 1);
+        }
+        remove_db(&path);
     }
 }

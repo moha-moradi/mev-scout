@@ -1,12 +1,13 @@
 //! Query / stats / report surface for ExplorerStore.
 use alloy::primitives::{Address, U256};
+use rusqlite::Connection;
 
 use crate::explorer::types::{Confidence, MevKind};
 use crate::types::{MevOpportunity, Strategy};
 
 use super::{
-    map_mev_op_row, map_report_row, map_stats_row, top_grouped, ExplorerStore, MevOpRow,
-    OpportunityInput, PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow, StatsRow,
+    map_mev_op_row, map_report_row, map_stats_row, ExplorerStore, MevOpRow, OpportunityInput,
+    PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow, StatsRow,
 };
 
 /// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.
@@ -24,62 +25,145 @@ fn report_filter_clause(kind: Option<MevKind>, confidence: Option<Confidence>) -
     s
 }
 
+/// Leaderboard grouping: the op's sender (`top_senders`).
+const GROUP_SENDER: &str = "sender";
+/// Leaderboard grouping: competitor bot identity `COALESCE(contract, eoa)`.
+const GROUP_COMPETITOR: &str = "competitor";
+/// Leaderboard grouping: a pool extracted from `route_json`.
+const GROUP_POOL: &str = "pool";
+
+/// Bind + insert one `opportunities` row on any connection or transaction.
+fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyhow::Result<()> {
+    let OpportunityInput {
+        run_id,
+        chain,
+        block_number,
+        tx_index,
+        strategy,
+        pool_a,
+        pool_b,
+        token_in,
+        token_out,
+        input_amount,
+        expected_profit,
+        gas_cost_wei,
+        path,
+        timestamp,
+        mempool_only,
+        confidence,
+        sender,
+        tx_hash,
+        detection_path,
+        canonical_id,
+    } = *row;
+    conn.execute(
+        "INSERT INTO opportunities
+           (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
+            token_in, token_out, input_amount, expected_profit, gas_cost_wei,
+            path, timestamp, mempool_only, confidence, sender, tx_hash,
+            detection_path, canonical_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+        rusqlite::params![
+            run_id,
+            chain,
+            block_number as i64,
+            tx_index.map(|v| v as i64),
+            strategy,
+            pool_a.map(|a| format!("{:#x}", a)),
+            pool_b.map(|a| format!("{:#x}", a)),
+            token_in.map(|a| format!("{:#x}", a)),
+            token_out.map(|a| format!("{:#x}", a)),
+            input_amount.map(|v| v.to_string()),
+            expected_profit.map(|v| v.to_string()),
+            gas_cost_wei.map(|v| v.to_string()),
+            path,
+            timestamp.map(|v| v as i64),
+            mempool_only as i64,
+            confidence,
+            sender.map(|a| format!("{:#x}", a)),
+            tx_hash.map(|h| format!("{:#x}", h)),
+            detection_path,
+            canonical_id,
+        ],
+    )?;
+    Ok(())
+}
+
 impl ExplorerStore {
     /// Insert one opportunity row from a `ResultsFile` entry.
     pub fn insert_opportunity(&self, row: OpportunityInput<'_>) -> anyhow::Result<()> {
-        let OpportunityInput {
-            run_id,
-            chain,
-            block_number,
-            tx_index,
-            strategy,
-            pool_a,
-            pool_b,
-            token_in,
-            token_out,
-            input_amount,
-            expected_profit,
-            gas_cost_wei,
-            path,
-            timestamp,
-            mempool_only,
-            confidence,
-            sender,
-            tx_hash,
-            detection_path,
-            canonical_id,
-        } = row;
-        self.conn.execute(
-            "INSERT INTO opportunities
-               (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
-                token_in, token_out, input_amount, expected_profit, gas_cost_wei,
-                path, timestamp, mempool_only, confidence, sender, tx_hash,
-                detection_path, canonical_id)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-            rusqlite::params![
-                run_id,
-                chain,
-                block_number as i64,
-                tx_index.map(|v| v as i64),
-                strategy,
-                pool_a.map(|a| format!("{:#x}", a)),
-                pool_b.map(|a| format!("{:#x}", a)),
-                token_in.map(|a| format!("{:#x}", a)),
-                token_out.map(|a| format!("{:#x}", a)),
-                input_amount.map(|v| v.to_string()),
-                expected_profit.map(|v| v.to_string()),
-                gas_cost_wei.map(|v| v.to_string()),
-                path,
-                timestamp.map(|v| v as i64),
-                mempool_only as i64,
-                confidence,
-                sender.map(|a| format!("{:#x}", a)),
-                tx_hash.map(|h| format!("{:#x}", h)),
-                detection_path,
-                canonical_id,
-            ],
-        )?;
+        insert_opportunity_row(&self.conn, &row)
+    }
+    /// Insert a run's opportunity rows in one transaction.
+    ///
+    /// Either the whole batch lands or none does, so a mid-run failure cannot
+    /// leave a partial results set behind (the per-row autocommit this
+    /// replaces could).
+    pub fn insert_opportunities(&self, rows: &[OpportunityInput<'_>]) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for row in rows {
+            insert_opportunity_row(&tx, row)?;
+        }
+        tx.commit()?;
         Ok(())
+    }
+    /// Shared leaderboard query: the top `limit` groups of `group_col` by
+    /// gross USD inside the window.
+    ///
+    /// `group_col` is one of [`GROUP_SENDER`] / [`GROUP_COMPETITOR`] /
+    /// [`GROUP_POOL`] — a closed set chosen by the public wrappers, so no user
+    /// string can reach the SQL. Kind/confidence filters still go through the
+    /// domain enums. `GROUP_POOL` is the one grouping that has to mine
+    /// `route_json` (`json_each`), which is why the FROM/count/label fragments
+    /// differ per grouping while the aggregate, ordering and limit are shared.
+    fn top_by(
+        &self,
+        since: i64,
+        group_col: &str,
+        limit: usize,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        let (label, ops, source, grouping_guard) = match group_col {
+            GROUP_POOL => (
+                "j.value->>'$.pool'",
+                "COUNT(DISTINCT m.id)",
+                "mev_ops m, json_each(COALESCE(m.route_json, '[]')) j",
+                "AND j.value->>'$.pool' IS NOT NULL",
+            ),
+            GROUP_COMPETITOR => (
+                "COALESCE(NULLIF(m.contract, ''), m.eoa)",
+                "COUNT(*)",
+                "mev_ops m",
+                "",
+            ),
+            // GROUP_SENDER
+            _ => ("m.eoa", "COUNT(*)", "mev_ops m", "AND m.eoa IS NOT NULL"),
+        };
+        // Unqualified `kind`/`confidence` resolve to `mev_ops` in every
+        // grouping: `json_each` has no such column.
+        let filter = report_filter_clause(kind, confidence);
+        let sql = format!(
+            "SELECT {label} AS label, {ops} AS ops,
+                    COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
+                    COALESCE(SUM(CASE WHEN m.excluded_from_net = 0
+                                      THEN m.net_profit_usd ELSE 0 END), 0) AS net_usd
+             FROM {source}
+             WHERE m.ts >= {since} {filter} {grouping_guard}
+             GROUP BY label
+             ORDER BY gross_usd DESC
+             LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_stats_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
     /// `top_senders` restricted to one `kind` value (`stats --kind`).
     pub fn top_senders_filtered(
@@ -89,7 +173,7 @@ impl ExplorerStore {
         kind: Option<MevKind>,
         confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        top_grouped(&self.conn, "eoa", since_ts, limit, kind, confidence)
+        self.top_by(since_ts as i64, GROUP_SENDER, limit, kind, confidence)
     }
     /// Competitor leaderboard: group by bot identity
     /// `COALESCE(contract, eoa)` so EOAs sharing an executor collapse.
@@ -100,26 +184,7 @@ impl ExplorerStore {
         kind: Option<MevKind>,
         confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        let filter = report_filter_clause(kind, confidence);
-        let sql = format!(
-            "SELECT COALESCE(NULLIF(contract, ''), eoa) AS label,
-                    COUNT(*) AS ops,
-                    COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
-                                      THEN net_profit_usd ELSE 0 END), 0) AS net_usd
-             FROM mev_ops
-             WHERE ts >= {since_ts} {filter}
-             GROUP BY label
-             ORDER BY gross_usd DESC
-             LIMIT {limit}"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_stats_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        self.top_by(since_ts as i64, GROUP_COMPETITOR, limit, kind, confidence)
     }
     /// `top_pools` restricted to one `kind` value (`stats --kind`).
     pub fn top_pools_filtered(
@@ -129,33 +194,8 @@ impl ExplorerStore {
         kind: Option<MevKind>,
         confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        // Pools live inside route_json; extract with json_each.
-        let mut filter = String::new();
-        if let Some(k) = kind {
-            filter.push_str(&format!("AND m.kind = '{}' ", k.as_str()));
-        }
-        if let Some(c) = confidence {
-            filter.push_str(&format!("AND m.confidence = '{}' ", c.as_str()));
-        }
-        let sql = format!(
-            "SELECT j.value->>'$.pool' AS label,
-                    COUNT(DISTINCT m.id) AS ops,
-                    COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(CASE WHEN m.excluded_from_net = 0
-                                      THEN m.net_profit_usd ELSE 0 END), 0) AS net_usd
-             FROM mev_ops m, json_each(COALESCE(m.route_json, '[]')) j
-             WHERE m.ts >= {since_ts} {filter} AND j.value->>'$.pool' IS NOT NULL
-             GROUP BY label
-             ORDER BY gross_usd DESC
-             LIMIT {limit}"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_stats_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        // Pools live inside route_json; `top_by` extracts them with json_each.
+        self.top_by(since_ts as i64, GROUP_POOL, limit, kind, confidence)
     }
     /// Full op detail for `show <TX>`.
     pub fn ops_for_tx(&self, tx_hash: &str) -> anyhow::Result<Vec<MevOpRow>> {

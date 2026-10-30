@@ -102,6 +102,11 @@ impl ExplorerStore {
         })
     }
     /// Persist (or refresh) open JIT Mint positions.
+    ///
+    /// Runs on the store connection, so a caller that already holds a
+    /// transaction on it (the ingest path's per-block JIT sweep) gets these
+    /// writes enrolled in that transaction; this method must not open one of
+    /// its own. Statement batching is a separate concern (Task C4).
     pub fn record_jit_open(&self, positions: &[OpenPosition]) -> anyhow::Result<()> {
         for p in positions {
             self.conn.execute(
@@ -121,6 +126,9 @@ impl ExplorerStore {
         Ok(())
     }
     /// Delete an open position once its exact-liquidity Burn is observed.
+    ///
+    /// Like [`Self::record_jit_open`], this participates in a transaction the
+    /// caller already holds on the shared connection.
     pub fn close_jit_position(
         &self,
         pool: Address,

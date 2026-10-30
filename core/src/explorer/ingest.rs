@@ -526,11 +526,20 @@ pub async fn index_block_fetched(
     if cfg.record_rejections && !classified.rejects.is_empty() {
         let chain_str = cfg.chain.to_string();
         let run_id = format!("explorer-index-{block_number}");
+        // One transaction for the block's reject set. Per-row insert errors
+        // stay best-effort (logged and skipped, as before), but the
+        // inserts are conflict-tolerant on `rejected_candidates`' natural key
+        // (`schema.rs`), so a retry after a partial or failed pass converges
+        // instead of appending a second copy. Rejects intentionally precede
+        // `insert_block_facts`: if the facts fail, the retry re-derives them
+        // identically and the unique key makes re-insertion a no-op.
+        let tx = store.connection().unchecked_transaction()?;
         for r in &classified.rejects {
             if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
                 tracing::warn!("explorer_classify reject insert failed: {e}");
             }
         }
+        tx.commit()?;
     }
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
@@ -591,12 +600,18 @@ pub async fn index_block_fetched(
 
 /// Persist JIT open positions: record Mints not closed in the same
 /// block, delete rows for Burns, and prune positions outside the window.
+///
+/// All writes share one transaction on the store connection (the `record_*` /
+/// `close_*` helpers execute on that same connection, so they join it): a
+/// failure half-way must not leave a Mint recorded as open while its Burn is
+/// pending, which would turn the next block's JIT detection into noise.
 fn persist_jit_positions(
     store: &ExplorerStore,
     block_number: u64,
     txs: &[TxInput],
 ) -> anyhow::Result<()> {
     let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
+    let tx = store.connection().unchecked_transaction()?;
     for t in txs {
         let burned: std::collections::HashSet<_> =
             t.jit.iter().filter(|j| !j.is_mint).map(key).collect();
@@ -618,6 +633,7 @@ fn persist_jit_positions(
         }
     }
     store.prune_jit_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    tx.commit()?;
     Ok(())
 }
 

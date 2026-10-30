@@ -1190,9 +1190,9 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 
 > **Add these three autocommit loops to the same sweep (2026-10-25 review).** They are the write paths that are *not* inside the block transaction and each has a distinct failure shape: (1) the rejection loop on the ingest path (around `ingest.rs:528-532`) writes rejects before/outside `insert_block_facts`, so if the fact insert then fails, the rejects are already durable — and `rejected_candidates` has **no primary key and no unique constraint** (`schema.rs:205-224`), so a re-indexed block appends a second full set of reject rows. That directly corrupts the reject denominators A20 is being written to create, so order A20 *after* this task or give `rejected_candidates` a natural unique key here. (2) The JIT open/close writes (`ingest.rs:~599-619` → `store/jit_positions.rs:66-83`) are one statement per position — C4 batches them, so coordinate: B7 owns "inside a transaction", C4 owns "fewer statements". (3) The label loop runs *after* `COMMIT` and propagates `?` per call (`store/facts.rs:426-428`) — a label failure therefore returns `Err` for a block whose facts are already committed, which makes the caller believe the block is unindexed while `blocks_classified` says otherwise. Decide explicitly: labels are best-effort (warn + continue) or they belong inside the transaction. Pick one and write the reason in the doc comment.
 
-- [ ] **Step 1: Read** facts.rs transaction sites, mod.rs:300-360, query.rs:80-160, results.rs.
-- [ ] **Step 2: Transactions** — replace `execute("BEGIN IMMEDIATE")` / `execute("COMMIT")` pairs with `let tx = self.conn.unchecked_transaction()?; … tx.commit()?;` (A7 pattern).
-- [ ] **Step 3: Leaderboard builder** — collapse the three fns into one private helper:
+- [x] **Step 1: Read** facts.rs transaction sites, mod.rs:300-360, query.rs:80-160, results.rs.
+- [x] **Step 2: Transactions** — replace `execute("BEGIN IMMEDIATE")` / `execute("COMMIT")` pairs with `let tx = self.conn.unchecked_transaction()?; … tx.commit()?;` (A7 pattern).
+- [x] **Step 3: Leaderboard builder** — collapse the three fns into one private helper:
 
 ```rust
 fn top_by(
@@ -1206,8 +1206,8 @@ fn top_by(
 ```
 
 with `group_col` chosen by the public wrappers from a closed set (no string escapes user space after Task A5). Keep the three public fn signatures so CLI is untouched.
-- [ ] **Step 4: `results.rs`** — collect rows, insert inside one `unchecked_transaction`.
-- [ ] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`; `git commit -m "refactor(explorer): transactional persist paths and shared leaderboard query builder"`
+- [x] **Step 4: `results.rs`** — collect rows, insert inside one `unchecked_transaction`.
+- [x] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`; `git commit -m "refactor(explorer): transactional persist paths and shared leaderboard query builder"`
 
 ---
 

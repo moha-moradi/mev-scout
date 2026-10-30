@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use alloy::primitives::{Address, U256};
 
 use super::pnl::{annotate_event, PersistedOp};
-use super::{BlockFactsInput, ExplorerStore, PersistBlockStats};
+use super::{BlockFactsInput, ExplorerStore, PendingLabels};
 
 impl ExplorerStore {
     /// Persist Chainlink answers for mode-B pre-poke divergence (plan P1.4).
@@ -120,6 +120,18 @@ impl ExplorerStore {
     }
     /// Insert block header + txs + swaps + transfers + mev events in one
     /// transaction. Idempotent via OR IGNORE on natural keys.
+    ///
+    /// The transaction covers every fact insert plus the `blocks_classified`
+    /// checkpoint, so a failure cannot leave a half-written block that the
+    /// checkpoint then reports as done. Annotated rows are built *before* the
+    /// transaction opens, so the write lock is held for the inserts only.
+    ///
+    /// Competitor labels run after the commit and are best-effort: a failure is
+    /// logged and the block still returns `Ok`. The facts are already durable,
+    /// so propagating a label error would tell the caller the block is
+    /// unindexed while `blocks_classified` says otherwise; a missed label only
+    /// costs entity attribution, which the idempotent
+    /// [`Self::backfill_competitor_labels`] can repair.
     pub fn insert_block_facts(&self, facts: BlockFactsInput<'_>) -> anyhow::Result<usize> {
         let BlockFactsInput {
             block_number,
@@ -135,152 +147,148 @@ impl ExplorerStore {
             token_prices,
         } = facts;
         let now = crate::utils::epoch_secs() as i64;
-        let conn = &self.conn;
-        conn.execute("BEGIN IMMEDIATE", [])?;
-        let result = (|| -> anyhow::Result<PersistBlockStats> {
-            conn.execute(
-                "INSERT OR IGNORE INTO blocks
-                   (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
-                 VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+        // All business logic (PnL annotation, sandwich gate, volume,
+        // flash-fee conversion, native residual, confidence) lives in
+        // `pnl::annotate_event`; the transaction below only binds and
+        // inserts the already-annotated rows.
+        let ops: Vec<PersistedOp> = events
+            .iter()
+            .map(|ev| annotate_event(ev, swaps, token_prices, native_price_usd, now))
+            .collect();
+        let pending_labels: PendingLabels = events
+            .iter()
+            .map(|ev| (ev.searcher, ev.contract, ev.block))
+            .collect();
+        let inserted = ops.len();
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO blocks
+               (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
+             VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+            rusqlite::params![
+                block_number as i64,
+                format!("{:#x}", block_hash),
+                ts as i64,
+                base_fee_gwei,
+                tx_count as i64,
+                now
+            ],
+        )?;
+
+        for t in txs {
+            tx.execute(
+                "INSERT OR IGNORE INTO txs
+                   (hash, block_number, tx_index, \"from\", \"to\", success,
+                    gas_used, effective_gas_price_gwei, priority_fee_gwei, value_native)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 rusqlite::params![
+                    format!("{:#x}", t.hash),
                     block_number as i64,
-                    format!("{:#x}", block_hash),
-                    ts as i64,
-                    base_fee_gwei,
-                    tx_count as i64,
-                    now
+                    t.tx_index as i64,
+                    format!("{:#x}", t.from),
+                    t.to.map(|a| format!("{:#x}", a)),
+                    t.success as i64,
+                    t.gas_used as i64,
+                    t.effective_gas_price_gwei,
+                    t.priority_fee_gwei,
+                    t.value.to_string(),
                 ],
             )?;
+        }
 
-            for tx in txs {
-                conn.execute(
-                    "INSERT OR IGNORE INTO txs
-                       (hash, block_number, tx_index, \"from\", \"to\", success,
-                        gas_used, effective_gas_price_gwei, priority_fee_gwei, value_native)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    rusqlite::params![
-                        format!("{:#x}", tx.hash),
-                        block_number as i64,
-                        tx.tx_index as i64,
-                        format!("{:#x}", tx.from),
-                        tx.to.map(|a| format!("{:#x}", a)),
-                        tx.success as i64,
-                        tx.gas_used as i64,
-                        tx.effective_gas_price_gwei,
-                        tx.priority_fee_gwei,
-                        tx.value.to_string(),
-                    ],
-                )?;
-            }
-
-            for s in swaps {
-                conn.execute(
-                    "INSERT OR IGNORE INTO swaps
-                       (block_number, tx_index, log_index, pool, dex, amm,
-                        token_in, token_out, amount_in, amount_out, sender)
-                     VALUES(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, NULL)",
-                    rusqlite::params![
-                        block_number as i64,
-                        s.tx_index as i64,
-                        s.log_index as i64,
-                        format!("{:#x}", s.pool),
-                        s.amm.as_str(),
-                        format!("{:#x}", s.token_in),
-                        format!("{:#x}", s.token_out),
-                        s.amount_in.to_string(),
-                        s.amount_out.to_string(),
-                    ],
-                )?;
-            }
-
-            for t in transfers {
-                conn.execute(
-                    "INSERT OR IGNORE INTO transfers
-                       (block_number, tx_index, log_index, token, \"from\", \"to\",
-                        amount, is_native)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                    rusqlite::params![
-                        block_number as i64,
-                        t.tx_index as i64,
-                        t.log_index as i64,
-                        format!("{:#x}", t.token),
-                        format!("{:#x}", t.from),
-                        format!("{:#x}", t.to),
-                        t.amount.to_string(),
-                    ],
-                )?;
-            }
-
-            // All business logic (PnL annotation, sandwich gate, volume,
-            // flash-fee conversion, native residual, confidence) lives in
-            // `pnl::annotate_event`; the rest of this block only binds and
-            // inserts the already-annotated rows.
-            let ops: Vec<PersistedOp> = events
-                .iter()
-                .map(|ev| annotate_event(ev, swaps, token_prices, native_price_usd, now))
-                .collect();
-            for op in &ops {
-                conn.execute(
-                    "INSERT INTO mev_ops
-                       (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
-                        confidence, canonical_id, profit_token, profit_amount,
-                        volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
-                        net_profit_usd, route_json, victim_hashes, details_json,
-                        detector, created_at, excluded_from_net)
-                     VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                            ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21)",
-                    rusqlite::params![
-                        op.block_number as i64,
-                        op.tx_index as i64,
-                        op.tx_hash,
-                        op.ts as i64,
-                        op.kind,
-                        op.eoa,
-                        op.contract,
-                        op.confidence,
-                        op.canonical_id,
-                        op.profit_token,
-                        op.profit_amount,
-                        op.volume_usd,
-                        op.profit_usd,
-                        op.gas_cost_usd,
-                        op.flashloan_fee_usd,
-                        op.net_profit_usd,
-                        op.route_json,
-                        op.victim_hashes,
-                        op.details_json,
-                        op.created_at,
-                        op.excluded_from_net,
-                    ],
-                )?;
-            }
-            let inserted = ops.len();
-            let pending_labels: Vec<(Address, Option<Address>, u64)> = events
-                .iter()
-                .map(|ev| (ev.searcher, ev.contract, ev.block))
-                .collect();
-
-            conn.execute(
-                "INSERT OR REPLACE INTO blocks_classified(block, classified_at, event_count)
-                 VALUES(?1, ?2, ?3)",
-                rusqlite::params![block_number as i64, now, inserted as i64],
+        for s in swaps {
+            tx.execute(
+                "INSERT OR IGNORE INTO swaps
+                   (block_number, tx_index, log_index, pool, dex, amm,
+                    token_in, token_out, amount_in, amount_out, sender)
+                 VALUES(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, NULL)",
+                rusqlite::params![
+                    block_number as i64,
+                    s.tx_index as i64,
+                    s.log_index as i64,
+                    format!("{:#x}", s.pool),
+                    s.amm.as_str(),
+                    format!("{:#x}", s.token_in),
+                    format!("{:#x}", s.token_out),
+                    s.amount_in.to_string(),
+                    s.amount_out.to_string(),
+                ],
             )?;
-            Ok((inserted, pending_labels))
-        })();
+        }
 
-        match result {
-            Ok((n, pending_labels)) => {
-                conn.execute("COMMIT", [])?;
-                for (eoa, contract, block) in pending_labels {
-                    self.label_competitor(eoa, contract, block)?;
-                }
-                Ok(n)
-            }
-            Err(e) => {
-                conn.execute("ROLLBACK", [])?;
-                Err(e)
+        for t in transfers {
+            tx.execute(
+                "INSERT OR IGNORE INTO transfers
+                   (block_number, tx_index, log_index, token, \"from\", \"to\",
+                    amount, is_native)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                rusqlite::params![
+                    block_number as i64,
+                    t.tx_index as i64,
+                    t.log_index as i64,
+                    format!("{:#x}", t.token),
+                    format!("{:#x}", t.from),
+                    format!("{:#x}", t.to),
+                    t.amount.to_string(),
+                ],
+            )?;
+        }
+
+        for op in &ops {
+            tx.execute(
+                "INSERT INTO mev_ops
+                   (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
+                    confidence, canonical_id, profit_token, profit_amount,
+                    volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
+                    net_profit_usd, route_json, victim_hashes, details_json,
+                    detector, created_at, excluded_from_net)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                        ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21)",
+                rusqlite::params![
+                    op.block_number as i64,
+                    op.tx_index as i64,
+                    op.tx_hash,
+                    op.ts as i64,
+                    op.kind,
+                    op.eoa,
+                    op.contract,
+                    op.confidence,
+                    op.canonical_id,
+                    op.profit_token,
+                    op.profit_amount,
+                    op.volume_usd,
+                    op.profit_usd,
+                    op.gas_cost_usd,
+                    op.flashloan_fee_usd,
+                    op.net_profit_usd,
+                    op.route_json,
+                    op.victim_hashes,
+                    op.details_json,
+                    op.created_at,
+                    op.excluded_from_net,
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "INSERT OR REPLACE INTO blocks_classified(block, classified_at, event_count)
+             VALUES(?1, ?2, ?3)",
+            rusqlite::params![block_number as i64, now, inserted as i64],
+        )?;
+        tx.commit()?;
+
+        // Best-effort (see the doc comment): the facts above are committed.
+        for (eoa, contract, block) in pending_labels {
+            if let Err(e) = self.label_competitor(eoa, contract, block) {
+                tracing::warn!(
+                    block,
+                    eoa = %format!("{eoa:#x}"),
+                    "competitor label upsert failed after block facts committed: {e}"
+                );
             }
         }
+        Ok(inserted)
     }
     /// Purge `transfers` older than `keep_blocks` behind head (retention).
     pub fn prune_transfers(&self, before_block: u64) -> anyhow::Result<usize> {
