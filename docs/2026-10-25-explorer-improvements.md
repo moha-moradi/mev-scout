@@ -1172,10 +1172,12 @@ pub(super) fn migrate(conn: &rusqlite::Connection) -> anyhow::Result<()> {
 
 > **One clarification useful for A2's test:** `ExplorerStore::open_in_memory()` does exist (`schema.rs:21`), so the A2 snippet's `ExplorerStore::open_in_memory().expect("open store")` is valid — the hedging note in A2 Step 1 can be dropped once you confirm it (note the workspace denies `expect_used`; `clippy.toml` re-allows it under tests, so keep such calls inside `#[cfg(test)]`).
 
-- [ ] **Step 1: Read schema.rs fully.** Identify the existing open path (where the CREATE set + `ensure_column` calls run).
-- [ ] **Step 2: Introduce `migrate`** — snapshot today's DDL as `SCHEMA_V1` (existing DBs already match it; set their `user_version` to 1 inside `migrate` when it is 0 but tables exist — detect with `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='blocks_classified'`). Replace the ad-hoc `ensure_column` calls: each existing ensure becomes migration V2+ (idempotent `ALTER TABLE … ADD COLUMN` guarded by the version check; SQLite has no `IF NOT EXISTS` for columns, so keep a `column_exists` helper for the V1→V2 legacy-DB path inside the migration itself).
-- [ ] **Step 3: Test** — open a store on a fresh temp file, assert `user_version == MIGRATIONS.len()`; if any test fixture in the repo has a pre-existing DB file, verify it migrates: `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`.
-- [ ] **Step 4: Commit** — `git commit -m "refactor(explorer): PRAGMA user_version ordered schema migrations"`
+- [x] **Step 1: Read schema.rs fully.** Identify the existing open path (where the CREATE set + `ensure_column` calls run).
+- [x] **Step 2: Introduce `migrate`** — snapshot today's DDL as `SCHEMA_V1` (existing DBs already match it; set their `user_version` to 1 inside `migrate` when it is 0 but tables exist — detect with `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='blocks_classified'`). Replace the ad-hoc `ensure_column` calls: each existing ensure becomes migration V2+ (idempotent `ALTER TABLE … ADD COLUMN` guarded by the version check; SQLite has no `IF NOT EXISTS` for columns, so keep a `column_exists` helper for the V1→V2 legacy-DB path inside the migration itself).
+- [x] **Step 3: Test** — open a store on a fresh temp file, assert `user_version == MIGRATIONS.len()`; if any test fixture in the repo has a pre-existing DB file, verify it migrates: `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`.
+- [x] **Step 4: Commit** — `git commit -m "refactor(explorer): PRAGMA user_version ordered schema migrations"`
+
+  *Progress: V1–V6 are the CREATE set, `flashloan_fee_usd`, `volume_usd`, `excluded_from_net`, the skim CHECK rebuild, and the rejected-candidate natural key. Both open paths set `busy_timeout=5000`. `foreign_keys` stays off (deferred). **Not in this migration:** A18's chain column / composite keys on the fact tables. The config guard is still the live safety; a column nothing reads would not isolate two chains, and the store API has no chain id to write. That rebuild is the next schema migration.*
 
 ---
 

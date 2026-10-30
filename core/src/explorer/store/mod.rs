@@ -1531,9 +1531,7 @@ mod tests {
             detection_path: None,
             canonical_id: None,
         };
-        let err = store
-            .insert_opportunities(&[row(1), row(2)])
-            .unwrap_err();
+        let err = store.insert_opportunities(&[row(1), row(2)]).unwrap_err();
         assert!(
             err.to_string().contains("forced failure"),
             "unexpected error: {err}"

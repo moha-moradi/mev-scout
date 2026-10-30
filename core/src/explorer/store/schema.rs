@@ -5,28 +5,108 @@ use rusqlite::Connection;
 
 use super::ExplorerStore;
 
-impl ExplorerStore {
-    /// Open (or create) the explorer database at `path`.
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent).ok();
+/// Milliseconds a writer waits on a locked explorer DB before failing.
+///
+/// WAL plus `unchecked_transaction` otherwise returns `SQLITE_BUSY`
+/// immediately when a live indexer and a backfill share the file.
+const BUSY_TIMEOUT_MS: i64 = 5_000;
+
+/// Ordered migrations. `Vn` runs when `user_version < n`. Never edit a landed
+/// migration; append one.
+///
+/// A file created before this list has `user_version = 0` and already contains
+/// the V1 tables. That file is stamped at version 1 and does not replay V1.
+/// V2+ are idempotent, so a DB that already received the old `ensure_column`
+/// / skim rebuild / reject index still opens.
+///
+/// Not in this list: a `chain` column and composite keys on the fact tables
+/// (A18's schema half). `blocks_classified` is still keyed by block number
+/// alone. The config-load guard refuses a shared `explorer.db_path`, which is
+/// the live safety; a column nothing reads would not isolate two chains.
+/// That rebuild has to land with the store API taking a chain id.
+const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
+    migrate_v1_create,
+    migrate_v2_flashloan_fee_usd,
+    migrate_v3_volume_usd,
+    migrate_v4_excluded_from_net,
+    migrate_v5_kind_skim,
+    migrate_v6_rejected_natural_key,
+];
+
+fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
+    // `:memory:` stays `journal_mode=memory` (SQLite will not put WAL on a
+    // memory database) but still accepts `synchronous` and `busy_timeout`,
+    // so tests and file opens share one pragma setup.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+    // `foreign_keys` stays OFF. There is no FOREIGN KEY clause in the schema,
+    // and enabling the pragma later has to be its own migration with a
+    // pre-flight orphan count — an existing DB with orphans would fail to open.
+    Ok(())
+}
+
+fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    let mut v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v == 0 && table_exists(conn, "blocks_classified")? {
+        conn.pragma_update(None, "user_version", 1i64)?;
+        v = 1;
+    }
+    for (i, step) in MIGRATIONS.iter().enumerate() {
+        let target = (i + 1) as i64;
+        if v < target {
+            step(conn)?;
+            conn.pragma_update(None, "user_version", target)?;
+            v = target;
         }
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        let store = ExplorerStore { conn };
-        store.initialize()?;
-        Ok(store)
     }
-    /// Open an in-memory database (tests).
-    pub fn open_in_memory() -> anyhow::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        let store = ExplorerStore { conn };
-        store.initialize()?;
-        Ok(store)
-    }
-    fn initialize(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch(
-            "
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+fn migrate_v1_create(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(SCHEMA_V1)?;
+    Ok(())
+}
+
+fn migrate_v2_flashloan_fee_usd(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "mev_ops", "flashloan_fee_usd", "REAL")
+}
+
+fn migrate_v3_volume_usd(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "mev_ops", "volume_usd", "REAL")
+}
+
+fn migrate_v4_excluded_from_net(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(
+        conn,
+        "mev_ops",
+        "excluded_from_net",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
+fn migrate_v5_kind_skim(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_mev_ops_kind_skim(conn)
+}
+
+fn migrate_v6_rejected_natural_key(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_rejected_candidates_unique(conn)
+}
+
+/// V1 table set. `CREATE TABLE IF NOT EXISTS` so replaying it on a file that
+/// already has the tables is a no-op. Columns added after the first release
+/// (`flashloan_fee_usd`, `volume_usd`, `excluded_from_net`) are in this DDL
+/// for a fresh database and re-applied idempotently by V2–V4 for a file that
+/// was created before they existed.
+const SCHEMA_V1: &str = "
             CREATE TABLE IF NOT EXISTS blocks(
               block_number INTEGER PRIMARY KEY,
               block_hash TEXT NOT NULL,
@@ -265,23 +345,26 @@ impl ExplorerStore {
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
               ON paper_fills(session_id, block_number);
-            ",
-        )?;
-        // runtime migration for databases created before the
-        // flash-loan fee column existed. `volume_usd` likewise for pre-report
-        // DBs, `excluded_from_net` for pre-loss-gate DBs (A10: lossy
-        // sandwiches are persisted with the flag instead of dropped).
-        Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
-        Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;
-        Self::ensure_column(
-            &self.conn,
-            "mev_ops",
-            "excluded_from_net",
-            "INTEGER NOT NULL DEFAULT 0",
-        )?;
-        Self::ensure_mev_ops_kind_skim(&self.conn)?;
-        Self::ensure_rejected_candidates_unique(&self.conn)?;
-        Ok(())
+            ";
+
+impl ExplorerStore {
+    /// Open (or create) the explorer database at `path`.
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let conn = Connection::open(path)?;
+        configure_connection(&conn)?;
+        migrate(&conn)?;
+        Ok(ExplorerStore { conn })
+    }
+    /// Open an in-memory database (tests). Same pragmas as [`Self::open`]
+    /// except that SQLite keeps `journal_mode=memory`.
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        configure_connection(&conn)?;
+        migrate(&conn)?;
+        Ok(ExplorerStore { conn })
     }
     /// Natural key of one rejected candidate, as a column list usable in both
     /// a `UNIQUE` index and a `GROUP BY`.
@@ -309,11 +392,10 @@ impl ExplorerStore {
         COALESCE(expected_profit, ''), reject_reason, COALESCE(detail, '')";
     /// Create the `rejected_candidates` natural-key unique index.
     ///
-    /// Kept idempotent and local to schema-create (Task B6 owns real
-    /// `PRAGMA user_version` migrations). A pre-B7 database can already hold
-    /// duplicate reject rows — that is the bug this index closes — so a
-    /// constraint failure on the first attempt collapses each natural key onto
-    /// its earliest row and retries once. Any other error surfaces unchanged.
+    /// V6. A pre-B7 database can already hold duplicate reject rows — that is
+    /// the bug this index closes — so a constraint failure on the first
+    /// attempt collapses each natural key onto its earliest row and retries
+    /// once. Any other error surfaces unchanged.
     fn ensure_rejected_candidates_unique(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         let create = format!(
             "CREATE UNIQUE INDEX IF NOT EXISTS rejected_candidates_natural
@@ -495,6 +577,99 @@ mod tests {
             // Reopening (the index already exists) is a no-op.
             let store = ExplorerStore::open(&path).unwrap();
             assert_eq!(count(&store), 1);
+        }
+        remove_db(&path);
+    }
+
+    fn user_version(store: &ExplorerStore) -> i64 {
+        store
+            .connection()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn fresh_store_is_at_head_and_sets_busy_timeout() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        let timeout: i64 = store
+            .connection()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, super::BUSY_TIMEOUT_MS);
+
+        let path = legacy_db_path("fresh");
+        remove_db(&path);
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        }
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        }
+        remove_db(&path);
+    }
+
+    /// A pre-migration file (`user_version = 0`, tables already present) is
+    /// stamped at V1 and still receives the later column alters.
+    #[test]
+    fn legacy_db_gains_mev_ops_columns_and_lands_on_head() {
+        let path = legacy_db_path("columns");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE blocks_classified(
+                   block INTEGER PRIMARY KEY,
+                   classified_at INTEGER NOT NULL,
+                   event_count INTEGER NOT NULL);
+                 CREATE TABLE mev_ops(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   block_number INTEGER NOT NULL,
+                   tx_index INTEGER,
+                   tx_hash TEXT NOT NULL,
+                   ts INTEGER NOT NULL,
+                   kind TEXT NOT NULL CHECK(kind IN
+                     ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
+                   eoa TEXT NOT NULL,
+                   contract TEXT,
+                   confidence TEXT NOT NULL,
+                   canonical_id TEXT,
+                   profit_token TEXT,
+                   profit_amount TEXT,
+                   profit_usd REAL,
+                   gas_cost_usd REAL,
+                   net_profit_usd REAL,
+                   route_json TEXT,
+                   victim_hashes TEXT,
+                   details_json TEXT,
+                   detector TEXT NOT NULL,
+                   created_at INTEGER NOT NULL);
+                 CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        }
+        let store = ExplorerStore::open(&path).unwrap();
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        for column in ["flashloan_fee_usd", "volume_usd", "excluded_from_net"] {
+            let present: i64 = store
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('mev_ops') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                present, 1,
+                "{column} must be migrated onto a legacy mev_ops"
+            );
         }
         remove_db(&path);
     }

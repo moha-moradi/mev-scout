@@ -186,8 +186,8 @@ pub fn annotate_event(
         );
     }
     // Gas in USD via native price (gas wei → native → USD).
-    let gas_usd = native_price_usd
-        .map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
+    let gas_usd =
+        native_price_usd.map(|np| crate::explorer::pricing::wei_to_usd(ev.gas_cost_wei, np));
     // Flash-loan fee in USD via the borrowed token's price (2.2). A non-zero
     // fee whose token has no usable quote is not worth $0: the row keeps NULL
     // (never an invented zero) and the op is flagged so the report can say the
@@ -253,16 +253,15 @@ pub fn annotate_event(
     // `None` when nothing priced. Attribution is per anchor tx — a tx with
     // multiple events shares its legs.
     let volume_usd = {
-        let total =
-            swaps
-                .iter()
-                .filter(|s| s.tx_index == ev.tx_index)
-                .fold(0.0f64, |acc, s| {
-                    acc + token_prices
-                        .get(&s.token_in)
-                        .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
-                        .unwrap_or(0.0)
-                });
+        let total = swaps
+            .iter()
+            .filter(|s| s.tx_index == ev.tx_index)
+            .fold(0.0f64, |acc, s| {
+                acc + token_prices
+                    .get(&s.token_in)
+                    .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
+                    .unwrap_or(0.0)
+            });
         (total > 0.0).then_some(total)
     };
     PersistedOp {
