@@ -8,12 +8,12 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 |----|-------|----------|--------|-------|-----------|---------|-------|
 | baseline.arb | arb_atomic | smoke | verified | avalanche | 95681722 | 95682322 | corpus Seeded |
 | baseline.liquidation | liquidation | smoke | verified | avalanche | 95682033 | 95682033 | corpus Seeded |
-| baseline.sandwich | sandwich | B | sparse_cross_chain | ethereum | 26089508 | 26089508 | AVAX empty; ETH DB verified |
+| baseline.sandwich | sandwich | B | pending | - | | | ETH claim 26089508 is not pinned in CORPUS; existing ETH windows 26055651..=26055745 and 26059500..=26059550 |
 | baseline.frontrun | frontrun | A | pending | - | | | not observed; 2026-10-25 ETH re-hunt (963 blk) 0; AVAX 2026-10-25 (5001 blk, 98489000..=98494000) 0 |
 | baseline.backrun | backrun | A | verified | ethereum | 26264539 | 26264858 | ETH re-hunt 2026-10-25 drpc (963 blk): 2 seeds (searcher 0xe8509…, 0xb52dae…); corpus `eth-backrun-*` |
 | baseline.jit | jit | A | verified | avalanche | 97783274 | 97783274 | Seeded in scenario_targets |
 | baseline.skim | skim | A | pending | - | | | not observed; AVAX 2026-10-25 (5001 blk, 98489000..=98494000, dwellir) 0; ETH re-hunt (963 blk) 0 |
-| P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V2 flash+liq; `aave_v2_pool` remap → details.protocol=aave_v2 |
+| P0.1 | flash_loan_liq | A | verified | avalanche | 97782322 | 97782322 | Aave V3 flash+liq; details.protocol=aave_v3 |
 | P0.2 | benqi | A | verified | avalanche | 97850836 | 97850836 | non-indexed LiquidateBorrow; c_token_underlyings=22 (core+isolated) |
 | polygon.liquidation | liquidation | smoke | verified | polygon | 94430973 | 94431566 | corpus poly-liquidation-*; protocol=aave_v3 |
 | polygon.aave_v2 | liquidation | A | verified | polygon | 95893023 | 95893023 | corpus `poly-aave-v2-95893023`; `aave_v2_pool` pin; searcher `0xd9ff…76c3` |
