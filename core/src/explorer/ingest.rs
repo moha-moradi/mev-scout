@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::data::{BlockData, ReceiptData, TxData};
-use crate::explorer::classify::{self, BlockInput, TxInput};
+use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
     BlockFactsInput, ExplorerStore, OpenPosition, SwapRow, TransferRow, TxRow,
@@ -30,11 +30,13 @@ pub type BlockBundle = (BlockData, Vec<TxData>, Vec<ReceiptData>);
 
 /// Per-block fetch payload for [`index_block_fetched`] (not classify [`BlockInput`]).
 #[derive(Debug)]
-pub struct FetchedBlockInput {
+pub struct FetchedBlockInput<'a> {
     pub block_number: u64,
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
     pub bundle: BlockBundle,
+    /// Run-scoped classification context, shared across the whole backfill.
+    pub ctx: &'a BlockContext,
 }
 
 /// Block range and concurrency for [`run_range`].
@@ -80,6 +82,12 @@ pub struct IngestConfig {
     /// Blocks per JSON-RPC batch POST during [`run_range`]. `1` fetches one
     /// block per POST.
     pub rpc_batch_blocks: usize,
+    /// Causal-pair window (D12); defaults to the compiled constant.
+    pub causal_window_txs: u64,
+    pub causal_price_min_pct: f64,
+    pub jit_window_blocks: u64,
+    pub interest_lookback_blocks: u64,
+    pub jit_pool_fee_bps: u32,
 }
 
 impl IngestConfig {
@@ -121,6 +129,11 @@ impl IngestConfig {
             tip_sink_addresses: HashSet::new(),
             record_rejections: false,
             rpc_batch_blocks: 1,
+            causal_window_txs: crate::explorer::classify::CAUSAL_WINDOW_TXS,
+            causal_price_min_pct: crate::explorer::classify::CAUSAL_PRICE_MIN_PCT,
+            jit_window_blocks: JIT_WINDOW_BLOCKS,
+            interest_lookback_blocks: crate::explorer::interest_attr::LOOKBACK_BLOCKS,
+            jit_pool_fee_bps: crate::explorer::classify::POOL_FEE_BPS,
         }
     }
 }
@@ -238,12 +251,37 @@ pub async fn fetch_block_bundle(rpc: &RpcClient, block_number: u64) -> anyhow::R
     rpc.get_block_and_receipts_batch(block_number).await
 }
 
+/// Build the run-scoped classification context once per backfill/live session.
+///
+/// The registry sets are cloned into `Arc`s here and only the `Arc` is cloned
+/// per block, so a multi-hour backfill does not copy the pool/feed universe
+/// on every block.
+fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
+    BlockContext {
+        wrapped_native: cfg.wrapped_native,
+        profit_policy: crate::explorer::profit::ProfitTokenPolicy {
+            priority: cfg.profit_token_priority.clone(),
+            wrapped_native: cfg.wrapped_native,
+            weth: cfg.wrapped_native,
+        },
+        v2_like_pools: std::sync::Arc::new(pools.v2_like.clone()),
+        chainlink_feeds: std::sync::Arc::new(cfg.chainlink_feeds.clone()),
+        savax: cfg.savax,
+        epoch_venue_pools: std::sync::Arc::new(pools.epoch_venue.clone()),
+        gmx_event_emitters: std::sync::Arc::new(cfg.gmx_event_emitters.clone()),
+        causal_window_txs: cfg.causal_window_txs,
+        causal_price_min_pct: cfg.causal_price_min_pct,
+        jit_pool_fee_bps: cfg.jit_pool_fee_bps,
+    }
+}
+
 /// Per-block indexing request for [`index_block`].
 pub struct IndexBlockRequest<'a> {
     pub rpc: &'a RpcClient,
     pub store: &'a ExplorerStore,
     pub cfg: &'a IngestConfig,
     pub pools: PoolViews<'a>,
+    pub ctx: &'a BlockContext,
     pub block_number: u64,
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
@@ -260,6 +298,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         store,
         cfg,
         pools,
+        ctx,
         block_number,
         native_price,
         token_prices,
@@ -286,6 +325,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
             native_price,
             token_prices,
             bundle,
+            ctx,
         },
         savax_rates,
         qi_rates,
@@ -455,7 +495,7 @@ pub async fn index_block_fetched(
     store: &ExplorerStore,
     cfg: &IngestConfig,
     pools: PoolViews<'_>,
-    input: FetchedBlockInput,
+    input: FetchedBlockInput<'_>,
     savax_rates: &mut SavaxRateCache,
     qi_rates: &mut crate::explorer::benqi_liq::QiRateCache,
 ) -> anyhow::Result<IndexedBlock> {
@@ -464,6 +504,7 @@ pub async fn index_block_fetched(
         native_price,
         token_prices,
         bundle,
+        ctx,
     } = input;
     let (block_data, txs, receipts) = bundle;
     let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
@@ -475,12 +516,10 @@ pub async fn index_block_fetched(
         jit_hashes,
     } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
 
-    let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    let open_positions =
+        store.open_positions(block_number.saturating_sub(cfg.jit_window_blocks))?;
     let interest_lookback = store
-        .interest_lookback(
-            block_number,
-            crate::explorer::interest_attr::LOOKBACK_BLOCKS,
-        )
+        .interest_lookback(block_number, cfg.interest_lookback_blocks)
         .unwrap_or_default();
     let feeds: Vec<Address> = cfg.chainlink_feeds.keys().copied().collect();
     let prior_oracle_answers = store
@@ -497,18 +536,8 @@ pub async fn index_block_fetched(
     let input = BlockInput {
         block: block_number,
         ts: block_data.timestamp,
-        wrapped_native: cfg.wrapped_native,
-        profit_policy: crate::explorer::profit::ProfitTokenPolicy {
-            priority: cfg.profit_token_priority.clone(),
-            wrapped_native: cfg.wrapped_native,
-            weth: cfg.wrapped_native,
-        },
+        ctx: ctx.clone(),
         open_positions,
-        v2_like_pools: pools.v2_like.clone(),
-        chainlink_feeds: cfg.chainlink_feeds.clone(),
-        savax: cfg.savax,
-        epoch_venue_pools: pools.epoch_venue.clone(),
-        gmx_event_emitters: cfg.gmx_event_emitters.clone(),
         interest_lookback,
         prior_oracle_answers,
         savax_exchange_rate_wad,
@@ -523,29 +552,32 @@ pub async fn index_block_fetched(
     };
 
     let classified = classify::classify_block(&input);
-    if cfg.record_rejections && !classified.rejects.is_empty() {
-        let chain_str = cfg.chain.to_string();
-        let run_id = format!("explorer-index-{block_number}");
-        // One transaction for the block's reject set. Per-row insert errors
-        // stay best-effort (logged and skipped, as before), but the
-        // inserts are conflict-tolerant on `rejected_candidates`' natural key
-        // (`schema.rs`), so a retry after a partial or failed pass converges
-        // instead of appending a second copy. Rejects intentionally precede
-        // `insert_block_facts`: if the facts fail, the retry re-derives them
-        // identically and the unique key makes re-insertion a no-op.
-        let tx = store.connection().unchecked_transaction()?;
-        for r in &classified.rejects {
-            if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
-                tracing::warn!("explorer_classify reject insert failed: {e}");
+    blocking_store(|| -> anyhow::Result<()> {
+        if cfg.record_rejections && !classified.rejects.is_empty() {
+            let chain_str = cfg.chain.to_string();
+            let run_id = format!("explorer-index-{block_number}");
+            // One transaction for the block's reject set. Per-row insert errors
+            // stay best-effort (logged and skipped, as before), but the
+            // inserts are conflict-tolerant on `rejected_candidates`' natural key
+            // (`schema.rs`), so a retry after a partial or failed pass converges
+            // instead of appending a second copy. Rejects intentionally precede
+            // `insert_block_facts`: if the facts fail, the retry re-derives them
+            // identically and the unique key makes re-insertion a no-op.
+            let tx = store.connection().unchecked_transaction()?;
+            for r in &classified.rejects {
+                if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
+                    tracing::warn!("explorer_classify reject insert failed: {e}");
+                }
             }
+            tx.commit()?;
         }
-        tx.commit()?;
-    }
+        Ok(())
+    })?;
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 
-    persist_mode_b_lookback(store, block_number, &input.txs);
+    blocking_store(|| persist_mode_b_lookback(store, block_number, &input.txs));
 
     // Benqi: seizeTokens → underlying before price warm / PnL (never price qi).
     crate::explorer::benqi_liq::convert_c_token_liquidation_events(
@@ -575,27 +607,46 @@ pub async fn index_block_fetched(
         }
     }
 
-    store.insert_block_facts(BlockFactsInput {
-        block_number,
-        block_hash: &block_data.hash,
-        ts: block_data.timestamp,
-        base_fee_gwei,
-        tx_count: txs.len(),
-        txs: &tx_rows,
-        swaps: &swap_rows,
-        transfers: &transfer_rows,
-        events: &events,
-        native_price_usd: native_price,
-        token_prices: &token_prices,
-    })?;
+    blocking_store(|| -> anyhow::Result<()> {
+        store.insert_block_facts(BlockFactsInput {
+            block_number,
+            block_hash: &block_data.hash,
+            ts: block_data.timestamp,
+            base_fee_gwei,
+            tx_count: txs.len(),
+            txs: &tx_rows,
+            swaps: &swap_rows,
+            transfers: &transfer_rows,
+            events: &events,
+            native_price_usd: native_price,
+            token_prices: &token_prices,
+        })?;
 
-    persist_jit_positions(store, block_number, &input.txs)?;
+        persist_jit_positions(store, block_number, &input.txs, cfg.jit_window_blocks)
+    })?;
 
     Ok(IndexedBlock {
         block: block_number,
         events: txs.len(),
         ops,
     })
+}
+
+/// Run a synchronous SQLite write on a blocking context when the runtime can
+/// spare the worker.
+///
+/// `rusqlite::Connection` is `Send` but not `Sync`, so the store cannot be
+/// moved into `spawn_blocking` (the closure would need `'static` ownership of
+/// a `Sync` value). `block_in_place` is the ownership-free equivalent: the
+/// runtime replaces the worker while the statement runs. A current-thread
+/// runtime has no spare worker, so tests take the inline path.
+fn blocking_store<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
 }
 
 /// Persist JIT open positions: record Mints not closed in the same
@@ -609,6 +660,7 @@ fn persist_jit_positions(
     store: &ExplorerStore,
     block_number: u64,
     txs: &[TxInput],
+    jit_window_blocks: u64,
 ) -> anyhow::Result<()> {
     let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
     let mut opens = Vec::new();
@@ -640,10 +692,10 @@ fn persist_jit_positions(
     if !opens.is_empty() {
         store.record_jit_open(&opens)?;
     }
-    for (pool, owner, lo, hi) in closes {
-        store.close_jit_position(pool, owner, lo, hi)?;
+    if !closes.is_empty() {
+        store.close_jit_positions(&closes)?;
     }
-    store.prune_jit_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    store.prune_jit_positions(block_number.saturating_sub(jit_window_blocks))?;
     tx.commit()?;
     Ok(())
 }
@@ -1097,6 +1149,7 @@ pub async fn run_live(
 ) -> anyhow::Result<u64> {
     use std::sync::atomic::Ordering;
 
+    let ctx = run_block_context(cfg, pools);
     let mut blocks_session: u64 = 0;
     let mut ops_session: u64 = 0;
     let mut since_reorg_check: u64 = 0;
@@ -1240,6 +1293,7 @@ pub async fn run_live(
                     store,
                     cfg,
                     pools,
+                    ctx: &ctx,
                     block_number: block,
                     native_price,
                     token_prices: None,
@@ -1332,6 +1386,7 @@ pub async fn run_range(
         to_block,
         block_concurrency,
     } = range;
+    let ctx = run_block_context(cfg, pools);
     if to_block < from_block {
         anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
     }
@@ -1392,8 +1447,8 @@ pub async fn run_range(
 
     let mut savax_rates = SavaxRateCache::default();
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
-    // Blocks dropped because their chunk fetch failed after retries. The
-    // serial path has no chunks to skip; it stays empty there.
+    // Blocks dropped because their fetch/index failed after retries. Both the
+    // serial and pipelined paths record them so a re-run fills the gap.
     let mut skipped: BTreeSet<u64> = BTreeSet::new();
     let cap = block_concurrency.max(1).min(missing.len());
     // One POST of `chunk` blocks. In-flight blocks stay at `cap`: a chunk of
@@ -1404,18 +1459,34 @@ pub async fn run_range(
             if block.saturating_sub(from_block) % 256 == 0 {
                 native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             }
-            let indexed = index_block(IndexBlockRequest {
+            let indexed = match index_block(IndexBlockRequest {
                 rpc,
                 store,
                 cfg,
                 pools,
+                ctx: &ctx,
                 block_number: block,
                 native_price,
                 token_prices: None,
                 savax_rates: &mut savax_rates,
                 qi_rates: &mut qi_rates,
             })
-            .await?;
+            .await
+            {
+                Ok(indexed) => indexed,
+                Err(e) => {
+                    warn!(
+                        block,
+                        error = %e,
+                        "backfill block failed after retries; skipping \
+                         (re-run the same range later to fill the gap)"
+                    );
+                    skipped.insert(block);
+                    let done = block - from_block + 1;
+                    emit_progress(done, outcome.ops, done == total);
+                    continue;
+                }
+            };
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;
             let done = block - from_block + 1;
@@ -1494,6 +1565,7 @@ pub async fn run_range(
                         native_price,
                         token_prices: None,
                         bundle,
+                        ctx: &ctx,
                     },
                     &mut savax_rates,
                     &mut qi_rates,
@@ -1566,6 +1638,16 @@ mod tests {
     use super::*;
     use crate::explorer::types::MevKind;
     use alloy::primitives::U256;
+
+    #[test]
+    fn blocking_store_is_inline_outside_a_runtime() {
+        assert_eq!(blocking_store(|| 7), 7);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_store_runs_on_a_multi_thread_runtime() {
+        assert_eq!(blocking_store(|| 7), 7);
+    }
 
     #[test]
     fn savax_rate_cache_reuses_one_success_per_hour() {

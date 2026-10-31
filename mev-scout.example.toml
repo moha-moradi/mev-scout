@@ -3,7 +3,9 @@
 # Generated from mev-scout.example.toml with free public endpoints listed on
 # chainlist.org / the ethereum-lists/chains registry for every supported chain.
 # No `${ENV_VAR}` placeholders require exporting any key; every URL below is a
-# public, free-tier HTTPS endpoint.
+# public, free-tier HTTPS endpoint. For a paid archive provider, keep the
+# credential in the environment and interpolate it:
+#   rpc_urls = ["https://api-avalanche-mainnet-archive.n.dwellir.com/${DWELLIR_AVALANCHE_KEY}/ext/bc/C/rpc"]
 
 # Default chain for this example file. Switch to avalanche (or others) as needed.
 chain = "avalanche"
@@ -89,6 +91,16 @@ output = "table"
 # each block's coinbase so a forwarded residual landing solely on them is
 # dropped (BuilderTip) instead of attributed as searcher PnL. Optional.
 # tip_sink_addresses = ["0x0000000000000000000000000000000000000000"]
+# Classification thresholds. Defaults reproduce the compiled constants, so an
+# unset config is bit-identical to today. Tightening a window grows the
+# corresponding reject reason; lowering one may surface a kind, which is a
+# hypothesis to verify with a pinned seed block — never loosen a threshold just
+# to make a kind appear.
+# causal_window_txs = 8        # causal_window_too_wide grows when lowered
+# causal_price_min_pct = 0.5   # causal_price_move_below_floor grows when raised
+# jit_window_blocks = 1000     # JIT open-position retention
+# interest_lookback_blocks = 300  # mode-B interest attribution window
+# jit_pool_fee_bps = 30        # V3 fee estimate; per-pool decoding is the fix
 
 [chains.polygon]
 chain_id = 137

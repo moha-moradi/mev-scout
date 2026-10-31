@@ -237,6 +237,39 @@ pub struct ExplorerConfig {
     /// Optional; empty by default. Coinbase is always merged per-block.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tip_sink_addresses: Vec<Address>,
+    /// Max tx-index distance for a causal (frontrun/backrun) pair. Defaults to
+    /// the legacy constant; lowering produces frontruns as a hypothesis, not
+    /// as verification.
+    #[serde(default = "default_causal_window_txs")]
+    pub causal_window_txs: u64,
+    /// Minimum relative price move for a causal leg to count as material.
+    #[serde(default = "default_causal_price_min_pct")]
+    pub causal_price_min_pct: f64,
+    /// JIT open-position retention window in blocks.
+    #[serde(default = "default_jit_window_blocks")]
+    pub jit_window_blocks: u64,
+    /// Oracle/reserve lookback used for interest-attribution mode B.
+    #[serde(default = "default_interest_lookback_blocks")]
+    pub interest_lookback_blocks: u64,
+    /// Pool-fee-tier estimate for JIT fee capture (V3 fees are not in logs).
+    #[serde(default = "default_jit_pool_fee_bps")]
+    pub jit_pool_fee_bps: u32,
+}
+
+fn default_causal_window_txs() -> u64 {
+    crate::explorer::classify::CAUSAL_WINDOW_TXS
+}
+fn default_causal_price_min_pct() -> f64 {
+    crate::explorer::classify::CAUSAL_PRICE_MIN_PCT
+}
+fn default_jit_window_blocks() -> u64 {
+    crate::explorer::ingest::JIT_WINDOW_BLOCKS
+}
+fn default_interest_lookback_blocks() -> u64 {
+    crate::explorer::interest_attr::LOOKBACK_BLOCKS
+}
+fn default_jit_pool_fee_bps() -> u32 {
+    crate::explorer::classify::POOL_FEE_BPS
 }
 
 fn default_false() -> bool {
@@ -457,6 +490,11 @@ impl Default for ExplorerConfig {
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
             tip_sink_addresses: Vec::new(),
+            causal_window_txs: default_causal_window_txs(),
+            causal_price_min_pct: default_causal_price_min_pct(),
+            jit_window_blocks: default_jit_window_blocks(),
+            interest_lookback_blocks: default_interest_lookback_blocks(),
+            jit_pool_fee_bps: default_jit_pool_fee_bps(),
         }
     }
 }
@@ -1116,6 +1154,31 @@ mod explorer_db_isolation_tests {
 
     fn parse(body: &str) -> Config {
         Config::from_toml_str_with(body, &[])
+    }
+
+    #[test]
+    fn explorer_threshold_defaults_match_legacy_constants() {
+        let cfg = parse("chain = \"avalanche\"\n");
+        assert_eq!(
+            cfg.explorer.causal_window_txs,
+            crate::explorer::classify::CAUSAL_WINDOW_TXS
+        );
+        assert_eq!(
+            cfg.explorer.causal_price_min_pct,
+            crate::explorer::classify::CAUSAL_PRICE_MIN_PCT
+        );
+        assert_eq!(
+            cfg.explorer.jit_window_blocks,
+            crate::explorer::ingest::JIT_WINDOW_BLOCKS
+        );
+        assert_eq!(
+            cfg.explorer.interest_lookback_blocks,
+            crate::explorer::interest_attr::LOOKBACK_BLOCKS
+        );
+        assert_eq!(
+            cfg.explorer.jit_pool_fee_bps,
+            crate::explorer::classify::POOL_FEE_BPS
+        );
     }
 
     #[test]
