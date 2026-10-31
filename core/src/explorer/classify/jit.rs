@@ -4,10 +4,14 @@ use std::collections::HashMap;
 use alloy::primitives::{Address, B256, U256};
 
 use crate::explorer::reject::RejectReason;
-use crate::explorer::types::{Confidence, JitFact, MevEvent, MevKind, PnlBasis, SwapFact};
+use crate::explorer::types::{JitFact, MevEvent, MevKind, PnlBasis, SwapFact};
 
 use super::drops::DropSink;
 use super::BlockInput;
+
+/// Default pool-fee-tier estimate for JIT fee capture (30 bps). Overridable via
+/// `explorer.jit_pool_fee_bps`; decoding each pool's real tier is the real fix.
+pub(crate) const POOL_FEE_BPS: u32 = 30;
 
 /// Position fields for [`build_jit_event`].
 pub(super) struct JitEventPosition {
@@ -181,13 +185,13 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
     // Documented estimate: in-range swap volume × pool fee (30 bps default).
     // V3 fees are not in logs and principal amounts are not fees, so this is
     // explicitly inferred (`Confidence::Exact` remains on the detection).
-    const POOL_FEE_BPS: u32 = 30;
+    let pool_fee_bps = input.ctx.jit_pool_fee_bps;
     let mut by_token: std::collections::BTreeMap<String, U256> = std::collections::BTreeMap::new();
     for t in &input.txs {
         for s in &t.swaps {
             if in_range(s) {
                 let fee =
-                    s.amount_in.saturating_mul(U256::from(POOL_FEE_BPS)) / U256::from(10_000u32);
+                    s.amount_in.saturating_mul(U256::from(pool_fee_bps)) / U256::from(10_000u32);
                 *by_token.entry(format!("{:#x}", s.token_in)).or_default() += fee;
             }
         }
@@ -199,24 +203,9 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
 
     let range_key = if bin_amm { "bin" } else { "tick" };
     Some(MevEvent {
-        block: input.block,
-        ts: input.ts,
-        tx_index: mint_tx,
-        tx_hash: B256::ZERO, // mint tx hash resolved at ingest stamping
-        kind: MevKind::Jit,
-        searcher: owner,
-        contract: None,
         pools: vec![pool],
-        profit_token: None, // fee capture — priced via pool tokens
-        profit_amount: None,
-        profit_tokens: vec![],
-        profit_usd: None,
+        // fee capture — priced via pool tokens, so no primary profit token
         gas_cost_wei,
-        flashloan_fee_wei: None,
-        flashloan_fee_token: None,
-        confidence: Confidence::Exact,
-        victim_hashes: vec![],
-        victim_swap_size: None,
         details: serde_json::json!({
             "pool": format!("{:#x}", pool),
             "owner": format!("{:#x}", owner),
@@ -247,7 +236,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
             },
             "fees_estimated": {
                 "method": "in_range_volume_x_pool_fee",
-                "pool_fee_bps": POOL_FEE_BPS,
+                "pool_fee_bps": pool_fee_bps,
                 "confidence": "inferred",
                 "range": range_key,
                 "by_token": fees_estimated,
@@ -257,6 +246,15 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
                 "method": "in_range_volume_x_pool_fee",
             },
         }),
+        ..MevEvent::for_tx(
+            input.block,
+            input.ts,
+            mint_tx,
+            B256::ZERO, // mint tx hash resolved at ingest stamping
+            MevKind::Jit,
+            owner,
+            None,
+        )
     })
 }
 

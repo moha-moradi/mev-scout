@@ -31,7 +31,7 @@ pub(crate) mod benqi_liq;
 pub(crate) mod canonical;
 pub(crate) mod classify;
 pub(crate) mod decode;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
@@ -40,18 +40,20 @@ pub mod profit;
 pub(crate) mod reject;
 pub(crate) mod results;
 pub mod scenario_targets;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 mod scenarios;
 pub mod store;
 pub(crate) mod strategy_tags;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) mod test_fixtures;
 pub mod types;
 
 pub use canonical::explorer_canonical_id;
 // `kind_precedence` is re-exported so the A15 census test injects the real
 // numbers into its SQL (single source of truth — no test-local copy).
-pub use classify::{classify_block, kind_precedence, BlockInput, ClassifyOutput, TxInput};
+pub use classify::{
+    classify_block, kind_precedence, BlockContext, BlockInput, ClassifyOutput, TxInput,
+};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};

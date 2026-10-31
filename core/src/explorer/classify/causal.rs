@@ -11,7 +11,7 @@ use crate::explorer::reject::RejectReason;
 use super::drops::DropSink;
 use super::legs::{
     opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit, CycleMiss,
-    SwapLeg, CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS,
+    SwapLeg,
 };
 use super::{BlockInput, TxInput};
 
@@ -92,7 +92,7 @@ pub(super) fn classify_backruns(
                 if *atx >= *btx {
                     continue; // not-a-drop: not a prior leg
                 }
-                if *btx - *atx > CAUSAL_WINDOW_TXS {
+                if *btx - *atx > input.ctx.causal_window_txs {
                     if *afrom != *bfrom && opposite_dir(aleg, bleg) {
                         drops.anchor(
                             *atx,
@@ -123,7 +123,7 @@ pub(super) fn classify_backruns(
                 let Some((ref_tx, _, ref_leg)) = ref_ else {
                     continue; // not-a-drop: no pre-move same-direction reference
                 };
-                let ref_far = *btx - *ref_tx > CAUSAL_WINDOW_TXS;
+                let ref_far = *btx - *ref_tx > input.ctx.causal_window_txs;
                 if ref_far {
                     drops.anchor(
                         *atx,
@@ -132,7 +132,7 @@ pub(super) fn classify_backruns(
                     );
                     named_miss = true;
                 }
-                if price_better_by(bleg, ref_leg, CAUSAL_PRICE_MIN_PCT) {
+                if price_better_by(bleg, ref_leg, input.ctx.causal_price_min_pct) {
                     // A far reference still counts for classification (the
                     // window check above is observational). Tightening it
                     // would move P&L, which is B8/calibration work, not A20.
@@ -165,24 +165,12 @@ pub(super) fn classify_backruns(
             let a_hash = a.0 .2.tx_hash;
             let (_searcher, btoken, bamount) = cycle;
             out.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: *btx,
-                tx_hash: b_tx.tx_hash,
-                kind: MevKind::Backrun,
-                searcher: *bfrom,
-                contract: None,
                 pools: vec![pool],
                 profit_token: Some(btoken),
                 profit_amount: Some(bamount),
-                profit_tokens: vec![],
-                profit_usd: None,
                 gas_cost_wei: super::gas::tx_gas_cost_wei(b_tx),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
                 confidence: Confidence::Inferred,
                 victim_hashes: vec![a_hash],
-                victim_swap_size: None,
                 details: serde_json::json!({
                     "mode": "realized",
                     "tier": "inferred",
@@ -205,7 +193,7 @@ pub(super) fn classify_backruns(
                         "STATE_DELTA_MATCH": true,
                         "DIRECTION_OF_BENEFIT": opposite_dir(aleg, bleg),
                         "PROFIT_VERIFIED": true,
-                        "exec_better_than_pre_move": price_better_by(bleg, a.1, CAUSAL_PRICE_MIN_PCT),
+                        "exec_better_than_pre_move": price_better_by(bleg, a.1, input.ctx.causal_price_min_pct),
                         "cycle": true,
                         "supporting_tx_hashes": [format!("{a_hash:#x}")],
                     },
@@ -216,6 +204,15 @@ pub(super) fn classify_backruns(
                     },
                     "reasons": ["STATE_DELTA_MATCH", "PROFIT_VERIFIED", "DIRECT_TOKEN_CYCLE"],
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    *btx,
+                    b_tx.tx_hash,
+                    MevKind::Backrun,
+                    *bfrom,
+                    None,
+                )
             });
         }
     }
@@ -249,7 +246,7 @@ pub(super) fn classify_frontruns(
             let mut victim_: Option<(u64, Address, &SwapLeg)> = None;
             let mut saw_third_party = false;
             for (vt, vfrom, vleg) in legs.iter().skip(fi + 1) {
-                if *vt == *ftx || *vt - *ftx > CAUSAL_WINDOW_TXS {
+                if *vt == *ftx || *vt - *ftx > input.ctx.causal_window_txs {
                     continue; // not-a-drop: outside the adjacency window
                 }
                 if *vfrom == *ffrom {
@@ -259,7 +256,7 @@ pub(super) fn classify_frontruns(
                     continue; // not-a-drop: opposite direction is not a frontrun victim
                 }
                 saw_third_party = true;
-                if price_worse_by(vleg, fleg, CAUSAL_PRICE_MIN_PCT) {
+                if price_worse_by(vleg, fleg, input.ctx.causal_price_min_pct) {
                     victim_ = Some((*vt, *vfrom, vleg));
                     break;
                 }
@@ -282,7 +279,7 @@ pub(super) fn classify_frontruns(
             // The window is borrowed once; each close candidate takes a prefix
             // instead of cloning every transfer in front..=close.
             let anchor = fleg.token_in;
-            let window_hi = ftx.saturating_add(CAUSAL_WINDOW_TXS);
+            let window_hi = ftx.saturating_add(input.ctx.causal_window_txs);
             let window: Vec<&TxInput> = input
                 .txs
                 .iter()
@@ -295,7 +292,7 @@ pub(super) fn classify_frontruns(
                 if tx.tx_index < vtx || tx.from != *ffrom {
                     continue; // not-a-drop: not a later tx from the mover
                 }
-                if tx.tx_index.saturating_sub(*ftx) > CAUSAL_WINDOW_TXS {
+                if tx.tx_index.saturating_sub(*ftx) > input.ctx.causal_window_txs {
                     break;
                 }
                 if consumed.contains(&tx.tx_index) {
@@ -303,7 +300,7 @@ pub(super) fn classify_frontruns(
                 }
                 let Some((net, ok)) = frontrun_cross_tx_profit(
                     &window,
-                    input.wrapped_native,
+                    input.ctx.wrapped_native,
                     *ffrom,
                     *ftx,
                     tx.tx_index,
@@ -341,21 +338,10 @@ pub(super) fn classify_frontruns(
                     acc.saturating_add(super::gas::tx_gas_cost_wei(t))
                 });
             out.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: *ftx,
-                tx_hash: fleg.tx_hash,
-                kind: MevKind::Frontrun,
-                searcher: *ffrom,
-                contract: None,
                 pools: vec![pool],
                 profit_token: Some(anchor),
                 profit_amount: Some(profit),
-                profit_tokens: vec![],
-                profit_usd: None,
                 gas_cost_wei,
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
                 confidence: Confidence::Inferred,
                 victim_hashes: vec![vleg.tx_hash],
                 victim_swap_size: Some(vleg.amount_in),
@@ -392,6 +378,15 @@ pub(super) fn classify_frontruns(
                     },
                     "reasons": ["STATE_DELTA_MATCH", "VICTIM_EXECUTION_DEGRADED", "PROFIT_VERIFIED"],
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    *ftx,
+                    fleg.tx_hash,
+                    MevKind::Frontrun,
+                    *ffrom,
+                    None,
+                )
             });
         }
     }

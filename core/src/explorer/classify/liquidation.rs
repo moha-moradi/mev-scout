@@ -37,8 +37,11 @@ pub(super) fn classify_liquidations(
         if tx.liquidations.is_empty() {
             continue; // not-a-drop: tx has no liquidation event
         }
-        let ledger =
-            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
+        let ledger = DeltaLedger::from_transfers(
+            &tx.transfers,
+            input.ctx.wrapped_native,
+            (tx.from, tx.value),
+        );
         let flash_funded = !tx.flashloans.is_empty();
         let primary_flash = tx.flashloans.first();
         for liq in &tx.liquidations {
@@ -90,15 +93,15 @@ pub(super) fn classify_liquidations(
                 liq.debt_asset,
                 liq.collateral_asset,
                 oracle_feeds_in_block,
-                &input.chainlink_feeds,
+                &input.ctx.chainlink_feeds,
             );
             // P1.4 mode B: pre-poke divergence vs last stored answer (secondary).
             let oracle_pre_poke_divergence_bps = if oracle_poke_block {
                 block_oracle_owned.iter().find_map(|o| {
-                    let asset = input.chainlink_feeds.get(&o.feed).copied();
+                    let asset = input.ctx.chainlink_feeds.get(&o.feed).copied();
                     let relevant = asset == Some(liq.debt_asset)
                         || asset == Some(liq.collateral_asset)
-                        || input.chainlink_feeds.is_empty();
+                        || input.ctx.chainlink_feeds.is_empty();
                     if !relevant {
                         return None;
                     }
@@ -113,7 +116,7 @@ pub(super) fn classify_liquidations(
                 liq,
                 block_reserve_owned,
                 block_oracle_owned,
-                &input.chainlink_feeds,
+                &input.ctx.chainlink_feeds,
                 Some(&input.interest_lookback),
             );
             // P&L basis O: seized − repaid components (USD at persist); flash
@@ -170,30 +173,27 @@ pub(super) fn classify_liquidations(
                 }
             }
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Liquidation,
-                // `LiquidationCall` carries no liquidator address; the tx
-                // sender is the attribution target (zero fallback covered).
-                searcher,
-                contract: tx.to,
                 pools: vec![],
                 // Compound V3 `Absorb` carries no per-asset seizure
                 // (collateral=0): leave profit_token NULL so downstream
                 // pricing does not special-case a zero address.
                 profit_token: (!liq.collateral_asset.is_zero()).then_some(liq.collateral_asset),
                 profit_amount: Some(liq.collateral_amount),
-                profit_tokens: vec![],
-                profit_usd: None,
                 gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 flashloan_fee_wei,
                 flashloan_fee_token,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details,
+                // `LiquidationCall` carries no liquidator address; the tx
+                // sender is the attribution target (zero fallback covered).
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Liquidation,
+                    searcher,
+                    tx.to,
+                )
             });
         }
     }
@@ -237,33 +237,29 @@ pub(super) fn classify_liquidations(
                     details["reasons"] = serde_json::json!(["ABSORB_UNPAIRED"]);
                 }
                 events.push(MevEvent {
-                    block: input.block,
-                    ts: input.ts,
-                    tx_index: tx.tx_index,
-                    tx_hash: tx.tx_hash,
-                    kind: MevKind::Liquidation,
-                    searcher: if buy.buyer.is_zero() {
-                        tx.from
-                    } else {
-                        buy.buyer
-                    },
-                    contract: tx.to,
                     pools: vec![],
                     profit_token: (!buy.collateral_asset.is_zero()).then_some(buy.collateral_asset),
                     profit_amount: Some(buy.collateral_amount),
-                    profit_tokens: vec![],
-                    profit_usd: None,
                     gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
-                    flashloan_fee_wei: None,
-                    flashloan_fee_token: None,
                     confidence: if paired {
                         Confidence::Exact
                     } else {
                         Confidence::Inferred
                     },
-                    victim_hashes: vec![],
-                    victim_swap_size: None,
                     details,
+                    ..MevEvent::for_tx(
+                        input.block,
+                        input.ts,
+                        tx.tx_index,
+                        tx.tx_hash,
+                        MevKind::Liquidation,
+                        if buy.buyer.is_zero() {
+                            tx.from
+                        } else {
+                            buy.buyer
+                        },
+                        tx.to,
+                    )
                 });
             }
         }

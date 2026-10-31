@@ -2,7 +2,7 @@
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::reject::RejectReason;
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
+use crate::explorer::types::{MevEvent, MevKind, PnlBasis};
 
 use super::drops::DropSink;
 use super::legs::{opposite_dir, pool_legs, same_dir, SandwichWalk, SwapLeg};
@@ -178,22 +178,10 @@ pub(super) fn fold_sandwich(
     }
 
     MevEvent {
-        block: input.block,
-        ts: input.ts,
-        tx_index: front.tx_index, // bundle anchor = front-run
-        tx_hash: front.tx_hash,
-        kind: MevKind::Sandwich,
-        searcher: attacker,
-        contract,
         pools: vec![pool],
         profit_token: Some(front.token_in),
         profit_amount: Some(profit),
-        profit_tokens: vec![],
-        profit_usd: None,
         gas_cost_wei,
-        flashloan_fee_wei: None,
-        flashloan_fee_token: None,
-        confidence: Confidence::Exact,
         victim_hashes: walk.victims.iter().map(|v| v.tx_hash).collect(),
         victim_swap_size: walk.victims.last().map(|v| v.amount_in),
         details: serde_json::json!({
@@ -247,5 +235,14 @@ pub(super) fn fold_sandwich(
             },
             "reasons": reasons,
         }),
+        ..MevEvent::for_tx(
+            input.block,
+            input.ts,
+            front.tx_index, // bundle anchor = front-run
+            front.tx_hash,
+            MevKind::Sandwich,
+            attacker,
+            contract,
+        )
     }
 }

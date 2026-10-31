@@ -49,8 +49,11 @@ pub(super) fn classify_atomic_arbs(
             continue;
         }
 
-        let mut ledger =
-            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
+        let mut ledger = DeltaLedger::from_transfers(
+            &tx.transfers,
+            input.ctx.wrapped_native,
+            (tx.from, tx.value),
+        );
 
         // net flash-loan borrow/repay before computing residuals so
         // borrowed principal never counts as profit. Only net when the repay
@@ -190,7 +193,7 @@ pub(super) fn classify_atomic_arbs(
                 profit_candidates
                     .iter()
                     .copied()
-                    .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some())
+                    .find(|a| select_profit_token(&ledger, *a, &input.ctx.profit_policy).is_some())
             })
             .or_else(|| match &forwarded {
                 ForwardedLookup::Hit {
@@ -266,7 +269,7 @@ pub(super) fn classify_atomic_arbs(
         // P0.4: flash-swap / flash-loan flag when principal was borrowed.
         let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
         // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-        let long_tail = is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
+        let long_tail = is_long_tail_arb(&tx.swaps, &input.ctx.profit_policy.priority);
         let mut tags: Vec<&str> = Vec::new();
         if flash_arb {
             tags.push("flash_arb");
@@ -311,22 +314,10 @@ pub(super) fn classify_atomic_arbs(
             details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
         }
         events.push(MevEvent {
-            block: input.block,
-            ts: input.ts,
-            tx_index: tx.tx_index,
-            tx_hash: tx.tx_hash,
-            kind: MevKind::ArbAtomic,
-            searcher,
-            contract: if searcher == tx.from {
-                None
-            } else {
-                tx.to.or(forwarded_from)
-            },
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(anchor),
             profit_amount: Some(amount),
             profit_tokens,
-            profit_usd: None, // pricing applied at persist time
             gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
             flashloan_fee_wei,
             flashloan_fee_token,
@@ -335,9 +326,20 @@ pub(super) fn classify_atomic_arbs(
             } else {
                 Confidence::Exact
             },
-            victim_hashes: vec![],
-            victim_swap_size: None,
             details,
+            ..MevEvent::for_tx(
+                input.block,
+                input.ts,
+                tx.tx_index,
+                tx.tx_hash,
+                MevKind::ArbAtomic,
+                searcher,
+                if searcher == tx.from {
+                    None
+                } else {
+                    tx.to.or(forwarded_from)
+                },
+            )
         });
     }
     (events, rejects)
@@ -369,25 +371,18 @@ pub(super) fn classify_keepers(input: &BlockInput) -> Vec<MevEvent> {
                 details["pnl"]["fee_token"] = serde_json::json!(format!("{:#x}", tok));
             }
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Utility,
-                searcher: tx.from,
-                contract: tx.to,
-                pools: vec![],
                 profit_token: keeper.fee_token,
                 profit_amount: fee,
-                profit_tokens: vec![],
-                profit_usd: None,
-                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details,
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Utility,
+                    tx.from,
+                    tx.to,
+                )
             });
         }
     }
@@ -418,9 +413,12 @@ pub(super) fn classify_claim_and_sell(
             ev.details["claimed_token"] = serde_json::json!(format!("{:#x}", token));
             continue;
         }
-        let ledger =
-            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
-        let Some(pt) = select_profit_token(&ledger, tx.from, &input.profit_policy) else {
+        let ledger = DeltaLedger::from_transfers(
+            &tx.transfers,
+            input.ctx.wrapped_native,
+            (tx.from, tx.value),
+        );
+        let Some(pt) = select_profit_token(&ledger, tx.from, &input.ctx.profit_policy) else {
             continue;
         };
         let pa = ledger.net(tx.from, pt);
@@ -428,24 +426,9 @@ pub(super) fn classify_claim_and_sell(
             continue;
         }
         events.push(MevEvent {
-            block: input.block,
-            ts: input.ts,
-            tx_index: tx.tx_index,
-            tx_hash: tx.tx_hash,
-            kind: MevKind::Utility,
-            searcher: tx.from,
-            contract: tx.to,
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(pt),
             profit_amount: Some(pa),
-            profit_tokens: vec![],
-            profit_usd: None,
-            gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
-            flashloan_fee_wei: None,
-            flashloan_fee_token: None,
-            confidence: Confidence::Exact,
-            victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({
                 "protocol": "claim_and_sell",
                 "tags": ["claim_and_sell", "airdrop"],
@@ -457,6 +440,15 @@ pub(super) fn classify_claim_and_sell(
                     "profit_token": format!("{:#x}", pt),
                 },
             }),
+            ..MevEvent::for_tx(
+                input.block,
+                input.ts,
+                tx.tx_index,
+                tx.tx_hash,
+                MevKind::Utility,
+                tx.from,
+                tx.to,
+            )
         });
     }
     events
@@ -471,24 +463,8 @@ pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
                 continue;
             }
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Utility,
-                searcher: tx.from,
-                contract: Some(uo.entry_point),
-                pools: vec![],
-                profit_token: Some(input.wrapped_native),
+                profit_token: Some(input.ctx.wrapped_native),
                 profit_amount: Some(uo.actual_gas_cost),
-                profit_tokens: vec![],
-                profit_usd: None,
-                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details: serde_json::json!({
                     "protocol": "erc4337",
                     "tags": ["bundler", "erc4337"],
@@ -500,6 +476,15 @@ pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
                         "actual_gas_cost": uo.actual_gas_cost.to_string(),
                     },
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Utility,
+                    tx.from,
+                    Some(uo.entry_point),
+                )
             });
         }
     }

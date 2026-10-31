@@ -6,6 +6,8 @@
 //!
 //! Chain-curated labels (hand-reviewed blocks) can be layered on later; until
 //! then this set is the CI ship gate for causal kinds.
+#![cfg_attr(feature = "test-util", allow(dead_code))]
+
 use alloy::primitives::{address, Address, B256, U256};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -164,19 +166,17 @@ fn block(txs: Vec<TxInput>) -> BlockInput {
     BlockInput {
         block: 42_000,
         ts: 1_700_000_000,
-        wrapped_native: WNATIVE,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC],
+        ctx: crate::explorer::classify::BlockContext {
             wrapped_native: WNATIVE,
-            weth: WNATIVE,
+            profit_policy: ProfitTokenPolicy {
+                priority: vec![USDC],
+                wrapped_native: WNATIVE,
+                weth: WNATIVE,
+            },
+            ..crate::explorer::classify::BlockContext::for_tests()
         },
         open_positions: vec![],
-        v2_like_pools: HashSet::new(),
-        chainlink_feeds: HashMap::new(),
-        savax: None,
-        epoch_venue_pools: HashSet::new(),
-        gmx_event_emitters: HashSet::new(),
-        interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
+        interest_lookback: Default::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,
         tip_sinks: HashSet::new(),

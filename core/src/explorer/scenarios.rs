@@ -9,8 +9,10 @@
 //! self-contained, reproducible, and CI-safe (this is the deterministic
 //! alternative to the RPC-gated replay in `tests/explorer_corpus.rs`).
 //!
-//! The module is only compiled under `cfg(test)` (see `explorer/mod.rs`).
-//! Shared builders live in [`super::test_fixtures`].
+//! The module is compiled under `cfg(test)` or the `test-util` feature (see
+//! `explorer/mod.rs`). Shared builders live in [`super::test_fixtures`].
+#![cfg_attr(feature = "test-util", allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 
 use alloy::primitives::{address, b256, Address, U256};
@@ -591,7 +593,7 @@ fn p1_1_interest_accrual() {
             }];
         }
         let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, WNATIVE)]);
+        input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, WNATIVE)]));
         classify_kind(&input, MevKind::Liquidation)
     };
 
@@ -637,7 +639,7 @@ fn p1_3_long_tail() {
         transfer(3, USDC, POOL_B, ATK, 110),
     ];
     let mut input = block(vec![tx(0, ATK, true, blue, blue_transfers)]);
-    input.profit_policy.priority = vec![USDC, WNATIVE];
+    input.ctx.profit_policy.priority = vec![USDC, WNATIVE];
     let ev = classify_kind(&input, MevKind::ArbAtomic);
     assert!(!has_tag(std::slice::from_ref(&ev), "long_tail"));
 }
@@ -665,7 +667,7 @@ fn p1_4_oracle_poke_block() {
             }];
         }
         let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, USDC)]);
+        input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, USDC)]));
         classify_kind(&input, MevKind::Liquidation)
     };
     let ev = build(true);
@@ -1098,8 +1100,8 @@ fn p3_16_savax_rate_arb() {
             transfer(3, SAVAX, POOL_B, ATK, 105),
         ];
         let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.savax = Some(SAVAX);
-        input.profit_policy.priority = vec![SAVAX, WNATIVE, USDC];
+        input.ctx.savax = Some(SAVAX);
+        input.ctx.profit_policy.priority = vec![SAVAX, WNATIVE, USDC];
         // 1.0 AVAX/sAVAX vs pool 1.1 → ≥5 bps divergence.
         if with_rate {
             input.savax_exchange_rate_wad = Some(U256::from(10u64.pow(18)));

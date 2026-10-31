@@ -18,6 +18,7 @@
 //!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
 //!    exists; a future one gets its own kind, never this bucket.
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use alloy::primitives::{Address, B256, U256};
 
@@ -39,6 +40,9 @@ mod drops;
 mod gas;
 mod jit;
 mod legs;
+
+pub(crate) use jit::POOL_FEE_BPS;
+pub(crate) use legs::{CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS};
 mod liquidation;
 mod sandwich;
 mod skim;
@@ -91,25 +95,66 @@ pub struct TxInput {
     pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
+/// Registry and configuration inputs shared by every block in a run.
+/// Grouped out of [`BlockInput`] so per-block facts and run-scoped settings
+/// do not mix; tests start from [`BlockContext::for_tests`].
+#[derive(Debug, Clone)]
+pub struct BlockContext {
+    pub wrapped_native: Address,
+    pub profit_policy: ProfitTokenPolicy,
+    /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
+    /// `Arc` so a backfill shares one registry universe across every block.
+    pub v2_like_pools: Arc<HashSet<Address>>,
+    /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
+    pub chainlink_feeds: Arc<HashMap<Address, Address>>,
+    /// Benqi sAVAX (plan P3.16); `None` disables the tag.
+    pub savax: Option<Address>,
+    /// Pharaoh / Blackhole pools eligible for epoch-transition tagging (P3.15).
+    pub epoch_venue_pools: Arc<HashSet<Address>>,
+    /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
+    pub gmx_event_emitters: Arc<HashSet<Address>>,
+    /// Max tx-index distance for a causal pair (D12).
+    pub causal_window_txs: u64,
+    /// Minimum relative price move for a causal leg to be material (D12).
+    pub causal_price_min_pct: f64,
+    /// Pool-fee-tier estimate used for JIT fee capture (D12/D11).
+    pub jit_pool_fee_bps: u32,
+}
+
+impl Default for BlockContext {
+    fn default() -> Self {
+        Self {
+            wrapped_native: Address::ZERO,
+            profit_policy: ProfitTokenPolicy::default(),
+            v2_like_pools: Arc::new(HashSet::new()),
+            chainlink_feeds: Arc::new(HashMap::new()),
+            savax: None,
+            epoch_venue_pools: Arc::new(HashSet::new()),
+            gmx_event_emitters: Arc::new(HashSet::new()),
+            causal_window_txs: legs::CAUSAL_WINDOW_TXS,
+            causal_price_min_pct: legs::CAUSAL_PRICE_MIN_PCT,
+            jit_pool_fee_bps: jit::POOL_FEE_BPS,
+        }
+    }
+}
+
+impl BlockContext {
+    /// Empty registries and zero wrapped native, with the legacy classification
+    /// thresholds: every registry-gated pass stays out of the way unless the
+    /// test opts in, and an unset config is bit-identical to today.
+    pub fn for_tests() -> Self {
+        Self::default()
+    }
+}
+
 /// One block's classified input.
 pub struct BlockInput {
     pub block: u64,
     pub ts: u64,
-    pub wrapped_native: Address,
-    pub profit_policy: ProfitTokenPolicy,
+    pub ctx: BlockContext,
     /// Cross-block JIT open Mint positions, loaded from the store
     /// window for the current block.
     pub open_positions: Vec<OpenPosition>,
-    /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
-    pub v2_like_pools: HashSet<Address>,
-    /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
-    pub chainlink_feeds: HashMap<Address, Address>,
-    /// Benqi sAVAX (plan P3.16); `None` disables the tag.
-    pub savax: Option<Address>,
-    /// Pharaoh / Blackhole pools eligible for epoch-transition tagging (P3.15).
-    pub epoch_venue_pools: HashSet<Address>,
-    /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
-    pub gmx_event_emitters: HashSet<Address>,
     /// Mode-B interest lookback (plan P1.1); empty = same-block heuristic only.
     pub interest_lookback: interest_attr::InterestLookback,
     /// Prior Chainlink answers keyed by feed (plan P1.4 mode B).
@@ -172,19 +217,20 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let epoch_signal = epoch_notify || strategy_tags::near_epoch_boundary(input.ts);
     let gmx_adl_signal = input.txs.iter().any(|t| {
         t.gmx_events.iter().any(|g| {
-            (input.gmx_event_emitters.is_empty() || input.gmx_event_emitters.contains(&g.emitter))
+            (input.ctx.gmx_event_emitters.is_empty()
+                || input.ctx.gmx_event_emitters.contains(&g.emitter))
                 && (g.kind == "adl" || g.kind == "impact" || g.kind == "liquidation")
         })
     });
-    let epoch_venue_list: Vec<Address> = input.epoch_venue_pools.iter().copied().collect();
+    let epoch_venue_list: Vec<Address> = input.ctx.epoch_venue_pools.iter().copied().collect();
     let block_rate_cache: Vec<RateCacheFact> = input
         .txs
         .iter()
         .flat_map(|t| t.rate_cache_updates.iter().cloned())
         .collect();
     let arb_tag_opts = ArbTagOpts {
-        wrapped_native: input.wrapped_native,
-        savax: input.savax,
+        wrapped_native: input.ctx.wrapped_native,
+        savax: input.ctx.savax,
         savax_exchange_rate_wad: input.savax_exchange_rate_wad,
         epoch_signal,
         epoch_venue_pools: &epoch_venue_list,
@@ -308,7 +354,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
 pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
     for e in events {
         if e.confidence != Confidence::Exact {
-            continue;
+            continue; // not-a-drop: only Exact events are normalized
         }
         let basis_exact = e
             .details
@@ -3002,6 +3048,11 @@ mod a20_reject_reasons {
     /// Structural guard (Step 4): no instrumented pass may drop a candidate with
     /// a bare `continue;`. Every one either records a reason on the line above
     /// or says why it is not a candidate drop (`not-a-drop:`).
+    ///
+    /// `arb.rs` is deliberately excluded: its drop sites feed
+    /// `classify_reject`/the reject-return plumbing and are covered by the
+    /// per-pass reason tests below. This guard covers the passes that used to
+    /// have zero reject emissions, plus the orchestrator's own filter.
     #[test]
     fn no_instrumented_pass_drops_a_candidate_without_a_reason() {
         let files = [
@@ -3011,6 +3062,7 @@ mod a20_reject_reasons {
             ("sandwich.rs", include_str!("sandwich.rs")),
             ("jit.rs", include_str!("jit.rs")),
             ("liquidation.rs", include_str!("liquidation.rs")),
+            ("mod.rs", include_str!("mod.rs")),
         ];
         const EMITS: [&str; 4] = [
             "drops.anchor(",

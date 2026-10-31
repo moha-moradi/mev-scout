@@ -39,7 +39,7 @@ pub(super) struct SandwichWalk {
 /// gate (`core/tests/explorer_golden.rs`) and the offline FP check
 /// (`core/tests/causal_fp_corpus.rs`). See
 /// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4.
-pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
+pub(crate) const CAUSAL_WINDOW_TXS: u64 = 8;
 
 /// Minimum relative price advantage (percentage points) a causal leg must
 /// show to be counted as *material* rather than float / gas-ordering noise.
@@ -54,7 +54,7 @@ pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 /// (`core/tests/causal_fp_corpus.rs`). Revisit once a real `frontrun`/`backrun`
 /// corpus seed is available (see
 /// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4).
-pub(super) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
+pub(crate) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
 
 /// True when `a` and `b` swap the same token pair in the same direction.
 pub(super) fn same_dir(a: &SwapLeg, b: &SwapLeg) -> bool {
@@ -182,7 +182,7 @@ pub(super) fn tx_cycle_profit(
     tx: &TxInput,
 ) -> Result<(Address, Address, U256), CycleMiss> {
     let ledger =
-        DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
+        DeltaLedger::from_transfers(&tx.transfers, input.ctx.wrapped_native, (tx.from, tx.value));
     let candidates = searcher_candidates(tx);
     let resolved: Vec<(Address, Address, _)> = tx
         .swaps
@@ -211,7 +211,7 @@ pub(super) fn tx_cycle_profit(
             continue; // not-a-drop: try the next searcher candidate
         }
         saw_clean = true;
-        if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
+        if let Some(token) = select_profit_token(&ledger, searcher, &input.ctx.profit_policy) {
             let amount = ledger.net(searcher, token);
             if !amount.is_zero() {
                 return Ok((searcher, token, amount));

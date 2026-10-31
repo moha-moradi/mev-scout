@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use alloy::primitives::{Address, U256};
 
 use crate::explorer::reject::RejectReason;
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
+use crate::explorer::types::{MevEvent, MevKind, PnlBasis};
 
 use super::drops::DropSink;
 use super::BlockInput;
@@ -26,7 +26,7 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
             if venue.contains(&t.from)
                 && !t.from.is_zero()
                 && !t.amount.is_zero()
-                && !input.v2_like_pools.contains(&t.from)
+                && !input.ctx.v2_like_pools.contains(&t.from)
                 && !reported_miss
             {
                 drops.bump(
@@ -36,7 +36,7 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
                 reported_miss = true;
             }
         }
-        if input.v2_like_pools.is_empty() {
+        if input.ctx.v2_like_pools.is_empty() {
             continue; // not-a-drop: no registry pools to score as skim
         }
         let mut excluded: HashSet<Address> = HashSet::new();
@@ -58,13 +58,13 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
             if t.amount.is_zero() {
                 continue; // not-a-drop: a zero transfer is not a skim
             }
-            if input.v2_like_pools.contains(&t.to) {
+            if input.ctx.v2_like_pools.contains(&t.to) {
                 inbound_pools.insert(t.to);
             }
             if t.from.is_zero() {
                 continue; // not-a-drop: mint-from-zero is not a pair outflow
             }
-            if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
+            if !input.ctx.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
                 continue; // not-a-drop: not a registry pair, or the pair already swapped
             }
             let entry = by_pool.entry(t.from).or_default();
@@ -99,7 +99,7 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
             // zero-address fallback.
             let (profit_token, profit_amount) = profit_tokens
                 .iter()
-                .find(|(tok, _)| input.profit_policy.priority.contains(tok))
+                .find(|(tok, _)| input.ctx.profit_policy.priority.contains(tok))
                 .copied()
                 .or_else(|| profit_tokens.iter().max_by(|a, b| a.1.cmp(&b.1)).copied())
                 .unwrap_or(profit_tokens[0]);
@@ -123,24 +123,11 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
                 .collect();
 
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Skim,
-                searcher: tx.from,
-                contract: tx.to,
                 pools: vec![pool],
                 profit_token: Some(profit_token),
                 profit_amount: Some(profit_amount),
                 profit_tokens: profit_tokens.clone(),
-                profit_usd: None,
                 gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details: serde_json::json!({
                     "pool": format!("{:#x}", pool),
                     "recipients": recipients,
@@ -152,6 +139,15 @@ pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<Me
                         "profit_token": format!("{:#x}", profit_token),
                     },
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Skim,
+                    tx.from,
+                    tx.to,
+                )
             });
         }
     }

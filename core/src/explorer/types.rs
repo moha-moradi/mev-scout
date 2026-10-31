@@ -32,6 +32,20 @@ pub enum MevKind {
 }
 
 impl MevKind {
+    /// Every emittable kind, in canonical order. Single source of truth for
+    /// coverage tests and CLI error messages.
+    pub const ALL: &[MevKind] = &[
+        MevKind::Sandwich,
+        MevKind::Frontrun,
+        MevKind::Backrun,
+        MevKind::ArbAtomic,
+        MevKind::JitArb,
+        MevKind::Jit,
+        MevKind::Liquidation,
+        MevKind::Skim,
+        MevKind::Utility,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             MevKind::ArbAtomic => "arb_atomic",
@@ -177,6 +191,44 @@ pub struct MevEvent {
     pub victim_swap_size: Option<U256>,
     /// Kind-specific structured details (liq assets, JIT tick range, notes).
     pub details: serde_json::Value,
+}
+
+impl MevEvent {
+    /// Common shape for a one-transaction event: block/tx identity and the
+    /// attribution pair, with every kind-specific field empty. Callers set
+    /// those fields with struct-update syntax so a new shared field is a
+    /// one-line change instead of an edit at every emission site.
+    pub fn for_tx(
+        block: u64,
+        ts: u64,
+        tx_index: u64,
+        tx_hash: B256,
+        kind: MevKind,
+        searcher: Address,
+        contract: Option<Address>,
+    ) -> Self {
+        Self {
+            block,
+            ts,
+            tx_index,
+            tx_hash,
+            kind,
+            searcher,
+            contract,
+            pools: Vec::new(),
+            profit_token: None,
+            profit_amount: None,
+            profit_tokens: Vec::new(),
+            profit_usd: None,
+            gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence: Confidence::Exact,
+            victim_hashes: Vec::new(),
+            victim_swap_size: None,
+            details: serde_json::json!({}),
+        }
+    }
 }
 
 /// A multi-transaction realized operation (sandwich bundle).
