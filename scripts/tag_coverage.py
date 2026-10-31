@@ -10,27 +10,9 @@ import sys
 from pathlib import Path
 
 # Tags the classifier can emit into details.tags (not detail bool flags).
-EXPECTED_TAGS = [
-    "flash_arb",
-    "long_tail",
-    "curve_imbalance",
-    "rate_provider_staleness",
-    "fot_arb",
-    "rebase_arb",
-    "savax_rate_arb",
-    "epoch_transition",
-    "gmx_adl_arb",
-    "flash_loan_liq",
-    "bad_debt_liq",
-    "buycollateral",
-    "keeper",
-    "automation",
-    "claim_and_sell",
-    "airdrop",
-    "bundler",
-    "erc4337",
-    "lb_bin_jit",
-]
+# Single source: core/data/explorer_tags.json, shared with the Rust coverage test.
+TAGS_PATH = Path(__file__).resolve().parent.parent / "core" / "data" / "explorer_tags.json"
+EXPECTED_TAGS = json.loads(TAGS_PATH.read_text(encoding="utf-8"))
 
 # Avalanche: Morpho bad-debt fingerprint is synthetic-only.
 AVAX_SKIP = {"bad_debt_liq"}

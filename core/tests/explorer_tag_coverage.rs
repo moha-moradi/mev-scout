@@ -20,26 +20,12 @@ use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
 use mev_scout_core::types::ChainName;
 
-const EXPECTED_TAGS: &[&str] = &[
-    "flash_arb",
-    "long_tail",
-    "curve_imbalance",
-    "rate_provider_staleness",
-    "fot_arb",
-    "rebase_arb",
-    "savax_rate_arb",
-    "epoch_transition",
-    "gmx_adl_arb",
-    "flash_loan_liq",
-    "buycollateral",
-    "keeper",
-    "automation",
-    "claim_and_sell",
-    "airdrop",
-    "bundler",
-    "erc4337",
-    "lb_bin_jit",
-];
+/// Single source of the classifier's tag vocabulary, shared with
+/// `scripts/tag_coverage.py`.
+fn expected_tags() -> Vec<String> {
+    serde_json::from_str(include_str!("../data/explorer_tags.json"))
+        .unwrap_or_else(|e| panic!("core/data/explorer_tags.json: {e}"))
+}
 
 /// Morpho bad-debt is synthetic-only on Avalanche — not required for AVAX coverage.
 const AVAX_SKIP: &[&str] = &["bad_debt_liq"];
@@ -115,9 +101,10 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
 
     let tags = collect_tags(&store)?;
     let skip: HashSet<&str> = AVAX_SKIP.iter().copied().collect();
-    let missing: Vec<&str> = EXPECTED_TAGS
+    let expected = expected_tags();
+    let missing: Vec<&str> = expected
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|t| !tags.contains(*t) && !skip.contains(t))
         .collect();
     let mut present: Vec<_> = tags.iter().cloned().collect();
