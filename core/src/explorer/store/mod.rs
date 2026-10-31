@@ -3,8 +3,10 @@
 //! Separate database file from the scanner cache (`explorer_{chain}.sqlite`)
 //! so live index writes never contend with replay-path reads. WAL mode,
 //! single-writer. `rusqlite::Connection` is `Send` but not `Sync`, so the
-//! store stays on the sequential index loop instead of being raced across
-//! `spawn_blocking` tasks. A pool would not help a single writer.
+//! store is never shared across threads; the index loop runs each block's
+//! synchronous writes inside `tokio::task::block_in_place` on multi-thread
+//! runtimes, which keeps the async worker free without a connection pool
+//! (a pool would not help a single writer).
 //!
 //! Layers:
 //! - forensic facts: `blocks`, `txs`, `transfers`, `swaps`, `mev_ops`
@@ -47,7 +49,7 @@ pub struct OpenPosition {
 }
 
 /// One persisted realized-MEV operation row (`mev_ops`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MevOpRow {
     pub id: i64,
     pub block_number: u64,
@@ -89,7 +91,7 @@ impl MevOpRow {
 }
 
 /// Aggregate row for stats/leaderboard queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StatsRow {
     pub label: String,
     pub ops: i64,
@@ -201,7 +203,7 @@ pub struct OpportunityInput<'a> {
 
 /// One cost · profit · volume row for the revenue report (per kind, per day,
 /// or the window overview).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportRow {
     pub label: String,
     pub ops: i64,
@@ -252,7 +254,7 @@ pub struct ReportQuality {
 }
 
 /// Revenue-report window header (bare `explorer` overview).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportOverview {
     pub ops: i64,
     pub volume_usd: f64,
@@ -454,6 +456,52 @@ mod tests {
     }
 
     #[test]
+    fn ops_in_range_ties_are_id_ordered_and_stable_across_runs() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+        // Same block, tx index and P&L: only the natural key differs, so
+        // `(block_number, tx_index)` alone is a tie.
+        let a = sample_event(100);
+        let mut b = sample_event(100);
+        b.tx_hash = B256::from([0x22u8; 32]);
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 2,
+                swaps: &[],
+                events: &[a, b],
+                token_prices: &prices,
+            },
+        );
+
+        let ids = |store: &ExplorerStore| -> Vec<i64> {
+            store
+                .ops_in_range(100, 100, &[])
+                .unwrap()
+                .into_iter()
+                .map(|op| op.id)
+                .collect()
+        };
+        let first = ids(&store);
+        assert_eq!(first.len(), 2);
+        assert!(first[0] < first[1], "id tiebreak must be ascending");
+        assert_eq!(
+            first,
+            ids(&store),
+            "repeated runs must return the same order"
+        );
+    }
+
+    #[test]
     fn jit_open_positions_roundtrip() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let pool = address!("3333000000000000000000000000000000000003");
@@ -493,6 +541,31 @@ mod tests {
 
         assert_eq!(store.prune_jit_positions(100).unwrap(), 1);
         assert!(store.open_positions(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn jit_positions_batch_close_removes_every_match() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let pool = address!("3333000000000000000000000000000000000003");
+        let owner = address!("2222000000000000000000000000000000000002");
+        let positions: Vec<OpenPosition> = [(-100, 100), (-200, 200), (-300, 300)]
+            .into_iter()
+            .map(|(tick_lower, tick_upper)| OpenPosition {
+                pool,
+                owner,
+                tick_lower,
+                tick_upper,
+                opened_block: 10,
+                liquidity: 1,
+            })
+            .collect();
+        store.record_jit_open(&positions).unwrap();
+        store
+            .close_jit_positions(&[(pool, owner, -100, 100), (pool, owner, -300, 300)])
+            .unwrap();
+        let open = store.open_positions(0).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].tick_lower, -200);
     }
 
     fn liquidation_event(collateral: Address, debt: Address) -> MevEvent {

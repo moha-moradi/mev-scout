@@ -261,7 +261,7 @@ impl ExplorerStore {
                     subkind
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
-             ORDER BY block_number, tx_index"
+             ORDER BY block_number, tx_index, id"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_mev_op_row)?;
@@ -284,7 +284,7 @@ impl ExplorerStore {
                     detection_path, canonical_id
              FROM opportunities
              WHERE run_id = ?1
-             ORDER BY block_number, tx_index",
+             ORDER BY block_number, tx_index, tx_hash, strategy",
         )?;
         let rows = stmt.query_map(rusqlite::params![run_id], |r| {
             Ok((
@@ -453,11 +453,9 @@ impl ExplorerStore {
         confidence: Option<Confidence>,
     ) -> anyhow::Result<ReportOverview> {
         let filter = report_filter_clause(kind, confidence);
-        // Reason counts scan `details_json`. These tokens are written verbatim
-        // into the `reasons` array (and `pricing_clamped` is also a top-level
-        // key), so a substring match is precise for the values `note_pricing_issue`
-        // emits. `SUM` skips NULL, so `gross` already counts only priced ops
-        // (unpriced rows carry NULL `profit_usd`).
+        // Pricing-quality counts read the columns promoted in V10. `SUM` skips
+        // NULL, so `gross` already counts only priced ops (unpriced rows carry
+        // NULL `profit_usd`).
         let sql = format!(
             "SELECT COUNT(*),
                     COALESCE(SUM(volume_usd), 0),
@@ -479,11 +477,11 @@ impl ExplorerStore {
                     COALESCE(SUM(CASE WHEN confidence = 'inferred'
                                           AND excluded_from_net = 0
                                       THEN net_profit_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%NATIVE_UNPRICED%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%MULTI_ASSET_PRICING%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%FLASH_FEE_UNPRICED%' THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(usd_approximate), 0),
+                    COALESCE(SUM(native_unpriced), 0),
+                    COALESCE(SUM(multi_asset_pricing), 0),
+                    COALESCE(SUM(pricing_clamped), 0),
+                    COALESCE(SUM(flash_fee_unpriced), 0),
                     COALESCE(SUM(CASE WHEN excluded_from_net = 1 THEN 1 ELSE 0 END), 0)
              FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );

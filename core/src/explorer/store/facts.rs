@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, U256};
 
-use super::pnl::{annotate_event, PersistedOp};
+use super::pnl::{annotate_event_with_volume, PersistedOp};
 use super::{BlockFactsInput, ExplorerStore, PendingLabels};
 
 impl ExplorerStore {
@@ -171,9 +171,21 @@ impl ExplorerStore {
         // flash-fee conversion, native residual, confidence) lives in
         // `pnl::annotate_event`; the transaction below only binds and
         // inserts the already-annotated rows.
+        // One pass over the block's swaps; each event reads its tx's total.
+        let mut volume_by_tx: HashMap<u64, f64> = HashMap::new();
+        for s in swaps {
+            let usd = token_prices
+                .get(&s.token_in)
+                .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
+                .unwrap_or(0.0);
+            *volume_by_tx.entry(s.tx_index).or_insert(0.0) += usd;
+        }
         let ops: Vec<PersistedOp> = events
             .iter()
-            .map(|ev| annotate_event(ev, swaps, token_prices, native_price_usd, now))
+            .map(|ev| {
+                let volume = volume_by_tx.get(&ev.tx_index).copied().filter(|v| *v > 0.0);
+                annotate_event_with_volume(ev, volume, token_prices, native_price_usd, now)
+            })
             .collect();
         let pending_labels: PendingLabels = events
             .iter()
@@ -280,9 +292,12 @@ impl ExplorerStore {
                     confidence, canonical_id, profit_token, profit_amount,
                     volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
                     net_profit_usd, route_json, victim_hashes, details_json,
-                    detector, created_at, excluded_from_net, subkind)
+                    detector, created_at, excluded_from_net, subkind,
+                    usd_approximate, native_unpriced, multi_asset_pricing,
+                    pricing_clamped, flash_fee_unpriced)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21, ?22)
+                        ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21, ?22,
+                        ?23, ?24, ?25, ?26, ?27)
                  ON CONFLICT(canonical_id, tx_hash) DO UPDATE SET
                     confidence = excluded.confidence,
                     volume_usd = excluded.volume_usd,
@@ -292,7 +307,12 @@ impl ExplorerStore {
                     net_profit_usd = excluded.net_profit_usd,
                     details_json = excluded.details_json,
                     excluded_from_net = excluded.excluded_from_net,
-                    subkind = excluded.subkind",
+                    subkind = excluded.subkind,
+                    usd_approximate = excluded.usd_approximate,
+                    native_unpriced = excluded.native_unpriced,
+                    multi_asset_pricing = excluded.multi_asset_pricing,
+                    pricing_clamped = excluded.pricing_clamped,
+                    flash_fee_unpriced = excluded.flash_fee_unpriced",
             )?;
             for op in &ops {
                 stmt.execute(rusqlite::params![
@@ -318,6 +338,11 @@ impl ExplorerStore {
                     op.created_at,
                     op.excluded_from_net,
                     op.subkind,
+                    op.usd_approximate,
+                    op.native_unpriced,
+                    op.multi_asset_pricing,
+                    op.pricing_clamped,
+                    op.flash_fee_unpriced,
                 ])?;
             }
         }

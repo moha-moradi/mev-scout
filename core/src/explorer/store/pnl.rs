@@ -10,7 +10,9 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::pricing::TokenUsd;
 use crate::explorer::types::{MevEvent, MevKind};
 
-use super::{merge_details_json, SwapRow};
+use super::merge_details_json;
+#[cfg(test)]
+use super::SwapRow;
 
 /// One fully annotated `mev_ops` row, ready to bind.
 ///
@@ -47,18 +49,26 @@ pub struct PersistedOp {
     /// `keeper` | `bundler` | `claim_and_sell` when this row is `Utility`
     /// (or carries exactly one of those tags). Absent otherwise.
     pub subkind: Option<&'static str>,
+    /// Pricing-quality flags promoted out of `details_json` so reports can
+    /// count them without substring scans.
+    pub usd_approximate: i64,
+    pub native_unpriced: i64,
+    pub multi_asset_pricing: i64,
+    pub pricing_clamped: i64,
+    pub flash_fee_unpriced: i64,
 }
 
 /// Apply every persist-time business rule for one event and return the row to
 /// bind: PnL annotation (liquidation or residual pricing), the A10 sandwich
-/// loss gate, volume pricing, flash-fee conversion, native-residual pricing
-/// (A16) and the A19 `pnl_basis`/confidence handling.
+/// loss gate, volume, flash-fee conversion, native-residual pricing (A16) and
+/// the A19 `pnl_basis`/confidence handling.
 ///
-/// Pure: the caller supplies the block-level price inputs and the block's
-/// swaps (for volume attribution); no store handle is involved.
-pub fn annotate_event(
+/// Pure: the caller supplies the block-level price inputs and the event's
+/// precomputed volume (one scan per block, not one per event); no store handle
+/// is involved.
+pub fn annotate_event_with_volume(
     ev: &MevEvent,
-    swaps: &[SwapRow],
+    volume_usd: Option<f64>,
     token_prices: &HashMap<Address, TokenUsd>,
     native_price_usd: Option<f64>,
     created_at: i64,
@@ -251,22 +261,23 @@ pub fn annotate_event(
     // gate never guesses.
     let excluded_from_net =
         (ev.kind == MevKind::Sandwich && matches!(net, Some(n) if n <= 0.0)) as i64;
-    // USD notional of the op's swap legs (report "volume"): priced at the
-    // block's token prices. Legs with no price/decimals are skipped; volume is
-    // `None` when nothing priced. Attribution is per anchor tx — a tx with
-    // multiple events shares its legs.
-    let volume_usd = {
-        let total = swaps
-            .iter()
-            .filter(|s| s.tx_index == ev.tx_index)
-            .fold(0.0f64, |acc, s| {
-                acc + token_prices
-                    .get(&s.token_in)
-                    .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
-                    .unwrap_or(0.0)
-            });
-        (total > 0.0).then_some(total)
+    let details_value: serde_json::Value = serde_json::from_str(&details_json).unwrap_or_default();
+    let reason_present = |name: &str| {
+        details_value
+            .get("reasons")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(name)))
     };
+    let usd_approximate_flag = i64::from(
+        details_value
+            .get("usd_approximate")
+            .and_then(|v| v.as_bool())
+            == Some(true),
+    );
+    let native_unpriced_flag = i64::from(reason_present("NATIVE_UNPRICED"));
+    let multi_asset_pricing_flag = i64::from(reason_present("MULTI_ASSET_PRICING"));
+    let pricing_clamped_flag = i64::from(reason_present("pricing_clamped"));
+    let flash_fee_unpriced_flag = i64::from(reason_present("FLASH_FEE_UNPRICED"));
     PersistedOp {
         block_number: ev.block,
         tx_index: ev.tx_index,
@@ -296,6 +307,11 @@ pub fn annotate_event(
         created_at,
         excluded_from_net,
         subkind: crate::explorer::types::utility_subkind(&ev.details),
+        usd_approximate: usd_approximate_flag,
+        native_unpriced: native_unpriced_flag,
+        multi_asset_pricing: multi_asset_pricing_flag,
+        pricing_clamped: pricing_clamped_flag,
+        flash_fee_unpriced: flash_fee_unpriced_flag,
     }
 }
 
@@ -389,6 +405,34 @@ pub(super) fn reason_list(details: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Test helper: derive an event's volume from the block's swaps, matching the
+/// persist path's precomputed per-tx map.
+#[cfg(test)]
+pub fn annotate_event(
+    ev: &MevEvent,
+    swaps: &[SwapRow],
+    token_prices: &HashMap<Address, TokenUsd>,
+    native_price_usd: Option<f64>,
+    created_at: i64,
+) -> PersistedOp {
+    let total = swaps
+        .iter()
+        .filter(|s| s.tx_index == ev.tx_index)
+        .fold(0.0f64, |acc, s| {
+            acc + token_prices
+                .get(&s.token_in)
+                .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
+                .unwrap_or(0.0)
+        });
+    annotate_event_with_volume(
+        ev,
+        (total > 0.0).then_some(total),
+        token_prices,
+        native_price_usd,
+        created_at,
+    )
 }
 
 #[cfg(test)]

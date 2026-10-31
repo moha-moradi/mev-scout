@@ -34,6 +34,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v7_mev_ops_natural_key,
     migrate_v8_utility_subkind,
     migrate_v9_report_indexes,
+    migrate_v10_pricing_flags,
 ];
 
 fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
@@ -246,6 +247,22 @@ fn migrate_v9_report_indexes(conn: &Connection) -> anyhow::Result<()> {
     }
     if table_exists(conn, "prices")? {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS prices_token_hour ON prices(token, hour);")?;
+    }
+    Ok(())
+}
+
+/// Promote the pricing-quality flags from `details_json` to queryable columns.
+/// The report used substring matches (`LIKE '%...%'`) over the JSON, which no
+/// index can serve and which would silently break if the flag shape changed.
+fn migrate_v10_pricing_flags(conn: &Connection) -> anyhow::Result<()> {
+    for column in [
+        "usd_approximate",
+        "native_unpriced",
+        "multi_asset_pricing",
+        "pricing_clamped",
+        "flash_fee_unpriced",
+    ] {
+        ExplorerStore::ensure_column(conn, "mev_ops", column, "INTEGER NOT NULL DEFAULT 0")?;
     }
     Ok(())
 }

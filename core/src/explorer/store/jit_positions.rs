@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::Address;
+use rusqlite::types::Value;
 
 use super::{ExplorerStore, OpenPosition};
 
@@ -194,25 +195,59 @@ impl ExplorerStore {
     /// Runs on the store connection, so a caller that already holds a
     /// transaction on it (the ingest path's per-block JIT sweep) gets these
     /// writes enrolled in that transaction; this method must not open one of
-    /// its own. Statement batching is a separate concern (Task C4).
+    /// its own. Rows are inserted in bounded multi-row statements.
     pub fn record_jit_open(&self, positions: &[OpenPosition]) -> anyhow::Result<()> {
-        for p in positions {
-            self.conn.execute(
+        // 6 bound values per position; 150 stays below SQLite's variable limit.
+        const CHUNK: usize = 150;
+        for chunk in positions.chunks(CHUNK) {
+            let rows = vec!["(?, ?, ?, ?, ?, ?)"; chunk.len()].join(", ");
+            let sql = format!(
                 "INSERT OR REPLACE INTO jit_open_positions
                    (pool, owner, tick_lower, tick_upper, opened_block, liquidity)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    format!("{:#x}", p.pool),
-                    format!("{:#x}", p.owner),
-                    p.tick_lower as i64,
-                    p.tick_upper as i64,
-                    p.opened_block as i64,
-                    p.liquidity.to_string(),
-                ],
-            )?;
+                 VALUES {rows}"
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let mut params: Vec<Value> = Vec::with_capacity(chunk.len() * 6);
+            for p in chunk {
+                params.push(Value::Text(format!("{:#x}", p.pool)));
+                params.push(Value::Text(format!("{:#x}", p.owner)));
+                params.push(Value::Integer(p.tick_lower as i64));
+                params.push(Value::Integer(p.tick_upper as i64));
+                params.push(Value::Integer(p.opened_block as i64));
+                params.push(Value::Text(p.liquidity.to_string()));
+            }
+            stmt.execute(rusqlite::params_from_iter(params))?;
         }
         Ok(())
     }
+    /// Delete every observed close in bounded multi-row statements. Participates
+    /// in the caller's transaction, like [`Self::record_jit_open`].
+    pub fn close_jit_positions(
+        &self,
+        closes: &[(Address, Address, i32, i32)],
+    ) -> anyhow::Result<()> {
+        // 4 bound values per position; 200 keeps the statement well below
+        // SQLite's variable limit on every supported build.
+        const CHUNK: usize = 200;
+        for chunk in closes.chunks(CHUNK) {
+            let rows = vec!["(?, ?, ?, ?)"; chunk.len()].join(", ");
+            let sql = format!(
+                "DELETE FROM jit_open_positions
+                  WHERE (pool, owner, tick_lower, tick_upper) IN (VALUES {rows})"
+            );
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let mut params: Vec<Value> = Vec::with_capacity(chunk.len() * 4);
+            for (pool, owner, tick_lower, tick_upper) in chunk {
+                params.push(Value::Text(format!("{pool:#x}")));
+                params.push(Value::Text(format!("{owner:#x}")));
+                params.push(Value::Integer(*tick_lower as i64));
+                params.push(Value::Integer(*tick_upper as i64));
+            }
+            stmt.execute(rusqlite::params_from_iter(params))?;
+        }
+        Ok(())
+    }
+
     /// Delete an open position once its exact-liquidity Burn is observed.
     ///
     /// Like [`Self::record_jit_open`], this participates in a transaction the
