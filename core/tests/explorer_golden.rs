@@ -18,7 +18,7 @@ use mev_scout_core::explorer::store::{
 use mev_scout_core::explorer::types::{
     Amm, Confidence, JitFact, LegSource, MevKind, SwapFact, TransferFact,
 };
-use mev_scout_core::explorer::{classify_block, BlockInput, TokenUsd, TxInput};
+use mev_scout_core::explorer::{classify_block, BlockContext, BlockInput, TokenUsd, TxInput};
 
 const BLOCK: u64 = 10_000;
 const USDC: Address = address!("4000000000000000000000000000000000000005");
@@ -187,18 +187,16 @@ fn golden_input() -> BlockInput {
     BlockInput {
         block: BLOCK,
         ts: 1_700_000_000,
-        wrapped_native: WNATIVE,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC],
+        ctx: BlockContext {
             wrapped_native: WNATIVE,
-            weth: WNATIVE,
+            profit_policy: ProfitTokenPolicy {
+                priority: vec![USDC],
+                wrapped_native: WNATIVE,
+                weth: WNATIVE,
+            },
+            ..BlockContext::for_tests()
         },
         open_positions: vec![],
-        v2_like_pools: std::collections::HashSet::new(),
-        chainlink_feeds: HashMap::new(),
-        savax: None,
-        epoch_venue_pools: std::collections::HashSet::new(),
-        gmx_event_emitters: std::collections::HashSet::new(),
         interest_lookback: Default::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,

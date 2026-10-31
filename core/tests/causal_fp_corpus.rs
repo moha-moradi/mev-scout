@@ -28,7 +28,7 @@ use rusqlite::Connection;
 
 use mev_scout_core::explorer::profit::ProfitTokenPolicy;
 use mev_scout_core::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
-use mev_scout_core::explorer::{classify_block, BlockInput, TxInput};
+use mev_scout_core::explorer::{classify_block, BlockContext, BlockInput, TxInput};
 
 // ── Avalanche C-Chain values (core/data/chains.toml) ──────────────────────────
 const WAVAX: Address = address!("b31f66aa3c1e785363f0875a1b74e27b85fd66c7");
@@ -144,18 +144,17 @@ fn block_input(block: u64, b: &PerBlock) -> BlockInput {
     BlockInput {
         block,
         ts: b.ts,
-        wrapped_native: WAVAX,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC, USDC_E, USDT_E, DAI_E, WAVAX],
+        ctx: BlockContext {
             wrapped_native: WAVAX,
-            weth: WAVAX,
+            profit_policy: ProfitTokenPolicy {
+                priority: vec![USDC, USDC_E, USDT_E, DAI_E, WAVAX],
+                wrapped_native: WAVAX,
+                weth: WAVAX,
+            },
+            savax: Some(SAVAX),
+            ..BlockContext::for_tests()
         },
         open_positions: vec![],
-        v2_like_pools: std::collections::HashSet::new(),
-        chainlink_feeds: std::collections::HashMap::new(),
-        savax: Some(SAVAX),
-        epoch_venue_pools: std::collections::HashSet::new(),
-        gmx_event_emitters: std::collections::HashSet::new(),
         interest_lookback: Default::default(),
         prior_oracle_answers: std::collections::HashMap::new(),
         savax_exchange_rate_wad: None,
