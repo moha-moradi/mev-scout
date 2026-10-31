@@ -158,7 +158,12 @@ fn config_prints_resolved_toml_from_example_toml() {
     // Dynamic provider count: compare against the example TOML itself instead of
     // a hard-coded threshold, so adding/removing providers doesn't break the
     // test. The resolved config must include at least every placeholder URL.
-    let example_https_count = common::example_config_text().matches("https://").count();
+    // Commented examples (the env-interpolation form) are documentation only.
+    let example_https_count = common::example_config_text()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.contains("https://"))
+        .count();
     assert!(
         example_https_count >= 1,
         "mev-scout.example.toml should contain at least one provider placeholder"

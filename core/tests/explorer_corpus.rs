@@ -789,13 +789,13 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
 /// including the ones with a zero count, which is how an absent rare kind
 /// (`jit`) is confirmed absent rather than merely unlisted.
 const ALL_KINDS: &[&str] = &[
-    "arb_atomic",
     "sandwich",
     "frontrun",
     "backrun",
-    "liquidation",
-    "jit",
+    "arb_atomic",
     "jit_arb",
+    "jit",
+    "liquidation",
     "skim",
     "utility",
 ];
@@ -994,23 +994,10 @@ fn hunt_chain_list_skips_unknown_names() {
 #[test]
 fn every_classifier_kind_is_reported_by_a_record_run() {
     // A kind absent from ALL_KINDS would print no line at all, so a rare kind
-    // like `jit` could never be confirmed absent.
-    for kind in [
-        "arb_atomic",
-        "sandwich",
-        "frontrun",
-        "backrun",
-        "liquidation",
-        "jit",
-        "jit_arb",
-        "skim",
-        "utility",
-    ] {
-        assert!(
-            ALL_KINDS.contains(&kind),
-            "{kind} is emittable but missing from ALL_KINDS"
-        );
-    }
+    // like `jit` could never be confirmed absent. Both sides derive from the
+    // enum, so a new variant fails until the corpus list follows it.
+    let expected: Vec<&str> = MevKind::ALL.iter().map(|k| k.as_str()).collect();
+    assert_eq!(ALL_KINDS, expected, "ALL_KINDS must mirror MevKind::ALL");
 }
 
 #[test]

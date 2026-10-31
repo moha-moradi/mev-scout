@@ -97,6 +97,8 @@ mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
 Bare `explorer` takes `--windows` / `--kind` / `--top` (revenue report).
+`--windows` accepts comma-separated `Nh` / `Nd` / `Nw` durations or `all`
+(e.g. `12h,1d,7d,all`); coverage is derived from the chain's block time.
 `explorer index` without `--loop` takes `--days` (1–365) or
 `--from-block`/`--to-block` (default trailing 7 days). With `--loop` it
 follows the tip (`--duration` optional).
@@ -396,6 +398,7 @@ on report).
 ```powershell
 mev-scout explorer
 mev-scout explorer --windows 1d,7d,30d
+mev-scout explorer --windows 12h,1d,7d
 mev-scout explorer --windows all --kind sandwich --top 20
 ```
 

@@ -104,7 +104,7 @@ Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
-`explorer` takes `--windows` / `--kind` / `--top`. `explorer index` takes
+`explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--top`. `explorer index` takes
 `--days` or `--from-block`/`--to-block` (bounded), or `--loop [--duration]`.
 
 ## Layout
@@ -123,10 +123,11 @@ metadata is seeded offline from the bundled known-token list.
 ## Configuration & secrets
 
 Copy `mev-scout.example.toml` to `mev-scout.toml` and reference API keys
-via `${ENV_VAR}` placeholders — never commit live keys. Print the fully
-resolved config with `mev-scout config`. Change chain, RPC URLs, or
-`output` in the TOML (or pass `-f` to pick a different file); those are
-not clap flags.
+via `${ENV_VAR}` placeholders — never commit live keys. Machine-local run
+configs (`mev-scout.avalanche-run.toml`, `hist.toml`) are gitignored for the
+same reason. Print the fully resolved config with `mev-scout config`. Change
+chain, RPC URLs, or `output` in the TOML (or pass `-f` to pick a different
+file); those are not clap flags.
 
 To avoid public / free-tier RPCs, run one small tip node for the chain you
 are scanning (one chain per box — the disk budgets do not stack) and point

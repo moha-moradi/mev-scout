@@ -6,26 +6,11 @@ use mev_scout_core::config::Config;
 use mev_scout_core::explorer::store::{ExplorerStore, MevOpRow};
 use mev_scout_core::explorer::MevKind;
 use mev_scout_core::types::ChainName;
-use mev_scout_core::utils::epoch_secs;
 
 // ── shared setup ────────────────────────────────────────────────────────
 
 fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerStore> {
     ExplorerStore::open(config.effective_explorer_db_path(&chain))
-}
-
-fn since_ts(since: Option<&str>) -> u64 {
-    let now = epoch_secs();
-    match since {
-        Some("all") | None => 0,
-        Some(other) => match report::parse_duration_secs(other) {
-            Some(secs) => now.saturating_sub(secs),
-            None => {
-                tracing::warn!("unknown --since '{other}', using all");
-                0
-            }
-        },
-    }
 }
 
 fn short_addr(s: &str) -> String {
