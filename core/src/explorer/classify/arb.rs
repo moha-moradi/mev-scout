@@ -373,7 +373,7 @@ pub(super) fn classify_keepers(input: &BlockInput) -> Vec<MevEvent> {
                 ts: input.ts,
                 tx_index: tx.tx_index,
                 tx_hash: tx.tx_hash,
-                kind: MevKind::Unknown,
+                kind: MevKind::Utility,
                 searcher: tx.from,
                 contract: tx.to,
                 pools: vec![],
@@ -432,7 +432,7 @@ pub(super) fn classify_claim_and_sell(
             ts: input.ts,
             tx_index: tx.tx_index,
             tx_hash: tx.tx_hash,
-            kind: MevKind::Unknown,
+            kind: MevKind::Utility,
             searcher: tx.from,
             contract: tx.to,
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
@@ -475,7 +475,7 @@ pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
                 ts: input.ts,
                 tx_index: tx.tx_index,
                 tx_hash: tx.tx_hash,
-                kind: MevKind::Unknown,
+                kind: MevKind::Utility,
                 searcher: tx.from,
                 contract: Some(uo.entry_point),
                 pools: vec![],
@@ -917,8 +917,8 @@ mod split_tests {
             signature(&orchestrated),
             vec![
                 (MevKind::ArbAtomic, 0),
-                (MevKind::Unknown, 1),
-                (MevKind::Unknown, 2),
+                (MevKind::Utility, 1),
+                (MevKind::Utility, 2),
             ]
         );
     }
@@ -972,12 +972,12 @@ mod split_tests {
 
         let keepers = classify_keepers(&input);
         assert_eq!(keepers.len(), 1);
-        assert_eq!(keepers[0].kind, MevKind::Unknown);
+        assert_eq!(keepers[0].kind, MevKind::Utility);
         assert_eq!(keepers[0].details["protocol"], "chainlink");
 
         let bundlers = classify_bundlers(&input);
         assert_eq!(bundlers.len(), 1);
-        assert_eq!(bundlers[0].kind, MevKind::Unknown);
+        assert_eq!(bundlers[0].kind, MevKind::Utility);
         assert_eq!(bundlers[0].details["protocol"], "erc4337");
     }
 }

@@ -13,8 +13,10 @@
 //! 5. Sandwich pass — same sender, same pool, opposite directions, with a
 //!    third-party swap between front-run and back-run (tx-index ordered).
 //! 6. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
-//!    same tx also closed an arb cycle. Leftover profitable patterns →
-//!    `unknown` (inferred).
+//!    same tx also closed an arb cycle.
+//! 7. `Utility` covers exact-fingerprint operational executions (keeper,
+//!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
+//!    exists; a future one gets its own kind, never this bucket.
 use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, B256, U256};
@@ -32,6 +34,8 @@ use crate::explorer::types::{
 
 mod arb;
 mod causal;
+mod claims;
+mod drops;
 mod gas;
 mod jit;
 mod legs;
@@ -194,10 +198,11 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         block_oracle_owned: &block_oracle_owned,
         block_reserve_owned: &block_reserve_owned,
     };
-    events.extend(classify_liquidations(input, &liq_ctx));
+    let mut drops = drops::DropSink::new(input.block);
+    events.extend(classify_liquidations(input, &liq_ctx, &mut drops));
 
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
-    events.extend(classify_skims(input));
+    events.extend(classify_skims(input, &mut drops));
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/bundler/upgrade)
     let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
@@ -205,7 +210,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     rejects.extend(arb_rejects);
 
     // ── 5b. JIT block-wide pairing ──────────────────────────────────────
-    let mut jit_events = classify_jit(input);
+    let mut jit_events = classify_jit(input, &mut drops);
     // jit_arb when a JIT tx also produced an arb in this block. The standalone
     // ArbAtomic is suppressed so USD/P&L never double-counts the same flow.
     //
@@ -236,7 +241,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     events.append(&mut jit_events);
 
     // ── 4b. Sandwich classification: front-run → victim → back-run ─────
-    let mut sandwiches = classify_sandwiches(input);
+    let mut sandwiches = classify_sandwiches(input, &mut drops);
 
     // ── 3c. Causal backrun / frontrun ─────────────────────────
     // Sandwich-consumed fronts/backs are excluded (kind priority): a sandwich
@@ -249,44 +254,40 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
             consumed.insert(b);
         }
     }
-    let mut frontruns = classify_frontruns(input, &consumed);
+    let mut frontruns = classify_frontruns(input, &consumed, &mut drops);
     let frontrun_consumed: HashSet<u64> = frontruns.iter().map(|e| e.tx_index).collect();
     let mut back_consumed = consumed;
     back_consumed.extend(frontrun_consumed);
-    let mut backruns = classify_backruns(input, &back_consumed);
-    // Kind precedence on the same claimed tx: Sandwich > Frontrun > Backrun >
-    // ArbAtomic > Unknown. A causal claim lifts a profitable closed-cycle tx
-    // out of the arb pass; the arb/unknown event on that tx is superseded so
-    // P&L is never double-counted (Frontrun/Backrun win per the precedence
-    // list). Sandwich legs claim their tx_indices first with `insert`: the arb
-    // pass runs before sandwiches exist, so a front-run (or back-run) tx that
-    // also closed a cycle still carries an ArbAtomic event that must go.
-    let mut superseder: HashMap<u64, MevKind> = HashMap::new();
+    let mut backruns = classify_backruns(input, &back_consumed, &mut drops);
+    // TxClaims is the authority for "one tx index, one P&L-bearing kind".
+    // Passes still over-emit; sandwich back-run txs and frontrun close txs
+    // are claimed even when the event itself is anchored on the other leg,
+    // so an ArbAtomic on that leg cannot survive. `consumed` above stays as
+    // an input prune. The Jit→JitArb upgrade above stays too: it is a kind
+    // change, not a second event.
+    let mut claims = claims::TxClaims::default();
+    for ev in events
+        .iter()
+        .chain(frontruns.iter())
+        .chain(backruns.iter())
+        .chain(sandwiches.iter())
+    {
+        claims.claim(ev.tx_index, ev.kind);
+    }
     for s in &sandwiches {
-        superseder.insert(s.tx_index, MevKind::Sandwich);
         if let Some(b) = s.details.get("backrun_tx_index").and_then(|v| v.as_u64()) {
-            superseder.insert(b, MevKind::Sandwich);
+            claims.claim(b, MevKind::Sandwich);
         }
     }
-    for e in frontruns.iter().chain(backruns.iter()) {
-        // Frontruns/backruns never collide with sandwich legs because
-        // `consumed` already excluded them at classify time.
-        superseder.entry(e.tx_index).or_insert(e.kind);
-        // Frontrun close tx may itself be a closed cycle; drop ArbAtomic /
-        // Unknown there so P&L is not double-counted (same rule as JitArb).
-        if e.kind == MevKind::Frontrun {
-            if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
-                superseder.entry(c).or_insert(MevKind::Frontrun);
-            }
+    for e in &frontruns {
+        if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
+            claims.claim(c, MevKind::Frontrun);
         }
     }
-    events.retain(|e| {
-        !(matches!(e.kind, MevKind::ArbAtomic | MevKind::Unknown)
-            && superseder.contains_key(&e.tx_index))
-    });
     events.append(&mut frontruns);
     events.append(&mut backruns);
     events.append(&mut sandwiches);
+    events.retain(|e| claims.is_claimed(e.tx_index) && claims.winner(e.tx_index) == Some(e.kind));
 
     events.sort_by(|a, b| {
         a.tx_index
@@ -294,6 +295,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
             .then_with(|| kind_precedence(a.kind).cmp(&kind_precedence(b.kind)))
     });
     normalize_confidence(&mut events);
+    rejects.extend(drops.into_rejects());
     ClassifyOutput { events, rejects }
 }
 
@@ -325,47 +327,25 @@ pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
     }
 }
 
-/// Kind priority for sort / supersede (lower = higher priority).
-/// Single source of truth for Sandwich > Frontrun > Backrun > ArbAtomic >
-/// JitArb > Jit > Liquidation > Skim > Unknown. The JitArb upgrade +
-/// Frontrun/Backrun retain paths must stay consistent with this order so
-/// P&L is never double-counted on one tx_index.
+/// Kind priority for [`claims::TxClaims`] (lower = higher priority).
 ///
-/// # A15 census (2026-10-26) — contested pairs measured, not assumed
-///
-/// The census (`core/tests/explorer_kind_census.rs`; result table in
-/// `docs/explorer_strategy_checklist.md` § "Kind collision census") found ZERO
-/// co-occurring kind pairs on the indexed corpus (`cache/oracle-avalanche.sqlite`,
-/// blocks 98572463..=98575973: 117 ops / 117 unique hashes across
-/// `arb_atomic`/`unknown`/`jit`), so no pair carries measured USD and the
-/// contested-pair decisions below are on-principle. B8 turns this function
-/// into the tx_index claims registry; until then the numbers stay untouched:
-///
-/// - `ArbAtomic`(3) vs `Liquidation`(6): an inferred cycle must NOT outrank an
-///   explicit `LiquidateBorrow` event — the liquidation label wins in B8's
-///   registry, with the cycle's P&L attributed to the liquidation event's
-///   `details`. Today's number orders the opposite; flipping it (and the
-///   golden re-baseline that follows) belongs to B8, not here.
-/// - `ArbAtomic`(3) vs `Jit`(5): an explicit Mint/Burn anchor beats an
-///   inferred cycle (genuine combined cases already upgrade to `JitArb`).
-/// - `ArbAtomic`(3) vs `Skim`(7): explicit pair outflow Transfers beat an
-///   inferred cycle.
-/// - `Liquidation` > `Jit` > `Skim`: explicit-anchored economic purpose of the
-///   tx first (liquidation P&L), fee/outflow annotations second.
-///
-/// Sandwich/Frontrun/Backrun over ArbAtomic/Unknown is not contested: the
-/// superseder `retain` in `classify_block` already enforces it structurally.
+/// Sandwich > Frontrun > Backrun > JitArb > Liquidation > Jit > Skim >
+/// ArbAtomic > Utility. Encodes the A15 census decisions: the indexed
+/// corpus had zero co-labeled `(block, tx_index)` pairs, so demoting
+/// `ArbAtomic` under the three explicitly anchored kinds is a no-op on that
+/// data and must not move goldens. A real collision keeps the explicit
+/// anchor (liquidation / mint-burn / pair outflow) and drops the inferred cycle.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
         MevKind::Sandwich => 0,
         MevKind::Frontrun => 1,
         MevKind::Backrun => 2,
-        MevKind::ArbAtomic => 3,
-        MevKind::JitArb => 4,
+        MevKind::JitArb => 3,
+        MevKind::Liquidation => 4,
         MevKind::Jit => 5,
-        MevKind::Liquidation => 6,
-        MevKind::Skim => 7,
-        MevKind::Unknown => 8,
+        MevKind::Skim => 6,
+        MevKind::ArbAtomic => 7,
+        MevKind::Utility => 8,
     }
 }
 
@@ -545,30 +525,16 @@ pub(crate) fn has_unresolved_tokens(s: &SwapFact) -> bool {
     decode::is_unresolved_token(s.token_in) || decode::is_unresolved_token(s.token_out)
 }
 
-/// Suppress `unknown` events whose swaps are entirely unresolved-direction
-/// or whose searcher candidate netted zero after netting — dedup guard for
-/// noisy blocks.
+/// Drop a `Utility` event that is not one of the three fingerprints and has
+/// no positive profit amount. The three families stay even at zero profit.
 pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
     events
         .into_iter()
         .filter(|e| {
-            if e.kind != MevKind::Unknown {
+            if e.kind != MevKind::Utility {
                 return true;
             }
-            // Keeper / bundler / claim-and-sell are Exact fingerprints even
-            // when profit_amount is zero/absent — keep them (P1.5 / P3.11/13).
-            if e.details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| {
-                    a.iter().any(|x| {
-                        matches!(
-                            x.as_str(),
-                            Some("keeper") | Some("bundler") | Some("claim_and_sell")
-                        )
-                    })
-                })
-            {
+            if crate::explorer::types::utility_subkind(&e.details).is_some() {
                 return true;
             }
             e.profit_amount.map(|a| !a.is_zero()).unwrap_or(false)
@@ -587,9 +553,70 @@ mod tests {
         swap_at_tick, swap_owned, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM,
         WNATIVE,
     };
-    use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
+    use crate::explorer::types::{
+        utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UserOpFact, V2PairOpFact,
+        V2PairOpKind,
+    };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
+
+    /// A future pass that dumps an untagged event into `Utility` fails here
+    /// instead of silently recreating the old mystery bucket.
+    #[test]
+    fn every_utility_event_has_exactly_one_subkind() {
+        let mut keeper_tx = tx(0, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink",
+            emitter: ATK,
+            fee: None,
+            fee_token: None,
+        }];
+        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 1,
+            log_index: 0,
+            entry_point: ATK,
+            sender: VICTIM,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(1u64),
+            success: true,
+        }];
+        let out = classify_block(&block(vec![keeper_tx, bundler_tx]));
+        let utilities: Vec<_> = out
+            .events
+            .iter()
+            .filter(|e| e.kind == MevKind::Utility)
+            .collect();
+        assert_eq!(utilities.len(), 2, "keeper and bundler must both emit");
+        for ev in utilities {
+            let n = ev
+                .details
+                .get("tags")
+                .and_then(|t| t.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|t| {
+                            matches!(
+                                t.as_str(),
+                                Some("keeper") | Some("bundler") | Some("claim_and_sell")
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            assert_eq!(n, 1, "exactly one utility family tag: {:?}", ev.details);
+            assert!(
+                matches!(
+                    utility_subkind(&ev.details),
+                    Some("keeper") | Some("bundler") | Some("claim_and_sell")
+                ),
+                "untagged Utility is the old mystery bucket: {:?}",
+                ev.details
+            );
+        }
+    }
 
     #[test]
     fn arb_cycle_single_flow_owner_is_exact() {
@@ -1053,7 +1080,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .all(|e| e.kind != MevKind::ArbAtomic && e.kind != MevKind::Unknown),
+                .all(|e| e.kind != MevKind::ArbAtomic && e.kind != MevKind::Utility),
             "expected no arb/unknown pollution, got {events:?}"
         );
     }
@@ -1101,7 +1128,7 @@ mod tests {
             "open-inventory transfer cycle must not promote, got {events:?}"
         );
         assert!(
-            events.iter().all(|e| e.kind != MevKind::Unknown),
+            events.iter().all(|e| e.kind != MevKind::Utility),
             "expected no unknown pollution, got {events:?}"
         );
     }
@@ -1992,7 +2019,7 @@ mod tests {
             ts: 1,
             tx_index: 0,
             tx_hash: B256::ZERO,
-            kind: MevKind::Unknown,
+            kind: MevKind::Utility,
             searcher: ATK,
             contract: None,
             pools: vec![],
@@ -2317,7 +2344,7 @@ mod tests {
         }
         for (tx, kinds) in by_tx {
             let has_sandwich = kinds.contains(&MevKind::Sandwich);
-            let has_arb = kinds.contains(&MevKind::ArbAtomic) || kinds.contains(&MevKind::Unknown);
+            let has_arb = kinds.contains(&MevKind::ArbAtomic) || kinds.contains(&MevKind::Utility);
             assert!(
                 !(has_sandwich && has_arb),
                 "tx {tx} carries both Sandwich and Arb/Unknown: {kinds:?}"
@@ -2465,13 +2492,7 @@ mod a20_reject_reasons {
     fn dump(out: &ClassifyOutput) -> Vec<(String, Option<u64>, Option<String>)> {
         out.rejects
             .iter()
-            .map(|r| {
-                (
-                    r.reject_reason.clone(),
-                    r.tx_index,
-                    r.detail.clone(),
-                )
-            })
+            .map(|r| (r.reject_reason.clone(), r.tx_index, r.detail.clone()))
             .collect()
     }
 
@@ -2702,11 +2723,7 @@ mod a20_reject_reasons {
 
         // Same shape, but the counterparty moved 9 txs earlier: beyond the
         // adjacency window, so the reject names the window, not the price.
-        let out = classify_block(&block(backrun_shape(
-            9,
-            (1000, 1100),
-            (100, 120),
-        )));
+        let out = classify_block(&block(backrun_shape(9, (1000, 1100), (100, 120))));
         assert!(
             has(
                 &out,
@@ -2788,12 +2805,7 @@ mod a20_reject_reasons {
         );
         let out = classify_block(&block(vec![f, v]));
         assert!(
-            has(
-                &out,
-                "cycle_not_closed",
-                Some(0),
-                "no_profitable_close_leg"
-            ),
+            has(&out, "cycle_not_closed", Some(0), "no_profitable_close_leg"),
             "a victim-anchored frontrun with no close must say so, got {:?}",
             dump(&out)
         );
@@ -2859,12 +2871,7 @@ mod a20_reject_reasons {
         );
         let out = classify_block(&block(vec![front, victim]));
         assert!(
-            has(
-                &out,
-                "cycle_not_closed",
-                Some(0),
-                "no_closing_back_run_leg"
-            ),
+            has(&out, "cycle_not_closed", Some(0), "no_closing_back_run_leg"),
             "an opened position that never reverses must be recorded, got {:?}",
             dump(&out)
         );
@@ -2914,12 +2921,7 @@ mod a20_reject_reasons {
         );
         let out = classify_block(&block_with_v2(vec![swap_like], &[POOL_A]));
         assert!(
-            has(
-                &out,
-                "skim_looks_like_swap",
-                Some(0),
-                "pool_also_receives"
-            ),
+            has(&out, "skim_looks_like_swap", Some(0), "pool_also_receives"),
             "an inbound+outbound pair must be recorded as swap-like, got {:?}",
             dump(&out)
         );
@@ -3028,9 +3030,12 @@ mod a20_reject_reasons {
                     continue;
                 }
                 let justified = trimmed.contains("not-a-drop:")
-                    || (i >= 3 && src.lines().skip(i.saturating_sub(3)).take(3).any(|p| {
-                        EMITS.iter().any(|emit| p.contains(emit))
-                    }));
+                    || (i >= 3
+                        && src
+                            .lines()
+                            .skip(i.saturating_sub(3))
+                            .take(3)
+                            .any(|p| EMITS.iter().any(|emit| p.contains(emit))));
                 if !justified {
                     violations.push(format!("{name}:{}", i + 1));
                 }

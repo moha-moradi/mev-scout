@@ -31,6 +31,9 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v4_excluded_from_net,
     migrate_v5_kind_skim,
     migrate_v6_rejected_natural_key,
+    migrate_v7_mev_ops_natural_key,
+    migrate_v8_utility_subkind,
+    migrate_v9_report_indexes,
 ];
 
 fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
@@ -99,6 +102,152 @@ fn migrate_v5_kind_skim(conn: &Connection) -> anyhow::Result<()> {
 
 fn migrate_v6_rejected_natural_key(conn: &Connection) -> anyhow::Result<()> {
     ExplorerStore::ensure_rejected_candidates_unique(conn)
+}
+
+/// `UNIQUE(canonical_id, tx_hash)` on `mev_ops`.
+///
+/// `explorer_canonical_id` embeds the kind (and the pool set or the
+/// liquidation/jit identity), and `tx_hash` is the transaction. That pair is
+/// one persisted event. Kind is part of the key, so a later reclassify that
+/// changes kind inserts a new row instead of overwriting the old one.
+///
+/// Existing duplicates are printed and the migration refuses. Silently
+/// keeping one row would pick a winner for P&L.
+fn migrate_v7_mev_ops_natural_key(conn: &Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "mev_ops")? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(canonical_id, ''), tx_hash, COUNT(*)
+           FROM mev_ops
+          GROUP BY canonical_id, tx_hash
+         HAVING COUNT(*) > 1",
+    )?;
+    let dups: Vec<(String, String, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if !dups.is_empty() {
+        for (id, hash, n) in &dups {
+            tracing::error!(
+                canonical_id = id.as_str(),
+                tx_hash = hash.as_str(),
+                count = n,
+                "mev_ops duplicate natural key"
+            );
+        }
+        anyhow::bail!(
+            "mev_ops has {} duplicate (canonical_id, tx_hash) group(s); \
+             refusing the unique index. Merge or delete them and reopen.",
+            dups.len()
+        );
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS mev_ops_natural
+           ON mev_ops(canonical_id, tx_hash)",
+    )?;
+    Ok(())
+}
+
+/// Rewrite `unknown` → `utility` and add `subkind`.
+///
+/// SQLite cannot alter a CHECK, so this rebuilds `mev_ops`. The unique index
+/// from V7 is dropped with the table and created again here. `subkind` comes
+/// from the tag string already stored in `details_json` (`keeper`, then
+/// `bundler`, then `claim_and_sell`).
+fn migrate_v8_utility_subkind(conn: &Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "mev_ops")? {
+        return Ok(());
+    }
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='mev_ops'",
+        [],
+        |r| r.get(0),
+    )?;
+    if sql.contains("'utility'") && sql.contains("subkind") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        BEGIN;
+        CREATE TABLE mev_ops_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          block_number INTEGER NOT NULL,
+          tx_index INTEGER,
+          tx_hash TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN
+            ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','utility')),
+          eoa TEXT NOT NULL,
+          contract TEXT,
+          confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
+          canonical_id TEXT,
+          profit_token TEXT,
+          profit_amount TEXT,
+          profit_usd REAL,
+          volume_usd REAL,
+          gas_cost_usd REAL,
+          flashloan_fee_usd REAL,
+          net_profit_usd REAL,
+          route_json TEXT,
+          victim_hashes TEXT,
+          details_json TEXT,
+          detector TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          excluded_from_net INTEGER NOT NULL DEFAULT 0,
+          subkind TEXT
+        );
+        INSERT INTO mev_ops_new(
+          id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net, subkind)
+        SELECT
+          id, block_number, tx_index, tx_hash, ts,
+          CASE WHEN kind = 'unknown' THEN 'utility' ELSE kind END,
+          eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net,
+          CASE
+            WHEN instr(COALESCE(details_json, ''), '\"keeper\"') > 0 THEN 'keeper'
+            WHEN instr(COALESCE(details_json, ''), '\"bundler\"') > 0 THEN 'bundler'
+            WHEN instr(COALESCE(details_json, ''), '\"claim_and_sell\"') > 0 THEN 'claim_and_sell'
+            ELSE NULL
+          END
+        FROM mev_ops;
+        DROP TABLE mev_ops;
+        ALTER TABLE mev_ops_new RENAME TO mev_ops;
+        CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_kind_ts ON mev_ops(kind, ts);
+        CREATE INDEX IF NOT EXISTS mev_ops_canonical ON mev_ops(canonical_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS mev_ops_natural
+          ON mev_ops(canonical_id, tx_hash);
+        COMMIT;
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v9_report_indexes(conn: &Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "mev_ops")? {
+        conn.execute_batch(
+            "
+            CREATE INDEX IF NOT EXISTS mev_ops_ts ON mev_ops(ts);
+            CREATE INDEX IF NOT EXISTS mev_ops_tx_hash ON mev_ops(tx_hash);
+            ",
+        )?;
+    }
+    if table_exists(conn, "opportunities")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS opportunities_run ON opportunities(run_id);",
+        )?;
+    }
+    if table_exists(conn, "prices")? {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS prices_token_hour ON prices(token, hour);")?;
+    }
+    Ok(())
 }
 
 /// V1 table set. `CREATE TABLE IF NOT EXISTS` so replaying it on a file that
@@ -670,6 +819,62 @@ mod tests {
                 present, 1,
                 "{column} must be migrated onto a legacy mev_ops"
             );
+        }
+        remove_db(&path);
+    }
+
+    #[test]
+    fn duplicate_mev_ops_natural_key_refuses_the_index() {
+        let path = legacy_db_path("mev-dups");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE blocks_classified(
+                   block INTEGER PRIMARY KEY,
+                   classified_at INTEGER NOT NULL,
+                   event_count INTEGER NOT NULL);
+                 CREATE TABLE mev_ops(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   block_number INTEGER NOT NULL,
+                   tx_index INTEGER,
+                   tx_hash TEXT NOT NULL,
+                   ts INTEGER NOT NULL,
+                   kind TEXT NOT NULL,
+                   eoa TEXT NOT NULL,
+                   contract TEXT,
+                   confidence TEXT NOT NULL,
+                   canonical_id TEXT,
+                   profit_token TEXT,
+                   profit_amount TEXT,
+                   profit_usd REAL,
+                   gas_cost_usd REAL,
+                   net_profit_usd REAL,
+                   route_json TEXT,
+                   victim_hashes TEXT,
+                   details_json TEXT,
+                   detector TEXT NOT NULL,
+                   created_at INTEGER NOT NULL);
+                 CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);
+                 INSERT INTO mev_ops(
+                   block_number, tx_hash, ts, kind, eoa, confidence, canonical_id, detector, created_at)
+                 VALUES
+                   (1, '0xabc', 1, 'arb_atomic', '0x1', 'exact', 'ArbAtomic|0x1', 'explorer', 1),
+                   (1, '0xabc', 1, 'arb_atomic', '0x1', 'exact', 'ArbAtomic|0x1', 'explorer', 2);",
+            )
+            .unwrap();
+        }
+        match ExplorerStore::open(&path) {
+            Ok(_) => panic!("duplicate natural key must refuse to open"),
+            Err(err) => assert!(
+                err.to_string().contains("duplicate"),
+                "migration must refuse duplicates, got {err}"
+            ),
         }
         remove_db(&path);
     }

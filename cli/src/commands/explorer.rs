@@ -17,14 +17,14 @@ fn explorer_store(config: &Config, chain: ChainName) -> anyhow::Result<ExplorerS
 fn since_ts(since: Option<&str>) -> u64 {
     let now = epoch_secs();
     match since {
-        Some("1d") => now - 86_400,
-        Some("7d") => now - 7 * 86_400,
-        Some("30d") => now - 30 * 86_400,
         Some("all") | None => 0,
-        Some(other) => {
-            tracing::warn!("unknown --since '{other}', using all");
-            0
-        }
+        Some(other) => match report::parse_duration_secs(other) {
+            Some(secs) => now.saturating_sub(secs),
+            None => {
+                tracing::warn!("unknown --since '{other}', using all");
+                0
+            }
+        },
     }
 }
 

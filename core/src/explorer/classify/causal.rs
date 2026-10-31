@@ -6,11 +6,46 @@ use alloy::primitives::{Address, U256};
 use crate::explorer::profit::{deficit_amount, is_dust_deficit, DeltaLedger, NATIVE_MARKER};
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
+use crate::explorer::reject::RejectReason;
+
+use super::drops::DropSink;
 use super::legs::{
-    opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit, SwapLeg,
-    CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS,
+    opposite_dir, pool_legs, price_better_by, price_worse_by, same_dir, tx_cycle_profit, CycleMiss,
+    SwapLeg, CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS,
 };
 use super::{BlockInput, TxInput};
+
+fn note_cycle_miss(drops: &mut DropSink, tx_index: u64, miss: CycleMiss) {
+    match miss {
+        CycleMiss::TooFewEdges => {
+            drops.bump(RejectReason::CycleNotClosed, "fewer_than_2_resolved_edges");
+        }
+        CycleMiss::NotClosed => {
+            drops.anchor(tx_index, RejectReason::CycleNotClosed, "no_closed_cycle");
+        }
+        CycleMiss::NotAttributable => {
+            drops.anchor(
+                tx_index,
+                RejectReason::MixedFlowOwner,
+                "cycle_flow_not_attributable",
+            );
+        }
+        CycleMiss::InventorySpend => {
+            drops.anchor(
+                tx_index,
+                RejectReason::MaterialDeficit,
+                "every_candidate_spends_pre_existing_inventory",
+            );
+        }
+        CycleMiss::NoResidual => {
+            drops.anchor(
+                tx_index,
+                RejectReason::NetZeroSearcher,
+                "no_candidate_holds_a_positive_residual",
+            );
+        }
+    }
+}
 
 /// logs-only causal backrun. A market-moving tx `A` (large notional,
 /// different sender) on pool `P` is followed, within the adjacency window, by a
@@ -19,7 +54,11 @@ use super::{BlockInput, TxInput};
 /// offered pre-move. Requiring pool overlap + direction-of-benefit + closed
 /// cycle; nothing else qualifies. Never Exact — this is a logs-only
 /// proxy, not REVM `profit(B|after)`.
-pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
+pub(super) fn classify_backruns(
+    input: &BlockInput,
+    consumed: &HashSet<u64>,
+    drops: &mut DropSink,
+) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
     let txs_by_index: HashMap<u64, &TxInput> = input.txs.iter().map(|t| (t.tx_index, t)).collect();
     let mut out: Vec<MevEvent> = Vec::new();
@@ -30,58 +69,101 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
     for (pool, legs) in by_pool {
         for (bi, (btx, bfrom, bleg)) in legs.iter().enumerate() {
             if consumed.contains(btx) || !claimed.insert((pool, *btx)) {
-                continue;
+                continue; // not-a-drop: sandwich-consumed or already claimed on this pool
             }
             let Some(b_tx) = txs_by_index.get(btx).copied() else {
-                continue;
+                continue; // not-a-drop: leg index has no tx row
             };
             if b_tx.from != *bfrom {
-                continue;
+                continue; // not-a-drop: leg sender is not the tx sender
             }
-            let Some(_) = tx_cycle_profit(input, b_tx) else {
-                continue; // must close a profitable cycle
+            let cycle = match tx_cycle_profit(input, b_tx) {
+                Ok(v) => v,
+                Err(miss) => {
+                    note_cycle_miss(drops, *btx, miss);
+                    continue; // not-a-drop: cycle gate already recorded the miss
+                }
             };
             // Nearest prior leg on the same pool in the opposite direction,
             // within the adjacency window, from a different sender.
             let mut move_: Option<(&(u64, Address, SwapLeg), &SwapLeg)> = None;
+            let mut named_miss = false;
             for (ai, (atx, afrom, aleg)) in legs.iter().enumerate().take(bi).rev() {
-                if *atx >= *btx || *btx - *atx > CAUSAL_WINDOW_TXS {
-                    continue;
+                if *atx >= *btx {
+                    continue; // not-a-drop: not a prior leg
+                }
+                if *btx - *atx > CAUSAL_WINDOW_TXS {
+                    if *afrom != *bfrom && opposite_dir(aleg, bleg) {
+                        drops.anchor(
+                            *atx,
+                            RejectReason::CausalWindowTooWide,
+                            "counterparty_leg_behind_causal_window",
+                        );
+                        named_miss = true;
+                    }
+                    continue; // not-a-drop: outside the adjacency window
                 }
                 if *afrom == *bfrom {
-                    continue;
+                    continue; // not-a-drop: same sender is not a counterparty
                 }
                 if !opposite_dir(aleg, bleg) {
-                    continue;
+                    continue; // not-a-drop: same direction is not a backrun counterparty
                 }
                 // Same-token size: victim received `token_out` which the
                 // backrun spends as `token_in` (opposite dirs). Comparing
                 // `amount_in` across directions mixes decimals/units.
                 if aleg.amount_out < bleg.amount_in {
-                    continue;
+                    continue; // not-a-drop: counterparty notional is smaller than the closer
                 }
                 // Pre-move price reference: nearest earlier same-direction leg.
                 let ref_ = legs[..ai]
                     .iter()
                     .rev()
                     .find(|(_, f, l)| *f != *afrom && same_dir(l, bleg));
-                if let Some((_, _, ref_leg)) = ref_ {
-                    if price_better_by(bleg, ref_leg, CAUSAL_PRICE_MIN_PCT) {
-                        move_ = Some((&legs[ai], ref_leg));
-                        break;
-                    }
+                let Some((ref_tx, _, ref_leg)) = ref_ else {
+                    continue; // not-a-drop: no pre-move same-direction reference
+                };
+                let ref_far = *btx - *ref_tx > CAUSAL_WINDOW_TXS;
+                if ref_far {
+                    drops.anchor(
+                        *atx,
+                        RejectReason::CausalWindowTooWide,
+                        "counterparty_leg_behind_causal_window",
+                    );
+                    named_miss = true;
                 }
+                if price_better_by(bleg, ref_leg, CAUSAL_PRICE_MIN_PCT) {
+                    // A far reference still counts for classification (the
+                    // window check above is observational). Tightening it
+                    // would move P&L, which is B8/calibration work, not A20.
+                    move_ = Some((&legs[ai], ref_leg));
+                    break;
+                }
+                if !ref_far {
+                    drops.anchor(
+                        *atx,
+                        RejectReason::CausalPriceMoveBelowFloor,
+                        "backrun_price_below_floor",
+                    );
+                    named_miss = true;
+                }
+                continue; // not-a-drop: this prior leg is not the move; keep scanning
             }
             let Some(a) = move_ else {
-                continue;
+                if !named_miss {
+                    drops.anchor(
+                        *btx,
+                        RejectReason::NoCounterpartyLeg,
+                        "no_prior_opposite_leg",
+                    );
+                }
+                continue; // not-a-drop: no qualifying counterparty; reason already recorded
             };
             let atx = a.0 .0;
             let afrom = a.0 .1;
             let aleg = &a.0 .2;
             let a_hash = a.0 .2.tx_hash;
-            let Some((_searcher, btoken, bamount)) = tx_cycle_profit(input, b_tx) else {
-                continue;
-            };
+            let (_searcher, btoken, bamount) = cycle;
             out.push(MevEvent {
                 block: input.block,
                 ts: input.ts,
@@ -146,7 +228,11 @@ pub(super) fn classify_backruns(input: &BlockInput, consumed: &HashSet<u64>) -> 
 /// sender then closes the position with a profitable opposite leg on `P`
 /// (PROFIT_VERIFIED). Sandwich-consumed front/back txs are excluded by
 /// `consumed` ( / kind priority).
-pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) -> Vec<MevEvent> {
+pub(super) fn classify_frontruns(
+    input: &BlockInput,
+    consumed: &HashSet<u64>,
+    drops: &mut DropSink,
+) -> Vec<MevEvent> {
     let by_pool = pool_legs(input);
     // Same-pool close after a third-party victim is owned by the sandwich
     // pass (front/back anchors land in `consumed`). Cross-pool / multi-hop
@@ -157,55 +243,76 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
     for (pool, legs) in by_pool {
         for (fi, (ftx, ffrom, fleg)) in legs.iter().enumerate() {
             if consumed.contains(ftx) {
-                continue;
+                continue; // not-a-drop: sandwich already claimed this front
             }
             // Victim: next third-party same-direction swap, adjacent window.
             let mut victim_: Option<(u64, Address, &SwapLeg)> = None;
+            let mut saw_third_party = false;
             for (vt, vfrom, vleg) in legs.iter().skip(fi + 1) {
-                if *vt - *ftx == 0 || *vt - *ftx > CAUSAL_WINDOW_TXS {
-                    continue;
+                if *vt == *ftx || *vt - *ftx > CAUSAL_WINDOW_TXS {
+                    continue; // not-a-drop: outside the adjacency window
                 }
                 if *vfrom == *ffrom {
-                    continue;
+                    continue; // not-a-drop: same sender is not a victim
                 }
                 if !same_dir(vleg, fleg) {
-                    continue;
+                    continue; // not-a-drop: opposite direction is not a frontrun victim
                 }
+                saw_third_party = true;
                 if price_worse_by(vleg, fleg, CAUSAL_PRICE_MIN_PCT) {
                     victim_ = Some((*vt, *vfrom, vleg));
                     break;
                 }
             }
             let Some((vtx, vfrom, vleg)) = victim_ else {
-                continue;
+                if !saw_third_party {
+                    drops.bump(
+                        RejectReason::VictimSetEmpty,
+                        "no_third_party_same_direction_leg",
+                    );
+                }
+                continue; // not-a-drop: no degraded victim; empty set already aggregated
             };
             if claimed.contains(&(pool, *ftx, vtx)) {
-                continue;
+                continue; // not-a-drop: this front/victim pair is already claimed
             }
             // Close: earliest later tx from the same sender inside the window
             // whose cross-tx ledger (front..=close) is net-positive on the
             // front's token_in with only in-walk dust deficits.
+            // The window is borrowed once; each close candidate takes a prefix
+            // instead of cloning every transfer in front..=close.
             let anchor = fleg.token_in;
+            let window_hi = ftx.saturating_add(CAUSAL_WINDOW_TXS);
+            let window: Vec<&TxInput> = input
+                .txs
+                .iter()
+                .filter(|tx| tx.tx_index >= *ftx && tx.tx_index <= window_hi)
+                .collect();
             let mut close_idx: Option<u64> = None;
             let mut profit = U256::ZERO;
             let mut close_hash = fleg.tx_hash;
             for tx in &input.txs {
                 if tx.tx_index < vtx || tx.from != *ffrom {
-                    continue;
+                    continue; // not-a-drop: not a later tx from the mover
                 }
                 if tx.tx_index.saturating_sub(*ftx) > CAUSAL_WINDOW_TXS {
                     break;
                 }
                 if consumed.contains(&tx.tx_index) {
-                    continue;
+                    continue; // not-a-drop: sandwich already claimed the close tx
                 }
-                let Some((net, ok)) =
-                    frontrun_cross_tx_profit(input, *ffrom, *ftx, tx.tx_index, anchor)
-                else {
-                    continue;
+                let Some((net, ok)) = frontrun_cross_tx_profit(
+                    &window,
+                    input.wrapped_native,
+                    *ffrom,
+                    *ftx,
+                    tx.tx_index,
+                    anchor,
+                ) else {
+                    continue; // not-a-drop: this tx does not close the anchor token
                 };
                 if !ok || net.is_zero() {
-                    continue;
+                    continue; // not-a-drop: close ledger is dusty or zero
                 }
                 close_idx = Some(tx.tx_index);
                 profit = net;
@@ -213,10 +320,15 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
                 break;
             }
             let Some(ctx) = close_idx else {
-                continue;
+                drops.anchor(
+                    *ftx,
+                    RejectReason::CycleNotClosed,
+                    "no_profitable_close_leg",
+                );
+                continue; // not-a-drop: victim-anchored miss already recorded
             };
             if !claimed.insert((pool, *ftx, vtx)) {
-                continue;
+                continue; // not-a-drop: lost the claim race for this pair
             }
             // Charge gas for every tx in the front..=close window, matching the
             // sandwich pass (both legs). The front-run P&L sums transfers
@@ -288,31 +400,31 @@ pub(super) fn classify_frontruns(input: &BlockInput, consumed: &HashSet<u64>) ->
 
 /// Cross-tx ledger for a frontrun close: sum `searcher`'s transfers from
 /// `front_tx` through `close_tx`. Returns `(anchor_net, deficits_are_dust)`.
+///
+/// `window` is the borrowed `[front, front+CAUSAL_WINDOW]` txs, built once
+/// per front. Facts are borrowed into the ledger; nothing is cloned.
 fn frontrun_cross_tx_profit(
-    input: &BlockInput,
+    window: &[&TxInput],
+    wrapped_native: Address,
     searcher: Address,
     front_tx: u64,
     close_tx: u64,
     anchor: Address,
 ) -> Option<(U256, bool)> {
-    let mut transfers = Vec::new();
     let mut hop_max: HashMap<Address, U256> = HashMap::new();
     let mut walk_tokens: HashSet<Address> = HashSet::new();
     walk_tokens.insert(anchor);
     let mut native_value = U256::ZERO;
-    for tx in &input.txs {
+    for tx in window {
         if tx.tx_index < front_tx || tx.tx_index > close_tx {
-            continue;
+            continue; // not-a-drop: outside the front..=close window
         }
         if tx.from == searcher {
             native_value = native_value.saturating_add(tx.value);
         }
-        for t in &tx.transfers {
-            transfers.push(t.clone());
-        }
         for s in &tx.swaps {
             if s.token_in.is_zero() || s.token_out.is_zero() {
-                continue;
+                continue; // not-a-drop: zero address is not a walk token
             }
             walk_tokens.insert(s.token_in);
             walk_tokens.insert(s.token_out);
@@ -324,19 +436,25 @@ fn frontrun_cross_tx_profit(
             }
         }
     }
-    let ledger =
-        DeltaLedger::from_transfers(&transfers, input.wrapped_native, (searcher, native_value));
+    let ledger = DeltaLedger::from_transfer_iter(
+        window
+            .iter()
+            .filter(|tx| tx.tx_index >= front_tx && tx.tx_index <= close_tx)
+            .flat_map(|tx| tx.transfers.iter()),
+        wrapped_native,
+        (searcher, native_value),
+    );
     let net = ledger.net(searcher, anchor);
     if net.is_zero() {
         return None;
     }
     for t in ledger.touched_tokens(searcher) {
         if t == NATIVE_MARKER {
-            continue;
+            continue; // not-a-drop: native marker is not an inventory token
         }
         let def = deficit_amount(&ledger, searcher, t);
         if def.is_zero() {
-            continue;
+            continue; // not-a-drop: token has no deficit
         }
         if !walk_tokens.contains(&t) {
             return Some((net, false));

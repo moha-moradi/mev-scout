@@ -66,6 +66,16 @@ impl DeltaLedger {
         wrapped_native: Address,
         native_value: (Address, U256), // (spender_of_value, value)
     ) -> DeltaLedger {
+        Self::from_transfer_iter(transfers.iter(), wrapped_native, native_value)
+    }
+
+    /// Same as [`Self::from_transfers`] over borrowed facts, so a caller that
+    /// already holds the window does not clone each `TransferFact`.
+    pub fn from_transfer_iter<'a>(
+        transfers: impl IntoIterator<Item = &'a TransferFact>,
+        wrapped_native: Address,
+        native_value: (Address, U256),
+    ) -> DeltaLedger {
         let mut ledger = DeltaLedger::default();
         let (spender, v) = native_value;
         let has_native_flow = !v.is_zero();

@@ -691,7 +691,7 @@ fn p1_5_keeper_execution() {
     }];
     let events = classify_block(&block(vec![t]));
     assert!(has_tag(&events, "keeper"));
-    let ev = event_of(&events, MevKind::Unknown);
+    let ev = event_of(&events, MevKind::Utility);
     assert_eq!(ev.details["protocol"], serde_json::json!("gelato"));
     assert_eq!(pnl_basis(ev), Some("F"));
     assert_eq!(ev.profit_amount, Some(U256::from(42)));
@@ -920,7 +920,7 @@ fn p3_11_erc4337_bundler() {
     t.user_ops = vec![op(true)];
     let events = classify_block(&block(vec![t]));
     assert!(has_tag(&events, "bundler"));
-    let ev = event_of(&events, MevKind::Unknown);
+    let ev = event_of(&events, MevKind::Utility);
     // A19: the bundler books its own gas cost as profit — not a ledger residual.
     assert_eq!(pnl_basis(ev), Some("gas_cost_as_profit"));
     assert_eq!(ev.profit_amount, Some(U256::from(12_000)));

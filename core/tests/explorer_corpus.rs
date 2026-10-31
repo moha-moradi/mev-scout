@@ -532,7 +532,7 @@ const CORPUS: &[CorpusCase] = &[
         chain: ChainName::Avalanche,
         from_block: 97_505_001,
         to_block: 97_505_001,
-        kind: "unknown",
+        kind: "utility",
         min_ops: 1,
         searcher: Some(address!("4337003fcd2f56de3977ccb806383e9161628d0e")),
         profit_usd_min: None,
@@ -547,7 +547,7 @@ const CORPUS: &[CorpusCase] = &[
         chain: ChainName::Avalanche,
         from_block: 97_781_738,
         to_block: 97_781_738,
-        kind: "unknown",
+        kind: "utility",
         min_ops: 1,
         searcher: Some(address!("04d9634df20aa66b23f114d37c45fa6c6ab76d56")),
         profit_usd_min: None,
@@ -797,7 +797,7 @@ const ALL_KINDS: &[&str] = &[
     "jit",
     "jit_arb",
     "skim",
-    "unknown",
+    "utility",
 ];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
@@ -1004,7 +1004,7 @@ fn every_classifier_kind_is_reported_by_a_record_run() {
         "jit",
         "jit_arb",
         "skim",
-        "unknown",
+        "utility",
     ] {
         assert!(
             ALL_KINDS.contains(&kind),
@@ -1023,7 +1023,7 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let kind = match t.label {
             "arb_atomic" | "long_tail" | "flash_arb" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
-            "bundler" | "claim_and_sell" => "unknown",
+            "bundler" | "claim_and_sell" => "utility",
             other => other,
         };
         let hit = CORPUS.iter().any(|c| {

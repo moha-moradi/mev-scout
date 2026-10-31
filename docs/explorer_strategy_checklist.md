@@ -246,13 +246,34 @@ census DB cache/avalanche-mev-scout.sqlite: not an explorer DB (no mev_ops table
 
 **The census is empty — and that is the valuable result.** All 117 `mev_ops` rows in the only explorer DB present sit on unique `(block_number, tx_index)`s (117 unique tx hashes; no tx hosts two rows at all), so no unordered kind pair co-occurs anywhere in the corpus and no precedence choice has measured USD at stake. The co-labeling the A15 brief verified as *unrestrained* in the classifier (the superseder `retain` only drops `ArbAtomic`/`Unknown`, so `Liquidation`/`Jit`/`Skim` co-labeling with a closed-cycle liquidator tx would emit both kinds) simply does not occur in this window. Consequence: **B8 is a no-op on today's corpus**, and the precedence question is answered on principle below. The census is cheap to re-run (env gate + `--ignored`), and the permanent guard `no_tx_index_carries_two_pnl_kinds` passes today; it is EXPECTED to go red on a pre-B8 DB the moment a real co-label lands — that red is B8's fitness function, not breakage (the test's doc comment says so).
 
-### Decided order per contested pair (on-principle — census empty; numbers unchanged until B8)
+## Classify reject reasons (A20)
+
+Silent `continue` in the causal, sandwich, skim, JIT, and liquidation passes now emits a `RejectedCandidate`. An anchored row (`tx_index` set) is a candidate that already had a victim, a matched pair, or a cycle of at least two resolved edges. Everything else is one aggregate row per block per `(reason, detail)` with `tx_index` NULL. Counts on a real window need a re-index; the emitters are pinned by `explorer::classify::a20_reject_reasons`.
+
+| reason | when | anchor |
+|---|---|---|
+| `cycle_not_closed` | cycle did not close, or the frontrun/sandwich never found its closing leg | tx, or aggregate when fewer than 2 edges |
+| `mixed_flow_owner` | closed cycle funded by more than one external owner | tx |
+| `material_deficit` | every searcher candidate spends pre-existing inventory | tx |
+| `net_zero_searcher` | closed attributable cycle, no positive residual | tx |
+| `no_counterparty_leg` | profitable cycle, no prior opposite leg | tx |
+| `causal_window_too_wide` | counterparty or its pre-move reference is outside `CAUSAL_WINDOW_TXS` | counterparty tx |
+| `causal_price_move_below_floor` | in-window move below `CAUSAL_PRICE_MIN_PCT` | counterparty tx |
+| `victim_set_empty` | no third-party same-direction victim | aggregate (frontrun) or front tx (sandwich round-trip) |
+| `skim_pool_not_v2_like` | pair-op outflow whose pool is not in the v2-like registry | aggregate |
+| `skim_looks_like_swap` | registry pool also receives tokens | tx |
+| `jit_pairing_unmatched` | Mint without a later Burn, or no in-range validating swap | mint tx |
+| `liquidation_not_reconciled` | seized collateral not covered by transfers; the liquidation event still stands | tx |
+
+`state_stale` stays in the enum as a scanner placeholder. Classify does not emit it.
+
+### Decided order per contested pair (on-principle — census empty; encoded by B8)
 
 No `kind_precedence` number changed in A15: an empty census leaves no measured USD to justify a re-baseline outside B8. The decisions B8 must encode (also cited in the `kind_precedence` doc comment):
 
 | pair (loser first) | decision | rationale |
 |---|---|---|
-| Liquidation vs ArbAtomic | **Liquidation wins** | anchored on an explicit `LiquidateBorrow` event; an inferred cycle must not delete the liquidation label. Today's numbers order the opposite (`ArbAtomic` 3 < `Liquidation` 6) — the flip + golden re-baseline is B8's job. Every `P0.*`/`polygon.*`/`bsc.*` row in this checklist is a Liquidation case. |
+| Liquidation vs ArbAtomic | **Liquidation wins** | anchored on an explicit `LiquidateBorrow` event; an inferred cycle must not delete the liquidation label. `kind_precedence` now ranks Liquidation above ArbAtomic (`claims::TxClaims`). Goldens did not move: the census was empty. Every `P0.*`/`polygon.*`/`bsc.*` row in this checklist is a Liquidation case. |
 | Jit vs ArbAtomic | **Jit wins** | anchored on explicit Mint/Burn facts; genuine combined arb+JIT cases already upgrade to `JitArb`, so a bare Jit-vs-Arb collision would be a mislabel. |
 | Skim vs ArbAtomic | **Skim wins** | anchored on explicit pair outflow `Transfer`s (skim is defined by the absence of Swap/Mint/Burn/Sync on the pair). |
 | Liquidation vs Jit vs Skim | **Liquidation > Jit > Skim** | explicit anchors, economic purpose of the tx first (liquidation P&L), fee/outflow annotations second. |

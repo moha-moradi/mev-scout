@@ -26,8 +26,9 @@ pub enum MevKind {
     JitArb,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
-    /// Profitable pattern not matching any rule (incl. probable CEX-DEX bots).
-    Unknown,
+    /// Exact-fingerprint operational execution: keeper, airdrop claim-and-sell,
+    /// or ERC-4337 bundler. Not a residual bucket. The family is `subkind`.
+    Utility,
 }
 
 impl MevKind {
@@ -41,7 +42,7 @@ impl MevKind {
             MevKind::Jit => "jit",
             MevKind::JitArb => "jit_arb",
             MevKind::Skim => "skim",
-            MevKind::Unknown => "unknown",
+            MevKind::Utility => "utility",
         }
     }
 
@@ -55,10 +56,38 @@ impl MevKind {
             "jit" => Some(MevKind::Jit),
             "jit_arb" => Some(MevKind::JitArb),
             "skim" => Some(MevKind::Skim),
-            "unknown" => Some(MevKind::Unknown),
+            // `unknown` is the pre-B11 label. Rows are rewritten to `utility`
+            // on open; the alias keeps old CLI flags and corpus strings valid.
+            "utility" | "unknown" => Some(MevKind::Utility),
             _ => None,
         }
     }
+}
+
+/// The one utility family on a classified event, from `details.tags`.
+///
+/// `Some` only when exactly one of `keeper`, `bundler`, `claim_and_sell` is
+/// present. Two different families is not a subkind — that would recreate the
+/// old mystery bucket.
+pub fn utility_subkind(details: &serde_json::Value) -> Option<&'static str> {
+    let tags = details.get("tags")?.as_array()?;
+    let mut found: Option<&'static str> = None;
+    for tag in tags {
+        let Some(name) = tag.as_str() else {
+            continue;
+        };
+        let sub = match name {
+            "keeper" => "keeper",
+            "bundler" => "bundler",
+            "claim_and_sell" => "claim_and_sell",
+            _ => continue,
+        };
+        match found {
+            Some(prev) if prev != sub => return None,
+            _ => found = Some(sub),
+        }
+    }
+    found
 }
 
 impl std::fmt::Display for MevKind {

@@ -3,20 +3,41 @@ use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
+use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
+use super::drops::DropSink;
 use super::BlockInput;
 
 /// Realized UniV2 `skim` capture: registry V2-like pair outbound Transfers
 /// that are not accompanied by a same-tx Swap, Sync, Mint, or Burn on that pair.
-pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
-    if input.v2_like_pools.is_empty() {
-        return Vec::new();
-    }
+pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     let mut events = Vec::new();
     for tx in &input.txs {
         if !tx.success {
-            continue;
+            continue; // not-a-drop: a failed tx did not skim
+        }
+        // Pair-op evidence (Sync/Mint/Burn/Swap) names a V2 venue even when
+        // the pool is absent from the registry. That miss is why a chain can
+        // show zero skims: the outflow existed and the registry did not.
+        let venue: HashSet<Address> = tx.v2_pair_ops.iter().map(|op| op.pool).collect();
+        let mut reported_miss = false;
+        for t in &tx.transfers {
+            if venue.contains(&t.from)
+                && !t.from.is_zero()
+                && !t.amount.is_zero()
+                && !input.v2_like_pools.contains(&t.from)
+                && !reported_miss
+            {
+                drops.bump(
+                    RejectReason::SkimPoolNotV2Like,
+                    "venue_outflow_not_in_v2_like_registry",
+                );
+                reported_miss = true;
+            }
+        }
+        if input.v2_like_pools.is_empty() {
+            continue; // not-a-drop: no registry pools to score as skim
         }
         let mut excluded: HashSet<Address> = HashSet::new();
         for s in &tx.swaps {
@@ -35,16 +56,16 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
         let mut inbound_pools: HashSet<Address> = HashSet::new();
         for t in &tx.transfers {
             if t.amount.is_zero() {
-                continue;
+                continue; // not-a-drop: a zero transfer is not a skim
             }
             if input.v2_like_pools.contains(&t.to) {
                 inbound_pools.insert(t.to);
             }
             if t.from.is_zero() {
-                continue;
+                continue; // not-a-drop: mint-from-zero is not a pair outflow
             }
             if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
-                continue;
+                continue; // not-a-drop: not a registry pair, or the pair already swapped
             }
             let entry = by_pool.entry(t.from).or_default();
             let slot = entry.entry(t.token).or_insert((U256::ZERO, HashSet::new()));
@@ -56,7 +77,12 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
 
         for (pool, tokens) in by_pool {
             if inbound_pools.contains(&pool) {
-                continue;
+                drops.anchor(
+                    tx.tx_index,
+                    RejectReason::SkimLooksLikeSwap,
+                    "pool_also_receives",
+                );
+                continue; // not-a-drop: swap-like pair already recorded
             }
             let mut profit_tokens: Vec<(Address, U256)> = tokens
                 .iter()
@@ -64,7 +90,7 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 .map(|(tok, (amt, _))| (*tok, *amt))
                 .collect();
             if profit_tokens.is_empty() {
-                continue;
+                continue; // not-a-drop: every token slot netted to zero
             }
             profit_tokens.sort_by_key(|a| a.0);
             // Primary display token: prefer profit-policy priority, else largest

@@ -44,6 +44,9 @@ pub struct PersistedOp {
     pub details_json: Option<String>,
     pub created_at: i64,
     pub excluded_from_net: i64,
+    /// `keeper` | `bundler` | `claim_and_sell` when this row is `Utility`
+    /// (or carries exactly one of those tags). Absent otherwise.
+    pub subkind: Option<&'static str>,
 }
 
 /// Apply every persist-time business rule for one event and return the row to
@@ -292,6 +295,7 @@ pub fn annotate_event(
         details_json: Some(details_json),
         created_at,
         excluded_from_net,
+        subkind: crate::explorer::types::utility_subkind(&ev.details),
     }
 }
 

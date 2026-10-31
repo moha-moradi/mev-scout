@@ -21,8 +21,10 @@ pub enum RejectReason {
     GasDominates,
     /// Dropped by the per-tx top-N cap (normal competition pressure).
     MaxCandidates,
-    /// Scanner never ran over the block (taxonomy placeholder; not emitted by
-    /// the runner).
+    /// Scanner taxonomy placeholder. Classify does not emit it, and neither
+    /// does the explorer runner: a block the scanner never visited is the
+    /// absence of a row, not a reject. The variant stays so a report that
+    /// iterates this enum can show an explicit zero instead of a missing label.
     StateStale,
     /// Explorer classify: closed swap-edge cycle failed (≥2 resolved edges).
     UnresolvedCycle,
@@ -39,6 +41,27 @@ pub enum RejectReason {
     BuilderTip,
     /// Anything else (M-detail in `detail`).
     Other,
+    /// Causal/cycle gate: the swap-edge walk did not close, or closed with
+    /// fewer than two resolved edges (the latter is aggregated, not anchored).
+    CycleNotClosed,
+    /// Causal backrun: a closed cycle had no prior opposite-direction leg.
+    NoCounterpartyLeg,
+    /// Causal gate: the counterparty (or its pre-move reference) sits outside
+    /// the adjacency window (`CAUSAL_WINDOW_TXS`).
+    CausalWindowTooWide,
+    /// Causal gate: an in-window counterparty failed the price-advantage floor.
+    CausalPriceMoveBelowFloor,
+    /// Frontrun/sandwich: no third-party same-direction victim.
+    VictimSetEmpty,
+    /// Skim: a pair outflow has V2 venue evidence but the pool is not in the
+    /// v2-like registry. Aggregated per block.
+    SkimPoolNotV2Like,
+    /// Skim: a registry pool both pays out and receives in the same tx.
+    SkimLooksLikeSwap,
+    /// JIT: a Mint has no later Burn, or the pair has no in-range validating swap.
+    JitPairingUnmatched,
+    /// Liquidation event stands, but seized collateral is not covered by transfers.
+    LiquidationNotReconciled,
 }
 
 impl RejectReason {
@@ -58,12 +81,27 @@ impl RejectReason {
             RejectReason::OpenInventory => "open_inventory",
             RejectReason::BuilderTip => "builder_tip",
             RejectReason::Other => "other",
+            RejectReason::CycleNotClosed => "cycle_not_closed",
+            RejectReason::NoCounterpartyLeg => "no_counterparty_leg",
+            RejectReason::CausalWindowTooWide => "causal_window_too_wide",
+            RejectReason::CausalPriceMoveBelowFloor => "causal_price_move_below_floor",
+            RejectReason::VictimSetEmpty => "victim_set_empty",
+            RejectReason::SkimPoolNotV2Like => "skim_pool_not_v2_like",
+            RejectReason::SkimLooksLikeSwap => "skim_looks_like_swap",
+            RejectReason::JitPairingUnmatched => "jit_pairing_unmatched",
+            RejectReason::LiquidationNotReconciled => "liquidation_not_reconciled",
         }
     }
 }
 
-/// One rejected scanner candidate (schema minus run_id/chain, which the
-/// persistence layer stamps at insert time).
+/// One rejected scanner or classify candidate (schema minus run_id/chain,
+/// which the persistence layer stamps at insert time).
+///
+/// Volume rule (A20): a classify pass emits an anchored row
+/// (`tx_index = Some`) only for a candidate that already had a plausible
+/// anchor — a victim set, a matched mint/burn or opposite leg, or a swap
+/// cycle of at least two resolved edges. Every other miss is aggregated to
+/// one row per block per `(reject_reason, detail)` with `tx_index = None`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedCandidate {
     pub block_number: u64,

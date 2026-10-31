@@ -611,7 +611,8 @@ fn persist_jit_positions(
     txs: &[TxInput],
 ) -> anyhow::Result<()> {
     let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
-    let tx = store.connection().unchecked_transaction()?;
+    let mut opens = Vec::new();
+    let mut closes: Vec<(Address, Address, i32, i32)> = Vec::new();
     for t in txs {
         let burned: std::collections::HashSet<_> =
             t.jit.iter().filter(|j| !j.is_mint).map(key).collect();
@@ -619,18 +620,28 @@ fn persist_jit_positions(
             if burned.contains(&key(j)) {
                 continue; // same-block JIT, not an open position
             }
-            store.record_jit_open(&[OpenPosition {
+            opens.push(OpenPosition {
                 pool: j.pool,
                 owner: j.owner,
                 tick_lower: j.tick_lower,
                 tick_upper: j.tick_upper,
                 opened_block: block_number,
                 liquidity: j.liquidity,
-            }])?;
+            });
         }
         for j in t.jit.iter().filter(|j| !j.is_mint) {
-            store.close_jit_position(j.pool, j.owner, j.tick_lower, j.tick_upper)?;
+            closes.push((j.pool, j.owner, j.tick_lower, j.tick_upper));
         }
+    }
+    if opens.is_empty() && closes.is_empty() {
+        return Ok(());
+    }
+    let tx = store.connection().unchecked_transaction()?;
+    if !opens.is_empty() {
+        store.record_jit_open(&opens)?;
+    }
+    for (pool, owner, lo, hi) in closes {
+        store.close_jit_position(pool, owner, lo, hi)?;
     }
     store.prune_jit_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
     tx.commit()?;
@@ -819,14 +830,14 @@ async fn fetch_savax_exchange_rate(
     }
 }
 
-fn known_token_cache(chain_id: u64) -> crate::cache::TokenCache {
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, crate::cache::TokenCache>>> = OnceLock::new();
+fn known_token_cache(chain_id: u64) -> std::sync::Arc<crate::cache::TokenCache> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<crate::cache::TokenCache>>>> = OnceLock::new();
     let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .entry(chain_id)
-        .or_insert_with(|| crate::cache::TokenCache::warm(chain_id))
+        .or_insert_with(|| Arc::new(crate::cache::TokenCache::warm(chain_id)))
         .clone()
 }
 
@@ -851,15 +862,15 @@ pub async fn warm_prices_for_tokens(
     };
 
     let hour = pricing::hour_bucket(ts);
-    // Priced tokens (store cache first, then llama), keyed by address.
+    let quotes = store.prices_at(tokens, hour)?;
     let mut priced: Vec<(Address, f64)> = Vec::new();
     let mut missing: Vec<Address> = Vec::new();
     for t in tokens {
         if t.is_zero() || *t == crate::explorer::profit::NATIVE_MARKER {
             continue;
         }
-        if let Some((usd, _)) = store.price_at(*t, hour)? {
-            priced.push((*t, usd));
+        if let Some((usd, _)) = quotes.get(t) {
+            priced.push((*t, *usd));
         } else {
             missing.push(*t);
         }
@@ -912,7 +923,8 @@ pub async fn warm_prices_for_tokens(
         }
     }
     if !need_onchain.is_empty() {
-        let usd_of = |a: &Address| priced.iter().find(|(p, _)| p == a).map(|(_, u)| *u);
+        let priced_usd: HashMap<Address, f64> = priced.iter().copied().collect();
+        let usd_of = |a: &Address| priced_usd.get(a).copied();
         match crate::rpc::multicall::resolve_token_decimals(rpc, &need_onchain, 4).await {
             Ok(decs) => {
                 for addr in need_onchain {

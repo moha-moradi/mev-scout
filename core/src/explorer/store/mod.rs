@@ -2,7 +2,9 @@
 //!
 //! Separate database file from the scanner cache (`explorer_{chain}.sqlite`)
 //! so live index writes never contend with replay-path reads. WAL mode,
-//! single-writer, batched transactions. Schema is Postgres-portable.
+//! single-writer. `rusqlite::Connection` is `Send` but not `Sync`, so the
+//! store stays on the sequential index loop instead of being raced across
+//! `spawn_blocking` tasks. A pool would not help a single writer.
 //!
 //! Layers:
 //! - forensic facts: `blocks`, `txs`, `transfers`, `swaps`, `mev_ops`
@@ -19,6 +21,7 @@ mod jit_positions;
 mod labels;
 mod pnl;
 mod query;
+mod reprice;
 mod schema;
 mod sync;
 
@@ -68,6 +71,9 @@ pub struct MevOpRow {
     pub details_json: Option<String>,
     pub detector: String,
     pub created_at: u64,
+    /// `keeper` | `bundler` | `claim_and_sell` for a utility op. JSON reports
+    /// carry it; `report_by_kind` still groups on `kind` alone.
+    pub subkind: Option<String>,
 }
 
 impl MevOpRow {
@@ -327,6 +333,7 @@ pub(super) fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow
         details_json: r.get(19)?,
         detector: r.get(20)?,
         created_at: r.get::<_, i64>(21)? as u64,
+        subkind: r.get(22)?,
     })
 }
 
@@ -373,11 +380,16 @@ mod tests {
     }
 
     fn sample_event(block: u64) -> MevEvent {
+        // The natural key is `(canonical_id, tx_hash)`. Fixtures that seed
+        // several blocks must not share a hash or the second insert revises
+        // the first row.
+        let mut raw = [0x11u8; 32];
+        raw[24..32].copy_from_slice(&block.to_be_bytes());
         MevEvent {
             block,
             ts: 1_700_000_000,
             tx_index: 3,
-            tx_hash: b256!("1111111111111111111111111111111111111111111111111111111111111111"),
+            tx_hash: B256::from(raw),
             kind: MevKind::ArbAtomic,
             searcher: address!("2222000000000000000000000000000000000002"),
             contract: None,
@@ -1028,6 +1040,9 @@ mod tests {
         // Event B: same inputs, but the ledger already netted the fee → no flag.
         let mut b = a.clone();
         b.block = 701;
+        let mut raw = [0x11u8; 32];
+        raw[24..32].copy_from_slice(&701u64.to_be_bytes());
+        b.tx_hash = B256::from(raw);
         b.details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
 
         let store = ExplorerStore::open_in_memory().unwrap();
@@ -1541,5 +1556,112 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM opportunities", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "the first row must not survive the failed batch");
+    }
+
+    #[test]
+    fn reindex_keeps_op_id_and_revises_usd() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let token = address!("4444000000000000000000000000000000000004");
+        let hash = b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(token, token_usd(0.5, 6));
+        let event = sample_event(100);
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &hash,
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: std::slice::from_ref(&event),
+                token_prices: &prices,
+            },
+        );
+        let (id, created, profit): (i64, i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT id, created_at, profit_usd FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        prices.insert(token, token_usd(2.0, 6));
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &hash,
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: std::slice::from_ref(&event),
+                token_prices: &prices,
+            },
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM mev_ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-index must not insert a second op");
+        let (id2, created2, profit2): (i64, i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT id, created_at, profit_usd FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id2, id);
+        assert_eq!(created2, created);
+        assert!(
+            (profit - 0.5).abs() < 1e-9,
+            "first quote was 0.5, got {profit}"
+        );
+        assert!(
+            (profit2 - 2.0).abs() < 1e-9,
+            "revised quote must replace profit_usd, got {profit2}"
+        );
+    }
+
+    #[test]
+    fn reprice_range_uses_stored_prices_without_rewriting_identity() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let token = address!("4444000000000000000000000000000000000004");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(token, token_usd(0.5, 6));
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[],
+                events: &[sample_event(100)],
+                token_prices: &prices,
+            },
+        );
+        let hour = crate::explorer::pricing::hour_bucket(1_700_000_000);
+        store.put_price(token, hour, 4.0, "test").unwrap();
+        let n = store
+            .reprice_range(100, 100, |addr| (addr == token).then_some(6))
+            .unwrap();
+        assert_eq!(n, 1);
+        let (profit, kind): (f64, String) = store
+            .conn
+            .query_row(
+                "SELECT profit_usd, kind FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            (profit - 4.0).abs() < 1e-9,
+            "stored 4.0 quote, got {profit}"
+        );
+        assert_eq!(kind, "arb_atomic");
     }
 }

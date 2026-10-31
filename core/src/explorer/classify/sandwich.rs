@@ -1,8 +1,10 @@
 //! Classic realized-sandwich detection.
 use alloy::primitives::{Address, U256};
 
+use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
 
+use super::drops::DropSink;
 use super::legs::{opposite_dir, pool_legs, same_dir, SandwichWalk, SwapLeg};
 use super::BlockInput;
 
@@ -16,7 +18,7 @@ use super::BlockInput;
 /// the front-run; every other-sender swap in the same direction while the
 /// position is open is a victim; the first attacker swap in the opposite
 /// direction after ≥1 victim is the back-run.
-pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
+pub(super) fn classify_sandwiches(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     // Every successful tx's resolved-direction swaps, flattened per pool and
     // sorted by tx index so the walk never depends on `input.txs` order.
     let by_pool = pool_legs(input);
@@ -32,19 +34,26 @@ pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
         for attacker in attackers {
             let mut front: Option<&SwapLeg> = None;
             let mut walk = SandwichWalk::default();
+            let mut saw_opposite = false;
+            let mut closed = false;
             for (_, from, leg) in &pool_swaps {
                 if *from == attacker {
                     if front.is_none() {
                         front = Some(leg); // position open
                     } else if !walk.victims.is_empty() {
                         let Some(f) = front else {
-                            continue;
+                            continue; // not-a-drop: front is set in this branch
                         };
                         if opposite_dir(f, leg) {
                             // First opposite-direction attacker swap after a
                             // victim closes the sandwich.
                             out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
+                            closed = true;
                             break;
+                        }
+                    } else if let Some(f) = front {
+                        if opposite_dir(f, leg) {
+                            saw_opposite = true;
                         }
                     }
                     // Same-direction or pre-victim opposite swaps keep the
@@ -54,6 +63,24 @@ pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
                         // Third-party swap in the same direction: the victim.
                         walk.victims.push(leg.clone());
                     }
+                }
+            }
+            if closed {
+                continue; // not-a-drop: the walk emitted a sandwich
+            }
+            if let Some(f) = front {
+                if saw_opposite && walk.victims.is_empty() {
+                    drops.anchor(
+                        f.tx_index,
+                        RejectReason::VictimSetEmpty,
+                        "closed_without_third_party_victim",
+                    );
+                } else if !walk.victims.is_empty() {
+                    drops.anchor(
+                        f.tx_index,
+                        RejectReason::CycleNotClosed,
+                        "no_closing_back_run_leg",
+                    );
                 }
             }
         }

@@ -3,8 +3,10 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
 
+use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{Confidence, JitFact, MevEvent, MevKind, PnlBasis, SwapFact};
 
+use super::drops::DropSink;
 use super::BlockInput;
 
 /// Position fields for [`build_jit_event`].
@@ -31,7 +33,7 @@ pub(super) struct JitEventPosition {
 /// several identical Mints — duplicate P&L on one tx_index).
 /// A candidate is only emitted when the block contains an in-window swap in
 /// that pool whose tick lies inside the range (tick-overlap validation).
-pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
+pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     let mints: Vec<JitFact> = input
         .txs
         .iter()
@@ -86,7 +88,19 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 },
             ) {
                 out.push(ev);
+            } else {
+                drops.anchor(
+                    mint.tx_index,
+                    RejectReason::JitPairingUnmatched,
+                    "no_validating_swap_in_position_range",
+                );
             }
+        } else {
+            drops.anchor(
+                mint.tx_index,
+                RejectReason::JitPairingUnmatched,
+                "mint_without_burn",
+            );
         }
     }
 
@@ -281,7 +295,8 @@ mod pairing_tests {
         mint_tx.jit.push(jit(1, true));
         let input = block(vec![burn_tx, mint_tx]);
 
-        let events = classify_jit(&input);
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        let events = classify_jit(&input, &mut drops);
         assert!(
             events.is_empty(),
             "Burn at tx0 must not pair with Mint at tx1: {:?}",
@@ -305,7 +320,8 @@ mod pairing_tests {
         burn_tx.jit.push(jit(3, false));
         let input = block(vec![mint_a, mint_b, burn_tx]);
 
-        let events = classify_jit(&input);
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        let events = classify_jit(&input, &mut drops);
         assert_eq!(
             events.len(),
             1,

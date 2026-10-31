@@ -154,7 +154,7 @@ impl ExplorerStore {
              FROM {source}
              WHERE m.ts >= {since} {filter} {grouping_guard}
              GROUP BY label
-             ORDER BY gross_usd DESC
+             ORDER BY gross_usd DESC, label ASC
              LIMIT {limit}"
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -203,7 +203,8 @@ impl ExplorerStore {
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([tx_hash], map_mev_op_row)?;
@@ -256,7 +257,8 @@ impl ExplorerStore {
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
              ORDER BY block_number, tx_index"
@@ -566,7 +568,7 @@ impl ExplorerStore {
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY kind
-             ORDER BY gross DESC"
+             ORDER BY gross DESC, label ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
@@ -619,7 +621,8 @@ impl ExplorerStore {
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops
              WHERE ts >= {since_ts} {filter} AND excluded_from_net = 0
              ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC

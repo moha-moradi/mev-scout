@@ -5,10 +5,12 @@ use alloy::primitives::Address;
 
 use crate::explorer::interest_attr;
 use crate::explorer::profit::DeltaLedger;
+use crate::explorer::reject::RejectReason;
 use crate::explorer::types::{
     Confidence, MevEvent, MevKind, OracleUpdateFact, PnlBasis, ReserveDataFact,
 };
 
+use super::drops::DropSink;
 use super::BlockInput;
 
 /// Block-scoped oracle/reserve facts already gathered by `classify_block`.
@@ -19,7 +21,11 @@ pub(super) struct LiqBlockCtx<'a> {
 }
 
 /// Passes 1 + 1a: exact liquidations and BuyCollateral discount capture.
-pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -> Vec<MevEvent> {
+pub(super) fn classify_liquidations(
+    input: &BlockInput,
+    ctx: &LiqBlockCtx<'_>,
+    drops: &mut DropSink,
+) -> Vec<MevEvent> {
     let mut events: Vec<MevEvent> = Vec::new();
     let oracle_feeds_in_block = ctx.oracle_feeds_in_block;
     let block_oracle_owned = ctx.block_oracle_owned;
@@ -29,7 +35,7 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
     // + LiquidationFact → tag `flash_loan_liq` (plan P0.1 / P2.3 routing).
     for tx in &input.txs {
         if tx.liquidations.is_empty() {
-            continue;
+            continue; // not-a-drop: tx has no liquidation event
         }
         let ledger =
             DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
@@ -47,6 +53,15 @@ pub(super) fn classify_liquidations(input: &BlockInput, ctx: &LiqBlockCtx<'_>) -
             // so it stays Exact with a TRANSFER_MISMATCH reason.
             let reconciled = !liq.collateral_asset.is_zero()
                 && ledger.net(searcher, liq.collateral_asset) >= liq.collateral_amount;
+            // The event still stands. The reject records that its seized
+            // amount is not covered by transfers, which is why P&L is demoted.
+            if !liq.collateral_asset.is_zero() && !reconciled {
+                drops.anchor(
+                    tx.tx_index,
+                    RejectReason::LiquidationNotReconciled,
+                    "transfer_net_below_seized_amount",
+                );
+            }
             let mut reasons: Vec<&str> = Vec::new();
             if !reconciled {
                 reasons.push("TRANSFER_MISMATCH");

@@ -108,11 +108,11 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
     let mut by_pool: HashMap<Address, Vec<(u64, Address, SwapLeg)>> = HashMap::new();
     for tx in &input.txs {
         if !tx.success {
-            continue;
+            continue; // not-a-drop: a failed tx has no executable leg
         }
         for s in &tx.swaps {
             if has_unresolved_tokens(s) {
-                continue; // unresolved direction cannot anchor a leg
+                continue; // not-a-drop: unresolved direction cannot anchor a leg
             }
             by_pool.entry(s.pool).or_default().push((
                 tx.tx_index,
@@ -159,12 +159,28 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
     candidates
 }
 
+/// Why [`tx_cycle_profit`] returned no residual. Callers record these; the
+/// function itself does not touch the reject sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CycleMiss {
+    /// Fewer than two resolved edges. Not an anchor — aggregate per block.
+    TooFewEdges,
+    /// Two or more resolved edges that do not close.
+    NotClosed,
+    /// Closed cycle whose legs are funded by more than one external owner.
+    NotAttributable,
+    /// Every searcher candidate spends a pre-existing inventory residual.
+    InventorySpend,
+    /// Cycle closes and is attributable, but nobody holds a positive residual.
+    NoResidual,
+}
+
 /// Logs-only closed-cycle profit of a tx, mirroring the arb pass: the sender
 /// (or a qualified participant) nets a positive delta in a priority token.
 pub(super) fn tx_cycle_profit(
     input: &BlockInput,
     tx: &TxInput,
-) -> Option<(Address, Address, U256)> {
+) -> Result<(Address, Address, U256), CycleMiss> {
     let ledger =
         DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
     let candidates = searcher_candidates(tx);
@@ -178,22 +194,33 @@ pub(super) fn tx_cycle_profit(
         })
         .map(|s| (s.token_in, s.token_out, s.pool))
         .collect();
-    if resolved.len() < 2
-        || !has_closed_cycle(&resolved)
-        || !flow_attributable(&tx.swaps, &candidates)
-    {
-        return None; // "closed cycle; else rejected" (§24) + flow ownership (§7.1)
+    if resolved.len() < 2 {
+        return Err(CycleMiss::TooFewEdges);
     }
+    if !has_closed_cycle(&resolved) {
+        return Err(CycleMiss::NotClosed);
+    }
+    if !flow_attributable(&tx.swaps, &candidates) {
+        return Err(CycleMiss::NotAttributable);
+    }
+    let mut saw_inventory = false;
+    let mut saw_clean = false;
     for searcher in candidates {
         if has_inventory_spend(&ledger, searcher) {
-            continue;
+            saw_inventory = true;
+            continue; // not-a-drop: try the next searcher candidate
         }
+        saw_clean = true;
         if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
             let amount = ledger.net(searcher, token);
             if !amount.is_zero() {
-                return Some((searcher, token, amount));
+                return Ok((searcher, token, amount));
             }
         }
     }
-    None
+    if saw_inventory && !saw_clean {
+        Err(CycleMiss::InventorySpend)
+    } else {
+        Err(CycleMiss::NoResidual)
+    }
 }

@@ -35,19 +35,39 @@ impl ExplorerStore {
         if feeds.is_empty() {
             return Ok(out);
         }
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT answer FROM oracle_answers
-             WHERE feed = ?1 AND block_number < ?2
-             ORDER BY block_number DESC LIMIT 1",
-        )?;
+        let mut feed_of: HashMap<String, Address> = HashMap::with_capacity(feeds.len());
+        let mut holders: Vec<String> = Vec::with_capacity(feeds.len());
         for feed in feeds {
-            let feed_s = format!("{feed:#x}");
-            if let Ok(ans) = stmt.query_row(rusqlite::params![feed_s, block as i64], |r| {
-                r.get::<_, String>(0)
-            }) {
-                if let Ok(v) = ans.parse::<i128>() {
-                    out.insert(*feed, v);
-                }
+            let s = format!("{feed:#x}");
+            feed_of.insert(s.clone(), *feed);
+            holders.push(s);
+        }
+        let placeholders = (0..holders.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        // Strictly before `block`, matching the previous per-feed query.
+        let sql = format!(
+            "SELECT o.feed, o.answer FROM oracle_answers o
+             WHERE o.block_number < ?1 AND o.feed IN ({placeholders})
+               AND o.block_number = (
+                 SELECT MAX(block_number) FROM oracle_answers
+                 WHERE feed = o.feed AND block_number < ?1)"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(holders.len() + 1);
+        let block_i = block as i64;
+        params.push(&block_i);
+        for h in &holders {
+            params.push(h);
+        }
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (feed_s, ans) = row?;
+            if let (Some(feed), Ok(v)) = (feed_of.get(&feed_s), ans.parse::<i128>()) {
+                out.insert(*feed, v);
             }
         }
         Ok(out)
@@ -162,27 +182,31 @@ impl ExplorerStore {
         let inserted = ops.len();
 
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO blocks
-               (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
-             VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
-            rusqlite::params![
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR IGNORE INTO blocks
+                   (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
+                 VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+            )?;
+            stmt.execute(rusqlite::params![
                 block_number as i64,
                 format!("{:#x}", block_hash),
                 ts as i64,
                 base_fee_gwei,
                 tx_count as i64,
                 now
-            ],
-        )?;
+            ])?;
+        }
 
-        for t in txs {
-            tx.execute(
+        {
+            let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO txs
                    (hash, block_number, tx_index, \"from\", \"to\", success,
                     gas_used, effective_gas_price_gwei, priority_fee_gwei, value_native)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![
+            )?;
+            for t in txs {
+                stmt.execute(rusqlite::params![
                     format!("{:#x}", t.hash),
                     block_number as i64,
                     t.tx_index as i64,
@@ -193,17 +217,19 @@ impl ExplorerStore {
                     t.effective_gas_price_gwei,
                     t.priority_fee_gwei,
                     t.value.to_string(),
-                ],
-            )?;
+                ])?;
+            }
         }
 
-        for s in swaps {
-            tx.execute(
+        {
+            let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO swaps
                    (block_number, tx_index, log_index, pool, dex, amm,
                     token_in, token_out, amount_in, amount_out, sender)
                  VALUES(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, NULL)",
-                rusqlite::params![
+            )?;
+            for s in swaps {
+                stmt.execute(rusqlite::params![
                     block_number as i64,
                     s.tx_index as i64,
                     s.log_index as i64,
@@ -213,17 +239,19 @@ impl ExplorerStore {
                     format!("{:#x}", s.token_out),
                     s.amount_in.to_string(),
                     s.amount_out.to_string(),
-                ],
-            )?;
+                ])?;
+            }
         }
 
-        for t in transfers {
-            tx.execute(
+        {
+            let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO transfers
                    (block_number, tx_index, log_index, token, \"from\", \"to\",
                     amount, is_native)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
-                rusqlite::params![
+            )?;
+            for t in transfers {
+                stmt.execute(rusqlite::params![
                     block_number as i64,
                     t.tx_index as i64,
                     t.log_index as i64,
@@ -231,21 +259,43 @@ impl ExplorerStore {
                     format!("{:#x}", t.from),
                     format!("{:#x}", t.to),
                     t.amount.to_string(),
-                ],
-            )?;
+                ])?;
+            }
         }
 
-        for op in &ops {
-            tx.execute(
+        // Column split (B10). Immutable on conflict — they identify the op
+        // and must not move under a re-index: `id`, `block_number`,
+        // `tx_index`, `tx_hash`, `ts`, `kind`, `eoa`, `contract`,
+        // `canonical_id`, `profit_token`, `profit_amount`, `route_json`,
+        // `victim_hashes`, `detector`, `created_at`.
+        // Revisable — pricing and the labels that depend on it (A10/A14/A16/A19):
+        // `confidence`, `volume_usd`, `profit_usd`, `gas_cost_usd`,
+        // `flashloan_fee_usd`, `net_profit_usd`, `details_json`
+        // (`pnl_basis` lives here), `excluded_from_net`.
+        // `id` stays, so anything that points at an op row survives.
+        {
+            let mut stmt = tx.prepare_cached(
                 "INSERT INTO mev_ops
                    (block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount,
                     volume_usd, profit_usd, gas_cost_usd, flashloan_fee_usd,
                     net_profit_usd, route_json, victim_hashes, details_json,
-                    detector, created_at, excluded_from_net)
+                    detector, created_at, excluded_from_net, subkind)
                  VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                        ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21)",
-                rusqlite::params![
+                        ?14, ?15, ?16, ?17, ?18, ?19, 'explorer', ?20, ?21, ?22)
+                 ON CONFLICT(canonical_id, tx_hash) DO UPDATE SET
+                    confidence = excluded.confidence,
+                    volume_usd = excluded.volume_usd,
+                    profit_usd = excluded.profit_usd,
+                    gas_cost_usd = excluded.gas_cost_usd,
+                    flashloan_fee_usd = excluded.flashloan_fee_usd,
+                    net_profit_usd = excluded.net_profit_usd,
+                    details_json = excluded.details_json,
+                    excluded_from_net = excluded.excluded_from_net,
+                    subkind = excluded.subkind",
+            )?;
+            for op in &ops {
+                stmt.execute(rusqlite::params![
                     op.block_number as i64,
                     op.tx_index as i64,
                     op.tx_hash,
@@ -267,8 +317,9 @@ impl ExplorerStore {
                     op.details_json,
                     op.created_at,
                     op.excluded_from_net,
-                ],
-            )?;
+                    op.subkind,
+                ])?;
+            }
         }
 
         tx.execute(

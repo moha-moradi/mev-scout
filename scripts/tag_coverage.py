@@ -44,7 +44,7 @@ EXPECTED_KINDS = [
     "jit",
     "jit_arb",
     "skim",
-    "unknown",
+    "utility",
 ]
 
 

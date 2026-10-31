@@ -49,20 +49,32 @@ impl ExplorerStore {
     }
     /// Blocks in `[from, to]` not yet classified (gap resume).
     pub fn unclassified_blocks(&self, from: u64, to: u64) -> anyhow::Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
-            "WITH RECURSIVE seq(b) AS (
-               SELECT ?1 UNION ALL SELECT b+1 FROM seq WHERE b < ?2
-             )
-             SELECT b FROM seq
-             WHERE b NOT IN (SELECT block FROM blocks_classified
-                             WHERE block BETWEEN ?1 AND ?2)",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![from as i64, to as i64], |r| {
-            r.get::<_, i64>(0)
-        })?;
+        const WINDOW: u64 = 4096;
         let mut out = Vec::new();
-        for row in rows {
-            out.push(row? as u64);
+        if from > to {
+            return Ok(out);
+        }
+        let mut lo = from;
+        while lo <= to {
+            let hi = lo.saturating_add(WINDOW - 1).min(to);
+            let mut stmt = self.conn.prepare(
+                "WITH RECURSIVE seq(b) AS (
+                   SELECT ?1 UNION ALL SELECT b+1 FROM seq WHERE b < ?2
+                 )
+                 SELECT b FROM seq
+                 WHERE b NOT IN (SELECT block FROM blocks_classified
+                                 WHERE block BETWEEN ?1 AND ?2)",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![lo as i64, hi as i64], |r| {
+                r.get::<_, i64>(0)
+            })?;
+            for row in rows {
+                out.push(row? as u64);
+            }
+            if hi == u64::MAX {
+                break;
+            }
+            lo = hi + 1;
         }
         Ok(out)
     }
@@ -191,5 +203,16 @@ mod tests {
         store.unwind_from(100).unwrap();
         assert!(!store.block_classified(100).unwrap());
         assert_eq!(rejected_count(&store, 100), 0);
+    }
+
+    #[test]
+    fn unclassified_blocks_reports_gaps_across_windows() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        store.mark_block_classified(4100, 0).unwrap();
+        let gaps = store.unclassified_blocks(0, 5000).unwrap();
+        assert!(!gaps.contains(&4100));
+        assert_eq!(gaps.len(), 5000);
+        assert_eq!(gaps.first().copied(), Some(0));
+        assert_eq!(gaps.last().copied(), Some(5000));
     }
 }

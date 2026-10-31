@@ -33,13 +33,28 @@ struct WindowReport {
 
 /// Expected blocks in a window using the chain's authoritative block time.
 fn expected_blocks(chain: ChainName, window: &str) -> Option<u64> {
-    let secs = match window {
-        "1d" => 86_400,
-        "7d" => 7 * 86_400,
-        "30d" => 30 * 86_400,
-        _ => return None, // "all" and invalid windows have no expected bound
-    };
+    let secs = parse_duration_secs(window)?;
     Some(secs / block_time_secs(chain) as u64)
+}
+
+/// `Nh` / `Nd` / `Nw`. Zero and unknown suffixes are rejected.
+pub(super) fn parse_duration_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.len().checked_sub(1)?);
+    if num.is_empty() {
+        return None;
+    }
+    let v: u64 = num.parse().ok()?;
+    if v == 0 {
+        return None;
+    }
+    let factor = match unit {
+        "h" => 3_600,
+        "d" => 86_400,
+        "w" => 7 * 86_400,
+        _ => return None,
+    };
+    Some(v.saturating_mul(factor))
 }
 
 fn usd(x: f64) -> String {
@@ -107,6 +122,7 @@ fn print_top_ops(rows: &[MevOpRow]) {
         "tx",
         "block",
         "kind",
+        "subkind",
         "basis",
         "volume USD",
         "gross USD",
@@ -114,13 +130,14 @@ fn print_top_ops(rows: &[MevOpRow]) {
         "net USD",
     ]);
     if rows.is_empty() {
-        table.add_row(vec!["(no data)", "-", "-", "-", "-", "-", "-", "-"]);
+        table.add_row(vec!["(no data)", "-", "-", "-", "-", "-", "-", "-", "-"]);
     }
     for r in rows {
         table.add_row(vec![
             short_addr(&r.tx_hash),
             r.block_number.to_string(),
             r.kind.clone(),
+            r.subkind.clone().unwrap_or_else(|| "-".to_string()),
             pnl_basis_of(r),
             usd(r.volume_usd.unwrap_or(0.0)),
             usd(r.profit_usd.unwrap_or(0.0)),
@@ -161,7 +178,7 @@ pub async fn cmd_explorer_report(
         Some(k) => {
             let parsed = MevKind::parse(k).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "invalid --kind '{k}' (expected one of arb_atomic, sandwich, frontrun, backrun, liquidation, jit, jit_arb, skim, unknown)"
+                    "invalid --kind '{k}' (expected one of arb_atomic, sandwich, frontrun, backrun, liquidation, jit, jit_arb, skim, utility)"
                 )
             })?;
             Some(parsed)
@@ -187,15 +204,16 @@ pub async fn cmd_explorer_report(
             if p.is_empty() {
                 continue;
             }
-            if !matches!(p, "1d" | "7d" | "30d" | "all") {
-                anyhow::bail!("invalid --windows '{p}' (expected 1d, 7d, 30d, all)");
+            if p != "all" && parse_duration_secs(p).is_none() {
+                anyhow::bail!("invalid --windows '{p}' (expected Nh, Nd, Nw, or all)");
             }
             window_list.push(p.to_string());
         }
     }
-    window_list.dedup();
+    let mut seen = std::collections::HashSet::new();
+    window_list.retain(|w| seen.insert(w.clone()));
     if window_list.is_empty() {
-        anyhow::bail!("no --windows selected (expected 1d, 7d, 30d, or all)");
+        anyhow::bail!("no --windows selected (expected Nh, Nd, Nw, or all)");
     }
     let top = top.min(100);
 
@@ -211,8 +229,8 @@ pub async fn cmd_explorer_report(
         let daily = store.report_daily(since, kind_filter, confidence_filter)?;
         let top_competitors =
             store.top_competitors_filtered(since, top, kind_filter, confidence_filter)?;
-        let top_senders = store.top_senders_filtered(since, 10, kind_filter, confidence_filter)?;
-        let top_pools = store.top_pools_filtered(since, 10, kind_filter, confidence_filter)?;
+        let top_senders = store.top_senders_filtered(since, top, kind_filter, confidence_filter)?;
+        let top_pools = store.top_pools_filtered(since, top, kind_filter, confidence_filter)?;
         let top_ops = store.top_ops(since, top, kind_filter, confidence_filter)?;
         let blocks = store.blocks_in_window(since)?;
         let classify_rejects = store.report_classify_rejects(since)?;
@@ -420,4 +438,20 @@ fn render_window(r: &WindowReport) {
 
     println!("\n  Top ops (by net profit):");
     print_top_ops(&r.top_ops);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_duration_secs;
+
+    #[test]
+    fn duration_suffixes() {
+        assert_eq!(parse_duration_secs("12h"), Some(12 * 3_600));
+        assert_eq!(parse_duration_secs("1d"), Some(86_400));
+        assert_eq!(parse_duration_secs("2w"), Some(14 * 86_400));
+        assert_eq!(parse_duration_secs("0d"), None);
+        assert_eq!(parse_duration_secs("1x"), None);
+        assert_eq!(parse_duration_secs("d"), None);
+        assert_eq!(parse_duration_secs("all"), None);
+    }
 }

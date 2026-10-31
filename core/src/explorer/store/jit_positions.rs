@@ -1,4 +1,6 @@
 //! JIT open-positions + price cache for ExplorerStore.
+use std::collections::HashMap;
+
 use alloy::primitives::Address;
 
 use super::{ExplorerStore, OpenPosition};
@@ -44,6 +46,90 @@ impl ExplorerStore {
             .unwrap_or(None)
             .filter(|(usd, _)| is_usable_quote(*usd));
         Ok(v)
+    }
+
+    /// Exact-hour quotes for many tokens, then the newest usable quote within
+    /// 24h for the ones that missed. One query per phase, not one per token.
+    pub fn prices_at(
+        &self,
+        tokens: &[Address],
+        hour: u64,
+    ) -> anyhow::Result<HashMap<Address, (f64, String)>> {
+        let mut out = HashMap::new();
+        if tokens.is_empty() {
+            return Ok(out);
+        }
+        let keys: Vec<(Address, String)> = tokens
+            .iter()
+            .copied()
+            .filter(|t| !t.is_zero())
+            .map(|t| (t, format!("{t:#x}")))
+            .collect();
+        self.fill_prices(&keys, hour, true, &mut out)?;
+        let missing: Vec<(Address, String)> = keys
+            .into_iter()
+            .filter(|(addr, _)| !out.contains_key(addr))
+            .collect();
+        self.fill_prices(&missing, hour, false, &mut out)?;
+        Ok(out)
+    }
+
+    fn fill_prices(
+        &self,
+        keys: &[(Address, String)],
+        hour: u64,
+        exact: bool,
+        out: &mut HashMap<Address, (f64, String)>,
+    ) -> anyhow::Result<()> {
+        const CHUNK: usize = 400;
+        let by_token: HashMap<&str, Address> = keys.iter().map(|(a, s)| (s.as_str(), *a)).collect();
+        for chunk in keys.chunks(CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = (0..chunk.len())
+                .map(|i| format!("?{}", i + 2))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = if exact {
+                format!(
+                    "SELECT token, usd, source FROM prices
+                     WHERE hour = ?1 AND token IN ({placeholders})"
+                )
+            } else {
+                format!(
+                    "SELECT p.token, p.usd, p.source FROM prices p
+                     WHERE p.hour <= ?1 AND p.hour > ?1 - 24 AND p.token IN ({placeholders})
+                       AND p.hour = (
+                         SELECT MAX(hour) FROM prices
+                         WHERE token = p.token AND hour <= ?1 AND hour > ?1 - 24)"
+                )
+            };
+            let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+            let hour_i = hour as i64;
+            params.push(&hour_i);
+            for (_, s) in chunk {
+                params.push(s);
+            }
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, f64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (token_s, usd, source) = row?;
+                if !is_usable_quote(usd) {
+                    continue;
+                }
+                if let Some(addr) = by_token.get(token_s.as_str()) {
+                    out.insert(*addr, (usd, source));
+                }
+            }
+        }
+        Ok(())
     }
     /// Cache a price observation.
     ///
@@ -91,7 +177,9 @@ impl ExplorerStore {
         let bucket = ts / 3600;
         let mut stmt = self.conn.prepare(
             "SELECT usd FROM prices
-             WHERE lower(token) IN ('0x0000000000000000000000000000000000000000', '0x0')
+             WHERE token IN (
+               '0x0000000000000000000000000000000000000000',
+               '0x0')
                AND hour BETWEEN ?1 - 24 AND ?1 + 24
              ORDER BY ABS(hour - ?1) ASC LIMIT 1",
         )?;

@@ -14,10 +14,12 @@
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
-//! (`ArbAtomic`, Exact only), three-leg sandwiches (`Sandwich`), frontruns
+//! (`ArbAtomic`, Exact only), keeper / claim-and-sell / ERC-4337 bundler
+//! (`Utility`, with `subkind`), three-leg sandwiches (`Sandwich`), frontruns
 //! (`Frontrun`), backruns (`Backrun`), and narrowly-intersected JIT liquidity
 //! (`Jit`). Kinds are mutually exclusive by priority (`Sandwich` > `Frontrun` >
-//! `Backrun` > `ArbAtomic` > `JitArb` > `Jit` > `Liquidation` > `Skim`).
+//! `Backrun` > `JitArb` > `Liquidation` > `Jit` > `Skim` > `ArbAtomic` >
+//! `Utility`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
 //! is non-positive is dropped at persist time (profitability gate).

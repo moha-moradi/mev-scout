@@ -72,7 +72,7 @@ const ALL_KINDS: &[MevKind] = &[
     MevKind::Jit,
     MevKind::Liquidation,
     MevKind::Skim,
-    MevKind::Unknown,
+    MevKind::Utility,
 ];
 
 /// `(kind, precedence)` VALUES rows injected straight from `kind_precedence`,
@@ -526,21 +526,21 @@ fn census_sql_prepares_against_real_schema() -> anyhow::Result<()> {
             ("arb_atomic".into(), "liquidation".into(), 1),
             ("arb_atomic".into(), "sandwich".into(), 1),
             ("backrun".into(), "sandwich".into(), 1),
-            ("skim".into(), "unknown".into(), 1),
+            ("skim".into(), "utility".into(), 1),
         ],
         "pair enumeration / counts wrong (dup same-kind rows must not double-count)"
     );
 
     let usd: Vec<(String, String, i64, f64)> = query_tuples(&mem, &census_usd_sql())?;
     let expect_usd: Vec<(&str, &str, i64, f64)> = vec![
-        // Loser = higher precedence number. (arb_atomic, liquidation): today's
-        // numbers delete the liquidation row → its $10 gross is the cost.
-        ("arb_atomic", "liquidation", 1, 10.0),
+        // Ordered by the loser's gross. After B8, ArbAtomic (precedence 7)
+        // loses to Liquidation and Jit, so those costs are the arb row.
         ("arb_atomic", "backrun", 1, 9.0),
         ("arb_atomic", "sandwich", 1, 9.0),
+        ("arb_atomic", "jit", 1, 5.0),
         ("backrun", "sandwich", 1, 4.0),
-        ("arb_atomic", "jit", 1, 2.0),
-        ("skim", "unknown", 1, 0.0), // NULL gross (unpriced) contributes 0
+        ("arb_atomic", "liquidation", 1, 3.0),
+        ("skim", "utility", 1, 0.0), // NULL gross (unpriced) contributes 0
     ];
     assert_eq!(usd.len(), expect_usd.len(), "usd row count");
     for (got, want) in usd.iter().zip(&expect_usd) {
@@ -651,7 +651,7 @@ fn seed_collisions(conn: &Connection) -> anyhow::Result<()> {
           (200, 0, '0xa8', 2, 'arb_atomic',  '0xe4', 'exact', 'census-test', 1, 9.0),
           -- block 300 tx 0: loser kind wholly unpriced (NULL gross → 0)
           (300, 0, '0xa9', 3, 'skim',        '0xe5', 'exact', 'census-test', 1, 1.5),
-          (300, 0, '0xaa', 3, 'unknown',     '0xe5', 'exact', 'census-test', 1, NULL),
+          (300, 0, '0xaa', 3, 'utility',     '0xe5', 'exact', 'census-test', 1, NULL),
           -- block 400: two kinds but NULL tx_index → must not collide
           (400, NULL, '0xab', 4, 'liquidation', '0xe6', 'exact', 'census-test', 1, 7.0),
           (400, NULL, '0xac', 4, 'arb_atomic',  '0xe6', 'exact', 'census-test', 1, 8.0);
