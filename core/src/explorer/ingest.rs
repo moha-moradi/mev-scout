@@ -93,9 +93,11 @@ pub struct IngestConfig {
 impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
         let wrapped_native = chain_config.wrapped_native_token.unwrap_or(Address::ZERO);
-        let priority = build_profit_priority(chain, wrapped_native);
-        // Config labels are deserialized as owned `String`s; intern them once
-        // here so the per-log remap stays a `&'static str` pointer compare.
+        let priority = build_profit_priority(chain_config, wrapped_native);
+        // `LiquidationFact.protocol` is a borrowed `&'static str`, so config
+        // labels are interned once here. The leak is bounded by the config: a
+        // handful of aliases per chain, at process start. Removing it means
+        // turning `protocol` into an owned String across decode/classify.
         let intern = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
         let mut liquidation_protocol_aliases = HashMap::new();
         if let Some(v2) = chain_config.aave_v2_pool {
@@ -167,50 +169,17 @@ impl SavaxRateCache {
     }
 }
 
-/// Profit-token priority: USDC → USDT → DAI → wrapped native.
-/// Canonical addresses from `known_tokens.json`; chain-specific via
-/// `wrapped_native`. Unknown-chain long-tail falls through to the
-/// largest-delta fallback in `select_profit_token`.
-fn build_profit_priority(chain: ChainName, wrapped_native: Address) -> Vec<Address> {
-    let parse = |s: &str| s.parse::<Address>().unwrap_or(Address::ZERO);
-    let mut v = match chain {
-        ChainName::Polygon => vec![
-            parse("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"), // USDC (native)
-            parse("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"), // USDC.e
-            parse("0xc2132D05D31c914a87C6611C10748AEb04B58e8F"), // USDT
-            parse("0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063"), // DAI
-        ],
-        ChainName::Avalanche => vec![
-            parse("0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"), // USDC
-            parse("0x9702230A8Ea53601f5cD2dc00fDBc13d4dF19497"), // USDC.e
-            parse("0xc7198437980c041389c85c43e942b31037ADb125"), // USDT.e
-            parse("0xd586E7F844cEa2F50bf48A84c291e3C71F0fDa99"), // DAI.e
-        ],
-        ChainName::Bsc => vec![
-            parse("0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"), // USDC
-            parse("0x55d398326f99059fF775485246999027B3197955"), // USDT
-            parse("0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3"), // DAI
-        ],
-        ChainName::Ethereum => vec![
-            parse("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
-            parse("0xdAC17F958D2ee523a2206206994597C13D831ec7"), // USDT
-            parse("0x6B175474E89094C44Da98b954EedeAC495271d0F"), // DAI
-        ],
-        ChainName::Arbitrum => vec![
-            parse("0xaf88d065e77c8cC2239327C5EDb3A432268e5831"), // USDC
-            parse("0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"), // USDT
-            parse("0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"), // DAI
-        ],
-        ChainName::Base => vec![
-            parse("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), // USDC
-            parse("0x4200000000000000000000000000000000000006"), // WETH (no USDT/DAI majors)
-        ],
-        ChainName::Optimism => vec![
-            parse("0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"), // USDC
-            parse("0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"), // USDT
-            parse("0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"), // DAI
-        ],
-    };
+/// Profit-token priority: the chain's stable majors (from `chains.toml`) then
+/// wrapped native. An empty chain list falls through to the largest-delta
+/// selection in `select_profit_token`.
+fn build_profit_priority(
+    chain_config: &crate::config::ChainConfig,
+    wrapped_native: Address,
+) -> Vec<Address> {
+    let mut v = chain_config
+        .profit_stable_tokens
+        .clone()
+        .unwrap_or_default();
     if !wrapped_native.is_zero() {
         v.push(wrapped_native);
     }
@@ -231,7 +200,6 @@ pub struct PoolViews<'a> {
 #[derive(Debug, Clone)]
 pub struct IndexedBlock {
     pub block: u64,
-    pub events: usize,
     pub ops: usize,
 }
 
@@ -275,6 +243,16 @@ fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
     }
 }
 
+/// D10: a live tip jump must not orphan the historical gap it skipped over.
+/// `indexed_to` stays at the older cursor so a later backfill still sees the
+/// gap; `0` means "no stored cursor" (fresh DB), which anchors at tip−1.
+fn tip_jump_checkpoint(existing: u64, safe: u64) -> u64 {
+    if existing == 0 {
+        return safe.saturating_sub(1);
+    }
+    existing.min(safe.saturating_sub(1))
+}
+
 /// Per-block indexing request for [`index_block`].
 pub struct IndexBlockRequest<'a> {
     pub rpc: &'a RpcClient,
@@ -309,7 +287,6 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         debug!(block = block_number, "already classified, skipping");
         return Ok(IndexedBlock {
             block: block_number,
-            events: 0,
             ops: 0,
         });
     }
@@ -627,7 +604,6 @@ pub async fn index_block_fetched(
 
     Ok(IndexedBlock {
         block: block_number,
-        events: txs.len(),
         ops,
     })
 }
@@ -1192,14 +1168,20 @@ pub async fn run_live(
         let mut cursor = match next_block {
             Some(n) => n,
             None => {
-                // Tip-only start: ignore stored `indexed_to` so we never catch up
-                // historical backlog. Anchor the checkpoint just behind tip.
-                warn!(
-                    tip = safe,
-                    confirmations = cfg.confirmations,
-                    "live indexer starting at current tip (no historical catch-up)"
-                );
-                store.set_sync_state(cfg.chain_id, safe, safe.saturating_sub(1))?;
+                // Tip-only start: never catch up the historical backlog, but do
+                // not pretend the backlog is indexed either — `indexed_to` keeps
+                // the older cursor so a later `explorer index` still sees the gap.
+                let existing = store.get_indexed_to(cfg.chain_id).unwrap_or_default();
+                let keep = tip_jump_checkpoint(existing, safe);
+                if keep.saturating_add(1) < safe.saturating_sub(1) {
+                    warn!(
+                        gap_from = keep.saturating_add(1),
+                        gap_to = safe.saturating_sub(1),
+                        indexed_to = keep,
+                        "live indexer started at tip; historical gap left unindexed"
+                    );
+                }
+                store.set_sync_state(cfg.chain_id, safe, keep)?;
                 safe
             }
         };
@@ -1642,6 +1624,18 @@ mod tests {
     #[test]
     fn blocking_store_is_inline_outside_a_runtime() {
         assert_eq!(blocking_store(|| 7), 7);
+    }
+
+    /// D10: starting live at the tip must not mark a skipped historical gap as
+    /// indexed, and must never move `indexed_to` forward past tip−1.
+    #[test]
+    fn tip_jump_keeps_the_older_cursor_when_a_gap_is_skipped() {
+        assert_eq!(tip_jump_checkpoint(40, 5_000), 40);
+        // Fresh DB (nothing indexed) behaves as before: tip−1.
+        assert_eq!(tip_jump_checkpoint(0, 5_000), 4_999);
+        // A cursor already at/behind zero cannot underflow.
+        assert_eq!(tip_jump_checkpoint(9, 5), 4);
+        assert_eq!(tip_jump_checkpoint(u64::MAX, 0), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

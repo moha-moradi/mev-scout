@@ -144,7 +144,7 @@ fn parse_duration_env(s: &str) -> anyhow::Result<Duration> {
 
 fn collect_tags(store: &ExplorerStore) -> anyhow::Result<HashSet<String>> {
     let mut out = HashSet::new();
-    for op in store.ops_in_range(0, u64::MAX, &[])? {
+    for op in store.ops_in_range(0, u64::MAX, &[], None)? {
         let Some(dj) = op.details_json.as_deref() else {
             continue;
         };

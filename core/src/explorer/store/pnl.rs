@@ -63,12 +63,13 @@ pub struct PersistedOp {
 /// loss gate, volume, flash-fee conversion, native-residual pricing (A16) and
 /// the A19 `pnl_basis`/confidence handling.
 ///
-/// Pure: the caller supplies the block-level price inputs and the event's
-/// precomputed volume (one scan per block, not one per event); no store handle
-/// is involved.
+/// Pure: the caller supplies the block-level price inputs, the event's
+/// precomputed volume and whether any of its legs were unpriced (one swap scan
+/// per block, not one per event); no store handle is involved.
 pub fn annotate_event_with_volume(
     ev: &MevEvent,
     volume_usd: Option<f64>,
+    volume_partial: bool,
     token_prices: &HashMap<Address, TokenUsd>,
     native_price_usd: Option<f64>,
     created_at: i64,
@@ -261,6 +262,12 @@ pub fn annotate_event_with_volume(
     // gate never guesses.
     let excluded_from_net =
         (ev.kind == MevKind::Sandwich && matches!(net, Some(n) if n <= 0.0)) as i64;
+    // Volume is the sum of *priced* legs only. When any leg had no quote the
+    // reported volume is a floor, not the real notional, so say so instead of
+    // silently folding unpriced legs in as zero (mirrors A9's fee mechanism).
+    if volume_partial {
+        note_pricing_issue(&mut details_json, "VOLUME_PARTIAL");
+    }
     let details_value: serde_json::Value = serde_json::from_str(&details_json).unwrap_or_default();
     let reason_present = |name: &str| {
         details_value
@@ -417,18 +424,18 @@ pub fn annotate_event(
     native_price_usd: Option<f64>,
     created_at: i64,
 ) -> PersistedOp {
-    let total = swaps
-        .iter()
-        .filter(|s| s.tx_index == ev.tx_index)
-        .fold(0.0f64, |acc, s| {
-            acc + token_prices
-                .get(&s.token_in)
-                .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
-                .unwrap_or(0.0)
-        });
+    let mut total = 0.0f64;
+    let mut partial = false;
+    for s in swaps.iter().filter(|s| s.tx_index == ev.tx_index) {
+        match token_prices.get(&s.token_in) {
+            Some(p) => total += crate::explorer::pricing::token_amount_to_usd(s.amount_in, p),
+            None => partial = true,
+        }
+    }
     annotate_event_with_volume(
         ev,
         (total > 0.0).then_some(total),
+        partial,
         token_prices,
         native_price_usd,
         created_at,
@@ -762,12 +769,37 @@ mod tests {
         let op = annotate_event(&ev, &legs, &prices, Some(0.75), 0);
         let v = op.volume_usd.expect("volume from the op's legs");
         assert!((v - 7.0).abs() < 1e-6, "op volume {v}");
+        assert!(
+            !op.details_json
+                .as_deref()
+                .unwrap_or("")
+                .contains("VOLUME_PARTIAL"),
+            "fully priced legs must not be flagged partial"
+        );
 
         let mut unpr = sample_event(401);
         unpr.tx_index = 11;
         let unpr_legs = [swap_leg(11, unpriced, 123)];
         let op = annotate_event(&unpr, &unpr_legs, &prices, Some(0.75), 0);
         assert!(op.volume_usd.is_none(), "got {:?}", op.volume_usd);
+        let details = op.details_json.as_deref().unwrap_or("");
+        assert!(details.contains("VOLUME_PARTIAL"), "got {details}");
+        assert!(
+            details.contains("\"usd_approximate\":true"),
+            "an unpriced volume floor must be marked approximate"
+        );
+
+        // Mixed: the priced legs still sum, but the total is a floor.
+        let mut mixed = sample_event(402);
+        mixed.tx_index = 12;
+        let mixed_legs = [swap_leg(12, usdc, 1_000_000), swap_leg(12, unpriced, 9)];
+        let op = annotate_event(&mixed, &mixed_legs, &prices, Some(0.75), 0);
+        assert!((op.volume_usd.unwrap_or(0.0) - 1.0).abs() < 1e-6);
+        assert!(op
+            .details_json
+            .as_deref()
+            .unwrap_or("")
+            .contains("VOLUME_PARTIAL"));
     }
 
     /// A10: the sandwich gate flags — never drops — a sandwich whose net is

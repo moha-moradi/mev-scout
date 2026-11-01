@@ -273,6 +273,10 @@ fn migrate_v10_pricing_flags(conn: &Connection) -> anyhow::Result<()> {
 /// for a fresh database and re-applied idempotently by V2–V4 for a file that
 /// was created before they existed.
 const SCHEMA_V1: &str = "
+            -- Legacy columns the logs-only ingest path never populates:
+            -- blocks.producer, swaps.dex, swaps.sender, transfers.is_native.
+            -- They stay NULL/default so existing files keep their shape;
+            -- removing them is a table-rebuild migration, not an INSERT change.
             CREATE TABLE IF NOT EXISTS blocks(
               block_number INTEGER PRIMARY KEY,
               block_hash TEXT NOT NULL,
@@ -326,6 +330,10 @@ const SCHEMA_V1: &str = "
             );
             CREATE INDEX IF NOT EXISTS swaps_pool ON swaps(pool, block_number);
 
+            -- USD columns are REAL (f64 math end to end): sums can drift by
+            -- sub-cent and are not reproducible to the wei. Read them as
+            -- approximations, never as balances; integer basis points would be
+            -- a schema + report rewrite of its own.
             CREATE TABLE IF NOT EXISTS mev_ops(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               block_number INTEGER NOT NULL,

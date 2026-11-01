@@ -335,7 +335,7 @@ fn golden_block_persists_mev_ops_rows() {
         .unwrap();
     assert_eq!(n, 3);
 
-    let rows = store.ops_in_range(BLOCK, BLOCK, &[]).unwrap();
+    let rows = store.ops_in_range(BLOCK, BLOCK, &[], None).unwrap();
     assert_eq!(rows.len(), 3);
 
     let usdc_str = format!("{USDC:#x}");

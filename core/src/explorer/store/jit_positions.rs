@@ -293,16 +293,24 @@ impl ExplorerStore {
         let mut out = Vec::new();
         for row in rows {
             let (pool, owner, tick_lower, tick_upper, opened_block, liq) = row?;
-            let (Ok(pool), Ok(owner)) = (pool.parse::<Address>(), owner.parse::<Address>()) else {
-                continue;
-            };
+            // A unreadable column must fail the read, not silently become a
+            // zero-liquidity position that then skews JIT in-range checks.
+            let pool = pool
+                .parse::<Address>()
+                .map_err(|e| anyhow::anyhow!("jit_open_positions.pool {pool:?}: {e}"))?;
+            let owner = owner
+                .parse::<Address>()
+                .map_err(|e| anyhow::anyhow!("jit_open_positions.owner {owner:?}: {e}"))?;
+            let liquidity = liq
+                .parse::<u128>()
+                .map_err(|e| anyhow::anyhow!("jit_open_positions.liquidity {liq:?}: {e}"))?;
             out.push(OpenPosition {
                 pool,
                 owner,
                 tick_lower,
                 tick_upper,
                 opened_block,
-                liquidity: liq.parse::<u128>().unwrap_or(0),
+                liquidity,
             });
         }
         Ok(out)

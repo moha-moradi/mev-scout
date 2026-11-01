@@ -85,6 +85,10 @@ pub struct ChainConfig {
     pub pool_discovery_batch_size: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrapped_native_token: Option<Address>,
+    /// Stable majors in profit-token priority order (explorer classifier).
+    /// Chain data, not code: the classifier appends `wrapped_native_token`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_stable_tokens: Option<Vec<Address>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uniswap_v2_default_fee: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,6 +162,7 @@ impl ChainConfig {
             pool_discovery_lookback_blocks,
             pool_discovery_batch_size,
             wrapped_native_token,
+            profit_stable_tokens,
             uniswap_v2_default_fee,
             curve_registry,
             curve_factories,

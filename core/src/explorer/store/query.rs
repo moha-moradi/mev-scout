@@ -165,7 +165,7 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// `top_senders` restricted to one `kind` value (`stats --kind`).
+    /// Sender leaderboard restricted to one kind/confidence (report `--kind`).
     pub fn top_senders_filtered(
         &self,
         since_ts: u64,
@@ -186,7 +186,7 @@ impl ExplorerStore {
     ) -> anyhow::Result<Vec<StatsRow>> {
         self.top_by(since_ts as i64, GROUP_COMPETITOR, limit, kind, confidence)
     }
-    /// `top_pools` restricted to one `kind` value (`stats --kind`).
+    /// Pool leaderboard restricted to one kind/confidence (report `--kind`).
     pub fn top_pools_filtered(
         &self,
         since_ts: u64,
@@ -197,7 +197,8 @@ impl ExplorerStore {
         // Pools live inside route_json; `top_by` extracts them with json_each.
         self.top_by(since_ts as i64, GROUP_POOL, limit, kind, confidence)
     }
-    /// Full op detail for `show <TX>`.
+    /// Every op persisted for one tx hash. Test/report drill-down: the CLI has
+    /// no per-tx subcommand, and `tests/mev_corpus.rs` is the only caller.
     pub fn ops_for_tx(&self, tx_hash: &str) -> anyhow::Result<Vec<MevOpRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
@@ -240,12 +241,15 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// Realized ops in a block window.
+    /// Realized ops in a block window. `limit` caps the read so a caller that
+    /// scans a whole database (e.g. `0..=u64::MAX`) cannot pull every row into
+    /// RAM at once; `None` is unbounded and only for genuinely full reads.
     pub fn ops_in_range(
         &self,
         from_block: u64,
         to_block: u64,
         kinds: &[MevKind],
+        limit: Option<usize>,
     ) -> anyhow::Result<Vec<MevOpRow>> {
         let kind_filter = if kinds.is_empty() {
             String::new()
@@ -261,13 +265,28 @@ impl ExplorerStore {
                     subkind
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
-             ORDER BY block_number, tx_index, id"
+             ORDER BY block_number, tx_index, id{}",
+            if limit.is_some() {
+                "\n             LIMIT ?"
+            } else {
+                ""
+            }
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_mev_op_row)?;
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        match limit {
+            Some(n) => {
+                let rows = stmt.query_map(rusqlite::params![n as i64], map_mev_op_row)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
+            None => {
+                let rows = stmt.query_map([], map_mev_op_row)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
         }
         Ok(out)
     }

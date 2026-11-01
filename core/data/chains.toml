@@ -21,6 +21,13 @@ uniswap_v2_factories = [
 pool_discovery_start_block = 49100000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", # USDC (native)
+  "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", # USDC.e
+  "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", # USDT
+  "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063", # DAI
+]
 v4_pool_manager = "0x67366782805870060151383f4bbff9dab53e5cd6"
 curve_factories = ["0x1764ee18e8B3ccA4787249Ceb249356192594585"]
 # Metric V2 AMM factory (same deterministic address on all chains).
@@ -47,6 +54,13 @@ uniswap_v2_factories = [
 pool_discovery_start_block = 4200000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", # USDC
+  "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF19497", # USDC.e
+  "0xc7198437980c041389c85c43e942b31037ADb125", # USDT.e
+  "0xd586E7F844cEa2F50bf48A84c291e3C71F0fDa99", # DAI.e
+]
 v4_pool_manager = "0x06380c0e0912312b5150364b9dc4542ba0dbbc85"
 # Curve Stableswap Factory NG (same deterministic address as Polygon).
 curve_factories = ["0x1764ee18e8B3ccA4787249Ceb249356192594585"]
@@ -151,6 +165,12 @@ uniswap_v2_factories = [
 pool_discovery_start_block = 5063800
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", # USDC
+  "0x55d398326f99059fF775485246999027B3197955", # USDT
+  "0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3", # DAI
+]
 uniswap_v2_default_fee = 25
 v4_pool_manager = "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df"
 # PancakeSwap Infinity CLPoolManager (BSC) — swap/initialize topics on this singleton.
@@ -290,6 +310,12 @@ uniswap_v3_factories = [
 pool_discovery_start_block = 172000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", # USDC
+  "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", # USDT
+  "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", # DAI
+]
 camelot_factories = ["0x6EcCab422D763aC031210895C81787E87B43A652"]
 v4_pool_manager = "0x360e68faccca8ca495c1b759fd9eee466db9fb32"
 # LFJ V2.1 (0x8e42f2...) + V2.2 (0xb43120...) LB factories both deployed on Arbitrum.
@@ -318,6 +344,11 @@ uniswap_v3_factories = [
 pool_discovery_start_block = 96000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x4200000000000000000000000000000000000006"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", # USDC
+  "0x4200000000000000000000000000000000000006", # WETH (no USDT/DAI majors)
+]
 solidly_factories = ["0x8909Dc15e40173Ff4699343b6eB8132c0eE88a14"]
 v4_pool_manager = "0x498581ff718922c3f8e6a244956af099b2652b2b"
 # Curve Stableswap Factory NG (Base).
@@ -348,6 +379,12 @@ uniswap_v2_factories = [
 pool_discovery_start_block = 10008335
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", # USDC
+  "0xdAC17F958D2ee523a2206206994597C13D831ec7", # USDT
+  "0x6B175474E89094C44Da98b954EedeAC495271d0F", # DAI
+]
 curve_registry = "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
 # Curve + Lista DEX SmartSwap (Curve-like stableswap) factory.
 curve_factories = ["0x6A8cbed756804B16E05E741eDaBd5cB544AE21bf", "0xF6c9ffA64bD0aE8a068dd7b7d954c654A3E7F8a6"]
@@ -374,6 +411,12 @@ uniswap_v2_factories = []
 pool_discovery_start_block = 10827000
 pool_discovery_lookback_blocks = 1000
 wrapped_native_token = "0x4200000000000000000000000000000000000006"
+# Explorer profit-token priority (stable majors, then wrapped native).
+profit_stable_tokens = [
+  "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", # USDC
+  "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", # USDT
+  "0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1", # DAI
+]
 solidly_factories = ["0x420DD381b31aEf6683db6B902084cB0FFECe40Da"]
 curve_factories = ["0x5eeE3091f747E60a045a2E715a4c71e600e31F6E"]
 v4_pool_manager = "0x9a13f98cb987694c9f086b1f5eb990eea8264ec3"

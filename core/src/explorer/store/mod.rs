@@ -438,7 +438,7 @@ mod tests {
         assert!(store.block_classified(100).unwrap());
         assert!(!store.block_classified(101).unwrap());
 
-        let ops = store.ops_in_range(100, 100, &[]).unwrap();
+        let ops = store.ops_in_range(100, 100, &[], None).unwrap();
         assert_eq!(ops.len(), 1);
         assert!(ops[0].profit_usd.unwrap() > 0.0);
         assert!(ops[0].net_profit_usd.unwrap() < ops[0].profit_usd.unwrap());
@@ -485,7 +485,7 @@ mod tests {
 
         let ids = |store: &ExplorerStore| -> Vec<i64> {
             store
-                .ops_in_range(100, 100, &[])
+                .ops_in_range(100, 100, &[], None)
                 .unwrap()
                 .into_iter()
                 .map(|op| op.id)
@@ -499,6 +499,44 @@ mod tests {
             ids(&store),
             "repeated runs must return the same order"
         );
+    }
+
+    #[test]
+    fn ops_in_range_limit_caps_the_read() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+        let ops: Vec<MevEvent> = (0..5u64)
+            .map(|i| {
+                let mut ev = sample_event(100);
+                let mut raw = [0u8; 32];
+                raw[31] = i as u8;
+                ev.tx_hash = B256::from(raw);
+                ev.tx_index = i;
+                ev
+            })
+            .collect();
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: &ops,
+                token_prices: &prices,
+            },
+        );
+        assert_eq!(store.ops_in_range(100, 100, &[], None).unwrap().len(), 5);
+        let capped = store.ops_in_range(100, 100, &[], Some(2)).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert!(capped[0].id < capped[1].id, "limit keeps the first rows");
     }
 
     #[test]
@@ -667,7 +705,7 @@ mod tests {
             },
         );
         assert_eq!(n, 1, "the lossy sandwich is persisted, not dropped");
-        let ops = store.ops_in_range(130, 130, &[]).unwrap();
+        let ops = store.ops_in_range(130, 130, &[], None).unwrap();
         assert_eq!(ops.len(), 1);
         assert!(ops[0].net_profit_usd.unwrap() < 0.0);
         let flagged: i64 = store
@@ -701,7 +739,7 @@ mod tests {
             },
         );
         assert_eq!(n, 1);
-        assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
+        assert_eq!(store.ops_in_range(131, 131, &[], None).unwrap().len(), 1);
         let unflagged: i64 = store
             .conn
             .query_row(
@@ -987,7 +1025,7 @@ mod tests {
         assert!(pct > 0.0 && pct < 100.0);
         // The wholly unpriced op (case 5) must stay NULL in the store
         // (excluded, not zeroed).
-        let ops = store.ops_in_range(600, 613, &[]).unwrap();
+        let ops = store.ops_in_range(600, 613, &[], None).unwrap();
         let null_blocks: Vec<u64> = ops
             .iter()
             .filter(|op| op.profit_usd.is_none())
@@ -1043,7 +1081,7 @@ mod tests {
         persist_native(&store, 700, Some(0.75), one_native);
         persist_native(&store, 701, None, one_native);
 
-        let ops = store.ops_in_range(700, 701, &[]).unwrap();
+        let ops = store.ops_in_range(700, 701, &[], None).unwrap();
         let priced = ops
             .iter()
             .find(|o| o.block_number == 700)
@@ -1147,7 +1185,7 @@ mod tests {
             "the flagged op is the only approximate one"
         );
 
-        let ops = store.ops_in_range(700, 701, &[]).unwrap();
+        let ops = store.ops_in_range(700, 701, &[], None).unwrap();
         assert_eq!(ops.len(), 2);
         let row = |block: u64| ops.iter().find(|op| op.block_number == block).unwrap();
         let details = |block: u64| row(block).details_json.clone().unwrap_or_default();
@@ -1293,7 +1331,7 @@ mod tests {
             },
         );
         assert_eq!(n, 1);
-        let ops = store.ops_in_range(801, 801, &[]).unwrap();
+        let ops = store.ops_in_range(801, 801, &[], None).unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(
             ops[0].net_profit_usd,

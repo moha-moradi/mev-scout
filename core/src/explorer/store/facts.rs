@@ -169,22 +169,33 @@ impl ExplorerStore {
         let now = crate::utils::epoch_secs() as i64;
         // All business logic (PnL annotation, sandwich gate, volume,
         // flash-fee conversion, native residual, confidence) lives in
-        // `pnl::annotate_event`; the transaction below only binds and
-        // inserts the already-annotated rows.
-        // One pass over the block's swaps; each event reads its tx's total.
-        let mut volume_by_tx: HashMap<u64, f64> = HashMap::new();
+        // `pnl::annotate_event_with_volume`; the transaction below only binds
+        // and inserts the already-annotated rows.
+        // One pass over the block's swaps: each event reads its tx's total, and
+        // a missing quote on any leg marks that volume as a floor.
+        let mut volume_by_tx: HashMap<u64, (f64, bool)> = HashMap::new();
         for s in swaps {
-            let usd = token_prices
-                .get(&s.token_in)
-                .map(|p| crate::explorer::pricing::token_amount_to_usd(s.amount_in, p))
-                .unwrap_or(0.0);
-            *volume_by_tx.entry(s.tx_index).or_insert(0.0) += usd;
+            let entry = volume_by_tx.entry(s.tx_index).or_insert((0.0, false));
+            match token_prices.get(&s.token_in) {
+                Some(p) => entry.0 += crate::explorer::pricing::token_amount_to_usd(s.amount_in, p),
+                None => entry.1 = true,
+            }
         }
         let ops: Vec<PersistedOp> = events
             .iter()
             .map(|ev| {
-                let volume = volume_by_tx.get(&ev.tx_index).copied().filter(|v| *v > 0.0);
-                annotate_event_with_volume(ev, volume, token_prices, native_price_usd, now)
+                let (total, partial) = volume_by_tx
+                    .get(&ev.tx_index)
+                    .copied()
+                    .unwrap_or((0.0, false));
+                annotate_event_with_volume(
+                    ev,
+                    (total > 0.0).then_some(total),
+                    partial,
+                    token_prices,
+                    native_price_usd,
+                    now,
+                )
             })
             .collect();
         let pending_labels: PendingLabels = events
@@ -197,8 +208,8 @@ impl ExplorerStore {
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO blocks
-                   (block_number, block_hash, ts, producer, base_fee_gwei, tx_count, indexed_at)
-                 VALUES(?1, ?2, ?3, NULL, ?4, ?5, ?6)",
+                   (block_number, block_hash, ts, base_fee_gwei, tx_count, indexed_at)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             stmt.execute(rusqlite::params![
                 block_number as i64,
@@ -236,9 +247,9 @@ impl ExplorerStore {
         {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO swaps
-                   (block_number, tx_index, log_index, pool, dex, amm,
-                    token_in, token_out, amount_in, amount_out, sender)
-                 VALUES(?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, NULL)",
+                   (block_number, tx_index, log_index, pool, amm,
+                    token_in, token_out, amount_in, amount_out)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
             for s in swaps {
                 stmt.execute(rusqlite::params![
@@ -259,8 +270,8 @@ impl ExplorerStore {
             let mut stmt = tx.prepare_cached(
                 "INSERT OR IGNORE INTO transfers
                    (block_number, tx_index, log_index, token, \"from\", \"to\",
-                    amount, is_native)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                    amount)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             for t in transfers {
                 stmt.execute(rusqlite::params![

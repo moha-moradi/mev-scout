@@ -588,7 +588,7 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
     let kind = MevKind::parse(case.kind)
         .unwrap_or_else(|| panic!("{}: invalid kind '{}'", case.id, case.kind));
     let mut ops = store
-        .ops_in_range(case.from_block, case.to_block, &[kind])
+        .ops_in_range(case.from_block, case.to_block, &[kind], None)
         .unwrap_or_else(|e| panic!("{}: ops_in_range query failed: {e}", case.id));
 
     if let Some(searcher) = case.searcher {
@@ -863,7 +863,7 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
     }
     for (from, to) in windows {
         lines.push(format!("{from}..={to}"));
-        let ops = match store.ops_in_range(*from, *to, &[]) {
+        let ops = match store.ops_in_range(*from, *to, &[], None) {
             Ok(ops) => ops,
             Err(e) => {
                 lines.push(format!("  ops query failed: {e}"));
