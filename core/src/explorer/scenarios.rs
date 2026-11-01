@@ -1,5 +1,5 @@
 //! Synthetic per-strategy scenario catalogue for the explorer strategy
-//! tracking plan (`docs/explorer_strategy_tracking_plan.md`).
+//! checklist (`docs/explorer_strategy_checklist.md`).
 //!
 //! One `#[test]` per scheduled item (P0.1–P3.16) plus the baseline kinds.
 //! Each test builds a deterministic [`BlockInput`] — a positive fingerprint and,

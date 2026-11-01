@@ -1,7 +1,7 @@
 //! Real-block hunt recipes for explorer strategy scenarios.
 //!
 //! Synthetic fixtures live in [`super::scenarios`] (cfg(test)). This module is
-//! the machine-readable companion to `docs/explorer_strategy_scenarios.md`:
+//! the machine-readable companion to `docs/explorer_strategy_checklist.md`:
 //! every scheduled plan item has a hunt recipe; Avalanche corpus seeds are
 //! filled in as RECORD runs pin windows.
 //!
@@ -39,8 +39,8 @@ pub struct StrategyScenarioTarget {
     pub hunt: &'static str,
 }
 
-/// Full scheduled catalogue (baseline + P0–P3). Keep in sync with
-/// `docs/explorer_strategy_scenarios.md`.
+/// Full scheduled catalogue (baseline + P0–P3). Kept in sync with
+/// `docs/explorer_strategy_checklist.md` by `tests/explorer_checklist_sync.rs`.
 pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
     // ── baseline ────────────────────────────────────────────────────
     StrategyScenarioTarget {

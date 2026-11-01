@@ -96,7 +96,8 @@ mev-scout discover --block 65000000
 mev-scout discover --from-block 65000000 --to-block 65000100
 ```
 
-Bare `explorer` takes `--windows` / `--kind` / `--top` (revenue report).
+Bare `explorer` takes `--windows` / `--kind` / `--confidence` / `--top`
+(revenue report). `--confidence` restricts rows to `exact`, `inferred` or `all`.
 `--windows` accepts comma-separated `Nh` / `Nd` / `Nw` durations or `all`
 (e.g. `12h,1d,7d,all`); coverage is derived from the chain's block time.
 `explorer index` without `--loop` takes `--days` (1–365) or

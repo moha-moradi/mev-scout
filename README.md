@@ -104,7 +104,7 @@ Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
-`explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--top`. `explorer index` takes
+`explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--confidence` (`exact`|`inferred`|`all`) / `--top`. `explorer index` takes
 `--days` or `--from-block`/`--to-block` (bounded), or `--loop [--duration]`.
 
 ## Layout
@@ -137,8 +137,7 @@ are scanning (one chain per box — the disk budgets do not stack) and point
 | Chain | Guide | Local profile | Local RPC |
 | --- | --- | --- | --- |
 | Avalanche | [`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md) | [`mev-scout.local.toml`](mev-scout.local.toml) | `http://127.0.0.1:9650/ext/bc/C/rpc` |
-| Polygon | [`docs/LOCAL_POLYGON.md`](docs/LOCAL_POLYGON.md) | [`mev-scout.local-polygon.toml`](mev-scout.local-polygon.toml) | `http://127.0.0.1:8545` |
-| BSC | [`docs/LOCAL_BSC.md`](docs/LOCAL_BSC.md) | [`mev-scout.local-bsc.toml`](mev-scout.local-bsc.toml) | `http://127.0.0.1:8545` |
+| Polygon | [`docs/LOCAL_POLYGON.md`](docs/LOCAL_POLYGON.md) | copy `mev-scout.example.toml` (no bundled profile) | `http://127.0.0.1:8545` |
 
 ## Validation
 
