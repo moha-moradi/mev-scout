@@ -2,7 +2,11 @@
 //!
 //! Separate database file from the scanner cache (`explorer_{chain}.sqlite`)
 //! so live index writes never contend with replay-path reads. WAL mode,
-//! single-writer, batched transactions. Schema is Postgres-portable.
+//! single-writer. `rusqlite::Connection` is `Send` but not `Sync`, so the
+//! store is never shared across threads; the index loop runs each block's
+//! synchronous writes inside `tokio::task::block_in_place` on multi-thread
+//! runtimes, which keeps the async worker free without a connection pool
+//! (a pool would not help a single writer).
 //!
 //! Layers:
 //! - forensic facts: `blocks`, `txs`, `transfers`, `swaps`, `mev_ops`
@@ -11,14 +15,15 @@
 //! - checkpointing: `sync_state` + `blocks_classified` (gap-safe resume)
 /// `(pool, amm, token_in, token_out)` for a realized swap row.
 pub(super) type PoolSwapRow = (String, Option<String>, String, String);
-/// Persist-block return: `(ops_written, open_jit_positions)`.
-pub(super) type PersistBlockStats = (usize, Vec<(Address, Option<Address>, u64)>);
+/// Competitor labels owed by a persisted block: `(eoa, contract, block)`.
+pub(super) type PendingLabels = Vec<(Address, Option<Address>, u64)>;
 
 mod facts;
 mod jit_positions;
 mod labels;
 mod pnl;
 mod query;
+mod reprice;
 mod schema;
 mod sync;
 
@@ -44,7 +49,7 @@ pub struct OpenPosition {
 }
 
 /// One persisted realized-MEV operation row (`mev_ops`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MevOpRow {
     pub id: i64,
     pub block_number: u64,
@@ -68,6 +73,9 @@ pub struct MevOpRow {
     pub details_json: Option<String>,
     pub detector: String,
     pub created_at: u64,
+    /// `keeper` | `bundler` | `claim_and_sell` for a utility op. JSON reports
+    /// carry it; `report_by_kind` still groups on `kind` alone.
+    pub subkind: Option<String>,
 }
 
 impl MevOpRow {
@@ -83,7 +91,7 @@ impl MevOpRow {
 }
 
 /// Aggregate row for stats/leaderboard queries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StatsRow {
     pub label: String,
     pub ops: i64,
@@ -195,7 +203,7 @@ pub struct OpportunityInput<'a> {
 
 /// One cost · profit · volume row for the revenue report (per kind, per day,
 /// or the window overview).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportRow {
     pub label: String,
     pub ops: i64,
@@ -236,10 +244,17 @@ pub struct ReportQuality {
     pub ops_multi_asset: i64,
     /// Ops whose details carry the `pricing_clamped` reason.
     pub ops_pricing_clamped: i64,
+    /// Ops whose details carry the `FLASH_FEE_UNPRICED` reason: a non-zero
+    /// flash-loan fee with no usable quote, not already netted into the ledger.
+    pub ops_flash_fee_unpriced: i64,
+    /// Sandwich ops loss-gated at persist (priced net `<= 0`): the row is kept
+    /// — counts and gross stay truthful — but every *net* sum and `top_ops`
+    /// exclude it.
+    pub ops_excluded_from_net: i64,
 }
 
 /// Revenue-report window header (bare `explorer` overview).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReportOverview {
     pub ops: i64,
     pub volume_usd: f64,
@@ -320,41 +335,8 @@ pub(super) fn map_mev_op_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MevOpRow
         details_json: r.get(19)?,
         detector: r.get(20)?,
         created_at: r.get::<_, i64>(21)? as u64,
+        subkind: r.get(22)?,
     })
-}
-
-pub(super) fn top_grouped(
-    conn: &Connection,
-    group_col: &str,
-    since_ts: u64,
-    limit: usize,
-    kind: Option<&str>,
-    confidence: Option<&str>,
-) -> anyhow::Result<Vec<StatsRow>> {
-    let mut filter = String::new();
-    if let Some(k) = kind {
-        filter.push_str(&format!("AND kind = '{k}' "));
-    }
-    if let Some(c) = confidence {
-        filter.push_str(&format!("AND confidence = '{c}' "));
-    }
-    let sql = format!(
-        "SELECT {group_col} AS label, COUNT(*) AS ops,
-                COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                COALESCE(SUM(net_profit_usd), 0) AS net_usd
-         FROM mev_ops
-         WHERE ts >= {since_ts} {filter} AND {group_col} IS NOT NULL
-         GROUP BY label
-         ORDER BY gross_usd DESC
-         LIMIT {limit}"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_stats_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -400,11 +382,16 @@ mod tests {
     }
 
     fn sample_event(block: u64) -> MevEvent {
+        // The natural key is `(canonical_id, tx_hash)`. Fixtures that seed
+        // several blocks must not share a hash or the second insert revises
+        // the first row.
+        let mut raw = [0x11u8; 32];
+        raw[24..32].copy_from_slice(&block.to_be_bytes());
         MevEvent {
             block,
             ts: 1_700_000_000,
             tx_index: 3,
-            tx_hash: b256!("1111111111111111111111111111111111111111111111111111111111111111"),
+            tx_hash: B256::from(raw),
             kind: MevKind::ArbAtomic,
             searcher: address!("2222000000000000000000000000000000000002"),
             contract: None,
@@ -451,7 +438,7 @@ mod tests {
         assert!(store.block_classified(100).unwrap());
         assert!(!store.block_classified(101).unwrap());
 
-        let ops = store.ops_in_range(100, 100, &[]).unwrap();
+        let ops = store.ops_in_range(100, 100, &[], None).unwrap();
         assert_eq!(ops.len(), 1);
         assert!(ops[0].profit_usd.unwrap() > 0.0);
         assert!(ops[0].net_profit_usd.unwrap() < ops[0].profit_usd.unwrap());
@@ -469,277 +456,87 @@ mod tests {
     }
 
     #[test]
-    fn multi_residual_profit_usd_sums_all_priced_tokens() {
+    fn ops_in_range_ties_are_id_ordered_and_stable_across_runs() {
         let store = ExplorerStore::open_in_memory().unwrap();
-        let tok_a = address!("4444000000000000000000000000000000000004"); // 6 decimals
-        let tok_b = address!("5555000000000000000000000000000000000005"); // 18 decimals
-        let mut ev = sample_event(200);
-        ev.profit_token = Some(tok_a);
-        ev.profit_amount = Some(U256::from(1_000_000u64)); // 1 token @0.5 = 0.5 USD
-        ev.profit_tokens = vec![
-            (tok_a, U256::from(1_000_000u64)),
-            (tok_b, U256::from(1_000_000_000_000_000_000u64)), // 1 token @2.0 = 2 USD
-        ];
         let mut prices = std::collections::HashMap::new();
-        prices.insert(tok_a, token_usd(0.5, 6));
-        prices.insert(tok_b, token_usd(2.0, 18));
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+        // Same block, tx index and P&L: only the natural key differs, so
+        // `(block_number, tx_index)` alone is a tie.
+        let a = sample_event(100);
+        let mut b = sample_event(100);
+        b.tx_hash = B256::from([0x22u8; 32]);
         seed_block(
             &store,
             SeedBlockParams {
-                block_number: 200,
+                block_number: 100,
                 block_hash: &b256!(
-                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 ),
                 ts: 1_700_000_000,
-                tx_count: 1,
+                tx_count: 2,
                 swaps: &[],
-                events: &[ev],
+                events: &[a, b],
                 token_prices: &prices,
             },
         );
-        let ops = store.ops_in_range(200, 200, &[]).unwrap();
-        assert_eq!(ops.len(), 1);
-        let expected = 0.5 + 2.0;
-        let profit_usd = ops[0].profit_usd.unwrap();
-        assert!((profit_usd - expected).abs() < 1e-6, "got {profit_usd}");
-        // Net subtracts gas (100_000_000_000_000 wei native @0.75 = 0.000075 USD).
-        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
-        assert!(
-            (ops[0].net_profit_usd.unwrap() - (expected - gas_usd)).abs() < 1e-9,
-            "net got {}",
-            ops[0].net_profit_usd.unwrap()
-        );
-        // Display-primary pair is persisted unchanged.
+
+        let ids = |store: &ExplorerStore| -> Vec<i64> {
+            store
+                .ops_in_range(100, 100, &[], None)
+                .unwrap()
+                .into_iter()
+                .map(|op| op.id)
+                .collect()
+        };
+        let first = ids(&store);
+        assert_eq!(first.len(), 2);
+        assert!(first[0] < first[1], "id tiebreak must be ascending");
         assert_eq!(
-            ops[0].profit_token.as_deref(),
-            Some("0x4444000000000000000000000000000000000004")
+            first,
+            ids(&store),
+            "repeated runs must return the same order"
         );
-        assert_eq!(ops[0].profit_amount.as_deref(), Some("1000000"));
-        // Residual list surfaces in details for forensic display.
-        assert!(ops[0]
-            .details_json
-            .as_deref()
-            .unwrap_or("")
-            .contains("\"profit_tokens\""));
-        // Every residual had an external price, so the sum is complete.
-        assert!(!ops[0]
-            .details_json
-            .as_deref()
-            .unwrap_or("")
-            .contains("MULTI_ASSET_PRICING"));
     }
 
     #[test]
-    fn fot_profit_token_flagged_approximate_and_realized_rate_falls_back() {
-        let usdt = address!("dac17f958d2ee523a2206206994597c13d831ec7"); // bundled FOT
-        let longtail = address!("0a00000000000000000000000000000000000000");
-        let usdc = address!("4444000000000000000000000000000000000004");
-
-        let mut prices = std::collections::HashMap::new();
-        prices.insert(usdt, token_usd(0.99, 6));
-        prices.insert(usdc, token_usd(1.0, 6));
-
+    fn ops_in_range_limit_caps_the_read() {
         let store = ExplorerStore::open_in_memory().unwrap();
-        let mut fot = sample_event(301);
-        fot.profit_token = Some(usdt);
-        fot.profit_amount = Some(U256::from(1_000_000u64));
-        // Unpriced profit token priced at the realized route rate :
-        // 1 longtail token sold for 2 USDC ⇒ each is worth 2 USD.
-        let mut realized = sample_event(302);
-        realized.profit_token = Some(longtail);
-        realized.profit_amount = Some(U256::from(500_000u64));
-        realized.details = serde_json::json!({
-            "route": [{
-                "pool": "0x3333",
-                "amm": "v2",
-                "token_in": format!("{longtail:#x}"),
-                "token_out": format!("{usdc:#x}"),
-                "token_source": "registry",
-                "amount_in": "1000000",
-                "amount_out": "2000000",
-            }]
-        });
-
-        for (block, ev) in [(301u64, fot), (302, realized)] {
-            seed_block(
-                &store,
-                SeedBlockParams {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    ),
-                    ts: 1_700_000_000,
-                    tx_count: 1,
-                    swaps: &[],
-                    events: &[ev],
-                    token_prices: &prices,
-                },
-            );
-        }
-
-        let ops = store.ops_in_range(301, 302, &[]).unwrap();
-        assert_eq!(ops.len(), 2);
-
-        let fot_row = &ops[0];
-        assert!(fot_row
-            .details_json
-            .as_deref()
-            .unwrap_or("")
-            .contains("\"usd_approximate\":true"));
-        assert!(fot_row
-            .details_json
-            .as_deref()
-            .unwrap_or("")
-            .contains("\"approximate_reason\":\"FOT\""));
-        // FOT still priced from the external feed.
-        assert!((fot_row.profit_usd.unwrap() - 0.99).abs() < 1e-6);
-
-        let realized_row = &ops[1];
-        // 0.5 longtail token × realized 2.0 USD/token = 1.0, minus gas.
-        let expected_profit = 1.0;
-        assert!(
-            (realized_row.profit_usd.unwrap() - expected_profit).abs() < 1e-6,
-            "got {}",
-            realized_row.profit_usd.unwrap()
-        );
-        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
-        assert_eq!(
-            realized_row.net_profit_usd.unwrap(),
-            expected_profit - gas_usd
-        );
-
-        // Cross-decimal trusted leg: 1e18 raw sold for 2 USDC, so 0.5e18 is $1.
-        // Decimals cancel inside the same-token ratio.
-        let mut cross = sample_event(303);
-        cross.profit_token = Some(longtail);
-        cross.profit_amount = Some(U256::from(500_000_000_000_000_000u64));
-        cross.details = serde_json::json!({
-            "route": [{
-                "pool": "0x3333",
-                "amm": "v2",
-                "token_in": format!("{longtail:#x}"),
-                "token_out": format!("{usdc:#x}"),
-                "token_source": "registry",
-                "amount_in": "1000000000000000000",
-                "amount_out": "2000000",
-            }]
-        });
-        // Proximity leg with the block-26059586 ratio must not be stored as a
-        // complete USD figure. 3000 raw against amount_in 1 and ~1.3e17 of a
-        // 6-decimal token is the $394,674,797,029,045 shape.
-        let mut guessed = sample_event(304);
-        guessed.profit_token = Some(longtail);
-        guessed.profit_amount = Some(U256::from(3000u64));
-        guessed.profit_tokens = vec![(longtail, U256::from(3000u64))];
-        guessed.details = serde_json::json!({
-            "route": [{
-                "pool": "0x3333",
-                "amm": "v2",
-                "token_in": format!("{longtail:#x}"),
-                "token_out": format!("{usdc:#x}"),
-                "token_source": "proximity",
-                "amount_in": "1",
-                "amount_out": "131558265676348437",
-            }]
-        });
-        for (block, ev) in [(303u64, cross), (304, guessed)] {
-            seed_block(
-                &store,
-                SeedBlockParams {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-                    ),
-                    ts: 1_700_000_000,
-                    tx_count: 1,
-                    swaps: &[],
-                    events: &[ev],
-                    token_prices: &prices,
-                },
-            );
-        }
-        let more = store.ops_in_range(303, 304, &[]).unwrap();
-        assert_eq!(more.len(), 2);
-        assert!(
-            (more[0].profit_usd.unwrap() - 1.0).abs() < 1e-6,
-            "cross-decimal got {:?}",
-            more[0].profit_usd
-        );
-        assert!(more[1].profit_usd.is_none(), "got {:?}", more[1].profit_usd);
-        let guessed_details = more[1].details_json.as_deref().unwrap_or("");
-        assert!(guessed_details.contains("MULTI_ASSET_PRICING"));
-        assert!(guessed_details.contains("\"usd_approximate\":true"));
-    }
-
-    #[test]
-    fn clamped_and_native_residuals_are_explicit() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        let longtail = address!("0a00000000000000000000000000000000000000");
-        let usdc = address!("4444000000000000000000000000000000000004");
         let mut prices = std::collections::HashMap::new();
-        prices.insert(usdc, token_usd(1.0, 6));
-
-        let mut clamped = sample_event(410);
-        clamped.profit_token = Some(longtail);
-        clamped.profit_amount = Some(U256::from(1_000_000u64));
-        clamped.details = serde_json::json!({
-            "route": [{
-                "token_in": format!("{longtail:#x}"),
-                "token_out": format!("{usdc:#x}"),
-                "token_source": "registry",
-                "amount_in": "1",
-                "amount_out": "1000000",
-            }]
-        });
-
-        let mut native = sample_event(411);
-        native.profit_token = Some(usdc);
-        native.profit_amount = Some(U256::from(1_000_000u64));
-        native.profit_tokens = vec![
-            (usdc, U256::from(1_000_000u64)),
-            (crate::explorer::profit::NATIVE_MARKER, U256::from(1u64)),
-        ];
-
-        let mut partial = sample_event(412);
-        partial.profit_token = Some(usdc);
-        partial.profit_amount = Some(U256::from(1_000_000u64));
-        partial.profit_tokens = vec![
-            (usdc, U256::from(1_000_000u64)),
-            (longtail, U256::from(100u64)),
-        ];
-
-        for (block, ev) in [(410u64, clamped), (411, native), (412, partial)] {
-            seed_block(
-                &store,
-                SeedBlockParams {
-                    block_number: block,
-                    block_hash: &b256!(
-                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-                    ),
-                    ts: 1_700_000_000,
-                    tx_count: 1,
-                    swaps: &[],
-                    events: &[ev],
-                    token_prices: &prices,
-                },
-            );
-        }
-        let ops = store.ops_in_range(410, 412, &[]).unwrap();
-        assert_eq!(ops.len(), 3);
-        assert!((ops[0].profit_usd.unwrap() - 1.0).abs() < 1e-6);
-        let clamped_details = ops[0].details_json.as_deref().unwrap_or("");
-        assert!(clamped_details.contains("pricing_clamped"));
-        assert!(clamped_details.contains("\"usd_approximate\":true"));
-        // USDC residual is $1; the native marker contributes a reason, not $0.
-        assert!((ops[1].profit_usd.unwrap() - 1.0).abs() < 1e-6);
-        let native_details = ops[1].details_json.as_deref().unwrap_or("");
-        assert!(native_details.contains("NATIVE_UNPRICED"));
-        assert!(native_details.contains("\"usd_approximate\":true"));
-        // Priced USDC is kept; the unpriced residual is not silently folded in as $0.
-        assert!((ops[2].profit_usd.unwrap() - 1.0).abs() < 1e-6);
-        let partial_details = ops[2].details_json.as_deref().unwrap_or("");
-        assert!(partial_details.contains("MULTI_ASSET_PRICING"));
-        assert!(partial_details.contains("\"usd_approximate\":true"));
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+        let ops: Vec<MevEvent> = (0..5u64)
+            .map(|i| {
+                let mut ev = sample_event(100);
+                let mut raw = [0u8; 32];
+                raw[31] = i as u8;
+                ev.tx_hash = B256::from(raw);
+                ev.tx_index = i;
+                ev
+            })
+            .collect();
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: &ops,
+                token_prices: &prices,
+            },
+        );
+        assert_eq!(store.ops_in_range(100, 100, &[], None).unwrap().len(), 5);
+        let capped = store.ops_in_range(100, 100, &[], Some(2)).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert!(capped[0].id < capped[1].id, "limit keeps the first rows");
     }
 
     #[test]
@@ -782,6 +579,31 @@ mod tests {
 
         assert_eq!(store.prune_jit_positions(100).unwrap(), 1);
         assert!(store.open_positions(0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn jit_positions_batch_close_removes_every_match() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let pool = address!("3333000000000000000000000000000000000003");
+        let owner = address!("2222000000000000000000000000000000000002");
+        let positions: Vec<OpenPosition> = [(-100, 100), (-200, 200), (-300, 300)]
+            .into_iter()
+            .map(|(tick_lower, tick_upper)| OpenPosition {
+                pool,
+                owner,
+                tick_lower,
+                tick_upper,
+                opened_block: 10,
+                liquidity: 1,
+            })
+            .collect();
+        store.record_jit_open(&positions).unwrap();
+        store
+            .close_jit_positions(&[(pool, owner, -100, 100), (pool, owner, -300, 300)])
+            .unwrap();
+        let open = store.open_positions(0).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].tick_lower, -200);
     }
 
     fn liquidation_event(collateral: Address, debt: Address) -> MevEvent {
@@ -854,14 +676,16 @@ mod tests {
     }
 
     #[test]
-    fn sandwich_loss_gate_skips_unprofitable() {
+    fn sandwich_loss_gate_persists_lossy_rows_with_flag() {
         let store = ExplorerStore::open_in_memory().unwrap();
         let mut prices = std::collections::HashMap::new();
         prices.insert(
             address!("4444000000000000000000000000000000000004"),
             token_usd(0.5, 6),
         );
-        // Zero extractable profit cannot cover front+back gas → not realized MEV.
+        // Zero extractable profit cannot cover front+back gas → net < 0. The
+        // sandwich is kept with `excluded_from_net = 1` (forensics survive,
+        // counts stay truthful) instead of being dropped.
         let mut loss = sample_event(130);
         loss.kind = MevKind::Sandwich;
         loss.profit_amount = Some(U256::ZERO);
@@ -880,12 +704,24 @@ mod tests {
                 token_prices: &prices,
             },
         );
-        assert_eq!(n, 0);
-        assert!(store.ops_in_range(130, 130, &[]).unwrap().is_empty());
-        // ...but the block is still marked classified (0 persisted ops).
+        assert_eq!(n, 1, "the lossy sandwich is persisted, not dropped");
+        let ops = store.ops_in_range(130, 130, &[], None).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert!(ops[0].net_profit_usd.unwrap() < 0.0);
+        let flagged: i64 = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 130",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(flagged, 1, "the lossy sandwich carries the flag");
+        // ...and the block is still marked classified (1 persisted op).
         assert!(store.block_classified(130).unwrap());
 
-        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept.
+        // A profitable sandwich (1.0 USD profit > ~0.00008 USD gas) is kept
+        // unflagged: the gate fires only on priced net <= 0.
         let mut win = sample_event(131);
         win.kind = MevKind::Sandwich;
         let n = seed_block(
@@ -903,7 +739,16 @@ mod tests {
             },
         );
         assert_eq!(n, 1);
-        assert_eq!(store.ops_in_range(131, 131, &[]).unwrap().len(), 1);
+        assert_eq!(store.ops_in_range(131, 131, &[], None).unwrap().len(), 1);
+        let unflagged: i64 = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net FROM mev_ops WHERE block_number = 131",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(unflagged, 0, "a profitable sandwich is not flagged");
     }
 
     #[test]
@@ -952,17 +797,17 @@ mod tests {
         assert_eq!(n, 1);
 
         let senders = store
-            .top_senders_filtered(1_699_999_000, 5, Some("arb_atomic"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::ArbAtomic), None)
             .unwrap();
         assert!(!senders.is_empty());
 
         let senders_sand = store
-            .top_senders_filtered(1_699_999_000, 5, Some("sandwich"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Sandwich), None)
             .unwrap();
         assert!(!senders_sand.is_empty());
 
         let misc = store
-            .top_senders_filtered(1_699_999_000, 5, Some("liquidations"), None)
+            .top_senders_filtered(1_699_999_000, 5, Some(MevKind::Liquidation), None)
             .unwrap();
         assert!(misc.is_empty());
     }
@@ -987,62 +832,6 @@ mod tests {
             amount_in: U256::from(amount_in),
             amount_out: U256::ZERO,
         }
-    }
-
-    #[test]
-    fn volume_usd_prices_op_swap_legs() {
-        let store = ExplorerStore::open_in_memory().unwrap();
-        let usdc = address!("4444000000000000000000000000000000000004");
-        let mut ev = sample_event(400);
-        ev.tx_index = 7;
-        let swap_legs = [
-            swap_leg(7, 0, usdc, 5_000_000),   // $5
-            swap_leg(7, 1, usdc, 2_000_000),   // $2
-            swap_leg(9, 0, usdc, 100_000_000), // other tx, not attributed
-        ];
-        seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 400,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaadd"
-                ),
-                ts: 1_700_000_000,
-                tx_count: 10,
-                swaps: &swap_legs,
-                events: &[ev],
-                token_prices: &usdc_price(),
-            },
-        );
-        let ops = store.ops_in_range(400, 400, &[]).unwrap();
-        assert_eq!(ops.len(), 1);
-        let v = ops[0].volume_usd.unwrap();
-        assert!((v - 7.0).abs() < 1e-6, "op volume {v}");
-        // Unpriced legs yield None volume.
-        let mut unpr = sample_event(401);
-        unpr.tx_index = 11;
-        // token not in prices map
-        seed_block(
-            &store,
-            SeedBlockParams {
-                block_number: 401,
-                block_hash: &b256!(
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaade"
-                ),
-                ts: 1_700_000_000,
-                tx_count: 1,
-                swaps: &[swap_leg(
-                    11,
-                    0,
-                    address!("9999000000000000000000000000000000000009"),
-                    123,
-                )],
-                events: &[unpr],
-                token_prices: &usdc_price(),
-            },
-        );
-        let ops = store.ops_in_range(401, 401, &[]).unwrap();
-        assert!(ops[0].volume_usd.is_none());
     }
 
     #[test]
@@ -1113,11 +902,14 @@ mod tests {
         assert_eq!(store.blocks_in_window(day_b).unwrap(), 1);
 
         let ov_k = store
-            .report_window_overview(0, Some("sandwich"), None)
+            .report_window_overview(0, Some(MevKind::Sandwich), None)
             .unwrap();
         assert_eq!(ov_k.ops, 1);
         assert_eq!(
-            store.report_by_kind(0, Some("sandwich"), None).unwrap().len(),
+            store
+                .report_by_kind(0, Some(MevKind::Sandwich), None)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -1150,7 +942,8 @@ mod tests {
             }]
         });
 
-        // 3. native residual with no native price → `NATIVE_UNPRICED` (inferred).
+        // 3. native residual — since A16 it is priced with the in-scope $0.75
+        // native price (1 wei ≈ $0), so it is no longer unpriced/approximate.
         let mut native = sample_event(611);
         native.profit_token = Some(usdc);
         native.profit_amount = Some(U256::from(1_000_000u64));
@@ -1164,7 +957,10 @@ mod tests {
         let mut multi = sample_event(612);
         multi.profit_token = Some(usdc);
         multi.profit_amount = Some(U256::from(1_000_000u64));
-        multi.profit_tokens = vec![(usdc, U256::from(1_000_000u64)), (longtail, U256::from(100u64))];
+        multi.profit_tokens = vec![
+            (usdc, U256::from(1_000_000u64)),
+            (longtail, U256::from(100u64)),
+        ];
 
         // 5. wholly unpriced (token absent, no route) → NULL profit_usd +
         // `MULTI_ASSET_PRICING`.
@@ -1173,7 +969,13 @@ mod tests {
         unpriced.profit_tokens = vec![];
         unpriced.details = serde_json::json!({ "route": [] });
 
-        for (block, ev) in [(600u64, exact), (610, clamped), (611, native), (612, multi), (613, unpriced)] {
+        for (block, ev) in [
+            (600u64, exact),
+            (610, clamped),
+            (611, native),
+            (612, multi),
+            (613, unpriced),
+        ] {
             seed_block(
                 &store,
                 SeedBlockParams {
@@ -1191,26 +993,368 @@ mod tests {
         }
 
         let ov = store.report_window_overview(0, None, None).unwrap();
+        // A16 shift: case 3 already counted as priced via its USDC leg; what
+        // changes is that its native residual now contributes real USD and the
+        // op no longer carries NATIVE_UNPRICED / usd_approximate. So priced
+        // stays 4, unpriced stays 1 (case 5 is the genuinely unpriced one),
+        // approx 4→3, native_unpriced 1→0. Coverage/gross are unchanged.
         assert_eq!(ov.ops, 5);
         assert_eq!(ov.quality.ops_priced, 4);
         assert_eq!(ov.quality.ops_unpriced, 1);
         assert_eq!(ov.quality.ops_exact, 4);
         assert_eq!(ov.quality.ops_inferred, 1);
-        assert_eq!(ov.quality.ops_approx, 4);
+        assert_eq!(ov.quality.ops_approx, 3);
         assert_eq!(ov.quality.ops_multi_asset, 2);
-        assert_eq!(ov.quality.ops_native_unpriced, 1);
+        assert_eq!(ov.quality.ops_native_unpriced, 0);
         assert_eq!(ov.quality.ops_pricing_clamped, 1);
         // Each priced op nets $1 (gas ~$0.000075 is tiny relative to 4.0).
         assert!((ov.quality.gross_usd_priced_only - 4.0).abs() < 1e-6);
-        assert_eq!(ov.quality.gross_usd_priced_only, ov.gross_usd, "priced-only gross must equal SUM(profit_usd)");
+        assert_eq!(
+            ov.quality.gross_usd_priced_only, ov.gross_usd,
+            "priced-only gross must equal SUM(profit_usd)"
+        );
         assert_eq!(ov.quality.pricing_coverage_pct, 80.0);
-        assert!(ov.net_usd > 0.0, "net should be positive for 4 priced $1 ops");
+        assert!(
+            ov.net_usd > 0.0,
+            "net should be positive for 4 priced $1 ops"
+        );
         // No divide-by-zero: one $1 op of $4 net ≈ 25% (< 40%), so no warning path.
-        let pct = ov.net_concentration_pct().expect("net>0 must yield a percentage");
+        let pct = ov
+            .net_concentration_pct()
+            .expect("net>0 must yield a percentage");
         assert!(pct > 0.0 && pct < 100.0);
-        // The unpriced op itself must be NULL in the store (excluded, not zeroed).
-        let ops = store.ops_in_range(600, 613, &[]).unwrap();
-        assert!(ops.iter().any(|op| op.profit_usd.is_none()), "expected one NULL-profit op");
+        // The wholly unpriced op (case 5) must stay NULL in the store
+        // (excluded, not zeroed).
+        let ops = store.ops_in_range(600, 613, &[], None).unwrap();
+        let null_blocks: Vec<u64> = ops
+            .iter()
+            .filter(|op| op.profit_usd.is_none())
+            .map(|op| op.block_number)
+            .collect();
+        assert_eq!(
+            null_blocks,
+            vec![613],
+            "only the wholly unpriced op is NULL"
+        );
+    }
+
+    /// A16: a native-denominated residual is priced with the native price
+    /// already in scope for gas. Only a genuinely missing native price keeps
+    /// the row NULL and the `NATIVE_UNPRICED` flag — a NULL is a data limit,
+    /// never an implicit "no profit".
+    #[test]
+    fn native_residual_is_priced_with_the_in_scope_native_price() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let one_native = U256::from(1_000_000_000_000_000_000u128);
+
+        fn persist_native(
+            store: &ExplorerStore,
+            block: u64,
+            native_price_usd: Option<f64>,
+            amount: U256,
+        ) {
+            let mut ev = sample_event(block);
+            ev.profit_token = None;
+            ev.profit_amount = None;
+            ev.profit_tokens = vec![(crate::explorer::profit::NATIVE_MARKER, amount)];
+            let prices: std::collections::HashMap<Address, crate::explorer::pricing::TokenUsd> =
+                Default::default();
+            store
+                .insert_block_facts(BlockFactsInput {
+                    block_number: block,
+                    block_hash: &b256!(
+                        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                    ),
+                    ts: 1_700_000_000,
+                    base_fee_gwei: Some(25.0),
+                    tx_count: 1,
+                    txs: &[],
+                    swaps: &[],
+                    transfers: &[],
+                    events: std::slice::from_ref(&ev),
+                    native_price_usd,
+                    token_prices: &prices,
+                })
+                .unwrap();
+        }
+
+        persist_native(&store, 700, Some(0.75), one_native);
+        persist_native(&store, 701, None, one_native);
+
+        let ops = store.ops_in_range(700, 701, &[], None).unwrap();
+        let priced = ops
+            .iter()
+            .find(|o| o.block_number == 700)
+            .expect("priced native op");
+        assert!(
+            (priced.profit_usd.expect("priced native profit_usd") - 0.75).abs() < 1e-9,
+            "1 native at $0.75 must persist as $0.75, got {:?}",
+            priced.profit_usd
+        );
+        assert!(
+            !priced
+                .details_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("NATIVE_UNPRICED"),
+            "a priced native residual must not carry NATIVE_UNPRICED"
+        );
+
+        let unpriced = ops
+            .iter()
+            .find(|o| o.block_number == 701)
+            .expect("unpriced native op");
+        assert_eq!(
+            unpriced.profit_usd, None,
+            "no native price → NULL, never $0"
+        );
+        assert!(
+            unpriced
+                .details_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("NATIVE_UNPRICED"),
+            "a missing native price must stay flagged"
+        );
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(
+            ov.quality.ops_native_unpriced, 1,
+            "only the genuinely price-less native op is flagged"
+        );
+    }
+
+    /// A non-zero flash-loan fee whose token has no quote is *reported*, not
+    /// silently netted as $0: the row keeps `flashloan_fee_usd = NULL`, carries
+    /// the `FLASH_FEE_UNPRICED` pricing reason (and `usd_approximate`), and is
+    /// counted in `ReportQuality`. The fee the ledger already absorbed (A13) is
+    /// exempt: its residual is inside the token amount, so the missing quote
+    /// does not make `net` incomplete and flagging it would be a false alarm.
+    #[test]
+    fn unpriced_flashloan_fee_is_flagged_unless_the_ledger_netted_it() {
+        let priced = address!("4444000000000000000000000000000000000004"); // 6 decimals
+        let unpriced_tok = address!("0a00000000000000000000000000000000000000");
+        // Only the profit token is priced — the fee token has no quote at all.
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(priced, token_usd(0.5, 6));
+        let profit_usd = 0.5; // 1_000_000 units @ $0.5
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+
+        // Event A: unpriced fee, no netting signal → must be flagged.
+        let mut a = sample_event(700);
+        a.profit_token = Some(priced);
+        a.profit_amount = Some(U256::from(1_000_000u64));
+        a.gas_cost_wei = U256::from(100_000_000_000_000u64);
+        a.flashloan_fee_token = Some(unpriced_tok);
+        a.flashloan_fee_wei = Some(U256::from(1_000u64));
+
+        // Event B: same inputs, but the ledger already netted the fee → no flag.
+        let mut b = a.clone();
+        b.block = 701;
+        let mut raw = [0x11u8; 32];
+        raw[24..32].copy_from_slice(&701u64.to_be_bytes());
+        b.tx_hash = B256::from(raw);
+        b.details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
+
+        let store = ExplorerStore::open_in_memory().unwrap();
+        for ev in [a, b] {
+            let block = ev.block;
+            seed_block(
+                &store,
+                SeedBlockParams {
+                    block_number: block,
+                    block_hash: &B256::repeat_byte(block as u8),
+                    ts: 1_700_000_000,
+                    tx_count: 1,
+                    swaps: &[],
+                    events: &[ev],
+                    token_prices: &prices,
+                },
+            );
+        }
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert_eq!(
+            ov.quality.ops_flash_fee_unpriced, 1,
+            "only the non-netted fee is flagged"
+        );
+        // note_pricing_issue also marks the flagged op approximate.
+        assert_eq!(
+            ov.quality.ops_approx, 1,
+            "the flagged op is the only approximate one"
+        );
+
+        let ops = store.ops_in_range(700, 701, &[], None).unwrap();
+        assert_eq!(ops.len(), 2);
+        let row = |block: u64| ops.iter().find(|op| op.block_number == block).unwrap();
+        let details = |block: u64| row(block).details_json.clone().unwrap_or_default();
+
+        let a_details = details(700);
+        assert!(
+            a_details.contains("FLASH_FEE_UNPRICED"),
+            "flagged op must carry the reason: {a_details}"
+        );
+        assert!(
+            a_details.contains("usd_approximate"),
+            "the reason must also mark the op approximate: {a_details}"
+        );
+        let b_details = details(701);
+        assert!(
+            !b_details.contains("FLASH_FEE_UNPRICED"),
+            "a ledger-netted fee must not be flagged: {b_details}"
+        );
+        assert!(
+            !b_details.contains("usd_approximate"),
+            "a ledger-netted fee must not be marked approximate: {b_details}"
+        );
+
+        // Neither row invents a $0 quote, and A13's arithmetic is unchanged:
+        // the unpriceable fee contributes nothing to `net` for both.
+        for block in [700u64, 701] {
+            let op = row(block);
+            assert!(
+                op.flashloan_fee_usd.is_none(),
+                "block {block}: unpriced fee must stay NULL, not 0.0"
+            );
+            let net = op.net_profit_usd.unwrap_or(f64::NAN);
+            assert!(
+                (net - (profit_usd - gas_usd)).abs() < 1e-9,
+                "block {block}: net {net} != {}",
+                profit_usd - gas_usd
+            );
+        }
+    }
+
+    /// A loss-gated sandwich (priced net `<= 0`) is persisted with
+    /// `excluded_from_net = 1` instead of dropped: op counts and gross stay
+    /// inclusive, every *net* sum and `top_ops` skip it, and the report
+    /// exposes the count. `net == 0.0` exactly is gated too (the gate is
+    /// `<= 0.0`).
+    #[test]
+    fn loss_gated_sandwich_is_counted_but_excluded_from_net() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(
+            address!("4444000000000000000000000000000000000004"),
+            token_usd(0.5, 6),
+        );
+
+        // Sandwich: $0.5 gross against $0.75 gas → net = −$0.25.
+        let mut loss = sample_event(800);
+        loss.kind = MevKind::Sandwich;
+        loss.tx_index = 1;
+        loss.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000001");
+        // 1 native @ $0.75.
+        loss.gas_cost_wei = U256::from(1_000_000_000_000_000_000u64);
+        // Ordinary profitable arb in the same block: $0.5 gross, ~$0.000075 gas.
+        let mut arb = sample_event(800);
+        arb.tx_index = 2;
+        arb.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000002");
+
+        let n = seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 800,
+                block_hash: &B256::repeat_byte(0x80),
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: &[loss, arb],
+                token_prices: &prices,
+            },
+        );
+        // Counts stay truthful: both rows persisted, so the block counted 2.
+        assert_eq!(n, 2);
+
+        let gas_usd = 100_000_000_000_000f64 / 1e18 * 0.75;
+        let arb_net = 0.5 - gas_usd;
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 2);
+        assert!(
+            (ov.net_usd - arb_net).abs() < 1e-9,
+            "net must be the arb's only, got {}",
+            ov.net_usd
+        );
+        assert!(
+            (ov.gross_usd - 1.0).abs() < 1e-9,
+            "gross includes both, got {}",
+            ov.gross_usd
+        );
+        assert_eq!(ov.quality.ops_excluded_from_net, 1);
+
+        // The flag itself is persisted on the sandwich row only.
+        let (flagged, flagged_net): (i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT excluded_from_net, net_profit_usd FROM mev_ops
+             WHERE kind = 'sandwich' AND block_number = 800",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flagged, 1);
+        assert!((flagged_net - (-0.25)).abs() < 1e-9, "got {flagged_net}");
+
+        // `top_ops` is "top by net": the loss-gated sandwich stays out.
+        let top = store.top_ops(0, 10, None, None).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].kind, "arb_atomic");
+
+        // The competitor leaderboard nets only the arb too.
+        let comps = store.top_competitors_filtered(0, 10, None, None).unwrap();
+        assert_eq!(comps.len(), 1);
+        assert!(
+            (comps[0].net_usd - arb_net).abs() < 1e-9,
+            "got {}",
+            comps[0].net_usd
+        );
+
+        // A sandwich with `net == 0.0` exactly is treated as excluded.
+        let mut zero = sample_event(801);
+        zero.kind = MevKind::Sandwich;
+        zero.tx_index = 1;
+        zero.tx_hash = b256!("8000000000000000000000000000000000000000000000000000000000000011");
+        zero.profit_amount = Some(U256::ZERO); // priced → profit_usd = Some(0.0)
+        zero.gas_cost_wei = U256::ZERO; // gas_usd = Some(0.0) → net = Some(0.0)
+        let n = seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 801,
+                block_hash: &B256::repeat_byte(0x81),
+                ts: 1_700_000_100,
+                tx_count: 5,
+                swaps: &[],
+                events: &[zero],
+                token_prices: &prices,
+            },
+        );
+        assert_eq!(n, 1);
+        let ops = store.ops_in_range(801, 801, &[], None).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(
+            ops[0].net_profit_usd,
+            Some(0.0),
+            "the gate saw net 0.0, not None"
+        );
+
+        let ov = store.report_window_overview(0, None, None).unwrap();
+        assert_eq!(ov.ops, 3, "all three rows are counted");
+        assert_eq!(ov.quality.ops_excluded_from_net, 2);
+        assert!(
+            (ov.net_usd - arb_net).abs() < 1e-9,
+            "net unchanged by the zero-net row, got {}",
+            ov.net_usd
+        );
+        assert!((ov.gross_usd - 1.0).abs() < 1e-9);
+
+        // Per kind: sandwich counts stay inclusive while its net sum is empty.
+        let kinds = store.report_by_kind(0, None, None).unwrap();
+        let sand = kinds.iter().find(|r| r.label == "sandwich").unwrap();
+        assert_eq!(sand.ops, 2);
+        assert!((sand.gross_usd - 0.5).abs() < 1e-9);
+        assert_eq!(sand.net_usd, 0.0);
     }
 
     /// The net-concentration guard must never divide by zero and must only emit
@@ -1231,7 +1375,10 @@ mod tests {
         };
 
         // above and below the 40% threshold both return a value (warning decision is display-side).
-        assert_eq!(ov(110.0, 100.0).net_concentration_pct(), Some((100.0 / 110.0) * 100.0));
+        assert_eq!(
+            ov(110.0, 100.0).net_concentration_pct(),
+            Some((100.0 / 110.0) * 100.0)
+        );
         assert_eq!(ov(100.0, 30.0).net_concentration_pct(), Some(30.0));
         assert_eq!(ov(100.0, 40.0).net_concentration_pct(), Some(40.0));
         // zero net → None (no divide-by-zero).
@@ -1383,15 +1530,23 @@ mod tests {
         store
             .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
             .unwrap();
+        // Same block/tx/reason as the row above, different `detail`: this is a
+        // distinct candidate and must survive the natural-key index.
+        let mut detailed = sample_reject(900, "net_zero_searcher", 0);
+        detailed.detail = Some("anchor_profit_zero".into());
         store
-            .insert_rejected_candidate("run", "test", &sample_reject(900, "net_zero_searcher", 0))
+            .insert_rejected_candidate("run", "test", &detailed)
             .unwrap();
         store
             .insert_rejected_candidate("run", "test", &sample_reject(900, "unresolved_cycle", 0))
             .unwrap();
         // No block row → falls back to created_at; before the window.
         store
-            .insert_rejected_candidate("run", "test", &sample_reject(901, "open_inventory", since - 1))
+            .insert_rejected_candidate(
+                "run",
+                "test",
+                &sample_reject(901, "open_inventory", since - 1),
+            )
             .unwrap();
         // No block row → created_at inside the window.
         store
@@ -1400,7 +1555,9 @@ mod tests {
         // Other strategies never show up in the classify slice.
         let mut scanner_reject = sample_reject(900, "no_pool", since + 10);
         scanner_reject.strategy = "scanner_v1".into();
-        store.insert_rejected_candidate("run", "test", &scanner_reject).unwrap();
+        store
+            .insert_rejected_candidate("run", "test", &scanner_reject)
+            .unwrap();
 
         let rejects = store.report_classify_rejects(since).unwrap();
         assert_eq!(rejects.len(), 3);
@@ -1412,6 +1569,210 @@ mod tests {
         assert_eq!(rejects[2].count, 1);
 
         // Older window excludes everything.
-        assert!(store.report_classify_rejects(since + 100).unwrap().is_empty());
+        assert!(store
+            .report_classify_rejects(since + 100)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Re-indexing a block re-derives the same rejects with only `created_at`
+    /// differing; the natural-key unique index must make that a no-op instead
+    /// of doubling every reject denominator.
+    #[test]
+    fn reject_insert_is_idempotent_across_reindex_passes() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let first = sample_reject(910, "unresolved_cycle", 0);
+        let run_id = "explorer-index-910";
+        store
+            .insert_rejected_candidate(run_id, "test", &first)
+            .unwrap();
+        // Second pass over the same block: same candidate, later `created_at`.
+        let mut again = first.clone();
+        again.created_at = 60;
+        store
+            .insert_rejected_candidate(run_id, "test", &again)
+            .unwrap();
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM rejected_candidates WHERE block_number = 910",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "a re-index pass must not duplicate rejects");
+
+        // A different tx in the same block is a different reject.
+        let mut other_tx = first.clone();
+        other_tx.tx_index = Some(2);
+        store
+            .insert_rejected_candidate(run_id, "test", &other_tx)
+            .unwrap();
+        let count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM rejected_candidates WHERE block_number = 910",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    /// A failure part-way through a batch insert must roll back the rows
+    /// already written in that transaction: no half-written results set.
+    #[test]
+    fn insert_opportunities_rolls_back_on_error() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        // Fail the second row after the first one has been inserted inside the
+        // same transaction.
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_second_opportunity
+                 BEFORE INSERT ON opportunities
+                 WHEN NEW.block_number = 2
+                 BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+            )
+            .unwrap();
+        let row = |block_number: u64| OpportunityInput {
+            run_id: "rollback-run",
+            chain: "test",
+            block_number,
+            tx_index: Some(0),
+            strategy: "atomic",
+            pool_a: None,
+            pool_b: None,
+            token_in: None,
+            token_out: None,
+            input_amount: None,
+            expected_profit: None,
+            gas_cost_wei: None,
+            path: None,
+            timestamp: None,
+            mempool_only: false,
+            confidence: None,
+            sender: None,
+            tx_hash: None,
+            detection_path: None,
+            canonical_id: None,
+        };
+        let err = store.insert_opportunities(&[row(1), row(2)]).unwrap_err();
+        assert!(
+            err.to_string().contains("forced failure"),
+            "unexpected error: {err}"
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM opportunities", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "the first row must not survive the failed batch");
+    }
+
+    #[test]
+    fn reindex_keeps_op_id_and_revises_usd() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let token = address!("4444000000000000000000000000000000000004");
+        let hash = b256!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(token, token_usd(0.5, 6));
+        let event = sample_event(100);
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &hash,
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: std::slice::from_ref(&event),
+                token_prices: &prices,
+            },
+        );
+        let (id, created, profit): (i64, i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT id, created_at, profit_usd FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        prices.insert(token, token_usd(2.0, 6));
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &hash,
+                ts: 1_700_000_000,
+                tx_count: 5,
+                swaps: &[],
+                events: std::slice::from_ref(&event),
+                token_prices: &prices,
+            },
+        );
+        let count: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM mev_ops", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "re-index must not insert a second op");
+        let (id2, created2, profit2): (i64, i64, f64) = store
+            .conn
+            .query_row(
+                "SELECT id, created_at, profit_usd FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(id2, id);
+        assert_eq!(created2, created);
+        assert!(
+            (profit - 0.5).abs() < 1e-9,
+            "first quote was 0.5, got {profit}"
+        );
+        assert!(
+            (profit2 - 2.0).abs() < 1e-9,
+            "revised quote must replace profit_usd, got {profit2}"
+        );
+    }
+
+    #[test]
+    fn reprice_range_uses_stored_prices_without_rewriting_identity() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let token = address!("4444000000000000000000000000000000000004");
+        let mut prices = std::collections::HashMap::new();
+        prices.insert(token, token_usd(0.5, 6));
+        seed_block(
+            &store,
+            SeedBlockParams {
+                block_number: 100,
+                block_hash: &b256!(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ),
+                ts: 1_700_000_000,
+                tx_count: 1,
+                swaps: &[],
+                events: &[sample_event(100)],
+                token_prices: &prices,
+            },
+        );
+        let hour = crate::explorer::pricing::hour_bucket(1_700_000_000);
+        store.put_price(token, hour, 4.0, "test").unwrap();
+        let n = store
+            .reprice_range(100, 100, |addr| (addr == token).then_some(6))
+            .unwrap();
+        assert_eq!(n, 1);
+        let (profit, kind): (f64, String) = store
+            .conn
+            .query_row(
+                "SELECT profit_usd, kind FROM mev_ops WHERE block_number = 100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(
+            (profit - 4.0).abs() < 1e-9,
+            "stored 4.0 quote, got {profit}"
+        );
+        assert_eq!(kind, "arb_atomic");
     }
 }

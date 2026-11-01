@@ -14,10 +14,12 @@
 //!
 //! Classification passes (in `classify`), applied per block in priority order:
 //! liquidations, UniV2 `skim()` capture (`Skim`), atomic-arbitrage cycles
-//! (`ArbAtomic`, Exact only), three-leg sandwiches (`Sandwich`), frontruns
+//! (`ArbAtomic`, Exact only), keeper / claim-and-sell / ERC-4337 bundler
+//! (`Utility`, with `subkind`), three-leg sandwiches (`Sandwich`), frontruns
 //! (`Frontrun`), backruns (`Backrun`), and narrowly-intersected JIT liquidity
 //! (`Jit`). Kinds are mutually exclusive by priority (`Sandwich` > `Frontrun` >
-//! `Backrun` > `ArbAtomic` > `JitArb` > `Jit` > `Liquidation` > `Skim`).
+//! `Backrun` > `JitArb` > `Liquidation` > `Jit` > `Skim` > `ArbAtomic` >
+//! `Utility`).
 //! Costs are netted per op: gas (wei × effective price → USD via native price)
 //! and any flash-loan fee (USD via borrowed token price); a sandwich whose net
 //! is non-positive is dropped at persist time (profitability gate).
@@ -29,7 +31,7 @@ pub(crate) mod benqi_liq;
 pub(crate) mod canonical;
 pub(crate) mod classify;
 pub(crate) mod decode;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) mod golden;
 pub mod ingest;
 pub(crate) mod interest_attr;
@@ -38,16 +40,20 @@ pub mod profit;
 pub(crate) mod reject;
 pub(crate) mod results;
 pub mod scenario_targets;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 mod scenarios;
 pub mod store;
 pub(crate) mod strategy_tags;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) mod test_fixtures;
 pub mod types;
 
 pub use canonical::explorer_canonical_id;
-pub use classify::{classify_block, BlockInput, ClassifyOutput, TxInput};
+// `kind_precedence` is re-exported so the A15 census test injects the real
+// numbers into its SQL (single source of truth — no test-local copy).
+pub use classify::{
+    classify_block, kind_precedence, BlockContext, BlockInput, ClassifyOutput, TxInput,
+};
 pub use pricing::TokenUsd;
 pub use reject::{RejectReason, RejectedCandidate};
 pub use results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};

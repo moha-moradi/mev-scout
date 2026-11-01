@@ -1,0 +1,21 @@
+[
+  "flash_arb",
+  "long_tail",
+  "curve_imbalance",
+  "rate_provider_staleness",
+  "fot_arb",
+  "rebase_arb",
+  "savax_rate_arb",
+  "epoch_transition",
+  "gmx_adl_arb",
+  "flash_loan_liq",
+  "bad_debt_liq",
+  "buycollateral",
+  "keeper",
+  "automation",
+  "claim_and_sell",
+  "airdrop",
+  "bundler",
+  "erc4337",
+  "lb_bin_jit"
+]

@@ -123,8 +123,6 @@ fn price_moved(
         return true; // cannot assert price-flat without a feed map
     }
     // Invert: caller wants !price_moved; here "moved" means a relevant poke.
-    // When no feed maps to these assets, treat as moved (conservative → false interest).
-    // Wait - original returned false from interest_accrued when relevant empty.
     oracle_updates.iter().any(|o| relevant.contains(&o.feed))
 }
 

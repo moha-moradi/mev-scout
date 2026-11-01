@@ -6,22 +6,20 @@
 //!
 //! Chain-curated labels (hand-reviewed blocks) can be layered on later; until
 //! then this set is the CI ship gate for causal kinds.
+#![cfg_attr(feature = "test-util", allow(dead_code))]
+
 use alloy::primitives::{address, Address, B256, U256};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
 
 use crate::explorer::classify::{classify_block, BlockInput, TxInput};
-use crate::explorer::profit::ProfitTokenPolicy;
-use crate::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
+use crate::explorer::test_fixtures::{
+    self as fixtures, swap, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM,
+};
+use crate::explorer::types::{MevKind, SwapFact, TransferFact};
 
-const USDC: Address = address!("4000000000000000000000000000000000000005");
-const TOKA: Address = address!("5000000000000000000000000000000000000006");
-const POOL_A: Address = address!("3000000000000000000000000000000000000003");
-const POOL_B: Address = address!("3000000000000000000000000000000000000004");
-const ATK: Address = address!("1000000000000000000000000000000000000001");
-const VICTIM: Address = address!("2000000000000000000000000000000000000002");
-const MARKET: Address = address!("8000000000000000000000000000000000000008");
-const WNATIVE: Address = address!("6000000000000000000000000000000000000007");
+/// The single block number the labeled set is scored at. Fixtures share every
+/// other address with `test_fixtures` so a schema/field change lands once.
+const BLOCK_NUMBER: u64 = 42_000;
 /// No-swap placeholder tx used to widen causal-window boundaries in the
 /// out-of-window fixture cases.
 const FILLER: Address = address!("9000000000000000000000000000000000000009");
@@ -47,6 +45,10 @@ pub struct LabeledCase {
 #[derive(Debug, Clone, Serialize)]
 pub struct GoldenSetScore {
     pub cases: usize,
+    /// Identities of the evaluated cases, in set order. Asserting this list
+    /// (not `cases`) makes an added fixture a named entry and a removed one
+    /// visible by name.
+    pub case_ids: Vec<String>,
     pub true_positives: u64,
     pub false_positives: u64,
     pub false_negatives: u64,
@@ -87,31 +89,9 @@ impl GoldenSetScore {
     }
 }
 
-fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> SwapFact {
-    SwapFact {
-        tx_index: 0,
-        log_index: 0,
-        pool,
-        amm: Amm::V2,
-        token_in: tin,
-        token_out: tout,
-        token_source: LegSource::Registry,
-        amount_in: U256::from(ain),
-        amount_out: U256::from(aout),
-        tick: None,
-        owner: None,
-    }
-}
-
 fn transfer(token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
-    TransferFact {
-        tx_index: 0,
-        log_index: 0,
-        token,
-        from,
-        to,
-        amount: U256::from(amt),
-    }
+    // Position-free: the log index is stamped by [`tx`].
+    fixtures::transfer(0, token, from, to, amt)
 }
 
 fn tx(
@@ -162,25 +142,8 @@ fn tx(
 
 fn block(txs: Vec<TxInput>) -> BlockInput {
     BlockInput {
-        block: 42_000,
-        ts: 1_700_000_000,
-        wrapped_native: WNATIVE,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC],
-            wrapped_native: WNATIVE,
-            weth: WNATIVE,
-        },
-        open_positions: vec![],
-        v2_like_pools: HashSet::new(),
-        chainlink_feeds: HashMap::new(),
-        savax: None,
-        epoch_venue_pools: HashSet::new(),
-        gmx_event_emitters: HashSet::new(),
-        interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
-        prior_oracle_answers: HashMap::new(),
-        savax_exchange_rate_wad: None,
-        tip_sinks: HashSet::new(),
-        txs,
+        block: BLOCK_NUMBER,
+        ..fixtures::block(txs)
     }
 }
 
@@ -396,8 +359,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, USDC, TOKA, 100, 200)],
                     vec![
-                transfer(USDC, ATK, POOL_A, 100),
-                transfer(TOKA, POOL_A, ATK, 200),
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
                     ],
                 ),
                 tx(
@@ -405,8 +368,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     VICTIM,
                     vec![swap(POOL_A, USDC, TOKA, 200, 350)],
                     vec![
-                transfer(USDC, VICTIM, POOL_A, 200),
-                transfer(TOKA, POOL_A, VICTIM, 350),
+                        transfer(USDC, VICTIM, POOL_A, 200),
+                        transfer(TOKA, POOL_A, VICTIM, 350),
                     ],
                 ),
                 tx(
@@ -414,8 +377,8 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                     ATK,
                     vec![swap(POOL_A, TOKA, USDC, 350, 195)],
                     vec![
-                transfer(TOKA, ATK, POOL_A, 350),
-                transfer(USDC, POOL_A, ATK, 195),
+                        transfer(TOKA, ATK, POOL_A, 350),
+                        transfer(USDC, POOL_A, ATK, 195),
                     ],
                 ),
             ]),
@@ -475,50 +438,44 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 expect_tx_index: None,
             },
             input: block({
-                let mut txs = vec![
-                    tx(
-                        0,
-                        VICTIM,
-                        vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-                        vec![
-                            transfer(TOKA, VICTIM, POOL_A, 100),
-                            transfer(USDC, POOL_A, VICTIM, 110),
-                        ],
-                    ),
-                ];
+                let mut txs = vec![tx(
+                    0,
+                    VICTIM,
+                    vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                    vec![
+                        transfer(TOKA, VICTIM, POOL_A, 100),
+                        transfer(USDC, POOL_A, VICTIM, 110),
+                    ],
+                )];
                 for i in 1..=9 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        10,
-                        MARKET,
-                        vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
-                        vec![
-                            transfer(USDC, MARKET, POOL_A, 1000),
-                            transfer(TOKA, POOL_A, MARKET, 100),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    10,
+                    MARKET,
+                    vec![swap(POOL_A, USDC, TOKA, 1000, 100)],
+                    vec![
+                        transfer(USDC, MARKET, POOL_A, 1000),
+                        transfer(TOKA, POOL_A, MARKET, 100),
+                    ],
+                ));
                 for i in 11..=18 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        19,
-                        ATK,
-                        vec![
-                            swap(POOL_A, TOKA, USDC, 100, 120),
-                            swap(POOL_B, USDC, TOKA, 120, 130),
-                        ],
-                        vec![
-                            transfer(TOKA, ATK, POOL_A, 100),
-                            transfer(USDC, POOL_A, ATK, 120),
-                            transfer(USDC, ATK, POOL_B, 120),
-                            transfer(TOKA, POOL_B, ATK, 130),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    19,
+                    ATK,
+                    vec![
+                        swap(POOL_A, TOKA, USDC, 100, 120),
+                        swap(POOL_B, USDC, TOKA, 120, 130),
+                    ],
+                    vec![
+                        transfer(TOKA, ATK, POOL_A, 100),
+                        transfer(USDC, POOL_A, ATK, 120),
+                        transfer(USDC, ATK, POOL_B, 120),
+                        transfer(TOKA, POOL_B, ATK, 130),
+                    ],
+                ));
                 txs
             }),
         },
@@ -616,42 +573,36 @@ pub fn causal_labeled_set() -> Vec<LabeledCase> {
                 expect_tx_index: None,
             },
             input: block({
-                let mut txs = vec![
-                    tx(
-                        0,
-                        ATK,
-                        vec![swap(POOL_A, USDC, TOKA, 100, 200)],
-                        vec![
-                            transfer(USDC, ATK, POOL_A, 100),
-                            transfer(TOKA, POOL_A, ATK, 200),
-                        ],
-                    ),
-                ];
+                let mut txs = vec![tx(
+                    0,
+                    ATK,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+                    vec![
+                        transfer(USDC, ATK, POOL_A, 100),
+                        transfer(TOKA, POOL_A, ATK, 200),
+                    ],
+                )];
                 for i in 1..=9 {
                     txs.push(filler(i));
                 }
-                txs.push(
-                    tx(
-                        10,
-                        VICTIM,
-                        vec![swap(POOL_A, USDC, TOKA, 100, 150)],
-                        vec![
-                            transfer(USDC, VICTIM, POOL_A, 100),
-                            transfer(TOKA, POOL_A, VICTIM, 150),
-                        ],
-                    ),
-                );
-                txs.push(
-                    tx(
-                        11,
-                        ATK,
-                        vec![swap(POOL_B, TOKA, USDC, 200, 250)],
-                        vec![
-                            transfer(TOKA, ATK, POOL_B, 200),
-                            transfer(USDC, POOL_B, ATK, 250),
-                        ],
-                    ),
-                );
+                txs.push(tx(
+                    10,
+                    VICTIM,
+                    vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+                    vec![
+                        transfer(USDC, VICTIM, POOL_A, 100),
+                        transfer(TOKA, POOL_A, VICTIM, 150),
+                    ],
+                ));
+                txs.push(tx(
+                    11,
+                    ATK,
+                    vec![swap(POOL_B, TOKA, USDC, 200, 250)],
+                    vec![
+                        transfer(TOKA, ATK, POOL_B, 200),
+                        transfer(USDC, POOL_B, ATK, 250),
+                    ],
+                ));
                 txs
             }),
         },
@@ -673,8 +624,10 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
     let mut fn_ = 0u64;
     let mut tn = 0u64;
     let mut failures = Vec::new();
+    let mut case_ids = Vec::with_capacity(cases.len());
 
     for case in cases {
+        case_ids.push(case.expectation.id.to_string());
         let events = classify_block(&case.input);
         let claims = causal_claims(&events);
         let exp = &case.expectation;
@@ -750,6 +703,7 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
 
     GoldenSetScore {
         cases: cases.len(),
+        case_ids,
         true_positives: tp,
         false_positives: fp,
         false_negatives: fn_,
@@ -777,10 +731,24 @@ mod tests {
             "causal golden set must be perfect on the synthetic labels:\n{}",
             score.render()
         );
-        // 2 positives; negatives: no-ref, same-sender, no-degradation,
-        // sandwich, sub-threshold improvement, move out of window, size
-        // mismatch, sub-threshold degradation, victim out of window.
-        assert_eq!(score.cases, 11);
+        // 2 positives + 9 negatives. Name the cases: adding a fixture extends
+        // this list, dropping one fails by name instead of moving a magic count.
+        assert_eq!(
+            score.case_ids,
+            vec![
+                "backrun_after_market_move",
+                "backrun_no_pre_move_reference",
+                "backrun_same_sender_as_move",
+                "frontrun_cross_pool_close",
+                "frontrun_no_measurable_degradation",
+                "sandwich_legs_not_causal",
+                "backrun_sub_threshold_improvement",
+                "backrun_move_outside_window",
+                "backrun_size_mismatch",
+                "frontrun_sub_threshold_degradation",
+                "frontrun_victim_outside_window",
+            ]
+        );
         assert_eq!(score.true_positives, 2);
         assert_eq!(score.true_negatives, 9);
     }

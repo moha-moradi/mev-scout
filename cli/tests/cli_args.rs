@@ -158,7 +158,12 @@ fn config_prints_resolved_toml_from_example_toml() {
     // Dynamic provider count: compare against the example TOML itself instead of
     // a hard-coded threshold, so adding/removing providers doesn't break the
     // test. The resolved config must include at least every placeholder URL.
-    let example_https_count = common::example_config_text().matches("https://").count();
+    // Commented examples (the env-interpolation form) are documentation only.
+    let example_https_count = common::example_config_text()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter(|line| line.contains("https://"))
+        .count();
     assert!(
         example_https_count >= 1,
         "mev-scout.example.toml should contain at least one provider placeholder"
@@ -507,9 +512,7 @@ fn explorer_invalid_confidence_value_fails_at_clap() {
     let out = run(&ws, &["explorer", "--confidence", "bogus"]);
     expect_fail(&out, "explorer --confidence bogus");
     assert!(
-        out.combined()
-            .contains("invalid value")
-            && out.combined().contains("bogus"),
+        out.combined().contains("invalid value") && out.combined().contains("bogus"),
         "expected clap rejection for --confidence 'bogus', got:\n{}",
         out.combined()
     );
@@ -633,13 +636,22 @@ fn report_selects_explicit_run_id_offline() {
         .unwrap()
         .replace('\\', "/");
 
+    // Single-chain config: the example template is a multi-chain registry,
+    // and a shared explorer.db_path across chain sections is rejected at load
+    // (explorer fact tables are not chain-keyed).
     let write_cfg = |ws: &std::path::Path, extras: &[(&str, &str)]| -> String {
-        let path = make_cfg(ws, extras);
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
-        writeln!(f, "\n[explorer]\ndb_path = \"{explorer_db}\"").unwrap();
-        path
+        let mut body = String::from("chain = \"polygon\"\n");
+        for (key, value) in extras {
+            if value.starts_with('"') {
+                body.push_str(&format!("{key} = {value}\n"));
+            } else {
+                body.push_str(&format!("{key} = \"{value}\"\n"));
+            }
+        }
+        body.push_str(&format!("\n[explorer]\ndb_path = \"{explorer_db}\"\n"));
+        let path = ws.join("cfg-single-chain.toml");
+        std::fs::write(&path, body).unwrap();
+        path.to_str().unwrap().to_string()
     };
 
     let cfg_path = write_cfg(&ws, &[("output", "\"json\""), ("db_path", &cache_db)]);

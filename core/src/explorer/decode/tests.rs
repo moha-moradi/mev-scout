@@ -269,7 +269,11 @@ fn donaswap_v3_swap_decodes_like_v3() {
     data[56..64].copy_from_slice(&12_641_094_804_701_311_522u64.to_be_bytes());
     // tick right-aligned in bytes 128..160
     data[156..160].copy_from_slice(&(-5_120i32).to_be_bytes());
-    let l = log(pool, vec![*DONASWAP_V3_SWAP_TOPIC, B256::ZERO, B256::ZERO], data);
+    let l = log(
+        pool,
+        vec![*DONASWAP_V3_SWAP_TOPIC, B256::ZERO, B256::ZERO],
+        data,
+    );
     let (amm, s) = decode_swap(&l).unwrap();
     assert_eq!(amm, Amm::V3);
     assert_eq!(s.pool, pool);
@@ -292,11 +296,7 @@ fn lb_legacy_swap_decodes_packed_xy() {
     data[64 + 28..64 + 32].copy_from_slice(&180_816u32.to_be_bytes());
     let l = log(
         pool,
-        vec![
-            *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
-            B256::ZERO,
-            B256::ZERO,
-        ],
+        vec![*TRADER_JOE_LB_SWAP_LEGACY_TOPIC, B256::ZERO, B256::ZERO],
         data,
     );
     let (amm, s) = decode_swap(&l).unwrap();
@@ -942,4 +942,128 @@ fn lb_deposited_to_bins_decodes() {
     assert_eq!(j.liquidity, 1);
     assert_eq!(j.amount0, U256::from(9));
     assert_eq!(j.amount1, U256::from(7));
+}
+
+#[test]
+fn abi_u256_array_rejects_over_64_entries() {
+    // head word = relative offset 32, then length 65, then 65 zero words.
+    let mut data = vec![0u8; 32]; // offset word (rel = 0x20)
+    data[31] = 32;
+    data.extend_from_slice(&U256::from(65usize).to_be_bytes::<32>()); // len = 65
+    data.extend_from_slice(&[0u8; 65 * 32]);
+    assert!(
+        super::jit::decode_abi_u256_array(&data, 0).is_none(),
+        "arrays > 64 entries must be rejected, not truncated"
+    );
+    // exactly 64 still decodes
+    let mut ok = vec![0u8; 32];
+    ok[31] = 32; // offset word (rel = 0x20)
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&[0u8; 64 * 32]);
+    assert_eq!(
+        super::jit::decode_abi_u256_array(&ok, 0).map(|v| v.len()),
+        Some(64)
+    );
+}
+
+#[test]
+fn lb_amounts_rejects_over_64_entries() {
+    // word 0: ids offset (unused here); word 1: amounts offset = 64, then len.
+    let mut data = vec![0u8; 32];
+    data.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>()); // amounts rel = 0x40
+    data.extend_from_slice(&U256::from(65usize).to_be_bytes::<32>()); // len = 65
+    data.extend_from_slice(&[0u8; 65 * 32]);
+    assert!(
+        super::jit::decode_lb_amounts_xy(&data).is_none(),
+        "amount arrays > 64 entries must be rejected, not truncated"
+    );
+    // exactly 64 still decodes
+    let mut ok = vec![0u8; 32];
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&U256::from(64usize).to_be_bytes::<32>());
+    ok.extend_from_slice(&[0u8; 64 * 32]);
+    assert_eq!(
+        super::jit::decode_lb_amounts_xy(&ok),
+        Some((U256::ZERO, U256::ZERO))
+    );
+}
+
+#[test]
+fn dispatched_topics_are_unique_and_classified() {
+    use crate::chain::events::{
+        AAVE_V2_FLASH_LOAN_TOPIC, AAVE_V3_FLASH_LOAN_TOPIC, AAVE_V3_LIQUIDATION_CALL_TOPIC,
+        AAVE_V3_RESERVE_DATA_UPDATED_TOPIC, BALANCER_FLASH_LOAN_TOPIC,
+        BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC, CHAINLINK_ANSWER_UPDATED_TOPIC,
+        CHAINLINK_LOG_TRIGGERED_TOPIC, CHAINLINK_UPKEEP_PERFORMED_TOPIC,
+        COMPOUND_V2_LIQUIDATE_BORROW_TOPIC, COMPOUND_V3_ABSORB_TOPIC,
+        COMPOUND_V3_BUY_COLLATERAL_TOPIC, EULER_V2_LIQUIDATE_TOPIC, GELATO_EXEC_SUCCESS_TOPIC,
+        INF_CL_SWAP_TOPIC, MORPHO_BLUE_FLASH_LOAN_TOPIC, MORPHO_BLUE_LIQUIDATE_TOPIC,
+        NOTIFY_REWARD_TOPIC, SILO_V2_LIQUIDATION_CALL_TOPIC, UNI_V3_FLASH_TOPIC,
+        USER_OPERATION_EVENT_TOPIC, V2_BURN_TOPIC, V2_MINT_TOPIC, V2_SYNC_TOPIC, V4_SWAP_TOPIC,
+    };
+    use crate::pool::decoders::{
+        BALANCER_SWAP_TOPIC, CURVE_TOKEN_EXCHANGE_TOPIC, CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+        FLUID_SWAP_TOPIC, LB_SWAP_TOPIC, LB_WITHDRAWN_FROM_BINS_TOPIC, METRIC_SWAP_TOPIC,
+        PENDLE_SWAP_TOPIC,
+    };
+    use std::collections::HashSet;
+
+    let topics = [
+        TRANSFER_TOPIC,
+        V2_SWAP_TOPIC,
+        V3_SWAP_TOPIC,
+        *DONASWAP_V3_SWAP_TOPIC,
+        *V4_SWAP_TOPIC,
+        *INF_CL_SWAP_TOPIC,
+        *CURVE_TOKEN_EXCHANGE_TOPIC,
+        *CURVE_V2_TOKEN_EXCHANGE_TOPIC,
+        *BALANCER_SWAP_TOPIC,
+        *LB_SWAP_TOPIC,
+        *TRADER_JOE_LB_SWAP_LEGACY_TOPIC,
+        *PENDLE_SWAP_TOPIC,
+        *FLUID_SWAP_TOPIC,
+        *METRIC_SWAP_TOPIC,
+        *SOLIDLY_SWAP_TOPIC,
+        ONEINCH_SWAPPED_TOPIC,
+        PARASWAP_SWAPPED_TOPIC,
+        PARASWAP_SWAPPED_V3_TOPIC,
+        ZRX_FILL_TOPIC,
+        ODOS_SWAP_TOPIC,
+        *AAVE_V3_LIQUIDATION_CALL_TOPIC,
+        *COMPOUND_V3_ABSORB_TOPIC,
+        *COMPOUND_V2_LIQUIDATE_BORROW_TOPIC,
+        *MORPHO_BLUE_LIQUIDATE_TOPIC,
+        *SILO_V2_LIQUIDATION_CALL_TOPIC,
+        *EULER_V2_LIQUIDATE_TOPIC,
+        *UNI_V3_FLASH_TOPIC,
+        *AAVE_V3_FLASH_LOAN_TOPIC,
+        *AAVE_V2_FLASH_LOAN_TOPIC,
+        *BALANCER_FLASH_LOAN_TOPIC,
+        *MORPHO_BLUE_FLASH_LOAN_TOPIC,
+        *COMPOUND_V3_BUY_COLLATERAL_TOPIC,
+        V3_MINT_TOPIC,
+        V3_BURN_TOPIC,
+        *LB_DEPOSITED_TO_BINS_TOPIC,
+        *LB_WITHDRAWN_FROM_BINS_TOPIC,
+        V2_SYNC_TOPIC,
+        *V2_MINT_TOPIC,
+        *V2_BURN_TOPIC,
+        *CHAINLINK_ANSWER_UPDATED_TOPIC,
+        *AAVE_V3_RESERVE_DATA_UPDATED_TOPIC,
+        *BALANCER_TOKEN_RATE_CACHE_UPDATED_TOPIC,
+        *GELATO_EXEC_SUCCESS_TOPIC,
+        *CHAINLINK_UPKEEP_PERFORMED_TOPIC,
+        *CHAINLINK_LOG_TRIGGERED_TOPIC,
+        *NOTIFY_REWARD_TOPIC,
+        *USER_OPERATION_EVENT_TOPIC,
+    ];
+    let mut seen = HashSet::new();
+    for topic in topics {
+        assert!(seen.insert(topic), "topic0 collision: {topic}");
+        assert!(
+            log_family(topic).is_some(),
+            "topic0 has no decoder family: {topic}"
+        );
+    }
+    assert_eq!(seen.len(), 47);
 }

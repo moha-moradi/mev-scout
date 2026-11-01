@@ -1,5 +1,5 @@
 //! Synthetic per-strategy scenario catalogue for the explorer strategy
-//! tracking plan (`docs/explorer_strategy_tracking_plan.md`).
+//! checklist (`docs/explorer_strategy_checklist.md`).
 //!
 //! One `#[test]` per scheduled item (P0.1–P3.16) plus the baseline kinds.
 //! Each test builds a deterministic [`BlockInput`] — a positive fingerprint and,
@@ -9,8 +9,10 @@
 //! self-contained, reproducible, and CI-safe (this is the deterministic
 //! alternative to the RPC-gated replay in `tests/explorer_corpus.rs`).
 //!
-//! The module is only compiled under `cfg(test)` (see `explorer/mod.rs`).
-//! Shared builders live in [`super::test_fixtures`].
+//! The module is compiled under `cfg(test)` or the `test-util` feature (see
+//! `explorer/mod.rs`). Shared builders live in [`super::test_fixtures`].
+#![cfg_attr(feature = "test-util", allow(dead_code, unused_imports))]
+
 use std::collections::HashMap;
 
 use alloy::primitives::{address, b256, Address, U256};
@@ -136,9 +138,13 @@ fn baseline_sandwich() {
     let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
     assert_eq!(ev.searcher, ATK);
     assert_eq!(ev.profit_amount, Some(U256::from(95)));
-    assert_eq!(ev.confidence, Confidence::Exact);
-    assert_eq!(pnl_basis(&ev), Some("R"));
-    assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(false));
+    // A19: sandwich P&L is a gross amount diff, not a ledger residual.
+    assert_eq!(ev.confidence, Confidence::Inferred);
+    assert_eq!(pnl_basis(&ev), Some("gross_amount_diff"));
+    assert_eq!(
+        ev.details["victim_via_aggregator"],
+        serde_json::json!(false)
+    );
 
     // Negative: attacker buys then sells with no intervening victim.
     let neg0 = tx(
@@ -209,7 +215,10 @@ fn sandwich_victim_via_aggregator_tagged() {
     );
     let ev = classify_kind(&block(vec![t0, t1, t2]), MevKind::Sandwich);
     assert_eq!(ev.details["victim_via_aggregator"], serde_json::json!(true));
-    assert_eq!(ev.details["victim_aggregator_brand"], serde_json::json!("odos"));
+    assert_eq!(
+        ev.details["victim_aggregator_brand"],
+        serde_json::json!("odos")
+    );
     assert!(ev.details["reasons"]
         .as_array()
         .unwrap()
@@ -343,7 +352,8 @@ fn baseline_liquidation() {
     assert_eq!(ev.searcher, ATK);
     assert_eq!(ev.profit_token, Some(USDC));
     assert_eq!(ev.profit_amount, Some(U256::from(500)));
-    assert_eq!(ev.confidence, Confidence::Exact);
+    // A19: oracle-valued (O) basis is not Exact.
+    assert_eq!(ev.confidence, Confidence::Inferred);
     assert_eq!(pnl_basis(&ev), Some("O"));
 
     assert!(!kinds(&classify_block(&block(vec![tx(
@@ -485,8 +495,7 @@ fn p0_2_benqi_alias() {
     assert_eq!(aliased.liquidations.len(), 1);
     assert_eq!(aliased.liquidations[0].protocol, "benqi");
 
-    let unaliased =
-        decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
+    let unaliased = decode_tx_logs_with_aliases(0, &[liq_log], &HashMap::new(), &HashMap::new());
     assert_eq!(unaliased.liquidations[0].protocol, "compound_v2");
 
     let mut t = tx(
@@ -505,7 +514,8 @@ fn p0_2_benqi_alias() {
         serde_json::json!("500")
     );
     assert_eq!(ev.profit_amount, Some(U256::from(500)));
-    assert_eq!(ev.confidence, Confidence::Exact);
+    // A19: oracle-valued (O) basis is not Exact.
+    assert_eq!(ev.confidence, Confidence::Inferred);
 }
 
 /// P0.4 — flash-swap / flash-loan flag on an atomic arb. Positive carries
@@ -583,7 +593,7 @@ fn p1_1_interest_accrual() {
             }];
         }
         let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, WNATIVE)]);
+        input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, WNATIVE)]));
         classify_kind(&input, MevKind::Liquidation)
     };
 
@@ -629,7 +639,7 @@ fn p1_3_long_tail() {
         transfer(3, USDC, POOL_B, ATK, 110),
     ];
     let mut input = block(vec![tx(0, ATK, true, blue, blue_transfers)]);
-    input.profit_policy.priority = vec![USDC, WNATIVE];
+    input.ctx.profit_policy.priority = vec![USDC, WNATIVE];
     let ev = classify_kind(&input, MevKind::ArbAtomic);
     assert!(!has_tag(std::slice::from_ref(&ev), "long_tail"));
 }
@@ -657,7 +667,7 @@ fn p1_4_oracle_poke_block() {
             }];
         }
         let mut input = block(vec![t]);
-        input.chainlink_feeds = HashMap::from([(feed, USDC)]);
+        input.ctx.chainlink_feeds = std::sync::Arc::new(HashMap::from([(feed, USDC)]));
         classify_kind(&input, MevKind::Liquidation)
     };
     let ev = build(true);
@@ -683,7 +693,7 @@ fn p1_5_keeper_execution() {
     }];
     let events = classify_block(&block(vec![t]));
     assert!(has_tag(&events, "keeper"));
-    let ev = event_of(&events, MevKind::Unknown);
+    let ev = event_of(&events, MevKind::Utility);
     assert_eq!(ev.details["protocol"], serde_json::json!("gelato"));
     assert_eq!(pnl_basis(ev), Some("F"));
     assert_eq!(ev.profit_amount, Some(U256::from(42)));
@@ -912,8 +922,9 @@ fn p3_11_erc4337_bundler() {
     t.user_ops = vec![op(true)];
     let events = classify_block(&block(vec![t]));
     assert!(has_tag(&events, "bundler"));
-    let ev = event_of(&events, MevKind::Unknown);
-    assert_eq!(pnl_basis(ev), Some("R"));
+    let ev = event_of(&events, MevKind::Utility);
+    // A19: the bundler books its own gas cost as profit — not a ledger residual.
+    assert_eq!(pnl_basis(ev), Some("gas_cost_as_profit"));
     assert_eq!(ev.profit_amount, Some(U256::from(12_000)));
 
     let mut neg = tx(0, ATK, true, vec![], vec![]);
@@ -1089,8 +1100,8 @@ fn p3_16_savax_rate_arb() {
             transfer(3, SAVAX, POOL_B, ATK, 105),
         ];
         let mut input = block(vec![tx(0, ATK, true, swaps, transfers)]);
-        input.savax = Some(SAVAX);
-        input.profit_policy.priority = vec![SAVAX, WNATIVE, USDC];
+        input.ctx.savax = Some(SAVAX);
+        input.ctx.profit_policy.priority = vec![SAVAX, WNATIVE, USDC];
         // 1.0 AVAX/sAVAX vs pool 1.1 → ≥5 bps divergence.
         if with_rate {
             input.savax_exchange_rate_wad = Some(U256::from(10u64.pow(18)));

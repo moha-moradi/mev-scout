@@ -1,12 +1,12 @@
 //! Classic realized-sandwich detection.
-use std::collections::HashMap;
-
 use alloy::primitives::{Address, U256};
 
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
+use crate::explorer::reject::RejectReason;
+use crate::explorer::types::{MevEvent, MevKind, PnlBasis};
 
-use super::legs::{opposite_dir, same_dir, SandwichWalk, SwapLeg};
-use super::{has_unresolved_tokens, BlockInput};
+use super::drops::DropSink;
+use super::legs::{opposite_dir, pool_legs, same_dir, SandwichWalk, SwapLeg};
+use super::BlockInput;
 
 /// Classic realized-sandwich detection (pass 4): one attacker
 /// opens a position on a pool (front-run), a **third-party** same-direction
@@ -18,31 +18,10 @@ use super::{has_unresolved_tokens, BlockInput};
 /// the front-run; every other-sender swap in the same direction while the
 /// position is open is a victim; the first attacker swap in the opposite
 /// direction after ≥1 victim is the back-run.
-pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
-    // Flatten every successful tx's resolved-direction swaps in block order.
-    let mut by_pool: HashMap<Address, Vec<(u64, Address, SwapLeg)>> = HashMap::new();
-    for tx in &input.txs {
-        if !tx.success {
-            continue;
-        }
-        for s in &tx.swaps {
-            if has_unresolved_tokens(s) {
-                continue; // unresolved direction cannot anchor a leg
-            }
-            by_pool.entry(s.pool).or_default().push((
-                tx.tx_index,
-                tx.from,
-                SwapLeg {
-                    tx_index: tx.tx_index,
-                    tx_hash: tx.tx_hash,
-                    token_in: s.token_in,
-                    token_out: s.token_out,
-                    amount_in: s.amount_in,
-                    amount_out: s.amount_out,
-                },
-            ));
-        }
-    }
+pub(super) fn classify_sandwiches(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
+    // Every successful tx's resolved-direction swaps, flattened per pool and
+    // sorted by tx index so the walk never depends on `input.txs` order.
+    let by_pool = pool_legs(input);
 
     let mut out = Vec::new();
     for (pool, pool_swaps) in by_pool {
@@ -55,19 +34,25 @@ pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
         for attacker in attackers {
             let mut front: Option<&SwapLeg> = None;
             let mut walk = SandwichWalk::default();
+            let mut saw_opposite = false;
+            let mut closed = false;
             for (_, from, leg) in &pool_swaps {
                 if *from == attacker {
-                    if front.is_none() {
-                        front = Some(leg); // position open
-                    } else if !walk.victims.is_empty() {
-                        let Some(f) = front else {
-                            continue;
-                        };
-                        if opposite_dir(f, leg) {
-                            // First opposite-direction attacker swap after a
-                            // victim closes the sandwich.
-                            out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
-                            break;
+                    match front {
+                        None => front = Some(leg), // position open
+                        Some(f) if !walk.victims.is_empty() => {
+                            if opposite_dir(f, leg) {
+                                // First opposite-direction attacker swap after a
+                                // victim closes the sandwich.
+                                out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
+                                closed = true;
+                                break;
+                            }
+                        }
+                        Some(f) => {
+                            if opposite_dir(f, leg) {
+                                saw_opposite = true;
+                            }
                         }
                     }
                     // Same-direction or pre-victim opposite swaps keep the
@@ -77,6 +62,24 @@ pub(super) fn classify_sandwiches(input: &BlockInput) -> Vec<MevEvent> {
                         // Third-party swap in the same direction: the victim.
                         walk.victims.push(leg.clone());
                     }
+                }
+            }
+            if closed {
+                continue; // not-a-drop: the walk emitted a sandwich
+            }
+            if let Some(f) = front {
+                if saw_opposite && walk.victims.is_empty() {
+                    drops.anchor(
+                        f.tx_index,
+                        RejectReason::VictimSetEmpty,
+                        "closed_without_third_party_victim",
+                    );
+                } else if !walk.victims.is_empty() {
+                    drops.anchor(
+                        f.tx_index,
+                        RejectReason::CycleNotClosed,
+                        "no_closing_back_run_leg",
+                    );
                 }
             }
         }
@@ -109,16 +112,13 @@ pub(super) fn fold_sandwich(
         }
         if (t.tx_index == front.tx_index || t.tx_index == back.tx_index) && seen.insert(t.tx_index)
         {
-            gas_cost_wei = gas_cost_wei.saturating_add(
-                U256::from(t.gas_used)
-                    .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128)),
-            );
+            gas_cost_wei = gas_cost_wei.saturating_add(super::gas::tx_gas_cost_wei(t));
         }
     }
-    // Contract-mediated legs (logs-only): either sandwich leg targets a
-    // contract (`tx.to`). Store-backed labeled-searcher enrichment is out of
-    // scope here — classify stays store-free.
-    let contract_mediated = front_to.is_some() || back_to.is_some();
+    // `tx.to` is present for any call, so "has a to" carries no information.
+    // Mediated means the attacker called something *other than* the pool (a
+    // router/executor); a direct pool call is not a mediation signal.
+    let contract_mediated = [front_to, back_to].into_iter().flatten().any(|a| a != pool);
     let contract = front_to.or(back_to);
 
     // Logs-only victim degradation vs the front-run execution price
@@ -139,11 +139,9 @@ pub(super) fn fold_sandwich(
         _ => None,
     };
 
-    let reverse_backrun = opposite_dir(front, back);
+    // The caller only folds a sandwich behind `opposite_dir(front, back)`, so a
+    // "reverse direction" reason would be set on every sandwich and say nothing.
     let mut reasons: Vec<&str> = Vec::new();
-    if reverse_backrun {
-        reasons.push("REVERSE_DIRECTION");
-    }
     reasons.push("SAME_SEARCHER");
     if degradation_pct.is_some_and(|d| d > 0.0) {
         reasons.push("VICTIM_EXECUTION_DEGRADED");
@@ -177,27 +175,15 @@ pub(super) fn fold_sandwich(
     }
 
     MevEvent {
-        block: input.block,
-        ts: input.ts,
-        tx_index: front.tx_index, // bundle anchor = front-run
-        tx_hash: front.tx_hash,
-        kind: MevKind::Sandwich,
-        searcher: attacker,
-        contract,
         pools: vec![pool],
         profit_token: Some(front.token_in),
         profit_amount: Some(profit),
-        profit_tokens: vec![],
-        profit_usd: None,
         gas_cost_wei,
-        flashloan_fee_wei: None,
-        flashloan_fee_token: None,
-        confidence: Confidence::Exact,
         victim_hashes: walk.victims.iter().map(|v| v.tx_hash).collect(),
         victim_swap_size: walk.victims.last().map(|v| v.amount_in),
         details: serde_json::json!({
             "mode": "realized",
-            "pnl_basis": PnlBasis::R.as_str(),
+            "pnl_basis": PnlBasis::GrossAmountDiff.as_str(),
             "pnl": {
                 "basis": PnlBasis::R.as_str(),
                 "profit_amount": profit.to_string(),
@@ -235,7 +221,6 @@ pub(super) fn fold_sandwich(
             "evidence": {
                 "same_pool": true,
                 "direction_match": true,
-                "reverse_backrun": reverse_backrun,
                 "same_searcher": true,
                 "contract_mediated": contract_mediated,
             },
@@ -246,5 +231,14 @@ pub(super) fn fold_sandwich(
             },
             "reasons": reasons,
         }),
+        ..MevEvent::for_tx(
+            input.block,
+            input.ts,
+            front.tx_index, // bundle anchor = front-run
+            front.tx_hash,
+            MevKind::Sandwich,
+            attacker,
+            contract,
+        )
     }
 }

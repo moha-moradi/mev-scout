@@ -6,6 +6,12 @@ edition = "2021"
 [lints]
 workspace = true
 
+[features]
+# Exposes the synthetic fixture/golden/scenario builders to integration tests
+# without compiling them into release builds. `cargo test` enables `cfg(test)`
+# automatically; `--features test-util` is for external test crates.
+test-util = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

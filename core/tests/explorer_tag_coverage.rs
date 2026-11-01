@@ -1,10 +1,13 @@
 //! Live/tip explorer indexing for tag coverage.
 //!
-//! Gated: set `MEV_SCOUT_COVERAGE=1` and run:
+//! Gated: the test is `#[ignore]`d, so a plain `cargo test` run skips it. Set
+//! `MEV_SCOUT_COVERAGE=1` and select it explicitly:
 //! ```text
 //! cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored --nocapture
 //! ```
-//! Optional: `MEV_SCOUT_COVERAGE_DURATION=15m`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`.
+//! Optional: `MEV_SCOUT_COVERAGE_DURATION=15m`, `MEV_SCOUT_COVERAGE_CONFIG=mev-scout.coverage.toml`,
+//! and `MEV_SCOUT_COVERAGE_STRICT=1` to fail on incomplete tag coverage instead
+//! of printing a warning.
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,26 +20,12 @@ use mev_scout_core::explorer::store::ExplorerStore;
 use mev_scout_core::jobs::{init_rpc, load_pool_registry};
 use mev_scout_core::types::ChainName;
 
-const EXPECTED_TAGS: &[&str] = &[
-    "flash_arb",
-    "long_tail",
-    "curve_imbalance",
-    "rate_provider_staleness",
-    "fot_arb",
-    "rebase_arb",
-    "savax_rate_arb",
-    "epoch_transition",
-    "gmx_adl_arb",
-    "flash_loan_liq",
-    "buycollateral",
-    "keeper",
-    "automation",
-    "claim_and_sell",
-    "airdrop",
-    "bundler",
-    "erc4337",
-    "lb_bin_jit",
-];
+/// Single source of the classifier's tag vocabulary, shared with
+/// `scripts/tag_coverage.py`.
+fn expected_tags() -> Vec<String> {
+    serde_json::from_str(include_str!("../data/explorer_tags.json"))
+        .unwrap_or_else(|e| panic!("core/data/explorer_tags.json: {e}"))
+}
 
 /// Morpho bad-debt is synthetic-only on Avalanche — not required for AVAX coverage.
 const AVAX_SKIP: &[&str] = &["bad_debt_liq"];
@@ -105,13 +94,17 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
     )
     .await?;
     let _ = deadline.await;
-    eprintln!("indexed {indexed} tip blocks; ops={}", store.op_count_since(0)?);
+    eprintln!(
+        "indexed {indexed} tip blocks; ops={}",
+        store.op_count_since(0)?
+    );
 
     let tags = collect_tags(&store)?;
     let skip: HashSet<&str> = AVAX_SKIP.iter().copied().collect();
-    let missing: Vec<&str> = EXPECTED_TAGS
+    let expected = expected_tags();
+    let missing: Vec<&str> = expected
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|t| !tags.contains(*t) && !skip.contains(t))
         .collect();
     let mut present: Vec<_> = tags.iter().cloned().collect();
@@ -128,7 +121,10 @@ async fn tip_loop_tag_coverage() -> anyhow::Result<()> {
             "WARN incomplete coverage (set MEV_SCOUT_COVERAGE_STRICT=1 to fail): {missing:?}"
         );
     }
-    anyhow::ensure!(indexed > 0 || store.op_count_since(0)? > 0, "no blocks indexed");
+    anyhow::ensure!(
+        indexed > 0 || store.op_count_since(0)? > 0,
+        "no blocks indexed"
+    );
     Ok(())
 }
 
@@ -148,7 +144,7 @@ fn parse_duration_env(s: &str) -> anyhow::Result<Duration> {
 
 fn collect_tags(store: &ExplorerStore) -> anyhow::Result<HashSet<String>> {
     let mut out = HashSet::new();
-    for op in store.ops_in_range(0, u64::MAX, &[])? {
+    for op in store.ops_in_range(0, u64::MAX, &[], None)? {
         let Some(dj) = op.details_json.as_deref() else {
             continue;
         };

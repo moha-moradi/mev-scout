@@ -39,7 +39,7 @@ pub(super) struct SandwichWalk {
 /// gate (`core/tests/explorer_golden.rs`) and the offline FP check
 /// (`core/tests/causal_fp_corpus.rs`). See
 /// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4.
-pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
+pub(crate) const CAUSAL_WINDOW_TXS: u64 = 8;
 
 /// Minimum relative price advantage (percentage points) a causal leg must
 /// show to be counted as *material* rather than float / gas-ordering noise.
@@ -54,7 +54,7 @@ pub(super) const CAUSAL_WINDOW_TXS: u64 = 8;
 /// (`core/tests/causal_fp_corpus.rs`). Revisit once a real `frontrun`/`backrun`
 /// corpus seed is available (see
 /// `docs/explorer_module_improvements_b59a6f27.plan.md`, Phase 4).
-pub(super) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
+pub(crate) const CAUSAL_PRICE_MIN_PCT: f64 = 0.5;
 
 /// True when `a` and `b` swap the same token pair in the same direction.
 pub(super) fn same_dir(a: &SwapLeg, b: &SwapLeg) -> bool {
@@ -108,11 +108,11 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
     let mut by_pool: HashMap<Address, Vec<(u64, Address, SwapLeg)>> = HashMap::new();
     for tx in &input.txs {
         if !tx.success {
-            continue;
+            continue; // not-a-drop: a failed tx has no executable leg
         }
         for s in &tx.swaps {
             if has_unresolved_tokens(s) {
-                continue; // unresolved direction cannot anchor a leg
+                continue; // not-a-drop: unresolved direction cannot anchor a leg
             }
             by_pool.entry(s.pool).or_default().push((
                 tx.tx_index,
@@ -134,28 +134,58 @@ pub(super) fn pool_legs(input: &BlockInput) -> HashMap<Address, Vec<(u64, Addres
     by_pool
 }
 
+/// Searcher-attribution candidates for a tx: EOA sender, its receiver-side
+/// contract, plus any address with ≥2 swap participations via transfers.
+/// Order-stable (sender first) for deterministic downstream matching.
+///
+/// The `>= 2` participation threshold is the single chain-configurable knob
+/// Task D12 is meant to expose.
+pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
+    let mut candidates: Vec<Address> = vec![tx.from];
+    if let Some(to) = tx.to {
+        candidates.push(to);
+    }
+    let mut participation: std::collections::HashMap<Address, usize> = Default::default();
+    for t in &tx.transfers {
+        *participation.entry(t.from).or_insert(0) += 1;
+        *participation.entry(t.to).or_insert(0) += 1;
+    }
+    let mut qualified: Vec<Address> = participation
+        .into_iter()
+        .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
+        .map(|(addr, _)| addr)
+        .collect();
+    // HashMap order would shuffle multi-candidate txs between runs.
+    qualified.sort_unstable();
+    candidates.extend(qualified);
+    candidates
+}
+
+/// Why [`tx_cycle_profit`] returned no residual. Callers record these; the
+/// function itself does not touch the reject sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CycleMiss {
+    /// Fewer than two resolved edges. Not an anchor — aggregate per block.
+    TooFewEdges,
+    /// Two or more resolved edges that do not close.
+    NotClosed,
+    /// Closed cycle whose legs are funded by more than one external owner.
+    NotAttributable,
+    /// Every searcher candidate spends a pre-existing inventory residual.
+    InventorySpend,
+    /// Cycle closes and is attributable, but nobody holds a positive residual.
+    NoResidual,
+}
+
 /// Logs-only closed-cycle profit of a tx, mirroring the arb pass: the sender
 /// (or a qualified participant) nets a positive delta in a priority token.
 pub(super) fn tx_cycle_profit(
     input: &BlockInput,
     tx: &TxInput,
-) -> Option<(Address, Address, U256)> {
+) -> Result<(Address, Address, U256), CycleMiss> {
     let ledger =
-        DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
-    let mut candidates: Vec<Address> = vec![tx.from];
-    if let Some(to) = tx.to {
-        candidates.push(to);
-    }
-    let mut participation: HashMap<Address, usize> = HashMap::new();
-    for t in &tx.transfers {
-        *participation.entry(t.from).or_insert(0) += 1;
-        *participation.entry(t.to).or_insert(0) += 1;
-    }
-    for (addr, count) in participation {
-        if count >= 2 && !candidates.contains(&addr) {
-            candidates.push(addr);
-        }
-    }
+        DeltaLedger::from_transfers(&tx.transfers, input.ctx.wrapped_native, (tx.from, tx.value));
+    let candidates = searcher_candidates(tx);
     let resolved: Vec<(Address, Address, _)> = tx
         .swaps
         .iter()
@@ -166,22 +196,81 @@ pub(super) fn tx_cycle_profit(
         })
         .map(|s| (s.token_in, s.token_out, s.pool))
         .collect();
-    if resolved.len() < 2
-        || !has_closed_cycle(&resolved)
-        || !flow_attributable(&tx.swaps, &candidates)
-    {
-        return None; // "closed cycle; else rejected" (§24) + flow ownership (§7.1)
+    if resolved.len() < 2 {
+        return Err(CycleMiss::TooFewEdges);
     }
+    if !has_closed_cycle(&resolved) {
+        return Err(CycleMiss::NotClosed);
+    }
+    if !flow_attributable(&tx.swaps, &candidates) {
+        return Err(CycleMiss::NotAttributable);
+    }
+    let mut saw_inventory = false;
+    let mut saw_clean = false;
     for searcher in candidates {
         if has_inventory_spend(&ledger, searcher) {
-            continue;
+            saw_inventory = true;
+            continue; // not-a-drop: try the next searcher candidate
         }
-        if let Some(token) = select_profit_token(&ledger, searcher, &input.profit_policy) {
+        saw_clean = true;
+        if let Some(token) = select_profit_token(&ledger, searcher, &input.ctx.profit_policy) {
             let amount = ledger.net(searcher, token);
             if !amount.is_zero() {
-                return Some((searcher, token, amount));
+                return Ok((searcher, token, amount));
             }
         }
     }
-    None
+    if saw_inventory && !saw_clean {
+        Err(CycleMiss::InventorySpend)
+    } else {
+        Err(CycleMiss::NoResidual)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::searcher_candidates;
+    use crate::explorer::test_fixtures::{transfer, tx, ATK, POOL_A, POOL_B, USDC, VICTIM};
+
+    #[test]
+    fn sender_leads_and_no_participation_is_invented() {
+        // `to == from` (self-call): the contract push is unconditional, so the
+        // anchor address can repeat. Consumers treat the list as a membership
+        // set (`contains`) or an idempotent loop, so no new candidate appears.
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.to = Some(ATK);
+        let candidates = searcher_candidates(&t);
+        assert_eq!(candidates[0], ATK);
+        assert!(
+            candidates.iter().all(|c| *c == ATK),
+            "no transfers ⇒ no other candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn participants_need_two_legs_and_sort_deterministically() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, USDC, POOL_A, ATK, 100),
+                transfer(1, USDC, ATK, POOL_B, 50),
+                transfer(2, USDC, POOL_A, VICTIM, 50),
+            ],
+        );
+        t.to = Some(POOL_B);
+        let candidates = searcher_candidates(&t);
+        assert_eq!(candidates, vec![ATK, POOL_B, POOL_A]);
+        assert!(
+            !candidates.contains(&VICTIM),
+            "one participation must not qualify as a searcher"
+        );
+        assert_eq!(
+            candidates,
+            searcher_candidates(&t),
+            "candidate order must not depend on hash iteration"
+        );
+    }
 }

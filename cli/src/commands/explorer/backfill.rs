@@ -27,6 +27,11 @@ pub async fn cmd_backfill(
     cfg.rpc_batch_blocks = config.effective_rpc(chain).rpc_batch_blocks;
     cfg.record_rejections = config.backtest.record_rejections;
     cfg.tip_sink_addresses = config.explorer.tip_sink_addresses.iter().cloned().collect();
+    cfg.causal_window_txs = config.explorer.causal_window_txs;
+    cfg.causal_price_min_pct = config.explorer.causal_price_min_pct;
+    cfg.jit_window_blocks = config.explorer.jit_window_blocks;
+    cfg.interest_lookback_blocks = config.explorer.interest_lookback_blocks;
+    cfg.jit_pool_fee_bps = config.explorer.jit_pool_fee_bps;
 
     let (from, to) = match (days, from_block, to_block) {
         (Some(d), None, None) => {
@@ -97,6 +102,23 @@ pub async fn cmd_backfill(
         out.ops,
         elapsed.as_secs_f64()
     ));
+    if !out.skipped_blocks.is_empty() {
+        const SHOW: usize = 20;
+        let n = out.skipped_blocks.len();
+        let shown = out
+            .skipped_blocks
+            .iter()
+            .take(SHOW)
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if n > SHOW { "…" } else { "" };
+        tracing::warn!(
+            skipped = n,
+            "backfill skipped {n} blocks whose fetch failed after retries \
+             [{shown}{more}]; re-run the same range to fill the gap"
+        );
+    }
     Ok(BackfillOutcome {
         from_block: from,
         to_block: to,

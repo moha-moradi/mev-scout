@@ -4,12 +4,14 @@
 //! and the strategy catalogue in `scenarios`. Only compiled under `cfg(test)`.
 
 #![allow(dead_code)]
+#![cfg_attr(feature = "test-util", allow(unused_imports))]
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use alloy::primitives::{address, Address, B256, U256};
 
-use crate::explorer::classify::{BlockInput, TxInput};
+use crate::explorer::classify::{BlockContext, BlockInput, TxInput};
 use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::types::{
     Amm, FlashLoanFact, JitFact, LegSource, LiquidationFact, MevEvent, MevKind, SwapFact,
@@ -207,19 +209,17 @@ pub fn block(txs: Vec<TxInput>) -> BlockInput {
     BlockInput {
         block: 12345,
         ts: 1_700_000_000,
-        wrapped_native: WNATIVE,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC],
+        ctx: BlockContext {
             wrapped_native: WNATIVE,
-            weth: WNATIVE,
+            profit_policy: ProfitTokenPolicy {
+                priority: vec![USDC],
+                wrapped_native: WNATIVE,
+                weth: WNATIVE,
+            },
+            ..BlockContext::for_tests()
         },
         open_positions: vec![],
-        v2_like_pools: HashSet::new(),
-        chainlink_feeds: HashMap::new(),
-        savax: None,
-        epoch_venue_pools: HashSet::new(),
-        gmx_event_emitters: HashSet::new(),
-        interest_lookback: crate::explorer::interest_attr::InterestLookback::default(),
+        interest_lookback: Default::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,
         tip_sinks: HashSet::new(),
@@ -229,7 +229,7 @@ pub fn block(txs: Vec<TxInput>) -> BlockInput {
 
 pub fn block_with_v2(txs: Vec<TxInput>, v2_like: &[Address]) -> BlockInput {
     let mut input = block(txs);
-    input.v2_like_pools = v2_like.iter().copied().collect();
+    input.ctx.v2_like_pools = Arc::new(v2_like.iter().copied().collect());
     input
 }
 

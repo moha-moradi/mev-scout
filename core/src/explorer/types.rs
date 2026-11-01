@@ -26,11 +26,26 @@ pub enum MevKind {
     JitArb,
     /// UniV2-style `skim`: pair outbound Transfers with no Swap/Mint/Burn/Sync.
     Skim,
-    /// Profitable pattern not matching any rule (incl. probable CEX-DEX bots).
-    Unknown,
+    /// Exact-fingerprint operational execution: keeper, airdrop claim-and-sell,
+    /// or ERC-4337 bundler. Not a residual bucket. The family is `subkind`.
+    Utility,
 }
 
 impl MevKind {
+    /// Every emittable kind, in canonical order. Single source of truth for
+    /// coverage tests and CLI error messages.
+    pub const ALL: &[MevKind] = &[
+        MevKind::Sandwich,
+        MevKind::Frontrun,
+        MevKind::Backrun,
+        MevKind::ArbAtomic,
+        MevKind::JitArb,
+        MevKind::Jit,
+        MevKind::Liquidation,
+        MevKind::Skim,
+        MevKind::Utility,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             MevKind::ArbAtomic => "arb_atomic",
@@ -41,7 +56,7 @@ impl MevKind {
             MevKind::Jit => "jit",
             MevKind::JitArb => "jit_arb",
             MevKind::Skim => "skim",
-            MevKind::Unknown => "unknown",
+            MevKind::Utility => "utility",
         }
     }
 
@@ -55,10 +70,38 @@ impl MevKind {
             "jit" => Some(MevKind::Jit),
             "jit_arb" => Some(MevKind::JitArb),
             "skim" => Some(MevKind::Skim),
-            "unknown" => Some(MevKind::Unknown),
+            // `unknown` is the pre-B11 label. Rows are rewritten to `utility`
+            // on open; the alias keeps old CLI flags and corpus strings valid.
+            "utility" | "unknown" => Some(MevKind::Utility),
             _ => None,
         }
     }
+}
+
+/// The one utility family on a classified event, from `details.tags`.
+///
+/// `Some` only when exactly one of `keeper`, `bundler`, `claim_and_sell` is
+/// present. Two different families is not a subkind — that would recreate the
+/// old mystery bucket.
+pub fn utility_subkind(details: &serde_json::Value) -> Option<&'static str> {
+    let tags = details.get("tags")?.as_array()?;
+    let mut found: Option<&'static str> = None;
+    for tag in tags {
+        let Some(name) = tag.as_str() else {
+            continue;
+        };
+        let sub = match name {
+            "keeper" => "keeper",
+            "bundler" => "bundler",
+            "claim_and_sell" => "claim_and_sell",
+            _ => continue,
+        };
+        match found {
+            Some(prev) if prev != sub => return None,
+            _ => found = Some(sub),
+        }
+    }
+    found
 }
 
 impl std::fmt::Display for MevKind {
@@ -75,8 +118,13 @@ impl std::str::FromStr for MevKind {
     }
 }
 
-/// Attribution confidence: `exact` = deterministic event/flow match;
-/// `inferred` = heuristic attribution (score 0..1 carried in details).
+/// Attribution confidence: `exact` means the P&L figure is a **realized
+/// ledger residual** (`details.pnl_basis = "R"`) with a non-empty amount and no
+/// recorded reconcile failure. `inferred` covers every other basis — gross
+/// amount differences, oracle-valued/seized collateral, fee/reward fields,
+/// gas-cost-as-profit — and any event whose amount is absent. A consumer may
+/// treat `exact` as ledger-backed money; `inferred` is an estimate (score 0..1
+/// carried in details where applicable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confidence {
     Exact,
@@ -143,6 +191,44 @@ pub struct MevEvent {
     pub victim_swap_size: Option<U256>,
     /// Kind-specific structured details (liq assets, JIT tick range, notes).
     pub details: serde_json::Value,
+}
+
+impl MevEvent {
+    /// Common shape for a one-transaction event: block/tx identity and the
+    /// attribution pair, with every kind-specific field empty. Callers set
+    /// those fields with struct-update syntax so a new shared field is a
+    /// one-line change instead of an edit at every emission site.
+    pub fn for_tx(
+        block: u64,
+        ts: u64,
+        tx_index: u64,
+        tx_hash: B256,
+        kind: MevKind,
+        searcher: Address,
+        contract: Option<Address>,
+    ) -> Self {
+        Self {
+            block,
+            ts,
+            tx_index,
+            tx_hash,
+            kind,
+            searcher,
+            contract,
+            pools: Vec::new(),
+            profit_token: None,
+            profit_amount: None,
+            profit_tokens: Vec::new(),
+            profit_usd: None,
+            gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence: Confidence::Exact,
+            victim_hashes: Vec::new(),
+            victim_swap_size: None,
+            details: serde_json::json!({}),
+        }
+    }
 }
 
 /// A multi-transaction realized operation (sandwich bundle).
@@ -415,6 +501,12 @@ pub enum PnlBasis {
     O,
     /// Explicit fee/reward event fields (keeper, flash premium, JIT tip).
     F,
+    /// Gross amount difference not netted through the ledger (sandwich
+    /// `back.amount_out − front.amount_in`): never `Exact`.
+    GrossAmountDiff,
+    /// The tx's own gas cost booked as "profit" (ERC-4337 bundler path):
+    /// never `Exact`.
+    GasCostAsProfit,
 }
 
 impl PnlBasis {
@@ -423,7 +515,14 @@ impl PnlBasis {
             PnlBasis::R => "R",
             PnlBasis::O => "O",
             PnlBasis::F => "F",
+            PnlBasis::GrossAmountDiff => "gross_amount_diff",
+            PnlBasis::GasCostAsProfit => "gas_cost_as_profit",
         }
+    }
+
+    /// The only basis that can back `Confidence::Exact` (A19).
+    pub fn is_ledger_residual(self) -> bool {
+        matches!(self, PnlBasis::R)
     }
 }
 
@@ -540,4 +639,49 @@ pub struct V2PairOpFact {
     pub log_index: u64,
     pub pool: Address,
     pub kind: V2PairOpKind,
+}
+
+#[cfg(test)]
+mod kind_contract_tests {
+    use super::{Confidence, MevKind, PnlBasis};
+
+    #[test]
+    fn every_kind_round_trips_through_its_string() {
+        for kind in MevKind::ALL {
+            let label = kind.as_str();
+            assert_eq!(
+                MevKind::parse(label),
+                Some(*kind),
+                "{label} must parse back to its kind"
+            );
+            assert_eq!(label.parse::<MevKind>().ok(), Some(*kind));
+        }
+    }
+
+    #[test]
+    fn pre_b11_unknown_label_still_resolves_to_utility() {
+        // Old DB rows are rewritten on migration; the alias keeps stale CLI
+        // flags and corpus strings readable.
+        assert_eq!(MevKind::parse("unknown"), Some(MevKind::Utility));
+    }
+
+    #[test]
+    fn only_the_ledger_residual_basis_is_exact_capable() {
+        assert!(PnlBasis::R.is_ledger_residual());
+        for basis in [
+            PnlBasis::O,
+            PnlBasis::F,
+            PnlBasis::GrossAmountDiff,
+            PnlBasis::GasCostAsProfit,
+        ] {
+            assert!(!basis.is_ledger_residual(), "{:?}", basis);
+        }
+    }
+
+    #[test]
+    fn confidence_labels_round_trip() {
+        for c in [Confidence::Exact, Confidence::Inferred] {
+            assert_eq!(c.as_str().parse::<Confidence>().ok(), Some(c));
+        }
+    }
 }

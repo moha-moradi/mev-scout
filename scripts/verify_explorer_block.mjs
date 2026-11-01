@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 /**
- * Index one block (or range) with mev-scout explorer, then check kind/tag presence.
+ * Index one block (or range) with mev-scout explorer, then verify the persisted
+ * op matches the claim being checked.
  *
- *   node scripts/verify_explorer_block.mjs --chain avalanche --from 97782322 --tag flash_loan_liq
- *   node scripts/verify_explorer_block.mjs --chain avalanche --from 97783552 --to 97783552 --kind arb_atomic --tag long_tail
+ *   node scripts/verify_explorer_block.mjs -f hist.toml --chain avalanche \
+ *     --from 97782322 --expect kind=arb_atomic,min-profit-usd=1
+ *
+ * The DB path comes from `--db`, else `[explorer].db_path` in the `-f` config,
+ * else the chain-derived default. The config must already enable the chain;
+ * this script never synthesizes a public-RPC config.
  */
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 function parseArgs(argv) {
@@ -18,6 +23,8 @@ function parseArgs(argv) {
     tag: null,
     kind: null,
     config: null,
+    db: null,
+    expect: [],
     skipIndex: false,
   };
   for (let i = 2; i < argv.length; i++) {
@@ -28,23 +35,95 @@ function parseArgs(argv) {
     else if (a === "--to") out.to = Number(next());
     else if (a === "--tag") out.tag = next();
     else if (a === "--kind") out.kind = next();
-    else if (a === "--config") out.config = next();
+    else if (a === "--config" || a === "-f") out.config = next();
+    else if (a === "--db") out.db = next();
+    else if (a === "--expect") out.expect.push(next());
     else if (a === "--skip-index") out.skipIndex = true;
     else throw new Error(`unknown arg ${a}`);
   }
   if (out.from == null) throw new Error("--from required");
   if (out.to == null) out.to = out.from;
+  if (!out.config) {
+    throw new Error(
+      "--config/-f required: pass the same config used for indexing (it names the explorer DB and chain)",
+    );
+  }
+  return out;
+}
+
+/** Minimal section reader for the flat TOML shapes this repo uses. */
+function parseConfigSections(text) {
+  const sections = {};
+  let current = "";
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (!line) continue;
+    const section = line.match(/^\[(.+)\]$/);
+    if (section) {
+      current = section[1];
+      if (!sections[current]) sections[current] = {};
+      continue;
+    }
+    const kv = line.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/);
+    if (kv) {
+      if (!sections[current]) sections[current] = {};
+      sections[current][kv[1]] = kv[2].trim();
+    }
+  }
+  return sections;
+}
+
+function unquote(value) {
+  return value?.replace(/^"|"$/g, "");
+}
+
+function parseExpect(values) {
+  const out = {};
+  for (const value of values) {
+    for (const pair of value.split(",")) {
+      const [key, raw] = pair.split("=");
+      if (!key || raw === undefined) {
+        throw new Error(`bad --expect '${value}' (want key=value[,key=value])`);
+      }
+      if (key === "kind") out.kind = raw;
+      else if (key === "searcher") out.searcher = raw.toLowerCase();
+      else if (key === "min-profit-usd") out.minProfitUsd = Number(raw);
+      else if (key === "confidence") out.confidence = raw;
+      else if (key === "pnl-basis") out.pnlBasis = raw;
+      else throw new Error(`unknown --expect key '${key}'`);
+    }
+  }
+  if (out.minProfitUsd !== undefined && !Number.isFinite(out.minProfitUsd)) {
+    throw new Error("--expect min-profit-usd must be a number");
+  }
   return out;
 }
 
 const args = parseArgs(process.argv);
-const config =
-  args.config ||
-  (existsSync("mev-scout.avalanche-run.toml") && args.chain === "avalanche"
-    ? "mev-scout.avalanche-run.toml"
-    : existsSync("mev-scout.local.toml")
-      ? "mev-scout.local.toml"
-      : "mev-scout.example.toml");
+const expect = parseExpect(args.expect);
+if (expect.kind == null) expect.kind = args.kind;
+
+const configText = readFileSync(args.config, "utf8");
+const sections = parseConfigSections(configText);
+const topChain = unquote(sections[""]?.chain);
+const chainSection = sections[`chains.${args.chain}`];
+if (!chainSection && topChain !== args.chain) {
+  throw new Error(
+    `chain '${args.chain}' is not enabled in ${args.config} ` +
+      `(top-level chain is '${topChain ?? "unset"}'); add [chains.${args.chain}] ` +
+      `or run with --chain ${topChain ?? "<name>"}`,
+  );
+}
+
+const configuredDb = unquote(sections["explorer"]?.db_path);
+const dbPath =
+  args.db || configuredDb || path.join("cache", `explorer-${args.chain}.sqlite`);
+if (!existsSync(dbPath)) {
+  throw new Error(
+    `explorer DB not found: ${dbPath} (from ${args.config}); ` +
+      `set --db or [explorer].db_path to the database the indexer wrote`,
+  );
+}
 
 const exe = existsSync("target/release/mev-scout.exe")
   ? "target/release/mev-scout.exe"
@@ -53,28 +132,14 @@ const exe = existsSync("target/release/mev-scout.exe")
     : "mev-scout";
 
 if (!args.skipIndex) {
-  // Ensure config chain matches; for non-avalanche write a tiny override file.
-  let cfgPath = config;
-  if (args.chain !== "avalanche") {
-    const fs = await import("node:fs");
-    cfgPath = `cache/_hunt_${args.chain}.toml`;
-    const rpc =
-      args.chain === "polygon"
-        ? "https://polygon-bor-rpc.publicnode.com"
-        : "https://ethereum-rpc.publicnode.com";
-    fs.writeFileSync(
-      cfgPath,
-      `chain = "${args.chain}"\nrpc_urls = ["${rpc}"]\nrps_limit = 8\n\n[chains.${args.chain}]\nchain_id = ${args.chain === "polygon" ? 137 : 1}\n\n[chains.${args.chain}.rpc]\nrpc_urls = ["${rpc}"]\nrpc_rps = [8.0]\n\n[explorer]\nconfirmations = 4\npoll_interval_ms = 2000\n`,
-    );
-  }
   console.error(
-    `indexing ${args.chain} ${args.from}..${args.to} via ${exe} -f ${cfgPath}`,
+    `indexing ${args.chain} ${args.from}..${args.to} via ${exe} -f ${args.config}`,
   );
   const r = spawnSync(
     exe,
     [
       "-f",
-      cfgPath,
+      args.config,
       "explorer",
       "index",
       "--from-block",
@@ -92,66 +157,79 @@ if (!args.skipIndex) {
   console.error(r.stdout?.split("\n").slice(-8).join("\n"));
 }
 
-const dbPath = path.join("cache", `explorer-${args.chain}.sqlite`);
 const db = new DatabaseSync(dbPath);
 const rows = db
   .prepare(
-    `SELECT block_number, kind, tx_hash, details_json, profit_usd
-     FROM mev_ops
-     WHERE block_number BETWEEN ? AND ?
-     ORDER BY block_number, kind`,
+    `SELECT block_number, kind, tx_hash, details_json, profit_usd, eoa, confidence
+       FROM mev_ops
+      WHERE block_number BETWEEN ? AND ?
+      ORDER BY block_number, kind, id`,
   )
   .all(args.from, args.to);
 
 const matched = [];
 for (const row of rows) {
-  let tags = [];
-  let flags = {};
+  let details = {};
   try {
-    const d = JSON.parse(row.details_json || "{}");
-    tags = d.tags || [];
-    flags = {
-      interest_accrued: d.interest_accrued === true,
-      oracle_poke_block: d.oracle_poke_block === true,
-      bad_debt: d.bad_debt === true,
-      protocol: d.protocol,
-    };
+    details = JSON.parse(row.details_json || "{}");
   } catch {
-    /* ignore */
+    /* keep the row; a malformed details blob fails the expectation below */
   }
-  const tagOk = !args.tag || tags.includes(args.tag);
+  const tags = Array.isArray(details.tags) ? details.tags : [];
+  const pnlBasis = details.pnl_basis ?? details.pnl?.basis ?? null;
+  const tagOk =
+    !args.tag || tags.includes(args.tag) || details[args.tag] === true;
   const kindOk = !args.kind || row.kind === args.kind;
-  const flagOk =
-    !args.tag ||
-    !(
-      args.tag === "interest_accrued" ||
-      args.tag === "oracle_poke_block"
-    ) ||
-    flags[args.tag] === true ||
-    tags.includes(args.tag);
-  if (kindOk && tagOk && flagOk) {
+  const expectKindOk = !expect.kind || row.kind === expect.kind;
+  const searcherOk =
+    !expect.searcher ||
+    String(row.eoa || "").toLowerCase() === expect.searcher;
+  const profitOk =
+    expect.minProfitUsd === undefined ||
+    (row.profit_usd != null && row.profit_usd >= expect.minProfitUsd);
+  const confidenceOk = !expect.confidence || row.confidence === expect.confidence;
+  const basisOk = !expect.pnlBasis || pnlBasis === expect.pnlBasis;
+  if (
+    tagOk &&
+    kindOk &&
+    expectKindOk &&
+    searcherOk &&
+    profitOk &&
+    confidenceOk &&
+    basisOk
+  ) {
     matched.push({
       block: row.block_number,
       kind: row.kind,
       tx: row.tx_hash,
+      searcher: row.eoa,
+      confidence: row.confidence,
+      pnl_basis: pnlBasis,
       tags,
-      flags,
       profit_usd: row.profit_usd,
-      protocol: flags.protocol,
+      protocol: details.protocol,
     });
   }
 }
 
 const result = {
   chain: args.chain,
+  config: args.config,
+  db: dbPath,
   from: args.from,
   to: args.to,
   want_tag: args.tag,
   want_kind: args.kind,
+  expect,
   ops_in_window: rows.length,
   matched: matched.length,
   hits: matched.slice(0, 20),
   ok: matched.length > 0,
 };
 console.log(JSON.stringify(result, null, 2));
+if (!result.ok) {
+  console.error(
+    `no op matched ${JSON.stringify(expect)} in ${dbPath} over ${args.from}..${args.to}`,
+  );
+}
 process.exit(result.ok ? 0 : 1);

@@ -42,8 +42,17 @@
 //!
 //! Distant windows on one chain are ingested separately (see `ingest_windows`).
 //!
-//! Gated like every other live-RPC test: `MEV_SCOUT_E2E=1` + `RPC_URL`
-//! (`common::setup::rpc_url`), otherwise it skips with no network I/O.
+//! Gated like every other live-RPC test: the live test is `#[ignore]`d, and
+//! running it needs `MEV_SCOUT_E2E=1` + `RPC_URL` (`common::setup::rpc_url`).
+//! Ignored, it does no network I/O:
+//!
+//! ```text
+//! set MEV_SCOUT_E2E=1 & set RPC_URL=…
+//! cargo test -p mev-scout-core --test explorer_corpus -- --ignored --nocapture
+//! ```
+//!
+//! Once un-ignored, `MEV_SCOUT_E2E=1` without an `RPC_URL`, or an `RPC_URL`
+//! with no reachable corpus chain, fails instead of passing silently.
 //!
 //! ## Seeding new cases (e.g. the missing `jit` kind)
 //!
@@ -523,7 +532,7 @@ const CORPUS: &[CorpusCase] = &[
         chain: ChainName::Avalanche,
         from_block: 97_505_001,
         to_block: 97_505_001,
-        kind: "unknown",
+        kind: "utility",
         min_ops: 1,
         searcher: Some(address!("4337003fcd2f56de3977ccb806383e9161628d0e")),
         profit_usd_min: None,
@@ -538,7 +547,7 @@ const CORPUS: &[CorpusCase] = &[
         chain: ChainName::Avalanche,
         from_block: 97_781_738,
         to_block: 97_781_738,
-        kind: "unknown",
+        kind: "utility",
         min_ops: 1,
         searcher: Some(address!("04d9634df20aa66b23f114d37c45fa6c6ab76d56")),
         profit_usd_min: None,
@@ -579,7 +588,7 @@ fn assert_case(store: &ExplorerStore, case: &CorpusCase) {
     let kind = MevKind::parse(case.kind)
         .unwrap_or_else(|| panic!("{}: invalid kind '{}'", case.id, case.kind));
     let mut ops = store
-        .ops_in_range(case.from_block, case.to_block, &[kind])
+        .ops_in_range(case.from_block, case.to_block, &[kind], None)
         .unwrap_or_else(|e| panic!("{}: ops_in_range query failed: {e}", case.id));
 
     if let Some(searcher) = case.searcher {
@@ -780,15 +789,15 @@ async fn run_chain_corpus(chain: ChainName, rpc_url: &str) -> bool {
 /// including the ones with a zero count, which is how an absent rare kind
 /// (`jit`) is confirmed absent rather than merely unlisted.
 const ALL_KINDS: &[&str] = &[
-    "arb_atomic",
     "sandwich",
     "frontrun",
     "backrun",
-    "liquidation",
-    "jit",
+    "arb_atomic",
     "jit_arb",
+    "jit",
+    "liquidation",
     "skim",
-    "unknown",
+    "utility",
 ];
 
 /// `MEV_SCOUT_RECORD=1` — report derived facts instead of asserting them.
@@ -854,7 +863,7 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
     }
     for (from, to) in windows {
         lines.push(format!("{from}..={to}"));
-        let ops = match store.ops_in_range(*from, *to, &[]) {
+        let ops = match store.ops_in_range(*from, *to, &[], None) {
             Ok(ops) => ops,
             Err(e) => {
                 lines.push(format!("  ops query failed: {e}"));
@@ -900,10 +909,24 @@ fn record_report(store: &ExplorerStore, windows: &[(u64, u64)]) {
 }
 
 #[tokio::test]
-async fn real_block_corpus_matches_derived_facts() {
+#[ignore = "live RPC — set MEV_SCOUT_E2E=1 and RPC_URL"]
+async fn real_block_corpus_matches_derived_facts() -> anyhow::Result<()> {
     let Some(rpc_url) = rpc_url() else {
+        // `rpc_url()` is `None` both when the live gate was not requested and
+        // when it was requested without an endpoint. Either way an explicit
+        // request must not read as a pass: `MEV_SCOUT_E2E=1` alone fails, and
+        // so does an endpoint supplied without `MEV_SCOUT_E2E=1`.
+        if std::env::var("MEV_SCOUT_E2E").as_deref() == Ok("1") {
+            anyhow::bail!("MEV_SCOUT_E2E=1 but RPC_URL is unset or empty");
+        }
+        if std::env::var("RPC_URL").is_ok_and(|v| !v.is_empty()) {
+            anyhow::bail!(
+                "RPC_URL is set but MEV_SCOUT_E2E=1 is not — set MEV_SCOUT_E2E=1 to run \
+                 this live test, or unset RPC_URL to skip it"
+            );
+        }
         eprintln!("Skipping: MEV_SCOUT_E2E/RPC_URL not set");
-        return;
+        return Ok(());
     };
 
     // A hunt (`MEV_SCOUT_RECORD_CHAIN`) is about the named chain only, so it
@@ -928,7 +951,7 @@ async fn real_block_corpus_matches_derived_facts() {
         }
     }
     if checked == 0 {
-        eprintln!("Skipping: no corpus chain reachable");
+        anyhow::bail!("RPC_URL supplied but no corpus chain was reachable");
     }
     // A named chain with no cases and no usable hunt window has nothing to
     // ingest, so the record run would exit silently — say so.
@@ -942,6 +965,7 @@ async fn real_block_corpus_matches_derived_facts() {
             }
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -970,23 +994,10 @@ fn hunt_chain_list_skips_unknown_names() {
 #[test]
 fn every_classifier_kind_is_reported_by_a_record_run() {
     // A kind absent from ALL_KINDS would print no line at all, so a rare kind
-    // like `jit` could never be confirmed absent.
-    for kind in [
-        "arb_atomic",
-        "sandwich",
-        "frontrun",
-        "backrun",
-        "liquidation",
-        "jit",
-        "jit_arb",
-        "skim",
-        "unknown",
-    ] {
-        assert!(
-            ALL_KINDS.contains(&kind),
-            "{kind} is emittable but missing from ALL_KINDS"
-        );
-    }
+    // like `jit` could never be confirmed absent. Both sides derive from the
+    // enum, so a new variant fails until the corpus list follows it.
+    let expected: Vec<&str> = MevKind::ALL.iter().map(|k| k.as_str()).collect();
+    assert_eq!(ALL_KINDS, expected, "ALL_KINDS must mirror MevKind::ALL");
 }
 
 #[test]
@@ -999,7 +1010,7 @@ fn strategy_scenario_targets_match_avalanche_corpus_seeds() {
         let kind = match t.label {
             "arb_atomic" | "long_tail" | "flash_arb" => "arb_atomic",
             "liquidation" | "benqi" | "flash_loan_liq" => "liquidation",
-            "bundler" | "claim_and_sell" => "unknown",
+            "bundler" | "claim_and_sell" => "utility",
             other => other,
         };
         let hit = CORPUS.iter().any(|c| {

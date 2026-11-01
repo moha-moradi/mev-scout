@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -44,10 +45,14 @@ TOPICS = {
     "curve_ex": "0x8b3e96f2b889fa771c53c981b40daf005f63f637f1869f707052d15a3dd97140",
 }
 
+# Address-bounded getLogs works on public nodes; archive-depth probes must pass
+# `--rpc-url`. Env overrides mirror scripts/hunt_strategy.mjs.
 RPC_DEFAULTS = {
-    "avalanche": "https://avalanche-c-chain-rpc.publicnode.com",
-    "polygon": "https://polygon-bor-rpc.publicnode.com",
-    "ethereum": "https://ethereum-rpc.publicnode.com",
+    "avalanche": os.environ.get(
+        "AVAX_RPC", "https://avalanche-c-chain-rpc.publicnode.com"
+    ),
+    "polygon": os.environ.get("POLYGON_RPC", "https://polygon-bor-rpc.publicnode.com"),
+    "ethereum": os.environ.get("ETH_RPC", "https://ethereum-rpc.publicnode.com"),
 }
 
 AAVE_POOLS = {

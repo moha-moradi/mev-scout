@@ -5,7 +5,7 @@
 //! the explorer store. Idempotent per block (checkpoints in
 //! `blocks_classified`); reorg-aware via stored block hashes; confirmation
 //! lag applied before indexing.
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use alloy::primitives::{Address, Bytes, B256, U256};
@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 use crate::data::{BlockData, ReceiptData, TxData};
-use crate::explorer::classify::{self, BlockInput, TxInput};
+use crate::explorer::classify::{self, BlockContext, BlockInput, TxInput};
 use crate::explorer::pricing::{self, TokenUsd};
 use crate::explorer::store::{
     BlockFactsInput, ExplorerStore, OpenPosition, SwapRow, TransferRow, TxRow,
@@ -30,11 +30,13 @@ pub type BlockBundle = (BlockData, Vec<TxData>, Vec<ReceiptData>);
 
 /// Per-block fetch payload for [`index_block_fetched`] (not classify [`BlockInput`]).
 #[derive(Debug)]
-pub struct FetchedBlockInput {
+pub struct FetchedBlockInput<'a> {
     pub block_number: u64,
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
     pub bundle: BlockBundle,
+    /// Run-scoped classification context, shared across the whole backfill.
+    pub ctx: &'a BlockContext,
 }
 
 /// Block range and concurrency for [`run_range`].
@@ -80,14 +82,22 @@ pub struct IngestConfig {
     /// Blocks per JSON-RPC batch POST during [`run_range`]. `1` fetches one
     /// block per POST.
     pub rpc_batch_blocks: usize,
+    /// Causal-pair window (D12); defaults to the compiled constant.
+    pub causal_window_txs: u64,
+    pub causal_price_min_pct: f64,
+    pub jit_window_blocks: u64,
+    pub interest_lookback_blocks: u64,
+    pub jit_pool_fee_bps: u32,
 }
 
 impl IngestConfig {
     pub fn from_chain(chain: ChainName, chain_config: &crate::config::ChainConfig) -> Self {
         let wrapped_native = chain_config.wrapped_native_token.unwrap_or(Address::ZERO);
-        let priority = build_profit_priority(chain, wrapped_native);
-        // Config labels are deserialized as owned `String`s; intern them once
-        // here so the per-log remap stays a `&'static str` pointer compare.
+        let priority = build_profit_priority(chain_config, wrapped_native);
+        // `LiquidationFact.protocol` is a borrowed `&'static str`, so config
+        // labels are interned once here. The leak is bounded by the config: a
+        // handful of aliases per chain, at process start. Removing it means
+        // turning `protocol` into an owned String across decode/classify.
         let intern = |s: &str| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) };
         let mut liquidation_protocol_aliases = HashMap::new();
         if let Some(v2) = chain_config.aave_v2_pool {
@@ -100,10 +110,7 @@ impl IngestConfig {
             liquidation_protocol_aliases.extend(aliases.iter().map(|(a, l)| (*a, intern(l))));
         }
         let chainlink_feeds = chain_config.chainlink_feeds.clone().unwrap_or_default();
-        let c_token_underlyings = chain_config
-            .c_token_underlyings
-            .clone()
-            .unwrap_or_default();
+        let c_token_underlyings = chain_config.c_token_underlyings.clone().unwrap_or_default();
         let gmx_event_emitters = chain_config
             .gmx_event_emitters
             .clone()
@@ -124,6 +131,11 @@ impl IngestConfig {
             tip_sink_addresses: HashSet::new(),
             record_rejections: false,
             rpc_batch_blocks: 1,
+            causal_window_txs: crate::explorer::classify::CAUSAL_WINDOW_TXS,
+            causal_price_min_pct: crate::explorer::classify::CAUSAL_PRICE_MIN_PCT,
+            jit_window_blocks: JIT_WINDOW_BLOCKS,
+            interest_lookback_blocks: crate::explorer::interest_attr::LOOKBACK_BLOCKS,
+            jit_pool_fee_bps: crate::explorer::classify::POOL_FEE_BPS,
         }
     }
 }
@@ -157,50 +169,17 @@ impl SavaxRateCache {
     }
 }
 
-/// Profit-token priority: USDC → USDT → DAI → wrapped native.
-/// Canonical addresses from `known_tokens.json`; chain-specific via
-/// `wrapped_native`. Unknown-chain long-tail falls through to the
-/// largest-delta fallback in `select_profit_token`.
-fn build_profit_priority(chain: ChainName, wrapped_native: Address) -> Vec<Address> {
-    let parse = |s: &str| s.parse::<Address>().unwrap_or(Address::ZERO);
-    let mut v = match chain {
-        ChainName::Polygon => vec![
-            parse("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"), // USDC (native)
-            parse("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"), // USDC.e
-            parse("0xc2132D05D31c914a87C6611C10748AEb04B58e8F"), // USDT
-            parse("0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063"), // DAI
-        ],
-        ChainName::Avalanche => vec![
-            parse("0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E"), // USDC
-            parse("0x9702230A8Ea53601f5cD2dc00fDBc13d4dF19497"), // USDC.e
-            parse("0xc7198437980c041389c85c43e942b31037ADb125"), // USDT.e
-            parse("0xd586E7F844cEa2F50bf48A84c291e3C71F0fDa99"), // DAI.e
-        ],
-        ChainName::Bsc => vec![
-            parse("0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"), // USDC
-            parse("0x55d398326f99059fF775485246999027B3197955"), // USDT
-            parse("0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3"), // DAI
-        ],
-        ChainName::Ethereum => vec![
-            parse("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"), // USDC
-            parse("0xdAC17F958D2ee523a2206206994597C13D831ec7"), // USDT
-            parse("0x6B175474E89094C44Da98b954EedeAC495271d0F"), // DAI
-        ],
-        ChainName::Arbitrum => vec![
-            parse("0xaf88d065e77c8cC2239327C5EDb3A432268e5831"), // USDC
-            parse("0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9"), // USDT
-            parse("0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"), // DAI
-        ],
-        ChainName::Base => vec![
-            parse("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"), // USDC
-            parse("0x4200000000000000000000000000000000000006"), // WETH (no USDT/DAI majors)
-        ],
-        ChainName::Optimism => vec![
-            parse("0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85"), // USDC
-            parse("0x94b008aA00579c1307B0EF2c499aD98a8ce58e58"), // USDT
-            parse("0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1"), // DAI
-        ],
-    };
+/// Profit-token priority: the chain's stable majors (from `chains.toml`) then
+/// wrapped native. An empty chain list falls through to the largest-delta
+/// selection in `select_profit_token`.
+fn build_profit_priority(
+    chain_config: &crate::config::ChainConfig,
+    wrapped_native: Address,
+) -> Vec<Address> {
+    let mut v = chain_config
+        .profit_stable_tokens
+        .clone()
+        .unwrap_or_default();
     if !wrapped_native.is_zero() {
         v.push(wrapped_native);
     }
@@ -221,7 +200,6 @@ pub struct PoolViews<'a> {
 #[derive(Debug, Clone)]
 pub struct IndexedBlock {
     pub block: u64,
-    pub events: usize,
     pub ops: usize,
 }
 
@@ -230,11 +208,49 @@ pub struct IndexedBlock {
 pub struct RangeOutcome {
     pub blocks_processed: u64,
     pub ops: u64,
+    /// Blocks whose chunk fetch failed after retries and were skipped, sorted
+    /// ascending. A re-run of the same range fills the gap via
+    /// `unclassified_blocks`.
+    pub skipped_blocks: Vec<u64>,
 }
 
 /// Fetch block + receipts (batched JSON-RPC POST).
 pub async fn fetch_block_bundle(rpc: &RpcClient, block_number: u64) -> anyhow::Result<BlockBundle> {
     rpc.get_block_and_receipts_batch(block_number).await
+}
+
+/// Build the run-scoped classification context once per backfill/live session.
+///
+/// The registry sets are cloned into `Arc`s here and only the `Arc` is cloned
+/// per block, so a multi-hour backfill does not copy the pool/feed universe
+/// on every block.
+fn run_block_context(cfg: &IngestConfig, pools: PoolViews<'_>) -> BlockContext {
+    BlockContext {
+        wrapped_native: cfg.wrapped_native,
+        profit_policy: crate::explorer::profit::ProfitTokenPolicy {
+            priority: cfg.profit_token_priority.clone(),
+            wrapped_native: cfg.wrapped_native,
+            weth: cfg.wrapped_native,
+        },
+        v2_like_pools: std::sync::Arc::new(pools.v2_like.clone()),
+        chainlink_feeds: std::sync::Arc::new(cfg.chainlink_feeds.clone()),
+        savax: cfg.savax,
+        epoch_venue_pools: std::sync::Arc::new(pools.epoch_venue.clone()),
+        gmx_event_emitters: std::sync::Arc::new(cfg.gmx_event_emitters.clone()),
+        causal_window_txs: cfg.causal_window_txs,
+        causal_price_min_pct: cfg.causal_price_min_pct,
+        jit_pool_fee_bps: cfg.jit_pool_fee_bps,
+    }
+}
+
+/// D10: a live tip jump must not orphan the historical gap it skipped over.
+/// `indexed_to` stays at the older cursor so a later backfill still sees the
+/// gap; `0` means "no stored cursor" (fresh DB), which anchors at tip−1.
+fn tip_jump_checkpoint(existing: u64, safe: u64) -> u64 {
+    if existing == 0 {
+        return safe.saturating_sub(1);
+    }
+    existing.min(safe.saturating_sub(1))
 }
 
 /// Per-block indexing request for [`index_block`].
@@ -243,6 +259,7 @@ pub struct IndexBlockRequest<'a> {
     pub store: &'a ExplorerStore,
     pub cfg: &'a IngestConfig,
     pub pools: PoolViews<'a>,
+    pub ctx: &'a BlockContext,
     pub block_number: u64,
     pub native_price: Option<f64>,
     pub token_prices: Option<HashMap<Address, TokenUsd>>,
@@ -259,6 +276,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         store,
         cfg,
         pools,
+        ctx,
         block_number,
         native_price,
         token_prices,
@@ -269,7 +287,6 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
         debug!(block = block_number, "already classified, skipping");
         return Ok(IndexedBlock {
             block: block_number,
-            events: 0,
             ops: 0,
         });
     }
@@ -285,6 +302,7 @@ pub async fn index_block(req: IndexBlockRequest<'_>) -> anyhow::Result<IndexedBl
             native_price,
             token_prices,
             bundle,
+            ctx,
         },
         savax_rates,
         qi_rates,
@@ -454,7 +472,7 @@ pub async fn index_block_fetched(
     store: &ExplorerStore,
     cfg: &IngestConfig,
     pools: PoolViews<'_>,
-    input: FetchedBlockInput,
+    input: FetchedBlockInput<'_>,
     savax_rates: &mut SavaxRateCache,
     qi_rates: &mut crate::explorer::benqi_liq::QiRateCache,
 ) -> anyhow::Result<IndexedBlock> {
@@ -463,6 +481,7 @@ pub async fn index_block_fetched(
         native_price,
         token_prices,
         bundle,
+        ctx,
     } = input;
     let (block_data, txs, receipts) = bundle;
     let base_fee_gwei = block_data.base_fee_per_gas.map(|b| b as f64 / 1e9);
@@ -474,12 +493,10 @@ pub async fn index_block_fetched(
         jit_hashes,
     } = decode_successful_txs(&txs, &receipts, pools, cfg, base_fee_gwei);
 
-    let open_positions = store.open_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    let open_positions =
+        store.open_positions(block_number.saturating_sub(cfg.jit_window_blocks))?;
     let interest_lookback = store
-        .interest_lookback(
-            block_number,
-            crate::explorer::interest_attr::LOOKBACK_BLOCKS,
-        )
+        .interest_lookback(block_number, cfg.interest_lookback_blocks)
         .unwrap_or_default();
     let feeds: Vec<Address> = cfg.chainlink_feeds.keys().copied().collect();
     let prior_oracle_answers = store
@@ -496,18 +513,8 @@ pub async fn index_block_fetched(
     let input = BlockInput {
         block: block_number,
         ts: block_data.timestamp,
-        wrapped_native: cfg.wrapped_native,
-        profit_policy: crate::explorer::profit::ProfitTokenPolicy {
-            priority: cfg.profit_token_priority.clone(),
-            wrapped_native: cfg.wrapped_native,
-            weth: cfg.wrapped_native,
-        },
+        ctx: ctx.clone(),
         open_positions,
-        v2_like_pools: pools.v2_like.clone(),
-        chainlink_feeds: cfg.chainlink_feeds.clone(),
-        savax: cfg.savax,
-        epoch_venue_pools: pools.epoch_venue.clone(),
-        gmx_event_emitters: cfg.gmx_event_emitters.clone(),
         interest_lookback,
         prior_oracle_answers,
         savax_exchange_rate_wad,
@@ -522,20 +529,32 @@ pub async fn index_block_fetched(
     };
 
     let classified = classify::classify_block(&input);
-    if cfg.record_rejections && !classified.rejects.is_empty() {
-        let chain_str = cfg.chain.to_string();
-        let run_id = format!("explorer-index-{block_number}");
-        for r in &classified.rejects {
-            if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
-                tracing::warn!("explorer_classify reject insert failed: {e}");
+    blocking_store(|| -> anyhow::Result<()> {
+        if cfg.record_rejections && !classified.rejects.is_empty() {
+            let chain_str = cfg.chain.to_string();
+            let run_id = format!("explorer-index-{block_number}");
+            // One transaction for the block's reject set. Per-row insert errors
+            // stay best-effort (logged and skipped, as before), but the
+            // inserts are conflict-tolerant on `rejected_candidates`' natural key
+            // (`schema.rs`), so a retry after a partial or failed pass converges
+            // instead of appending a second copy. Rejects intentionally precede
+            // `insert_block_facts`: if the facts fail, the retry re-derives them
+            // identically and the unique key makes re-insertion a no-op.
+            let tx = store.connection().unchecked_transaction()?;
+            for r in &classified.rejects {
+                if let Err(e) = store.insert_rejected_candidate(&run_id, &chain_str, r) {
+                    tracing::warn!("explorer_classify reject insert failed: {e}");
+                }
             }
+            tx.commit()?;
         }
-    }
+        Ok(())
+    })?;
     let mut events: Vec<MevEvent> = classify::filter_unresolved(classified.events);
     classify::stamp_jit_tx_hashes(&mut events, &jit_hashes);
     let ops = events.len();
 
-    persist_mode_b_lookback(store, block_number, &input.txs);
+    blocking_store(|| persist_mode_b_lookback(store, block_number, &input.txs));
 
     // Benqi: seizeTokens → underlying before price warm / PnL (never price qi).
     crate::explorer::benqi_liq::convert_c_token_liquidation_events(
@@ -565,37 +584,63 @@ pub async fn index_block_fetched(
         }
     }
 
-    store.insert_block_facts(BlockFactsInput {
-        block_number,
-        block_hash: &block_data.hash,
-        ts: block_data.timestamp,
-        base_fee_gwei,
-        tx_count: txs.len(),
-        txs: &tx_rows,
-        swaps: &swap_rows,
-        transfers: &transfer_rows,
-        events: &events,
-        native_price_usd: native_price,
-        token_prices: &token_prices,
-    })?;
+    blocking_store(|| -> anyhow::Result<()> {
+        store.insert_block_facts(BlockFactsInput {
+            block_number,
+            block_hash: &block_data.hash,
+            ts: block_data.timestamp,
+            base_fee_gwei,
+            tx_count: txs.len(),
+            txs: &tx_rows,
+            swaps: &swap_rows,
+            transfers: &transfer_rows,
+            events: &events,
+            native_price_usd: native_price,
+            token_prices: &token_prices,
+        })?;
 
-    persist_jit_positions(store, block_number, &input.txs)?;
+        persist_jit_positions(store, block_number, &input.txs, cfg.jit_window_blocks)
+    })?;
 
     Ok(IndexedBlock {
         block: block_number,
-        events: txs.len(),
         ops,
     })
 }
 
+/// Run a synchronous SQLite write on a blocking context when the runtime can
+/// spare the worker.
+///
+/// `rusqlite::Connection` is `Send` but not `Sync`, so the store cannot be
+/// moved into `spawn_blocking` (the closure would need `'static` ownership of
+/// a `Sync` value). `block_in_place` is the ownership-free equivalent: the
+/// runtime replaces the worker while the statement runs. A current-thread
+/// runtime has no spare worker, so tests take the inline path.
+fn blocking_store<T>(f: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(f)
+        }
+        _ => f(),
+    }
+}
+
 /// Persist JIT open positions: record Mints not closed in the same
 /// block, delete rows for Burns, and prune positions outside the window.
+///
+/// All writes share one transaction on the store connection (the `record_*` /
+/// `close_*` helpers execute on that same connection, so they join it): a
+/// failure half-way must not leave a Mint recorded as open while its Burn is
+/// pending, which would turn the next block's JIT detection into noise.
 fn persist_jit_positions(
     store: &ExplorerStore,
     block_number: u64,
     txs: &[TxInput],
+    jit_window_blocks: u64,
 ) -> anyhow::Result<()> {
     let key = |j: &crate::explorer::types::JitFact| (j.pool, j.owner, j.tick_lower, j.tick_upper);
+    let mut opens = Vec::new();
+    let mut closes: Vec<(Address, Address, i32, i32)> = Vec::new();
     for t in txs {
         let burned: std::collections::HashSet<_> =
             t.jit.iter().filter(|j| !j.is_mint).map(key).collect();
@@ -603,20 +648,31 @@ fn persist_jit_positions(
             if burned.contains(&key(j)) {
                 continue; // same-block JIT, not an open position
             }
-            store.record_jit_open(&[OpenPosition {
+            opens.push(OpenPosition {
                 pool: j.pool,
                 owner: j.owner,
                 tick_lower: j.tick_lower,
                 tick_upper: j.tick_upper,
                 opened_block: block_number,
                 liquidity: j.liquidity,
-            }])?;
+            });
         }
         for j in t.jit.iter().filter(|j| !j.is_mint) {
-            store.close_jit_position(j.pool, j.owner, j.tick_lower, j.tick_upper)?;
+            closes.push((j.pool, j.owner, j.tick_lower, j.tick_upper));
         }
     }
-    store.prune_jit_positions(block_number.saturating_sub(JIT_WINDOW_BLOCKS))?;
+    if opens.is_empty() && closes.is_empty() {
+        return Ok(());
+    }
+    let tx = store.connection().unchecked_transaction()?;
+    if !opens.is_empty() {
+        store.record_jit_open(&opens)?;
+    }
+    if !closes.is_empty() {
+        store.close_jit_positions(&closes)?;
+    }
+    store.prune_jit_positions(block_number.saturating_sub(jit_window_blocks))?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -626,58 +682,142 @@ pub async fn safe_head(rpc: &RpcClient, cfg: &IngestConfig) -> anyhow::Result<u6
     Ok(head.saturating_sub(cfg.confirmations))
 }
 
-/// Reorg check: stored hash at `block` differs from chain → unwind from there.
-/// Returns Some(fork_block) when a reorg was detected and unwound.
+/// Blocks per live reorg sweep — the walk-back bound is
+/// `confirmations + REORG_SWEEP_BLOCKS`.
+const REORG_SWEEP_BLOCKS: u64 = 32;
+
+/// Result of a reorg probe. Distinguishes "provider unreachable" from "no
+/// reorg": the pre-A21 code returned `Ok(None)` for both, so a failed probe
+/// read as a clean chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReorgOutcome {
+    NoReorg,
+    Forked { fork_block: u64 },
+    ProbeFailed,
+}
+
+/// Pure fork-point selection over descending per-block hash comparisons.
+///
+/// `checks` is `(block, verdict)` from the probe block downward, where
+/// `Some(true)` = stored hash matches the live chain, `Some(false)` =
+/// mismatch, `None` = no stored hash at that block (below the indexed range).
+/// Returns the lowest mismatching block — the fork point to unwind from — or
+/// `None` when every checked block mismatched (the fork is deeper than the
+/// lookback, so deleting anything would be a guess).
+///
+/// Callers only walk after the probe itself mismatched, so the first entry is
+/// always `(probe, Some(false))`.
+pub(crate) fn fork_block_from_checks(checks: &[(u64, Option<bool>)]) -> Option<u64> {
+    let mut fork: Option<u64> = None;
+    for (block, verdict) in checks {
+        match verdict {
+            Some(false) => fork = Some(*block),
+            // Common ancestor found (or nothing stored below): stop — the
+            // fork is the lowest block already seen to mismatch.
+            Some(true) | None => return fork,
+        }
+    }
+    None
+}
+
+/// Walk back from a mismatched `probe` until the stored and live hashes agree,
+/// then unwind from the fork point. Bounded by `max_lookback`; a walk that
+/// cannot find a common ancestor returns `ProbeFailed` rather than deleting
+/// an arbitrary range.
+async fn walk_to_fork(
+    rpc: &RpcClient,
+    store: &ExplorerStore,
+    probe: u64,
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
+    // The probe's mismatch is already known — do not re-fetch it.
+    let mut checks: Vec<(u64, Option<bool>)> = vec![(probe, Some(false))];
+    let lo = probe.saturating_sub(max_lookback);
+    for block in (lo..probe).rev() {
+        let Some(stored) = store.block_hash(block)? else {
+            checks.push((block, None));
+            break;
+        };
+        match rpc.get_block_hash(block).await {
+            Ok(onchain) => {
+                let matches = stored == format!("{onchain:#x}");
+                checks.push((block, Some(matches)));
+                if matches {
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!(block, "reorg walk hash fetch failed: {e}");
+                return Ok(ReorgOutcome::ProbeFailed);
+            }
+        }
+    }
+    match fork_block_from_checks(&checks) {
+        Some(fork_block) => {
+            warn!(
+                probe,
+                fork_block, "reorg detected — unwinding from the fork point"
+            );
+            store.unwind_from(fork_block)?;
+            Ok(ReorgOutcome::Forked { fork_block })
+        }
+        None => {
+            warn!(
+                probe,
+                max_lookback, "reorg deeper than the lookback bound — not unwinding"
+            );
+            Ok(ReorgOutcome::ProbeFailed)
+        }
+    }
+}
+
+/// Reorg check: stored hash at `block` differs from chain → walk back to the
+/// true fork and unwind from there (header-only probes; no receipts fetch).
 pub async fn check_reorg(
     rpc: &RpcClient,
     store: &ExplorerStore,
     block: u64,
-) -> anyhow::Result<Option<u64>> {
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
     let Some(stored) = store.block_hash(block)? else {
-        return Ok(None);
+        return Ok(ReorgOutcome::NoReorg);
     };
-    let (block_data, _, _) = match rpc.get_block_and_receipts_batch(block).await {
-        Ok(v) => v,
+    match rpc.get_block_hash(block).await {
+        Ok(onchain) if stored == format!("{onchain:#x}") => Ok(ReorgOutcome::NoReorg),
+        Ok(_) => walk_to_fork(rpc, store, block, max_lookback).await,
         Err(e) => {
-            warn!(block, "reorg-check fetch failed: {e}");
-            return Ok(None);
+            warn!(block, "reorg-check probe failed: {e}");
+            Ok(ReorgOutcome::ProbeFailed)
         }
-    };
-    let onchain: B256 = block_data.hash;
-    if stored != format!("{onchain:#x}") {
-        warn!(block, "reorg detected — unwinding from fork block");
-        store.unwind_from(block)?;
-        Ok(Some(block))
-    } else {
-        Ok(None)
     }
 }
 
 /// Cheap per-poll reorg re-verify: a single header-only hash compare
 /// on the highest already-indexed block. Runs on every live poll, so a reorg of
 /// the indexed tip is caught before the indexer extends onto it; the heavier
-/// 32-block `check_reorg` sweep (block + receipts) stays to catch deeper forks.
+/// 32-block `check_reorg` sweep stays to catch deeper forks. A mismatch walks
+/// back to the fork point exactly like `check_reorg`.
 pub async fn verify_indexed_tip(
     rpc: &RpcClient,
     store: &ExplorerStore,
     block: u64,
-) -> anyhow::Result<Option<u64>> {
+    max_lookback: u64,
+) -> anyhow::Result<ReorgOutcome> {
     let Some(stored) = store.block_hash(block)? else {
-        return Ok(None);
+        return Ok(ReorgOutcome::NoReorg);
     };
     match rpc.get_block_hash(block).await {
         Ok(onchain) if stored != format!("{onchain:#x}") => {
             warn!(
                 block,
-                "reorg detected via indexed-tip hash compare — unwinding"
+                "reorg detected via indexed-tip hash compare — walking to the fork"
             );
-            store.unwind_from(block)?;
-            Ok(Some(block))
+            walk_to_fork(rpc, store, block, max_lookback).await
         }
-        Ok(_) => Ok(None),
+        Ok(_) => Ok(ReorgOutcome::NoReorg),
         Err(e) => {
             warn!(block, "indexed-tip reorg check failed: {e}");
-            Ok(None)
+            Ok(ReorgOutcome::ProbeFailed)
         }
     }
 }
@@ -718,14 +858,14 @@ async fn fetch_savax_exchange_rate(
     }
 }
 
-fn known_token_cache(chain_id: u64) -> crate::cache::TokenCache {
-    use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<u64, crate::cache::TokenCache>>> = OnceLock::new();
+fn known_token_cache(chain_id: u64) -> std::sync::Arc<crate::cache::TokenCache> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<u64, Arc<crate::cache::TokenCache>>>> = OnceLock::new();
     let map = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
     guard
         .entry(chain_id)
-        .or_insert_with(|| crate::cache::TokenCache::warm(chain_id))
+        .or_insert_with(|| Arc::new(crate::cache::TokenCache::warm(chain_id)))
         .clone()
 }
 
@@ -750,15 +890,15 @@ pub async fn warm_prices_for_tokens(
     };
 
     let hour = pricing::hour_bucket(ts);
-    // Priced tokens (store cache first, then llama), keyed by address.
+    let quotes = store.prices_at(tokens, hour)?;
     let mut priced: Vec<(Address, f64)> = Vec::new();
     let mut missing: Vec<Address> = Vec::new();
     for t in tokens {
         if t.is_zero() || *t == crate::explorer::profit::NATIVE_MARKER {
             continue;
         }
-        if let Some((usd, _)) = store.price_at(*t, hour)? {
-            priced.push((*t, usd));
+        if let Some((usd, _)) = quotes.get(t) {
+            priced.push((*t, *usd));
         } else {
             missing.push(*t);
         }
@@ -769,6 +909,18 @@ pub async fn warm_prices_for_tokens(
         match pricing::fetch_prices_llama(cfg.chain, ts, &missing).await {
             Ok(prices) => {
                 for (addr, (usd, llama_dec)) in prices {
+                    // A non-positive quote is not a price: caching it would
+                    // value every amount of this token in the hour at $0 and
+                    // silently mark partial totals complete. Leave it unpriced.
+                    if !usd.is_finite() || usd <= 0.0 {
+                        warn!(
+                            token = %format!("{addr:#x}"),
+                            hour,
+                            usd,
+                            "llama returned a non-positive price; leaving token unpriced"
+                        );
+                        continue;
+                    }
                     store.put_price(addr, hour, usd, "llama")?;
                     priced.push((addr, usd));
                     if let Some(d) = llama_dec {
@@ -799,7 +951,8 @@ pub async fn warm_prices_for_tokens(
         }
     }
     if !need_onchain.is_empty() {
-        let usd_of = |a: &Address| priced.iter().find(|(p, _)| p == a).map(|(_, u)| *u);
+        let priced_usd: HashMap<Address, f64> = priced.iter().copied().collect();
+        let usd_of = |a: &Address| priced_usd.get(a).copied();
         match crate::rpc::multicall::resolve_token_decimals(rpc, &need_onchain, 4).await {
             Ok(decs) => {
                 for addr in need_onchain {
@@ -873,6 +1026,13 @@ pub async fn native_price_cached(
         }
     };
     if let Some((usd, source)) = fetched {
+        // A non-positive fetch is not a usable quote. `put_price` would refuse
+        // the write anyway; returning it here would still surface it as the
+        // in-flight native price (gas at $0, inflated net P&L).
+        if !usd.is_finite() || usd <= 0.0 {
+            warn!("native price {source} returned a non-finite or non-positive quote {usd} for hour {hour}; treating it as unavailable");
+            return Ok(None);
+        }
         store.put_price(marker, hour, usd, source)?;
         // Also cache under wrapped-native so profit_usd converts for WAVAX/WETH.
         if !cfg.wrapped_native.is_zero() {
@@ -884,11 +1044,72 @@ pub async fn native_price_cached(
     }
 }
 
+/// Consecutive transient price/block failures tolerated by [`run_live`] before
+/// it gives up. A dead provider must end the run loudly instead of spinning at
+/// `poll_ms` forever.
+const MAX_CONSECUTIVE_LIVE_FAILURES: u32 = 10;
+
+/// Decision for one block-index attempt in [`run_live`]'s poll body, kept pure
+/// so the cursor/checkpoint invariant is testable without an RPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockAttempt {
+    /// `Some(block)` re-pins the live cursor to the failed block so the next
+    /// poll retries it; `None` on success (the `for` loop advances).
+    next_block: Option<u64>,
+    /// Whether this attempt leaves the `[cursor..=safe]` range checkpointable.
+    /// Always false on failure: a partially indexed range must never be
+    /// recorded as complete, or resume logic would skip the failed blocks.
+    advance_sync: bool,
+    /// Consecutive transient failures after this attempt.
+    consecutive_failures: u32,
+}
+
+/// Fold one block-index attempt into the live loop's state. Success resets the
+/// failure counter; failure counts up (saturating) and forbids the checkpoint.
+///
+/// This is the only constructor, so `next_block == Some(_)` and
+/// `advance_sync == false` are never produced separately: pinning the retry
+/// block and clearing the range verdict always happen together.
+fn after_block_attempt(failures: u32, block: u64, ok: bool) -> BlockAttempt {
+    if ok {
+        BlockAttempt {
+            next_block: None,
+            advance_sync: true,
+            consecutive_failures: 0,
+        }
+    } else {
+        BlockAttempt {
+            next_block: Some(block),
+            advance_sync: false,
+            consecutive_failures: failures.saturating_add(1),
+        }
+    }
+}
+
+/// Post-loop checkpoint decision for one `run_live` poll over `[cursor..=safe]`.
+///
+/// `Some(resume_at)` means every block in the range indexed, so the caller may
+/// persist `(safe, safe)` and continue at `resume_at`. `None` means a block
+/// failed and the checkpoint must stay where it was — recording the range as
+/// complete would make resume logic skip the failed blocks forever (silent data
+/// loss). Pure so this gate is testable without an RPC.
+fn checkpoint_target(range_completed: bool, safe: u64) -> Option<u64> {
+    if range_completed {
+        Some(safe.saturating_add(1))
+    } else {
+        None
+    }
+}
+
 /// Live streaming mode: on start, jump to the current confirmed tip and only
 /// follow new blocks forward. Never resumes a historical `indexed_to` gap and
 /// never walks earlier blocks. Runs until `stop` is set; the indexed tip is
 /// hash-verified on every poll and a heavier reorg sweep runs every
 /// 32 blocks.
+///
+/// Transient price/RPC failures are retried on the next poll instead of
+/// ending the run; a failed block is never checkpointed as part of a completed
+/// range. [`MAX_CONSECUTIVE_LIVE_FAILURES`] consecutive failures abort loudly.
 ///
 /// Returns the number of blocks indexed this session. Emits indeterminate
 /// `backfill` progress (`done` = session blocks, no `total`) plus a final
@@ -904,6 +1125,7 @@ pub async fn run_live(
 ) -> anyhow::Result<u64> {
     use std::sync::atomic::Ordering;
 
+    let ctx = run_block_context(cfg, pools);
     let mut blocks_session: u64 = 0;
     let mut ops_session: u64 = 0;
     let mut since_reorg_check: u64 = 0;
@@ -911,6 +1133,9 @@ pub async fn run_live(
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
     // `None` until the first successful tip probe — then pinned to tip, not DB.
     let mut next_block: Option<u64> = None;
+    // Transient price/block failures since the last success; capped by
+    // `MAX_CONSECUTIVE_LIVE_FAILURES` so a dead provider ends the run.
+    let mut consecutive_failures: u32 = 0;
     let t0 = std::time::Instant::now();
     let mut last_emit = t0;
 
@@ -943,14 +1168,20 @@ pub async fn run_live(
         let mut cursor = match next_block {
             Some(n) => n,
             None => {
-                // Tip-only start: ignore stored `indexed_to` so we never catch up
-                // historical backlog. Anchor the checkpoint just behind tip.
-                warn!(
-                    tip = safe,
-                    confirmations = cfg.confirmations,
-                    "live indexer starting at current tip (no historical catch-up)"
-                );
-                store.set_sync_state(cfg.chain_id, safe, safe.saturating_sub(1))?;
+                // Tip-only start: never catch up the historical backlog, but do
+                // not pretend the backlog is indexed either — `indexed_to` keeps
+                // the older cursor so a later `explorer index` still sees the gap.
+                let existing = store.get_indexed_to(cfg.chain_id).unwrap_or_default();
+                let keep = tip_jump_checkpoint(existing, safe);
+                if keep.saturating_add(1) < safe.saturating_sub(1) {
+                    warn!(
+                        gap_from = keep.saturating_add(1),
+                        gap_to = safe.saturating_sub(1),
+                        indexed_to = keep,
+                        "live indexer started at tip; historical gap left unindexed"
+                    );
+                }
+                store.set_sync_state(cfg.chain_id, safe, keep)?;
                 safe
             }
         };
@@ -958,44 +1189,139 @@ pub async fn run_live(
         if safe >= cursor {
             // cheap per-poll reorg re-verify on the last indexed block.
             // Only meaningful for blocks we indexed this session (checkpoint is
-            // tip-anchored on start).
+            // tip-anchored on start). A failed probe is not "no reorg": it
+            // skips the poll and counts toward the loud-failure cap, because
+            // indexing onto an unverified tip risks extending a fork.
+            let max_lookback = cfg.confirmations.saturating_add(REORG_SWEEP_BLOCKS);
             let indexed_to = store.get_indexed_to(cfg.chain_id)?;
-            if indexed_to > 0
-                && indexed_to < cursor
-                && verify_indexed_tip(rpc, store, indexed_to).await?.is_some()
-            {
-                cursor = indexed_to;
+            if indexed_to > 0 && indexed_to < cursor {
+                match verify_indexed_tip(rpc, store, indexed_to, max_lookback).await? {
+                    ReorgOutcome::Forked { fork_block } => cursor = fork_block,
+                    ReorgOutcome::NoReorg => {}
+                    ReorgOutcome::ProbeFailed => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (tip reorg probe at block {indexed_to}): could not \
+                                 verify the indexed tip"
+                            );
+                        }
+                        warn!(
+                            block = indexed_to,
+                            failures = consecutive_failures,
+                            "tip reorg probe failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
+                }
             }
 
             since_reorg_check += 1;
-            if since_reorg_check >= 32 {
+            if since_reorg_check >= REORG_SWEEP_BLOCKS {
                 let check_at = cursor.saturating_sub(1);
-                if check_reorg(rpc, store, check_at).await?.is_some() {
-                    cursor = check_at;
+                match check_reorg(rpc, store, check_at, max_lookback).await? {
+                    ReorgOutcome::Forked { fork_block } => cursor = fork_block,
+                    ReorgOutcome::NoReorg => {}
+                    ReorgOutcome::ProbeFailed => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (reorg sweep at block {check_at}): could not verify \
+                                 the chain"
+                            );
+                        }
+                        warn!(
+                            block = check_at,
+                            failures = consecutive_failures,
+                            "reorg sweep probe failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
                 }
                 since_reorg_check = 0;
             }
 
-            let native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
+            let native_price =
+                match native_price_cached(cfg, store, crate::utils::epoch_secs()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures (next block {cursor}): native price fetch: {e:#}"
+                            );
+                        }
+                        warn!(
+                            error = %e,
+                            failures = consecutive_failures,
+                            "native price fetch failed; skipping this poll"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(poll_ms)).await;
+                        continue;
+                    }
+                };
+            // Cleared by any failed block: `set_sync_state` below must not
+            // record `[cursor..=safe]` as complete when blocks were skipped,
+            // or resume logic would never revisit them.
+            let mut range_completed = true;
             for block in cursor..=safe {
-                let indexed = index_block(IndexBlockRequest {
+                let indexed = match index_block(IndexBlockRequest {
                     rpc,
                     store,
                     cfg,
                     pools,
+                    ctx: &ctx,
                     block_number: block,
                     native_price,
                     token_prices: None,
                     savax_rates: &mut savax_rates,
                     qi_rates: &mut qi_rates,
                 })
-                .await?;
+                .await
+                {
+                    Ok(indexed) => indexed,
+                    Err(e) => {
+                        // Transient failure: do not advance the cursor; retry
+                        // this block on the next poll.
+                        let attempt = after_block_attempt(consecutive_failures, block, false);
+                        consecutive_failures = attempt.consecutive_failures;
+                        range_completed &= attempt.advance_sync;
+                        next_block = attempt.next_block;
+                        if consecutive_failures >= MAX_CONSECUTIVE_LIVE_FAILURES {
+                            anyhow::bail!(
+                                "live indexing aborted after {consecutive_failures} consecutive \
+                                 failures at block {block}: {e:#}"
+                            );
+                        }
+                        warn!(
+                            block,
+                            error = %e,
+                            failures = consecutive_failures,
+                            "live index_block failed; retrying next poll"
+                        );
+                        break;
+                    }
+                };
+                let attempt = after_block_attempt(consecutive_failures, block, true);
+                // Success verdict only resets the counter; the `for` loop
+                // advances and `range_completed` stays true.
+                consecutive_failures = attempt.consecutive_failures;
                 blocks_session += 1;
                 ops_session += indexed.ops as u64;
                 emit_progress(blocks_session, ops_session, false);
             }
-            store.set_sync_state(cfg.chain_id, safe, safe)?;
-            next_block = Some(safe + 1);
+            // The checkpoint decision lives entirely in `checkpoint_target`:
+            // `None` (failed block) leaves the stored checkpoint untouched and
+            // `next_block` pinned to the failed block by the loop above.
+            if let Some(resume_at) = checkpoint_target(range_completed, safe) {
+                store.set_sync_state(cfg.chain_id, safe, safe)?;
+                next_block = Some(resume_at);
+            }
             emit_progress(blocks_session, ops_session, true);
         } else {
             next_block = Some(cursor);
@@ -1042,10 +1368,13 @@ pub async fn run_range(
         to_block,
         block_concurrency,
     } = range;
+    let ctx = run_block_context(cfg, pools);
     if to_block < from_block {
         anyhow::bail!("to_block ({to_block}) < from_block ({from_block})");
     }
-    let tip = rpc.get_block_number().await.unwrap_or(to_block);
+    // A failed head fetch cannot be skipped: nothing can be indexed without a
+    // safe tip, so it must surface instead of clamping to `to_block`.
+    let tip = rpc.get_block_number().await?;
     let safe_tip = tip.saturating_sub(cfg.confirmations);
     let end = to_block.min(safe_tip);
     if end < from_block {
@@ -1100,6 +1429,9 @@ pub async fn run_range(
 
     let mut savax_rates = SavaxRateCache::default();
     let mut qi_rates = crate::explorer::benqi_liq::QiRateCache::default();
+    // Blocks dropped because their fetch/index failed after retries. Both the
+    // serial and pipelined paths record them so a re-run fills the gap.
+    let mut skipped: BTreeSet<u64> = BTreeSet::new();
     let cap = block_concurrency.max(1).min(missing.len());
     // One POST of `chunk` blocks. In-flight blocks stay at `cap`: a chunk of
     // 32 with concurrency 32 is one POST, not 32×32.
@@ -1109,18 +1441,34 @@ pub async fn run_range(
             if block.saturating_sub(from_block) % 256 == 0 {
                 native_price = native_price_cached(cfg, store, crate::utils::epoch_secs()).await?;
             }
-            let indexed = index_block(IndexBlockRequest {
+            let indexed = match index_block(IndexBlockRequest {
                 rpc,
                 store,
                 cfg,
                 pools,
+                ctx: &ctx,
                 block_number: block,
                 native_price,
                 token_prices: None,
                 savax_rates: &mut savax_rates,
                 qi_rates: &mut qi_rates,
             })
-            .await?;
+            .await
+            {
+                Ok(indexed) => indexed,
+                Err(e) => {
+                    warn!(
+                        block,
+                        error = %e,
+                        "backfill block failed after retries; skipping \
+                         (re-run the same range later to fill the gap)"
+                    );
+                    skipped.insert(block);
+                    let done = block - from_block + 1;
+                    emit_progress(done, outcome.ops, done == total);
+                    continue;
+                }
+            };
             outcome.blocks_processed += 1;
             outcome.ops += indexed.ops as u64;
             let done = block - from_block + 1;
@@ -1145,24 +1493,31 @@ pub async fn run_range(
                 let sem = sem.clone();
                 let rpc = rpc.clone();
                 inflight.push(async move {
-                    let _permit = sem
-                        .acquire_owned()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
-                    let rows = if blocks.len() == 1 {
-                        vec![(blocks[0], fetch_block_bundle(&rpc, blocks[0]).await?)]
-                    } else {
-                        let fetched = rpc.get_blocks_and_receipts_batch(&blocks).await?;
-                        if fetched.len() != blocks.len() {
-                            anyhow::bail!(
-                                "batch returned {} blocks, expected {}",
-                                fetched.len(),
-                                blocks.len()
-                            );
-                        }
-                        blocks.into_iter().zip(fetched).collect()
-                    };
-                    Ok::<_, anyhow::Error>(rows)
+                    // Return the chunk's block list alongside the result so a
+                    // failed fetch is attributable to blocks that can be skipped.
+                    let chunk_blocks = blocks.clone();
+                    let result = async {
+                        let _permit = sem
+                            .acquire_owned()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("backfill fetch semaphore closed: {e}"))?;
+                        let rows = if blocks.len() == 1 {
+                            vec![(blocks[0], fetch_block_bundle(&rpc, blocks[0]).await?)]
+                        } else {
+                            let fetched = rpc.get_blocks_and_receipts_batch(&blocks).await?;
+                            if fetched.len() != blocks.len() {
+                                anyhow::bail!(
+                                    "batch returned {} blocks, expected {}",
+                                    fetched.len(),
+                                    blocks.len()
+                                );
+                            }
+                            blocks.into_iter().zip(fetched).collect()
+                        };
+                        Ok::<_, anyhow::Error>(rows)
+                    }
+                    .await;
+                    (chunk_blocks, result)
                 });
                 Ok(())
             };
@@ -1173,6 +1528,10 @@ pub async fn run_range(
 
         while next_persist < missing.len() {
             let need = missing[next_persist];
+            if skipped.contains(&need) {
+                next_persist += 1;
+                continue;
+            }
             if let Some(bundle) = ready.remove(&need) {
                 if need.saturating_sub(from_block) % 256 == 0 {
                     native_price =
@@ -1188,6 +1547,7 @@ pub async fn run_range(
                         native_price,
                         token_prices: None,
                         bundle,
+                        ctx: &ctx,
                     },
                     &mut savax_rates,
                     &mut qi_rates,
@@ -1205,7 +1565,7 @@ pub async fn run_range(
             }
 
             match inflight.next().await {
-                Some(Ok(rows)) => {
+                Some((_chunk_blocks, Ok(rows))) => {
                     for (block, bundle) in rows {
                         ready.insert(block, bundle);
                     }
@@ -1213,7 +1573,24 @@ pub async fn run_range(
                         spawn_one(&mut next_spawn, &mut inflight)?;
                     }
                 }
-                Some(Err(e)) => return Err(e),
+                Some((chunk_blocks, Err(e))) => {
+                    // The fetch path already exhausted `retry_call` backoff.
+                    // Skip the chunk, keep the pipeline full, and let a re-run
+                    // heal the gap via `unclassified_blocks`.
+                    warn!(
+                        blocks = ?chunk_blocks,
+                        error = %e,
+                        "backfill chunk fetch failed after retries; skipping blocks \
+                         (re-run the same range later to fill the gap)"
+                    );
+                    skipped.extend(chunk_blocks);
+                    // Refill exactly like the success branch: without this the
+                    // loop can drain `inflight` while `next_spawn` is still
+                    // pending and bail out as stalled.
+                    while next_spawn < missing.len() && inflight.len() < posts {
+                        spawn_one(&mut next_spawn, &mut inflight)?;
+                    }
+                }
                 None => anyhow::bail!(
                     "backfill fetch pipeline stalled waiting for block {need} \
                      (spawned {next_spawn}/{}, ready {})",
@@ -1224,9 +1601,12 @@ pub async fn run_range(
         }
     }
 
+    outcome.skipped_blocks = skipped.into_iter().collect();
     store.set_sync_state(cfg.chain_id, tip, end)?;
     if total > 0 {
-        emit_progress(total, outcome.ops, true);
+        // Report the blocks actually indexed: a run with gaps must not look
+        // 100% complete.
+        emit_progress(outcome.blocks_processed, outcome.ops, true);
     }
     let mut done = ProgressEvent::stage("complete");
     done.ops = Some(outcome.ops);
@@ -1240,6 +1620,28 @@ mod tests {
     use super::*;
     use crate::explorer::types::MevKind;
     use alloy::primitives::U256;
+
+    #[test]
+    fn blocking_store_is_inline_outside_a_runtime() {
+        assert_eq!(blocking_store(|| 7), 7);
+    }
+
+    /// D10: starting live at the tip must not mark a skipped historical gap as
+    /// indexed, and must never move `indexed_to` forward past tip−1.
+    #[test]
+    fn tip_jump_keeps_the_older_cursor_when_a_gap_is_skipped() {
+        assert_eq!(tip_jump_checkpoint(40, 5_000), 40);
+        // Fresh DB (nothing indexed) behaves as before: tip−1.
+        assert_eq!(tip_jump_checkpoint(0, 5_000), 4_999);
+        // A cursor already at/behind zero cannot underflow.
+        assert_eq!(tip_jump_checkpoint(9, 5), 4);
+        assert_eq!(tip_jump_checkpoint(u64::MAX, 0), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocking_store_runs_on_a_multi_thread_runtime() {
+        assert_eq!(blocking_store(|| 7), 7);
+    }
 
     #[test]
     fn savax_rate_cache_reuses_one_success_per_hour() {
@@ -1383,6 +1785,110 @@ mod tests {
         assert_eq!(toks, vec![primary, residual]);
     }
 
+    /// A6: a failed block must re-pin the live cursor to that block and forbid
+    /// the completed-range checkpoint — `run_live` gates `set_sync_state` on
+    /// exactly this verdict, so a partially indexed range is never recorded as
+    /// complete.
+    #[test]
+    fn failed_block_attempt_reports_no_sync_advance() {
+        let failed = after_block_attempt(3, 100, false);
+        assert_eq!(failed.next_block, Some(100));
+        assert!(!failed.advance_sync);
+        assert_eq!(failed.consecutive_failures, 4);
+
+        // A second failure keeps counting; failures never reset the cap.
+        let again = after_block_attempt(failed.consecutive_failures, 100, false);
+        assert_eq!(again.next_block, Some(100));
+        assert!(!again.advance_sync);
+        assert_eq!(again.consecutive_failures, 5);
+
+        // Success resets the counter and lets the range be checkpointed.
+        let ok = after_block_attempt(again.consecutive_failures, 100, true);
+        assert!(ok.advance_sync);
+        assert_eq!(ok.consecutive_failures, 0);
+        assert_eq!(ok.next_block, None);
+    }
+
+    /// A6: the post-loop checkpoint gate `run_live` calls. Flipping, dropping
+    /// or unconditional-izing that gate fails this test, and deleting the call
+    /// site leaves `checkpoint_target` referenced only from `#[cfg(test)]` —
+    /// a `dead_code` warning under `-D warnings` — so the silent-data-loss mode
+    /// cannot come back unnoticed.
+    #[test]
+    fn checkpoint_target_requires_a_completed_range() {
+        // Any failed block in `[cursor..=safe]` ⇒ no checkpoint; retry instead.
+        assert_eq!(checkpoint_target(false, 104), None);
+        // Fully indexed range ⇒ checkpoint `(safe, safe)` and resume at safe+1.
+        assert_eq!(checkpoint_target(true, 104), Some(105));
+        // Never wraps the resume cursor at the u64 ceiling.
+        assert_eq!(checkpoint_target(true, u64::MAX), Some(u64::MAX));
+    }
+
+    /// A6 end-to-end shape without an RPC: replaying the poll body's decisions
+    /// through the real checkpoint gate leaves `indexed_to` below the failed
+    /// block and the block unclassified.
+    #[test]
+    fn failed_block_is_never_checkpointed_as_complete() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let chain_id = 137u64;
+        store.set_sync_state(chain_id, 99, 99).unwrap();
+
+        let cursor = 100u64;
+        let safe = 104u64;
+        let failing_block = 102u64;
+        let mut failures = 0u32;
+        let mut range_completed = true;
+        let mut next_block = None;
+        for block in cursor..=safe {
+            let attempt = after_block_attempt(failures, block, block != failing_block);
+            failures = attempt.consecutive_failures;
+            range_completed &= attempt.advance_sync;
+            if let Some(n) = attempt.next_block {
+                next_block = Some(n);
+                break;
+            }
+        }
+        // `run_live`'s real post-loop gate — no mirrored `if` here.
+        if let Some(resume_at) = checkpoint_target(range_completed, safe) {
+            store.set_sync_state(chain_id, safe, safe).unwrap();
+            next_block = Some(resume_at);
+        }
+
+        assert_eq!(next_block, Some(failing_block));
+        assert!(store.get_indexed_to(chain_id).unwrap() < failing_block);
+        assert!(!store.block_classified(failing_block).unwrap());
+    }
+
+    /// A6 control: with every block indexed, the same replay through the same
+    /// gate still checkpoints `(safe, safe)` and resumes at `safe + 1` — the
+    /// gate was not fixed by simply disabling checkpointing.
+    #[test]
+    fn completed_range_is_checkpointed_at_safe() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let chain_id = 137u64;
+        store.set_sync_state(chain_id, 99, 99).unwrap();
+
+        let cursor = 100u64;
+        let safe = 104u64;
+        let mut range_completed = true;
+        let mut next_block = None;
+        for block in cursor..=safe {
+            let attempt = after_block_attempt(0, block, true);
+            range_completed &= attempt.advance_sync;
+            if let Some(n) = attempt.next_block {
+                next_block = Some(n);
+                break;
+            }
+        }
+        if let Some(resume_at) = checkpoint_target(range_completed, safe) {
+            store.set_sync_state(chain_id, safe, safe).unwrap();
+            next_block = Some(resume_at);
+        }
+
+        assert_eq!(next_block, Some(safe + 1));
+        assert_eq!(store.get_indexed_to(chain_id).unwrap(), safe);
+    }
+
     fn sample() -> MevEvent {
         MevEvent {
             block: 1,
@@ -1405,5 +1911,54 @@ mod tests {
             victim_swap_size: None,
             details: serde_json::json!({}),
         }
+    }
+}
+
+#[cfg(test)]
+mod reorg_fork_tests {
+    use super::fork_block_from_checks;
+
+    /// Diverged at N-2: the probe block N mismatches down to N-2, and N-3
+    /// matches. The walk must return N-2, never the probe block N — the old
+    /// code unwound from the probe, leaving N-2..N-1 from the abandoned chain.
+    #[test]
+    fn walks_back_to_the_fork_not_the_probe() {
+        let n = 100u64;
+        let checks = vec![
+            (n, Some(false)),
+            (n - 1, Some(false)),
+            (n - 2, Some(false)),
+            (n - 3, Some(true)),
+        ];
+        assert_eq!(fork_block_from_checks(&checks), Some(n - 2));
+    }
+
+    /// A single-block fork: probe mismatch with a matching parent → fork = probe.
+    #[test]
+    fn single_block_fork_is_the_probe() {
+        assert_eq!(
+            fork_block_from_checks(&[(100, Some(false)), (99, Some(true))]),
+            Some(100)
+        );
+    }
+
+    /// Nothing stored below the lowest mismatch → unwind from there (that is
+    /// as far back as our own data goes).
+    #[test]
+    fn stops_at_the_lowest_indexed_block() {
+        assert_eq!(
+            fork_block_from_checks(&[(100, Some(false)), (99, None)]),
+            Some(100)
+        );
+    }
+
+    /// Deeper than the lookback: every checked block mismatched, so there is
+    /// no common ancestor to anchor the unwind — return None (the caller maps
+    /// that to `ProbeFailed` and deletes nothing).
+    #[test]
+    fn refuses_when_the_fork_is_deeper_than_the_lookback() {
+        let checks: Vec<(u64, Option<bool>)> =
+            (60..=100u64).rev().map(|b| (b, Some(false))).collect();
+        assert_eq!(fork_block_from_checks(&checks), None);
     }
 }

@@ -18,7 +18,7 @@ use mev_scout_core::explorer::store::{
 use mev_scout_core::explorer::types::{
     Amm, Confidence, JitFact, LegSource, MevKind, SwapFact, TransferFact,
 };
-use mev_scout_core::explorer::{classify_block, BlockInput, TokenUsd, TxInput};
+use mev_scout_core::explorer::{classify_block, BlockContext, BlockInput, TokenUsd, TxInput};
 
 const BLOCK: u64 = 10_000;
 const USDC: Address = address!("4000000000000000000000000000000000000005");
@@ -187,18 +187,16 @@ fn golden_input() -> BlockInput {
     BlockInput {
         block: BLOCK,
         ts: 1_700_000_000,
-        wrapped_native: WNATIVE,
-        profit_policy: ProfitTokenPolicy {
-            priority: vec![USDC],
+        ctx: BlockContext {
             wrapped_native: WNATIVE,
-            weth: WNATIVE,
+            profit_policy: ProfitTokenPolicy {
+                priority: vec![USDC],
+                wrapped_native: WNATIVE,
+                weth: WNATIVE,
+            },
+            ..BlockContext::for_tests()
         },
         open_positions: vec![],
-        v2_like_pools: std::collections::HashSet::new(),
-        chainlink_feeds: HashMap::new(),
-        savax: None,
-        epoch_venue_pools: std::collections::HashSet::new(),
-        gmx_event_emitters: std::collections::HashSet::new(),
         interest_lookback: Default::default(),
         prior_oracle_answers: HashMap::new(),
         savax_exchange_rate_wad: None,
@@ -236,7 +234,9 @@ fn golden_block_classifies_arb_sandwich_jit() {
     assert_eq!(sandwich.profit_token, Some(USDC));
     // back-run out (195_000_000) − front-run in (100_000_000).
     assert_eq!(sandwich.profit_amount, Some(U256::from(95_000_000)));
-    assert_eq!(sandwich.confidence, Confidence::Exact);
+    // A19: sandwich P&L is a gross amount diff (gross_amount_diff), not a
+    // ledger residual, so it no longer claims Exact.
+    assert_eq!(sandwich.confidence, Confidence::Inferred);
     assert_eq!(sandwich.tx_index, 1, "sandwich anchors on the front-run tx");
     assert_eq!(sandwich.victim_hashes, vec![B256::repeat_byte(2)]);
     // front + back gas summed.
@@ -250,7 +250,9 @@ fn golden_block_classifies_arb_sandwich_jit() {
         .find(|e| e.kind == MevKind::Jit)
         .expect("golden JIT missing");
     assert_eq!(jit_ev.searcher, JIT);
-    assert_eq!(jit_ev.confidence, Confidence::Exact);
+    // A19: JIT P&L is a fee estimate (F basis, fees_estimated.confidence =
+    // "inferred") — the event no longer claims Exact.
+    assert_eq!(jit_ev.confidence, Confidence::Inferred);
     assert_eq!(jit_ev.tx_index, 4, "JIT anchors on the mint tx");
 }
 
@@ -333,7 +335,7 @@ fn golden_block_persists_mev_ops_rows() {
         .unwrap();
     assert_eq!(n, 3);
 
-    let rows = store.ops_in_range(BLOCK, BLOCK, &[]).unwrap();
+    let rows = store.ops_in_range(BLOCK, BLOCK, &[], None).unwrap();
     assert_eq!(rows.len(), 3);
 
     let usdc_str = format!("{USDC:#x}");
@@ -357,7 +359,8 @@ fn golden_block_persists_mev_ops_rows() {
     assert!(arb.gas_cost_usd.unwrap() > 0.0);
 
     let sandwich = row_by_kind("sandwich");
-    assert_eq!(sandwich.confidence, "exact");
+    // A19: gross-amount-diff basis → inferred.
+    assert_eq!(sandwich.confidence, "inferred");
     assert_eq!(sandwich.tx_index, Some(1));
     assert_eq!(sandwich.profit_amount.as_deref(), Some("95000000"));
     assert!(sandwich
@@ -372,7 +375,8 @@ fn golden_block_persists_mev_ops_rows() {
     assert!(sandwich.victim_hashes.as_deref().unwrap().contains("0x02"));
 
     let jit = row_by_kind("jit");
-    assert_eq!(jit.confidence, "exact");
+    // A19: fee-estimate (F) basis → inferred.
+    assert_eq!(jit.confidence, "inferred");
     assert_eq!(jit.tx_index, Some(4));
     assert_eq!(
         jit.profit_token, None,

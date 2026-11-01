@@ -1,93 +1,179 @@
 //! Query / stats / report surface for ExplorerStore.
 use alloy::primitives::{Address, U256};
+use rusqlite::Connection;
 
-use crate::explorer::types::MevKind;
+use crate::explorer::types::{Confidence, MevKind};
 use crate::types::{MevOpportunity, Strategy};
 
 use super::{
-    map_mev_op_row, map_report_row, map_stats_row, top_grouped, ExplorerStore, MevOpRow,
-    OpportunityInput, PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow,
-    StatsRow,
+    map_mev_op_row, map_report_row, map_stats_row, ExplorerStore, MevOpRow, OpportunityInput,
+    PoolSwapRow, RejectCount, ReportOverview, ReportQuality, ReportRow, StatsRow,
 };
 
 /// SQL fragment for optional `--kind` / `--confidence` filters on `mev_ops`.
-fn report_filter_clause(kind: Option<&str>, confidence: Option<&str>) -> String {
+///
+/// Takes the enums (not `&str`) so arbitrary strings cannot reach SQL: the
+/// SQL spelling is always [`MevKind::as_str`] / [`Confidence::as_str`].
+fn report_filter_clause(kind: Option<MevKind>, confidence: Option<Confidence>) -> String {
     let mut s = String::new();
     if let Some(k) = kind {
-        s.push_str(&format!("AND kind = '{k}' "));
+        s.push_str(&format!("AND kind = '{}' ", k.as_str()));
     }
     if let Some(c) = confidence {
-        s.push_str(&format!("AND confidence = '{c}' "));
+        s.push_str(&format!("AND confidence = '{}' ", c.as_str()));
     }
     s
+}
+
+/// Leaderboard grouping: the op's sender (`top_senders`).
+const GROUP_SENDER: &str = "sender";
+/// Leaderboard grouping: competitor bot identity `COALESCE(contract, eoa)`.
+const GROUP_COMPETITOR: &str = "competitor";
+/// Leaderboard grouping: a pool extracted from `route_json`.
+const GROUP_POOL: &str = "pool";
+
+/// Bind + insert one `opportunities` row on any connection or transaction.
+fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyhow::Result<()> {
+    let OpportunityInput {
+        run_id,
+        chain,
+        block_number,
+        tx_index,
+        strategy,
+        pool_a,
+        pool_b,
+        token_in,
+        token_out,
+        input_amount,
+        expected_profit,
+        gas_cost_wei,
+        path,
+        timestamp,
+        mempool_only,
+        confidence,
+        sender,
+        tx_hash,
+        detection_path,
+        canonical_id,
+    } = *row;
+    conn.execute(
+        "INSERT INTO opportunities
+           (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
+            token_in, token_out, input_amount, expected_profit, gas_cost_wei,
+            path, timestamp, mempool_only, confidence, sender, tx_hash,
+            detection_path, canonical_id)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+        rusqlite::params![
+            run_id,
+            chain,
+            block_number as i64,
+            tx_index.map(|v| v as i64),
+            strategy,
+            pool_a.map(|a| format!("{:#x}", a)),
+            pool_b.map(|a| format!("{:#x}", a)),
+            token_in.map(|a| format!("{:#x}", a)),
+            token_out.map(|a| format!("{:#x}", a)),
+            input_amount.map(|v| v.to_string()),
+            expected_profit.map(|v| v.to_string()),
+            gas_cost_wei.map(|v| v.to_string()),
+            path,
+            timestamp.map(|v| v as i64),
+            mempool_only as i64,
+            confidence,
+            sender.map(|a| format!("{:#x}", a)),
+            tx_hash.map(|h| format!("{:#x}", h)),
+            detection_path,
+            canonical_id,
+        ],
+    )?;
+    Ok(())
 }
 
 impl ExplorerStore {
     /// Insert one opportunity row from a `ResultsFile` entry.
     pub fn insert_opportunity(&self, row: OpportunityInput<'_>) -> anyhow::Result<()> {
-        let OpportunityInput {
-            run_id,
-            chain,
-            block_number,
-            tx_index,
-            strategy,
-            pool_a,
-            pool_b,
-            token_in,
-            token_out,
-            input_amount,
-            expected_profit,
-            gas_cost_wei,
-            path,
-            timestamp,
-            mempool_only,
-            confidence,
-            sender,
-            tx_hash,
-            detection_path,
-            canonical_id,
-        } = row;
-        self.conn.execute(
-            "INSERT INTO opportunities
-               (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b,
-                token_in, token_out, input_amount, expected_profit, gas_cost_wei,
-                path, timestamp, mempool_only, confidence, sender, tx_hash,
-                detection_path, canonical_id)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
-            rusqlite::params![
-                run_id,
-                chain,
-                block_number as i64,
-                tx_index.map(|v| v as i64),
-                strategy,
-                pool_a.map(|a| format!("{:#x}", a)),
-                pool_b.map(|a| format!("{:#x}", a)),
-                token_in.map(|a| format!("{:#x}", a)),
-                token_out.map(|a| format!("{:#x}", a)),
-                input_amount.map(|v| v.to_string()),
-                expected_profit.map(|v| v.to_string()),
-                gas_cost_wei.map(|v| v.to_string()),
-                path,
-                timestamp.map(|v| v as i64),
-                mempool_only as i64,
-                confidence,
-                sender.map(|a| format!("{:#x}", a)),
-                tx_hash.map(|h| format!("{:#x}", h)),
-                detection_path,
-                canonical_id,
-            ],
-        )?;
+        insert_opportunity_row(&self.conn, &row)
+    }
+    /// Insert a run's opportunity rows in one transaction.
+    ///
+    /// Either the whole batch lands or none does, so a mid-run failure cannot
+    /// leave a partial results set behind (the per-row autocommit this
+    /// replaces could).
+    pub fn insert_opportunities(&self, rows: &[OpportunityInput<'_>]) -> anyhow::Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for row in rows {
+            insert_opportunity_row(&tx, row)?;
+        }
+        tx.commit()?;
         Ok(())
     }
-    /// `top_senders` restricted to one `kind` value (`stats --kind`).
+    /// Shared leaderboard query: the top `limit` groups of `group_col` by
+    /// gross USD inside the window.
+    ///
+    /// `group_col` is one of [`GROUP_SENDER`] / [`GROUP_COMPETITOR`] /
+    /// [`GROUP_POOL`] — a closed set chosen by the public wrappers, so no user
+    /// string can reach the SQL. Kind/confidence filters still go through the
+    /// domain enums. `GROUP_POOL` is the one grouping that has to mine
+    /// `route_json` (`json_each`), which is why the FROM/count/label fragments
+    /// differ per grouping while the aggregate, ordering and limit are shared.
+    fn top_by(
+        &self,
+        since: i64,
+        group_col: &str,
+        limit: usize,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
+    ) -> anyhow::Result<Vec<StatsRow>> {
+        let (label, ops, source, grouping_guard) = match group_col {
+            GROUP_POOL => (
+                "j.value->>'$.pool'",
+                "COUNT(DISTINCT m.id)",
+                "mev_ops m, json_each(COALESCE(m.route_json, '[]')) j",
+                "AND j.value->>'$.pool' IS NOT NULL",
+            ),
+            GROUP_COMPETITOR => (
+                "COALESCE(NULLIF(m.contract, ''), m.eoa)",
+                "COUNT(*)",
+                "mev_ops m",
+                "",
+            ),
+            // GROUP_SENDER
+            _ => ("m.eoa", "COUNT(*)", "mev_ops m", "AND m.eoa IS NOT NULL"),
+        };
+        // Unqualified `kind`/`confidence` resolve to `mev_ops` in every
+        // grouping: `json_each` has no such column.
+        let filter = report_filter_clause(kind, confidence);
+        let sql = format!(
+            "SELECT {label} AS label, {ops} AS ops,
+                    COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
+                    COALESCE(SUM(CASE WHEN m.excluded_from_net = 0
+                                      THEN m.net_profit_usd ELSE 0 END), 0) AS net_usd
+             FROM {source}
+             WHERE m.ts >= {since} {filter} {grouping_guard}
+             GROUP BY label
+             ORDER BY gross_usd DESC, label ASC
+             LIMIT {limit}"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([], map_stats_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+    /// Sender leaderboard restricted to one kind/confidence (report `--kind`).
     pub fn top_senders_filtered(
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        top_grouped(&self.conn, "eoa", since_ts, limit, kind, confidence)
+        self.top_by(since_ts as i64, GROUP_SENDER, limit, kind, confidence)
     }
     /// Competitor leaderboard: group by bot identity
     /// `COALESCE(contract, eoa)` so EOAs sharing an executor collapse.
@@ -95,71 +181,31 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        let filter = report_filter_clause(kind, confidence);
-        let sql = format!(
-            "SELECT COALESCE(NULLIF(contract, ''), eoa) AS label,
-                    COUNT(*) AS ops,
-                    COALESCE(SUM(profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(net_profit_usd), 0) AS net_usd
-             FROM mev_ops
-             WHERE ts >= {since_ts} {filter}
-             GROUP BY label
-             ORDER BY gross_usd DESC
-             LIMIT {limit}"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_stats_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        self.top_by(since_ts as i64, GROUP_COMPETITOR, limit, kind, confidence)
     }
-    /// `top_pools` restricted to one `kind` value (`stats --kind`).
+    /// Pool leaderboard restricted to one kind/confidence (report `--kind`).
     pub fn top_pools_filtered(
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<StatsRow>> {
-        // Pools live inside route_json; extract with json_each.
-        let mut filter = String::new();
-        if let Some(k) = kind {
-            filter.push_str(&format!("AND m.kind = '{k}' "));
-        }
-        if let Some(c) = confidence {
-            filter.push_str(&format!("AND m.confidence = '{c}' "));
-        }
-        let sql = format!(
-            "SELECT j.value->>'$.pool' AS label,
-                    COUNT(DISTINCT m.id) AS ops,
-                    COALESCE(SUM(m.profit_usd), 0) AS gross_usd,
-                    COALESCE(SUM(m.net_profit_usd), 0) AS net_usd
-             FROM mev_ops m, json_each(COALESCE(m.route_json, '[]')) j
-             WHERE m.ts >= {since_ts} {filter} AND j.value->>'$.pool' IS NOT NULL
-             GROUP BY label
-             ORDER BY gross_usd DESC
-             LIMIT {limit}"
-        );
-        let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_stats_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        // Pools live inside route_json; `top_by` extracts them with json_each.
+        self.top_by(since_ts as i64, GROUP_POOL, limit, kind, confidence)
     }
-    /// Full op detail for `show <TX>`.
+    /// Every op persisted for one tx hash. Test/report drill-down: the CLI has
+    /// no per-tx subcommand, and `tests/mev_corpus.rs` is the only caller.
     pub fn ops_for_tx(&self, tx_hash: &str) -> anyhow::Result<Vec<MevOpRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([tx_hash], map_mev_op_row)?;
@@ -195,12 +241,15 @@ impl ExplorerStore {
         }
         Ok(out)
     }
-    /// Realized ops in a block window.
+    /// Realized ops in a block window. `limit` caps the read so a caller that
+    /// scans a whole database (e.g. `0..=u64::MAX`) cannot pull every row into
+    /// RAM at once; `None` is unbounded and only for genuinely full reads.
     pub fn ops_in_range(
         &self,
         from_block: u64,
         to_block: u64,
         kinds: &[MevKind],
+        limit: Option<usize>,
     ) -> anyhow::Result<Vec<MevOpRow>> {
         let kind_filter = if kinds.is_empty() {
             String::new()
@@ -212,16 +261,32 @@ impl ExplorerStore {
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
-             ORDER BY block_number, tx_index"
+             ORDER BY block_number, tx_index, id{}",
+            if limit.is_some() {
+                "\n             LIMIT ?"
+            } else {
+                ""
+            }
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = stmt.query_map([], map_mev_op_row)?;
         let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
+        match limit {
+            Some(n) => {
+                let rows = stmt.query_map(rusqlite::params![n as i64], map_mev_op_row)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
+            None => {
+                let rows = stmt.query_map([], map_mev_op_row)?;
+                for r in rows {
+                    out.push(r?);
+                }
+            }
         }
         Ok(out)
     }
@@ -238,7 +303,7 @@ impl ExplorerStore {
                     detection_path, canonical_id
              FROM opportunities
              WHERE run_id = ?1
-             ORDER BY block_number, tx_index",
+             ORDER BY block_number, tx_index, tx_hash, strategy",
         )?;
         let rows = stmt.query_map(rusqlite::params![run_id], |r| {
             Ok((
@@ -403,22 +468,21 @@ impl ExplorerStore {
     pub fn report_window_overview(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<ReportOverview> {
         let filter = report_filter_clause(kind, confidence);
-        // Reason counts scan `details_json`. These tokens are written verbatim
-        // into the `reasons` array (and `pricing_clamped` is also a top-level
-        // key), so a substring match is precise for the values `note_pricing_issue`
-        // emits. `SUM` skips NULL, so `gross` already counts only priced ops
-        // (unpriced rows carry NULL `profit_usd`).
+        // Pricing-quality counts read the columns promoted in V10. `SUM` skips
+        // NULL, so `gross` already counts only priced ops (unpriced rows carry
+        // NULL `profit_usd`).
         let sql = format!(
             "SELECT COUNT(*),
                     COALESCE(SUM(volume_usd), 0),
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0),
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa),
                     COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa)),
@@ -426,12 +490,18 @@ impl ExplorerStore {
                     COALESCE(SUM(CASE WHEN profit_usd IS NULL THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'exact' THEN 1 ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN confidence = 'exact' THEN net_profit_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN confidence = 'inferred' THEN net_profit_usd ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%\"usd_approximate\":true%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%NATIVE_UNPRICED%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%MULTI_ASSET_PRICING%' THEN 1 ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN details_json LIKE '%pricing_clamped%' THEN 1 ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN confidence = 'exact'
+                                          AND excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN confidence = 'inferred'
+                                          AND excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0),
+                    COALESCE(SUM(usd_approximate), 0),
+                    COALESCE(SUM(native_unpriced), 0),
+                    COALESCE(SUM(multi_asset_pricing), 0),
+                    COALESCE(SUM(pricing_clamped), 0),
+                    COALESCE(SUM(flash_fee_unpriced), 0),
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 1 THEN 1 ELSE 0 END), 0)
              FROM mev_ops WHERE ts >= {since_ts} {filter}"
         );
         let row = self.conn.query_row(&sql, [], |r| {
@@ -464,6 +534,8 @@ impl ExplorerStore {
                     ops_native_unpriced: r.get::<_, i64>(16).unwrap_or(0),
                     ops_multi_asset: r.get::<_, i64>(17).unwrap_or(0),
                     ops_pricing_clamped: r.get::<_, i64>(18).unwrap_or(0),
+                    ops_flash_fee_unpriced: r.get::<_, i64>(19).unwrap_or(0),
+                    ops_excluded_from_net: r.get::<_, i64>(20).unwrap_or(0),
                 },
             })
         })?;
@@ -498,8 +570,8 @@ impl ExplorerStore {
     pub fn report_by_kind(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<ReportRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -508,11 +580,12 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0) AS gross,
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0)
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0)
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY kind
-             ORDER BY gross DESC"
+             ORDER BY gross DESC, label ASC"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
@@ -526,8 +599,8 @@ impl ExplorerStore {
     pub fn report_daily(
         &self,
         since_ts: u64,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<ReportRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
@@ -536,7 +609,8 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(net_profit_usd), 0)
+                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
+                                      THEN net_profit_usd ELSE 0 END), 0)
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY label
@@ -556,17 +630,18 @@ impl ExplorerStore {
         &self,
         since_ts: u64,
         limit: usize,
-        kind: Option<&str>,
-        confidence: Option<&str>,
+        kind: Option<MevKind>,
+        confidence: Option<Confidence>,
     ) -> anyhow::Result<Vec<MevOpRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
             "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
                     confidence, canonical_id, profit_token, profit_amount, profit_usd,
                     gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at
+                    route_json, victim_hashes, details_json, detector, created_at,
+                    subkind
              FROM mev_ops
-             WHERE ts >= {since_ts} {filter}
+             WHERE ts >= {since_ts} {filter} AND excluded_from_net = 0
              ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC
              LIMIT {limit}"
         );
@@ -588,5 +663,18 @@ impl ExplorerStore {
             |r| r.get(0),
         )?;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+    use crate::explorer::types::{Confidence, MevKind};
+
+    #[test]
+    fn filter_clause_takes_enums_not_strings() {
+        let s = report_filter_clause(Some(MevKind::Sandwich), Some(Confidence::Exact));
+        assert!(s.contains("kind = 'sandwich'"));
+        assert!(s.contains("confidence = 'exact'"));
     }
 }

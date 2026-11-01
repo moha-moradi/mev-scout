@@ -100,7 +100,7 @@ pub struct ExplorerArgs {
     #[command(subcommand)]
     pub command: Option<ExplorerCommand>,
 
-    /// Time windows: comma-separated 1d|7d|30d|all (default 1d,7d,30d).
+    /// Time windows: comma-separated durations (Nh|Nd|Nw) or all (default 1d,7d,30d).
     /// Only valid on bare `explorer` (the revenue report).
     #[arg(long, value_name = "WINDOWS", value_delimiter = ',')]
     pub windows: Vec<String>,

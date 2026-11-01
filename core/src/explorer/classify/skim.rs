@@ -3,20 +3,41 @@ use std::collections::{HashMap, HashSet};
 
 use alloy::primitives::{Address, U256};
 
-use crate::explorer::types::{Confidence, MevEvent, MevKind, PnlBasis};
+use crate::explorer::reject::RejectReason;
+use crate::explorer::types::{MevEvent, MevKind, PnlBasis};
 
+use super::drops::DropSink;
 use super::BlockInput;
 
 /// Realized UniV2 `skim` capture: registry V2-like pair outbound Transfers
 /// that are not accompanied by a same-tx Swap, Sync, Mint, or Burn on that pair.
-pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
-    if input.v2_like_pools.is_empty() {
-        return Vec::new();
-    }
+pub(super) fn classify_skims(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     let mut events = Vec::new();
     for tx in &input.txs {
         if !tx.success {
-            continue;
+            continue; // not-a-drop: a failed tx did not skim
+        }
+        // Pair-op evidence (Sync/Mint/Burn/Swap) names a V2 venue even when
+        // the pool is absent from the registry. That miss is why a chain can
+        // show zero skims: the outflow existed and the registry did not.
+        let venue: HashSet<Address> = tx.v2_pair_ops.iter().map(|op| op.pool).collect();
+        let mut reported_miss = false;
+        for t in &tx.transfers {
+            if venue.contains(&t.from)
+                && !t.from.is_zero()
+                && !t.amount.is_zero()
+                && !input.ctx.v2_like_pools.contains(&t.from)
+                && !reported_miss
+            {
+                drops.bump(
+                    RejectReason::SkimPoolNotV2Like,
+                    "venue_outflow_not_in_v2_like_registry",
+                );
+                reported_miss = true;
+            }
+        }
+        if input.ctx.v2_like_pools.is_empty() {
+            continue; // not-a-drop: no registry pools to score as skim
         }
         let mut excluded: HashSet<Address> = HashSet::new();
         for s in &tx.swaps {
@@ -35,16 +56,16 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
         let mut inbound_pools: HashSet<Address> = HashSet::new();
         for t in &tx.transfers {
             if t.amount.is_zero() {
-                continue;
+                continue; // not-a-drop: a zero transfer is not a skim
             }
-            if input.v2_like_pools.contains(&t.to) {
+            if input.ctx.v2_like_pools.contains(&t.to) {
                 inbound_pools.insert(t.to);
             }
             if t.from.is_zero() {
-                continue;
+                continue; // not-a-drop: mint-from-zero is not a pair outflow
             }
-            if !input.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
-                continue;
+            if !input.ctx.v2_like_pools.contains(&t.from) || excluded.contains(&t.from) {
+                continue; // not-a-drop: not a registry pair, or the pair already swapped
             }
             let entry = by_pool.entry(t.from).or_default();
             let slot = entry.entry(t.token).or_insert((U256::ZERO, HashSet::new()));
@@ -56,7 +77,12 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
 
         for (pool, tokens) in by_pool {
             if inbound_pools.contains(&pool) {
-                continue;
+                drops.anchor(
+                    tx.tx_index,
+                    RejectReason::SkimLooksLikeSwap,
+                    "pool_also_receives",
+                );
+                continue; // not-a-drop: swap-like pair already recorded
             }
             let mut profit_tokens: Vec<(Address, U256)> = tokens
                 .iter()
@@ -64,16 +90,19 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 .map(|(tok, (amt, _))| (*tok, *amt))
                 .collect();
             if profit_tokens.is_empty() {
-                continue;
+                continue; // not-a-drop: every token slot netted to zero
             }
             profit_tokens.sort_by_key(|a| a.0);
-            // Primary display token: prefer profit-policy priority, else largest amount.
+            // Primary display token: prefer profit-policy priority, else largest
+            // amount. `profit_tokens` is non-empty (early return above), so the
+            // best-by-amount search always yields a member — no synthetic
+            // zero-address fallback.
             let (profit_token, profit_amount) = profit_tokens
                 .iter()
-                .find(|(tok, _)| input.profit_policy.priority.contains(tok))
+                .find(|(tok, _)| input.ctx.profit_policy.priority.contains(tok))
                 .copied()
                 .or_else(|| profit_tokens.iter().max_by(|a, b| a.1.cmp(&b.1)).copied())
-                .unwrap_or((Address::ZERO, U256::ZERO));
+                .unwrap_or(profit_tokens[0]);
 
             let recipients: Vec<String> = tokens
                 .values()
@@ -94,25 +123,11 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                 .collect();
 
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Skim,
-                searcher: tx.from,
-                contract: tx.to,
                 pools: vec![pool],
                 profit_token: Some(profit_token),
                 profit_amount: Some(profit_amount),
                 profit_tokens: profit_tokens.clone(),
-                profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
+                gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
                 details: serde_json::json!({
                     "pool": format!("{:#x}", pool),
                     "recipients": recipients,
@@ -124,6 +139,15 @@ pub(super) fn classify_skims(input: &BlockInput) -> Vec<MevEvent> {
                         "profit_token": format!("{:#x}", profit_token),
                     },
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Skim,
+                    tx.from,
+                    tx.to,
+                )
             });
         }
     }

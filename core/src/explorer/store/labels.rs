@@ -86,6 +86,11 @@ impl ExplorerStore {
         Ok((after - before).max(0) as usize)
     }
     /// Insert one rejected-candidate row (run_id/chain stamped here).
+    ///
+    /// Conflict-tolerant on the `rejected_candidates_natural` unique index
+    /// (see `schema.rs`): re-indexing a block re-derives the same rejects with
+    /// only `created_at` differing, and those must not be counted twice by the
+    /// reject denominators in the revenue report.
     pub fn insert_rejected_candidate(
         &self,
         run_id: &str,
@@ -93,7 +98,7 @@ impl ExplorerStore {
         r: &crate::explorer::RejectedCandidate,
     ) -> anyhow::Result<()> {
         self.conn.execute(
-            "INSERT INTO rejected_candidates
+            "INSERT OR IGNORE INTO rejected_candidates
                (run_id, chain, block_number, tx_index, strategy, pool_a, pool_b, path,
                 token_in, token_out, input_amount, expected_profit, expected_profit_usd,
                 gas_cost_wei, reject_reason, detail, created_at)

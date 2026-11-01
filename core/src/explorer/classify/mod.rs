@@ -13,9 +13,12 @@
 //! 5. Sandwich pass — same sender, same pool, opposite directions, with a
 //!    third-party swap between front-run and back-run (tx-index ordered).
 //! 6. JIT pass — V3 Mint+Burn same position same block; jit_arb when the
-//!    same tx also closed an arb cycle. Leftover profitable patterns →
-//!    `unknown` (inferred).
+//!    same tx also closed an arb cycle.
+//! 7. `Utility` covers exact-fingerprint operational executions (keeper,
+//!    airdrop claim-and-sell, ERC-4337 bundler). No residual-inference pass
+//!    exists; a future one gets its own kind, never this bucket.
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use alloy::primitives::{Address, B256, U256};
 
@@ -25,15 +28,21 @@ use crate::explorer::profit::ProfitTokenPolicy;
 use crate::explorer::store::OpenPosition;
 use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
-    AggregatorSignal, BuyCollateralFact, EpochRewardFact, GmxEventFact, JitFact, KeeperFact,
-    MevEvent, MevKind, OracleUpdateFact, RateCacheFact, ReserveDataFact, SwapFact, TransferFact,
-    UserOpFact, V2PairOpFact,
+    AggregatorSignal, BuyCollateralFact, Confidence, EpochRewardFact, GmxEventFact, JitFact,
+    KeeperFact, MevEvent, MevKind, OracleUpdateFact, PnlBasis, RateCacheFact, ReserveDataFact,
+    SwapFact, TransferFact, UserOpFact, V2PairOpFact,
 };
 
 mod arb;
 mod causal;
+mod claims;
+mod drops;
+mod gas;
 mod jit;
 mod legs;
+
+pub(crate) use jit::POOL_FEE_BPS;
+pub(crate) use legs::{CAUSAL_PRICE_MIN_PCT, CAUSAL_WINDOW_TXS};
 mod liquidation;
 mod sandwich;
 mod skim;
@@ -86,25 +95,66 @@ pub struct TxInput {
     pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
+/// Registry and configuration inputs shared by every block in a run.
+/// Grouped out of [`BlockInput`] so per-block facts and run-scoped settings
+/// do not mix; tests start from [`BlockContext::for_tests`].
+#[derive(Debug, Clone)]
+pub struct BlockContext {
+    pub wrapped_native: Address,
+    pub profit_policy: ProfitTokenPolicy,
+    /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
+    /// `Arc` so a backfill shares one registry universe across every block.
+    pub v2_like_pools: Arc<HashSet<Address>>,
+    /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
+    pub chainlink_feeds: Arc<HashMap<Address, Address>>,
+    /// Benqi sAVAX (plan P3.16); `None` disables the tag.
+    pub savax: Option<Address>,
+    /// Pharaoh / Blackhole pools eligible for epoch-transition tagging (P3.15).
+    pub epoch_venue_pools: Arc<HashSet<Address>>,
+    /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
+    pub gmx_event_emitters: Arc<HashSet<Address>>,
+    /// Max tx-index distance for a causal pair (D12).
+    pub causal_window_txs: u64,
+    /// Minimum relative price move for a causal leg to be material (D12).
+    pub causal_price_min_pct: f64,
+    /// Pool-fee-tier estimate used for JIT fee capture (D12/D11).
+    pub jit_pool_fee_bps: u32,
+}
+
+impl Default for BlockContext {
+    fn default() -> Self {
+        Self {
+            wrapped_native: Address::ZERO,
+            profit_policy: ProfitTokenPolicy::default(),
+            v2_like_pools: Arc::new(HashSet::new()),
+            chainlink_feeds: Arc::new(HashMap::new()),
+            savax: None,
+            epoch_venue_pools: Arc::new(HashSet::new()),
+            gmx_event_emitters: Arc::new(HashSet::new()),
+            causal_window_txs: legs::CAUSAL_WINDOW_TXS,
+            causal_price_min_pct: legs::CAUSAL_PRICE_MIN_PCT,
+            jit_pool_fee_bps: jit::POOL_FEE_BPS,
+        }
+    }
+}
+
+impl BlockContext {
+    /// Empty registries and zero wrapped native, with the legacy classification
+    /// thresholds: every registry-gated pass stays out of the way unless the
+    /// test opts in, and an unset config is bit-identical to today.
+    pub fn for_tests() -> Self {
+        Self::default()
+    }
+}
+
 /// One block's classified input.
 pub struct BlockInput {
     pub block: u64,
     pub ts: u64,
-    pub wrapped_native: Address,
-    pub profit_policy: ProfitTokenPolicy,
+    pub ctx: BlockContext,
     /// Cross-block JIT open Mint positions, loaded from the store
     /// window for the current block.
     pub open_positions: Vec<OpenPosition>,
-    /// Registry addresses that expose UniV2-style `skim` (V2/Solidly/Camelot).
-    pub v2_like_pools: HashSet<Address>,
-    /// Chainlink aggregator → underlying asset (plan P1.1 / P1.4).
-    pub chainlink_feeds: HashMap<Address, Address>,
-    /// Benqi sAVAX (plan P3.16); `None` disables the tag.
-    pub savax: Option<Address>,
-    /// Pharaoh / Blackhole pools eligible for epoch-transition tagging (P3.15).
-    pub epoch_venue_pools: HashSet<Address>,
-    /// Optional GMX EventEmitter allowlist; empty = accept any matching name hash.
-    pub gmx_event_emitters: HashSet<Address>,
     /// Mode-B interest lookback (plan P1.1); empty = same-block heuristic only.
     pub interest_lookback: interest_attr::InterestLookback,
     /// Prior Chainlink answers keyed by feed (plan P1.4 mode B).
@@ -147,39 +197,36 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut rejects: Vec<crate::explorer::RejectedCandidate> = Vec::new();
 
     // Block-wide oracle / reserve facts (P1.1 / P1.4 co-block checks).
-    let block_oracle_updates: Vec<&OracleUpdateFact> = input
+    let block_oracle_owned: Vec<OracleUpdateFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.oracle_updates.iter())
+        .flat_map(|t| t.oracle_updates.iter().cloned())
         .collect();
-    let block_reserve_updates: Vec<&ReserveDataFact> = input
+    let block_reserve_owned: Vec<ReserveDataFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.reserve_updates.iter())
+        .flat_map(|t| t.reserve_updates.iter().cloned())
         .collect();
-    let block_oracle_owned: Vec<OracleUpdateFact> =
-        block_oracle_updates.iter().map(|o| (*o).clone()).collect();
-    let block_reserve_owned: Vec<ReserveDataFact> =
-        block_reserve_updates.iter().map(|r| (*r).clone()).collect();
     let oracle_feeds_in_block: HashSet<Address> =
         block_oracle_owned.iter().map(|o| o.feed).collect();
     let epoch_notify = input.txs.iter().any(|t| !t.epoch_rewards.is_empty());
     let epoch_signal = epoch_notify || strategy_tags::near_epoch_boundary(input.ts);
     let gmx_adl_signal = input.txs.iter().any(|t| {
         t.gmx_events.iter().any(|g| {
-            (input.gmx_event_emitters.is_empty() || input.gmx_event_emitters.contains(&g.emitter))
+            (input.ctx.gmx_event_emitters.is_empty()
+                || input.ctx.gmx_event_emitters.contains(&g.emitter))
                 && (g.kind == "adl" || g.kind == "impact" || g.kind == "liquidation")
         })
     });
-    let epoch_venue_list: Vec<Address> = input.epoch_venue_pools.iter().copied().collect();
+    let epoch_venue_list: Vec<Address> = input.ctx.epoch_venue_pools.iter().copied().collect();
     let block_rate_cache: Vec<RateCacheFact> = input
         .txs
         .iter()
         .flat_map(|t| t.rate_cache_updates.iter().cloned())
         .collect();
     let arb_tag_opts = ArbTagOpts {
-        wrapped_native: input.wrapped_native,
-        savax: input.savax,
+        wrapped_native: input.ctx.wrapped_native,
+        savax: input.ctx.savax,
         savax_exchange_rate_wad: input.savax_exchange_rate_wad,
         epoch_signal,
         epoch_venue_pools: &epoch_venue_list,
@@ -193,23 +240,19 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
         block_oracle_owned: &block_oracle_owned,
         block_reserve_owned: &block_reserve_owned,
     };
-    events.extend(classify_liquidations(input, &liq_ctx));
-    let liq_txs: HashSet<u64> = events
-        .iter()
-        .filter(|e| e.kind == MevKind::Liquidation)
-        .map(|e| e.tx_index)
-        .collect();
+    let mut drops = drops::DropSink::new(input.block);
+    events.extend(classify_liquidations(input, &liq_ctx, &mut drops));
 
     // ── 1b. Skim pass (exact, UniV2 pair outbound without Swap/Mint/Burn/Sync)
-    events.extend(classify_skims(input));
+    events.extend(classify_skims(input, &mut drops));
 
     // ── 2-3. Swap attribution + atomic arb (+ keeper/claim/bundler/upgrade)
-    let (arb_events, arb_rejects) = classify_arbs(input, &liq_txs, &arb_tag_opts);
+    let (arb_events, arb_rejects) = classify_arbs(input, &arb_tag_opts);
     events.extend(arb_events);
     rejects.extend(arb_rejects);
 
     // ── 5b. JIT block-wide pairing ──────────────────────────────────────
-    let mut jit_events = classify_jit(input);
+    let mut jit_events = classify_jit(input, &mut drops);
     // jit_arb when a JIT tx also produced an arb in this block. The standalone
     // ArbAtomic is suppressed so USD/P&L never double-counts the same flow.
     //
@@ -240,7 +283,7 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     events.append(&mut jit_events);
 
     // ── 4b. Sandwich classification: front-run → victim → back-run ─────
-    let mut sandwiches = classify_sandwiches(input);
+    let mut sandwiches = classify_sandwiches(input, &mut drops);
 
     // ── 3c. Causal backrun / frontrun ─────────────────────────
     // Sandwich-consumed fronts/backs are excluded (kind priority): a sandwich
@@ -253,58 +296,98 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
             consumed.insert(b);
         }
     }
-    let mut frontruns = classify_frontruns(input, &consumed);
+    let mut frontruns = classify_frontruns(input, &consumed, &mut drops);
     let frontrun_consumed: HashSet<u64> = frontruns.iter().map(|e| e.tx_index).collect();
     let mut back_consumed = consumed;
     back_consumed.extend(frontrun_consumed);
-    let mut backruns = classify_backruns(input, &back_consumed);
-    // Kind precedence on the same claimed tx: Frontrun > Backrun > ArbAtomic >
-    // Unknown. A causal claim lifts a profitable closed-cycle tx out of the arb
-    // pass; the arb/unknown event on that tx is superseded so P&L is never
-    // double-counted (Frontrun/Backrun win per the precedence list).
-    let mut superseder: HashMap<u64, MevKind> = HashMap::new();
-    for e in frontruns.iter().chain(backruns.iter()) {
-        superseder.entry(e.tx_index).or_insert(e.kind);
-        // Frontrun close tx may itself be a closed cycle; drop ArbAtomic /
-        // Unknown there so P&L is not double-counted (same rule as JitArb).
-        if e.kind == MevKind::Frontrun {
-            if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
-                superseder.entry(c).or_insert(MevKind::Frontrun);
-            }
+    let mut backruns = classify_backruns(input, &back_consumed, &mut drops);
+    // TxClaims is the authority for "one tx index, one P&L-bearing kind".
+    // Passes still over-emit; sandwich back-run txs and frontrun close txs
+    // are claimed even when the event itself is anchored on the other leg,
+    // so an ArbAtomic on that leg cannot survive. `consumed` above stays as
+    // an input prune. The Jit→JitArb upgrade above stays too: it is a kind
+    // change, not a second event.
+    let mut claims = claims::TxClaims::default();
+    for ev in events
+        .iter()
+        .chain(frontruns.iter())
+        .chain(backruns.iter())
+        .chain(sandwiches.iter())
+    {
+        claims.claim(ev.tx_index, ev.kind);
+    }
+    for s in &sandwiches {
+        if let Some(b) = s.details.get("backrun_tx_index").and_then(|v| v.as_u64()) {
+            claims.claim(b, MevKind::Sandwich);
         }
     }
-    events.retain(|e| {
-        !(matches!(e.kind, MevKind::ArbAtomic | MevKind::Unknown)
-            && superseder.contains_key(&e.tx_index))
-    });
+    for e in &frontruns {
+        if let Some(c) = e.details.get("close_tx_index").and_then(|v| v.as_u64()) {
+            claims.claim(c, MevKind::Frontrun);
+        }
+    }
     events.append(&mut frontruns);
     events.append(&mut backruns);
     events.append(&mut sandwiches);
+    events.retain(|e| claims.is_claimed(e.tx_index) && claims.winner(e.tx_index) == Some(e.kind));
 
     events.sort_by(|a, b| {
         a.tx_index
             .cmp(&b.tx_index)
             .then_with(|| kind_precedence(a.kind).cmp(&kind_precedence(b.kind)))
     });
+    normalize_confidence(&mut events);
+    rejects.extend(drops.into_rejects());
     ClassifyOutput { events, rejects }
 }
 
-/// Kind priority for sort / supersede (lower = higher priority).
-/// Single source of truth for Sandwich > Frontrun > Backrun > ArbAtomic >
-/// JitArb > Jit > Liquidation > Skim > Unknown. The JitArb upgrade +
-/// Frontrun/Backrun retain paths must stay consistent with this order so
-/// P&L is never double-counted on one tx_index.
+/// A19: `Confidence::Exact` means the P&L figure is a **realized ledger
+/// residual** (`details.pnl_basis = "R"`) with a non-empty amount and no
+/// recorded reconcile failure. Every other basis — gross amount diff, oracle /
+/// seized collateral, fee/reward fields, gas-cost-as-profit — and any
+/// amount-less event is demoted to `Inferred`. Detection is unchanged; only
+/// the confidence claim moves.
+pub(crate) fn normalize_confidence(events: &mut [MevEvent]) {
+    for e in events {
+        if e.confidence != Confidence::Exact {
+            continue; // not-a-drop: only Exact events are normalized
+        }
+        let basis_exact = e
+            .details
+            .get("pnl_basis")
+            .and_then(|v| v.as_str())
+            .is_some_and(|b| b == PnlBasis::R.as_str());
+        let reconciled = !e
+            .details
+            .get("reasons")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("TRANSFER_MISMATCH")));
+        let has_pnl = e.profit_amount.is_some_and(|a| !a.is_zero()) || !e.profit_tokens.is_empty();
+        if !(basis_exact && reconciled && has_pnl) {
+            e.confidence = Confidence::Inferred;
+        }
+    }
+}
+
+/// Kind priority for [`claims::TxClaims`] (lower = higher priority).
+///
+/// Sandwich > Frontrun > Backrun > JitArb > Liquidation > Jit > Skim >
+/// ArbAtomic > Utility. Encodes the A15 census decisions: the indexed
+/// corpus had zero co-labeled `(block, tx_index)` pairs, so demoting
+/// `ArbAtomic` under the three explicitly anchored kinds is a no-op on that
+/// data and must not move goldens. A real collision keeps the explicit
+/// anchor (liquidation / mint-burn / pair outflow) and drops the inferred cycle.
 pub fn kind_precedence(k: MevKind) -> u8 {
     match k {
         MevKind::Sandwich => 0,
         MevKind::Frontrun => 1,
         MevKind::Backrun => 2,
-        MevKind::ArbAtomic => 3,
-        MevKind::JitArb => 4,
+        MevKind::JitArb => 3,
+        MevKind::Liquidation => 4,
         MevKind::Jit => 5,
-        MevKind::Liquidation => 6,
-        MevKind::Skim => 7,
-        MevKind::Unknown => 8,
+        MevKind::Skim => 6,
+        MevKind::ArbAtomic => 7,
+        MevKind::Utility => 8,
     }
 }
 
@@ -339,6 +422,15 @@ pub struct DecodedTxFacts {
     pub aggregator_signals: Vec<AggregatorSignal>,
 }
 
+fn push_swap(facts: &mut DecodedTxFacts, tx_index: u64, log_idx: u64, log: &crate::data::LogData) {
+    if let Some((amm, mut s)) = decode::decode_swap(log) {
+        s.tx_index = tx_index;
+        s.log_index = log_idx;
+        s.amm = amm;
+        facts.swaps.push(s);
+    }
+}
+
 /// Decode a tx's receipt logs into facts (used by ingest / scenarios).
 /// `pool_tokens` = pool → (token0, token1) registry for swap direction (1.1).
 /// `liquidation_protocol_aliases` remaps shared-topic0 emitters (Spark, Benqi).
@@ -351,86 +443,117 @@ pub(crate) fn decode_tx_logs_with_aliases(
     let mut facts = DecodedTxFacts::default();
     for (log_idx, log) in logs.iter().enumerate() {
         let log_idx = log_idx as u64;
-        if let Some(mut t) = decode::decode_transfer(log) {
-            t.tx_index = tx_index;
-            t.log_index = log_idx;
-            facts.transfers.push(t);
+        if let Some(&topic0) = log.topics.first() {
+            match decode::log_family(topic0) {
+                Some(decode::LogFamily::Transfer) => {
+                    if let Some(mut t) = decode::decode_transfer(log) {
+                        t.tx_index = tx_index;
+                        t.log_index = log_idx;
+                        facts.transfers.push(t);
+                    }
+                }
+                // Signal before the swap edge so brand survives dedup.
+                Some(decode::LogFamily::Aggregator) => {
+                    if let Some(mut sig) = decode::decode_aggregator_signal(log) {
+                        sig.log_index = log_idx;
+                        facts.aggregator_signals.push(sig);
+                    }
+                    push_swap(&mut facts, tx_index, log_idx, log);
+                }
+                Some(decode::LogFamily::Swap) => push_swap(&mut facts, tx_index, log_idx, log),
+                Some(decode::LogFamily::Liquidation) => {
+                    if let Some(mut l) = decode::decode_liquidation(log) {
+                        l.tx_index = tx_index;
+                        l.log_index = log_idx;
+                        decode::remap_liquidation_protocol(&mut l, liquidation_protocol_aliases);
+                        facts.liquidations.push(l);
+                    }
+                }
+                Some(decode::LogFamily::FlashLoan) => {
+                    if let Some(mut f) = decode::decode_flash_loan(log) {
+                        f.tx_index = tx_index;
+                        f.log_index = log_idx;
+                        facts.flashloans.push(f);
+                    }
+                }
+                Some(decode::LogFamily::BuyCollateral) => {
+                    if let Some(mut b) = decode::decode_buy_collateral(log) {
+                        b.tx_index = tx_index;
+                        b.log_index = log_idx;
+                        facts.buy_collaterals.push(b);
+                    }
+                }
+                Some(decode::LogFamily::V3Liquidity) => {
+                    if let Some(mut j) = decode::decode_v3_mint_burn(log) {
+                        j.tx_index = tx_index;
+                        j.log_index = log_idx;
+                        facts.jit.push(j);
+                    }
+                }
+                Some(decode::LogFamily::LbLiquidity) => {
+                    if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
+                        j.tx_index = tx_index;
+                        j.log_index = log_idx;
+                        facts.jit.push(j);
+                    }
+                }
+                Some(decode::LogFamily::V2PairOp) => {
+                    if let Some(mut op) = decode::decode_v2_pair_op(log) {
+                        op.tx_index = tx_index;
+                        op.log_index = log_idx;
+                        facts.v2_pair_ops.push(op);
+                    }
+                }
+                Some(decode::LogFamily::Oracle) => {
+                    if let Some(mut o) = decode::decode_oracle_update(log) {
+                        o.tx_index = tx_index;
+                        o.log_index = log_idx;
+                        facts.oracle_updates.push(o);
+                    }
+                }
+                Some(decode::LogFamily::Reserve) => {
+                    if let Some(mut r) = decode::decode_reserve_data(log) {
+                        r.tx_index = tx_index;
+                        r.log_index = log_idx;
+                        facts.reserve_updates.push(r);
+                    }
+                }
+                Some(decode::LogFamily::RateCache) => {
+                    if let Some(mut rc) = decode::decode_rate_cache_update(log) {
+                        rc.tx_index = tx_index;
+                        rc.log_index = log_idx;
+                        facts.rate_cache_updates.push(rc);
+                    }
+                }
+                Some(decode::LogFamily::Keeper) => {
+                    if let Some(mut k) = decode::decode_keeper(log) {
+                        k.tx_index = tx_index;
+                        k.log_index = log_idx;
+                        facts.keepers.push(k);
+                    }
+                }
+                Some(decode::LogFamily::EpochReward) => {
+                    if let Some(mut e) = decode::decode_epoch_reward(log) {
+                        e.tx_index = tx_index;
+                        e.log_index = log_idx;
+                        facts.epoch_rewards.push(e);
+                    }
+                }
+                Some(decode::LogFamily::UserOp) => {
+                    if let Some(mut u) = decode::decode_user_op(log) {
+                        u.tx_index = tx_index;
+                        u.log_index = log_idx;
+                        facts.user_ops.push(u);
+                    }
+                }
+                None => {}
+            }
         }
-        // Collect aggregator intent before swap-edge dedup so brand survives.
-        if let Some(mut sig) = decode::decode_aggregator_signal(log) {
-            sig.log_index = log_idx;
-            facts.aggregator_signals.push(sig);
-        }
-        if let Some((amm, mut s)) = decode::decode_swap(log) {
-            s.tx_index = tx_index;
-            s.log_index = log_idx;
-            s.amm = amm;
-            facts.swaps.push(s);
-        }
-        if let Some(mut l) = decode::decode_liquidation(log) {
-            l.tx_index = tx_index;
-            l.log_index = log_idx;
-            decode::remap_liquidation_protocol(&mut l, liquidation_protocol_aliases);
-            facts.liquidations.push(l);
-        }
-        if let Some(mut f) = decode::decode_flash_loan(log) {
-            f.tx_index = tx_index;
-            f.log_index = log_idx;
-            facts.flashloans.push(f);
-        }
-        if let Some(mut b) = decode::decode_buy_collateral(log) {
-            b.tx_index = tx_index;
-            b.log_index = log_idx;
-            facts.buy_collaterals.push(b);
-        }
-        if let Some(mut j) = decode::decode_v3_mint_burn(log) {
-            j.tx_index = tx_index;
-            j.log_index = log_idx;
-            facts.jit.push(j);
-        } else if let Some(mut j) = decode::decode_lb_bins_liquidity(log) {
-            j.tx_index = tx_index;
-            j.log_index = log_idx;
-            facts.jit.push(j);
-        }
-        if let Some(mut op) = decode::decode_v2_pair_op(log) {
-            op.tx_index = tx_index;
-            op.log_index = log_idx;
-            facts.v2_pair_ops.push(op);
-        }
-        if let Some(mut o) = decode::decode_oracle_update(log) {
-            o.tx_index = tx_index;
-            o.log_index = log_idx;
-            facts.oracle_updates.push(o);
-        }
-        if let Some(mut r) = decode::decode_reserve_data(log) {
-            r.tx_index = tx_index;
-            r.log_index = log_idx;
-            facts.reserve_updates.push(r);
-        }
-        if let Some(mut rc) = decode::decode_rate_cache_update(log) {
-            rc.tx_index = tx_index;
-            rc.log_index = log_idx;
-            facts.rate_cache_updates.push(rc);
-        }
-        if let Some(mut k) = decode::decode_keeper(log) {
-            k.tx_index = tx_index;
-            k.log_index = log_idx;
-            facts.keepers.push(k);
-        }
-        if let Some(mut e) = decode::decode_epoch_reward(log) {
-            e.tx_index = tx_index;
-            e.log_index = log_idx;
-            facts.epoch_rewards.push(e);
-        }
+        // GMX EventEmitter keys eventNameHash on topics[1]; topic0 is not stable.
         if let Some(mut g) = decode::decode_gmx_event(log) {
             g.tx_index = tx_index;
             g.log_index = log_idx;
             facts.gmx_events.push(g);
-        }
-        if let Some(mut u) = decode::decode_user_op(log) {
-            u.tx_index = tx_index;
-            u.log_index = log_idx;
-            facts.user_ops.push(u);
         }
     }
     decode::attach_swap_tokens(&mut facts.swaps, &facts.transfers, pool_tokens);
@@ -441,36 +564,19 @@ pub(crate) fn decode_tx_logs_with_aliases(
 
 /// True when a swap fact has unresolved direction tokens (V3 sentinel kept).
 pub(crate) fn has_unresolved_tokens(s: &SwapFact) -> bool {
-    s.token_in == decode::TOKEN0_SENTINEL
-        || s.token_in == decode::TOKEN1_SENTINEL
-        || s.token_in == Address::ZERO
-        || s.token_out == Address::ZERO
+    decode::is_unresolved_token(s.token_in) || decode::is_unresolved_token(s.token_out)
 }
 
-/// Suppress `unknown` events whose swaps are entirely unresolved-direction
-/// or whose searcher candidate netted zero after netting — dedup guard for
-/// noisy blocks.
+/// Drop a `Utility` event that is not one of the three fingerprints and has
+/// no positive profit amount. The three families stay even at zero profit.
 pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
     events
         .into_iter()
         .filter(|e| {
-            if e.kind != MevKind::Unknown {
+            if e.kind != MevKind::Utility {
                 return true;
             }
-            // Keeper / bundler / claim-and-sell are Exact fingerprints even
-            // when profit_amount is zero/absent — keep them (P1.5 / P3.11/13).
-            if e.details
-                .get("tags")
-                .and_then(|t| t.as_array())
-                .is_some_and(|a| {
-                    a.iter().any(|x| {
-                        matches!(
-                            x.as_str(),
-                            Some("keeper") | Some("bundler") | Some("claim_and_sell")
-                        )
-                    })
-                })
-            {
+            if crate::explorer::types::utility_subkind(&e.details).is_some() {
                 return true;
             }
             e.profit_amount.map(|a| !a.is_zero()).unwrap_or(false)
@@ -481,17 +587,78 @@ pub(crate) fn filter_unresolved(events: Vec<MevEvent>) -> Vec<MevEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::explorer::ingest::IngestConfig;
     use crate::explorer::store::OpenPosition;
     use crate::explorer::test_fixtures::{
         block, block_with_v2, classify_kind, event_of, flash_loan, jit, kinds, liquidation, swap,
         swap_at_tick, swap_owned, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC, VICTIM,
         WNATIVE,
     };
-    use crate::explorer::types::{Confidence, JitFact, MevKind, V2PairOpFact, V2PairOpKind};
-    use crate::explorer::ingest::IngestConfig;
-    use crate::config::Config;
+    use crate::explorer::types::{
+        utility_subkind, Confidence, JitFact, KeeperFact, MevKind, UserOpFact, V2PairOpFact,
+        V2PairOpKind,
+    };
     use crate::types::ChainName;
     use alloy::primitives::{address, b256, Address, U256};
+
+    /// A future pass that dumps an untagged event into `Utility` fails here
+    /// instead of silently recreating the old mystery bucket.
+    #[test]
+    fn every_utility_event_has_exactly_one_subkind() {
+        let mut keeper_tx = tx(0, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink",
+            emitter: ATK,
+            fee: None,
+            fee_token: None,
+        }];
+        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 1,
+            log_index: 0,
+            entry_point: ATK,
+            sender: VICTIM,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(1u64),
+            success: true,
+        }];
+        let out = classify_block(&block(vec![keeper_tx, bundler_tx]));
+        let utilities: Vec<_> = out
+            .events
+            .iter()
+            .filter(|e| e.kind == MevKind::Utility)
+            .collect();
+        assert_eq!(utilities.len(), 2, "keeper and bundler must both emit");
+        for ev in utilities {
+            let n = ev
+                .details
+                .get("tags")
+                .and_then(|t| t.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|t| {
+                            matches!(
+                                t.as_str(),
+                                Some("keeper") | Some("bundler") | Some("claim_and_sell")
+                            )
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            assert_eq!(n, 1, "exactly one utility family tag: {:?}", ev.details);
+            assert!(
+                matches!(
+                    utility_subkind(&ev.details),
+                    Some("keeper") | Some("bundler") | Some("claim_and_sell")
+                ),
+                "untagged Utility is the old mystery bucket: {:?}",
+                ev.details
+            );
+        }
+    }
 
     #[test]
     fn arb_cycle_single_flow_owner_is_exact() {
@@ -679,8 +846,8 @@ mod tests {
         .expect("config with tip sink must parse");
         assert_eq!(config.explorer.tip_sink_addresses, vec![sink]);
 
-        let (_, chain_cfg) = crate::config::validation::resolve_chain(&config)
-            .expect("resolve_chain for polygon");
+        let (_, chain_cfg) =
+            crate::config::validation::resolve_chain(&config).expect("resolve_chain for polygon");
         let mut ingest = IngestConfig::from_chain(ChainName::Polygon, &chain_cfg);
         // The exact field the job/backfill entry points assign.
         ingest.tip_sink_addresses = config.explorer.tip_sink_addresses.iter().cloned().collect();
@@ -812,7 +979,10 @@ mod tests {
             transfer(2, TOKA, ATK, POOL_B, 199),
             transfer(3, USDC, POOL_B, ATK, 110),
         ];
-        let ev = classify_kind(&block(vec![tx(0, ATK, true, swaps, transfers)]), MevKind::ArbAtomic);
+        let ev = classify_kind(
+            &block(vec![tx(0, ATK, true, swaps, transfers)]),
+            MevKind::ArbAtomic,
+        );
         assert_eq!(ev.profit_token, Some(USDC));
         assert_eq!(ev.profit_amount, Some(U256::from(10)));
         assert_eq!(ev.profit_tokens, vec![(USDC, U256::from(10))]);
@@ -877,7 +1047,9 @@ mod tests {
             transfer(4, TOKA, SEARCHER, POOL_B, 200),
             transfer(5, USDC, POOL_B, SEARCHER, 110),
         ];
-        let events = classify_block(&block(vec![tx_to(0, ATK, SEARCHER, true, swaps, transfers)]));
+        let events = classify_block(&block(vec![tx_to(
+            0, ATK, SEARCHER, true, swaps, transfers,
+        )]));
         assert!(
             !kinds(&events).contains(&MevKind::ArbAtomic),
             "EOA outside-walk spend must drop, got {events:?}"
@@ -950,7 +1122,7 @@ mod tests {
         assert!(
             events
                 .iter()
-                .all(|e| e.kind != MevKind::ArbAtomic && e.kind != MevKind::Unknown),
+                .all(|e| e.kind != MevKind::ArbAtomic && e.kind != MevKind::Utility),
             "expected no arb/unknown pollution, got {events:?}"
         );
     }
@@ -998,7 +1170,7 @@ mod tests {
             "open-inventory transfer cycle must not promote, got {events:?}"
         );
         assert!(
-            events.iter().all(|e| e.kind != MevKind::Unknown),
+            events.iter().all(|e| e.kind != MevKind::Utility),
             "expected no unknown pollution, got {events:?}"
         );
     }
@@ -1275,42 +1447,43 @@ mod tests {
     fn backrun_same_token_size_accepts_decimal_mismatched_amount_in() {
         // Move amount_in (50 USDC) < backrun amount_in (200 TOKA) — old gate
         // rejected. Same-token: move.amount_out (1000) >= back.amount_in (200).
-        let mut txs = Vec::new();
-        txs.push(tx(
-            0,
-            VICTIM,
-            true,
-            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
-            vec![
-                transfer(0, TOKA, VICTIM, POOL_A, 100),
-                transfer(1, USDC, POOL_A, VICTIM, 110),
-            ],
-        ));
-        txs.push(tx(
-            1,
-            MARKET,
-            true,
-            vec![swap(POOL_A, USDC, TOKA, 50, 1000)],
-            vec![
-                transfer(0, USDC, MARKET, POOL_A, 50),
-                transfer(1, TOKA, POOL_A, MARKET, 1000),
-            ],
-        ));
-        txs.push(tx(
-            2,
-            ATK,
-            true,
-            vec![
-                swap(POOL_A, TOKA, USDC, 200, 250),
-                swap(POOL_B, USDC, TOKA, 250, 260),
-            ],
-            vec![
-                transfer(0, TOKA, ATK, POOL_A, 200),
-                transfer(1, USDC, POOL_A, ATK, 250),
-                transfer(2, USDC, ATK, POOL_B, 250),
-                transfer(3, TOKA, POOL_B, ATK, 260),
-            ],
-        ));
+        let txs = vec![
+            tx(
+                0,
+                VICTIM,
+                true,
+                vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+                vec![
+                    transfer(0, TOKA, VICTIM, POOL_A, 100),
+                    transfer(1, USDC, POOL_A, VICTIM, 110),
+                ],
+            ),
+            tx(
+                1,
+                MARKET,
+                true,
+                vec![swap(POOL_A, USDC, TOKA, 50, 1000)],
+                vec![
+                    transfer(0, USDC, MARKET, POOL_A, 50),
+                    transfer(1, TOKA, POOL_A, MARKET, 1000),
+                ],
+            ),
+            tx(
+                2,
+                ATK,
+                true,
+                vec![
+                    swap(POOL_A, TOKA, USDC, 200, 250),
+                    swap(POOL_B, USDC, TOKA, 250, 260),
+                ],
+                vec![
+                    transfer(0, TOKA, ATK, POOL_A, 200),
+                    transfer(1, USDC, POOL_A, ATK, 250),
+                    transfer(2, USDC, ATK, POOL_B, 250),
+                    transfer(3, TOKA, POOL_B, ATK, 260),
+                ],
+            ),
+        ];
         let events = classify_block(&block(txs));
         assert!(
             kinds(&events).contains(&MevKind::Backrun),
@@ -1520,7 +1693,8 @@ mod tests {
                 searcher: Some(ATK),
                 profit_token: Some(USDC),
                 profit_amount: Some(500),
-                confidence: Some(Confidence::Exact),
+                // A19: O basis (seized collateral) is not a ledger residual.
+                confidence: Some(Confidence::Inferred),
                 reconciled: None,
                 reasons: None,
             },
@@ -1550,7 +1724,8 @@ mod tests {
                 searcher: None,
                 profit_token: None,
                 profit_amount: None,
-                confidence: Some(Confidence::Exact),
+                // A19: O basis (seized collateral) is not a ledger residual.
+                confidence: Some(Confidence::Inferred),
                 reconciled: Some(false),
                 reasons: Some(&["TRANSFER_MISMATCH"]),
             },
@@ -1643,7 +1818,8 @@ mod tests {
                         .is_some_and(|a| a.iter().any(|x| x.as_str() == Some("buycollateral")))
             })
             .expect("buycollateral event");
-        assert_eq!(buy.confidence, Confidence::Exact);
+        // A19: oracle-valued (O) basis is no longer Exact.
+        assert_eq!(buy.confidence, Confidence::Inferred);
         assert_eq!(buy.details["pnl_basis"], serde_json::json!("O"));
         assert_eq!(buy.details["absorb_paired"], serde_json::json!(true));
         assert_eq!(buy.details["pnl"]["base_paid"], serde_json::json!("90"));
@@ -1885,7 +2061,7 @@ mod tests {
             ts: 1,
             tx_index: 0,
             tx_hash: B256::ZERO,
-            kind: MevKind::Unknown,
+            kind: MevKind::Utility,
             searcher: ATK,
             contract: None,
             pools: vec![],
@@ -2152,5 +2328,770 @@ mod tests {
         assert!(kind_precedence(MevKind::Frontrun) < kind_precedence(MevKind::Backrun));
         assert!(kind_precedence(MevKind::Backrun) < kind_precedence(MevKind::ArbAtomic));
         assert!(kind_precedence(MevKind::JitArb) < kind_precedence(MevKind::Jit));
+    }
+
+    #[test]
+    fn sandwich_front_supersedes_arb_on_same_tx() {
+        // tx0 is the sandwich front-run (TOKA→USDC on POOL_A) *and* closes a
+        // 2-pool cycle (USDC→TOKA on POOL_B), so the arb pass emits ArbAtomic
+        // on the same tx_index as the Sandwich anchor. Kind precedence
+        // (Sandwich > ArbAtomic) must drop the arb event: P&L is attributed
+        // once, to the Sandwich.
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 200, 250),
+                swap(POOL_B, USDC, TOKA, 250, 260),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 250),
+                transfer(2, USDC, ATK, POOL_B, 250),
+                transfer(3, TOKA, POOL_B, ATK, 260),
+            ],
+        );
+        let t1 = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 100, 110)],
+            vec![
+                transfer(0, TOKA, VICTIM, POOL_A, 100),
+                transfer(1, USDC, POOL_A, VICTIM, 110),
+            ],
+        );
+        let t2 = tx(
+            2,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 105)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 105),
+            ],
+        );
+        let events = classify_block(&block(vec![t0, t1, t2]));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == MevKind::Sandwich && e.tx_index == 0),
+            "fixture must produce the sandwich anchor on tx0, got {events:?}"
+        );
+
+        let mut by_tx: HashMap<u64, Vec<MevKind>> = HashMap::new();
+        for e in events.iter() {
+            by_tx.entry(e.tx_index).or_default().push(e.kind);
+        }
+        for (tx, kinds) in by_tx {
+            let has_sandwich = kinds.contains(&MevKind::Sandwich);
+            let has_arb = kinds.contains(&MevKind::ArbAtomic) || kinds.contains(&MevKind::Utility);
+            assert!(
+                !(has_sandwich && has_arb),
+                "tx {tx} carries both Sandwich and Arb/Unknown: {kinds:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod unresolved_token_tests {
+    use super::*;
+    use crate::explorer::decode::{TOKEN0_SENTINEL, TOKEN1_SENTINEL};
+    use crate::explorer::test_fixtures::{swap, POOL_A, TOKA, USDC};
+
+    /// Either side of the swap can be unresolved: the old check tested the
+    /// sentinels on `token_in` only, so a resolved-in / sentinel-out edge kept
+    /// its event and poisoned downstream direction inference.
+    #[test]
+    fn sentinel_detected_on_either_side() {
+        let mut s = swap(POOL_A, USDC, TOKA, 1, 1);
+        assert!(!has_unresolved_tokens(&s), "resolved both sides");
+
+        s.token_out = TOKEN0_SENTINEL;
+        assert!(has_unresolved_tokens(&s), "out-side token0 sentinel");
+
+        s.token_out = TOKA;
+        s.token_in = TOKEN1_SENTINEL;
+        assert!(has_unresolved_tokens(&s), "in-side token1 sentinel");
+
+        s.token_in = Address::ZERO;
+        assert!(has_unresolved_tokens(&s), "in-side zero");
+
+        s.token_in = USDC;
+        s.token_out = Address::ZERO;
+        assert!(has_unresolved_tokens(&s), "out-side zero");
+    }
+}
+
+#[cfg(test)]
+mod confidence_basis_tests {
+    use super::*;
+    use crate::explorer::test_fixtures::{ATK, POOL_A, USDC};
+    use alloy::primitives::B256;
+
+    fn event_with(basis: serde_json::Value, confidence: Confidence) -> MevEvent {
+        MevEvent {
+            block: 1,
+            ts: 1_700_000_000,
+            tx_index: 0,
+            tx_hash: B256::ZERO,
+            kind: MevKind::ArbAtomic,
+            searcher: ATK,
+            contract: None,
+            pools: vec![POOL_A],
+            profit_token: Some(USDC),
+            profit_amount: Some(U256::from(10u64)),
+            profit_tokens: vec![],
+            profit_usd: None,
+            gas_cost_wei: U256::ZERO,
+            flashloan_fee_wei: None,
+            flashloan_fee_token: None,
+            confidence,
+            victim_hashes: vec![],
+            victim_swap_size: None,
+            details: serde_json::json!({ "pnl_basis": basis }),
+        }
+    }
+
+    /// A19: only a realized ledger residual may claim `Exact`; every other
+    /// basis the plan names (oracle, fee fields, gross diff, gas-as-profit)
+    /// is demoted.
+    #[test]
+    fn exact_requires_ledger_residual_basis() {
+        let mut events = vec![
+            event_with(serde_json::json!("R"), Confidence::Exact),
+            event_with(serde_json::json!("O"), Confidence::Exact),
+            event_with(serde_json::json!("F"), Confidence::Exact),
+            event_with(serde_json::json!("gross_amount_diff"), Confidence::Exact),
+            event_with(serde_json::json!("gas_cost_as_profit"), Confidence::Exact),
+        ];
+        normalize_confidence(&mut events);
+        assert_eq!(
+            events[0].confidence,
+            Confidence::Exact,
+            "ledger residual stays Exact"
+        );
+        for (i, e) in events.iter().enumerate().skip(1) {
+            assert_eq!(
+                e.confidence,
+                Confidence::Inferred,
+                "basis at index {i} is not a ledger residual"
+            );
+        }
+    }
+
+    /// A recorded reconcile failure, or no P&L amount at all, demotes even an
+    /// R-basis event: there is nothing exact to stand behind.
+    #[test]
+    fn reconcile_failure_and_missing_amount_demote() {
+        let mut mismatch = event_with(serde_json::json!("R"), Confidence::Exact);
+        mismatch.details["reasons"] = serde_json::json!(["TRANSFER_MISMATCH"]);
+        let mut no_amount = event_with(serde_json::json!("R"), Confidence::Exact);
+        no_amount.profit_amount = None;
+        let mut events = vec![mismatch, no_amount];
+        normalize_confidence(&mut events);
+        assert_eq!(events[0].confidence, Confidence::Inferred);
+        assert_eq!(events[1].confidence, Confidence::Inferred);
+    }
+}
+
+/// A20: every candidate a classify pass drops must emit a `RejectedCandidate`
+/// whose reason carries the *decision*, so "0 frontrun / backrun / skim over
+/// N blocks" is answerable from data instead of being a guess.
+///
+/// One test per instrumented pass asserts the exact reason string (and the
+/// `detail` gate name) for a near-miss fixture; the absence of that reason is
+/// the test failure. The last test is the structural guard: no bare `continue;`
+/// may land in the instrumented files without either recording a reason or
+/// saying why it is not a candidate drop.
+#[cfg(test)]
+mod a20_reject_reasons {
+    use super::*;
+    use crate::explorer::test_fixtures::{
+        block, block_with_v2, jit, liquidation, swap, swap_at_tick, swap_owned, transfer, tx, ATK,
+        MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM, WNATIVE,
+    };
+    use crate::explorer::types::V2PairOpKind;
+    use alloy::primitives::address;
+
+    const OUTSIDER: Address = address!("7000000000000000000000000000000000000011");
+    const FILLER: Address = address!("f000000000000000000000000000000000000001");
+    const POOL_C: Address = address!("300000000000000000000000000000000000000c");
+    const TOKB: Address = address!("700000000000000000000000000000000000000b");
+
+    /// True when a reject carries this reason, this tx anchor (`None` = the
+    /// per-block aggregate row) and a `detail` starting with `gate`.
+    fn has(out: &ClassifyOutput, reason: &str, tx_index: Option<u64>, gate: &str) -> bool {
+        out.rejects.iter().any(|r| {
+            r.reject_reason == reason
+                && r.tx_index == tx_index
+                && r.detail.as_deref().is_some_and(|d| d.starts_with(gate))
+        })
+    }
+
+    fn dump(out: &ClassifyOutput) -> Vec<(String, Option<u64>, Option<String>)> {
+        out.rejects
+            .iter()
+            .map(|r| (r.reject_reason.clone(), r.tx_index, r.detail.clone()))
+            .collect()
+    }
+
+    /// A profitable closed cycle (the anchor the causal backrun pass needs)
+    /// plus a market-moving tx at index 0, `gap` txs apart.
+    fn backrun_shape(gap: u64, ref_price: (u64, u64), back_price: (u64, u64)) -> Vec<TxInput> {
+        let mut txs = vec![tx(
+            0,
+            MARKET,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, ref_price.0, ref_price.1)],
+            vec![
+                transfer(0, TOKA, MARKET, POOL_A, ref_price.0),
+                transfer(1, USDC, POOL_A, MARKET, ref_price.1),
+            ],
+        )];
+        // `gap - 1` unrelated filler txs, then the move, then the closer.
+        let mut idx = 1u64;
+        let fillers = gap.saturating_sub(2);
+        for _ in 0..fillers {
+            txs.push(tx(
+                idx,
+                FILLER,
+                true,
+                vec![swap(POOL_C, USDC, TOKA, 10, 10)],
+                vec![
+                    transfer(0, USDC, FILLER, POOL_C, 10),
+                    transfer(1, TOKA, POOL_C, FILLER, 10),
+                ],
+            ));
+            idx += 1;
+        }
+        let move_in = 1000u64;
+        let move_out = 500u64;
+        txs.push(tx(
+            idx,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, move_in, move_out)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, move_in),
+                transfer(1, TOKA, POOL_A, VICTIM, move_out),
+            ],
+        ));
+        idx += 1;
+        txs.push(tx(
+            idx,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, back_price.0, back_price.1),
+                swap(POOL_B, USDC, TOKA, back_price.1, back_price.1 + 10),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, back_price.0),
+                transfer(1, USDC, POOL_A, ATK, back_price.1),
+                transfer(2, USDC, ATK, POOL_B, back_price.1),
+                transfer(3, TOKA, POOL_B, ATK, back_price.1 + 10),
+            ],
+        ));
+        txs
+    }
+
+    #[test]
+    fn cycle_gate_reports_closed_cycle_misses_by_name() {
+        // (fixture, expected tx anchor, expected gate in `detail`).
+        // Two resolved edges that do not close → anchored `cycle_not_closed`.
+        let unclosed = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 120),
+                swap(POOL_B, USDC, TOKB, 120, 130),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+                transfer(2, USDC, ATK, POOL_B, 120),
+                transfer(3, TOKB, POOL_B, ATK, 130),
+            ],
+        )]);
+        let out = classify_block(&unclosed);
+        assert!(
+            has(&out, "cycle_not_closed", Some(0), "no_closed_cycle"),
+            "two unclosed edges must report `no_closed_cycle`, got {:?}",
+            dump(&out)
+        );
+
+        // A single resolved edge is not an anchor at all: one aggregate row.
+        let one_edge = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 100, 120)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+            ],
+        )]);
+        let out = classify_block(&one_edge);
+        assert!(
+            has(
+                &out,
+                "cycle_not_closed",
+                None,
+                "fewer_than_2_resolved_edges"
+            ),
+            "a sub-2-edge tx must be aggregated, not written per tx, got {:?}",
+            dump(&out)
+        );
+
+        // Closed cycle whose legs are funded by an unrelated actor.
+        let mixed = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap_owned(ATK, POOL_A, USDC, TOKA, 100, 200),
+                swap_owned(OUTSIDER, POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+            ],
+        )]);
+        let out = classify_block(&mixed);
+        assert!(
+            has(
+                &out,
+                "mixed_flow_owner",
+                Some(0),
+                "cycle_flow_not_attributable"
+            ),
+            "a closed cycle with a foreign leg owner must say so, got {:?}",
+            dump(&out)
+        );
+
+        // Cycle whose only candidates dump pre-existing inventory.
+        let inventory = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 50),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 50),
+            ],
+        )]);
+        let out = classify_block(&inventory);
+        assert!(
+            has(
+                &out,
+                "material_deficit",
+                Some(0),
+                "every_candidate_spends_pre_existing_inventory"
+            ),
+            "an inventory-dumping cycle must report the spend, got {:?}",
+            dump(&out)
+        );
+
+        // Cycle that closes at exactly break-even: no positive residual.
+        let net_zero = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 100),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 100),
+            ],
+        )]);
+        let out = classify_block(&net_zero);
+        assert!(
+            has(
+                &out,
+                "net_zero_searcher",
+                Some(0),
+                "no_candidate_holds_a_positive_residual"
+            ),
+            "a break-even cycle must report no residual, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn backrun_reports_no_counterparty_leg_and_the_window_gate() {
+        // A closed profitable cycle that is the only leg on its pool: nothing
+        // moved the market, so there is no counterparty to backrun.
+        let alone = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, TOKA, USDC, 100, 120),
+                swap(POOL_B, USDC, TOKA, 120, 130),
+            ],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 100),
+                transfer(1, USDC, POOL_A, ATK, 120),
+                transfer(2, USDC, ATK, POOL_B, 120),
+                transfer(3, TOKA, POOL_B, ATK, 130),
+            ],
+        )]);
+        let out = classify_block(&alone);
+        assert!(
+            has(
+                &out,
+                "no_counterparty_leg",
+                Some(0),
+                "no_prior_opposite_leg"
+            ),
+            "a cycle with no prior opposite leg must say why, got {:?}",
+            dump(&out)
+        );
+
+        // Same shape, but the counterparty moved 9 txs earlier: beyond the
+        // adjacency window, so the reject names the window, not the price.
+        let out = classify_block(&block(backrun_shape(9, (1000, 1100), (100, 120))));
+        assert!(
+            has(
+                &out,
+                "causal_window_too_wide",
+                Some(8),
+                "counterparty_leg_behind_causal_window"
+            ),
+            "the CAUSAL_WINDOW_TXS gate must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn backrun_reports_the_price_floor_gate() {
+        // In-window counterparty move present, closed profitable cycle present,
+        // but the closer executes at the pre-move reference price (1.2 vs 1.2):
+        // below CAUSAL_PRICE_MIN_PCT, so it is noise, not a backrun.
+        let out = classify_block(&block(backrun_shape(3, (1000, 1200), (100, 120))));
+        assert!(
+            has(
+                &out,
+                "causal_price_move_below_floor",
+                Some(2),
+                "backrun_price_below_floor"
+            ),
+            "the CAUSAL_PRICE_MIN_PCT gate must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn frontrun_reports_empty_victim_set_and_unclosed_position() {
+        // A mover with no third-party same-direction swap after it: nothing was
+        // frontrun. Aggregate row (no anchor existed).
+        let mover = block(vec![tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        )]);
+        let out = classify_block(&mover);
+        assert!(
+            has(
+                &out,
+                "victim_set_empty",
+                None,
+                "no_third_party_same_direction_leg"
+            ),
+            "an empty victim set must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Degraded third-party victim (the anchor) but the position is never
+        // closed by the mover's sender: a frontrun-shaped candidate that fails
+        // the close gate.
+        let f = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let v = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 150)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, VICTIM, 150),
+            ],
+        );
+        let out = classify_block(&block(vec![f, v]));
+        assert!(
+            has(&out, "cycle_not_closed", Some(0), "no_profitable_close_leg"),
+            "a victim-anchored frontrun with no close must say so, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn sandwich_reports_its_leg_walk_rejections() {
+        // Attacker opens and closes on one pool with no third-party swap in
+        // between: a round trip, rejected because the victim set is empty.
+        let t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let t1 = tx(
+            1,
+            ATK,
+            true,
+            vec![swap(POOL_A, TOKA, USDC, 200, 95)],
+            vec![
+                transfer(0, TOKA, ATK, POOL_A, 200),
+                transfer(1, USDC, POOL_A, ATK, 95),
+            ],
+        );
+        let out = classify_block(&block(vec![t0, t1]));
+        assert!(
+            has(
+                &out,
+                "victim_set_empty",
+                Some(0),
+                "closed_without_third_party_victim"
+            ),
+            "a front/back pair with no victim must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Victims did pile up between the front and a same-direction attacker
+        // swap that never reverses: no back-run leg, so no sandwich.
+        let front = tx(
+            0,
+            ATK,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 100, 200)],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+            ],
+        );
+        let victim = tx(
+            1,
+            VICTIM,
+            true,
+            vec![swap(POOL_A, USDC, TOKA, 200, 380)],
+            vec![
+                transfer(0, USDC, VICTIM, POOL_A, 200),
+                transfer(1, TOKA, POOL_A, VICTIM, 380),
+            ],
+        );
+        let out = classify_block(&block(vec![front, victim]));
+        assert!(
+            has(&out, "cycle_not_closed", Some(0), "no_closing_back_run_leg"),
+            "an opened position that never reverses must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn skim_reports_pool_set_rejections() {
+        // An undecoded-pair outflow whose pool has V2 venue evidence (it emits
+        // Sync) but is absent from the registry: the skim pass cannot look at
+        // it. This is the exact "0 skim across N blocks" answer.
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 42)],
+        );
+        t.v2_pair_ops = vec![crate::explorer::types::V2PairOpFact {
+            tx_index: 0,
+            log_index: 1,
+            pool: POOL_A,
+            kind: V2PairOpKind::Sync,
+        }];
+        let out = classify_block(&block(vec![t]));
+        assert!(
+            has(
+                &out,
+                "skim_pool_not_v2_like",
+                None,
+                "venue_outflow_not_in_v2_like_registry"
+            ),
+            "a pair outflow excluded by the registry must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Registry pool that both receives and pays out in the same tx:
+        // swap-like activity, not a skim.
+        let swap_like = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, WNATIVE, ATK, POOL_A, 1000),
+                transfer(1, USDC, POOL_A, ATK, 500),
+            ],
+        );
+        let out = classify_block(&block_with_v2(vec![swap_like], &[POOL_A]));
+        assert!(
+            has(&out, "skim_looks_like_swap", Some(0), "pool_also_receives"),
+            "an inbound+outbound pair must be recorded as swap-like, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn jit_reports_mint_to_burn_pairing_misses() {
+        // A Mint with no Burn that closes it.
+        let mut mint_tx = tx(0, ATK, true, vec![], vec![]);
+        mint_tx.jit = vec![jit(0, true)];
+        let out = classify_block(&block(vec![mint_tx.clone()]));
+        assert!(
+            has(&out, "jit_pairing_unmatched", Some(0), "mint_without_burn"),
+            "an unmatched Mint must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Matched Mint+Burn pair, but no swap lands inside the tick range: the
+        // pairing is fine, the range validation is not.
+        let mut t0 = tx(
+            0,
+            ATK,
+            true,
+            vec![swap_at_tick(POOL_A, USDC, TOKA, 100, 200, 200)],
+            vec![],
+        );
+        t0.jit = vec![jit(0, true)];
+        let mut t1 = tx(1, VICTIM, true, vec![], vec![]);
+        t1.jit = vec![jit(1, false)];
+        let out = classify_block(&block(vec![t0, t1]));
+        assert!(
+            has(
+                &out,
+                "jit_pairing_unmatched",
+                Some(0),
+                "no_validating_swap_in_position_range"
+            ),
+            "a range-validation miss must be recorded, got {:?}",
+            dump(&out)
+        );
+    }
+
+    #[test]
+    fn liquidation_reports_reconcile_failures() {
+        // Aave-style liquidation that seizes 500 collateral with no Transfer
+        // covering it: the event stands, its P&L does not reconcile.
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let out = classify_block(&block(vec![t]));
+        assert!(
+            has(
+                &out,
+                "liquidation_not_reconciled",
+                Some(0),
+                "transfer_net_below_seized_amount"
+            ),
+            "an unreconciled seizure must be recorded, got {:?}",
+            dump(&out)
+        );
+
+        // Same event with a covering Transfer: reconciled, so no reject row.
+        let mut ok = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![transfer(0, USDC, POOL_A, ATK, 500)],
+        );
+        ok.liquidations = vec![liquidation("aave_v3", ATK, USDC, WNATIVE, 500, 300)];
+        let out = classify_block(&block(vec![ok]));
+        assert!(
+            !has(&out, "liquidation_not_reconciled", Some(0), ""),
+            "a reconciled liquidation must not be reported, got {:?}",
+            dump(&out)
+        );
+    }
+
+    /// Structural guard (Step 4): no instrumented pass may drop a candidate with
+    /// a bare `continue;`. Every one either records a reason on the line above
+    /// or says why it is not a candidate drop (`not-a-drop:`).
+    ///
+    /// `arb.rs` is deliberately excluded: its drop sites feed
+    /// `classify_reject`/the reject-return plumbing and are covered by the
+    /// per-pass reason tests below. This guard covers the passes that used to
+    /// have zero reject emissions, plus the orchestrator's own filter.
+    #[test]
+    fn no_instrumented_pass_drops_a_candidate_without_a_reason() {
+        let files = [
+            ("legs.rs", include_str!("legs.rs")),
+            ("causal.rs", include_str!("causal.rs")),
+            ("skim.rs", include_str!("skim.rs")),
+            ("sandwich.rs", include_str!("sandwich.rs")),
+            ("jit.rs", include_str!("jit.rs")),
+            ("liquidation.rs", include_str!("liquidation.rs")),
+            ("mod.rs", include_str!("mod.rs")),
+        ];
+        const EMITS: [&str; 4] = [
+            "drops.anchor(",
+            "drops.bump(",
+            "rejects.push(",
+            "sink.anchor(",
+        ];
+        let mut violations: Vec<String> = Vec::new();
+        for (name, src) in files {
+            let mut in_tests = false;
+            for (i, line) in src.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed == "#[cfg(test)]" {
+                    in_tests = true;
+                }
+                if in_tests || !trimmed.starts_with("continue;") {
+                    continue;
+                }
+                let justified = trimmed.contains("not-a-drop:")
+                    || (i >= 3
+                        && src
+                            .lines()
+                            .skip(i.saturating_sub(3))
+                            .take(3)
+                            .any(|p| EMITS.iter().any(|emit| p.contains(emit))));
+                if !justified {
+                    violations.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "silent `continue;` drop sites with no reject reason: {violations:?}"
+        );
     }
 }

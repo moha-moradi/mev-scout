@@ -1,9 +1,16 @@
 //! Transfer-pairing token attachment for swap facts.
+use std::collections::HashMap;
+
 use alloy::primitives::Address;
 
 use crate::explorer::types::{Amm, LegSource, SwapFact, TransferFact};
 
 use super::sentinels::is_unresolved_token;
+
+/// ±24 logs. Router/hop layouts sometimes emit the pool outflow just before
+/// the next Swap log; this is the fallback window when a strict before/after
+/// pair misses. Named so the bound is not an inline magic number.
+const PROXIMITY_LOG_WINDOW: usize = 24;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SideHow {
@@ -30,7 +37,7 @@ fn combine_leg_source(token_in: Option<SideHow>, token_out: Option<SideHow>) -> 
 ///    is [`LegSource::Registry`].
 /// 2. Nearest before/after `Transfer` with the pool as counterparty.
 ///    Provenance is [`LegSource::Transfer`].
-/// 3. A ±24-log window when a side is still unresolved. Provenance is
+/// 3. A ±[`PROXIMITY_LOG_WINDOW`]-log window when a side is still unresolved. Provenance is
 ///    [`LegSource::Proximity`], and either side resolved this way taints the leg.
 ///
 /// Balancer already carries topic tokens and skips pairing; it stays
@@ -42,8 +49,19 @@ fn combine_leg_source(token_in: Option<SideHow>, token_out: Option<SideHow>) -> 
 pub fn attach_swap_tokens(
     swaps: &mut [SwapFact],
     transfers: &[TransferFact],
-    pool_tokens: &std::collections::HashMap<Address, (Address, Address)>,
+    pool_tokens: &HashMap<Address, (Address, Address)>,
 ) {
+    // One index per call. The caller passes a single tx's transfers, so this
+    // is once per tx. Each swap then walks only the pool's counterparties
+    // instead of the whole transfer list three times.
+    let mut by_counterparty: HashMap<Address, Vec<&TransferFact>> = HashMap::new();
+    for t in transfers {
+        by_counterparty.entry(t.from).or_default().push(t);
+        if t.to != t.from {
+            by_counterparty.entry(t.to).or_default().push(t);
+        }
+    }
+
     for s in swaps.iter_mut() {
         // Balancer already carries explicit tokens from topics.
         if s.amm == Amm::Balancer {
@@ -98,7 +116,11 @@ pub fn attach_swap_tokens(
         // Flow-ownership: the funder of the input leg is the address
         // that transferred the input token into the pool right before the swap.
         let mut owner: Option<Address> = None;
-        for t in transfers {
+        let candidates = by_counterparty
+            .get(&s.pool)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for t in candidates {
             let dist = t.log_index as i64 - s.log_index as i64;
             if dist < 0 && t.to == s.pool {
                 // nearest before
@@ -137,9 +159,9 @@ pub fn attach_swap_tokens(
         // outflow within a short window when still unresolved.
         if is_unresolved_token(s.token_out) {
             let mut best: Option<(i64, Address)> = None;
-            for t in transfers {
+            for t in candidates {
                 let dist = (t.log_index as i64 - s.log_index as i64).abs();
-                if dist == 0 || dist > 24 {
+                if dist == 0 || dist > PROXIMITY_LOG_WINDOW as i64 {
                     continue;
                 }
                 if t.from != s.pool {
@@ -160,9 +182,9 @@ pub fn attach_swap_tokens(
         }
         if is_unresolved_token(s.token_in) && !s.token_out.is_zero() {
             let mut best: Option<(i64, Address)> = None;
-            for t in transfers {
+            for t in candidates {
                 let dist = (t.log_index as i64 - s.log_index as i64).abs();
-                if dist == 0 || dist > 24 {
+                if dist == 0 || dist > PROXIMITY_LOG_WINDOW as i64 {
                     continue;
                 }
                 if t.to != s.pool {

@@ -104,7 +104,7 @@ Globals on every command: `-f/--config`, `--verbose`, `--quiet`. `live
 --blocks` sets the one-shot window (default 64); `--loop` follows the tip.
 `discover` takes optional `--blocks` / `--block` / `--from-block`/`--to-block`,
 and `--incremental`. Source and enrich live under `[discover]` in TOML.
-`explorer` takes `--windows` / `--kind` / `--top`. `explorer index` takes
+`explorer` takes `--windows` (`Nh`/`Nd`/`Nw` or `all`) / `--kind` / `--confidence` (`exact`|`inferred`|`all`) / `--top`. `explorer index` takes
 `--days` or `--from-block`/`--to-block` (bounded), or `--loop [--duration]`.
 
 ## Layout
@@ -123,10 +123,11 @@ metadata is seeded offline from the bundled known-token list.
 ## Configuration & secrets
 
 Copy `mev-scout.example.toml` to `mev-scout.toml` and reference API keys
-via `${ENV_VAR}` placeholders — never commit live keys. Print the fully
-resolved config with `mev-scout config`. Change chain, RPC URLs, or
-`output` in the TOML (or pass `-f` to pick a different file); those are
-not clap flags.
+via `${ENV_VAR}` placeholders — never commit live keys. Machine-local run
+configs (`mev-scout.avalanche-run.toml`, `hist.toml`) are gitignored for the
+same reason. Print the fully resolved config with `mev-scout config`. Change
+chain, RPC URLs, or `output` in the TOML (or pass `-f` to pick a different
+file); those are not clap flags.
 
 To avoid public / free-tier RPCs, run one small tip node for the chain you
 are scanning (one chain per box — the disk budgets do not stack) and point
@@ -136,12 +137,43 @@ are scanning (one chain per box — the disk budgets do not stack) and point
 | Chain | Guide | Local profile | Local RPC |
 | --- | --- | --- | --- |
 | Avalanche | [`docs/LOCAL_AVALANCHE.md`](docs/LOCAL_AVALANCHE.md) | [`mev-scout.local.toml`](mev-scout.local.toml) | `http://127.0.0.1:9650/ext/bc/C/rpc` |
-| Polygon | [`docs/LOCAL_POLYGON.md`](docs/LOCAL_POLYGON.md) | [`mev-scout.local-polygon.toml`](mev-scout.local-polygon.toml) | `http://127.0.0.1:8545` |
-| BSC | [`docs/LOCAL_BSC.md`](docs/LOCAL_BSC.md) | [`mev-scout.local-bsc.toml`](mev-scout.local-bsc.toml) | `http://127.0.0.1:8545` |
+| Polygon | [`docs/LOCAL_POLYGON.md`](docs/LOCAL_POLYGON.md) | copy `mev-scout.example.toml` (no bundled profile) | `http://127.0.0.1:8545` |
 
 ## Validation
 
 ```powershell
-cargo test --workspace          # unit + integration
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace          # unit + integration; #[ignore]d live tests are skipped,
+                                # but some non-ignored lib tests still call
+                                # GeckoTerminal/DexScreener and need live network
 ```
+
+### CI
+
+`.github/workflows/ci.yml` runs a subset of these gates on every push to `main`
+and on every pull request — it does not run the full workspace suite:
+
+| Job | Gates |
+| --- | --- |
+| `static` | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -p mev-scout-core --test explorer_golden` |
+| `live` | `cargo test -p mev-scout-core --test explorer_corpus -- --ignored` and `cargo test -p mev-scout-core --test explorer_tag_coverage -- --ignored`, with `MEV_SCOUT_E2E=1`, `RPC_URL`, `MEV_SCOUT_COVERAGE=1`, `MEV_SCOUT_COVERAGE_CONFIG` and `MEV_SCOUT_COVERAGE_STRICT=1` |
+
+The `live` job only runs when the repository variable `RPC_URL` is set; when it
+is not, the job reports as skipped — never as a green check. It also requires
+the coverage config: `MEV_SCOUT_COVERAGE_CONFIG` comes from the repository
+variable `COVERAGE_CONFIG`, falling back to `mev-scout.coverage.toml`, which is
+not committed. An opted-in live job that cannot find that file fails loudly
+rather than passing as a skip.
+
+Live-RPC tests are `#[ignore]`d, so a plain `cargo test` run skips them; select
+them with `--ignored` and supply the environment each one names:
+
+| Test | Environment |
+| --- | --- |
+| `explorer_corpus` | `MEV_SCOUT_E2E=1`, `RPC_URL` |
+| `explorer_tag_coverage` | `MEV_SCOUT_COVERAGE=1`, `MEV_SCOUT_COVERAGE_CONFIG` (path to a coverage TOML), and `MEV_SCOUT_COVERAGE_STRICT=1` so incomplete tag coverage fails |
+
+Once a test is selected, the gate fails loudly instead of skipping: a missing
+endpoint or coverage config, and zero reachable chains, are failures, not
+passes.

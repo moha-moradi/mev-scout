@@ -237,6 +237,39 @@ pub struct ExplorerConfig {
     /// Optional; empty by default. Coinbase is always merged per-block.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tip_sink_addresses: Vec<Address>,
+    /// Max tx-index distance for a causal (frontrun/backrun) pair. Defaults to
+    /// the legacy constant; lowering produces frontruns as a hypothesis, not
+    /// as verification.
+    #[serde(default = "default_causal_window_txs")]
+    pub causal_window_txs: u64,
+    /// Minimum relative price move for a causal leg to count as material.
+    #[serde(default = "default_causal_price_min_pct")]
+    pub causal_price_min_pct: f64,
+    /// JIT open-position retention window in blocks.
+    #[serde(default = "default_jit_window_blocks")]
+    pub jit_window_blocks: u64,
+    /// Oracle/reserve lookback used for interest-attribution mode B.
+    #[serde(default = "default_interest_lookback_blocks")]
+    pub interest_lookback_blocks: u64,
+    /// Pool-fee-tier estimate for JIT fee capture (V3 fees are not in logs).
+    #[serde(default = "default_jit_pool_fee_bps")]
+    pub jit_pool_fee_bps: u32,
+}
+
+fn default_causal_window_txs() -> u64 {
+    crate::explorer::classify::CAUSAL_WINDOW_TXS
+}
+fn default_causal_price_min_pct() -> f64 {
+    crate::explorer::classify::CAUSAL_PRICE_MIN_PCT
+}
+fn default_jit_window_blocks() -> u64 {
+    crate::explorer::ingest::JIT_WINDOW_BLOCKS
+}
+fn default_interest_lookback_blocks() -> u64 {
+    crate::explorer::interest_attr::LOOKBACK_BLOCKS
+}
+fn default_jit_pool_fee_bps() -> u32 {
+    crate::explorer::classify::POOL_FEE_BPS
 }
 
 fn default_false() -> bool {
@@ -457,6 +490,11 @@ impl Default for ExplorerConfig {
             mev_tolerance_pct: default_explorer_mev_tolerance_pct(),
             mev_error_usd_tol: default_explorer_mev_error_usd_tol(),
             tip_sink_addresses: Vec::new(),
+            causal_window_txs: default_causal_window_txs(),
+            causal_price_min_pct: default_causal_price_min_pct(),
+            jit_window_blocks: default_jit_window_blocks(),
+            interest_lookback_blocks: default_interest_lookback_blocks(),
+            jit_pool_fee_bps: default_jit_pool_fee_bps(),
         }
     }
 }
@@ -581,6 +619,32 @@ impl Config {
         }
     }
 
+    /// Reject a shared `explorer.db_path` when the config targets more than
+    /// one chain. The explorer fact tables carry no chain column, so two
+    /// chains pointed at one file overwrite each other's rows (a classified
+    /// block on one chain makes the other skip it, and `unwind_from` deletes
+    /// the other chain's facts). Must run on the *user-authored* chain
+    /// sections — before `merge_default_chains` inserts the built-in
+    /// registry — and keeps the single-chain config working (`hist.toml`).
+    /// Per-chain schema keying is Task B6's migration; this guard is the
+    /// immediate safety (plan Task A18).
+    pub fn validate_explorer_db_isolation(&self) -> error::Result<()> {
+        if self.explorer.db_path.is_empty() || self.chains.len() <= 1 {
+            return Ok(());
+        }
+        let mut names: Vec<&str> = self.chains.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        Err(error::Error::Other(format!(
+            "explorer.db_path = '{}' is set while the config defines multiple chains ({}). \
+             Explorer fact tables are not chain-keyed, so every chain would share one \
+             database and corrupt each other's rows. Remove `[explorer] db_path` to use \
+             the per-chain defaults (./cache/explorer-<chain>.sqlite), or keep a single \
+             `[chains.*]` section.",
+            self.explorer.db_path,
+            names.join(", ")
+        )))
+    }
+
     /// Parse a TOML configuration file from disk.
     pub fn load(path: &str) -> error::Result<Self> {
         let content = std::fs::read_to_string(path).map_err(|e| {
@@ -591,6 +655,7 @@ impl Config {
         })?;
         cfg.expand_env_secrets();
         cfg.config_path = Some(PathBuf::from(path));
+        cfg.validate_explorer_db_isolation()?;
         // Same field-wise merge as `load_or_default`: partial `[chains.<name>]`
         // must not wipe built-in pool_discovery_start_block / factories / vaults.
         merge_default_chains(&mut cfg.chains);
@@ -667,6 +732,7 @@ impl Config {
                 }
             }
         };
+        cfg.validate_explorer_db_isolation()?;
         // Field-wise merge: a partial `[chains.<name>]` (RPC-only) must not
         // wipe built-in pool_discovery_start_block / factories / vaults.
         merge_default_chains(&mut cfg.chains);
@@ -1080,6 +1146,115 @@ fn expand_placeholders(s: &str, lookup: &impl Fn(&str) -> Option<String>) -> Str
     }
     out.push_str(rest);
     out
+}
+
+#[cfg(test)]
+mod explorer_db_isolation_tests {
+    use super::Config;
+
+    fn parse(body: &str) -> Config {
+        Config::from_toml_str_with(body, &[])
+    }
+
+    #[test]
+    fn explorer_threshold_defaults_match_legacy_constants() {
+        let cfg = parse("chain = \"avalanche\"\n");
+        assert_eq!(
+            cfg.explorer.causal_window_txs,
+            crate::explorer::classify::CAUSAL_WINDOW_TXS
+        );
+        assert_eq!(
+            cfg.explorer.causal_price_min_pct,
+            crate::explorer::classify::CAUSAL_PRICE_MIN_PCT
+        );
+        assert_eq!(
+            cfg.explorer.jit_window_blocks,
+            crate::explorer::ingest::JIT_WINDOW_BLOCKS
+        );
+        assert_eq!(
+            cfg.explorer.interest_lookback_blocks,
+            crate::explorer::interest_attr::LOOKBACK_BLOCKS
+        );
+        assert_eq!(
+            cfg.explorer.jit_pool_fee_bps,
+            crate::explorer::classify::POOL_FEE_BPS
+        );
+    }
+
+    #[test]
+    fn shared_explorer_db_with_multiple_chain_sections_is_rejected() {
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/shared-explorer.sqlite"
+
+[chains.polygon]
+chain_id = 137
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        let err = cfg.validate_explorer_db_isolation().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("explorer.db_path"),
+            "error must name the offending key: {msg}"
+        );
+        assert!(
+            msg.contains("polygon") && msg.contains("avalanche"),
+            "error must name the chains involved: {msg}"
+        );
+    }
+
+    #[test]
+    fn single_chain_section_with_explorer_db_path_still_loads() {
+        // The hist.toml pattern: one [chains.*] section plus an explicit
+        // explorer db_path must keep working.
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/explorer-hist.sqlite"
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert_eq!(cfg.explorer.db_path, "./cache/explorer-hist.sqlite");
+    }
+
+    #[test]
+    fn multiple_chain_sections_without_explorer_db_path_still_load() {
+        // Per-chain default paths (./cache/explorer-<chain>.sqlite) keep the
+        // chains isolated, so a multi-chain registry without a shared
+        // explorer.db_path is fine.
+        let cfg = parse(
+            r#"
+[chains.polygon]
+chain_id = 137
+
+[chains.avalanche]
+chain_id = 43114
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert!(cfg.explorer.db_path.is_empty());
+    }
+
+    #[test]
+    fn no_chain_sections_with_explorer_db_path_still_loads() {
+        // No [chains.*] sections means the config runs the single default
+        // chain; nothing can share the explorer DB yet.
+        let cfg = parse(
+            r#"
+[explorer]
+db_path = "./cache/explorer-solo.sqlite"
+"#,
+        );
+        cfg.validate_explorer_db_isolation().unwrap();
+        assert_eq!(cfg.explorer.db_path, "./cache/explorer-solo.sqlite");
+    }
 }
 
 #[cfg(test)]

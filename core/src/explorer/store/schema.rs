@@ -5,28 +5,278 @@ use rusqlite::Connection;
 
 use super::ExplorerStore;
 
-impl ExplorerStore {
-    /// Open (or create) the explorer database at `path`.
-    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        if let Some(parent) = path.as_ref().parent() {
-            std::fs::create_dir_all(parent).ok();
+/// Milliseconds a writer waits on a locked explorer DB before failing.
+///
+/// WAL plus `unchecked_transaction` otherwise returns `SQLITE_BUSY`
+/// immediately when a live indexer and a backfill share the file.
+const BUSY_TIMEOUT_MS: i64 = 5_000;
+
+/// Ordered migrations. `Vn` runs when `user_version < n`. Never edit a landed
+/// migration; append one.
+///
+/// A file created before this list has `user_version = 0` and already contains
+/// the V1 tables. That file is stamped at version 1 and does not replay V1.
+/// V2+ are idempotent, so a DB that already received the old `ensure_column`
+/// / skim rebuild / reject index still opens.
+///
+/// Not in this list: a `chain` column and composite keys on the fact tables
+/// (A18's schema half). `blocks_classified` is still keyed by block number
+/// alone. The config-load guard refuses a shared `explorer.db_path`, which is
+/// the live safety; a column nothing reads would not isolate two chains.
+/// That rebuild has to land with the store API taking a chain id.
+const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
+    migrate_v1_create,
+    migrate_v2_flashloan_fee_usd,
+    migrate_v3_volume_usd,
+    migrate_v4_excluded_from_net,
+    migrate_v5_kind_skim,
+    migrate_v6_rejected_natural_key,
+    migrate_v7_mev_ops_natural_key,
+    migrate_v8_utility_subkind,
+    migrate_v9_report_indexes,
+    migrate_v10_pricing_flags,
+];
+
+fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
+    // `:memory:` stays `journal_mode=memory` (SQLite will not put WAL on a
+    // memory database) but still accepts `synchronous` and `busy_timeout`,
+    // so tests and file opens share one pragma setup.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    conn.pragma_update(None, "busy_timeout", BUSY_TIMEOUT_MS)?;
+    // `foreign_keys` stays OFF. There is no FOREIGN KEY clause in the schema,
+    // and enabling the pragma later has to be its own migration with a
+    // pre-flight orphan count — an existing DB with orphans would fail to open.
+    Ok(())
+}
+
+fn migrate(conn: &Connection) -> anyhow::Result<()> {
+    let mut v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v == 0 && table_exists(conn, "blocks_classified")? {
+        conn.pragma_update(None, "user_version", 1i64)?;
+        v = 1;
+    }
+    for (i, step) in MIGRATIONS.iter().enumerate() {
+        let target = (i + 1) as i64;
+        if v < target {
+            step(conn)?;
+            conn.pragma_update(None, "user_version", target)?;
+            v = target;
         }
-        let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        let store = ExplorerStore { conn };
-        store.initialize()?;
-        Ok(store)
     }
-    /// Open an in-memory database (tests).
-    pub fn open_in_memory() -> anyhow::Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        let store = ExplorerStore { conn };
-        store.initialize()?;
-        Ok(store)
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> anyhow::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+fn migrate_v1_create(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(SCHEMA_V1)?;
+    Ok(())
+}
+
+fn migrate_v2_flashloan_fee_usd(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "mev_ops", "flashloan_fee_usd", "REAL")
+}
+
+fn migrate_v3_volume_usd(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "mev_ops", "volume_usd", "REAL")
+}
+
+fn migrate_v4_excluded_from_net(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(
+        conn,
+        "mev_ops",
+        "excluded_from_net",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+}
+
+fn migrate_v5_kind_skim(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_mev_ops_kind_skim(conn)
+}
+
+fn migrate_v6_rejected_natural_key(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_rejected_candidates_unique(conn)
+}
+
+/// `UNIQUE(canonical_id, tx_hash)` on `mev_ops`.
+///
+/// `explorer_canonical_id` embeds the kind (and the pool set or the
+/// liquidation/jit identity), and `tx_hash` is the transaction. That pair is
+/// one persisted event. Kind is part of the key, so a later reclassify that
+/// changes kind inserts a new row instead of overwriting the old one.
+///
+/// Existing duplicates are printed and the migration refuses. Silently
+/// keeping one row would pick a winner for P&L.
+fn migrate_v7_mev_ops_natural_key(conn: &Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "mev_ops")? {
+        return Ok(());
     }
-    fn initialize(&self) -> anyhow::Result<()> {
-        self.conn.execute_batch(
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(canonical_id, ''), tx_hash, COUNT(*)
+           FROM mev_ops
+          GROUP BY canonical_id, tx_hash
+         HAVING COUNT(*) > 1",
+    )?;
+    let dups: Vec<(String, String, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    if !dups.is_empty() {
+        for (id, hash, n) in &dups {
+            tracing::error!(
+                canonical_id = id.as_str(),
+                tx_hash = hash.as_str(),
+                count = n,
+                "mev_ops duplicate natural key"
+            );
+        }
+        anyhow::bail!(
+            "mev_ops has {} duplicate (canonical_id, tx_hash) group(s); \
+             refusing the unique index. Merge or delete them and reopen.",
+            dups.len()
+        );
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS mev_ops_natural
+           ON mev_ops(canonical_id, tx_hash)",
+    )?;
+    Ok(())
+}
+
+/// Rewrite `unknown` → `utility` and add `subkind`.
+///
+/// SQLite cannot alter a CHECK, so this rebuilds `mev_ops`. The unique index
+/// from V7 is dropped with the table and created again here. `subkind` comes
+/// from the tag string already stored in `details_json` (`keeper`, then
+/// `bundler`, then `claim_and_sell`).
+fn migrate_v8_utility_subkind(conn: &Connection) -> anyhow::Result<()> {
+    if !table_exists(conn, "mev_ops")? {
+        return Ok(());
+    }
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='mev_ops'",
+        [],
+        |r| r.get(0),
+    )?;
+    if sql.contains("'utility'") && sql.contains("subkind") {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "
+        BEGIN;
+        CREATE TABLE mev_ops_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          block_number INTEGER NOT NULL,
+          tx_index INTEGER,
+          tx_hash TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL CHECK(kind IN
+            ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','utility')),
+          eoa TEXT NOT NULL,
+          contract TEXT,
+          confidence TEXT NOT NULL CHECK(confidence IN ('exact','inferred')),
+          canonical_id TEXT,
+          profit_token TEXT,
+          profit_amount TEXT,
+          profit_usd REAL,
+          volume_usd REAL,
+          gas_cost_usd REAL,
+          flashloan_fee_usd REAL,
+          net_profit_usd REAL,
+          route_json TEXT,
+          victim_hashes TEXT,
+          details_json TEXT,
+          detector TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          excluded_from_net INTEGER NOT NULL DEFAULT 0,
+          subkind TEXT
+        );
+        INSERT INTO mev_ops_new(
+          id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net, subkind)
+        SELECT
+          id, block_number, tx_index, tx_hash, ts,
+          CASE WHEN kind = 'unknown' THEN 'utility' ELSE kind END,
+          eoa, contract, confidence,
+          canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
+          gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
+          victim_hashes, details_json, detector, created_at, excluded_from_net,
+          CASE
+            WHEN instr(COALESCE(details_json, ''), '\"keeper\"') > 0 THEN 'keeper'
+            WHEN instr(COALESCE(details_json, ''), '\"bundler\"') > 0 THEN 'bundler'
+            WHEN instr(COALESCE(details_json, ''), '\"claim_and_sell\"') > 0 THEN 'claim_and_sell'
+            ELSE NULL
+          END
+        FROM mev_ops;
+        DROP TABLE mev_ops;
+        ALTER TABLE mev_ops_new RENAME TO mev_ops;
+        CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
+        CREATE INDEX IF NOT EXISTS mev_ops_kind_ts ON mev_ops(kind, ts);
+        CREATE INDEX IF NOT EXISTS mev_ops_canonical ON mev_ops(canonical_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS mev_ops_natural
+          ON mev_ops(canonical_id, tx_hash);
+        COMMIT;
+        ",
+    )?;
+    Ok(())
+}
+
+fn migrate_v9_report_indexes(conn: &Connection) -> anyhow::Result<()> {
+    if table_exists(conn, "mev_ops")? {
+        conn.execute_batch(
             "
+            CREATE INDEX IF NOT EXISTS mev_ops_ts ON mev_ops(ts);
+            CREATE INDEX IF NOT EXISTS mev_ops_tx_hash ON mev_ops(tx_hash);
+            ",
+        )?;
+    }
+    if table_exists(conn, "opportunities")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS opportunities_run ON opportunities(run_id);",
+        )?;
+    }
+    if table_exists(conn, "prices")? {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS prices_token_hour ON prices(token, hour);")?;
+    }
+    Ok(())
+}
+
+/// Promote the pricing-quality flags from `details_json` to queryable columns.
+/// The report used substring matches (`LIKE '%...%'`) over the JSON, which no
+/// index can serve and which would silently break if the flag shape changed.
+fn migrate_v10_pricing_flags(conn: &Connection) -> anyhow::Result<()> {
+    for column in [
+        "usd_approximate",
+        "native_unpriced",
+        "multi_asset_pricing",
+        "pricing_clamped",
+        "flash_fee_unpriced",
+    ] {
+        ExplorerStore::ensure_column(conn, "mev_ops", column, "INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
+/// V1 table set. `CREATE TABLE IF NOT EXISTS` so replaying it on a file that
+/// already has the tables is a no-op. Columns added after the first release
+/// (`flashloan_fee_usd`, `volume_usd`, `excluded_from_net`) are in this DDL
+/// for a fresh database and re-applied idempotently by V2–V4 for a file that
+/// was created before they existed.
+const SCHEMA_V1: &str = "
+            -- Legacy columns the logs-only ingest path never populates:
+            -- blocks.producer, swaps.dex, swaps.sender, transfers.is_native.
+            -- They stay NULL/default so existing files keep their shape;
+            -- removing them is a table-rebuild migration, not an INSERT change.
             CREATE TABLE IF NOT EXISTS blocks(
               block_number INTEGER PRIMARY KEY,
               block_hash TEXT NOT NULL,
@@ -80,6 +330,10 @@ impl ExplorerStore {
             );
             CREATE INDEX IF NOT EXISTS swaps_pool ON swaps(pool, block_number);
 
+            -- USD columns are REAL (f64 math end to end): sums can drift by
+            -- sub-cent and are not reproducible to the wei. Read them as
+            -- approximations, never as balances; integer basis points would be
+            -- a schema + report rewrite of its own.
             CREATE TABLE IF NOT EXISTS mev_ops(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               block_number INTEGER NOT NULL,
@@ -103,7 +357,8 @@ impl ExplorerStore {
               victim_hashes TEXT,
               details_json TEXT,
               detector TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              excluded_from_net INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS mev_ops_block ON mev_ops(block_number);
             CREATE INDEX IF NOT EXISTS mev_ops_sender ON mev_ops(eoa, block_number);
@@ -264,14 +519,86 @@ impl ExplorerStore {
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
               ON paper_fills(session_id, block_number);
-            ",
-        )?;
-        // runtime migration for databases created before the
-        // flash-loan fee column existed. `volume_usd` likewise for pre-report DBs.
-        Self::ensure_column(&self.conn, "mev_ops", "flashloan_fee_usd", "REAL")?;
-        Self::ensure_column(&self.conn, "mev_ops", "volume_usd", "REAL")?;
-        Self::ensure_mev_ops_kind_skim(&self.conn)?;
-        Ok(())
+            ";
+
+impl ExplorerStore {
+    /// Open (or create) the explorer database at `path`.
+    pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let conn = Connection::open(path)?;
+        configure_connection(&conn)?;
+        migrate(&conn)?;
+        Ok(ExplorerStore { conn })
+    }
+    /// Open an in-memory database (tests). Same pragmas as [`Self::open`]
+    /// except that SQLite keeps `journal_mode=memory`.
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        configure_connection(&conn)?;
+        migrate(&conn)?;
+        Ok(ExplorerStore { conn })
+    }
+    /// Natural key of one rejected candidate, as a column list usable in both
+    /// a `UNIQUE` index and a `GROUP BY`.
+    ///
+    /// Identity = where the reject was seen (`chain`, `block_number`,
+    /// `tx_index`), which pass produced it (`strategy`), the candidate geometry
+    /// that pass was looking at (pool/path/token/amount columns), why it was
+    /// dropped (`reject_reason`) and the pass's own note (`detail`).
+    ///
+    /// `created_at` and `run_id` are deliberately excluded: a re-index
+    /// re-derives every other field, and it must be a no-op instead of
+    /// appending a second copy of every reject. Scanner rows keep their
+    /// distinctness through the geometry columns, so two candidates dropped
+    /// from the same tx for the same reason (the per-tx top-N cap) stay
+    /// separate rows — only a byte-identical candidate collapses.
+    ///
+    /// Nullable columns are wrapped in `COALESCE(…, '')` because SQLite treats
+    /// NULLs as distinct inside a unique index; without that the classify rows
+    /// (whose geometry columns are all NULL) would never conflict and
+    /// re-indexing would keep duplicating them.
+    const REJECTED_NATURAL_KEY: &str = "
+        COALESCE(chain, ''), block_number, COALESCE(tx_index, -1), strategy,
+        COALESCE(pool_a, ''), COALESCE(pool_b, ''), COALESCE(path, ''),
+        COALESCE(token_in, ''), COALESCE(token_out, ''), COALESCE(input_amount, ''),
+        COALESCE(expected_profit, ''), reject_reason, COALESCE(detail, '')";
+    /// Create the `rejected_candidates` natural-key unique index.
+    ///
+    /// V6. A pre-B7 database can already hold duplicate reject rows — that is
+    /// the bug this index closes — so a constraint failure on the first
+    /// attempt collapses each natural key onto its earliest row and retries
+    /// once. Any other error surfaces unchanged.
+    fn ensure_rejected_candidates_unique(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        let create = format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS rejected_candidates_natural
+               ON rejected_candidates({})",
+            Self::REJECTED_NATURAL_KEY
+        );
+        match conn.execute_batch(&create) {
+            Ok(()) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                conn.execute_batch(&format!(
+                    "DELETE FROM rejected_candidates
+                      WHERE rowid NOT IN (
+                        SELECT MIN(rowid) FROM rejected_candidates
+                        GROUP BY {}
+                      )",
+                    Self::REJECTED_NATURAL_KEY
+                ))?;
+                tracing::warn!(
+                    "rejected_candidates held duplicate rows from before the \
+                     natural-key index; collapsed them onto the earliest row \
+                     of each key before indexing"
+                );
+                conn.execute_batch(&create)?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
     /// Widen `mev_ops.kind` CHECK to include `'skim'` (SQLite cannot ALTER CHECK).
     fn ensure_mev_ops_kind_skim(conn: &rusqlite::Connection) -> anyhow::Result<()> {
@@ -314,13 +641,14 @@ impl ExplorerStore {
               victim_hashes TEXT,
               details_json TEXT,
               detector TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              excluded_from_net INTEGER NOT NULL DEFAULT 0
             );
             INSERT INTO mev_ops_new SELECT
               id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence,
               canonical_id, profit_token, profit_amount, profit_usd, volume_usd,
               gas_cost_usd, flashloan_fee_usd, net_profit_usd, route_json,
-              victim_hashes, details_json, detector, created_at
+              victim_hashes, details_json, detector, created_at, excluded_from_net
             FROM mev_ops;
             DROP TABLE mev_ops;
             ALTER TABLE mev_ops_new RENAME TO mev_ops;
@@ -356,5 +684,223 @@ impl ExplorerStore {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_db_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "mev-scout-schema-{tag}-{}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    fn remove_db(path: &std::path::Path) {
+        for p in [
+            path.to_path_buf(),
+            path.with_extension("sqlite-wal"),
+            path.with_extension("sqlite-shm"),
+        ] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// A pre-B7 database can already hold duplicate rejects (the bug the
+    /// natural-key index closes). Opening it must collapse each key onto its
+    /// earliest row instead of failing on the new unique index, and reopening
+    /// must stay a no-op.
+    #[test]
+    fn opening_a_legacy_db_collapses_duplicate_rejects() {
+        let path = legacy_db_path("rejects");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);
+                 INSERT INTO rejected_candidates
+                   (chain, block_number, tx_index, strategy, reject_reason, created_at)
+                 VALUES ('polygon', 7, 1, 'explorer_classify', 'unresolved_cycle', 0),
+                        ('polygon', 7, 1, 'explorer_classify', 'unresolved_cycle', 99);",
+            )
+            .unwrap();
+        }
+
+        let count = |store: &ExplorerStore| -> i64 {
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM rejected_candidates", [], |r| r.get(0))
+                .unwrap()
+        };
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(
+                count(&store),
+                1,
+                "duplicates collapse onto the earliest row"
+            );
+        }
+        {
+            // Reopening (the index already exists) is a no-op.
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(count(&store), 1);
+        }
+        remove_db(&path);
+    }
+
+    fn user_version(store: &ExplorerStore) -> i64 {
+        store
+            .connection()
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn fresh_store_is_at_head_and_sets_busy_timeout() {
+        let store = ExplorerStore::open_in_memory().unwrap();
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        let timeout: i64 = store
+            .connection()
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(timeout, super::BUSY_TIMEOUT_MS);
+
+        let path = legacy_db_path("fresh");
+        remove_db(&path);
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        }
+        {
+            let store = ExplorerStore::open(&path).unwrap();
+            assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        }
+        remove_db(&path);
+    }
+
+    /// A pre-migration file (`user_version = 0`, tables already present) is
+    /// stamped at V1 and still receives the later column alters.
+    #[test]
+    fn legacy_db_gains_mev_ops_columns_and_lands_on_head() {
+        let path = legacy_db_path("columns");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE blocks_classified(
+                   block INTEGER PRIMARY KEY,
+                   classified_at INTEGER NOT NULL,
+                   event_count INTEGER NOT NULL);
+                 CREATE TABLE mev_ops(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   block_number INTEGER NOT NULL,
+                   tx_index INTEGER,
+                   tx_hash TEXT NOT NULL,
+                   ts INTEGER NOT NULL,
+                   kind TEXT NOT NULL CHECK(kind IN
+                     ('arb_atomic','sandwich','frontrun','backrun','liquidation','jit','jit_arb','skim','unknown')),
+                   eoa TEXT NOT NULL,
+                   contract TEXT,
+                   confidence TEXT NOT NULL,
+                   canonical_id TEXT,
+                   profit_token TEXT,
+                   profit_amount TEXT,
+                   profit_usd REAL,
+                   gas_cost_usd REAL,
+                   net_profit_usd REAL,
+                   route_json TEXT,
+                   victim_hashes TEXT,
+                   details_json TEXT,
+                   detector TEXT NOT NULL,
+                   created_at INTEGER NOT NULL);
+                 CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);",
+            )
+            .unwrap();
+        }
+        let store = ExplorerStore::open(&path).unwrap();
+        assert_eq!(user_version(&store), super::MIGRATIONS.len() as i64);
+        for column in ["flashloan_fee_usd", "volume_usd", "excluded_from_net"] {
+            let present: i64 = store
+                .connection()
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('mev_ops') WHERE name = ?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                present, 1,
+                "{column} must be migrated onto a legacy mev_ops"
+            );
+        }
+        remove_db(&path);
+    }
+
+    #[test]
+    fn duplicate_mev_ops_natural_key_refuses_the_index() {
+        let path = legacy_db_path("mev-dups");
+        remove_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE blocks_classified(
+                   block INTEGER PRIMARY KEY,
+                   classified_at INTEGER NOT NULL,
+                   event_count INTEGER NOT NULL);
+                 CREATE TABLE mev_ops(
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   block_number INTEGER NOT NULL,
+                   tx_index INTEGER,
+                   tx_hash TEXT NOT NULL,
+                   ts INTEGER NOT NULL,
+                   kind TEXT NOT NULL,
+                   eoa TEXT NOT NULL,
+                   contract TEXT,
+                   confidence TEXT NOT NULL,
+                   canonical_id TEXT,
+                   profit_token TEXT,
+                   profit_amount TEXT,
+                   profit_usd REAL,
+                   gas_cost_usd REAL,
+                   net_profit_usd REAL,
+                   route_json TEXT,
+                   victim_hashes TEXT,
+                   details_json TEXT,
+                   detector TEXT NOT NULL,
+                   created_at INTEGER NOT NULL);
+                 CREATE TABLE rejected_candidates(
+                   run_id TEXT, chain TEXT, block_number INTEGER NOT NULL, tx_index INTEGER,
+                   strategy TEXT NOT NULL, pool_a TEXT, pool_b TEXT, path TEXT,
+                   token_in TEXT, token_out TEXT, input_amount TEXT, expected_profit TEXT,
+                   expected_profit_usd REAL, gas_cost_wei TEXT, reject_reason TEXT NOT NULL,
+                   detail TEXT, created_at INTEGER NOT NULL);
+                 INSERT INTO mev_ops(
+                   block_number, tx_hash, ts, kind, eoa, confidence, canonical_id, detector, created_at)
+                 VALUES
+                   (1, '0xabc', 1, 'arb_atomic', '0x1', 'exact', 'ArbAtomic|0x1', 'explorer', 1),
+                   (1, '0xabc', 1, 'arb_atomic', '0x1', 'exact', 'ArbAtomic|0x1', 'explorer', 2);",
+            )
+            .unwrap();
+        }
+        match ExplorerStore::open(&path) {
+            Ok(_) => panic!("duplicate natural key must refuse to open"),
+            Err(err) => assert!(
+                err.to_string().contains("duplicate"),
+                "migration must refuse duplicates, got {err}"
+            ),
+        }
+        remove_db(&path);
     }
 }

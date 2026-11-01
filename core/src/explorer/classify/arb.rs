@@ -9,40 +9,51 @@ use crate::explorer::profit::{
     deficit_amount, find_closed_cycle, is_dust_deficit, net_flash_loan, select_profit_token,
     DeltaLedger, NATIVE_MARKER,
 };
-use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::reject::{RejectReason, RejectedCandidate};
+use crate::explorer::strategy_tags::{self, ArbTagOpts};
 use crate::explorer::types::{
     Amm, Confidence, MevEvent, MevKind, PnlBasis, SwapFact, TransferFact,
 };
 
+use super::legs::searcher_candidates;
 use super::{append_tag, has_unresolved_tokens, BlockInput, TxInput};
 
 const CLASSIFY_STRATEGY: &str = "explorer_classify";
 
-/// Swap attribution + atomic arb + keeper/claim/bundler.
+/// Swap attribution + atomic arb + keeper/claim/bundler, in that order.
 pub(super) fn classify_arbs(
     input: &BlockInput,
-    liq_txs: &HashSet<u64>,
+    arb_tag_opts: &ArbTagOpts<'_>,
+) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
+    let (mut events, rejects) = classify_atomic_arbs(input, arb_tag_opts);
+    let keepers = classify_keepers(input);
+    let claims = classify_claim_and_sell(input, &mut events);
+    events.extend(keepers);
+    events.extend(claims);
+    events.extend(classify_bundlers(input));
+    (events, rejects)
+}
+
+/// Swap attribution + atomic arb pass (ledger, flash-loan netting, cycle).
+pub(super) fn classify_atomic_arbs(
+    input: &BlockInput,
     arb_tag_opts: &ArbTagOpts<'_>,
 ) -> (Vec<MevEvent>, Vec<RejectedCandidate>) {
     let mut events: Vec<MevEvent> = Vec::new();
     let mut rejects: Vec<RejectedCandidate> = Vec::new();
-    // ── 2-3. Swap attribution + atomic arb pass ─────────────────────────
     for tx in &input.txs {
         if !tx.success {
             continue;
-        }
-        if liq_txs.contains(&tx.tx_index) {
-            // Liquidation anchor tx — still scan for arb in the same tx
-            // (liquidator often swaps seized collateral), but do not double-
-            // classify the tx as pure arb unless deltas confirm it.
         }
         if tx.swaps.is_empty() {
             continue;
         }
 
-        let mut ledger =
-            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
+        let mut ledger = DeltaLedger::from_transfers(
+            &tx.transfers,
+            input.ctx.wrapped_native,
+            (tx.from, tx.value),
+        );
 
         // net flash-loan borrow/repay before computing residuals so
         // borrowed principal never counts as profit. Only net when the repay
@@ -51,6 +62,10 @@ pub(super) fn classify_arbs(
         // ledger already nets it, so subtracting again would erase real profit.
         let mut flashloan_fee_wei: Option<U256> = None;
         let mut flashloan_fee_token: Option<Address> = None;
+        // Largest fee among loans the ledger actually netted. The event's
+        // recorded fee is the max across *all* loans, so only an equal value
+        // proves the recorded fee is already inside the residual.
+        let mut max_netted_fee: Option<U256> = None;
         for fl in &tx.flashloans {
             if fl.token.is_zero() || fl.amount.is_zero() {
                 continue;
@@ -61,18 +76,32 @@ pub(super) fn classify_arbs(
             } else {
                 fl.initiator
             };
-            let repaid = tx.transfers.iter().any(|t| {
-                t.token == fl.token
-                    && t.amount >= fl.amount
-                    && (t.from == borrower || t.from == tx.from)
-                    && (t.to == fl.provider || t.to == fl.recipient)
-            });
+            // Aggregate: Balancer-style repays can be split into several
+            // transfers, so a single full-amount leg is not required — the sum
+            // of repay legs to the provider/recipient is what the ledger nets.
+            let repaid_total = tx
+                .transfers
+                .iter()
+                .filter(|t| {
+                    t.token == fl.token
+                        && (t.from == borrower || t.from == tx.from)
+                        && (t.to == fl.provider || t.to == fl.recipient)
+                })
+                .fold(U256::ZERO, |acc, t| acc.saturating_add(t.amount));
+            let repaid = repaid_total >= fl.amount;
             if !repaid {
-                net_flash_loan(&mut ledger, borrower, fl.token, fl.amount, fee);
-                if let Some(to) = tx.to {
-                    if to != borrower {
-                        net_flash_loan(&mut ledger, to, fl.token, fl.amount, fee);
-                    }
+                // The principal sits where the loan was delivered: the
+                // recipient (executor contract) when the provider names one,
+                // else the borrower. Netting `tx.to` in addition used to strip
+                // the same principal from the EOA, erasing its real profit.
+                let owner = if fl.recipient.is_zero() {
+                    borrower
+                } else {
+                    fl.recipient
+                };
+                net_flash_loan(&mut ledger, owner, fl.token, fl.amount, fee);
+                if !fee.is_zero() && max_netted_fee.is_none_or(|f| fee > f) {
+                    max_netted_fee = Some(fee);
                 }
             }
             if !fee.is_zero() && flashloan_fee_wei.is_none_or(|f| fee > f) {
@@ -82,24 +111,9 @@ pub(super) fn classify_arbs(
         }
 
         // Participant scope: sender + receiver-side contracts (searcher
-        // attribution: "EOA sender (or its deployed contract)").
-        let mut candidates: Vec<Address> = vec![tx.from];
-        if let Some(to) = tx.to {
-            candidates.push(to);
-        }
-        // Addresses with ≥2 swap participations via transfers also qualify.
-        let mut participation: std::collections::HashMap<Address, usize> =
-            std::collections::HashMap::new();
-        for t in &tx.transfers {
-            *participation.entry(t.from).or_insert(0) += 1;
-            *participation.entry(t.to).or_insert(0) += 1;
-        }
-        let qualified: Vec<Address> = participation
-            .into_iter()
-            .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
-            .map(|(addr, _)| addr)
-            .collect();
-        candidates.extend(qualified);
+        // attribution: "EOA sender (or its deployed contract)") + addresses
+        // with ≥2 transfer participations (see `searcher_candidates`).
+        let candidates = searcher_candidates(tx);
 
         // ── Atomic arb ─────────────────────────────────────────────────
         // Resolved directional edges (token_in, token_out, pool).
@@ -179,7 +193,7 @@ pub(super) fn classify_arbs(
                 profit_candidates
                     .iter()
                     .copied()
-                    .find(|a| select_profit_token(&ledger, *a, &input.profit_policy).is_some())
+                    .find(|a| select_profit_token(&ledger, *a, &input.ctx.profit_policy).is_some())
             })
             .or_else(|| match &forwarded {
                 ForwardedLookup::Hit {
@@ -255,7 +269,7 @@ pub(super) fn classify_arbs(
         // P0.4: flash-swap / flash-loan flag when principal was borrowed.
         let flash_arb = !tx.flashloans.is_empty() || flashloan_fee_wei.is_some();
         // P1.3: multi-hop arb whose route includes a non-blue-chip token.
-        let long_tail = is_long_tail_arb(&tx.swaps, &input.profit_policy.priority);
+        let long_tail = is_long_tail_arb(&tx.swaps, &input.ctx.profit_policy.priority);
         let mut tags: Vec<&str> = Vec::new();
         if flash_arb {
             tags.push("flash_arb");
@@ -288,32 +302,23 @@ pub(super) fn classify_arbs(
             })).collect::<Vec<_>>(),
             "arb_meta": arb_route_meta(&tx.swaps, flash_arb),
         });
-        if tags.iter().any(|t| *t == "savax_rate_arb") {
+        if tags.contains(&"savax_rate_arb") {
             details["tag_modes"] = serde_json::json!({ "savax_rate_arb": "exact" });
+        }
+        // The recorded fee is already inside the residual iff its loan was
+        // netted above (repay leg absent). Persist must not subtract it again.
+        if flashloan_fee_wei.is_some() && flashloan_fee_wei == max_netted_fee {
+            details["flashloan_fee_netted_in_ledger"] = serde_json::json!(true);
         }
         if let Some(from_addr) = forwarded_from {
             details["forwarded_from"] = serde_json::json!(format!("{from_addr:#x}"));
         }
         events.push(MevEvent {
-            block: input.block,
-            ts: input.ts,
-            tx_index: tx.tx_index,
-            tx_hash: tx.tx_hash,
-            kind: MevKind::ArbAtomic,
-            searcher,
-            contract: if searcher == tx.from {
-                None
-            } else {
-                tx.to.or(forwarded_from)
-            },
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(anchor),
             profit_amount: Some(amount),
             profit_tokens,
-            profit_usd: None, // pricing applied at persist time
-            gas_cost_wei: U256::from(tx.gas_used).saturating_mul(U256::from(
-                (tx.effective_gas_price_gwei * 1e9) as u128,
-            )),
+            gas_cost_wei: super::gas::tx_gas_cost_wei(tx),
             flashloan_fee_wei,
             flashloan_fee_token,
             confidence: if is_forwarded {
@@ -321,19 +326,30 @@ pub(super) fn classify_arbs(
             } else {
                 Confidence::Exact
             },
-            victim_hashes: vec![],
-            victim_swap_size: None,
             details,
+            ..MevEvent::for_tx(
+                input.block,
+                input.ts,
+                tx.tx_index,
+                tx.tx_hash,
+                MevKind::ArbAtomic,
+                searcher,
+                if searcher == tx.from {
+                    None
+                } else {
+                    tx.to.or(forwarded_from)
+                },
+            )
         });
-
-        // ── 5. JIT pass (Mint+Burn same position, same block) ──────────
-        // Handled block-wide below (needs cross-tx pairing); per-tx we only
-        // mark minted positions.
     }
+    (events, rejects)
+}
 
-    // ── 4b. Keeper / automation execution (plan P1.5 /) ─────────────
-    // Mode A: Gelato ExecSuccess / Chainlink UpkeepPerformed|LogTriggered.
-    // Emitted as Unknown + tags so MevKind stays stable; P&L basis F.
+/// Keeper / automation execution (plan P1.5): Gelato ExecSuccess /
+/// Chainlink UpkeepPerformed|LogTriggered. Emitted as Unknown + tags so
+/// MevKind stays stable; P&L basis F.
+pub(super) fn classify_keepers(input: &BlockInput) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         for keeper in &tx.keepers {
             let fee = keeper.fee.filter(|f| !f.is_zero());
@@ -355,33 +371,32 @@ pub(super) fn classify_arbs(
                 details["pnl"]["fee_token"] = serde_json::json!(format!("{:#x}", tok));
             }
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Unknown,
-                searcher: tx.from,
-                contract: tx.to,
-                pools: vec![],
                 profit_token: keeper.fee_token,
                 profit_amount: fee,
-                profit_tokens: vec![],
-                profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details,
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Utility,
+                    tx.from,
+                    tx.to,
+                )
             });
         }
     }
+    events
+}
 
-    // ── 4c. Airdrop claim-and-sell (plan P3.13 /) ──────────────────
-    // Mode A: Transfer from zero + same-tx sell swap; held claims are ignored.
-    // When the tx already produced ArbAtomic, just attach the tag (no double count).
+/// Airdrop claim-and-sell (plan P3.13): Transfer from zero + same-tx sell
+/// swap; held claims are ignored. When the tx already produced ArbAtomic in
+/// `arb_events`, only the tag is attached there (no double count).
+pub(super) fn classify_claim_and_sell(
+    input: &BlockInput,
+    arb_events: &mut [MevEvent],
+) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         if !tx.success {
             continue;
@@ -389,7 +404,7 @@ pub(super) fn classify_arbs(
         let Some(token) = strategy_tags::claim_and_sell_token(&tx.transfers, &tx.swaps) else {
             continue;
         };
-        if let Some(ev) = events
+        if let Some(ev) = arb_events
             .iter_mut()
             .find(|e| e.tx_index == tx.tx_index && e.kind == MevKind::ArbAtomic)
         {
@@ -398,9 +413,12 @@ pub(super) fn classify_arbs(
             ev.details["claimed_token"] = serde_json::json!(format!("{:#x}", token));
             continue;
         }
-        let ledger =
-            DeltaLedger::from_transfers(&tx.transfers, input.wrapped_native, (tx.from, tx.value));
-        let Some(pt) = select_profit_token(&ledger, tx.from, &input.profit_policy) else {
+        let ledger = DeltaLedger::from_transfers(
+            &tx.transfers,
+            input.ctx.wrapped_native,
+            (tx.from, tx.value),
+        );
+        let Some(pt) = select_profit_token(&ledger, tx.from, &input.ctx.profit_policy) else {
             continue;
         };
         let pa = ledger.net(tx.from, pt);
@@ -408,25 +426,9 @@ pub(super) fn classify_arbs(
             continue;
         }
         events.push(MevEvent {
-            block: input.block,
-            ts: input.ts,
-            tx_index: tx.tx_index,
-            tx_hash: tx.tx_hash,
-            kind: MevKind::Unknown,
-            searcher: tx.from,
-            contract: tx.to,
             pools: tx.swaps.iter().map(|s| s.pool).collect(),
             profit_token: Some(pt),
             profit_amount: Some(pa),
-            profit_tokens: vec![],
-            profit_usd: None,
-            gas_cost_wei: U256::from(tx.gas_used)
-                .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-            flashloan_fee_wei: None,
-            flashloan_fee_token: None,
-            confidence: Confidence::Exact,
-            victim_hashes: vec![],
-            victim_swap_size: None,
             details: serde_json::json!({
                 "protocol": "claim_and_sell",
                 "tags": ["claim_and_sell", "airdrop"],
@@ -438,51 +440,55 @@ pub(super) fn classify_arbs(
                     "profit_token": format!("{:#x}", pt),
                 },
             }),
+            ..MevEvent::for_tx(
+                input.block,
+                input.ts,
+                tx.tx_index,
+                tx.tx_hash,
+                MevKind::Utility,
+                tx.from,
+                tx.to,
+            )
         });
     }
+    events
+}
 
-    // ── 4d. ERC-4337 bundler executions (plan P3.11 /) ─────────────
+/// ERC-4337 bundler executions (plan P3.11).
+pub(super) fn classify_bundlers(input: &BlockInput) -> Vec<MevEvent> {
+    let mut events: Vec<MevEvent> = Vec::new();
     for tx in &input.txs {
         for uo in &tx.user_ops {
             if !uo.success {
                 continue;
             }
             events.push(MevEvent {
-                block: input.block,
-                ts: input.ts,
-                tx_index: tx.tx_index,
-                tx_hash: tx.tx_hash,
-                kind: MevKind::Unknown,
-                searcher: tx.from,
-                contract: Some(uo.entry_point),
-                pools: vec![],
-                profit_token: Some(input.wrapped_native),
+                profit_token: Some(input.ctx.wrapped_native),
                 profit_amount: Some(uo.actual_gas_cost),
-                profit_tokens: vec![],
-                profit_usd: None,
-                gas_cost_wei: U256::from(tx.gas_used)
-                    .saturating_mul(U256::from((tx.effective_gas_price_gwei * 1e9) as u128)),
-                flashloan_fee_wei: None,
-                flashloan_fee_token: None,
-                confidence: Confidence::Exact,
-                victim_hashes: vec![],
-                victim_swap_size: None,
                 details: serde_json::json!({
                     "protocol": "erc4337",
                     "tags": ["bundler", "erc4337"],
                     "sender": format!("{:#x}", uo.sender),
                     "paymaster": format!("{:#x}", uo.paymaster),
-                    "pnl_basis": PnlBasis::R.as_str(),
+                    "pnl_basis": PnlBasis::GasCostAsProfit.as_str(),
                     "pnl": {
                         "basis": PnlBasis::R.as_str(),
                         "actual_gas_cost": uo.actual_gas_cost.to_string(),
                     },
                 }),
+                ..MevEvent::for_tx(
+                    input.block,
+                    input.ts,
+                    tx.tx_index,
+                    tx.tx_hash,
+                    MevKind::Utility,
+                    tx.from,
+                    Some(uo.entry_point),
+                )
             });
         }
     }
-
-    (events, rejects)
+    events
 }
 
 fn classify_reject(
@@ -577,6 +583,8 @@ enum ForwardedLookup {
 /// When no searcher candidate holds a positive anchor residual, recover a
 /// single third-party recipient that received the cycle profit solely from
 /// `tx.from` / `tx.to` and did not participate in swaps.
+// Eight correlated ledger views of one tx.
+#[allow(clippy::too_many_arguments)]
 fn forwarded_anchor_recipient(
     ledger: &DeltaLedger,
     transfers: &[TransferFact],
@@ -706,8 +714,7 @@ fn anchor_profit_amount(
         };
     }
     let eoa_net = ledger.net_signed(eoa, anchor);
-    let funded = eoa_net.is_negative()
-        && searcher_net.is_positive();
+    let funded = eoa_net.is_negative() && searcher_net.is_positive();
     let combined = if funded {
         searcher_net + eoa_net
     } else {
@@ -813,4 +820,289 @@ fn initiator_blocks_cycle(
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+    use crate::explorer::test_fixtures::{
+        block, swap, transfer, tx, ATK, POOL_A, POOL_B, TOKA, USDC, WNATIVE,
+    };
+    use crate::explorer::types::{KeeperFact, UserOpFact};
+
+    fn tag_opts() -> ArbTagOpts<'static> {
+        ArbTagOpts {
+            wrapped_native: WNATIVE,
+            savax: None,
+            savax_exchange_rate_wad: None,
+            epoch_signal: false,
+            epoch_venue_pools: &[],
+            gmx_adl_signal: false,
+            rate_cache_updates: &[],
+        }
+    }
+
+    fn arb_tx(idx: u64) -> TxInput {
+        tx(
+            idx,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 100, 200),
+                swap(POOL_B, TOKA, USDC, 200, 110),
+            ],
+            vec![
+                transfer(0, USDC, ATK, POOL_A, 100),
+                transfer(1, TOKA, POOL_A, ATK, 200),
+                transfer(2, TOKA, ATK, POOL_B, 200),
+                transfer(3, USDC, POOL_B, ATK, 110),
+            ],
+        )
+    }
+
+    #[test]
+    fn orchestrator_matches_the_four_passes_in_order() {
+        let mut keeper_tx = tx(1, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 1,
+            log_index: 0,
+            protocol: "gelato",
+            emitter: ATK,
+            fee: Some(U256::from(10u64)),
+            fee_token: Some(USDC),
+        }];
+        let mut bundler_tx = tx(2, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 2,
+            log_index: 0,
+            entry_point: POOL_A,
+            sender: ATK,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(5u64),
+            success: true,
+        }];
+        let input = block(vec![arb_tx(0), keeper_tx, bundler_tx]);
+        let opts = tag_opts();
+
+        let (orchestrated, rejects) = classify_arbs(&input, &opts);
+
+        let (mut manual, manual_rejects) = classify_atomic_arbs(&input, &opts);
+        let keepers = classify_keepers(&input);
+        let claims = classify_claim_and_sell(&input, &mut manual);
+        manual.extend(keepers);
+        manual.extend(claims);
+        manual.extend(classify_bundlers(&input));
+
+        let signature = |v: &[MevEvent]| -> Vec<(MevKind, u64)> {
+            v.iter().map(|e| (e.kind, e.tx_index)).collect()
+        };
+        assert_eq!(signature(&orchestrated), signature(&manual));
+        assert_eq!(rejects.len(), manual_rejects.len());
+        assert_eq!(
+            signature(&orchestrated),
+            vec![
+                (MevKind::ArbAtomic, 0),
+                (MevKind::Utility, 1),
+                (MevKind::Utility, 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn claim_and_sell_tags_the_existing_arb_instead_of_double_counting() {
+        // Zero-from TOKA claim is sold by the cycle's TOKA→USDC leg, so the
+        // claim pass must tag the arb event rather than emit a second event.
+        let mut t = arb_tx(0);
+        t.transfers.push(transfer(9, TOKA, Address::ZERO, ATK, 7));
+        let input = block(vec![t]);
+        let opts = tag_opts();
+
+        let (mut events, _) = classify_atomic_arbs(&input, &opts);
+        assert_eq!(events.len(), 1);
+        let claims = classify_claim_and_sell(&input, &mut events);
+
+        assert!(claims.is_empty(), "arb tx must not produce a second event");
+        let tagged = events[0].details["tags"].as_array().is_some_and(|tags| {
+            tags.iter().any(|t| t.as_str() == Some("claim_and_sell"))
+                && tags.iter().any(|t| t.as_str() == Some("airdrop"))
+        });
+        assert!(
+            tagged,
+            "arb event must carry claim_and_sell and airdrop tags"
+        );
+    }
+
+    #[test]
+    fn keeper_and_bundler_passes_emit_unknown() {
+        let mut keeper_tx = tx(0, ATK, true, vec![], vec![]);
+        keeper_tx.keepers = vec![KeeperFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "chainlink",
+            emitter: ATK,
+            fee: None,
+            fee_token: None,
+        }];
+        let mut bundler_tx = tx(1, ATK, true, vec![], vec![]);
+        bundler_tx.user_ops = vec![UserOpFact {
+            tx_index: 1,
+            log_index: 0,
+            entry_point: POOL_A,
+            sender: ATK,
+            paymaster: Address::ZERO,
+            actual_gas_cost: U256::from(5u64),
+            success: true,
+        }];
+        let input = block(vec![keeper_tx, bundler_tx]);
+
+        let keepers = classify_keepers(&input);
+        assert_eq!(keepers.len(), 1);
+        assert_eq!(keepers[0].kind, MevKind::Utility);
+        assert_eq!(keepers[0].details["protocol"], "chainlink");
+
+        let bundlers = classify_bundlers(&input);
+        assert_eq!(bundlers.len(), 1);
+        assert_eq!(bundlers[0].kind, MevKind::Utility);
+        assert_eq!(bundlers[0].details["protocol"], "erc4337");
+    }
+}
+
+#[cfg(test)]
+mod repay_tests {
+    use super::*;
+    use crate::explorer::classify::classify_block;
+    use crate::explorer::test_fixtures::{
+        block, swap, transfer, tx, tx_to, ATK, POOL_A, POOL_B, TOKA, USDC,
+    };
+    use crate::explorer::types::FlashLoanFact;
+    use alloy::primitives::address;
+
+    /// Balancer-style vault: distinct from the borrower and from the pools.
+    const PROVIDER: Address = address!("7000000000000000000000000000000000000009");
+
+    /// One tx: 1000 USDC flash loan in, two-hop arb to +200 USDC, repaid as
+    /// two 500 transfer legs (Balancer split repay) instead of one 1000 leg.
+    fn split_repay_input() -> BlockInput {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, ATK, 1000), // loan in
+                transfer(1, USDC, ATK, POOL_A, 1000),
+                transfer(2, TOKA, POOL_A, ATK, 1100),
+                transfer(3, TOKA, ATK, POOL_B, 1100),
+                transfer(4, USDC, POOL_B, ATK, 1200),
+                transfer(5, USDC, ATK, PROVIDER, 500), // repay half
+                transfer(6, USDC, ATK, PROVIDER, 500), // repay half
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "balancer_v2",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(1000u64),
+            fee: Some(U256::ZERO),
+            recipient: ATK,
+            provider: PROVIDER,
+        });
+        block(vec![t])
+    }
+
+    /// Two half-amount repayments to the provider must count as repaid, so
+    /// `net_flash_loan` must NOT subtract the principal again (which erases
+    /// the real +200 profit and rejects the op as `NetZeroSearcher`).
+    #[test]
+    fn split_flash_repay_is_detected() {
+        let input = split_repay_input();
+        let out = classify_block(&input);
+        assert!(
+            out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "split-repay flash arb must classify: rejects were {:?}",
+            out.rejects
+        );
+        let arb = out.events.iter().find(|e| e.kind == MevKind::ArbAtomic);
+        assert_eq!(
+            arb.and_then(|e| e.profit_amount),
+            Some(U256::from(200u64)),
+            "principal must not be netted twice; residual is +200"
+        );
+    }
+
+    /// Executor contract distinct from the EOA: the loan principal is held by
+    /// the recipient (`tx.to`), and the provider pulls the repay back
+    /// internally (no repay Transfer). Only the recipient owns that principal,
+    /// so netting the EOA as well erases the swept +200 and rejects the op.
+    fn executor_owned_loan_input() -> BlockInput {
+        const EXEC: Address = address!("9000000000000000000000000000000000000009");
+        let mut t = tx_to(
+            0,
+            ATK,
+            EXEC,
+            true,
+            vec![
+                swap(POOL_A, USDC, TOKA, 1000, 1100),
+                swap(POOL_B, TOKA, USDC, 1100, 1200),
+            ],
+            vec![
+                transfer(0, USDC, PROVIDER, EXEC, 1000), // loan in → executor
+                transfer(1, USDC, EXEC, POOL_A, 1000),
+                transfer(2, TOKA, POOL_A, EXEC, 1100),
+                transfer(3, TOKA, EXEC, POOL_B, 1100),
+                transfer(4, USDC, POOL_B, EXEC, 1200),
+                // Profit sweep; no repay Transfer follows (the provider pulls
+                // 1005 back internally), so this exercises the `!repaid` branch.
+                transfer(5, USDC, EXEC, ATK, 200),
+            ],
+        );
+        t.flashloans.push(FlashLoanFact {
+            tx_index: 0,
+            log_index: 0,
+            protocol: "aave_v3",
+            initiator: ATK,
+            token: USDC,
+            amount: U256::from(1000u64),
+            fee: Some(U256::from(5u64)),
+            recipient: EXEC,
+            provider: PROVIDER,
+        });
+        block(vec![t])
+    }
+
+    /// The borrowed principal must be netted against exactly one owner (the
+    /// loan recipient), leaving the EOA's swept profit intact.
+    #[test]
+    fn executor_held_flash_loan_is_netted_against_one_owner() {
+        let input = executor_owned_loan_input();
+        let out = classify_block(&input);
+        assert!(
+            out.events.iter().any(|e| e.kind == MevKind::ArbAtomic),
+            "executor-held flash loan must classify: rejects were {:?}",
+            out.rejects
+        );
+        let arb = out
+            .events
+            .iter()
+            .find(|e| e.kind == MevKind::ArbAtomic)
+            .expect("arb present");
+        assert_eq!(
+            arb.profit_amount,
+            Some(U256::from(200u64)),
+            "the EOA's swept profit (200) must survive; only the recipient owns the principal"
+        );
+        // The recorded fee came from the netted loan, so persist must not
+        // subtract it from the already fee-netted residual again.
+        assert_eq!(
+            arb.details
+                .get("flashloan_fee_netted_in_ledger")
+                .and_then(|v| v.as_bool()),
+            Some(true)
+        );
+    }
 }

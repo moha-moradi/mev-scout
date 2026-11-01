@@ -1,7 +1,7 @@
 //! Real-block hunt recipes for explorer strategy scenarios.
 //!
 //! Synthetic fixtures live in [`super::scenarios`] (cfg(test)). This module is
-//! the machine-readable companion to `docs/explorer_strategy_scenarios.md`:
+//! the machine-readable companion to `docs/explorer_strategy_checklist.md`:
 //! every scheduled plan item has a hunt recipe; Avalanche corpus seeds are
 //! filled in as RECORD runs pin windows.
 //!
@@ -39,8 +39,8 @@ pub struct StrategyScenarioTarget {
     pub hunt: &'static str,
 }
 
-/// Full scheduled catalogue (baseline + P0–P3). Keep in sync with
-/// `docs/explorer_strategy_scenarios.md`.
+/// Full scheduled catalogue (baseline + P0–P3). Kept in sync with
+/// `docs/explorer_strategy_checklist.md` by `tests/explorer_checklist_sync.rs`.
 pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
     // ── baseline ────────────────────────────────────────────────────
     StrategyScenarioTarget {
@@ -57,13 +57,14 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         id: "baseline.sandwich",
         label: "sandwich",
         syn_test: "baseline_sandwich",
-        // Avalanche sparse. Real seed lives on Ethereum in explorer_corpus
-        // (block 26089508); seed_* here are Avalanche-only.
+        // Avalanche sparse. Ethereum cases live in explorer_corpus
+        // (26055651..=26055745 and 26059500..=26059550); seed_* here are
+        // Avalanche-only. Block 26089508 is a hunt observation, not a case.
         real: RealSeedStatus::Hunt,
         seed_from: None,
         seed_to: None,
         seed_searcher: None,
-        hunt: "same sender opposite legs around victim on one pool (Avalanche rare; ETH verified @ 26089508)",
+        hunt: "same sender opposite legs around victim on one pool (Avalanche rare; ETH corpus 26059500..=26059550)",
     },
     StrategyScenarioTarget {
         id: "baseline.frontrun",
@@ -124,7 +125,7 @@ pub const STRATEGY_SCENARIO_TARGETS: &[StrategyScenarioTarget] = &[
         seed_from: Some(97_782_322),
         seed_to: Some(97_782_322),
         seed_searcher: None,
-        hunt: "same tx Aave V2/V3 FlashLoan + LiquidationCall (AVAX seed uses Aave V2 pool)",
+        hunt: "same tx Aave V3 FlashLoan + LiquidationCall (AVAX seed resolves to aave_v3)",
     },
     StrategyScenarioTarget {
         id: "P0.2",
@@ -320,6 +321,25 @@ pub fn seeded_targets() -> impl Iterator<Item = &'static StrategyScenarioTarget>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_seeded_targets_carry_seed_blocks() {
+        for t in STRATEGY_SCENARIO_TARGETS {
+            if t.real == RealSeedStatus::Seeded {
+                assert!(
+                    t.seed_from.is_some() && t.seed_to.is_some(),
+                    "{} is Seeded but has no seed block",
+                    t.id
+                );
+            } else {
+                assert!(
+                    t.seed_from.is_none() && t.seed_to.is_none(),
+                    "{} is not Seeded but carries a seed block claim",
+                    t.id
+                );
+            }
+        }
+    }
 
     #[test]
     fn catalogue_covers_syn_tests_uniquely() {

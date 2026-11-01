@@ -3,9 +3,15 @@ use std::collections::HashMap;
 
 use alloy::primitives::{Address, B256, U256};
 
-use crate::explorer::types::{Confidence, JitFact, MevEvent, MevKind, PnlBasis, SwapFact};
+use crate::explorer::reject::RejectReason;
+use crate::explorer::types::{JitFact, MevEvent, MevKind, PnlBasis, SwapFact};
 
+use super::drops::DropSink;
 use super::BlockInput;
+
+/// Default pool-fee-tier estimate for JIT fee capture (30 bps). Overridable via
+/// `explorer.jit_pool_fee_bps`; decoding each pool's real tier is the real fix.
+pub(crate) const POOL_FEE_BPS: u32 = 30;
 
 /// Position fields for [`build_jit_event`].
 pub(super) struct JitEventPosition {
@@ -26,9 +32,12 @@ pub(super) struct JitEventPosition {
 ///
 /// pairs an in-block Mint+Burn *or* a prior-block open position
 /// (loaded from `jit_open_positions`) with an in-block exact-liquidity Burn.
+/// A Burn strictly after the Mint's tx closes a position, and each Burn closes
+/// at most one position (a `find` without consumption let one Burn satisfy
+/// several identical Mints — duplicate P&L on one tx_index).
 /// A candidate is only emitted when the block contains an in-window swap in
 /// that pool whose tick lies inside the range (tick-overlap validation).
-pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
+pub(super) fn classify_jit(input: &BlockInput, drops: &mut DropSink) -> Vec<MevEvent> {
     let mints: Vec<JitFact> = input
         .txs
         .iter()
@@ -49,17 +58,23 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
         .collect();
 
     let mut out = Vec::new();
+    // (burn tx_index, log_index): one-shot burn consumption. Keyed by log as
+    // well as tx because a single tx can carry several JIT burns.
+    let mut used_burns: std::collections::HashSet<(u64, u64)> = Default::default();
 
-    // Same-block Mint → Burn.
+    // Same-block Mint → Burn (Burn strictly after the Mint's tx).
     for mint in &mints {
-        let burn = burns.iter().find(|(_, b)| {
-            b.pool == mint.pool
+        let burn = burns.iter().find(|(burn_tx, b)| {
+            *burn_tx > mint.tx_index
+                && !used_burns.contains(&(*burn_tx, b.log_index))
+                && b.pool == mint.pool
                 && b.owner == mint.owner
                 && b.tick_lower == mint.tick_lower
                 && b.tick_upper == mint.tick_upper
                 && b.liquidity >= mint.liquidity
         });
-        if let Some((burn_tx, _)) = burn {
+        if let Some((burn_tx, b)) = burn {
+            used_burns.insert((*burn_tx, b.log_index));
             if let Some(ev) = build_jit_event(
                 input,
                 JitEventPosition {
@@ -77,20 +92,34 @@ pub(super) fn classify_jit(input: &BlockInput) -> Vec<MevEvent> {
                 },
             ) {
                 out.push(ev);
+            } else {
+                drops.anchor(
+                    mint.tx_index,
+                    RejectReason::JitPairingUnmatched,
+                    "no_validating_swap_in_position_range",
+                );
             }
+        } else {
+            drops.anchor(
+                mint.tx_index,
+                RejectReason::JitPairingUnmatched,
+                "mint_without_burn",
+            );
         }
     }
 
     // Cross-block: a prior-block open position closed by an in-block Burn.
     for pos in &input.open_positions {
-        let burn = burns.iter().find(|(_, b)| {
-            b.pool == pos.pool
+        let burn = burns.iter().find(|(burn_tx, b)| {
+            !used_burns.contains(&(*burn_tx, b.log_index))
+                && b.pool == pos.pool
                 && b.owner == pos.owner
                 && b.tick_lower == pos.tick_lower
                 && b.tick_upper == pos.tick_upper
                 && b.liquidity >= pos.liquidity
         });
         if let Some((burn_tx, b)) = burn {
+            used_burns.insert((*burn_tx, b.log_index));
             // Anchor to the burn tx when the opening tx is not in this block.
             if let Some(ev) = build_jit_event(
                 input,
@@ -149,23 +178,20 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
         .txs
         .iter()
         .filter(|t| t.tx_index == mint_tx)
-        .map(|t| {
-            U256::from(t.gas_used)
-                .saturating_mul(U256::from((t.effective_gas_price_gwei * 1e9) as u128))
-        })
+        .map(super::gas::tx_gas_cost_wei)
         .next()
         .unwrap_or(U256::ZERO);
 
     // Documented estimate: in-range swap volume × pool fee (30 bps default).
     // V3 fees are not in logs and principal amounts are not fees, so this is
     // explicitly inferred (`Confidence::Exact` remains on the detection).
-    const POOL_FEE_BPS: u32 = 30;
+    let pool_fee_bps = input.ctx.jit_pool_fee_bps;
     let mut by_token: std::collections::BTreeMap<String, U256> = std::collections::BTreeMap::new();
     for t in &input.txs {
         for s in &t.swaps {
             if in_range(s) {
                 let fee =
-                    s.amount_in.saturating_mul(U256::from(POOL_FEE_BPS)) / U256::from(10_000u32);
+                    s.amount_in.saturating_mul(U256::from(pool_fee_bps)) / U256::from(10_000u32);
                 *by_token.entry(format!("{:#x}", s.token_in)).or_default() += fee;
             }
         }
@@ -177,24 +203,9 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
 
     let range_key = if bin_amm { "bin" } else { "tick" };
     Some(MevEvent {
-        block: input.block,
-        ts: input.ts,
-        tx_index: mint_tx,
-        tx_hash: B256::ZERO, // mint tx hash resolved at ingest stamping
-        kind: MevKind::Jit,
-        searcher: owner,
-        contract: None,
         pools: vec![pool],
-        profit_token: None, // fee capture — priced via pool tokens
-        profit_amount: None,
-        profit_tokens: vec![],
-        profit_usd: None,
+        // fee capture — priced via pool tokens, so no primary profit token
         gas_cost_wei,
-        flashloan_fee_wei: None,
-        flashloan_fee_token: None,
-        confidence: Confidence::Exact,
-        victim_hashes: vec![],
-        victim_swap_size: None,
         details: serde_json::json!({
             "pool": format!("{:#x}", pool),
             "owner": format!("{:#x}", owner),
@@ -225,7 +236,7 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
             },
             "fees_estimated": {
                 "method": "in_range_volume_x_pool_fee",
-                "pool_fee_bps": POOL_FEE_BPS,
+                "pool_fee_bps": pool_fee_bps,
                 "confidence": "inferred",
                 "range": range_key,
                 "by_token": fees_estimated,
@@ -235,6 +246,15 @@ pub(super) fn build_jit_event(input: &BlockInput, pos: JitEventPosition) -> Opti
                 "method": "in_range_volume_x_pool_fee",
             },
         }),
+        ..MevEvent::for_tx(
+            input.block,
+            input.ts,
+            mint_tx,
+            B256::ZERO, // mint tx hash resolved at ingest stamping
+            MevKind::Jit,
+            owner,
+            None,
+        )
     })
 }
 
@@ -247,5 +267,67 @@ pub(crate) fn stamp_jit_tx_hashes(events: &mut [MevEvent], tx_hashes: &HashMap<u
                 ev.tx_hash = *h;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+    use crate::explorer::test_fixtures::{block, jit, swap_at_tick, tx, ATK, POOL_A, TOKA, USDC};
+
+    /// An in-range V3 swap on the JIT pool, so `build_jit_event` validates the
+    /// range and a wrongly-paired event is actually emitted (not masked by the
+    /// tick-overlap gate).
+    fn in_range_swaps() -> Vec<SwapFact> {
+        vec![swap_at_tick(POOL_A, USDC, TOKA, 1_000, 1_100, 0)]
+    }
+
+    /// Burn in tx0, Mint in tx1 (same pool/owner/ticks): a Burn that predates
+    /// the Mint cannot close it. The old pairing had no ordering check and
+    /// emitted the event.
+    #[test]
+    fn burn_before_mint_same_coords_does_not_pair() {
+        let mut burn_tx = tx(0, ATK, true, in_range_swaps(), vec![]);
+        burn_tx.jit.push(jit(0, false));
+        let mut mint_tx = tx(1, ATK, true, vec![], vec![]);
+        mint_tx.jit.push(jit(1, true));
+        let input = block(vec![burn_tx, mint_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        let events = classify_jit(&input, &mut drops);
+        assert!(
+            events.is_empty(),
+            "Burn at tx0 must not pair with Mint at tx1: {:?}",
+            events
+                .iter()
+                .map(|e| (&e.details["burn_tx_index"], e.tx_index))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Two identical Mints (tx1, tx2) and one Burn (tx3): the Burn can close
+    /// exactly one position, so exactly one JIT event may be emitted. The old
+    /// `find` let the same Burn satisfy both Mints (duplicate P&L).
+    #[test]
+    fn one_burn_closes_one_of_two_identical_mints() {
+        let mut mint_a = tx(1, ATK, true, vec![], vec![]);
+        mint_a.jit.push(jit(1, true));
+        let mut mint_b = tx(2, ATK, true, vec![], vec![]);
+        mint_b.jit.push(jit(2, true));
+        let mut burn_tx = tx(3, ATK, true, in_range_swaps(), vec![]);
+        burn_tx.jit.push(jit(3, false));
+        let input = block(vec![mint_a, mint_b, burn_tx]);
+
+        let mut drops = super::super::drops::DropSink::new(input.block);
+        let events = classify_jit(&input, &mut drops);
+        assert_eq!(
+            events.len(),
+            1,
+            "one Burn must close exactly one Mint, not both: {:?}",
+            events
+                .iter()
+                .map(|e| (e.tx_index, &e.details["burn_tx_index"]))
+                .collect::<Vec<_>>()
+        );
     }
 }
