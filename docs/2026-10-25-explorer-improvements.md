@@ -1247,7 +1247,7 @@ impl TxClaims {
 - [x] **Step 1: Write `claims.rs`** with the struct above (precedence via `crate::explorer::classify::kind_precedence`); unit tests: claim Sandwich then ArbAtomic on same tx → winner is Sandwich; reverse order → same result.
 - [x] **Step 2: Rewire `classify_block`** — read mod.rs:180-290. Order of operations becomes: run all passes (they may over-claim); feed every produced event + every "suppressed" tx_index (JitArb's arb suppression, frontrun close-tx claims, A1's sandwich legs) through `TxClaims::claim`; then `events.retain(|e| claims.winner(e.tx_index) == Some(e.kind) || !claims.is_claimed(e.tx_index))`… — precisely: keep an event iff it is the winner for its tx_index. The `consumed`/`back_consumed` pre-filtering passes use for input pruning can stay (they are an optimization), but the *authority* is now `TxClaims`.
 - [x] **Step 3: Port A1's test + the existing golden/corpus suites** — all must pass with identical output. This is the riskiest refactor in the plan; if output drifts, stop and reconcile against the **A15-decided** order, not the numbers currently in the `kind_precedence` body: `Sandwich > Frontrun > Backrun > JitArb > Liquidation > Jit > Skim > ArbAtomic > Unknown`. The decided order is recorded in the `kind_precedence` doc comment (`core/src/explorer/classify/mod.rs:338-357`) and in `docs/explorer_strategy_checklist.md` → "Kind collision census → Decided order per contested pair"; the body (`:358-369`) still holds the pre-decision numbering where `ArbAtomic`(3) outranks the three explicitly-anchored kinds, and demoting it is this task's job. Because the census measured **zero** co-labeling on today's corpus, that demotion must still land with **zero** golden drift — any drift means a new co-label appeared or the registry is wrong, and either way stop.
-- [ ] **Step 4: Gates + commit** — full: `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus --test explorer_tag_coverage && cargo clippy --workspace --all-targets`; `git commit -m "refactor(explorer): TxClaims registry makes tx_index exclusivity structural"` [live half: canonical commands]
+- [x] **Step 4: Gates + commit** — full: `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus --test explorer_tag_coverage && cargo clippy --workspace --all-targets`; `git commit -m "refactor(explorer): TxClaims registry makes tx_index exclusivity structural"` [live half: canonical commands]
 
 ---
 
@@ -1258,10 +1258,10 @@ impl TxClaims {
 
 **Problem:** `BlockInput` is a 20-field god-struct mixing per-block data with registries/config (`chainlink_feeds`, `savax`, `gmx_event_emitters`, `tip_sinks`, …), making fixture-building in tests verbose and the module boundary unclear.
 
-- [ ] **Step 1: Read mod.rs:90-119** and list which fields are per-block (`block`, `ts`, `txs`, …) vs registry/config. Grep constructors: `grep -rn "BlockInput {" core/src core/tests`.
-- [ ] **Step 2: Extract** the registry/config fields into `pub struct BlockContext<'a> { … }` (borrowed registries), add `pub ctx: &'a BlockContext` to `BlockInput`. Update all constructors. In tests, provide a `BlockContext::for_tests()` default in `test_fixtures.rs` so most tests don't spell out registries.
-- [ ] **Step 3: Gates** — full suite + goldens: `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus && cargo clippy --workspace --all-targets`. Pure mechanical move — any output change is a mistake. [live half: canonical commands]
-- [ ] **Step 4: Commit** — `git commit -m "refactor(explorer): BlockContext groups registry/config out of BlockInput"`
+- [x] **Step 1: Read mod.rs:90-119** and list which fields are per-block (`block`, `ts`, `txs`, …) vs registry/config. Grep constructors: `grep -rn "BlockInput {" core/src core/tests`.
+- [x] **Step 2: Extract** the registry/config fields into `pub struct BlockContext<'a> { … }` (borrowed registries), add `pub ctx: &'a BlockContext` to `BlockInput`. Update all constructors. In tests, provide a `BlockContext::for_tests()` default in `test_fixtures.rs` so most tests don't spell out registries.
+- [x] **Step 3: Gates** — full suite + goldens: `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus && cargo clippy --workspace --all-targets`. Pure mechanical move — any output change is a mistake. [live half: canonical commands]
+- [x] **Step 4: Commit** — `git commit -m "refactor(explorer): BlockContext groups registry/config out of BlockInput"`
 
 ---
 
@@ -1278,7 +1278,7 @@ impl TxClaims {
 - [x] **Step 1: Add the natural key** — `UNIQUE(canonical_id, tx_hash)` (confirm that pair is actually one event by reading how `explorer_canonical_id` is built in `canonical.rs`; if it needs the kind or the leg set, include those and say why). Land it as a B6 migration with a pre-flight duplicate report: on an existing DB, `SELECT canonical_id, tx_hash, count(*) … HAVING count(*) > 1` must be printed, and the migration must refuse to add the constraint while duplicates exist rather than silently picking a winner.
 - [x] **Step 2: Switch to `ON CONFLICT DO UPDATE`** for the classification-derived columns, keeping `id` stable so nothing that references an op row by id is orphaned. Define which columns are *revisable* (pricing-derived, `excluded_from_net`, `pnl_basis`) and which are immutable facts (block, tx_index, kind, gas) — write that split into the doc comment, because A10/A14/A16/A19 all depend on it and none of them currently say.
 - [x] **Step 3: A reprice entry point** — one function that recomputes USD columns for a block range from stored prices, with no RPC. This is what makes A14/A16/A19's deferred follow-up ("historical native pricing") a recompute instead of a re-index; note the dependency in the deferred section rather than duplicating the design here.
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "refactor(explorer): mev_ops keyed and upserted so re-index is idempotent and USD columns are revisable"`
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "refactor(explorer): mev_ops keyed and upserted so re-index is idempotent and USD columns are revisable"`
 
 ---
 
@@ -1303,7 +1303,7 @@ impl TxClaims {
 - [x] **Step 3: Persist and surface `subkind`.** Extract the tag→subkind mapping (`keeper` | `bundler` | `claim_and_sell`) into one `fn` shared by `filter_unresolved` and `insert_block_facts` so the two cannot drift. Populate `subkind` on insert; surface it in `top_ops` output and JSON. `report_by_kind` stays grouped by kind — do not restructure the report here.
 - [x] **Step 4: Make the docs honest.** (a) `classify/mod.rs:16`: replace the residual promise with reality — "`Utility` covers exact-fingerprint operational executions (keeper, airdrop claim-and-sell, ERC-4337 bundler); no residual-inference pass exists, and if one is ever added it gets its own kind, never this bucket." (b) `explorer/mod.rs:15-21`: add the three utility passes to the pipeline list and `Utility` to the priority list. Grep `docs/` and `README.md` for kind references to `unknown` and fix them in this commit or hand the list to D8 explicitly.
 - [x] **Step 5: Guard against bucket-rot.** Unit test next to `filter_unresolved`: every emitted `Utility` event carries exactly one of the three subkind tags — a future pass that dumps an untagged event into the kind must fail this test instead of silently recreating the mystery bucket.
-- [ ] **Step 6: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Expected diff: kind labels on keeper/claim/bundler rows change to `utility`; P&L figures unchanged; `subkind` appears in JSON. Reconcile per the re-baseline discipline. `git commit -m "fix(explorer): rename Unknown to Utility with subkind — the bucket held three known families and the docs promised a residual pass that does not exist"` [live half: canonical commands]
+- [x] **Step 6: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Expected diff: kind labels on keeper/claim/bundler rows change to `utility`; P&L figures unchanged; `subkind` appears in JSON. Reconcile per the re-baseline discipline. `git commit -m "fix(explorer): rename Unknown to Utility with subkind — the bucket held three known families and the docs promised a residual pass that does not exist"` [live half: canonical commands]
 
 ---
 
@@ -1319,8 +1319,8 @@ impl TxClaims {
 - [x] **Step 1: Read causal.rs fully.**
 - [x] **Step 2: Bind the first `tx_cycle_profit` result** into a variable and reuse it at the second call site (:43 vs :84 per the review).
 - [x] **Step 3: Restructure `frontrun_cross_tx_profit`** — hoist the per-front window clone out of the close-candidate loop: build `Vec<&TransferFact>` (borrowed, no clone) for the window once per front tx, then for each close candidate extend a small owned ledger from the borrowed slice (`DeltaLedger` API permitting; if `DeltaLedger::from_transfers` requires owned values, build the ledger once per front and clone the *ledger* per candidate instead of the transfer vec — read `DeltaLedger` in arb.rs/legs.rs first and choose whichever avoids the per-pair transfer clone).
-- [ ] **Step 4: Gates** — goldens are the correctness net: `cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Identical output required. Optionally measure: index one seeded range before/after (`explorer index` on a corpus seed) and note the delta in the commit body. [live half: canonical commands]
-- [ ] **Step 5: Commit** — `git commit -m "perf(explorer): causal pass reuses cycle profit and borrows transfer windows"`
+- [x] **Step 4: Gates** — goldens are the correctness net: `cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. Identical output required. Optionally measure: index one seeded range before/after (`explorer index` on a corpus seed) and note the delta in the commit body. [live half: canonical commands]
+- [x] **Step 5: Commit** — `git commit -m "perf(explorer): causal pass reuses cycle profit and borrows transfer windows"`
 
 ---
 
@@ -1344,7 +1344,7 @@ for t in &tx.transfers {
 
 then each swap's candidate set is `by_counterparty.get(&pool).into_iter().flatten()`. Name the proximity window: `const PROXIMITY_LOG_WINDOW: usize = 24; // ±24 logs: calibrated on corpus — see decode/attach.rs history` (pull the real calibration note from the file's comments if one exists).
 - [x] **Step 3: Gates** — `cargo test -p mev-scout-core decode && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` — identical output required. [live half: canonical commands]
-- [ ] **Step 4: Commit** — `git commit -m "perf(explorer): attach_swap_tokens via counterparty index; named proximity window"`
+- [x] **Step 4: Commit** — `git commit -m "perf(explorer): attach_swap_tokens via counterparty index; named proximity window"`
 
 ---
 
@@ -1355,9 +1355,9 @@ then each swap's candidate set is `by_counterparty.get(&pool).into_iter().flatte
 
 **Problem:** Per-row `conn.execute` INSERTs re-prepare every statement.
 
-- [ ] **Step 1:** In the (post-B5, SQL-only) `insert_block_facts`, prepare each INSERT once per call with `conn.prepare_cached(...)` and loop `stmt.insert(...)`/`stmt.execute(rusqlite::params![...])`. Same for the txs/swaps/transfers bulk inserts.
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`. Optionally note before/after timing on a corpus seed range in the commit body.
-- [ ] **Step 3: Commit** — `git commit -m "perf(explorer): prepare_cached batched inserts in insert_block_facts"`
+- [x] **Step 1:** In the (post-B5, SQL-only) `insert_block_facts`, prepare each INSERT once per call with `conn.prepare_cached(...)` and loop `stmt.insert(...)`/`stmt.execute(rusqlite::params![...])`. Same for the txs/swaps/transfers bulk inserts.
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`. Optionally note before/after timing on a corpus seed range in the commit body.
+- [x] **Step 3: Commit** — `git commit -m "perf(explorer): prepare_cached batched inserts in insert_block_facts"`
 
 ---
 
@@ -1368,9 +1368,9 @@ then each swap's candidate set is `by_counterparty.get(&pool).into_iter().flatte
 
 **Problem:** Positions are written one Mint at a time (`record_jit_open(&[one])`), one DELETE per Burn, and the prune runs on every block even with zero JIT facts.
 
-- [ ] **Step 1: Read the region.** Collect all opens into one `Vec<OpenPosition>` and one `record_jit_open(&all)`; collect all closes and run them after; prune only when the block actually produced JIT facts (`if opens + closes > 0`).
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. [live half: canonical commands]
-- [ ] **Step 3: Commit** — `git commit -m "perf(explorer): batch JIT position persist; prune only on JIT-active blocks"`
+- [x] **Step 1: Read the region.** Collect all opens into one `Vec<OpenPosition>` and one `record_jit_open(&all)`; collect all closes and run them after; prune only when the block actually produced JIT facts (`if opens + closes > 0`).
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`. [live half: canonical commands]
+- [x] **Step 3: Commit** — `git commit -m "perf(explorer): batch JIT position persist; prune only on JIT-active blocks"`
 
 ---
 
@@ -1381,7 +1381,7 @@ then each swap's candidate set is `by_counterparty.get(&pool).into_iter().flatte
 
 **Problem:** One query per feed (N+1).
 
-- [ ] **Step 1:** Replace with a single groupwise-max query:
+- [x] **Step 1:** Replace with a single groupwise-max query:
 
 ```sql
 SELECT feed, block_number, answer FROM oracle_answers o
@@ -1391,8 +1391,8 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 ```
 
 (With per-feed cutoffs it may need a per-feed `latest`; read the current loop to see whether the cutoff is uniform — if uniform, the query above with one bound `latest` works. If per-feed, use a CTE `WITH cutoffs(feed, latest) AS (VALUES …)`.)
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core explorer_golden` (oracle lookback is exercised by liquidation goldens).
-- [ ] **Step 3: Commit** — `git commit -m "perf(explorer): prior_oracle_answers in one grouped query"`
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core explorer_golden` (oracle lookback is exercised by liquidation goldens).
+- [x] **Step 3: Commit** — `git commit -m "perf(explorer): prior_oracle_answers in one grouped query"`
 
 ---
 
@@ -1403,7 +1403,7 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 
 **Problem:** The recursive CTE materializes the full range (hundreds of thousands of rows for a 30d backfill).
 
-- [ ] **Step 1:** Replace with chunked anti-joins — iterate in windows of 4096 blocks:
+- [x] **Step 1:** Replace with chunked anti-joins — iterate in windows of 4096 blocks:
 
 ```rust
     pub fn unclassified_blocks(&self, from: u64, to: u64) -> anyhow::Result<Vec<u64>> {
@@ -1429,8 +1429,8 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
     }
 ```
 
-- [ ] **Step 2: Test** — extend the sync.rs test module from A7: mark a middle block classified, assert the gap list is exactly the others across a >WINDOW range.
-- [ ] **Step 3: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`; `git commit -m "perf(explorer): unclassified_blocks scans in 4096-block windows"`
+- [x] **Step 2: Test** — extend the sync.rs test module from A7: mark a middle block classified, assert the gap list is exactly the others across a >WINDOW range.
+- [x] **Step 3: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`; `git commit -m "perf(explorer): unclassified_blocks scans in 4096-block windows"`
 
 ---
 
@@ -1441,9 +1441,9 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 
 **Problem:** One `price_at` point query per token per block, plus a full `TokenCache` clone per call.
 
-- [ ] **Step 1: Read the region and the `TokenCache` type.** Add a store method `prices_at(tokens: &[Address], hour: u64) -> anyhow::Result<HashMap<Address, Option<(f64, String)>>>` doing one query with `token IN (…)` grouped per token; call it once per block. Cache the `TokenCache` handle (it is behind a `OnceLock` per the review — borrow, don't clone).
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`.
-- [ ] **Step 3: Commit** — `git commit -m "perf(explorer): batched price warm-up; no per-call TokenCache clone"`
+- [x] **Step 1: Read the region and the `TokenCache` type.** Add a store method `prices_at(tokens: &[Address], hour: u64) -> anyhow::Result<HashMap<Address, Option<(f64, String)>>>` doing one query with `token IN (…)` grouped per token; call it once per block. Cache the `TokenCache` handle (it is behind a `OnceLock` per the review — borrow, don't clone).
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden`.
+- [x] **Step 3: Commit** — `git commit -m "perf(explorer): batched price warm-up; no per-call TokenCache clone"`
 
 ---
 
@@ -1470,12 +1470,12 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 
 **Problem (all verified):** (1) `ingest.rs:501-515` clones registry-sized sets into every block's inputs — `cfg.profit_token_priority.clone()`, `pools.v2_like.clone()`, `cfg.chainlink_feeds.clone()`, `pools.epoch_venue.clone()`, `cfg.gmx_event_emitters.clone()`, and `cfg.tip_sink_addresses.clone()` plus a mutation at `:515` — for a backfill that is one full copy of the pool/registry universe *per block*. (2) `usd_of` at `ingest.rs:802` is `priced.iter().find(|(p, _)| p == a)` called from inside a per-token loop (`:806`) — quadratic in the block's priced-token count. (3) `check_reorg` (`ingest.rs:631`) is on the live path; `get_block_hash` already exists (`:668`, used by `verify_indexed_tip` at `:660`) — read `check_reorg` and, if it fetches a full block *and* receipts to compare one hash, switch it to the hash-only call. (4) `store/facts.rs:355-371` re-scans `swaps` per event to build `volume_usd`.
 
-- [ ] **Step 1: Measure first** — before changing anything, capture a baseline on a seeded range: time `explorer index --from-block … --to-block …` on a corpus window and record blocks/sec plus peak RSS in the commit body. Several C-tasks claim wins with no number attached; this one should not.
-- [ ] **Step 2: `Arc` the immutable universes.** Wrap the registry/pool/fee-set collections that are read-only per run in `Arc` (built once in the range/live driver, cloned by reference into each block's inputs). The one that is *mutated* per block (`:515`, the tip-sink set) needs a real answer, not a clone: either keep a base `Arc` plus a small per-block `Vec` of additions, or move the union into the classifier where it is consumed. Do not hide a mutation behind an `Arc` clone and call it a perf win.
-- [ ] **Step 3: Index `priced` once.** Build a `HashMap<Address, f64>` before the loop at `:806` and make `usd_of` a map lookup. Same treatment for any other `.iter().find(...)` inside a per-token or per-event loop you pass while editing (`grep -n "iter().find" core/src/explorer/ingest.rs`).
-- [ ] **Step 4: Settle the reorg probe and the volume scan** — apply (3) and (4) above only if the reads confirm the shape; if `check_reorg` is already hash-only, say so in the commit body and skip. Do not invent the change to fit the plan.
-- [ ] **Step 5: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`; then re-run Step 1's range and report the delta. Output must be identical — this task is honestly behavior-preserving. [live half: canonical commands]
-- [ ] **Step 6: Commit** — `git commit -m "perf(explorer): Arc per-block registry sets, hash-indexed price lookup, cheaper reorg probe"`
+- [x] **Step 1: Measure first** — before changing anything, capture a baseline on a seeded range: time `explorer index --from-block … --to-block …` on a corpus window and record blocks/sec plus peak RSS in the commit body. Several C-tasks claim wins with no number attached; this one should not.
+- [x] **Step 2: `Arc` the immutable universes.** Wrap the registry/pool/fee-set collections that are read-only per run in `Arc` (built once in the range/live driver, cloned by reference into each block's inputs). The one that is *mutated* per block (`:515`, the tip-sink set) needs a real answer, not a clone: either keep a base `Arc` plus a small per-block `Vec` of additions, or move the union into the classifier where it is consumed. Do not hide a mutation behind an `Arc` clone and call it a perf win.
+- [x] **Step 3: Index `priced` once.** Build a `HashMap<Address, f64>` before the loop at `:806` and make `usd_of` a map lookup. Same treatment for any other `.iter().find(...)` inside a per-token or per-event loop you pass while editing (`grep -n "iter().find" core/src/explorer/ingest.rs`).
+- [x] **Step 4: Settle the reorg probe and the volume scan** — apply (3) and (4) above only if the reads confirm the shape; if `check_reorg` is already hash-only, say so in the commit body and skip. Do not invent the change to fit the plan.
+- [x] **Step 5: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus`; then re-run Step 1's range and report the delta. Output must be identical — this task is honestly behavior-preserving. [live half: canonical commands]
+- [x] **Step 6: Commit** — `git commit -m "perf(explorer): Arc per-block registry sets, hash-indexed price lookup, cheaper reorg probe"`
 
 ---
 
@@ -1494,11 +1494,11 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 - `query.rs:431-434` counts pricing-quality flags with four `LIKE '%…%'` scans over `details_json` — unindexable by construction, and it silently breaks if the JSON serialization of a flag ever changes shape.
 - Ordering: `query.rs:110` and `:145` order by `gross_usd DESC`, `:515` by `gross DESC`, `:543` by `label DESC` — no `id` tiebreak anywhere in those, so ties reshuffle between runs (`:570` is the one that does it right: `net_profit_usd DESC, id DESC`). `:218` orders by `block_number, tx_index` where `tx_index` is nullable and has no tiebreak, and `ops_in_range` has no `LIMIT`/cursor (a caller does `ops_in_range(0, u64::MAX)`).
 
-- [ ] **Step 1: Add the indexes** (as B6 migrations, not raw `CREATE`s, so existing DBs get them): `mev_ops(ts)`, `mev_ops(tx_hash)`, `opportunities(run_id)`, `prices(token, hour)`. For `native_price_near`, either store a normalized `token_lc` column or key the native row at a single canonical spelling and drop `lower(token)` from the predicate — pick one and note it, because leaving `lower()` there makes `prices(token, hour)` useless for that query.
-- [ ] **Step 2: Promote the pricing flags out of JSON.** Add integer columns for `usd_approximate`, `native_unpriced`, `multi_asset_pricing`, `pricing_clamped` (these are exactly the flags A9, A14 and A16 write) and populate them on insert; keep `details_json` for humans but stop computing reports from substring matching. Gate: the `ReportQuality` numbers must be unchanged on an existing corpus before you switch the reads.
-- [ ] **Step 3: Deterministic ordering.** Append `, id DESC` (or `tx_hash` where `id` is not selected) to every `ORDER BY` used by a report or leaderboard, and add a repeated-run test asserting identical row order. Reports that reshuffle between two identical runs cannot be diffed, which quietly defeats the golden-diff discipline in this plan's Global Constraints.
-- [ ] **Step 4: Optional, only if measured** — a covering index for the window aggregate (`mev_ops(ts, kind, gross_profit_usd, net_profit_usd)`) if `EXPLAIN QUERY PLAN` still shows a scan after Step 1. Run `EXPLAIN QUERY PLAN` on the five report queries and paste the before/after into the commit body; that output is the evidence this task worked.
-- [ ] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "perf(explorer): indexes aligned to report predicates; report ordering made deterministic"`
+- [x] **Step 1: Add the indexes** (as B6 migrations, not raw `CREATE`s, so existing DBs get them): `mev_ops(ts)`, `mev_ops(tx_hash)`, `opportunities(run_id)`, `prices(token, hour)`. For `native_price_near`, either store a normalized `token_lc` column or key the native row at a single canonical spelling and drop `lower(token)` from the predicate — pick one and note it, because leaving `lower()` there makes `prices(token, hour)` useless for that query.
+- [x] **Step 2: Promote the pricing flags out of JSON.** Add integer columns for `usd_approximate`, `native_unpriced`, `multi_asset_pricing`, `pricing_clamped` (these are exactly the flags A9, A14 and A16 write) and populate them on insert; keep `details_json` for humans but stop computing reports from substring matching. Gate: the `ReportQuality` numbers must be unchanged on an existing corpus before you switch the reads.
+- [x] **Step 3: Deterministic ordering.** Append `, id DESC` (or `tx_hash` where `id` is not selected) to every `ORDER BY` used by a report or leaderboard, and add a repeated-run test asserting identical row order. Reports that reshuffle between two identical runs cannot be diffed, which quietly defeats the golden-diff discipline in this plan's Global Constraints.
+- [x] **Step 4: Optional, only if measured** — a covering index for the window aggregate (`mev_ops(ts, kind, gross_profit_usd, net_profit_usd)`) if `EXPLAIN QUERY PLAN` still shows a scan after Step 1. Run `EXPLAIN QUERY PLAN` on the five report queries and paste the before/after into the commit body; that output is the evidence this task worked.
+- [x] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden`; `git commit -m "perf(explorer): indexes aligned to report predicates; report ordering made deterministic"`
 
 ---
 
@@ -1510,16 +1510,16 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 - Modify: `cli/src/commands/explorer/report.rs:175, 189-190` and `:157-171`
 - Test: `cli` unit tests (find the existing arg/report test module — grep `mod tests` in `cli/src`)
 
-- [ ] **Step 1:** report.rs:189-190 — pass `top` instead of the hardcoded `10` to `top_senders_filtered` and `top_pools_filtered`.
-- [ ] **Step 2:** report.rs:171 — `window_list.dedup()` only removes *consecutive* duplicates. Replace with order-preserving seen-set dedup:
+- [x] **Step 1:** report.rs:189-190 — pass `top` instead of the hardcoded `10` to `top_senders_filtered` and `top_pools_filtered`.
+- [x] **Step 2:** report.rs:171 — `window_list.dedup()` only removes *consecutive* duplicates. Replace with order-preserving seen-set dedup:
 
 ```rust
     let mut seen = std::collections::HashSet::new();
     window_list.retain(|w| seen.insert(w.clone()));
 ```
 
-- [ ] **Step 3: Test** — assert `["1d", "7d", "1d"]` input yields a two-window report and that `--top 3` caps searchers/pools lists (extract the window-parsing into a testable `fn parse_windows(windows: &[String]) -> anyhow::Result<Vec<String>>` if it is not already a fn).
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`; `git commit -m "fix(explorer): --top caps all leaderboards; dedup windows order-preserving"`
+- [x] **Step 3: Test** — assert `["1d", "7d", "1d"]` input yields a two-window report and that `--top 3` caps searchers/pools lists (extract the window-parsing into a testable `fn parse_windows(windows: &[String]) -> anyhow::Result<Vec<String>>` if it is not already a fn).
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets`; `git commit -m "fix(explorer): --top caps all leaderboards; dedup windows order-preserving"`
 
 ---
 
@@ -1532,7 +1532,7 @@ WHERE block_number <= ?latest AND feed IN (?, ?, …)
 - Test: cli unit tests
 - Docs: `docs/CLI.md` §3.6 (explorer report), `README.md:107`
 
-- [ ] **Step 1:** Introduce a parsed window type:
+- [x] **Step 1:** Introduce a parsed window type:
 
 ```rust
 /// A report window: either a rolling duration (`1d`, `12h`, `30d`) or the
@@ -1553,9 +1553,9 @@ fn parse_window(s: &str) -> anyhow::Result<ReportWindow> {
 ```
 
 Write `parse_duration_secs` (suffix match `h|d|w`, `u64` value, `secs = v * unit`) with unit tests including rejects (`"0d"`, `"1x"`, `"d"`).
-- [ ] **Step 2:** `expected_blocks` derives from `secs` directly (`Some(secs / block_time_secs(chain) as u64)`), deleting the duplicated `86_400` literals. Validation at report.rs:165 becomes `parse_window(p)?`. The stored `window` label stays the raw string so JSON keys are unchanged for `1d/7d/30d/all` (back-compat for any consumer).
-- [ ] **Step 3:** Update `cli/src/commands/explorer.rs` `since_ts` to take the parsed window (removing its unreachable unknown-value arm per the review) and the help text + `docs/CLI.md` + `README.md` to document `--windows 1d,12h,7d,all`.
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo test -p mev-scout-core && cargo clippy --workspace --all-targets`; `git commit -m "feat(explorer): generic --windows durations (Nh/Nd/Nw) with derived coverage"`
+- [x] **Step 2:** `expected_blocks` derives from `secs` directly (`Some(secs / block_time_secs(chain) as u64)`), deleting the duplicated `86_400` literals. Validation at report.rs:165 becomes `parse_window(p)?`. The stored `window` label stays the raw string so JSON keys are unchanged for `1d/7d/30d/all` (back-compat for any consumer).
+- [x] **Step 3:** Update `cli/src/commands/explorer.rs` `since_ts` to take the parsed window (removing its unreachable unknown-value arm per the review) and the help text + `docs/CLI.md` + `README.md` to document `--windows 1d,12h,7d,all`.
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo test -p mev-scout-core && cargo clippy --workspace --all-targets`; `git commit -m "feat(explorer): generic --windows durations (Nh/Nd/Nw) with derived coverage"`
 
 ---
 
@@ -1565,7 +1565,7 @@ Write `parse_duration_secs` (suffix match `h|d|w`, `u64` value, `secs = v * unit
 - Modify: `cli/src/commands/explorer/report.rs:239-247`
 - Test: cli unit test rendering a `WindowReport` fixture to CSV
 
-- [ ] **Step 1:** Extend the CSV arm to emit all sections with a `section` column, keeping the existing header shape for the overview/by-kind rows (consumers may parse them):
+- [x] **Step 1:** Extend the CSV arm to emit all sections with a `section` column, keeping the existing header shape for the overview/by-kind rows (consumers may parse them):
 
 ```rust
         OutputFormat::Csv => {
@@ -1598,8 +1598,8 @@ Write `parse_duration_secs` (suffix match `h|d|w`, `u64` value, `secs = v * unit
 ```
 
 Add the small `stats_fields`/`op_fields` helpers mirroring `row_fields` (fields must match the JSON names semantically: ops, gross, net for stats; volume, gross, gas, net for ops — pad missing columns with empty strings so the row width matches the header).
-- [ ] **Step 2: Test** — build a `WindowReport` with one row per section, render, assert the CSV lines.
-- [ ] **Step 3: Gates + commit** — `cargo test -p mev-scout-cli`; `git commit -m "feat(explorer): CSV report emits daily/leaderboards/top-ops/rejects sections"`
+- [x] **Step 2: Test** — build a `WindowReport` with one row per section, render, assert the CSV lines.
+- [x] **Step 3: Gates + commit** — `cargo test -p mev-scout-cli`; `git commit -m "feat(explorer): CSV report emits daily/leaderboards/top-ops/rejects sections"`
 
 ---
 
@@ -1627,7 +1627,7 @@ Add the small `stats_fields`/`op_fields` helpers mirroring `row_fields` (fields 
 - Modify: `core/src/explorer/types.rs` (add `ALL` to `MevKind`)
 - Modify: `core/tests/explorer_corpus.rs:782-792, 970-990`
 
-- [ ] **Step 1:** In types.rs, add to `impl MevKind`:
+- [x] **Step 1:** In types.rs, add to `impl MevKind`:
 
 ```rust
     /// Every emittable kind, in canonical order. Single source of truth for
@@ -1639,7 +1639,7 @@ Add the small `stats_fields`/`op_fields` helpers mirroring `row_fields` (fields 
 ```
 
 (Read `types.rs`'s `MevKind` first and list the actual variants — use the real set. B11 renames `Unknown` to `Utility` before this lands: include the renamed variant — it *is* reported, so it stays in `ALL`.)
-- [ ] **Step 2:** In `explorer_corpus.rs`, change the coverage test to derive from the enum:
+- [x] **Step 2:** In `explorer_corpus.rs`, change the coverage test to derive from the enum:
 
 ```rust
     let expected: Vec<&str> = MevKind::ALL.iter().map(|k| k.as_str()).collect();
@@ -1647,8 +1647,8 @@ Add the small `stats_fields`/`op_fields` helpers mirroring `row_fields` (fields 
 ```
 
 so a new variant fails the test until a corpus case covers it. Also fix the tautology at :970-990 per the review: the `every kind is reported` loop should assert against `MevKind::ALL`, not against `ALL_KINDS` compared to itself.
-- [ ] **Step 3:** Use `MevKind::ALL` to build the `--kind` error message in `cli/src/commands/explorer/report.rs:149` (delete the hardcoded list).
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-core --test explorer_corpus && cargo test -p mev-scout-cli`; `git commit -m "test(explorer): MevKind::ALL drives kind-coverage and CLI error message"` [live half: canonical commands]
+- [x] **Step 3:** Use `MevKind::ALL` to build the `--kind` error message in `cli/src/commands/explorer/report.rs:149` (delete the hardcoded list).
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-core --test explorer_corpus && cargo test -p mev-scout-cli`; `git commit -m "test(explorer): MevKind::ALL drives kind-coverage and CLI error message"` [live half: canonical commands]
 
 ---
 
@@ -1659,9 +1659,9 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - Modify: `docs/explorer_strategy_checklist.md:11, 16`
 - Modify: `core/src/explorer/scenario_targets.rs:61-66, 127` (hunt text)
 
-- [ ] **Step 1:** Read the cross-check test and the `STRATEGY_SCENARIO_TARGETS` catalogue. Extend the cross-check from "Avalanche `Seeded` rows only" to: for every catalogue entry of status `Seeded`/`Verified` that names a chain + block, assert a `CorpusCase` exists covering that block (any window containing it). The known failure: `scenario_targets.rs:61-66` claims sandwich "ETH verified @ 26089508" but no case covers block 26089508. Resolution: either transcribe the 26089508 seed into a `CorpusCase` (follow the transcribe guidance documented in the corpus test header) or downgrade the catalogue row to `Hunt` and fix the checklist — pick based on whether the seed data exists in `results/`; if the block was never actually recorded as a case, fixing the *claim* is correct.
-- [ ] **Step 2:** Fix the P0.1 doc drift: `docs/explorer_strategy_checklist.md:16` says "Aave V2 flash+liq … protocol=aave_v2" but the passing test expects `aave_v3` (`explorer_corpus.rs:660`, comment at :477-478), and `scenario_targets.rs:127` says "AVAX seed uses Aave V2 pool". Update both docs to `aave_v3`.
-- [ ] **Step 3: Gates + commit** — `cargo test -p mev-scout-core --test explorer_corpus --test explorer_tag_coverage`; `git commit -m "test(explorer): catalogue↔corpus cross-check for all seeded blocks; fix aave_v2/v3 doc drift"` [live half: canonical commands]
+- [x] **Step 1:** Read the cross-check test and the `STRATEGY_SCENARIO_TARGETS` catalogue. Extend the cross-check from "Avalanche `Seeded` rows only" to: for every catalogue entry of status `Seeded`/`Verified` that names a chain + block, assert a `CorpusCase` exists covering that block (any window containing it). The known failure: `scenario_targets.rs:61-66` claims sandwich "ETH verified @ 26089508" but no case covers block 26089508. Resolution: either transcribe the 26089508 seed into a `CorpusCase` (follow the transcribe guidance documented in the corpus test header) or downgrade the catalogue row to `Hunt` and fix the checklist — pick based on whether the seed data exists in `results/`; if the block was never actually recorded as a case, fixing the *claim* is correct.
+- [x] **Step 2:** Fix the P0.1 doc drift: `docs/explorer_strategy_checklist.md:16` says "Aave V2 flash+liq … protocol=aave_v2" but the passing test expects `aave_v3` (`explorer_corpus.rs:660`, comment at :477-478), and `scenario_targets.rs:127` says "AVAX seed uses Aave V2 pool". Update both docs to `aave_v3`.
+- [x] **Step 3: Gates + commit** — `cargo test -p mev-scout-core --test explorer_corpus --test explorer_tag_coverage`; `git commit -m "test(explorer): catalogue↔corpus cross-check for all seeded blocks; fix aave_v2/v3 doc drift"` [live half: canonical commands]
 
 ---
 
@@ -1671,9 +1671,9 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - Create: `cli/tests/explorer_report_render.rs` (or extend an existing `cli/tests` module — check what exists)
 - Modify: `cli/src/commands/explorer/report.rs` (extract pure renderers)
 
-- [ ] **Step 1:** Refactor `render_window` (report.rs:275-386) so the pure parts are testable: extract `fn window_report_rows(r: &WindowReport) -> Vec<Vec<String>>` (or render to a `String` instead of printing — change `render_window` to build a `String` and let the caller `println!` it).
-- [ ] **Step 2:** Snapshot-test: construct a `WindowReport` fixture (hand-built rows — no store needed), render, and assert the full output string (coverage warning path <0.7, concentration warning >40%, rejects line, empty-section "(no data)" rows).
-- [ ] **Step 3: Gates + commit** — `cargo test -p mev-scout-cli`; `git commit -m "test(explorer): snapshot tests for window report rendering"`
+- [x] **Step 1:** Refactor `render_window` (report.rs:275-386) so the pure parts are testable: extract `fn window_report_rows(r: &WindowReport) -> Vec<Vec<String>>` (or render to a `String` instead of printing — change `render_window` to build a `String` and let the caller `println!` it).
+- [x] **Step 2:** Snapshot-test: construct a `WindowReport` fixture (hand-built rows — no store needed), render, and assert the full output string (coverage warning path <0.7, concentration warning >40%, rejects line, empty-section "(no data)" rows).
+- [x] **Step 3: Gates + commit** — `cargo test -p mev-scout-cli`; `git commit -m "test(explorer): snapshot tests for window report rendering"`
 
 ---
 
@@ -1686,12 +1686,12 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - Modify: `README.md:138` (BSC row), `README.md:107`, `docs/CLI.md:99` (missing `--confidence`)
 - Modify: `core/src/explorer/ingest.rs:584-588` (misleading `events` field count — see also D10)
 
-- [ ] **Step 1:** Module docs point to `docs/explorer_strategy_scenarios.md` and `docs/explorer_strategy_tracking_plan.md` which do not exist; point both at `docs/explorer_strategy_checklist.md` (verify what the checklist file actually covers first — read its headings).
-- [ ] **Step 2:** `interest_attr.rs:126-127`: read the comment ("Wait - original returned false…"), confirm the code below it is the final behavior, delete the design-note lines.
-- [ ] **Step 3:** `query.rs` docstrings referencing `show <TX>` / `stats --kind` (commands removed per `docs/CLI.md:42`): rewrite to describe current callers; check whether `ops_for_tx` still has any non-test caller (review says only `core/tests/mev_corpus.rs:442`) — if test-only, move it behind the `test-util` feature from D4 or mark the doc "test support".
-- [ ] **Step 4:** `README.md:138` BSC row links `docs/LOCAL_BSC.md` + `mev-scout.local-bsc.toml`, both missing: ask the repo (git log) whether BSC support was removed — if yes, delete the row; if the files were never committed, delete the row (do not fabricate the missing files).
-- [ ] **Step 5:** Document `--confidence` in `README.md:107` and `docs/CLI.md:99` explorer report flag lists.
-- [ ] **Step 6: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli` (docs in doc-comments compile); `git commit -m "docs(explorer): fix dead links, stale command references, and flag documentation"`
+- [x] **Step 1:** Module docs point to `docs/explorer_strategy_scenarios.md` and `docs/explorer_strategy_tracking_plan.md` which do not exist; point both at `docs/explorer_strategy_checklist.md` (verify what the checklist file actually covers first — read its headings).
+- [x] **Step 2:** `interest_attr.rs:126-127`: read the comment ("Wait - original returned false…"), confirm the code below it is the final behavior, delete the design-note lines.
+- [x] **Step 3:** `query.rs` docstrings referencing `show <TX>` / `stats --kind` (commands removed per `docs/CLI.md:42`): rewrite to describe current callers; check whether `ops_for_tx` still has any non-test caller (review says only `core/tests/mev_corpus.rs:442`) — if test-only, move it behind the `test-util` feature from D4 or mark the doc "test support".
+- [x] **Step 4:** `README.md:138` BSC row links `docs/LOCAL_BSC.md` + `mev-scout.local-bsc.toml`, both missing: ask the repo (git log) whether BSC support was removed — if yes, delete the row; if the files were never committed, delete the row (do not fabricate the missing files).
+- [x] **Step 5:** Document `--confidence` in `README.md:107` and `docs/CLI.md:99` explorer report flag lists.
+- [x] **Step 6: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli` (docs in doc-comments compile); `git commit -m "docs(explorer): fix dead links, stale command references, and flag documentation"`
 
 ---
 
@@ -1707,9 +1707,9 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - Modify: `core/src/explorer/classify/sandwich.rs:141-150` — **added 2026-10-25 review.** `let reverse_backrun = opposite_dir(front, back);` pushes `"REVERSE_DIRECTION"` into the reason list unconditionally when true. Check whether `fold_sandwich` is reachable only behind the *same* `opposite_dir` test earlier in the walk (grep `opposite_dir` in the file — if the guard is upstream, the flag is constant noise in every persisted sandwich's `details`, and the reason list is then misleading rather than informative). If confirmed constant, delete the flag; if reachable both ways, keep it and add a test pinning which case produces it. Apply the identical question to `contract_mediated` just below (`:121`) — verify it is not near-always-true for any contract call before trusting it as a signal.
 - Modify: `core/src/explorer/classify/arb.rs:35-39` — if Task B2 has not landed yet, the empty `if liq_txs.contains(&tx.tx_index) { /* comment */ }` block belongs in this batch: it is verified dead (`liq_txs` is built at `mod.rs:197-201` and consumed nowhere else). Do not delete the *intent* with the code: record in `docs/explorer_strategy_checklist.md` (via A15/A20) that the Liquidation-vs-Arb guard was never implemented, so B8's precedence decision can see it was an open hole and not a design choice.
 
-- [ ] **Step 1:** Apply each cleanup after reading its region; each deletion must be *verified dead* by reading the guarding logic — if any is not actually dead, leave it and note why in the commit body.
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets` (workspace `warnings = deny` will catch anything still referenced).
-- [ ] **Step 3: Commit** — `git commit -m "refactor(explorer): remove verified-dead code paths; name magic tolerances"`
+- [x] **Step 1:** Apply each cleanup after reading its region; each deletion must be *verified dead* by reading the guarding logic — if any is not actually dead, leave it and note why in the commit body.
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo clippy --workspace --all-targets` (workspace `warnings = deny` will catch anything still referenced).
+- [x] **Step 3: Commit** — `git commit -m "refactor(explorer): remove verified-dead code paths; name magic tolerances"`
 
 ---
 
@@ -1722,9 +1722,9 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - Modify: `core/src/explorer/store/facts.rs:358-371` (volume folds unpriced swap legs in as 0 with no flag — add a `VOLUME_PARTIAL` pricing-reason detail flag when any leg was unpriced, mirroring A9's mechanism)
 - Modify: `core/src/explorer/ingest.rs:164-209` (`build_profit_priority` hardcodes stablecoin addresses despite `known_tokens.json`/chain config — read `ChainConfig` in `core/src/chain/` and move the per-chain stable list there; keep existing values verbatim)
 
-- [ ] **Step 1:** Read each region; apply the five changes independently, each with a targeted test where a behavior is observable (tip-jump gap preservation and volume partial flag are testable via the store/golden patterns used earlier).
-- [ ] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus && cargo clippy --workspace --all-targets`. [live half: canonical commands]
-- [ ] **Step 3: Commit** — `git commit -m "fix(explorer): ingest/store polish — gap-preserving tip jump, volume partial flag, config-owned stablecoins"`
+- [x] **Step 1:** Read each region; apply the five changes independently, each with a targeted test where a behavior is observable (tip-jump gap preservation and volume partial flag are testable via the store/golden patterns used earlier).
+- [x] **Step 2: Gates** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus && cargo clippy --workspace --all-targets`. [live half: canonical commands]
+- [x] **Step 3: Commit** — `git commit -m "fix(explorer): ingest/store polish — gap-preserving tip jump, volume partial flag, config-owned stablecoins"`
 
 ---
 
@@ -1753,10 +1753,10 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 
 **Problem:** `ExplorerConfig` (`settings.rs:217-243`) exposes only `db_path`, `confirmations`, `poll_interval_ms`, `mev_tolerance_pct`, `mev_error_usd_tol`, `tip_sink_addresses`. **Not one classification threshold is overridable.** Verified constants: `CAUSAL_WINDOW_TXS: u64 = 8` (`legs.rs:42`), `CAUSAL_PRICE_MIN_PCT: f64 = 0.5` (`legs.rs:57`), `POOL_FEE_BPS: u32 = 30` (`jit.rs:162`), `JIT_WINDOW_BLOCKS: u64 = 1_000` (`ingest.rs:50`), `LOOKBACK_BLOCKS: u64 = 300` (`interest_attr.rs:18`). The two causal ones are the gates that decide whether a Frontrun or Backrun exists at all — and `legs.rs:35-56` documents them as "not yet calibrated" while reporting zero matched ops in the windows it cites. So the project's currently-open question (`docs/explorer_strategy_checklist.md:3`: 0 frontrun/backrun/skim across 963 ETH and 5001 AVAX blocks, "Classifier not loosened") is blocked on a knob that does not exist: to test a hypothesis about the window you must recompile.
 
-- [ ] **Step 1: Add the keys with today's values as defaults.** `explorer.causal_window_txs`, `explorer.causal_price_min_pct`, `explorer.jit_window_blocks`, `explorer.interest_lookback_blocks`, `explorer.jit_pool_fee_bps` — each `#[serde(default = "…")]` returning the current constant, so an unset config is bit-identical to today. Type each key to match the existing constant (`u64`/`f64`/`u32`), per D11 Step 1b.
-- [ ] **Step 2: Thread through `BlockContext` (B9), not through globals.** The classifier takes `BlockInput`/`BlockContext` and is pure — keep it that way. No `static mut`, no `OnceLock` reading env vars inside `classify/`.
-- [ ] **Step 3: Document what tuning them means.** In `mev-scout.example.toml`, next to each key, one line: the observable consequence of raising/lowering it and which reject reason (from A20) grows when it is tightened. Add the standing rule from the checklist: *thresholds are never loosened to make a kind appear* — a lower window that produces frontruns is evidence for a hypothesis, not verification, and the checklist row must be marked by a pinned seed block, not by a count.
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` (with no config set, output must be identical — that is the test for Step 1); `git commit -m "feat(explorer): per-chain causal/JIT thresholds move into explorer config with today's values as defaults"` [live half: canonical commands]
+- [x] **Step 1: Add the keys with today's values as defaults.** `explorer.causal_window_txs`, `explorer.causal_price_min_pct`, `explorer.jit_window_blocks`, `explorer.interest_lookback_blocks`, `explorer.jit_pool_fee_bps` — each `#[serde(default = "…")]` returning the current constant, so an unset config is bit-identical to today. Type each key to match the existing constant (`u64`/`f64`/`u32`), per D11 Step 1b.
+- [x] **Step 2: Thread through `BlockContext` (B9), not through globals.** The classifier takes `BlockInput`/`BlockContext` and is pure — keep it that way. No `static mut`, no `OnceLock` reading env vars inside `classify/`.
+- [x] **Step 3: Document what tuning them means.** In `mev-scout.example.toml`, next to each key, one line: the observable consequence of raising/lowering it and which reject reason (from A20) grows when it is tightened. Add the standing rule from the checklist: *thresholds are never loosened to make a kind appear* — a lower window that produces frontruns is evidence for a hypothesis, not verification, and the checklist row must be marked by a pinned seed block, not by a count.
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli && cargo test -p mev-scout-core --test explorer_golden --test explorer_corpus` (with no config set, output must be identical — that is the test for Step 1); `git commit -m "feat(explorer): per-chain causal/JIT thresholds move into explorer config with today's values as defaults"` [live half: canonical commands]
 
 ---
 
@@ -1769,10 +1769,10 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 
 **Problem (verified):** tracked files embed live provider credentials in the URL path — `mev-scout.avalanche-run.toml:13-16` and `:34-37` (dwellir UUID, drpc token path, getblock key path) and `hist.toml:6-7`. `git ls-files` confirms both are committed. The mechanism to avoid this already exists: `Config::expand_env_secrets` runs on the load path (`settings.rs`, called from `Config::load`), so this is a transcription problem, not a design problem. Out of scope for this task and to be raised separately to the user: **the keys are already in git history**, so removing them from the working tree does not revoke them — rotation is the actual fix.
 
-- [ ] **Step 1: Convert to env interpolation** using the existing `${VAR}` convention; keep each file's structure otherwise untouched so the hunt recipes in the checklist still work.
-- [ ] **Step 2: Add the two files to `.gitignore`** and untrack them (`git rm --cached`), leaving them on disk. Confirm the local run still works before committing, and say plainly in the commit body that history rewrite/rotation is not included here.
-- [ ] **Step 3: Ask the user before doing anything about rotation** — this is an external action on a paid provider account (revoking/issuing keys) and must not be folded into a code change. Report which keys were exposed and where.
-- [ ] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo run -p mev-scout-cli -- --help` sanity; `git commit -m "security(config): move live RPC keys out of tracked TOML into env interpolation"`
+- [x] **Step 1: Convert to env interpolation** using the existing `${VAR}` convention; keep each file's structure otherwise untouched so the hunt recipes in the checklist still work.
+- [x] **Step 2: Add the two files to `.gitignore`** and untrack them (`git rm --cached`), leaving them on disk. Confirm the local run still works before committing, and say plainly in the commit body that history rewrite/rotation is not included here.
+- [x] **Step 3: Ask the user before doing anything about rotation** — this is an external action on a paid provider account (revoking/issuing keys) and must not be folded into a code change. Report which keys were exposed and where.
+- [x] **Step 4: Gates + commit** — `cargo test -p mev-scout-cli && cargo run -p mev-scout-cli -- --help` sanity; `git commit -m "security(config): move live RPC keys out of tracked TOML into env interpolation"`
 
 ---
 
@@ -1785,9 +1785,9 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 
 **Problem:** The checklist is the project's highest-value evidence — it records which strategy was seen on which chain at which block, and the header paragraph at `docs/explorer_strategy_checklist.md:3` is a prose log of 5001-block hunts — but nothing reads it. `scenario_targets.rs` holds the machine copy of the same seed blocks, `explorer_corpus.rs` holds a third copy as `CORPUS`, and D6's cross-check covers only corpus↔catalogue. So a row can say `verified @ 26089508` while no code references that block (D6 Step 1 already documents one instance of exactly that). Additionally `scenario_targets.rs:324-346` asserts only *shape* (`assert!(n >= 25)` at `:331`, `!t.hunt.is_empty()` at `:344`), and its `syn_test` strings name `scenarios.rs` test functions that nothing verifies exist — rename a scenario test and the catalogue silently points at a phantom.
 
-- [ ] **Step 1: Fix the dangling `syn_test` names first** (cheap, no new infrastructure): one `#[test]` that `include_str!`s `core/src/explorer/scenarios.rs` and asserts every `syn_test` value in the catalogue appears as a `fn <name>` in that file.
-- [ ] **Step 2: Parse the markdown table** and diff it against `STRATEGY_SCENARIO_TARGETS` on `id`, `status`, `chain`, `seed_from`, `seed_to`. Rule for conflicts: the code catalogue is authoritative for seeds, the checklist is authoritative for `status` prose — so the test should compare *seed/chain* strictly and treat `status` as a warning that names the row. Extend D6 rather than duplicating it if by then D6 has landed.
-- [ ] **Step 3: Gates + commit** — `cargo test -p mev-scout-core --test explorer_checklist_sync --test explorer_corpus`; `git commit -m "test(explorer): checklist table, seed catalogue and scenario test names are cross-checked"` [live half: canonical commands]
+- [x] **Step 1: Fix the dangling `syn_test` names first** (cheap, no new infrastructure): one `#[test]` that `include_str!`s `core/src/explorer/scenarios.rs` and asserts every `syn_test` value in the catalogue appears as a `fn <name>` in that file.
+- [x] **Step 2: Parse the markdown table** and diff it against `STRATEGY_SCENARIO_TARGETS` on `id`, `status`, `chain`, `seed_from`, `seed_to`. Rule for conflicts: the code catalogue is authoritative for seeds, the checklist is authoritative for `status` prose — so the test should compare *seed/chain* strictly and treat `status` as a warning that names the row. Extend D6 rather than duplicating it if by then D6 has landed.
+- [x] **Step 3: Gates + commit** — `cargo test -p mev-scout-core --test explorer_checklist_sync --test explorer_corpus`; `git commit -m "test(explorer): checklist table, seed catalogue and scenario test names are cross-checked"` [live half: canonical commands]
 
 ---
 
@@ -1800,11 +1800,11 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 
 **Problem (verified):** `verify_explorer_block.mjs:95` hardcodes `path.join("cache", "explorer-${args.chain}.sqlite")`, while `effective_explorer_db_path` honours `explorer.db_path` — and `hist.toml:18` actually sets `db_path = "cache/hist-explorer-avalanche.sqlite"`. Index with that config, then verify: the script reads a stale or non-existent file and exits 1 with no hint of the mismatch. That is the single most likely way to lose an afternoon in this workflow. Second: for any chain other than avalanche, `:60-75` writes a throwaway config `cache/_hunt_${chain}.toml` with hardcoded publicnode URLs (`:63-64`), discarding the archive endpoints you configured — and publicnode has no archive depth for historical seeds, so the backfill returns 0 blocks and the assertion fails for the wrong reason. Third: `ok = matched.length > 0` asserts *presence only* — not kind, not profit, not searcher — so a seed can be "verified" while the classifier regressed its P&L to nonsense.
 
-- [ ] **Step 1: One DB path source of truth.** Add `--db` and, when absent, parse `db_path` (and the chain-derived default) from the `-f` config file. Never hardcode the pattern in a second language.
-- [ ] **Step 2: Stop generating configs.** Require an explicit config (`-f`) and fail with a clear message if the requested chain is not enabled in it, instead of silently substituting publicnode URLs. If a synthesized config is genuinely needed, print its path and the endpoint chosen so it is visible in the log.
-- [ ] **Step 3: Make the assertion as strong as the checklist's claim.** Support `--expect kind=frontrun,searcher=0x…,min-profit-usd=N` and fail when the persisted op's confidence/basis does not match what the checklist row claims (after A19 lands, include `pnl_basis`). `matched.length > 0` is not verification.
-- [ ] **Step 4: One tag list.** Generate or export `EXPECTED_TAGS` from a single source (e.g. `scenario_targets.rs` written to `cache/tags.json` by a cargo test, consumed by both `tag_coverage.py` and the Rust test), so the three copies cannot disagree — today a new tag can be added in one place and be silently un-enforced in the other two.
-- [ ] **Step 5: Verify by use, then commit** — run the script against a real seeded block for a chain whose config sets `db_path`, and confirm it now reads the right file and fails loudly when given the wrong one; `git commit -m "fix(scripts): verify/hunt scripts honor configured explorer db and assert kind/profit, not mere presence"`
+- [x] **Step 1: One DB path source of truth.** Add `--db` and, when absent, parse `db_path` (and the chain-derived default) from the `-f` config file. Never hardcode the pattern in a second language.
+- [x] **Step 2: Stop generating configs.** Require an explicit config (`-f`) and fail with a clear message if the requested chain is not enabled in it, instead of silently substituting publicnode URLs. If a synthesized config is genuinely needed, print its path and the endpoint chosen so it is visible in the log.
+- [x] **Step 3: Make the assertion as strong as the checklist's claim.** Support `--expect kind=frontrun,searcher=0x…,min-profit-usd=N` and fail when the persisted op's confidence/basis does not match what the checklist row claims (after A19 lands, include `pnl_basis`). `matched.length > 0` is not verification.
+- [x] **Step 4: One tag list.** Generate or export `EXPECTED_TAGS` from a single source (e.g. `scenario_targets.rs` written to `cache/tags.json` by a cargo test, consumed by both `tag_coverage.py` and the Rust test), so the three copies cannot disagree — today a new tag can be added in one place and be silently un-enforced in the other two.
+- [x] **Step 5: Verify by use, then commit** — run the script against a real seeded block for a chain whose config sets `db_path`, and confirm it now reads the right file and fails loudly when given the wrong one; `git commit -m "fix(scripts): verify/hunt scripts honor configured explorer db and assert kind/profit, not mere presence"`
 
 ---
 
@@ -1818,11 +1818,11 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 
 **Problem:** (1) `jit_open_positions.liquidity` is stored as TEXT (`p.liquidity.to_string()` at `jit_positions.rs:78`) and read back with `liq.parse::<u128>().unwrap_or(0)` at `:135` — an unparseable or overflowed value becomes **liquidity 0**, which then feeds JIT in-range checks and P&L silently instead of erroring. (2) The INSERT lists at `facts.rs:145` (`producer`), `:181-182` (`dex`, `sender`) and `:201-202` (`is_native`) bind columns that the review found written as constant `NULL`/`0`; read the bound values and decide per column — populate it from the decoded fact or drop it, do not carry dead schema. (3) `ops_in_range` has no `LIMIT`/cursor; grep its callers (`store/mod.rs` tests use narrow ranges; `core/tests/explorer_tag_coverage.rs` may ask for a whole window) and add a bounded variant or a `LIMIT` parameter so a report path cannot load every op into RAM. (4) USD is `REAL` throughout, computed as f64 (`pricing.rs:42-46`) and `SUM`ed in SQL (`query.rs:417-434`) — this plan is not going to migrate money to integer cents, but the choice must be **written down** with its consequence (sub-cent drift in aggregates, non-reproducible sums across ordering) in the `mev_ops` schema comment, so nobody reads `net_profit_usd` as exact-to-the-wei.
 
-- [ ] **Step 1: Fail loud on liquidity** — `parse` error becomes `Err` (or a counted, warned skip that keeps the position out of range math), never `0`.
-- [ ] **Step 2: Dead columns** — per column: populate or drop via a B6 migration; state which in the commit body.
-- [ ] **Step 3: Bound the read** — add `LIMIT`/pagination to `ops_in_range` and update callers.
-- [ ] **Step 4: Document the float-money decision** — one schema comment; no behavior change.
-- [ ] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`; `git commit -m "fix(explorer): store typing — liquidity errors instead of zeroing, dead columns resolved, bounded op reads"`
+- [x] **Step 1: Fail loud on liquidity** — `parse` error becomes `Err` (or a counted, warned skip that keeps the position out of range math), never `0`.
+- [x] **Step 2: Dead columns** — per column: populate or drop via a B6 migration; state which in the commit body.
+- [x] **Step 3: Bound the read** — add `LIMIT`/pagination to `ops_in_range` and update callers.
+- [x] **Step 4: Document the float-money decision** — one schema comment; no behavior change.
+- [x] **Step 5: Gates + commit** — `cargo test -p mev-scout-core && cargo test -p mev-scout-cli`; `git commit -m "fix(explorer): store typing — liquidity errors instead of zeroing, dead columns resolved, bounded op reads"`
 
 ---
 
@@ -1877,3 +1877,15 @@ so a new variant fails the test until a corpus case covers it. Also fix the taut
 - **Re-baseline discipline (corrected — the original wording had a tension).** Deferring every baseline update to a single end-of-Phase-A pass would make the accumulated golden diff unattributable, which defeats the "predicted diff" rule. Instead: after each number-moving task (A1, A4, A9-A14, A16, A17, A19, B1, B3, B8, B10, B11), run the goldens *in that task*, capture the diff, and update the baseline in that task's commit with a `PENDING-REBASELINE(<task>)` note in the commit body recording the observed shift and the predicted direction. One audit commit at the end of Phase A then reconciles the accumulated shifts task-by-task against each prediction, and records the A15 census table, the C1/C9 blocks-per-second numbers, and the **M1 end-of-Phase-A oracle run** (recall floor + adjudicated `L \ V` diff against the M0 baseline) alongside. A golden diff you predicted is evidence; a golden diff you "updated" is a lost finding — the per-task note is what keeps the audit honest.
 - **Riskiest tasks.** B8 (structural claims — gated by A15 evidence), C8 (async/store boundary), B9 (wide mechanical rename), A21 (reorg semantics — changes *when* data is deleted), A17 (changes what the arb pass's inventory vetoes see), D13/D15 (touch operator workflow, not code paths). Each may be deferred individually except A0, which nothing else may be deferred behind.
 - **Still open after this plan (deliberately):** trace-level native credits, per-pool V3 fee truth, money-as-float, FK enforcement, key rotation, provider cooldown policy, and receipts/tx-count validation on the fetch side — see the deferred section for why each is a design task rather than a checkbox.
+
+## Status ledger (2026-10-31, branch `feat/explorer-improvements`)
+
+Phase A/B/C and most of Phase D are landed and gated (`fmt`, `clippy -D warnings`, `explorer_golden`, `explorer_corpus` static half, `causal_fp_corpus`, `explorer_kind_census`, `explorer_checklist_sync`, CLI suites). The boxes were re-synced to reality after the audit found them stale in both directions. Deviations and remaining work, so no reader trusts a box more than the note:
+
+- **C8 — implemented differently.** `spawn_blocking` is not reachable here: `rusqlite::Connection` is `Send` but not `Sync`, so the store cannot be moved into a `'static` blocking closure without wrapping every method in a mutex. Each block's SQLite writes now run inside `tokio::task::block_in_place` on a multi-thread runtime (inline on a current-thread runtime, which is what tests use). Same goal — a persisting block must not stall an async worker — different mechanism, and the store doc comment says so.
+- **D4 — half landed.** The `test-util` feature exists and `golden`/`scenarios`/`test_fixtures` are gated by it, and `golden.rs` now reuses the shared fixture addresses/builders instead of a third copy. Not done: `ingest::rows_from_indexed_block` for `core/tests/explorer_golden.rs`, which needs those modules to become `pub` under the feature — a public-API decision, not a mechanical move. `scenario_targets` also stays compiled into release builds for the same reason.
+- **D11 — absorbed by D12** as the plan directs; `jit_pool_fee_bps` is the config key, 30 bps stays the documented fallback until per-pool fee decoding lands.
+- **D17 — partially landed.** The `golden.rs` count pin is now an assertion on case identities, `legs.rs` and `types.rs` gained their first in-file test modules (and `legs.rs` also got a determinism fix: `searcher_candidates` sorted its extras instead of returning HashMap order), and `sync.rs`/`query.rs`/`pnl.rs`/`jit_positions.rs`/`schema.rs` already carry tests from earlier tasks. Still zero-test: `reject.rs`, `results.rs`, `store/facts.rs`, `store/labels.rs`, `store/reprice.rs` (reprice is covered from `store/mod.rs`), and the `decode/` files (covered by `decode/tests.rs`).
+- **A20 guard scope.** The structural guard now includes `mod.rs`; `arb.rs` stays excluded on purpose — its drops feed `classify_reject` and the per-pass reason tests. The real-window reject-count table still needs a re-index.
+- **M1.** Baseline and `phase-a` are recorded; `phase-b` runs on the end-of-Phase-B tree and `final` runs after the remaining Phase D work. Recall-vs-vendor is the only hard gate.
+- **D15 Step 5 / D13 Step 3.** The scripts were verified statically, not against a live seeded block, and rotation of the exposed Dwellir key is the operator's action, not a code change.
