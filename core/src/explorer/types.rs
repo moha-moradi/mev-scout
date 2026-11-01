@@ -640,3 +640,48 @@ pub struct V2PairOpFact {
     pub pool: Address,
     pub kind: V2PairOpKind,
 }
+
+#[cfg(test)]
+mod kind_contract_tests {
+    use super::{Confidence, MevKind, PnlBasis};
+
+    #[test]
+    fn every_kind_round_trips_through_its_string() {
+        for kind in MevKind::ALL {
+            let label = kind.as_str();
+            assert_eq!(
+                MevKind::parse(label),
+                Some(*kind),
+                "{label} must parse back to its kind"
+            );
+            assert_eq!(label.parse::<MevKind>().ok(), Some(*kind));
+        }
+    }
+
+    #[test]
+    fn pre_b11_unknown_label_still_resolves_to_utility() {
+        // Old DB rows are rewritten on migration; the alias keeps stale CLI
+        // flags and corpus strings readable.
+        assert_eq!(MevKind::parse("unknown"), Some(MevKind::Utility));
+    }
+
+    #[test]
+    fn only_the_ledger_residual_basis_is_exact_capable() {
+        assert!(PnlBasis::R.is_ledger_residual());
+        for basis in [
+            PnlBasis::O,
+            PnlBasis::F,
+            PnlBasis::GrossAmountDiff,
+            PnlBasis::GasCostAsProfit,
+        ] {
+            assert!(!basis.is_ledger_residual(), "{:?}", basis);
+        }
+    }
+
+    #[test]
+    fn confidence_labels_round_trip() {
+        for c in [Confidence::Exact, Confidence::Inferred] {
+            assert_eq!(c.as_str().parse::<Confidence>().ok(), Some(c));
+        }
+    }
+}

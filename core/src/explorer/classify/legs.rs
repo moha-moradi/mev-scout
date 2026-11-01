@@ -150,11 +150,13 @@ pub(super) fn searcher_candidates(tx: &TxInput) -> Vec<Address> {
         *participation.entry(t.from).or_insert(0) += 1;
         *participation.entry(t.to).or_insert(0) += 1;
     }
-    let qualified: Vec<Address> = participation
+    let mut qualified: Vec<Address> = participation
         .into_iter()
         .filter(|(addr, count)| *count >= 2 && !candidates.contains(addr))
         .map(|(addr, _)| addr)
         .collect();
+    // HashMap order would shuffle multi-candidate txs between runs.
+    qualified.sort_unstable();
     candidates.extend(qualified);
     candidates
 }
@@ -222,5 +224,53 @@ pub(super) fn tx_cycle_profit(
         Err(CycleMiss::InventorySpend)
     } else {
         Err(CycleMiss::NoResidual)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::searcher_candidates;
+    use crate::explorer::test_fixtures::{transfer, tx, ATK, POOL_A, POOL_B, USDC, VICTIM};
+
+    #[test]
+    fn sender_leads_and_no_participation_is_invented() {
+        // `to == from` (self-call): the contract push is unconditional, so the
+        // anchor address can repeat. Consumers treat the list as a membership
+        // set (`contains`) or an idempotent loop, so no new candidate appears.
+        let mut t = tx(0, ATK, true, vec![], vec![]);
+        t.to = Some(ATK);
+        let candidates = searcher_candidates(&t);
+        assert_eq!(candidates[0], ATK);
+        assert!(
+            candidates.iter().all(|c| *c == ATK),
+            "no transfers ⇒ no other candidate: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn participants_need_two_legs_and_sort_deterministically() {
+        let mut t = tx(
+            0,
+            ATK,
+            true,
+            vec![],
+            vec![
+                transfer(0, USDC, POOL_A, ATK, 100),
+                transfer(1, USDC, ATK, POOL_B, 50),
+                transfer(2, USDC, POOL_A, VICTIM, 50),
+            ],
+        );
+        t.to = Some(POOL_B);
+        let candidates = searcher_candidates(&t);
+        assert_eq!(candidates, vec![ATK, POOL_B, POOL_A]);
+        assert!(
+            !candidates.contains(&VICTIM),
+            "one participation must not qualify as a searcher"
+        );
+        assert_eq!(
+            candidates,
+            searcher_candidates(&t),
+            "candidate order must not depend on hash iteration"
+        );
     }
 }

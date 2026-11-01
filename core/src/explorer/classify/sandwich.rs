@@ -38,22 +38,21 @@ pub(super) fn classify_sandwiches(input: &BlockInput, drops: &mut DropSink) -> V
             let mut closed = false;
             for (_, from, leg) in &pool_swaps {
                 if *from == attacker {
-                    if front.is_none() {
-                        front = Some(leg); // position open
-                    } else if !walk.victims.is_empty() {
-                        let Some(f) = front else {
-                            continue; // not-a-drop: front is set in this branch
-                        };
-                        if opposite_dir(f, leg) {
-                            // First opposite-direction attacker swap after a
-                            // victim closes the sandwich.
-                            out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
-                            closed = true;
-                            break;
+                    match front {
+                        None => front = Some(leg), // position open
+                        Some(f) if !walk.victims.is_empty() => {
+                            if opposite_dir(f, leg) {
+                                // First opposite-direction attacker swap after a
+                                // victim closes the sandwich.
+                                out.push(fold_sandwich(input, pool, attacker, f, leg, &walk));
+                                closed = true;
+                                break;
+                            }
                         }
-                    } else if let Some(f) = front {
-                        if opposite_dir(f, leg) {
-                            saw_opposite = true;
+                        Some(f) => {
+                            if opposite_dir(f, leg) {
+                                saw_opposite = true;
+                            }
                         }
                     }
                     // Same-direction or pre-victim opposite swaps keep the
@@ -116,10 +115,10 @@ pub(super) fn fold_sandwich(
             gas_cost_wei = gas_cost_wei.saturating_add(super::gas::tx_gas_cost_wei(t));
         }
     }
-    // Contract-mediated legs (logs-only): either sandwich leg targets a
-    // contract (`tx.to`). Store-backed labeled-searcher enrichment is out of
-    // scope here — classify stays store-free.
-    let contract_mediated = front_to.is_some() || back_to.is_some();
+    // `tx.to` is present for any call, so "has a to" carries no information.
+    // Mediated means the attacker called something *other than* the pool (a
+    // router/executor); a direct pool call is not a mediation signal.
+    let contract_mediated = [front_to, back_to].into_iter().flatten().any(|a| a != pool);
     let contract = front_to.or(back_to);
 
     // Logs-only victim degradation vs the front-run execution price
@@ -140,11 +139,9 @@ pub(super) fn fold_sandwich(
         _ => None,
     };
 
-    let reverse_backrun = opposite_dir(front, back);
+    // The caller only folds a sandwich behind `opposite_dir(front, back)`, so a
+    // "reverse direction" reason would be set on every sandwich and say nothing.
     let mut reasons: Vec<&str> = Vec::new();
-    if reverse_backrun {
-        reasons.push("REVERSE_DIRECTION");
-    }
     reasons.push("SAME_SEARCHER");
     if degradation_pct.is_some_and(|d| d > 0.0) {
         reasons.push("VICTIM_EXECUTION_DEGRADED");
@@ -224,7 +221,6 @@ pub(super) fn fold_sandwich(
             "evidence": {
                 "same_pool": true,
                 "direction_match": true,
-                "reverse_backrun": reverse_backrun,
                 "same_searcher": true,
                 "contract_mediated": contract_mediated,
             },

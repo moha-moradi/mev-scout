@@ -192,6 +192,13 @@ fn amounts_match(a: U256, b: U256, tol_bps: u32) -> bool {
     scaled <= a.max(b).saturating_mul(U256::from(tol_bps))
 }
 
+/// Direct single-pool match tolerance: an edge that trades the same pair at
+/// nearly the same size is the same route, so only a tight band counts.
+const AGG_EDGE_TOLERANCE_BPS_CLOSE: u32 = 200;
+/// Multi-hop endpoint tolerance: hop amounts drift with intermediate pools, so
+/// the start/end comparison has to be looser than a direct pair match.
+const AGG_EDGE_TOLERANCE_BPS_MID: u32 = 400;
+
 /// True when the aggregator edge duplicates a ≤3-hop DEX chain: the first
 /// hop spends ≈ the aggregator's input and the last hop returns ≈ its output.
 fn aggregator_edge_redundant(agg: &SwapFact, dexs: &[&SwapFact]) -> bool {
@@ -200,8 +207,8 @@ fn aggregator_edge_redundant(agg: &SwapFact, dexs: &[&SwapFact]) -> bool {
         !is_unresolved_token(s.token_in)
             && s.token_in == agg.token_in
             && s.token_out == agg.token_out
-            && amounts_match(s.amount_in, agg.amount_in, 200)
-            && amounts_match(s.amount_out, agg.amount_out, 200)
+            && amounts_match(s.amount_in, agg.amount_in, AGG_EDGE_TOLERANCE_BPS_CLOSE)
+            && amounts_match(s.amount_out, agg.amount_out, AGG_EDGE_TOLERANCE_BPS_CLOSE)
     }) {
         return true;
     }
@@ -211,7 +218,7 @@ fn aggregator_edge_redundant(agg: &SwapFact, dexs: &[&SwapFact]) -> bool {
         .filter(|s| {
             !is_unresolved_token(s.token_in)
                 && s.token_in == agg.token_in
-                && amounts_match(s.amount_in, agg.amount_in, 400)
+                && amounts_match(s.amount_in, agg.amount_in, AGG_EDGE_TOLERANCE_BPS_MID)
         })
         .collect();
     let ends: Vec<&&SwapFact> = dexs
@@ -219,7 +226,7 @@ fn aggregator_edge_redundant(agg: &SwapFact, dexs: &[&SwapFact]) -> bool {
         .filter(|s| {
             !is_unresolved_token(s.token_out)
                 && s.token_out == agg.token_out
-                && amounts_match(s.amount_out, agg.amount_out, 400)
+                && amounts_match(s.amount_out, agg.amount_out, AGG_EDGE_TOLERANCE_BPS_MID)
         })
         .collect();
     for start in starts {

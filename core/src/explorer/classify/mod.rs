@@ -197,20 +197,16 @@ pub fn classify_block(input: &BlockInput) -> ClassifyOutput {
     let mut rejects: Vec<crate::explorer::RejectedCandidate> = Vec::new();
 
     // Block-wide oracle / reserve facts (P1.1 / P1.4 co-block checks).
-    let block_oracle_updates: Vec<&OracleUpdateFact> = input
+    let block_oracle_owned: Vec<OracleUpdateFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.oracle_updates.iter())
+        .flat_map(|t| t.oracle_updates.iter().cloned())
         .collect();
-    let block_reserve_updates: Vec<&ReserveDataFact> = input
+    let block_reserve_owned: Vec<ReserveDataFact> = input
         .txs
         .iter()
-        .flat_map(|t| t.reserve_updates.iter())
+        .flat_map(|t| t.reserve_updates.iter().cloned())
         .collect();
-    let block_oracle_owned: Vec<OracleUpdateFact> =
-        block_oracle_updates.iter().map(|o| (*o).clone()).collect();
-    let block_reserve_owned: Vec<ReserveDataFact> =
-        block_reserve_updates.iter().map(|r| (*r).clone()).collect();
     let oracle_feeds_in_block: HashSet<Address> =
         block_oracle_owned.iter().map(|o| o.feed).collect();
     let epoch_notify = input.txs.iter().any(|t| !t.epoch_rewards.is_empty());

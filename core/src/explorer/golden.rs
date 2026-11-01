@@ -10,20 +10,16 @@
 
 use alloy::primitives::{address, Address, B256, U256};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
 
 use crate::explorer::classify::{classify_block, BlockInput, TxInput};
-use crate::explorer::profit::ProfitTokenPolicy;
-use crate::explorer::types::{Amm, LegSource, MevKind, SwapFact, TransferFact};
+use crate::explorer::test_fixtures::{
+    self as fixtures, swap, ATK, MARKET, POOL_A, POOL_B, TOKA, USDC, VICTIM,
+};
+use crate::explorer::types::{MevKind, SwapFact, TransferFact};
 
-const USDC: Address = address!("4000000000000000000000000000000000000005");
-const TOKA: Address = address!("5000000000000000000000000000000000000006");
-const POOL_A: Address = address!("3000000000000000000000000000000000000003");
-const POOL_B: Address = address!("3000000000000000000000000000000000000004");
-const ATK: Address = address!("1000000000000000000000000000000000000001");
-const VICTIM: Address = address!("2000000000000000000000000000000000000002");
-const MARKET: Address = address!("8000000000000000000000000000000000000008");
-const WNATIVE: Address = address!("6000000000000000000000000000000000000007");
+/// The single block number the labeled set is scored at. Fixtures share every
+/// other address with `test_fixtures` so a schema/field change lands once.
+const BLOCK_NUMBER: u64 = 42_000;
 /// No-swap placeholder tx used to widen causal-window boundaries in the
 /// out-of-window fixture cases.
 const FILLER: Address = address!("9000000000000000000000000000000000000009");
@@ -49,6 +45,10 @@ pub struct LabeledCase {
 #[derive(Debug, Clone, Serialize)]
 pub struct GoldenSetScore {
     pub cases: usize,
+    /// Identities of the evaluated cases, in set order. Asserting this list
+    /// (not `cases`) makes an added fixture a named entry and a removed one
+    /// visible by name.
+    pub case_ids: Vec<String>,
     pub true_positives: u64,
     pub false_positives: u64,
     pub false_negatives: u64,
@@ -89,31 +89,9 @@ impl GoldenSetScore {
     }
 }
 
-fn swap(pool: Address, tin: Address, tout: Address, ain: u64, aout: u64) -> SwapFact {
-    SwapFact {
-        tx_index: 0,
-        log_index: 0,
-        pool,
-        amm: Amm::V2,
-        token_in: tin,
-        token_out: tout,
-        token_source: LegSource::Registry,
-        amount_in: U256::from(ain),
-        amount_out: U256::from(aout),
-        tick: None,
-        owner: None,
-    }
-}
-
 fn transfer(token: Address, from: Address, to: Address, amt: u64) -> TransferFact {
-    TransferFact {
-        tx_index: 0,
-        log_index: 0,
-        token,
-        from,
-        to,
-        amount: U256::from(amt),
-    }
+    // Position-free: the log index is stamped by [`tx`].
+    fixtures::transfer(0, token, from, to, amt)
 }
 
 fn tx(
@@ -164,23 +142,8 @@ fn tx(
 
 fn block(txs: Vec<TxInput>) -> BlockInput {
     BlockInput {
-        block: 42_000,
-        ts: 1_700_000_000,
-        ctx: crate::explorer::classify::BlockContext {
-            wrapped_native: WNATIVE,
-            profit_policy: ProfitTokenPolicy {
-                priority: vec![USDC],
-                wrapped_native: WNATIVE,
-                weth: WNATIVE,
-            },
-            ..crate::explorer::classify::BlockContext::for_tests()
-        },
-        open_positions: vec![],
-        interest_lookback: Default::default(),
-        prior_oracle_answers: HashMap::new(),
-        savax_exchange_rate_wad: None,
-        tip_sinks: HashSet::new(),
-        txs,
+        block: BLOCK_NUMBER,
+        ..fixtures::block(txs)
     }
 }
 
@@ -661,8 +624,10 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
     let mut fn_ = 0u64;
     let mut tn = 0u64;
     let mut failures = Vec::new();
+    let mut case_ids = Vec::with_capacity(cases.len());
 
     for case in cases {
+        case_ids.push(case.expectation.id.to_string());
         let events = classify_block(&case.input);
         let claims = causal_claims(&events);
         let exp = &case.expectation;
@@ -738,6 +703,7 @@ pub fn score_causal_labeled_set(cases: &[LabeledCase]) -> GoldenSetScore {
 
     GoldenSetScore {
         cases: cases.len(),
+        case_ids,
         true_positives: tp,
         false_positives: fp,
         false_negatives: fn_,
@@ -765,10 +731,24 @@ mod tests {
             "causal golden set must be perfect on the synthetic labels:\n{}",
             score.render()
         );
-        // 2 positives; negatives: no-ref, same-sender, no-degradation,
-        // sandwich, sub-threshold improvement, move out of window, size
-        // mismatch, sub-threshold degradation, victim out of window.
-        assert_eq!(score.cases, 11);
+        // 2 positives + 9 negatives. Name the cases: adding a fixture extends
+        // this list, dropping one fails by name instead of moving a magic count.
+        assert_eq!(
+            score.case_ids,
+            vec![
+                "backrun_after_market_move",
+                "backrun_no_pre_move_reference",
+                "backrun_same_sender_as_move",
+                "frontrun_cross_pool_close",
+                "frontrun_no_measurable_degradation",
+                "sandwich_legs_not_causal",
+                "backrun_sub_threshold_improvement",
+                "backrun_move_outside_window",
+                "backrun_size_mismatch",
+                "frontrun_sub_threshold_degradation",
+                "frontrun_victim_outside_window",
+            ]
+        );
         assert_eq!(score.true_positives, 2);
         assert_eq!(score.true_negatives, 9);
     }
