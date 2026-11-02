@@ -159,11 +159,7 @@ impl ExplorerStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_stats_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Sender leaderboard restricted to one kind/confidence (report `--kind`).
     pub fn top_senders_filtered(
@@ -209,11 +205,7 @@ impl ExplorerStore {
              FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map([tx_hash], map_mev_op_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Distinct pools seen in realized swaps: `(pool, amm, token_in, token_out)`.
     ///
@@ -235,11 +227,7 @@ impl ExplorerStore {
                 r.get::<_, String>(3)?,
             ))
         })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Realized ops in a block window. `limit` caps the read so a caller that
     /// scans a whole database (e.g. `0..=u64::MAX`) cannot pull every row into
@@ -273,22 +261,16 @@ impl ExplorerStore {
             }
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let mut out = Vec::new();
         match limit {
             Some(n) => {
                 let rows = stmt.query_map(rusqlite::params![n as i64], map_mev_op_row)?;
-                for r in rows {
-                    out.push(r?);
-                }
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             }
             None => {
                 let rows = stmt.query_map([], map_mev_op_row)?;
-                for r in rows {
-                    out.push(r?);
-                }
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             }
         }
-        Ok(out)
     }
     /// Reconstruct the `MevOpportunity` list recorded for a run id
     /// (SQLite-backed `report`). Rows whose strategy string cannot be parsed
@@ -589,11 +571,7 @@ impl ExplorerStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Daily revenue series in a window (bare `explorer` trend).
     pub fn report_daily(
@@ -618,11 +596,7 @@ impl ExplorerStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Highest net-value ops in a window (drill-down detail list), by
     /// `net_profit_usd` descending.
@@ -647,11 +621,7 @@ impl ExplorerStore {
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_mev_op_row)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
     /// Blocks indexed whose timestamp falls in the window (coverage). Each
     /// classified block persists a `blocks` row, so this counts indexed blocks
