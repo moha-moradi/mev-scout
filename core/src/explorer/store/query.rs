@@ -32,6 +32,13 @@ const GROUP_COMPETITOR: &str = "competitor";
 /// Leaderboard grouping: a pool extracted from `route_json`.
 const GROUP_POOL: &str = "pool";
 
+/// Columns read from `mev_ops`, in the exact order [`map_mev_op_row`] consumes
+/// them positionally (`r.get(0)` = `id` … `r.get(22)` = `subkind`). This list is
+/// NOT derived from `PersistedOp` — keep it and that mapper in lockstep when the
+/// schema changes, or every `mev_ops` read silently misaligns its columns.
+const MEV_OP_COLUMNS: &str =
+    "id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence, canonical_id, profit_token, profit_amount, profit_usd, gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd, route_json, victim_hashes, details_json, detector, created_at, subkind";
+
 /// Bind + insert one `opportunities` row on any connection or transaction.
 fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyhow::Result<()> {
     let OpportunityInput {
@@ -196,14 +203,10 @@ impl ExplorerStore {
     /// Every op persisted for one tx hash. Test/report drill-down: the CLI has
     /// no per-tx subcommand, and `tests/mev_corpus.rs` is the only caller.
     pub fn ops_for_tx(&self, tx_hash: &str) -> anyhow::Result<Vec<MevOpRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
-                    confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at,
-                    subkind
-             FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {cols} FROM mev_ops WHERE tx_hash = ?1 ORDER BY id",
+            cols = MEV_OP_COLUMNS
+        ))?;
         let rows = stmt.query_map([tx_hash], map_mev_op_row)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -246,11 +249,7 @@ impl ExplorerStore {
             format!("AND kind IN ({})", list.join(","))
         };
         let sql = format!(
-            "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
-                    confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at,
-                    subkind
+            "SELECT {cols}
              FROM mev_ops
              WHERE block_number BETWEEN {from_block} AND {to_block} {kind_filter}
              ORDER BY block_number, tx_index, id{}",
@@ -258,7 +257,8 @@ impl ExplorerStore {
                 "\n             LIMIT ?"
             } else {
                 ""
-            }
+            },
+            cols = MEV_OP_COLUMNS
         );
         let mut stmt = self.conn.prepare(&sql)?;
         match limit {
@@ -609,15 +609,12 @@ impl ExplorerStore {
     ) -> anyhow::Result<Vec<MevOpRow>> {
         let filter = report_filter_clause(kind, confidence);
         let sql = format!(
-            "SELECT id, block_number, tx_index, tx_hash, ts, kind, eoa, contract,
-                    confidence, canonical_id, profit_token, profit_amount, profit_usd,
-                    gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd,
-                    route_json, victim_hashes, details_json, detector, created_at,
-                    subkind
+            "SELECT {cols}
              FROM mev_ops
              WHERE ts >= {since_ts} {filter} AND excluded_from_net = 0
              ORDER BY COALESCE(net_profit_usd, 0) DESC, id DESC
-             LIMIT {limit}"
+             LIMIT {limit}",
+            cols = MEV_OP_COLUMNS
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_mev_op_row)?;
