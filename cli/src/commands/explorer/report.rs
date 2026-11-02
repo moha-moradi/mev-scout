@@ -345,14 +345,15 @@ pub async fn cmd_explorer_report(
 }
 
 fn row_overview_fields(o: &ReportOverview) -> Vec<String> {
-    vec![
-        o.ops.to_string(),
-        usd(o.volume_usd),
-        usd(o.gross_usd),
-        usd(o.gas_usd),
-        usd(o.flash_fee_usd),
-        usd(o.net_usd),
-    ]
+    row_fields(&ReportRow {
+        ops: o.ops,
+        volume_usd: o.volume_usd,
+        gross_usd: o.gross_usd,
+        gas_usd: o.gas_usd,
+        flash_fee_usd: o.flash_fee_usd,
+        net_usd: o.net_usd,
+        ..Default::default()
+    })
 }
 
 /// Stats rows carry ops/gross/net; pad the volume and fee columns so every
@@ -426,18 +427,27 @@ fn csv_lines(reports: &[WindowReport]) -> Vec<String> {
             lines.push(csv_row(&r.window, "top_ops", &op.tx_hash, &op_fields(op)));
         }
         for c in &r.classify_rejects {
-            let padded = [
-                c.count.to_string(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-                String::new(),
-            ];
-            lines.push(csv_row(&r.window, "classify_rejects", &c.reason, &padded));
+            lines.push(csv_row(
+                &r.window,
+                "classify_rejects",
+                &c.reason,
+                &reject_fields(c),
+            ));
         }
     }
     lines
+}
+
+/// Reject rows carry only a count; the remaining five columns are empty.
+fn reject_fields(c: &RejectCount) -> Vec<String> {
+    vec![
+        c.count.to_string(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ]
 }
 
 fn render_window(r: &WindowReport) {
@@ -546,23 +556,8 @@ fn render_window_text(r: &WindowReport) -> (String, Vec<String>) {
     }
 
     out.push_str("\n  Per kind:\n");
-    let mut t = Table::new();
-    t.set_header(vec![
-        "kind",
-        "ops",
-        "volume USD",
-        "gross USD",
-        "gas USD",
-        "flash USD",
-        "net USD",
-    ]);
-    if r.by_kind.is_empty() {
-        t.add_row(vec!["(no data)", "-", "-", "-", "-", "-", "-"]);
-    }
-    for k in &r.by_kind {
-        t.add_row(row_cells(&k.label, &row_fields(k)));
-    }
-    out.push_str(&format!("{t}\n"));
+    out.push_str(&report_table_text(&r.by_kind, "kind"));
+    out.push('\n');
 
     out.push_str("\n  Daily trend:\n");
     out.push_str(&report_table_text(&r.daily, "date"));
