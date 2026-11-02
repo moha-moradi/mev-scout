@@ -16,43 +16,34 @@
 //! and they rarely coincide.
 use alloy::primitives::Address;
 
-use crate::explorer::types::MevEvent;
+use crate::explorer::types::{MevEvent, MevKind};
 
 /// Compute the explorer-side canonical ID for a classified realized op.
 pub fn explorer_canonical_id(ev: &MevEvent) -> String {
     match ev.kind {
-        crate::explorer::types::MevKind::Sandwich => {
+        MevKind::Sandwich => {
             format!(
                 "Sandwich|{:#x}|victim:{:?}|backrun:{:?}",
                 first_pool(&ev.pools),
                 ev.victim_hashes.len(),
-                ev.details
-                    .get("backrun_tx_index")
-                    .cloned()
-                    .unwrap_or(serde_json::json!(null))
+                detail_or_null(ev, "backrun_tx_index")
             )
         }
-        crate::explorer::types::MevKind::Frontrun => {
+        MevKind::Frontrun => {
             format!(
                 "Frontrun|{:#x}|victim_tx:{}",
                 first_pool(&ev.pools),
-                ev.details
-                    .get("victim_tx_index")
-                    .cloned()
-                    .unwrap_or(serde_json::json!(null))
+                detail_or_null(ev, "victim_tx_index")
             )
         }
-        crate::explorer::types::MevKind::Backrun => {
+        MevKind::Backrun => {
             format!(
                 "Backrun|{:#x}|source_tx:{}",
                 first_pool(&ev.pools),
-                ev.details
-                    .get("source_tx_index")
-                    .cloned()
-                    .unwrap_or(serde_json::json!(null))
+                detail_or_null(ev, "source_tx_index")
             )
         }
-        crate::explorer::types::MevKind::Liquidation => {
+        MevKind::Liquidation => {
             format!(
                 "Liquidation|{:#x}|{:#x}",
                 ev.details
@@ -63,7 +54,7 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
                 ev.searcher,
             )
         }
-        crate::explorer::types::MevKind::Jit | crate::explorer::types::MevKind::JitArb => {
+        MevKind::Jit | MevKind::JitArb => {
             let (lo, hi) = (
                 ev.details
                     .get("tick_lower")
@@ -76,7 +67,7 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
             );
             format!("Jit|{:#x}|{}|{}", first_pool(&ev.pools), lo, hi)
         }
-        crate::explorer::types::MevKind::Skim => {
+        MevKind::Skim => {
             format!("Skim|{:#x}|{:#x}", first_pool(&ev.pools), ev.searcher)
         }
         _ => {
@@ -84,9 +75,19 @@ pub fn explorer_canonical_id(ev: &MevEvent) -> String {
             pools.sort();
             pools.dedup();
             let pool_strs: Vec<String> = pools.iter().map(|p| format!("{:#x}", p)).collect();
-            format!("{:?}|{}", ev.kind, pool_strs.join("|"),)
+            format!("{:?}|{}", ev.kind, pool_strs.join("|"))
         }
     }
+}
+
+/// `ev.details[key]` as an owned `Value`, or JSON null when the key is absent.
+/// Returned as a `Value` (not a rendered string) so each call site's existing
+/// format spec renders it identically — the emitted canonical id is unchanged.
+fn detail_or_null(ev: &MevEvent, key: &str) -> serde_json::Value {
+    ev.details
+        .get(key)
+        .cloned()
+        .unwrap_or(serde_json::json!(null))
 }
 
 fn first_pool(pools: &[Address]) -> Address {
