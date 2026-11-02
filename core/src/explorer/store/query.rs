@@ -45,6 +45,27 @@ const MEV_OP_COLUMNS: &str =
 const NET_USD_AGG: &str =
     "COALESCE(SUM(CASE WHEN excluded_from_net = 0 THEN net_profit_usd ELSE 0 END), 0)";
 
+/// Parse a required string column into `T`, tagging any failure with the column
+/// name so schema drift surfaces as `unparseable {field} '{v}'` instead of a
+/// bare, contextless parse error.
+fn parse_required<T: std::str::FromStr>(field: &str, v: &str) -> anyhow::Result<T>
+where
+    T::Err: std::fmt::Display,
+{
+    v.parse::<T>().map_err(|e| {
+        anyhow::anyhow!("opportunities table holds unparseable {field} '{v}' (schema drift?): {e}")
+    })
+}
+
+/// [`parse_required`] for a nullable column: `NULL` becomes `None`, a bad value
+/// yields the same tagged error.
+fn parse_col<T: std::str::FromStr>(field: &str, raw: Option<&str>) -> anyhow::Result<Option<T>>
+where
+    T::Err: std::fmt::Display,
+{
+    raw.map(|v| parse_required(field, v)).transpose()
+}
+
 /// Bind + insert one `opportunities` row on any connection or transaction.
 fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyhow::Result<()> {
     let OpportunityInput {
@@ -317,11 +338,7 @@ impl ExplorerStore {
         })?;
         let parse_addr = |s: &Option<String>| -> anyhow::Result<Address> {
             match s {
-                Some(v) => v.parse::<Address>().map_err(|e| {
-                    anyhow::anyhow!(
-                        "opportunities table holds unparseable address '{v}' (schema drift?): {e}"
-                    )
-                }),
+                Some(v) => parse_required("address", v),
                 None => Ok(Address::ZERO),
             }
         };
@@ -366,19 +383,11 @@ impl ExplorerStore {
                 token_in: parse_addr(&token_in)?,
                 token_out: parse_addr(&token_out)?,
                 input_amount: match &input_amount {
-                    Some(v) => v.parse::<U256>().map_err(|e| {
-                        anyhow::anyhow!(
-                            "opportunities table holds unparseable input_amount '{v}' (schema drift?): {e}"
-                        )
-                    })?,
+                    Some(v) => parse_required("input_amount", v)?,
                     None => U256::ZERO,
                 },
                 expected_profit: match &expected_profit {
-                    Some(v) => v.parse::<U256>().map_err(|e| {
-                        anyhow::anyhow!(
-                            "opportunities table holds unparseable expected_profit '{v}' (schema drift?): {e}"
-                        )
-                    })?,
+                    Some(v) => parse_required("expected_profit", v)?,
                     None => U256::ZERO,
                 },
                 raw_profit: None,
@@ -387,11 +396,7 @@ impl ExplorerStore {
                 profit_slippage_p2: None,
                 profit_slippage_m2: None,
                 gas_cost_wei: match &gas_cost_wei {
-                    Some(v) => v.parse::<u128>().map_err(|e| {
-                        anyhow::anyhow!(
-                            "opportunities table holds unparseable gas_cost_wei '{v}' (schema drift?): {e}"
-                        )
-                    })?,
+                    Some(v) => parse_required("gas_cost_wei", v)?,
                     None => 0,
                 },
                 timestamp: timestamp.unwrap_or(0),
@@ -400,14 +405,10 @@ impl ExplorerStore {
                         if p.is_empty() {
                             None
                         } else {
-                            let parsed: anyhow::Result<Vec<Address>> =
-                                p.split(',').map(|a| {
-                                    a.parse::<Address>().map_err(|e| {
-                                        anyhow::anyhow!(
-                                            "opportunities table holds unparseable path address '{a}' (schema drift?): {e}"
-                                        )
-                                    })
-                                }).collect();
+                            let parsed: anyhow::Result<Vec<Address>> = p
+                                .split(',')
+                                .map(|a| parse_required("path address", a))
+                                .collect();
                             Some(parsed?).filter(|v| !v.is_empty())
                         }
                     }
@@ -420,22 +421,8 @@ impl ExplorerStore {
                 backrun_tx_index: None,
                 mempool_only,
                 confidence: confidence.as_deref().and_then(|v| v.parse().ok()),
-                sender: match &sender {
-                    Some(v) => Some(v.parse::<Address>().map_err(|e| {
-                        anyhow::anyhow!(
-                            "opportunities table holds unparseable sender '{v}' (schema drift?): {e}"
-                        )
-                    })?),
-                    None => None,
-                },
-                tx_hash: match &tx_hash {
-                    Some(v) => Some(v.parse().map_err(|e| {
-                        anyhow::anyhow!(
-                            "opportunities table holds unparseable tx_hash '{v}' (schema drift?): {e}"
-                        )
-                    })?),
-                    None => None,
-                },
+                sender: parse_col("sender", sender.as_deref())?,
+                tx_hash: parse_col("tx_hash", tx_hash.as_deref())?,
                 detection_path: detection_path
                     .as_deref()
                     .and_then(|v| v.parse::<crate::types::DetectionPath>().ok()),
@@ -649,5 +636,58 @@ mod filter_tests {
         let s = report_filter_clause(Some(MevKind::Sandwich), Some(Confidence::Exact));
         assert!(s.contains("kind = 'sandwich'"));
         assert!(s.contains("confidence = 'exact'"));
+    }
+
+    #[test]
+    fn opportunities_by_run_round_trips_and_rejects_drift() {
+        use alloy::primitives::address;
+        let store = ExplorerStore::open_in_memory().unwrap();
+        let pool = address!("1111111111111111111111111111111111111111");
+        store
+            .insert_opportunity(OpportunityInput {
+                run_id: "run-1",
+                chain: "test",
+                // A strategy that actually parses — an unknown one is skipped
+                // before the address columns are read, which would mask drift.
+                strategy: "two_hop_arb",
+                block_number: 7,
+                tx_index: Some(0),
+                pool_a: Some(pool),
+                pool_b: None,
+                token_in: None,
+                token_out: None,
+                input_amount: None,
+                expected_profit: None,
+                gas_cost_wei: None,
+                path: None,
+                timestamp: None,
+                mempool_only: false,
+                confidence: None,
+                sender: None,
+                tx_hash: None,
+                detection_path: None,
+                canonical_id: None,
+            })
+            .unwrap();
+
+        // Round-trip: the stored hex address parses back to the same value.
+        let read = store.opportunities_by_run("run-1").unwrap();
+        assert_eq!(read.len(), 1, "a parseable strategy must not be skipped");
+        assert_eq!(read[0].pool_a, pool);
+        assert_eq!(read[0].block_number, 7);
+
+        // Schema drift: a non-address string persisted in `pool_a` surfaces the
+        // tagged parse error, not a bare alloy ParseError.
+        store
+            .conn
+            .execute("UPDATE opportunities SET pool_a = ?1", ["not-an-address"])
+            .unwrap();
+        let err = store.opportunities_by_run("run-1").unwrap_err();
+        assert!(
+            err.to_string().starts_with(
+                "opportunities table holds unparseable address 'not-an-address' (schema drift?)"
+            ),
+            "unexpected drift error: {err}"
+        );
     }
 }
