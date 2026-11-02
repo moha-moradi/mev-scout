@@ -39,6 +39,12 @@ const GROUP_POOL: &str = "pool";
 const MEV_OP_COLUMNS: &str =
     "id, block_number, tx_index, tx_hash, ts, kind, eoa, contract, confidence, canonical_id, profit_token, profit_amount, profit_usd, gas_cost_usd, flashloan_fee_usd, volume_usd, net_profit_usd, route_json, victim_hashes, details_json, detector, created_at, subkind";
 
+/// Loss-gated net-USD aggregate: sums `net_profit_usd` only for ops not flagged
+/// `excluded_from_net` (sandwich ops loss-gated at persist keep their row but are
+/// dropped from every net sum and `top_ops`).
+const NET_USD_AGG: &str =
+    "COALESCE(SUM(CASE WHEN excluded_from_net = 0 THEN net_profit_usd ELSE 0 END), 0)";
+
 /// Bind + insert one `opportunities` row on any connection or transaction.
 fn insert_opportunity_row(conn: &Connection, row: &OpportunityInput<'_>) -> anyhow::Result<()> {
     let OpportunityInput {
@@ -463,8 +469,7 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
-                                      THEN net_profit_usd ELSE 0 END), 0),
+                    {net},
                     COALESCE(MAX(profit_usd), 0),
                     COUNT(DISTINCT eoa),
                     COUNT(DISTINCT COALESCE(NULLIF(contract, ''), eoa)),
@@ -484,7 +489,8 @@ impl ExplorerStore {
                     COALESCE(SUM(pricing_clamped), 0),
                     COALESCE(SUM(flash_fee_unpriced), 0),
                     COALESCE(SUM(CASE WHEN excluded_from_net = 1 THEN 1 ELSE 0 END), 0)
-             FROM mev_ops WHERE ts >= {since_ts} {filter}"
+             FROM mev_ops WHERE ts >= {since_ts} {filter}",
+            net = NET_USD_AGG
         );
         let row = self.conn.query_row(&sql, [], |r| {
             let ops = r.get::<_, i64>(0)?;
@@ -562,12 +568,12 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0) AS gross,
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
-                                      THEN net_profit_usd ELSE 0 END), 0)
+                    {net}
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY kind
-             ORDER BY gross DESC, label ASC"
+             ORDER BY gross DESC, label ASC",
+            net = NET_USD_AGG
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
@@ -587,12 +593,12 @@ impl ExplorerStore {
                     COALESCE(SUM(profit_usd), 0),
                     COALESCE(SUM(gas_cost_usd), 0),
                     COALESCE(SUM(flashloan_fee_usd), 0),
-                    COALESCE(SUM(CASE WHEN excluded_from_net = 0
-                                      THEN net_profit_usd ELSE 0 END), 0)
+                    {net}
              FROM mev_ops
              WHERE ts >= {since_ts} {filter}
              GROUP BY label
-             ORDER BY label DESC"
+             ORDER BY label DESC",
+            net = NET_USD_AGG
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], map_report_row)?;
