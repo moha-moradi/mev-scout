@@ -65,6 +65,15 @@ pub async fn cmd_report(config: &Config, args: &ReportArgs) -> anyhow::Result<()
                     s.starting_gas_wei, s.ending_gas_wei, s.reserve_wei
                 );
                 println!("    blocks {}-{}", s.start_block, s.end_block);
+                if let Some(sim) = s.sim_mode.as_deref() {
+                    println!("    sim: {sim}");
+                }
+                match (s.replay_blocks, s.log_only_blocks) {
+                    (Some(r), Some(l)) if r > 0 || l > 0 => {
+                        println!("    modes: {r} replay / {l} log-only");
+                    }
+                    _ => {}
+                }
             }
             println!();
 

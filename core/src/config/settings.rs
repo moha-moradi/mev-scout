@@ -162,6 +162,23 @@ pub struct PaperConfig {
     /// Soft per-block fill cap (also clamped to hard safety cap of 32).
     #[serde(default = "default_paper_max_fills_per_block")]
     pub max_fills_per_block: usize,
+    /// Fill verification: `assumed` (default) or `state`.
+    #[serde(default = "default_paper_sim")]
+    pub sim: String,
+    /// Enforce flash-loan repay check under `--sim state`.
+    #[serde(default = "default_true")]
+    pub sim_flash_loan: bool,
+    /// Seed budget per block when capturing pool snapshots (not fill cap).
+    #[serde(default = "default_paper_sim_max_candidates")]
+    pub sim_max_candidates_per_block: usize,
+}
+
+fn default_paper_sim() -> String {
+    "assumed".to_string()
+}
+
+fn default_paper_sim_max_candidates() -> usize {
+    32
 }
 
 fn default_paper_starting_gas_wei_str() -> String {
@@ -199,6 +216,24 @@ impl PaperConfig {
             max_fills_per_block: self.max_fills_per_block,
         })
     }
+
+    pub fn sim_mode(&self) -> anyhow::Result<crate::paper::SimMode> {
+        crate::paper::SimMode::parse(&self.sim).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid paper.sim '{}': expected 'assumed' or 'state'",
+                self.sim
+            )
+        })
+    }
+
+    pub fn sim_policy(&self) -> anyhow::Result<crate::paper::SimPolicy> {
+        Ok(crate::paper::SimPolicy {
+            mode: self.sim_mode()?,
+            flash_loan: self.sim_flash_loan,
+            fee_bps: 0, // resolved from gas flash-loan provider at session start
+            max_candidates_per_block: self.sim_max_candidates_per_block.max(1),
+        })
+    }
 }
 
 impl Default for PaperConfig {
@@ -207,6 +242,9 @@ impl Default for PaperConfig {
             starting_gas_wei: default_paper_starting_gas_wei_str(),
             reserve_wei: default_zero_str(),
             max_fills_per_block: default_paper_max_fills_per_block(),
+            sim: default_paper_sim(),
+            sim_flash_loan: default_true(),
+            sim_max_candidates_per_block: default_paper_sim_max_candidates(),
         }
     }
 }

@@ -30,5 +30,5 @@ pub use curve::{
 pub use fee::{FeeTier, BPS_FEE_DENOM, PPM_FEE_DENOM};
 pub use v3::{
     estimate_v3_swap_gas, get_sqrt_ratio_at_tick, max_v3_tradeable_amount, quote_v3_exact_in,
-    v3_breakpoints, V3Direction,
+    quote_v3_exact_in_post, v3_breakpoints, V3Direction, V3QuotePostState,
 };

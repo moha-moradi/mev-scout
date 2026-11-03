@@ -291,6 +291,12 @@ pub struct LiveArgs {
     /// Overrides [paper].reserve_wei.
     #[arg(long, value_name = "WEI", help_heading = "Ledger")]
     pub reserve: Option<u128>,
+
+    /// Paper fill verification: `assumed` (default, claim detector net) or
+    /// `state` (re-quote against pool snapshots with liquidity consumption).
+    /// Overrides [paper].sim.
+    #[arg(long = "sim", value_name = "MODE", help_heading = "Ledger")]
+    pub sim: Option<String>,
 }
 
 impl Default for LiveArgs {
@@ -304,6 +310,7 @@ impl Default for LiveArgs {
             blocks: DEFAULT_SINGLE_PASS_BLOCKS,
             initial_balance: None,
             reserve: None,
+            sim: None,
         }
     }
 }

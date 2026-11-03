@@ -17,6 +17,7 @@ use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2P
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
+use crate::paper::sim::{record_seeds_for_block, SimSeeds};
 use crate::types::gas::GasCalibration;
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, GasModel, Strategy};
@@ -268,6 +269,12 @@ pub struct BacktestRunner {
     /// Rejected-candidate buffer drained by the CLI via `take_rejections`.
     pending_rejections: Vec<crate::explorer::RejectedCandidate>,
     last_processed_block: u64,
+    /// When true, capture pool snapshots for state-sim paper fills.
+    sim_seeds_enabled: bool,
+    /// Seed budget per block (not fill cap).
+    sim_max_candidates_per_block: usize,
+    /// Snapshots keyed by canonical_id; drained via [`Self::take_sim_seeds`].
+    sim_seeds: RefCell<SimSeeds>,
 }
 
 impl BacktestRunner {
@@ -297,7 +304,22 @@ impl BacktestRunner {
             record_rejections: false,
             pending_rejections: Vec::new(),
             last_processed_block: 0,
+            sim_seeds_enabled: false,
+            sim_max_candidates_per_block: 32,
+            sim_seeds: RefCell::new(SimSeeds::new()),
         }
+    }
+
+    /// Enable pool-snapshot capture for `--sim state` paper fills.
+    pub fn with_sim_seeds(mut self, enabled: bool, max_per_block: usize) -> Self {
+        self.sim_seeds_enabled = enabled;
+        self.sim_max_candidates_per_block = max_per_block.max(1);
+        self
+    }
+
+    /// Drain captured pool snapshots (empty when sim seeds are disabled).
+    pub fn take_sim_seeds(&mut self) -> SimSeeds {
+        self.sim_seeds.borrow_mut().drain().collect()
     }
 
     /// Enable or disable pending transaction capture from the mempool.
@@ -489,6 +511,42 @@ impl BacktestRunner {
         if self.persistence_scoring {
             Self::update_persistence(&mut self.opp_persistence, opps, block_num);
         }
+
+        if self.sim_seeds_enabled {
+            let mut seeds = self.sim_seeds.borrow_mut();
+            record_seeds_for_block(
+                &mut seeds,
+                &self.pool_manager,
+                opps,
+                self.sim_max_candidates_per_block,
+            );
+        }
+    }
+
+    fn stamp_and_record_pending_seeds(&self, opps: &mut [MevOpportunity]) {
+        for opp in opps.iter_mut() {
+            if opp.canonical_id.is_none() {
+                opp.canonical_id = Some(crate::types::compute_canonical_id(
+                    crate::types::CanonicalIdParts {
+                        strategy: opp.strategy,
+                        pool_a: opp.pool_a,
+                        pool_b: opp.pool_b,
+                        token_in: opp.token_in,
+                        token_out: opp.token_out,
+                    },
+                ));
+            }
+        }
+        if !self.sim_seeds_enabled {
+            return;
+        }
+        let mut seeds = self.sim_seeds.borrow_mut();
+        record_seeds_for_block(
+            &mut seeds,
+            &self.pool_manager,
+            opps,
+            self.sim_max_candidates_per_block,
+        );
     }
 
     fn gas_model_target_percentile(&self) -> Option<u8> {
@@ -1150,7 +1208,7 @@ impl BacktestRunner {
                     last.pending_tx_count = capture.tx_count;
                 }
                 // Run pool-state-based arb detection on pending state
-                let pending_opps = detect_pending_opportunities(
+                let mut pending_opps = detect_pending_opportunities(
                     &self.pool_manager,
                     self.gas_config,
                     capture.base_fee_per_gas,
@@ -1166,6 +1224,7 @@ impl BacktestRunner {
                     if let Some(last) = all_stats.last_mut() {
                         last.mempool_opp_count = pending_opps.len();
                     }
+                    self.stamp_and_record_pending_seeds(&mut pending_opps);
                     all.extend(pending_opps);
                 }
             } else {
@@ -1293,7 +1352,7 @@ impl BacktestRunner {
                 if let Some(last) = all_stats.last_mut() {
                     last.pending_tx_count = capture.tx_count;
                 }
-                let pending_opps = detect_pending_opportunities(
+                let mut pending_opps = detect_pending_opportunities(
                     &self.pool_manager,
                     self.gas_config,
                     capture.base_fee_per_gas,
@@ -1309,6 +1368,7 @@ impl BacktestRunner {
                     if let Some(last) = all_stats.last_mut() {
                         last.mempool_opp_count = pending_opps.len();
                     }
+                    self.stamp_and_record_pending_seeds(&mut pending_opps);
                     all.extend(pending_opps);
                 }
             } else {

@@ -3,6 +3,7 @@ pub(crate) mod factory;
 pub(crate) mod manager;
 pub(crate) mod pool_types;
 pub(crate) mod quoting;
+pub(crate) mod sim;
 pub use factory::PoolInitResult;
 pub use manager::{check_dedup_key, PoolManager, ScanScope};
 pub use pool_types::{
@@ -12,3 +13,4 @@ pub use pool_types::{
     UniswapV2PoolState, UniswapV3PoolState, UniswapV4PoolState,
 };
 pub use quoting::QuoteKind;
+pub use sim::{apply_post_state, quote_swap_post, PoolPostState};

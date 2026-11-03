@@ -252,7 +252,7 @@ fn compute_slippage_profits(
 
 /// Compute the profit for a two-hop arbitrage at a fixed input amount.
 /// Returns the profit (output - input) or 0 if unprofitable.
-fn two_hop_profit_at(
+pub(crate) fn two_hop_profit_at(
     pool_a: &PoolState,
     pool_b: &PoolState,
     shared_token: Address,

@@ -12,10 +12,12 @@ use crate::explorer::pricing;
 use crate::explorer::results::{persist_opportunities_to_explorer, persist_rejections_to_explorer};
 use crate::explorer::store::ExplorerStore;
 use crate::fetch::Fetcher;
+use crate::paper::sim::{merge_seeds, SimSeeds};
 use crate::paper::{
-    FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode, HARD_MAX_FILLS_PER_BLOCK,
+    FillSkipReason, LedgerPolicy, LedgerResult, PaperFill, PaperMode, SimMode, SimPolicy,
+    HARD_MAX_FILLS_PER_BLOCK,
 };
-use crate::pipeline::{aggregate_fills, BacktestRunner, BlockReplayStats};
+use crate::pipeline::{aggregate_fills, BacktestRunner, BlockMode, BlockReplayStats};
 use crate::pool::state::PoolManager;
 use crate::progress::{JobProgress, ProgressEvent};
 use crate::replay::BlockReplayer;
@@ -45,6 +47,10 @@ pub struct LiveOpts {
     pub reserve_wei: Option<u128>,
     pub max_fills_per_block: Option<usize>,
     pub native_usd: Option<f64>,
+    /// Override `[paper].sim` (`assumed` | `state`).
+    pub sim: Option<String>,
+    /// Override `[paper].sim_max_candidates_per_block`.
+    pub sim_max_candidates_per_block: Option<usize>,
 }
 
 pub struct LiveOneShotOutcome {
@@ -118,6 +124,22 @@ fn resolve_ledger_policy(
     Ok(policy)
 }
 
+/// Resolve sim policy from `[paper]` plus CLI `--sim` override.
+fn resolve_sim_policy(config: &Config, opts: &LiveOpts) -> anyhow::Result<SimPolicy> {
+    let mut policy = config.paper.sim_policy()?;
+    if let Some(raw) = opts.sim.as_deref() {
+        policy.mode = SimMode::parse(raw).ok_or_else(|| {
+            anyhow::anyhow!("invalid --sim '{raw}': expected 'assumed' or 'state'")
+        })?;
+    }
+    if let Some(n) = opts.sim_max_candidates_per_block {
+        policy.max_candidates_per_block = n.max(1);
+    }
+    // Fee bps from the configured flash-loan provider (Auto → 0).
+    policy.fee_bps = config.backtest.flash_loan_provider.fee_rate_bps();
+    Ok(policy)
+}
+
 /// Resolve the native USD price once per session.
 ///
 /// Order: cached ZERO-keyed price, then the wrapped-native cache, then
@@ -175,6 +197,7 @@ fn widen_span(span: Option<(u64, u64)>, start: u64, end: u64) -> (u64, u64) {
 /// Ledger inputs resolved once at session start.
 struct ResolvedLedger {
     policy: LedgerPolicy,
+    sim: SimPolicy,
     native_usd: Option<f64>,
 }
 
@@ -206,13 +229,19 @@ struct LiveContext<'a> {
     /// Recomputed from scratch each pass — `LedgerPolicy::apply` is pure and
     /// re-derives block grouping itself, so no incremental state to thread.
     policy: LedgerPolicy,
+    sim: SimPolicy,
     session_opps: Vec<MevOpportunity>,
+    /// Pool snapshots accumulated across passes (keyed by canonical_id).
+    session_seeds: SimSeeds,
     /// Native price resolved once at startup; `None` when unavailable and the
     /// session does not need it (P&L stays in wei).
     native_usd: Option<f64>,
     /// Persisted once at session end — `paper_sessions` keys on a plain
     /// `session_id`, so re-inserting the same id would violate the constraint.
     session_id: String,
+    /// Blocks scanned via full revm vs log-only (session counters for report).
+    replay_blocks: u64,
+    log_only_blocks: u64,
 }
 
 impl<'a> LiveContext<'a> {
@@ -280,7 +309,11 @@ impl<'a> LiveContext<'a> {
             .with_capture_pending(config.backtest.capture_pending)
             .with_min_profit_wei(config.backtest.min_profit_wei)
             .with_max_candidates_per_tx(config.backtest.max_candidates_per_tx)
-            .with_record_rejections(record_rejections);
+            .with_record_rejections(record_rejections)
+            .with_sim_seeds(
+                ledger.sim.is_state_sim(),
+                ledger.sim.max_candidates_per_block,
+            );
 
         Ok(LiveContext {
             config,
@@ -295,9 +328,13 @@ impl<'a> LiveContext<'a> {
             session_run_id: format!("live_{}", epoch_secs()),
             scanned_span: None,
             policy: ledger.policy,
+            sim: ledger.sim,
             session_opps: Vec::new(),
+            session_seeds: SimSeeds::new(),
             native_usd: ledger.native_usd,
             session_id: format!("paper_live_{}", epoch_secs()),
+            replay_blocks: 0,
+            log_only_blocks: 0,
         })
     }
 
@@ -340,9 +377,19 @@ impl<'a> LiveContext<'a> {
         progress: Option<&dyn Fn(u64, u64) -> bool>,
     ) -> anyhow::Result<(Vec<MevOpportunity>, Vec<BlockReplayStats>)> {
         let state_horizon = self.rpc.detect_state_horizon(resolved.end_block).await;
-        let (opps, stats, _modes) =
+        let (opps, stats, modes) =
             self.runner
                 .run_range_hybrid(resolved, state_horizon, progress)?;
+        for mode in &modes {
+            match mode {
+                BlockMode::FullReplay => self.replay_blocks += 1,
+                BlockMode::LogOnly => self.log_only_blocks += 1,
+            }
+        }
+        if self.sim.is_state_sim() {
+            let incoming = self.runner.take_sim_seeds();
+            merge_seeds(&mut self.session_seeds, incoming);
+        }
         Ok((opps, stats))
     }
 
@@ -423,7 +470,16 @@ impl<'a> LiveContext<'a> {
     /// the only state needed. Cost is O(n) per pass in session opportunities.
     fn update_ledger(&mut self, opps: &[MevOpportunity]) -> LedgerResult {
         self.session_opps.extend_from_slice(opps);
-        self.policy.apply(&self.session_opps)
+        let mut ledger = if self.sim.is_state_sim() {
+            self.policy
+                .apply_simulated(&self.session_opps, &self.session_seeds, &self.sim)
+        } else {
+            self.policy.apply(&self.session_opps)
+        };
+        ledger.sim_mode = self.sim.mode;
+        ledger.replay_blocks = self.replay_blocks;
+        ledger.log_only_blocks = self.log_only_blocks;
+        ledger
     }
 
     /// Persist the finished session ledger. Called once — `insert_paper_session`
@@ -481,6 +537,36 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         ledger.skips_count(),
         ledger.net_profit_wei,
     ));
+    let state_fills = ledger
+        .fills
+        .iter()
+        .filter(|f| f.sim_mode == SimMode::StateSim)
+        .count();
+    let assumed_fills = ledger.fills.len().saturating_sub(state_fills);
+    let sim_skips = ledger
+        .skips
+        .iter()
+        .filter(|s| {
+            matches!(
+                s.reason,
+                FillSkipReason::SimNotQuotable
+                    | FillSkipReason::SimPriceConsumed
+                    | FillSkipReason::SimRepayShortfall
+                    | FillSkipReason::SimPathUnavailable
+                    | FillSkipReason::SimStrategyUnsupported
+            )
+        })
+        .count();
+    out.push_str(&format!(
+        "  sim: {} | state-sim {state_fills} fill / {sim_skips} skipped | assumed {assumed_fills}\n",
+        ledger.sim_mode.as_str(),
+    ));
+    if ledger.replay_blocks > 0 || ledger.log_only_blocks > 0 {
+        out.push_str(&format!(
+            "  blocks: {} replay / {} log-only\n",
+            ledger.replay_blocks, ledger.log_only_blocks
+        ));
+    }
     out.push_str(&format!(
         "  wallet: {}{usd_start} → {}{usd_end} | reserve {} | max drawdown {} wei",
         ledger.starting_gas_wei,
@@ -607,7 +693,12 @@ pub async fn job_live(
     // every pass would both cost RPC calls and make the wallet drift mid-session.
     let native_usd = resolve_native_price(config, &validation, opts.native_usd).await?;
     let policy = resolve_ledger_policy(config, opts, native_usd)?;
-    let ledger = ResolvedLedger { policy, native_usd };
+    let sim = resolve_sim_policy(config, opts)?;
+    let ledger = ResolvedLedger {
+        policy,
+        sim,
+        native_usd,
+    };
 
     let setup = init_rpc(config, validation.chain_name, true).await?;
     let mut ctx = LiveContext::new(
@@ -1262,6 +1353,9 @@ mod tests {
             best_net_wei: 0,
             start_block: Some(10),
             end_block: Some(10),
+            sim_mode: crate::paper::SimMode::Assumed,
+            replay_blocks: 0,
+            log_only_blocks: 0,
         };
         let text = render_ledger_summary(&ledger, None);
         assert!(

@@ -668,6 +668,7 @@ mod tests {
         wallet_after: u128,
         cid: Option<&str>,
     ) -> PaperFill {
+        let net = gross as i128 - gas as i128;
         PaperFill {
             block_number: block,
             tx_index: tx,
@@ -675,11 +676,17 @@ mod tests {
             strategy: strategy.to_string(),
             gross_wei: gross,
             gas_wei: gas,
-            net_wei: gross as i128 - gas as i128,
+            net_wei: net,
             wallet_before: wallet_after,
             wallet_after,
             pools: vec![address!("aaaa000000000000000000000000000000000001")],
             mempool_only: tx.is_none(),
+            sim_mode: crate::paper::SimMode::Assumed,
+            sim_gross_wei: gross,
+            sim_net_wei: net,
+            borrowed_wei: 0,
+            repay_ok: true,
+            state_drift: false,
         }
     }
 

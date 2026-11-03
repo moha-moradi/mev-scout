@@ -464,7 +464,7 @@ impl MultiHopArbDetector {
     /// the [`PoolState`] quoting registry. Single source of truth shared by
     /// the composed quote, the slippage probes, and prefix inversion — instead
     /// of three copies of this loop.
-    fn walk_quote(
+    pub(crate) fn walk_quote(
         pm: &PoolManager,
         path: &[Address],
         token_in: Address,

@@ -260,6 +260,12 @@ mod tests {
             wallet_after: 0,
             pools: vec![],
             mempool_only: false,
+            sim_mode: crate::paper::SimMode::Assumed,
+            sim_gross_wei: 0,
+            sim_net_wei: net,
+            borrowed_wei: 0,
+            repay_ok: true,
+            state_drift: false,
         }
     }
 
@@ -278,6 +284,9 @@ mod tests {
             best_net_wei: 0,
             start_block: None,
             end_block: None,
+            sim_mode: crate::paper::SimMode::Assumed,
+            replay_blocks: 0,
+            log_only_blocks: 0,
         }
     }
 

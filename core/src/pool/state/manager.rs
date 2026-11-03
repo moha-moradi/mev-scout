@@ -293,6 +293,25 @@ impl PoolManager {
         *self.pairs_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
+    /// Scratch manager containing only `addrs` (cloned pool states).
+    ///
+    /// Used by paper state-sim so overlay walks do not mutate the live manager.
+    /// Source manager is left untouched.
+    pub fn subset(&self, addrs: &[Address]) -> PoolManager {
+        let mut out = PoolManager::new();
+        out.wrapped_native = self.wrapped_native;
+        out.balancer_vault = self.balancer_vault;
+        out.max_pairs_per_token = self.max_pairs_per_token;
+        out.concurrency_limit = self.concurrency_limit;
+        out.use_latest = self.use_latest;
+        for addr in addrs {
+            if let Some(state) = self.pools.get(addr) {
+                out.add_pool(state.clone());
+            }
+        }
+        out
+    }
+
     /// Look up a pool by address.
     pub fn get(&self, address: &Address) -> Option<&PoolState> {
         self.pools.get(address)

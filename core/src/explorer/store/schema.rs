@@ -35,6 +35,7 @@ const MIGRATIONS: &[fn(&Connection) -> anyhow::Result<()>] = &[
     migrate_v8_utility_subkind,
     migrate_v9_report_indexes,
     migrate_v10_pricing_flags,
+    migrate_v11_paper_fill_verification,
 ];
 
 fn configure_connection(conn: &Connection) -> anyhow::Result<()> {
@@ -267,6 +268,30 @@ fn migrate_v10_pricing_flags(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Paper fill verification columns for `--sim state` (assumed remains default).
+fn migrate_v11_paper_fill_verification(conn: &Connection) -> anyhow::Result<()> {
+    ExplorerStore::ensure_column(conn, "paper_sessions", "sim_mode", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "replay_blocks", "INTEGER")?;
+    ExplorerStore::ensure_column(conn, "paper_sessions", "log_only_blocks", "INTEGER")?;
+    ExplorerStore::ensure_column(
+        conn,
+        "paper_fills",
+        "sim_mode",
+        "TEXT NOT NULL DEFAULT 'assumed'",
+    )?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "sim_gross_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "sim_net_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "borrowed_wei", "TEXT")?;
+    ExplorerStore::ensure_column(conn, "paper_fills", "repay_ok", "INTEGER")?;
+    ExplorerStore::ensure_column(
+        conn,
+        "paper_fills",
+        "state_drift",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(())
+}
+
 /// V1 table set. `CREATE TABLE IF NOT EXISTS` so replaying it on a file that
 /// already has the tables is a no-op. Columns added after the first release
 /// (`flashloan_fee_usd`, `volume_usd`, `excluded_from_net`) are in this DDL
@@ -495,7 +520,10 @@ const SCHEMA_V1: &str = "
               skipped INTEGER NOT NULL,
               net_profit_wei TEXT NOT NULL,
               max_drawdown_wei TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              sim_mode TEXT,
+              replay_blocks INTEGER,
+              log_only_blocks INTEGER
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -515,7 +543,13 @@ const SCHEMA_V1: &str = "
               wallet_before TEXT NOT NULL,
               wallet_after TEXT NOT NULL,
               pools_json TEXT,
-              mempool_only INTEGER NOT NULL DEFAULT 0
+              mempool_only INTEGER NOT NULL DEFAULT 0,
+              sim_mode TEXT NOT NULL DEFAULT 'assumed',
+              sim_gross_wei TEXT,
+              sim_net_wei TEXT,
+              borrowed_wei TEXT,
+              repay_ok INTEGER,
+              state_drift INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
               ON paper_fills(session_id, block_number);

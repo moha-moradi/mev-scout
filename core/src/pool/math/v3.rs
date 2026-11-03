@@ -594,11 +594,21 @@ fn cross_tick(
     *liquidity == 0
 }
 
-pub fn quote_v3_exact_in(
+/// Post-swap concentrated-liquidity state after an exact-in quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct V3QuotePostState {
+    pub amount_out: u128,
+    pub sqrt_price_x96: U256,
+    pub tick: i32,
+    pub liquidity: u128,
+}
+
+/// Exact-in V3 quote that also returns the post-swap price/tick/liquidity.
+pub fn quote_v3_exact_in_post(
     pool: &UniswapV3PoolState,
     amount_in: u128,
     direction: V3Direction,
-) -> Option<u128> {
+) -> Option<V3QuotePostState> {
     if amount_in == 0 || pool.liquidity == 0 || pool.sqrt_price_x96.is_zero() {
         return None;
     }
@@ -664,7 +674,20 @@ pub fn quote_v3_exact_in(
     if limbs[1] != 0 || limbs[2] != 0 || limbs[3] != 0 {
         return None;
     }
-    Some(limbs[0] as u128)
+    Some(V3QuotePostState {
+        amount_out: limbs[0] as u128,
+        sqrt_price_x96: sqrt_price,
+        tick: current_tick,
+        liquidity,
+    })
+}
+
+pub fn quote_v3_exact_in(
+    pool: &UniswapV3PoolState,
+    amount_in: u128,
+    direction: V3Direction,
+) -> Option<u128> {
+    quote_v3_exact_in_post(pool, amount_in, direction).map(|p| p.amount_out)
 }
 
 /// Like `get_swap_target` but uses a passed-in sqrt_price and current_tick

@@ -56,7 +56,7 @@ pub(super) fn slippage_profits(
 /// unavailable. A same-token cycle's profit is denominated in `token_in`,
 /// so it is converted to native too — identity for the native token itself,
 /// with an as-is fallback when no pricing path exists.
-pub(super) fn normalize_profit(
+pub(crate) fn normalize_profit(
     pm: &PoolManager,
     token_in: Address,
     token_out: Address,
@@ -79,7 +79,7 @@ pub(super) fn normalize_profit(
 /// use this so an unpriceable point becomes an absent datapoint rather than a
 /// phantom same-token number — `ref_input` is the optimal input whose native
 /// value anchors the fallback difference.
-pub(super) fn normalize_profit_native(
+pub(crate) fn normalize_profit_native(
     pm: &PoolManager,
     token_in: Address,
     token_out: Address,

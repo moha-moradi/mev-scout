@@ -151,6 +151,8 @@ pub async fn cmd_live(
         reserve_wei: args.reserve,
         max_fills_per_block: None,
         native_usd: None,
+        sim: args.sim.clone(),
+        sim_max_candidates_per_block: None,
     };
 
     match job_live(config, &opts, progress).await? {

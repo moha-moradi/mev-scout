@@ -1,6 +1,6 @@
 //! Paper session / fill persistence on the explorer SQLite database.
 use crate::explorer::store::ExplorerStore;
-use crate::paper::types::{LedgerResult, PaperFill, PaperMode, PaperSession};
+use crate::paper::types::{LedgerResult, PaperFill, PaperMode, PaperSession, SimMode};
 use crate::utils::epoch_secs;
 
 impl ExplorerStore {
@@ -22,7 +22,10 @@ impl ExplorerStore {
               skipped INTEGER NOT NULL,
               net_profit_wei TEXT NOT NULL,
               max_drawdown_wei TEXT NOT NULL,
-              created_at INTEGER NOT NULL
+              created_at INTEGER NOT NULL,
+              sim_mode TEXT,
+              replay_blocks INTEGER,
+              log_only_blocks INTEGER
             );
             CREATE INDEX IF NOT EXISTS paper_sessions_created
               ON paper_sessions(created_at);
@@ -43,6 +46,12 @@ impl ExplorerStore {
               wallet_after TEXT NOT NULL,
               pools_json TEXT,
               mempool_only INTEGER NOT NULL DEFAULT 0,
+              sim_mode TEXT NOT NULL DEFAULT 'assumed',
+              sim_gross_wei TEXT,
+              sim_net_wei TEXT,
+              borrowed_wei TEXT,
+              repay_ok INTEGER,
+              state_drift INTEGER NOT NULL DEFAULT 0,
               FOREIGN KEY(session_id) REFERENCES paper_sessions(session_id)
             );
             CREATE INDEX IF NOT EXISTS paper_fills_session
@@ -69,8 +78,9 @@ impl ExplorerStore {
             "INSERT INTO paper_sessions(
                session_id, chain, mode, linked_run_id, start_block, end_block,
                starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
-               net_profit_wei, max_drawdown_wei, created_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+               net_profit_wei, max_drawdown_wei, created_at,
+               sim_mode, replay_blocks, log_only_blocks
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
             rusqlite::params![
                 session_id,
                 chain,
@@ -86,6 +96,9 @@ impl ExplorerStore {
                 ledger.net_profit_wei.to_string(),
                 ledger.max_drawdown_wei.to_string(),
                 created as i64,
+                ledger.sim_mode.as_str(),
+                ledger.replay_blocks as i64,
+                ledger.log_only_blocks as i64,
             ],
         )?;
         for f in &ledger.fills {
@@ -105,8 +118,9 @@ impl ExplorerStore {
             "INSERT INTO paper_fills(
                session_id, block_number, tx_index, canonical_id, strategy,
                gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
-               pools_json, mempool_only
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+               pools_json, mempool_only,
+               sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             rusqlite::params![
                 session_id,
                 f.block_number as i64,
@@ -120,6 +134,12 @@ impl ExplorerStore {
                 f.wallet_after.to_string(),
                 pools_json,
                 if f.mempool_only { 1i64 } else { 0i64 },
+                f.sim_mode.as_str(),
+                f.sim_gross_wei.to_string(),
+                f.sim_net_wei.to_string(),
+                f.borrowed_wei.to_string(),
+                if f.repay_ok { 1i64 } else { 0i64 },
+                if f.state_drift { 1i64 } else { 0i64 },
             ],
         )?;
         Ok(())
@@ -131,7 +151,8 @@ impl ExplorerStore {
         let mut stmt = self.connection().prepare(
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
-                    net_profit_wei, max_drawdown_wei, created_at
+                    net_profit_wei, max_drawdown_wei, created_at,
+                    sim_mode, replay_blocks, log_only_blocks
              FROM paper_sessions WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -152,7 +173,8 @@ impl ExplorerStore {
         let mut stmt = conn.prepare(
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
-                    net_profit_wei, max_drawdown_wei, created_at
+                    net_profit_wei, max_drawdown_wei, created_at,
+                    sim_mode, replay_blocks, log_only_blocks
              FROM paper_sessions
              WHERE linked_run_id = ?1
              ORDER BY created_at DESC
@@ -176,7 +198,8 @@ impl ExplorerStore {
         let mut stmt = self.connection().prepare(
             "SELECT session_id, chain, mode, linked_run_id, start_block, end_block,
                     starting_gas_wei, ending_gas_wei, reserve_wei, fills, skipped,
-                    net_profit_wei, max_drawdown_wei, created_at
+                    net_profit_wei, max_drawdown_wei, created_at,
+                    sim_mode, replay_blocks, log_only_blocks
              FROM paper_sessions
              WHERE created_at >= ?1
              ORDER BY created_at DESC
@@ -198,7 +221,8 @@ impl ExplorerStore {
         let mut stmt = self.connection().prepare(
             "SELECT block_number, tx_index, canonical_id, strategy,
                     gross_wei, gas_wei, net_wei, wallet_before, wallet_after,
-                    pools_json, mempool_only
+                    pools_json, mempool_only,
+                    sim_mode, sim_gross_wei, sim_net_wei, borrowed_wei, repay_ok, state_drift
              FROM paper_fills
              WHERE session_id = ?1
              ORDER BY block_number, tx_index",
@@ -215,18 +239,44 @@ impl ExplorerStore {
             };
             let net_s: String = r.get(6)?;
             let net_wei: i128 = net_s.parse().unwrap_or(0);
+            let gross_wei: u128 = r.get::<_, String>(4)?.parse().unwrap_or(0);
+            let sim_mode = r
+                .get::<_, Option<String>>(11)?
+                .as_deref()
+                .and_then(SimMode::parse)
+                .unwrap_or(SimMode::Assumed);
+            let sim_gross_wei: u128 = r
+                .get::<_, Option<String>>(12)?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(gross_wei);
+            let sim_net_wei: i128 = r
+                .get::<_, Option<String>>(13)?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(net_wei);
+            let borrowed_wei: u128 = r
+                .get::<_, Option<String>>(14)?
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let repay_ok = r.get::<_, Option<i64>>(15)?.unwrap_or(1) != 0;
+            let state_drift = r.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0;
             Ok(PaperFill {
                 block_number: r.get::<_, i64>(0)? as u64,
                 tx_index: r.get::<_, Option<i64>>(1)?.map(|v| v as usize),
                 canonical_id: r.get(2)?,
                 strategy: r.get(3)?,
-                gross_wei: r.get::<_, String>(4)?.parse().unwrap_or(0),
+                gross_wei,
                 gas_wei: r.get::<_, String>(5)?.parse().unwrap_or(0),
                 net_wei,
                 wallet_before: r.get::<_, String>(7)?.parse().unwrap_or(0),
                 wallet_after: r.get::<_, String>(8)?.parse().unwrap_or(0),
                 pools,
                 mempool_only: r.get::<_, i64>(10)? != 0,
+                sim_mode,
+                sim_gross_wei,
+                sim_net_wei,
+                borrowed_wei,
+                repay_ok,
+                state_drift,
             })
         })?;
         let mut out = Vec::new();
@@ -253,6 +303,9 @@ fn row_to_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<PaperSession> {
         net_profit_wei: r.get(11)?,
         max_drawdown_wei: r.get(12)?,
         created_at: r.get::<_, i64>(13)? as u64,
+        sim_mode: r.get(14)?,
+        replay_blocks: r.get::<_, Option<i64>>(15)?.map(|v| v as u64),
+        log_only_blocks: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
     })
 }
 
@@ -292,8 +345,11 @@ mod tests {
         let s = store.paper_session("paper_test_1").unwrap().unwrap();
         assert_eq!(s.fills, 1);
         assert_eq!(s.mode, "sim");
+        assert_eq!(s.sim_mode.as_deref(), Some("assumed"));
         let fills = store.paper_fills("paper_test_1").unwrap();
         assert_eq!(fills.len(), 1);
         assert_eq!(fills[0].net_wei, 900);
+        assert_eq!(fills[0].sim_mode, SimMode::Assumed);
+        assert_eq!(fills[0].sim_net_wei, 900);
     }
 }
