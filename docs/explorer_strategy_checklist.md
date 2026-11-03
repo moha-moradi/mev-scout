@@ -39,9 +39,9 @@ Status values: `pending` | `candidate_block` | `verified` | `sparse_cross_chain`
 
 ## Tooling
 
-- `scripts/hunt_strategy.py` / `scripts/hunt_strategy.mjs` -- eth_getLogs hunt
+- `scripts/hunt_strategy.mjs` -- eth_getLogs hunt
 - `scripts/verify_explorer_block.mjs` -- index + tag/kind assert
-- `scripts/tag_coverage.py` / `scripts/_coverage_report.mjs` -- coverage + profit sums
+- `scripts/tag_coverage.py` -- coverage + profit sums
 
 ## External coverage oracle — baseline
 

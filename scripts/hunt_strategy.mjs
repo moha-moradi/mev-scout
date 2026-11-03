@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Node twin of hunt_strategy.py (Windows hosts may block python.exe).
+ * eth_getLogs hunter for explorer corpus seeds (single implementation).
  *
  *   node scripts/hunt_strategy.mjs --list
  *   node scripts/hunt_strategy.mjs --label flash_loan_liq --chain avalanche
