@@ -17,7 +17,9 @@ use crate::pool::state::{PoolInfo, PoolManager, PoolState, ScanScope, UniswapV2P
 use crate::replay::BlockReplayer;
 use crate::resolver::ResolvedRange;
 use crate::rpc::RpcClient;
-use crate::paper::sim::{record_seeds_for_block, SimSeeds};
+use crate::paper::sim::{
+    promote_pending_seeds, push_pending_seeds, record_seeds_for_block, PendingSeed, SimSeeds,
+};
 use crate::types::gas::GasCalibration;
 use crate::types::MevOpportunity;
 use crate::types::{GasConfig, GasModel, Strategy};
@@ -63,6 +65,8 @@ struct DetectTxArgs<'a> {
     gas_prices: &'a RefCell<Vec<u128>>,
     gas_calibration: &'a RefCell<GasCalibration>,
     all_opportunities: &'a mut Vec<MevOpportunity>,
+    /// Detect-time seed buffer (filled before log apply for arbs).
+    pending_seeds: Option<&'a RefCell<Vec<PendingSeed>>>,
 }
 
 /// Per-block MEV detectors (dedup state spans transactions in one block).
@@ -101,6 +105,7 @@ impl BlockDetectors {
             gas_prices,
             gas_calibration,
             all_opportunities,
+            pending_seeds,
         } = args;
         // Snapshot dirty set (not a held `Ref`): `ScanScope::Dirty` borrows it for
         // the whole detect block; folding newly-dirty pools below uses `borrow_mut`.
@@ -126,6 +131,9 @@ impl BlockDetectors {
                 opps.len()
             );
         }
+        if let Some(buf) = pending_seeds {
+            push_pending_seeds(&mut buf.borrow_mut(), pm, &opps);
+        }
         all_opportunities.extend(opps);
 
         let multi_opps = self.multi_hop.detect(ctx);
@@ -136,6 +144,9 @@ impl BlockDetectors {
                 tx_index,
                 multi_opps.len()
             );
+        }
+        if let Some(buf) = pending_seeds {
+            push_pending_seeds(&mut buf.borrow_mut(), pm, &multi_opps);
         }
         all_opportunities.extend(multi_opps);
 
@@ -198,6 +209,10 @@ impl BlockDetectors {
             );
             let backrun_opps = self.backrun.post_detect(ctx_post, &tx.logs, all_txs);
             if !backrun_opps.is_empty() {
+                // Backrun is quoted on post-tx state — seed after apply.
+                if let Some(buf) = pending_seeds {
+                    push_pending_seeds(&mut buf.borrow_mut(), pm, &backrun_opps);
+                }
                 all_opportunities.extend(backrun_opps);
             }
         }
@@ -275,6 +290,10 @@ pub struct BacktestRunner {
     sim_max_candidates_per_block: usize,
     /// Snapshots keyed by canonical_id; drained via [`Self::take_sim_seeds`].
     sim_seeds: RefCell<SimSeeds>,
+    /// Detect-time seeds awaiting canonical_id promotion at finalize.
+    pending_seeds: RefCell<Vec<PendingSeed>>,
+    /// How many simulatable candidates were dropped by the seed budget.
+    seeds_capped: RefCell<usize>,
 }
 
 impl BacktestRunner {
@@ -307,6 +326,8 @@ impl BacktestRunner {
             sim_seeds_enabled: false,
             sim_max_candidates_per_block: 32,
             sim_seeds: RefCell::new(SimSeeds::new()),
+            pending_seeds: RefCell::new(Vec::new()),
+            seeds_capped: RefCell::new(0),
         }
     }
 
@@ -320,6 +341,16 @@ impl BacktestRunner {
     /// Drain captured pool snapshots (empty when sim seeds are disabled).
     pub fn take_sim_seeds(&mut self) -> SimSeeds {
         self.sim_seeds.borrow_mut().drain().collect()
+    }
+
+    /// How many candidates were skipped because the per-block seed budget was full.
+    pub fn take_seeds_capped(&mut self) -> usize {
+        std::mem::take(&mut *self.seeds_capped.borrow_mut())
+    }
+
+    /// Seed budget configured on this runner.
+    pub fn sim_max_candidates_per_block(&self) -> usize {
+        self.sim_max_candidates_per_block
     }
 
     /// Enable or disable pending transaction capture from the mempool.
@@ -514,12 +545,16 @@ impl BacktestRunner {
 
         if self.sim_seeds_enabled {
             let mut seeds = self.sim_seeds.borrow_mut();
-            record_seeds_for_block(
+            let mut pending = self.pending_seeds.borrow_mut();
+            let (_recorded, capped) = promote_pending_seeds(
                 &mut seeds,
-                &self.pool_manager,
+                &mut pending,
                 opps,
                 self.sim_max_candidates_per_block,
             );
+            *self.seeds_capped.borrow_mut() += capped;
+        } else {
+            self.pending_seeds.borrow_mut().clear();
         }
     }
 
@@ -541,12 +576,13 @@ impl BacktestRunner {
             return;
         }
         let mut seeds = self.sim_seeds.borrow_mut();
-        record_seeds_for_block(
+        let (_recorded, capped) = record_seeds_for_block(
             &mut seeds,
             &self.pool_manager,
             opps,
             self.sim_max_candidates_per_block,
         );
+        *self.seeds_capped.borrow_mut() += capped;
     }
 
     fn gas_model_target_percentile(&self) -> Option<u8> {
@@ -847,6 +883,7 @@ impl BacktestRunner {
             |i, tx, _db| {
                 let mut pm = pool_manager.borrow_mut();
                 let sender = *current_tx_from.borrow();
+                let pending = self.sim_seeds_enabled.then_some(&self.pending_seeds);
                 block_detectors.detect_tx(DetectTxArgs {
                     block_num,
                     tx_index: i,
@@ -862,6 +899,7 @@ impl BacktestRunner {
                     gas_prices: &gas_prices,
                     gas_calibration: &gas_calibration,
                     all_opportunities: &mut all_opportunities,
+                    pending_seeds: pending,
                 });
                 Ok(())
             },
@@ -994,9 +1032,23 @@ impl BacktestRunner {
                 &scope,
             );
             let opps = two_hop_detector.detect(ctx);
+            if self.sim_seeds_enabled {
+                push_pending_seeds(
+                    &mut self.pending_seeds.borrow_mut(),
+                    &self.pool_manager,
+                    &opps,
+                );
+            }
             all_opportunities.extend(opps);
 
             let multi_opps = multi_hop_detector.detect(ctx);
+            if self.sim_seeds_enabled {
+                push_pending_seeds(
+                    &mut self.pending_seeds.borrow_mut(),
+                    &self.pool_manager,
+                    &multi_opps,
+                );
+            }
             all_opportunities.extend(multi_opps);
 
             // Backrun pre-image: opportunities on the pre-tx state, captured
@@ -1038,6 +1090,13 @@ impl BacktestRunner {
                 );
                 let backrun_opps = backrun_detector.post_detect(ctx_post, &logs, &txs);
                 if !backrun_opps.is_empty() {
+                    if self.sim_seeds_enabled {
+                        push_pending_seeds(
+                            &mut self.pending_seeds.borrow_mut(),
+                            &self.pool_manager,
+                            &backrun_opps,
+                        );
+                    }
                     all_opportunities.extend(backrun_opps);
                 }
             }

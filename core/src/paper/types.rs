@@ -189,6 +189,15 @@ pub struct LedgerResult {
     /// Blocks scanned via log-only sync (optional session counter).
     #[serde(default)]
     pub log_only_blocks: u64,
+    /// Seed budget per block (`sim_max_candidates_per_block`).
+    #[serde(default)]
+    pub seed_budget: usize,
+    /// Snapshots retained this session.
+    #[serde(default)]
+    pub seeds_recorded: usize,
+    /// Simulatable candidates skipped because the seed budget was full.
+    #[serde(default)]
+    pub seeds_capped: usize,
 }
 
 impl LedgerResult {

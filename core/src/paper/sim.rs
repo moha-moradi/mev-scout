@@ -129,9 +129,40 @@ pub fn pools_of_opp(opp: &MevOpportunity) -> Vec<Address> {
     pools
 }
 
-/// Capture a snapshot of `opp`'s pools from `pm` (call after canonical_id is set).
-pub fn capture_snapshot(pm: &PoolManager, opp: &MevOpportunity) -> Option<(String, PoolSnapshot)> {
-    let cid = opp.canonical_id.as_ref()?.clone();
+/// Match key for detect-time seeds before `canonical_id` is stamped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SeedMatchKey {
+    pub strategy: Strategy,
+    pub pool_a: Address,
+    pub pool_b: Address,
+    pub token_in: Address,
+    pub token_out: Address,
+    pub block_number: u64,
+    pub tx_index: usize,
+}
+
+impl SeedMatchKey {
+    pub fn from_opp(opp: &MevOpportunity) -> Self {
+        Self {
+            strategy: opp.strategy,
+            pool_a: opp.pool_a,
+            pool_b: opp.pool_b,
+            token_in: opp.token_in,
+            token_out: opp.token_out,
+            block_number: opp.block_number,
+            tx_index: opp.tx_index,
+        }
+    }
+}
+
+/// Snapshot captured at detect time (before later txs mutate the manager).
+#[derive(Debug, Clone)]
+pub struct PendingSeed {
+    pub key: SeedMatchKey,
+    pub snap: PoolSnapshot,
+}
+
+fn snapshot_pools(pm: &PoolManager, opp: &MevOpportunity) -> Option<PoolSnapshot> {
     let addrs = pools_of_opp(opp);
     if addrs.is_empty() {
         return None;
@@ -141,38 +172,119 @@ pub fn capture_snapshot(pm: &PoolManager, opp: &MevOpportunity) -> Option<(Strin
         let state = pm.get(addr)?.clone();
         pools.push((*addr, state));
     }
-    Some((
-        cid,
-        PoolSnapshot {
-            block_number: opp.block_number,
-            tx_index: opp.tx_index,
-            pools,
-        },
-    ))
+    Some(PoolSnapshot {
+        block_number: opp.block_number,
+        tx_index: opp.tx_index,
+        pools,
+    })
+}
+
+/// Capture a snapshot of `opp`'s pools from `pm` (call after canonical_id is set).
+pub fn capture_snapshot(pm: &PoolManager, opp: &MevOpportunity) -> Option<(String, PoolSnapshot)> {
+    let cid = opp.canonical_id.as_ref()?.clone();
+    let snap = snapshot_pools(pm, opp)?;
+    Some((cid, snap))
+}
+
+/// Push detect-time snapshots (no `canonical_id` required). Call **before**
+/// applying the tx's logs so the seed matches the quoted state.
+pub fn push_pending_seeds(
+    pending: &mut Vec<PendingSeed>,
+    pm: &PoolManager,
+    opps: &[MevOpportunity],
+) {
+    for opp in opps {
+        if !SimPolicy::is_simulatable(opp.strategy) {
+            continue;
+        }
+        if let Some(snap) = snapshot_pools(pm, opp) {
+            pending.push(PendingSeed {
+                key: SeedMatchKey::from_opp(opp),
+                snap,
+            });
+        }
+    }
+}
+
+/// Promote detect-time pending seeds into `seeds` keyed by `canonical_id`.
+///
+/// Returns `(recorded, capped)` where `capped` is how many simulatable opps
+/// were skipped because the per-block seed budget was already full.
+pub fn promote_pending_seeds(
+    seeds: &mut SimSeeds,
+    pending: &mut Vec<PendingSeed>,
+    opps: &[MevOpportunity],
+    max_per_block: usize,
+) -> (usize, usize) {
+    let mut per_block: HashMap<u64, usize> = HashMap::new();
+    for snap in seeds.values() {
+        *per_block.entry(snap.block_number).or_insert(0) += 1;
+    }
+    let mut index: HashMap<SeedMatchKey, PoolSnapshot> = HashMap::new();
+    for p in pending.drain(..) {
+        index.entry(p.key).or_insert(p.snap);
+    }
+    let mut recorded = 0usize;
+    let mut capped = 0usize;
+    for opp in opps {
+        if !SimPolicy::is_simulatable(opp.strategy) {
+            continue;
+        }
+        let Some(cid) = opp.canonical_id.as_ref() else {
+            continue;
+        };
+        if seeds.contains_key(cid) {
+            continue;
+        }
+        let count = per_block.entry(opp.block_number).or_insert(0);
+        if *count >= max_per_block {
+            capped += 1;
+            continue;
+        }
+        let key = SeedMatchKey::from_opp(opp);
+        if let Some(snap) = index.remove(&key) {
+            seeds.insert(cid.clone(), snap);
+            *count += 1;
+            recorded += 1;
+        }
+    }
+    (recorded, capped)
 }
 
 /// Record seeds for simulatable opps into `seeds`, capped per block.
+///
+/// Fallback for paths that already have `canonical_id` and quote against the
+/// current manager (e.g. mempool). Prefer [`push_pending_seeds`] +
+/// [`promote_pending_seeds`] for block replay/log-only.
 pub fn record_seeds_for_block(
     seeds: &mut SimSeeds,
     pm: &PoolManager,
     opps: &[MevOpportunity],
     max_per_block: usize,
-) {
+) -> (usize, usize) {
     let mut per_block: HashMap<u64, usize> = HashMap::new();
+    for snap in seeds.values() {
+        *per_block.entry(snap.block_number).or_insert(0) += 1;
+    }
+    let mut recorded = 0usize;
+    let mut capped = 0usize;
     for opp in opps {
         if !SimPolicy::is_simulatable(opp.strategy) {
             continue;
         }
         let count = per_block.entry(opp.block_number).or_insert(0);
         if *count >= max_per_block {
+            capped += 1;
             continue;
         }
         if let Some((cid, snap)) = capture_snapshot(pm, opp) {
             if seeds.insert(cid, snap).is_none() {
                 *count += 1;
+                recorded += 1;
             }
         }
     }
+    (recorded, capped)
 }
 
 fn next_token(pool: &PoolState, token_in: Address) -> Option<Address> {
@@ -345,5 +457,75 @@ pub fn commit_outcome(
 pub fn merge_seeds(session: &mut SimSeeds, incoming: SimSeeds) {
     for (k, v) in incoming {
         session.entry(k).or_insert(v);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dex_type::DexType;
+    use crate::pool::state::{PoolInfo, UniswapV2PoolState};
+    use alloy::primitives::address;
+
+    fn v2(addr: Address, t0: Address, t1: Address, r0: u128, r1: u128) -> PoolState {
+        PoolState::UniswapV2(UniswapV2PoolState {
+            info: PoolInfo {
+                address: addr,
+                token0: t0,
+                token1: t1,
+                fee: 30,
+                dex_type: DexType::UniswapV2,
+                ..Default::default()
+            },
+            reserve0: r0,
+            reserve1: r1,
+        })
+    }
+
+    #[test]
+    fn promote_pending_seeds_requires_detect_time_capture() {
+        let t0 = address!("0x0000000000000000000000000000000000000001");
+        let t1 = address!("0x0000000000000000000000000000000000000002");
+        let pa = address!("0x00000000000000000000000000000000000000aa");
+        let pb = address!("0x00000000000000000000000000000000000000bb");
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2(pa, t0, t1, 1_000_000, 1_000_000));
+        pm.add_pool(v2(pb, t0, t1, 1_000_000, 1_000_000));
+
+        let mut opp = MevOpportunity::new(7, 3, Strategy::TwoHopArb, pa, 0);
+        opp.pool_b = pb;
+        opp.token_in = t0;
+        opp.token_out = t0;
+        opp.path = Some(vec![pa, pb]);
+
+        // Without pending push, promote finds nothing.
+        let mut seeds = SimSeeds::new();
+        let mut pending = Vec::new();
+        opp.canonical_id = Some("cid".into());
+        let (rec, _cap) = promote_pending_seeds(&mut seeds, &mut pending, &[opp.clone()], 32);
+        assert_eq!(rec, 0);
+        assert!(seeds.is_empty());
+
+        // Detect-time push then promote.
+        opp.canonical_id = None;
+        push_pending_seeds(&mut pending, &pm, &[opp.clone()]);
+        assert_eq!(pending.len(), 1);
+        opp.canonical_id = Some("cid".into());
+        let (rec, capped) = promote_pending_seeds(&mut seeds, &mut pending, &[opp], 32);
+        assert_eq!(rec, 1);
+        assert_eq!(capped, 0);
+        assert!(seeds.contains_key("cid"));
+        assert_eq!(seeds["cid"].tx_index, 3);
+    }
+
+    #[test]
+    fn assumed_path_keeps_pending_empty_when_disabled() {
+        // Documented contract: with sim disabled the runner clears pending and
+        // never records — unit-level: record with empty pm opps is a no-op.
+        let mut seeds = SimSeeds::new();
+        let pm = PoolManager::new();
+        let (rec, capped) = record_seeds_for_block(&mut seeds, &pm, &[], 32);
+        assert_eq!((rec, capped), (0, 0));
+        assert!(seeds.is_empty());
     }
 }

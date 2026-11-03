@@ -181,6 +181,35 @@ mod tests {
     }
 
     #[test]
+    fn curve_returns_none() {
+        use crate::pool::state::{CurvePoolState, CurvePoolVariant};
+        use std::collections::HashMap;
+        let t0 = address!("0x0000000000000000000000000000000000000001");
+        let t1 = address!("0x0000000000000000000000000000000000000002");
+        let mut token_index = HashMap::new();
+        token_index.insert(t0, 0usize);
+        token_index.insert(t1, 1usize);
+        let curve = PoolState::Curve(CurvePoolState {
+            info: PoolInfo {
+                address: address!("0x00000000000000000000000000000000000000cc"),
+                token0: t0,
+                token1: t1,
+                fee: 4,
+                dex_type: DexType::Curve,
+                ..Default::default()
+            },
+            balances: vec![1_000_000, 1_000_000],
+            token_index,
+            a_coeff: 100,
+            pool_variant: CurvePoolVariant::Plain,
+            gamma: None,
+            price_scale: vec![],
+            base_pool: None,
+        });
+        assert!(quote_swap_post(&curve, t0, 1_000, t1).is_none());
+    }
+
+    #[test]
     fn subset_leaves_source_untouched() {
         let t0 = address!("0x0000000000000000000000000000000000000001");
         let t1 = address!("0x0000000000000000000000000000000000000002");

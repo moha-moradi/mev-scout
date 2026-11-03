@@ -242,6 +242,8 @@ struct LiveContext<'a> {
     /// Blocks scanned via full revm vs log-only (session counters for report).
     replay_blocks: u64,
     log_only_blocks: u64,
+    /// Seed-budget diagnostics for report (`seed_budget` vs `fills capped`).
+    seeds_capped: usize,
 }
 
 impl<'a> LiveContext<'a> {
@@ -335,6 +337,7 @@ impl<'a> LiveContext<'a> {
             session_id: format!("paper_live_{}", epoch_secs()),
             replay_blocks: 0,
             log_only_blocks: 0,
+            seeds_capped: 0,
         })
     }
 
@@ -389,6 +392,7 @@ impl<'a> LiveContext<'a> {
         if self.sim.is_state_sim() {
             let incoming = self.runner.take_sim_seeds();
             merge_seeds(&mut self.session_seeds, incoming);
+            self.seeds_capped = self.seeds_capped.saturating_add(self.runner.take_seeds_capped());
         }
         Ok((opps, stats))
     }
@@ -479,6 +483,9 @@ impl<'a> LiveContext<'a> {
         ledger.sim_mode = self.sim.mode;
         ledger.replay_blocks = self.replay_blocks;
         ledger.log_only_blocks = self.log_only_blocks;
+        ledger.seed_budget = self.sim.max_candidates_per_block;
+        ledger.seeds_recorded = self.session_seeds.len();
+        ledger.seeds_capped = self.seeds_capped;
         ledger
     }
 
@@ -561,6 +568,16 @@ pub fn render_ledger_summary(ledger: &LedgerResult, native_usd: Option<f64>) -> 
         "  sim: {} | state-sim {state_fills} fill / {sim_skips} skipped | assumed {assumed_fills}\n",
         ledger.sim_mode.as_str(),
     ));
+    if ledger.sim_mode == SimMode::StateSim
+        || ledger.seed_budget > 0
+        || ledger.seeds_recorded > 0
+        || ledger.seeds_capped > 0
+    {
+        out.push_str(&format!(
+            "  caps: fill_slots≤{HARD_MAX_FILLS_PER_BLOCK} | seed_budget={} (recorded {}, capped {})\n",
+            ledger.seed_budget, ledger.seeds_recorded, ledger.seeds_capped,
+        ));
+    }
     if ledger.replay_blocks > 0 || ledger.log_only_blocks > 0 {
         out.push_str(&format!(
             "  blocks: {} replay / {} log-only\n",
@@ -1356,6 +1373,9 @@ mod tests {
             sim_mode: crate::paper::SimMode::Assumed,
             replay_blocks: 0,
             log_only_blocks: 0,
+            seed_budget: 0,
+            seeds_recorded: 0,
+            seeds_capped: 0,
         };
         let text = render_ledger_summary(&ledger, None);
         assert!(

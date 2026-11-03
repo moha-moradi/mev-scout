@@ -15,8 +15,8 @@ pub use ledger::{
 };
 pub use recon::{paper_vs_executed, ReconFill, ReconReport, ReconVerdict};
 pub use sim::{
-    merge_seeds, pools_of_opp, record_seeds_for_block, PoolSnapshot, SimFail, SimOutcome,
-    SimPolicy, SimSeeds,
+    merge_seeds, pools_of_opp, promote_pending_seeds, push_pending_seeds, record_seeds_for_block,
+    PendingSeed, PoolSnapshot, SeedMatchKey, SimFail, SimOutcome, SimPolicy, SimSeeds,
 };
 pub use types::{
     FillSkipReason, LedgerResult, PaperFill, PaperMode, PaperSession, PaperSkip, SimMode,

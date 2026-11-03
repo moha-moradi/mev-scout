@@ -287,6 +287,9 @@ mod tests {
             sim_mode: crate::paper::SimMode::Assumed,
             replay_blocks: 0,
             log_only_blocks: 0,
+            seed_budget: 0,
+            seeds_recorded: 0,
+            seeds_capped: 0,
         }
     }
 

@@ -265,6 +265,9 @@ impl LedgerPolicy {
             sim_mode: SimMode::Assumed,
             replay_blocks: 0,
             log_only_blocks: 0,
+            seed_budget: 0,
+            seeds_recorded: 0,
+            seeds_capped: 0,
         }
     }
 
@@ -444,6 +447,9 @@ impl LedgerPolicy {
             sim_mode: SimMode::StateSim,
             replay_blocks: 0,
             log_only_blocks: 0,
+            seed_budget: 0,
+            seeds_recorded: 0,
+            seeds_capped: 0,
         }
     }
 }
@@ -740,6 +746,99 @@ mod tests {
         } else {
             assert!(r.fills[1].sim_net_wei < first_net);
         }
+    }
+
+    #[test]
+    fn seed_budget_caps_record_count() {
+        use crate::paper::sim::record_seeds_for_block;
+        use crate::pool::state::PoolManager;
+
+        let t0 = address!("0x00000000000000000000000000000000000000e1");
+        let t1 = address!("0x00000000000000000000000000000000000000e2");
+        let p_a = address!("0x00000000000000000000000000000000000000f1");
+        let p_b = address!("0x00000000000000000000000000000000000000f2");
+        let mut pm = PoolManager::new();
+        pm.add_pool(v2(p_a, t0, t1, 1_000_000, 1_000_000));
+        pm.add_pool(v2(p_b, t0, t1, 1_000_000, 1_000_000));
+
+        let mut opps = Vec::new();
+        for i in 0..5 {
+            let mut o = MevOpportunity::new(1, i, Strategy::TwoHopArb, p_a, 0);
+            o.pool_b = p_b;
+            o.token_in = t0;
+            o.token_out = t0;
+            o.canonical_id = Some(format!("cid{i}"));
+            o.path = Some(vec![p_a, p_b]);
+            o.expected_profit = U256::from(100u64);
+            o.gas_cost_wei = 1;
+            opps.push(o);
+        }
+        let mut seeds = SimSeeds::new();
+        let (recorded, capped) = record_seeds_for_block(&mut seeds, &pm, &opps, 2);
+        assert_eq!(recorded, 2);
+        assert_eq!(capped, 3);
+        assert_eq!(seeds.len(), 2);
+    }
+
+    #[test]
+    fn fee_applied_once_lowers_gross_vs_zero_fee() {
+        use crate::paper::sim::PoolSnapshot;
+
+        let t0 = address!("0x00000000000000000000000000000000000000a1");
+        let t1 = address!("0x00000000000000000000000000000000000000a2");
+        let p_buy = address!("0x00000000000000000000000000000000000000b1");
+        let p_sell = address!("0x00000000000000000000000000000000000000b2");
+        let buy = v2(p_buy, t0, t1, 1_000_000, 2_000_000);
+        let sell = v2(p_sell, t0, t1, 2_000_000, 1_000_000);
+        let input = 50_000u128;
+        let mid = buy.quote_dir(input, t0, t1).unwrap();
+        let out = sell.quote_dir(mid, t1, t0).unwrap();
+        let profit = out - input;
+
+        let mut o = MevOpportunity::new(1, 0, Strategy::TwoHopArb, p_buy, 0);
+        o.pool_b = p_sell;
+        o.token_in = t0;
+        o.token_out = t0;
+        o.input_amount = U256::from(input);
+        o.expected_profit = U256::from(profit);
+        o.gas_cost_wei = 1;
+        o.canonical_id = Some("fee1".into());
+        o.path = Some(vec![p_buy, p_sell]);
+
+        let mut seeds = SimSeeds::new();
+        seeds.insert(
+            "fee1".into(),
+            PoolSnapshot {
+                block_number: 1,
+                tx_index: 0,
+                pools: vec![(p_buy, buy), (p_sell, sell)],
+            },
+        );
+        let policy = LedgerPolicy {
+            starting_gas_wei: 10_000_000,
+            reserve_wei: 0,
+            max_fills_per_block: 32,
+        };
+        let zero = SimPolicy {
+            mode: SimMode::StateSim,
+            flash_loan: true,
+            fee_bps: 0,
+            max_candidates_per_block: 32,
+        };
+        let fee9 = SimPolicy {
+            fee_bps: 9,
+            ..zero
+        };
+        let r0 = policy.apply_simulated(&[o.clone()], &seeds, &zero);
+        let r9 = policy.apply_simulated(&[o], &seeds, &fee9);
+        assert_eq!(r0.fills.len(), 1);
+        assert_eq!(r9.fills.len(), 1);
+        assert!(
+            r9.fills[0].sim_gross_wei < r0.fills[0].sim_gross_wei,
+            "fee should reduce native gross once"
+        );
+        assert!(r0.fills[0].sim_gross_wei <= profit);
+        assert!(r9.fills[0].sim_gross_wei <= profit);
     }
 
     #[test]
