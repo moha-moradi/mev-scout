@@ -197,7 +197,7 @@ fn by_kind_rollup(snap: &DashboardSnapshot) -> Vec<(String, Agg)> {
             e.gas += v;
         }
     }
-    let mut rows: Vec<_> = map.into_iter().collect();
+    let mut rows: Vec<_> = map.into_iter().filter(|(_, a)| a.ops > 0).collect();
     rows.sort_by(|a, b| b.1.gross.total_cmp(&a.1.gross).then(a.0.cmp(&b.0)));
     rows
 }

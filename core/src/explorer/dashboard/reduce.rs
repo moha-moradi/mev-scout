@@ -332,7 +332,7 @@ fn reduce_kpi(ops: &[OpRecord], caps: &StoreCaps) -> KpiPanel {
 
 fn auto_bucket_secs(window: &WindowSpec) -> i64 {
     let span = (window.until_ts - window.since_ts).max(1);
-    if span <= 3600 {
+    let mut secs = if span <= 3600 {
         60
     } else if span <= 6 * 3600 {
         300
@@ -342,7 +342,14 @@ fn auto_bucket_secs(window: &WindowSpec) -> i64 {
         3600
     } else {
         86400
+    };
+    // Hard cap so a mis-clamped window cannot explode the artifact.
+    const MAX_BUCKETS: i64 = 720;
+    let buckets = span / secs + 1;
+    if buckets > MAX_BUCKETS {
+        secs = (span / MAX_BUCKETS).max(secs);
     }
+    secs
 }
 
 fn reduce_series(
@@ -356,7 +363,9 @@ fn reduce_series(
     let start = (window.since_ts / bucket_secs) * bucket_secs;
     let end = window.until_ts;
     let mut t = start;
-    while t <= end {
+    // Guard against pathological ranges even after auto_bucket_secs.
+    let mut n = 0i64;
+    while t <= end && n < 2_000 {
         map.insert(
             t,
             SeriesPoint {
@@ -366,7 +375,8 @@ fn reduce_series(
                 blocks_indexed: 0,
             },
         );
-        t += bucket_secs;
+        t = t.saturating_add(bucket_secs);
+        n += 1;
     }
     for o in ops {
         let b = (o.ts as i64 / bucket_secs) * bucket_secs;

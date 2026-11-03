@@ -321,12 +321,26 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
     let min_block_ts = sorted_blocks.first().copied();
     let max_block_ts = sorted_blocks.last().copied();
 
+    // `WindowSpec::all` starts at epoch 0 — clamp the *series domain* to observed
+    // data so we don't emit ~10⁶ empty minute buckets into the artifact.
+    let mut window = opts.window.clone();
+    if window.label == "all" || window.since_ts == 0 {
+        let op_min = ops.iter().map(|o| o.ts as i64).min();
+        let op_max = ops.iter().map(|o| o.ts as i64).max();
+        let lo = [min_block_ts, op_min].into_iter().flatten().min();
+        let hi = [max_block_ts, op_max].into_iter().flatten().max();
+        if let (Some(lo), Some(hi)) = (lo, hi) {
+            window.since_ts = lo;
+            window.until_ts = hi.max(lo);
+        }
+    }
+
     let labels = load_labels(&tx)?;
     let catalogue_tags = load_catalogue_tags();
     let mut panels = reduce(
         &ops,
         &caps,
-        &opts.window,
+        &window,
         &sorted_blocks,
         &labels,
         &catalogue_tags,
@@ -400,7 +414,7 @@ pub fn build(opts: &BuildOptions) -> anyhow::Result<DashboardSnapshot> {
             status: caps.status_label().to_string(),
         },
         caps,
-        window: opts.window.clone(),
+        window,
         semantics: Semantics {
             null_usd_means: "not priceable — never zero",
             usd_columns_are: "f64 approximations; prefix ≈; never balances",
